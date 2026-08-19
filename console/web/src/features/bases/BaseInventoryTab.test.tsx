@@ -201,6 +201,14 @@ async function pickItem(ariaLabel: string, itemName: string) {
   fireEvent.mouseDown(option);
 }
 
+// Give/Fill share one combobox+quantity input, switched by this mode
+// toggle (consolidated 2026-08-19, "Alternative A" from the UI/UX hat's
+// design review) -- the Give/Fill panel opens in Give mode by default, so
+// any test targeting Fill's own combobox/button/warning must switch first.
+function switchToFillMode() {
+  fireEvent.click(screen.getByRole("button", { name: "Fill" }));
+}
+
 // The tab opens on Containers, so anything testing the rollup switches first.
 function showItems() {
   fireEvent.click(screen.getByRole("button", { name: "Items" }));
@@ -751,8 +759,12 @@ describe("BaseInventoryTab", () => {
     await openVaultContents();
     expect(screen.getByText(/Giving and filling items are unaffected/i)).toBeTruthy();
     // Give/Fill must actually still be live in this exact state, or the
-    // explanatory text itself would be false.
+    // explanatory text itself would be false. Give and Fill now share one
+    // combobox (mode toggle below it), so this checks the combobox exists
+    // in Give mode (the default) and that switching to Fill mode also
+    // still works, rather than checking two separately-named comboboxes.
     expect(screen.getByRole("combobox", { name: "Item to give" })).toBeTruthy();
+    switchToFillMode();
     expect(screen.getByRole("combobox", { name: "Item to fill" })).toBeTruthy();
   });
 
@@ -1154,6 +1166,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    switchToFillMode();
 
     await pickItem("Item to fill", "SteelBar");
     fireEvent.change(screen.getByLabelText("Quantity to fill"), { target: { value: "50" } });
@@ -1183,6 +1196,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    switchToFillMode();
 
     await pickItem("Item to fill", "SteelBar");
     fireEvent.change(screen.getByLabelText("Quantity to fill"), { target: { value: "50" } });
@@ -1210,6 +1224,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    switchToFillMode();
 
     await pickItem("Item to fill", "SteelBar");
     fireEvent.change(screen.getByLabelText("Quantity to fill"), { target: { value: "50" } });
@@ -1236,6 +1251,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    switchToFillMode();
 
     const fillInput = screen.getByRole("combobox", { name: "Item to fill" });
     fireEvent.change(fillInput, { target: { value: "" } });
@@ -1302,14 +1318,19 @@ describe("BaseInventoryTab", () => {
   // end of the container; Fill cannot use the same mitigation, since it is
   // meant to top up toward real capacity, the same direction the engine
   // already fills. Per explicit operator direction, Fill gets a warning
-  // and documentation instead of a mitigation -- this test locks in that
-  // the warning is shown once, specific to Fill.
+  // and documentation instead of a mitigation. Give/Fill share one panel
+  // (mode toggle, consolidated 2026-08-19) that opens in Give mode by
+  // default, so this warning must be absent in Give mode and appear only
+  // after switching to Fill mode -- it must never show for Give, which does
+  // not carry this risk.
   it("warns specifically about the position_index collision risk for Fill, not Give", async () => {
     mockInventory();
     renderTab();
     await loaded();
     await openVaultContents();
 
+    expect(screen.queryByText(/can land on the same slot and be lost on the next restart/)).toBeNull();
+    switchToFillMode();
     expect(screen.getByText(/can land on the same slot and be lost on the next restart/)).toBeTruthy();
   });
 
@@ -1321,6 +1342,80 @@ describe("BaseInventoryTab", () => {
     await openVaultContents();
 
     expect(screen.queryByText(/can land on the same slot and be lost on the next restart/)).toBeNull();
+  });
+
+  // Give/Fill panel consolidation (2026-08-19, "Alternative A" from the
+  // UI/UX hat's dispatched design review): one shared item combobox and
+  // quantity field, switched by a Give/Fill mode toggle, replacing the
+  // previous two separately-stacked panels. These tests lock in the
+  // consolidated panel's own new behavior directly, not just via
+  // incidental pass-through from the pre-existing Give/Fill action tests
+  // above.
+  it("opens the Add Item/Fill Container panel in Give mode by default", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    expect(screen.getByRole("button", { name: "Give" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Fill" }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByRole("combobox", { name: "Item to give" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Give Item" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Fill Amount" })).toBeNull();
+  });
+
+  it("switches between Give and Fill mode, swapping the combobox label and action buttons", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    switchToFillMode();
+    expect(screen.getByRole("button", { name: "Fill" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("combobox", { name: "Item to fill" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Fill Amount" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Fill to Capacity" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Give Item" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Give" }));
+    expect(screen.getByRole("button", { name: "Give" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("combobox", { name: "Item to give" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Give Item" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Fill Amount" })).toBeNull();
+  });
+
+  it("clears the selected item and resets the quantity default when switching modes", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    await pickItem("Item to give", "AzuriteOre");
+    fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "42" } });
+    expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe("AzuriteOre");
+
+    switchToFillMode();
+    // Switching modes must not silently carry a Give selection/quantity
+    // into a Fill submission -- both reset.
+    expect((screen.getByRole("combobox", { name: "Item to fill" }) as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Quantity to fill") as HTMLInputElement).value).toBe("100");
+  });
+
+  it("keeps a queued Give batch intact after switching to Fill mode and back", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    await pickItem("Item to give", "AzuriteOre");
+    fireEvent.click(screen.getByRole("button", { name: "Add to Batch" }));
+    expect(screen.getByText(/AzuriteOre ×/)).toBeTruthy();
+
+    switchToFillMode();
+    fireEvent.click(screen.getByRole("button", { name: "Give" }));
+    // The queued batch entry must still be there -- only the shared
+    // selection/quantity fields reset on a mode switch, never the batch.
+    expect(screen.getByText(/AzuriteOre ×/)).toBeTruthy();
   });
 
   it("selects several items and deletes only the checked ones", async () => {

@@ -254,9 +254,31 @@ single item renders as a bare icon.
 ## Adding items: Give, Give Multiple, and Fill
 
 Storage containers only — the same allowlist restriction as deletion, one section down. The overlay's
-"Add Item"/"Fill Container" panel is offered whenever `group === "storage"`; it does not additionally
-require `deleteSafety.safe`, unlike every delete action on this page. See "Why Give/Fill do not require a
-stopped map" below for why that asymmetry is deliberate, not an oversight.
+Give/Fill panel is offered whenever `group === "storage"`; it does not additionally require
+`deleteSafety.safe`, unlike every delete action on this page. See "Why Give/Fill do not require a stopped
+map" below for why that asymmetry is deliberate, not an oversight.
+
+**One shared item picker and quantity field, switched by a Give/Fill mode toggle — not two separate
+panels.** **Corrected 2026-08-19** after a real operator reported the original layout (a full
+combobox+quantity+button row for Give, a second, visually identical one for Fill, stacked vertically) as
+confusing — especially once Give and Fill were restricted to the same three item groups in the same
+session (see below), making the two rows show identical candidate items with nothing explaining when to
+use which. A dispatched UI/UX-hat design review diagnosed this precisely and recommended consolidating to
+one shared `ItemCatalogCombobox` + quantity `input`, with a `Give`/`Fill` segmented toggle (reusing the
+same visual pattern as the contents overlay's own List/Grid toggle) determining which action the shared
+row submits to and which action-specific affordance renders beneath it:
+- **Give mode** shows "Add to Batch" and the queued-items list — Give's batch capability (see below) is
+  unchanged, just fed by the shared fields instead of its own dedicated ones.
+- **Fill mode** shows "Fill Amount" and "Fill to Capacity" — Fill's capacity sentinel (see below) is
+  likewise unchanged.
+
+Switching modes clears the shared item selection and resets the quantity field to that mode's own prior
+default (`1` for Give, `100` for Fill) — a half-typed Give quantity must never be silently submitted as a
+Fill quantity, or vice versa. A queued Give batch is **not** cleared by switching to Fill and back; an
+operator should be able to check Fill without losing in-progress batch work. The two safety notices below
+the toggle were also consolidated: the restart-visibility warning applies to both modes and is shown
+unconditionally; the position_index collision warning (see "Give fills from the high end..." below) is
+Fill-specific and shown only while Fill mode is selected, since Give does not carry that risk.
 
 | Action | Route | Backend function | Confirmation phrase |
 |---|---|---|---|
@@ -306,9 +328,10 @@ mitigation, not a guarantee. Falls back to the old lowest-next-free convention w
 **Fill does not get this mitigation, by design.** Fill exists to top up a container toward its real
 capacity — the same low-to-high direction the engine already fills in — so there is no meaningful "far end"
 left once Fill has done its job; the high-end approach that helps Give simply does not apply. Per explicit
-operator direction, Fill instead ships with an in-UI warning above the Fill Container panel stating this
-risk directly, and the incident document above is the canonical reference for an operator who wants the
-full mechanism. This is treated as an accepted, documented limitation, not an open bug.
+operator direction, Fill instead ships with an in-UI warning shown while Fill mode is selected (see "One
+shared item picker..." above) stating this risk directly, and the incident document above is the canonical
+reference for an operator who wants the full mechanism. This is treated as an accepted, documented
+limitation, not an open bug.
 
 **Neither Give nor Fill ever rejects a request just because it would exceed the container's remaining
 volume.** Per explicit operator direction (found during manual UI review of #347): an earlier version threw
@@ -384,9 +407,10 @@ knowing the exact template id or exact in-game name, offered no way to discover 
 catalog, and did not filter anything as the operator typed — typing was just raw text sent straight to the
 server on submit. Search and the results list are name-only: the catalog id (e.g. `"Oil"` for the in-game
 "Fuel Cell") is a backend concept the operator never needs to see or type, and Give/Fill both submit the
-selected item's real `itemId` under the hood regardless. The Fill combobox additionally filters its results
-to `FILLABLE_GROUPS` client-side, matching the server's own `resolveFillableCatalogItem()` check, so the
-picker never even offers an item the server would reject.
+selected item's real `itemId` under the hood regardless. Give and Fill share one combobox instance (see
+"One shared item picker..." above), filtered to `FILLABLE_GROUPS` client-side in both modes, matching the
+server's own `resolveFillableCatalogItem()` check, so the picker never even offers an item the server would
+reject.
 
 ## Why Give/Fill do not require a stopped map
 

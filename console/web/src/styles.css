@@ -3181,6 +3181,12 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 }
 .bases-inventory-add-panel h4 { margin: 0 0 6px; font-size: 13px; }
 .bases-inventory-add-panel h4 + p.bases-inventory-note { margin-bottom: 8px; }
+/* Give/Fill mode toggle (consolidated 2026-08-19, "Alternative A" from the
+   UI/UX hat's design review) -- reuses .bases-inventory-views/.bases-inventory-view's
+   existing segmented-button look for visual consistency with the contents
+   overlay's own List/Grid toggle above, but is not right-aligned the way
+   that one is (this panel has no sibling control to push away from). */
+.bases-inventory-add-panel .bases-inventory-views { margin: 0 0 10px; }
 .bases-inventory-add-row {
   display: flex;
   align-items: center;

@@ -438,6 +438,28 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   risk is instead documented with a new in-UI warning above the Fill
   Container panel and the incident writeup above -- an accepted, by-design
   limitation, not an open bug.
+- **The Base Inventory contents overlay's Give/Fill panel was two
+  separately-stacked combobox+quantity+button rows -- one for Give, one for
+  Fill -- reported confusing by a real operator, especially after Give and
+  Fill were restricted to the same three item groups earlier in this same
+  session, making the two rows show identical candidate items with nothing
+  explaining when to use which.** A dispatched UI/UX-hat design review
+  diagnosed the confusion precisely (visual duplication, no naming/decision
+  signal distinguishing the two actions, duplicated warning banners) and
+  recommended consolidating to one shared `ItemCatalogCombobox` + quantity
+  field with a `Give`/`Fill` mode toggle (reusing the contents overlay's own
+  List/Grid segmented-button pattern), each mode revealing only its own
+  secondary affordance -- Give's "Add to Batch" queue, Fill's "Fill to
+  Capacity" sentinel -- rather than showing both actions' full controls at
+  once. Switching modes clears the shared item selection and resets the
+  quantity field to that mode's own prior default (`1` for Give, `100` for
+  Fill); a queued Give batch survives a Fill-and-back mode switch
+  unconditionally. The two safety notices were also consolidated: the
+  restart-visibility warning now applies to both modes and shows
+  unconditionally; the position_index collision warning (see above) is
+  Fill-specific and shows only while Fill mode is selected. No backend
+  routes, request shapes, or confirmation phrases changed -- this is a
+  client-side state/markup consolidation only.
 
 ### Security
 

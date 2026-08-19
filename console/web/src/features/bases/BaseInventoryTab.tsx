@@ -130,16 +130,44 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
   const giveFillAllowed = slots?.group === "storage";
   const [checkedItemIds, setCheckedItemIds] = useState<Set<string>>(new Set());
   const [bulkDeleteRunning, setBulkDeleteRunning] = useState(false);
-  const [addItem, setAddItem] = useState<CatalogItem | null>(null);
-  const [addQuantityText, setAddQuantityText] = useState("1");
+  // Give and Fill share one item picker and one quantity field, switched by
+  // addFillMode -- consolidated 2026-08-19 after a real operator reported
+  // the previous two-panel layout (a separate combobox+quantity+button row
+  // for each of Give and Fill, stacked vertically) as confusing, especially
+  // once Give and Fill were restricted to the same three item groups in the
+  // same session, making the two rows show identical candidate items with
+  // no explanation of when to use which. See the UI/UX hat's dispatched
+  // design review (referenced in this session's PR/issue trail) for the
+  // full diagnosis and the alternatives considered -- this implements its
+  // explicit recommendation ("Alternative A"): one shared item+quantity
+  // input, a Give/Fill mode toggle, and each mode's own secondary
+  // affordance (Give's batch queue, Fill's capacity sentinel) revealed only
+  // while that mode is selected, rather than both shown at once.
+  const [addFillMode, setAddFillMode] = useState<"give" | "fill">("give");
+  const [selectedItem, setSelectedItem] = useState<CatalogItem | null>(null);
+  const [quantityText, setQuantityText] = useState("1");
   const [addRunning, setAddRunning] = useState(false);
   // Queued batch entries keep the item's real in-game name for display
   // (the batch list, and the confirm dialog below) alongside itemId, which
-  // is all that ever reaches the server -- see giveItems().
+  // is all that ever reaches the server -- see giveItems(). Give-only --
+  // Fill has no batch concept (one fill call always targets one item).
   const [addBatch, setAddBatch] = useState<{ itemName: string; itemId: string; quantity: number }[]>([]);
-  const [fillItem, setFillItem] = useState<CatalogItem | null>(null);
-  const [fillQuantityText, setFillQuantityText] = useState("100");
   const [fillRunning, setFillRunning] = useState(false);
+
+  // Switching modes clears the shared selection/quantity (matching each
+  // mode's own prior default -- Give defaulted to "1", Fill to "100") so a
+  // half-typed Give quantity never gets silently submitted as a Fill
+  // quantity or vice versa, and so a selected item does not appear to carry
+  // over into a mode where it may not even be relevant (e.g. mid-batch).
+  // The Give batch itself is deliberately NOT cleared on a mode switch --
+  // an operator queuing items should be able to glance at Fill and switch
+  // back to Give without losing progress.
+  function selectAddFillMode(mode: "give" | "fill") {
+    if (mode === addFillMode) return;
+    setAddFillMode(mode);
+    setSelectedItem(null);
+    setQuantityText(mode === "fill" ? "100" : "1");
+  }
 
   // Only the newest request may write state. StrictMode double-invokes this
   // effect, so two requests really are open at once here, and whichever settles
@@ -306,11 +334,10 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       setSelectedSlotId("");
       setAmount("");
       setCheckedItemIds(new Set());
-      setAddItem(null);
-      setAddQuantityText("1");
+      setAddFillMode("give");
+      setSelectedItem(null);
+      setQuantityText("1");
       setAddBatch([]);
-      setFillItem(null);
-      setFillQuantityText("100");
       return;
     }
     setSelectedSlotId("");
@@ -486,19 +513,20 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     }
   }
 
-  function addQuantity() {
-    return Math.max(1, Math.min(1000000, Number(addQuantityText) || 1));
+  function selectedQuantity() {
+    return Math.max(1, Math.min(1000000, Number(quantityText) || 1));
   }
 
   // Queues the currently-selected item into the batch rather than giving it
   // immediately -- lets an operator add several distinct templates and
   // confirm them all in one give-items call, matching giveMultipleItemsToStorage's
   // "one transaction, all or nothing" batch semantics on the backend.
+  // Give-only -- only rendered/reachable while addFillMode === "give".
   function queueAddItem() {
-    if (!addItem) return;
-    setAddBatch((current) => [...current, { itemName: addItem.name, itemId: addItem.itemId || addItem.id, quantity: addQuantity() }]);
-    setAddItem(null);
-    setAddQuantityText("1");
+    if (!selectedItem) return;
+    setAddBatch((current) => [...current, { itemName: selectedItem.name, itemId: selectedItem.itemId || selectedItem.id, quantity: selectedQuantity() }]);
+    setSelectedItem(null);
+    setQuantityText("1");
   }
 
   function removeQueuedItem(index: number) {
@@ -510,8 +538,8 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     // A single selected-but-not-yet-queued item is folded in at confirm
     // time -- an operator should not have to click "Add to batch" before
     // giving just one item.
-    const pending = addItem
-      ? [...addBatch, { itemName: addItem.name, itemId: addItem.itemId || addItem.id, quantity: addQuantity() }]
+    const pending = selectedItem
+      ? [...addBatch, { itemName: selectedItem.name, itemId: selectedItem.itemId || selectedItem.id, quantity: selectedQuantity() }]
       : addBatch;
     if (pending.length === 0) return;
     const confirmed = await confirmAction(
@@ -562,8 +590,8 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
           : `${pending.length} items were given to the container.`);
       }
       setAddBatch([]);
-      setAddItem(null);
-      setAddQuantityText("1");
+      setSelectedItem(null);
+      setQuantityText("1");
       await Promise.all([loadSlots(contentsFor), load()]);
     } catch (error) {
       const text = errorText(error);
@@ -572,10 +600,6 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     } finally {
       setAddRunning(false);
     }
-  }
-
-  function fillQuantity() {
-    return Math.max(1, Math.min(1000000, Number(fillQuantityText) || 1));
   }
 
   // toCapacity sends quantity: 0, a real sentinel fillItemToStorage
@@ -590,19 +614,19 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
   // the quantity field with a special "0 means max" meaning a operator
   // would have no way to discover on their own.
   async function submitFill(containerName: string, toCapacity = false) {
-    if (!giveFillAllowed || !fillItem) return;
-    const quantity = toCapacity ? 0 : fillQuantity();
+    if (!giveFillAllowed || !selectedItem) return;
+    const quantity = toCapacity ? 0 : selectedQuantity();
     const confirmed = await confirmAction(
       toCapacity
-        ? `Fill container with as much ${fillItem.name} as fits in its remaining volume? Only raw resources, refined resources, and components are allowed.`
-        : `Fill container with ${quantity} x ${fillItem.name}? Only raw resources, refined resources, and components are allowed.`,
+        ? `Fill container with as much ${selectedItem.name} as fits in its remaining volume? Only raw resources, refined resources, and components are allowed.`
+        : `Fill container with ${quantity} x ${selectedItem.name}? Only raw resources, refined resources, and components are allowed.`,
       {
         title: "Fill Container",
         confirmLabel: "Fill",
         details: [
           { label: "Base", value: baseName },
           { label: "Container", value: containerName, tone: "accent" },
-          { label: fillItem.name, value: toCapacity ? "As much as fits" : `x${quantity.toLocaleString()}` }
+          { label: selectedItem.name, value: toCapacity ? "As much as fits" : `x${quantity.toLocaleString()}` }
         ]
       }
     );
@@ -611,7 +635,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     setDeleteNotice("");
     setDeleteError("");
     try {
-      const response = await basesApi.fillContainerItem(baseId, contentsFor, { itemId: fillItem.itemId || fillItem.id, quantity, confirmation: "FILL ITEM TO STORAGE" });
+      const response = await basesApi.fillContainerItem(baseId, contentsFor, { itemId: selectedItem.itemId || selectedItem.id, quantity, confirmation: "FILL ITEM TO STORAGE" });
       if (!response.supported || !response.result?.ok) {
         throw new Error(response.error || response.reason || "The container could not be filled.");
       }
@@ -623,13 +647,14 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       // when only 100 of a larger request fit -- and separately, sending
       // 100 when the operator meant 'fill it up' at all").
       const { given, clamped } = response.result;
+      const filledName = selectedItem.name;
       setDeleteNotice(toCapacity
-        ? `${given.toLocaleString()} x ${fillItem.name} was filled into the container (as much as fit).`
+        ? `${given.toLocaleString()} x ${filledName} was filled into the container (as much as fit).`
         : clamped
-          ? `Only ${given.toLocaleString()} of the requested ${quantity.toLocaleString()} x ${fillItem.name} fit and was filled into the container.`
-          : `${fillItem.name} was filled into the container.`);
-      setFillItem(null);
-      setFillQuantityText("100");
+          ? `Only ${given.toLocaleString()} of the requested ${quantity.toLocaleString()} x ${filledName} fit and was filled into the container.`
+          : `${filledName} was filled into the container.`);
+      setSelectedItem(null);
+      setQuantityText("100");
       await Promise.all([loadSlots(contentsFor), load()]);
     } catch (error) {
       const text = errorText(error);
@@ -1112,6 +1137,24 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
           </p>}
 
           {giveFillAllowed && <div className="bases-inventory-add-panel">
+            {/* Consolidated 2026-08-19 (per the UI/UX hat's dispatched design
+                review, "Alternative A") from two separately-stacked
+                panels -- one full combobox+quantity+button row for Give,
+                a second, visually identical one for Fill -- into one
+                shared item picker + quantity field with a Give/Fill mode
+                toggle. A real operator reported the old two-panel layout as
+                confusing, especially once Give and Fill were restricted to
+                the same three item groups in this same session, making the
+                two rows show identical candidate items with nothing
+                explaining when to use which. The mode toggle IS that
+                explanation now, and each mode's own secondary affordance
+                (Give's batch queue, Fill's capacity sentinel) only renders
+                while that mode is selected, instead of both being visible
+                and competing for attention at once. */}
+            <p className="muted bases-inventory-note">
+              <strong>Give</strong> inserts a new stack and can queue several different items in one confirmation.{" "}
+              <strong>Fill</strong> tops up one item toward this container's real capacity, including filling it all the way in one click. Both accept raw resources, refined resources, and components only.
+            </p>
             {/* Per INC-2026-07-31-001: the game engine claims dune.items rows
                 only at server startup, so a given/filled item sits in the
                 database but stays invisible in-game until the Survival
@@ -1123,54 +1166,11 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                 "Apply Fills" button) -- Server Control/Bases already own
                 that action, and duplicating a player-disconnecting restart
                 trigger in a third place was judged a bigger risk than one
-                extra tab switch. */}
+                extra tab switch. Applies to both modes, so it is shown
+                unconditionally rather than duplicated per mode. */}
             <p className="bases-inventory-restart-warning" role="status">
               <TriangleAlert size={14} aria-hidden="true" /> Given and filled items are not visible in-game until the Survival server restarts. Restart it from Server Control or Bases when convenient — all connected players will be disconnected for a few minutes.
             </p>
-            <h4>Add Item</h4>
-            <p className="muted bases-inventory-note">Only raw resources, refined resources, and components are accepted.</p>
-            <div className="bases-inventory-add-row">
-              <ItemCatalogCombobox
-                value={addItem}
-                onChange={setAddItem}
-                filterGroups={FILLABLE_GROUPS}
-                ariaLabel="Item to give"
-                placeholder="Type to search items…"
-                disabled={addRunning}
-              />
-              <input
-                type="number"
-                min={1}
-                max={1000000}
-                className="small-input"
-                value={addQuantityText}
-                onChange={(event) => setAddQuantityText(event.target.value)}
-                aria-label="Quantity to give"
-                disabled={addRunning}
-              />
-              <button
-                type="button"
-                disabled={!addItem || addRunning}
-                onClick={queueAddItem}
-              >Add to Batch</button>
-              <button
-                disabled={(!addItem && addBatch.length === 0) || addRunning}
-                onClick={() => void giveItems(containerLabel(openContainer))}
-              >{addRunning ? "Giving…" : addBatch.length > 0 ? `Give ${addBatch.length + (addItem ? 1 : 0)} Items` : "Give Item"}</button>
-            </div>
-            {addBatch.length > 0 && <ul className="bases-inventory-add-batch">
-              {addBatch.map((item, index) => (
-                <li key={`${item.itemId}-${index}`}>
-                  {item.itemName} ×{item.quantity.toLocaleString()}
-                  <button type="button" className="icon-toggle-button" aria-label={`Remove ${item.itemName} from batch`} onClick={() => removeQueuedItem(index)} disabled={addRunning}>
-                    <X size={12} />
-                  </button>
-                </li>
-              ))}
-            </ul>}
-
-            <h4>Fill Container</h4>
-            <p className="muted bases-inventory-note">Only raw resources, refined resources, and components are accepted, respecting slot and volume limits.</p>
             {/* Per INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md: while
                 the map stays running, a filled row can land on the same slot
                 a live in-game move/pickup claims at the same time, and the
@@ -1182,39 +1182,76 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                 real capacity, the same direction the engine already fills,
                 so there is no "far end" left once Fill has done its job.
                 This is a documented, accepted limitation, not a bug --
-                warned here since it is Fill-specific and not shared by
-                Give. */}
-            <p className="bases-inventory-fill-collision-warning" role="status">
+                shown only in Fill mode, since Give does not carry this risk. */}
+            {addFillMode === "fill" && <p className="bases-inventory-fill-collision-warning" role="status">
               <TriangleAlert size={14} aria-hidden="true" /> If items are added to this container in-game while the map is running, a filled item can land on the same slot and be lost on the next restart. This risk is highest for a nearly-full container. See the Base Inventory documentation for details.
-            </p>
+            </p>}
+
+            <div className="bases-inventory-views" role="group" aria-label="Give or Fill">
+              <button
+                type="button"
+                className={`bases-inventory-view${addFillMode === "give" ? " active" : ""}`}
+                aria-pressed={addFillMode === "give"}
+                onClick={() => selectAddFillMode("give")}
+              >Give</button>
+              <button
+                type="button"
+                className={`bases-inventory-view${addFillMode === "fill" ? " active" : ""}`}
+                aria-pressed={addFillMode === "fill"}
+                onClick={() => selectAddFillMode("fill")}
+              >Fill</button>
+            </div>
+
             <div className="bases-inventory-add-row">
               <ItemCatalogCombobox
-                value={fillItem}
-                onChange={setFillItem}
+                value={selectedItem}
+                onChange={setSelectedItem}
                 filterGroups={FILLABLE_GROUPS}
-                ariaLabel="Item to fill"
-                placeholder="Type to search fillable items…"
-                disabled={fillRunning}
+                ariaLabel={addFillMode === "give" ? "Item to give" : "Item to fill"}
+                placeholder={addFillMode === "give" ? "Type to search items…" : "Type to search fillable items…"}
+                disabled={addRunning || fillRunning}
               />
               <input
                 type="number"
                 min={1}
                 max={1000000}
                 className="small-input"
-                value={fillQuantityText}
-                onChange={(event) => setFillQuantityText(event.target.value)}
-                aria-label="Quantity to fill"
-                disabled={fillRunning}
+                value={quantityText}
+                onChange={(event) => setQuantityText(event.target.value)}
+                aria-label={addFillMode === "give" ? "Quantity to give" : "Quantity to fill"}
+                disabled={addRunning || fillRunning}
               />
-              <button
-                disabled={!fillItem || fillRunning}
-                onClick={() => void submitFill(containerLabel(openContainer))}
-              >{fillRunning ? "Filling…" : "Fill Amount"}</button>
-              <button
-                disabled={!fillItem || fillRunning}
-                onClick={() => void submitFill(containerLabel(openContainer), true)}
-              >{fillRunning ? "Filling…" : "Fill to Capacity"}</button>
+              {addFillMode === "give" ? <>
+                <button
+                  type="button"
+                  disabled={!selectedItem || addRunning}
+                  onClick={queueAddItem}
+                >Add to Batch</button>
+                <button
+                  disabled={(!selectedItem && addBatch.length === 0) || addRunning}
+                  onClick={() => void giveItems(containerLabel(openContainer))}
+                >{addRunning ? "Giving…" : addBatch.length > 0 ? `Give ${addBatch.length + (selectedItem ? 1 : 0)} Items` : "Give Item"}</button>
+              </> : <>
+                <button
+                  disabled={!selectedItem || fillRunning}
+                  onClick={() => void submitFill(containerLabel(openContainer))}
+                >{fillRunning ? "Filling…" : "Fill Amount"}</button>
+                <button
+                  disabled={!selectedItem || fillRunning}
+                  onClick={() => void submitFill(containerLabel(openContainer), true)}
+                >{fillRunning ? "Filling…" : "Fill to Capacity"}</button>
+              </>}
             </div>
+            {addFillMode === "give" && addBatch.length > 0 && <ul className="bases-inventory-add-batch">
+              {addBatch.map((item, index) => (
+                <li key={`${item.itemId}-${index}`}>
+                  {item.itemName} ×{item.quantity.toLocaleString()}
+                  <button type="button" className="icon-toggle-button" aria-label={`Remove ${item.itemName} from batch`} onClick={() => removeQueuedItem(index)} disabled={addRunning}>
+                    <X size={12} />
+                  </button>
+                </li>
+              ))}
+            </ul>}
           </div>}
 
           <div className="confirm-modal-actions">
