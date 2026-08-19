@@ -47,7 +47,21 @@
 import { DISCORD_ADAPTER_ROUTES, DISCORD_LIVE_ADAPTER_ROUTES } from "./adapter.js";
 import { DISCORD_CAPABILITIES, SELF_SCOPED_CAPABILITIES, minTierForCapability as policyMinTierForCapability } from "./policy.js";
 
-export const CATALOG_VERSION = 1;
+// Bumped from 1 to 2: subcommand.route (a single string) became
+// subcommand.routes (an array) for every (group, subcommand) pair that
+// fans out to more than one backing adapter route -- a breaking shape
+// change for any future consumer that assumed one route per subcommand
+// (see the DISCORD_CATALOG_PROTOCOL_VERSION comment in adapter.js: bump on
+// "a field is removed or its meaning changes", not on ordinary additions).
+// Ports the same fix already merged upstream via
+// Red-Blink/dune-awakening-selfhost-docker#171 (issue #358) to this fork's
+// `main`, which has its own superset of routes (the multi-account
+// players/accounts/* family) not present on that upstream PR branch --
+// see issue #360. No live consumer exists yet (Phase 2/3 bot-side
+// generator is still unimplemented -- confirmed via grep across
+// arrakis-control-panel's src/), so this bump is forward hygiene, not a
+// fix for an active breakage.
+export const CATALOG_VERSION = 2;
 
 // Minimum Discord role tier able to invoke each capability. Delegates
 // directly to policy.js's minTierForCapability() (added alongside this file
@@ -85,11 +99,58 @@ function minTierForCapability(capability) {
 // checks for this route (verified by direct reading of both files, not
 // inferred) -- diagnostic-mode STATUS uses LOGS_READ instead of
 // STATUS_READ; that distinction is preserved here via diagnosticCapability.
-const COMMAND_METADATA = Object.freeze({
+//
+// method: the exact HTTP method routes.js's real dispatch table checks for
+// this route (`req.method === "GET"|"POST"`) -- defaults to "POST" when
+// omitted (buildCommandCatalog() below), since all but 3 live routes
+// (HEALTH, VERSION, BACKUPS_LIST) are POST; those 3 set method: "GET"
+// explicitly.
+//
+// params[].bodyField: the real JSON body field name routes.js actually
+// reads for this param, when it differs from the param's own Discord-
+// facing `name`. Defaults to the param's own `name` when omitted. Found
+// via upstream PR #171's review (issue #358): PLAYERS_LINK
+// ("character" -> body.characterName) and PLAYERS_INVENTORY_SEARCH
+// ("search" -> body.query); ALSO applies to two multi-account-only
+// entries this fork's main has beyond that upstream branch:
+// PLAYERS_ACCOUNTS_LINK ("character" -> body.characterName) and
+// PLAYERS_ACCOUNTS_UNLINK/PLAYERS_ACCOUNTS_SET_DEFAULT ("character" ->
+// body.playerControllerId) -- see each entry's own comment below.
+//
+// Six (group, subcommand) pairs intentionally fan out to two backing
+// routes each -- three shared with the upstream PR #171 branch
+// (storage/find/inventory, confirmed live against arrakis-control-panel's
+// real commands.js) plus three specific to this fork's multi-account
+// superset (link/verify/unlink). Each fanned-out route entry carries its
+// own `selector` describing which param/value or param-presence picks it;
+// the entry with `selector: null` is the default used when no other
+// selector in the pair matches. See issue #360 for the full audit of
+// which of the multi-account routes are genuinely live vs. dead
+// (PLAYERS_ACCOUNTS_LINK/LINK_VERIFY/SET_DEFAULT have NO live bot caller
+// today -- routeHasNoCurrentBotCaller: true, unchanged from #342 -- but
+// are kept in the catalog per this file's own Phase 1 scope of
+// "describe what's live on Core," and are NOT given a fan-out `selector`
+// since there is no real single subcommand picking between them and
+// their single-account counterpart).
+// Exported (not just module-private) so discordCommandCatalog.test.js can
+// cross-check every declared field/bodyField against buildCommandCatalog()'s
+// real output and against routes.js's real body.<field> reads, without
+// re-deriving or hand-retyping this table a second time inside the test.
+export const COMMAND_METADATA = Object.freeze({
   [DISCORD_ADAPTER_ROUTES.HEALTH]: {
     group: "server", subcommand: "health",
     description: "Check the console Discord adapter.",
+    // HEALTH has no requireDiscordCapability() call -- discordAdapterHealth()
+    // (adapter.js) never checks a capability. Recorded as STATUS_READ for
+    // display purposes (matching the bot's own health command's stated
+    // minimum role), but routeEnforcesCapability: false makes clear that
+    // is not actually enforced by this specific route -- the same L3
+    // integration-audit finding already fixed on the upstream PR #171
+    // branch (Red-Blink/dune-awakening-selfhost-docker#171), ported here
+    // since main's discordAdapterHealth() has the identical gap.
     capability: DISCORD_CAPABILITIES.STATUS_READ,
+    routeEnforcesCapability: false,
+    method: "GET",
     params: []
   },
   [DISCORD_ADAPTER_ROUTES.STATUS]: {
@@ -169,6 +230,7 @@ const COMMAND_METADATA = Object.freeze({
     // or a gap to close in a separate issue.
     capability: DISCORD_CAPABILITIES.BACKUPS_READ,
     routeEnforcesCapability: false,
+    method: "GET",
     params: []
   },
   [DISCORD_ADAPTER_ROUTES.ANNOUNCEMENTS]: {
@@ -241,7 +303,9 @@ const COMMAND_METADATA = Object.freeze({
     capability: DISCORD_CAPABILITIES.PLAYER_LINK_WRITE,
     selfScoped: true,
     params: [
-      { name: "character", type: "STRING", required: true, description: "Your character name." }
+      // routes.js reads body.characterName, not body.character -- same
+      // mismatch upstream PR #171's review found (issue #358).
+      { name: "character", bodyField: "characterName", type: "STRING", required: true, description: "Your character name." }
     ]
   },
   [DISCORD_ADAPTER_ROUTES.PLAYERS_LINK_VERIFY]: {
@@ -253,11 +317,23 @@ const COMMAND_METADATA = Object.freeze({
       { name: "code", type: "STRING", required: true, description: "Verification code from in-game whisper." }
     ]
   },
+  // Fan-out pair (issue #360): the bot registers ONE real "unlink"
+  // subcommand under group "player" (commands.js) with an OPTIONAL
+  // "character" option ("Player controller ID... omit to unlink your
+  // single-link character"); at runtime it calls PLAYERS_UNLINK when
+  // omitted (the default) or PLAYERS_ACCOUNTS_UNLINK when a
+  // playerControllerId is given (verified directly against
+  // arrakis-control-panel's real commands.js key "player:unlink"). This
+  // is a genuine one-subcommand-fans-out-to-two-routes case, the same
+  // shape as the storage/find/inventory pairs already fixed on the
+  // upstream PR #171 branch (issue #358) -- NOT a naming collision to
+  // rename away.
   [DISCORD_ADAPTER_ROUTES.PLAYERS_UNLINK]: {
     group: "player", subcommand: "unlink",
     description: "Unlink your character from your Discord (single-link flow).",
     capability: DISCORD_CAPABILITIES.PLAYER_LINK_WRITE,
     selfScoped: true,
+    selector: null,
     params: []
   },
   // routeHasNoCurrentBotCaller (issue #342, found during an independent
@@ -266,25 +342,32 @@ const COMMAND_METADATA = Object.freeze({
   // routes.js) but no slash command in arrakis-control-panel calls it
   // today (verified directly against arrakis-control-panel @ 8f3d3ed --
   // grep for "players-accounts-link" across that repo's src/ finds no
-  // caller). Included here because Phase 1's scope is "describe what's
-  // live on Core," not "describe only what the bot currently calls" --
-  // but flagged explicitly, with a description that does not imply an
-  // existing working bot command, so a future Phase 2 generator does not
-  // mistake this for something Discord users can invoke today.
+  // caller, re-confirmed during issue #360's audit). UNLIKE
+  // PLAYERS_ACCOUNTS_UNLINK below, there is no real bot subcommand that
+  // ever fans out to this route, so it is NOT modeled as a fan-out pair
+  // with PLAYERS_LINK -- it would collide on subcommand "link" with no
+  // genuine picking mechanism behind it. Renamed to "link-account",
+  // following the exact precedent PLAYERS_ACCOUNTS_LINK_STEAM below
+  // already sets (subcommand "link-steam", not "link") for a
+  // same-group, no-live-caller, no-fan-out multi-account variant.
   [DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK]: {
-    group: "player", subcommand: "link",
+    group: "player", subcommand: "link-account",
     description: "(Not yet exposed as a bot command.) Core route to link an additional character to a Discord account (multi-account).",
     capability: DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE,
     selfScoped: true,
     routeHasNoCurrentBotCaller: true,
     params: [
-      { name: "character", type: "STRING", required: true, description: "Character name to link." }
+      // routes.js reads body.characterName, not body.character.
+      { name: "character", bodyField: "characterName", type: "STRING", required: true, description: "Character name to link." }
     ]
   },
   // See PLAYERS_ACCOUNTS_LINK's comment above -- same finding (#342),
   // same verification method, no bot-side caller for this route either.
+  // Renamed to "verify-account" for the same reason ("verify" would
+  // otherwise collide with PLAYERS_LINK_VERIFY's real, live subcommand
+  // with no genuine fan-out behind it).
   [DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_VERIFY]: {
-    group: "player", subcommand: "verify",
+    group: "player", subcommand: "verify-account",
     description: "(Not yet exposed as a bot command.) Core route to verify a pending additional-account link with a code.",
     capability: DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE,
     selfScoped: true,
@@ -298,8 +381,13 @@ const COMMAND_METADATA = Object.freeze({
     description: "Unlink one additional character from your Discord.",
     capability: DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE,
     selfScoped: true,
+    selector: { param: "character", present: true },
     params: [
-      { name: "character", type: "STRING", required: false, description: "Player controller ID from /dune player characters." }
+      // routes.js reads body.playerControllerId, not body.character --
+      // the Discord-facing option is still named "character" (it accepts
+      // a player-controller ID string, per the description), but the
+      // wire field name differs.
+      { name: "character", bodyField: "playerControllerId", type: "STRING", required: false, description: "Player controller ID from /dune player characters." }
     ]
   },
   [DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LIST]: {
@@ -329,7 +417,8 @@ const COMMAND_METADATA = Object.freeze({
     selfScoped: true,
     routeHasNoCurrentBotCaller: true,
     params: [
-      { name: "character", type: "STRING", required: true, description: "Character link ID." }
+      // routes.js reads body.playerControllerId, not body.character.
+      { name: "character", bodyField: "playerControllerId", type: "STRING", required: true, description: "Character link ID." }
     ]
   },
   [DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_STEAM]: {
@@ -350,49 +439,72 @@ const COMMAND_METADATA = Object.freeze({
     capability: DISCORD_CAPABILITIES.INVENTORY_READ,
     params: []
   },
-  [DISCORD_ADAPTER_ROUTES.PLAYERS_INVENTORY]: {
-    group: "player", subcommand: "inventory",
-    description: "View your personal inventory.",
-    capability: DISCORD_CAPABILITIES.INVENTORY_READ,
-    params: []
-  },
+  // Fan-out pair (shared with upstream PR #171/issue #358): the bot
+  // registers ONE real "storage" subcommand under group "player"
+  // (commands.js) with a scope choice ("owned"/"guild"); at runtime it
+  // calls PLAYERS_STORAGE for scope=owned (the default) or GUILD_STORAGE
+  // for scope=guild. Two different capabilities/tiers are genuinely
+  // enforced depending on which route is selected (STORAGE_READ vs
+  // GUILD_READ).
   [DISCORD_ADAPTER_ROUTES.PLAYERS_STORAGE]: {
     group: "player", subcommand: "storage",
     description: "View your storage containers grouped by map.",
     capability: DISCORD_CAPABILITIES.STORAGE_READ,
+    selector: null,
     params: [
       { name: "scope", type: "STRING", required: false, description: 'Storage scope: "owned" (default) or "guild".', choices: ["owned", "guild"] }
-    ]
-  },
-  [DISCORD_ADAPTER_ROUTES.PLAYERS_FIND]: {
-    group: "player", subcommand: "find",
-    description: "Search for items across your containers.",
-    capability: DISCORD_CAPABILITIES.INVENTORY_READ,
-    params: [
-      { name: "query", type: "STRING", required: true, description: "Item name to search for." },
-      { name: "scope", type: "STRING", required: false, description: 'Search scope: "owned" (default) or "guild".', choices: ["owned", "guild"] }
-    ]
-  },
-  [DISCORD_ADAPTER_ROUTES.PLAYERS_INVENTORY_SEARCH]: {
-    group: "player", subcommand: "inventory",
-    description: "View your personal inventory, filtered by item name.",
-    capability: DISCORD_CAPABILITIES.INVENTORY_READ,
-    params: [
-      { name: "search", type: "STRING", required: false, description: "Filter by item name (optional)." }
     ]
   },
   [DISCORD_ADAPTER_ROUTES.GUILD_STORAGE]: {
     group: "player", subcommand: "storage",
     description: "View guild-scoped storage containers.",
     capability: DISCORD_CAPABILITIES.GUILD_READ,
+    selector: { param: "scope", equals: "guild" },
     params: []
+  },
+  // Fan-out pair (shared with upstream PR #171/issue #358): same pattern
+  // as storage above -- one real "find" subcommand, scope-selected
+  // between PLAYERS_FIND (owned, default) and GUILD_FIND (guild).
+  [DISCORD_ADAPTER_ROUTES.PLAYERS_FIND]: {
+    group: "player", subcommand: "find",
+    description: "Search for items across your containers.",
+    capability: DISCORD_CAPABILITIES.INVENTORY_READ,
+    selector: null,
+    params: [
+      { name: "query", type: "STRING", required: true, description: "Item name to search for." },
+      { name: "scope", type: "STRING", required: false, description: 'Search scope: "owned" (default) or "guild".', choices: ["owned", "guild"] }
+    ]
   },
   [DISCORD_ADAPTER_ROUTES.GUILD_FIND]: {
     group: "player", subcommand: "find",
     description: "Search for items across guild containers.",
     capability: DISCORD_CAPABILITIES.GUILD_READ,
+    selector: { param: "scope", equals: "guild" },
     params: [
       { name: "query", type: "STRING", required: true, description: "Item name to search for." }
+    ]
+  },
+  // Fan-out pair (shared with upstream PR #171/issue #358): one real
+  // "inventory" subcommand under group "player" with an optional "search"
+  // string option. The bot calls PLAYERS_INVENTORY_SEARCH when search is
+  // present, else PLAYERS_INVENTORY -- selected by param PRESENCE, not a
+  // value match (`present: true` instead of `equals`). Same capability
+  // either way (INVENTORY_READ).
+  [DISCORD_ADAPTER_ROUTES.PLAYERS_INVENTORY]: {
+    group: "player", subcommand: "inventory",
+    description: "View your personal inventory.",
+    capability: DISCORD_CAPABILITIES.INVENTORY_READ,
+    selector: null,
+    params: []
+  },
+  [DISCORD_ADAPTER_ROUTES.PLAYERS_INVENTORY_SEARCH]: {
+    group: "player", subcommand: "inventory",
+    description: "View your personal inventory, filtered by item name.",
+    capability: DISCORD_CAPABILITIES.INVENTORY_READ,
+    selector: { param: "search", present: true },
+    params: [
+      // routes.js reads body.query, not body.search.
+      { name: "search", bodyField: "query", type: "STRING", required: false, description: "Filter by item name (optional)." }
     ]
   },
   [DISCORD_ADAPTER_ROUTES.VERSION]: {
@@ -403,6 +515,7 @@ const COMMAND_METADATA = Object.freeze({
     // is actually checked; recorded as null rather than guessing one.
     capability: null,
     routeEnforcesCapability: false,
+    method: "GET",
     params: []
   },
   [DISCORD_ADAPTER_ROUTES.SERVERS]: {
@@ -469,27 +582,71 @@ export function buildCommandCatalog(liveRoutes = DISCORD_LIVE_ADAPTER_ROUTES, me
     throw new Error(`commandCatalog.js: ${stale.length} catalog entry(ies) reference route(s) no longer in DISCORD_LIVE_ADAPTER_ROUTES: ${stale.join(", ")}`);
   }
 
+  // groups: group name -> (subcommand name -> array of route entries). A
+  // subcommand normally has exactly one route entry; the 6 documented
+  // fan-out pairs above (storage/find/inventory shared with upstream PR
+  // #171, plus link/verify/unlink specific to this fork's multi-account
+  // superset -- see issue #360) produce two.
   const groups = new Map();
   for (const route of liveRoutes) {
-    const meta = metadata[route];
-    if (!groups.has(meta.group)) groups.set(meta.group, []);
-    groups.get(meta.group).push({
-      name: meta.subcommand,
-      description: meta.description,
+    // Destructure-and-spread (not a hand-picked allowlist): every field
+    // NOT explicitly named below survives into the output route entry
+    // automatically via `...rest` -- this is the fix for the
+    // diagnosticCapability-silently-dropped bug already fixed upstream
+    // (Red-Blink/dune-awakening-selfhost-docker#171, issue #358), ported
+    // here since main's version of buildCommandCatalog() had the same
+    // allowlist bug -- confirmed it was ALSO silently dropping
+    // disabledPendingSecurityReview (defined on PLAYERS_ACCOUNTS_LINK_STEAM,
+    // a field that doesn't exist at all on the upstream PR #171 branch).
+    // Only fields that need renaming (group/subcommand, consumed into the
+    // Map keys below rather than copied verbatim) or type coercion
+    // (selfScoped, requiresWritesEnabled, routeEnforcesCapability,
+    // routeHasNoCurrentBotCaller -- all intentionally normalized to a
+    // real boolean, undefined -> false, not left as undefined) are named
+    // explicitly and excluded from `rest`.
+    const {
+      group, subcommand, capability, selfScoped, requiresWritesEnabled,
+      routeEnforcesCapability, routeHasNoCurrentBotCaller, method, params, ...rest
+    } = metadata[route];
+    const routeEntry = {
+      ...rest,
       route,
-      capability: meta.capability,
-      minTier: minTierForCapability(meta.capability),
-      selfScoped: Boolean(meta.selfScoped),
-      requiresWritesEnabled: Boolean(meta.requiresWritesEnabled),
-      routeEnforcesCapability: meta.routeEnforcesCapability !== false,
-      routeHasNoCurrentBotCaller: Boolean(meta.routeHasNoCurrentBotCaller),
-      params: meta.params || []
-    });
+      capability,
+      minTier: minTierForCapability(capability),
+      // Conditional capabilities need their own tier on the wire. A bot
+      // cannot derive this from diagnosticCapability alone because the
+      // Core policy table is not otherwise part of the catalog response.
+      // Ports Red-Blink's post-merge fix on the upstream PR #171 branch
+      // (commit 144aa84d, recorded in issue #370) to main's copy of this
+      // function, which has the identical gap.
+      ...(rest.diagnosticCapability
+        ? { diagnosticMinTier: minTierForCapability(rest.diagnosticCapability) }
+        : {}),
+      method: method || "POST",
+      selfScoped: Boolean(selfScoped),
+      requiresWritesEnabled: Boolean(requiresWritesEnabled),
+      routeEnforcesCapability: routeEnforcesCapability !== false,
+      routeHasNoCurrentBotCaller: Boolean(routeHasNoCurrentBotCaller),
+      // bodyField defaults to the param's own Discord-facing name when
+      // not explicitly overridden.
+      params: (params || []).map((param) => ({ ...param, bodyField: param.bodyField || param.name }))
+    };
+
+    if (!groups.has(group)) groups.set(group, new Map());
+    const subcommands = groups.get(group);
+    if (!subcommands.has(subcommand)) subcommands.set(subcommand, []);
+    subcommands.get(subcommand).push(routeEntry);
   }
 
   const result = {
     version: CATALOG_VERSION,
-    groups: [...groups.entries()].map(([name, subcommands]) => ({ name, subcommands }))
+    groups: [...groups.entries()].map(([groupName, subcommands]) => ({
+      name: groupName,
+      subcommands: [...subcommands.entries()].map(([subcommandName, routes]) => ({
+        name: subcommandName,
+        routes
+      }))
+    }))
   };
   if (isProductionCall) cachedProductionCatalog = result;
   return result;
