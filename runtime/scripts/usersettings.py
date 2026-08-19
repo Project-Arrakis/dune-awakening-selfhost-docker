@@ -378,6 +378,10 @@ FIELD_LABELS = {
 # only and unknown Advanced-editor values must never be offered to players.
 CLIENT_FILE_REQUIRED = {
     "vehicle_max_per_player": "Engine.ini",
+    # Funcom's shipped self-host setup template explicitly requires these
+    # building values to match on every player's client.
+    "max_landclaim_segments": "Game.ini",
+    "building_restriction_limits_enabled": "Game.ini",
     "hydration_enabled": "Game.ini",
     "water_consumption_rate": "Game.ini",
     "player_starting_water": "Game.ini",
@@ -2304,7 +2308,7 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
     return render_ini_sections(section_lines, [
         "; Game.ini for the Dune: Awakening client.",
         f"; Client-required settings generated from Docker UserGame.ini values for {target_label}.",
-        "; Copy these sections into Saved/Config/WindowsClient/Game.ini while the game is closed.",
+        "; Merge these sections into Saved/Config/WindowsClient/Game.ini while the game is closed.",
         "; Only settings changed from the default and known to require client configuration are listed.",
         "; Remove keys from an earlier copy when they are no longer listed here.",
     ])
@@ -2335,10 +2339,11 @@ def client_engine_ini(profile: dict, map_name: str = "", partition_id: str | Non
 
     target_label = "global UserEngine" if not target_map else target_map if not target_partition else f"{target_map} partition {target_partition}"
     return render_ini_sections(section_lines, [
-        "; Experimental: Engine.ini for the Dune: Awakening client.",
-        f"; Generated from Docker UserEngine.ini values for {target_label}.",
-        "; Copy these sections into Saved/Config/WindowsClient/Engine.ini while the game is closed.",
-        "; Only settings changed from the default are listed. Delete any keys from an earlier copy that are not here.",
+        "; Engine.ini for the Dune: Awakening client.",
+        f"; Client-required settings generated from Docker UserEngine.ini values for {target_label}.",
+        "; Merge these sections into Saved/Config/WindowsClient/Engine.ini while the game is closed.",
+        "; Only settings changed from the default and known to require client configuration are listed.",
+        "; Remove keys from an earlier generated copy when they are no longer listed here.",
     ])
 
 
@@ -2986,9 +2991,16 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
     client_game = client_game_ini(reparsed, "Survival_1", "3")
     if "[Global:" in client_game or "[Map:" in client_game or "[Partition:" in client_game:
         raise SystemExit("Client Game.ini export contains scoped Docker profile headers.")
-    for server_only in ("m_DefaultReconnectGracePeriodSeconds", "UnknownGlobal", "CustomPartitionKey", "m_GlobalXPMultiplier", "m_MaxNumLandclaimSegments"):
+    for server_only in ("m_DefaultReconnectGracePeriodSeconds", "UnknownGlobal", "CustomPartitionKey", "m_GlobalXPMultiplier"):
         if server_only in client_game:
             raise SystemExit(f"Server-only UserGame value leaked into client Game.ini export: {server_only}")
+    profile_set_key(reparsed, "global", BUILDING_SETTINGS_SECTION, "m_MaxNumLandclaimSegments", "20")
+    profile_set_key(reparsed, "global", BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "False")
+    matched_building_client_game = client_game_ini(reparsed, "Survival_1", "3")
+    if "m_MaxNumLandclaimSegments=20" not in matched_building_client_game:
+        raise SystemExit("Client-required landclaim segment limit did not carry into the client Game.ini export.")
+    if "m_bBuildingRestrictionLimitsEnabled=False" not in matched_building_client_game:
+        raise SystemExit("Client-required building restriction setting did not carry into the client Game.ini export.")
     profile_set_key(reparsed, "global", "ConsoleVariables", "Bgd.ServerDisplayName", quote_ini_string("Do Not Export"))
     profile_set_key(reparsed, "global", "ConsoleVariables", "Bgd.ServerLoginPassword", quote_ini_string("Do Not Export"))
     bgd_filtered_client_game = client_game_ini(reparsed, "Survival_1", "3")
