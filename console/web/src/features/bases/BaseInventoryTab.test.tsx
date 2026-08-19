@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { adminApi } from "../../api/admin";
 import { basesApi, type BaseContainerSlots, type BaseInventory } from "../../api/bases";
 import { BaseInventoryTab } from "./BaseInventoryTab";
 
@@ -17,7 +18,29 @@ vi.mock("../../api/bases", () => ({
   }
 }));
 
+// The Give/Fill panels now use ItemCatalogCombobox, which fetches the full
+// catalog via adminApi.itemCatalog() on mount -- every test that opens the
+// contents overlay needs this mocked, the same way every other consumer of
+// ItemCatalogSelector/ItemCatalogCombobox already mocks it (see
+// CharacterAdminUI.skills.test.tsx).
+vi.mock("../../api/admin", () => ({
+  adminApi: {
+    itemCatalog: vi.fn()
+  }
+}));
+
 const IMAGE = "/images/items/image-unavailable.png";
+
+// Small, realistic catalog fixture -- real fillable groups on AzuriteOre/
+// PlantFiber/SteelBar (matching FILLABLE_GROUPS in adminCatalog.js), and a
+// non-fillable weapon so the Fill combobox's group filtering has something
+// real to exclude.
+const CATALOG_ITEMS = [
+  { id: "AzuriteOre", itemId: "AzuriteOre", name: "AzuriteOre", category: "resources", source: "Resources", group: "raw_resource", image: IMAGE },
+  { id: "PlantFiber", itemId: "PlantFiber", name: "PlantFiber", category: "resources", source: "Resources", group: "raw_resource", image: IMAGE },
+  { id: "SteelBar", itemId: "SteelBar", name: "SteelBar", category: "resources", source: "Resources", group: "refined_resource", image: IMAGE },
+  { id: "SilverSword_Ranger", itemId: "SilverSword_Ranger", name: "SilverSword_Ranger", category: "weapons", source: "Weapons", group: "weapon", image: IMAGE }
+];
 
 // One base holding the same template in two groups, so the group chips have
 // something to actually change.
@@ -120,6 +143,10 @@ function mockSlots(payload: BaseContainerSlots = SLOTS) {
   vi.mocked(basesApi.containerSlots).mockResolvedValue(payload as never);
 }
 
+function mockCatalog(items = CATALOG_ITEMS) {
+  vi.mocked(adminApi.itemCatalog).mockResolvedValue({ rows: items } as never);
+}
+
 // Typed with the real signature rather than inferred from `async () => true`,
 // so assertions can reach the options argument (the crafting warning) instead
 // of indexing into an empty tuple.
@@ -160,6 +187,20 @@ async function loaded() {
   await waitFor(() => expect(screen.getByText("Distinct")).toBeTruthy());
 }
 
+// Selects an item from ItemCatalogCombobox the same way a real player would:
+// type into the labeled input, wait for the matching option to appear, then
+// click it -- typing alone never commits a selection (a player could type
+// something the server would reject, or half a name, without this).
+async function pickItem(ariaLabel: string, itemName: string) {
+  const input = screen.getByRole("combobox", { name: ariaLabel });
+  fireEvent.change(input, { target: { value: itemName } });
+  // A plain substring-match function, not a dynamically-built RegExp --
+  // avoids constructing a regex from a variable (ReDoS lint concern),
+  // which is unnecessary here anyway since these are exact fixture names.
+  const option = await waitFor(() => screen.getByRole("option", { name: (accessibleName) => accessibleName.includes(itemName) }));
+  fireEvent.mouseDown(option);
+}
+
 // The tab opens on Containers, so anything testing the rollup switches first.
 function showItems() {
   fireEvent.click(screen.getByRole("button", { name: "Items" }));
@@ -191,6 +232,11 @@ beforeEach(() => {
   // Every test that opens the contents overlay needs slots; the ones that
   // don't are unaffected by the default.
   mockSlots();
+  // Every mount of ItemCatalogCombobox (the Give/Fill panels) fetches the
+  // catalog -- needed even for tests that never touch Give/Fill, since the
+  // combobox mounts as soon as the contents overlay opens for a storage
+  // container.
+  mockCatalog();
 });
 
 describe("BaseInventoryTab", () => {
@@ -471,7 +517,12 @@ describe("BaseInventoryTab", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("offers no contents button for an empty container", async () => {
+  // Issue #347 (found during manual UI review): an empty Storage container
+  // used to render bare "Empty" text with no click target at all, making it
+  // permanently unreachable -- exactly the container an operator most needs
+  // to open, to Give/Fill something into it. The button must always exist;
+  // only its trailing label (distinct-count vs "Empty") changes.
+  it("still offers a working contents button for an empty container, labelled Empty", async () => {
     mockInventory({
       ...PAYLOAD,
       containers: [{
@@ -482,11 +533,20 @@ describe("BaseInventoryTab", () => {
         ? { ...g, containerCount: 1, itemCount: 0 }
         : { ...g, containerCount: 0, itemCount: 0 })
     });
+    mockSlots({
+      supported: true, found: true, baseId: 1006, placeableId: "40009",
+      typeName: "Repair Station", group: "other", maxSlots: 5, usedSlots: 0,
+      currentVolume: 0, maxVolume: 0,
+      deleteSafety: { safe: false, known: true, map: "HaggaBasin", partitionId: 1, reason: "Item deletion is available only for Storage containers." },
+      inventories: [{ inventoryId: "9009", maxSlots: 5, usedSlots: 0, currentVolume: 0, maxVolume: 0, slots: [] }]
+    });
     renderTab();
     await loaded();
 
-    expect(screen.queryByRole("button", { name: /View Contents/ })).toBeNull();
-    expect(cards()[0].textContent).toContain("Empty");
+    const button = screen.getByRole("button", { name: /View Contents/ });
+    expect(button.textContent).toContain("Empty");
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
   });
 
   it("keeps the overlay open when a filter would exclude its container", async () => {
@@ -679,8 +739,8 @@ describe("BaseInventoryTab", () => {
     expect(screen.getByText(/Giving and filling items are unaffected/i)).toBeTruthy();
     // Give/Fill must actually still be live in this exact state, or the
     // explanatory text itself would be false.
-    expect(screen.getByLabelText("Item name or ID to give")).toBeTruthy();
-    expect(screen.getByLabelText("Item name or ID to fill")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Item to give" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Item to fill" })).toBeTruthy();
   });
 
   // The explanatory clause is specific to the map-safety case -- it must
@@ -873,17 +933,17 @@ describe("BaseInventoryTab", () => {
     await loaded();
     await openVaultContents();
 
-    fireEvent.change(screen.getByLabelText("Item name or ID to give"), { target: { value: "AzuriteOre" } });
+    await pickItem("Item to give", "AzuriteOre");
     fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "20" } });
     fireEvent.click(screen.getByRole("button", { name: "Give Item" }));
 
     await waitFor(() => expect(basesApi.giveContainerItem).toHaveBeenCalled());
     expect(vi.mocked(basesApi.giveContainerItem).mock.calls[0]).toEqual([
-      "1006", "40001", { itemName: "AzuriteOre", quantity: 20, confirmation: "GIVE ITEM TO STORAGE" }
+      "1006", "40001", { itemId: "AzuriteOre", quantity: 20, confirmation: "GIVE ITEM TO STORAGE" }
     ]);
     await waitFor(() => expect(vi.mocked(basesApi.inventory).mock.calls.length).toBeGreaterThan(1));
-    // The input clears after a successful give, ready for the next item.
-    await waitFor(() => expect((screen.getByLabelText("Item name or ID to give") as HTMLInputElement).value).toBe(""));
+    // The selection clears after a successful give, ready for the next item.
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "Item to give" }) as HTMLInputElement).value).toBe(""));
   });
 
   it("does not give an item when the confirmation is declined", async () => {
@@ -893,7 +953,7 @@ describe("BaseInventoryTab", () => {
     await loaded();
     await openVaultContents();
 
-    fireEvent.change(screen.getByLabelText("Item name or ID to give"), { target: { value: "AzuriteOre" } });
+    await pickItem("Item to give", "AzuriteOre");
     fireEvent.click(screen.getByRole("button", { name: "Give Item" }));
     await waitFor(() => expect(confirmAction).toHaveBeenCalled());
     expect(basesApi.giveContainerItem).not.toHaveBeenCalled();
@@ -910,21 +970,21 @@ describe("BaseInventoryTab", () => {
     await openVaultContents();
 
     // Queue the first item into the batch...
-    fireEvent.change(screen.getByLabelText("Item name or ID to give"), { target: { value: "AzuriteOre" } });
+    await pickItem("Item to give", "AzuriteOre");
     fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "20" } });
     fireEvent.click(screen.getByRole("button", { name: "Add to Batch" }));
     await waitFor(() => expect(screen.getByText(/AzuriteOre ×20/)).toBeTruthy());
 
-    // ...then type a second item and give both in one click, folding the
+    // ...then select a second item and give both in one click, folding the
     // not-yet-queued second item in at confirm time.
-    fireEvent.change(screen.getByLabelText("Item name or ID to give"), { target: { value: "PlantFiber" } });
+    await pickItem("Item to give", "PlantFiber");
     fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "5" } });
     fireEvent.click(screen.getByRole("button", { name: /Give 2 Items/ }));
 
     await waitFor(() => expect(basesApi.giveContainerItems).toHaveBeenCalled());
     expect(vi.mocked(basesApi.giveContainerItems).mock.calls[0]).toEqual([
       "1006", "40001",
-      [{ itemName: "AzuriteOre", quantity: 20 }, { itemName: "PlantFiber", quantity: 5 }],
+      [{ itemName: "AzuriteOre", itemId: "AzuriteOre", quantity: 20 }, { itemName: "PlantFiber", itemId: "PlantFiber", quantity: 5 }],
       "GIVE ITEMS TO STORAGE"
     ]);
     // A single-item give must never be routed through the batch endpoint.
@@ -951,12 +1011,12 @@ describe("BaseInventoryTab", () => {
     await loaded();
     await openVaultContents();
 
-    fireEvent.change(screen.getByLabelText("Item name or ID to give"), { target: { value: "AzuriteOre" } });
+    await pickItem("Item to give", "AzuriteOre");
     fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "20" } });
     fireEvent.click(screen.getByRole("button", { name: "Add to Batch" }));
     await waitFor(() => expect(screen.getByText(/AzuriteOre ×20/)).toBeTruthy());
 
-    fireEvent.change(screen.getByLabelText("Item name or ID to give"), { target: { value: "PlantFiber" } });
+    await pickItem("Item to give", "PlantFiber");
     fireEvent.change(screen.getByLabelText("Quantity to give"), { target: { value: "5" } });
     fireEvent.click(screen.getByRole("button", { name: /Give 2 Items/ }));
 
@@ -983,7 +1043,7 @@ describe("BaseInventoryTab", () => {
     await loaded();
     await openVaultContents();
 
-    fireEvent.change(screen.getByLabelText("Item name or ID to give"), { target: { value: "AzuriteOre" } });
+    await pickItem("Item to give", "AzuriteOre");
     fireEvent.click(screen.getByRole("button", { name: "Add to Batch" }));
     await waitFor(() => expect(screen.getByText(/AzuriteOre/)).toBeTruthy());
 
@@ -1001,15 +1061,31 @@ describe("BaseInventoryTab", () => {
     await loaded();
     await openVaultContents();
 
-    fireEvent.change(screen.getByLabelText("Item name or ID to fill"), { target: { value: "SteelBar" } });
+    await pickItem("Item to fill", "SteelBar");
     fireEvent.change(screen.getByLabelText("Quantity to fill"), { target: { value: "50" } });
     fireEvent.click(screen.getByRole("button", { name: "Fill" }));
 
     await waitFor(() => expect(basesApi.fillContainerItem).toHaveBeenCalled());
     expect(vi.mocked(basesApi.fillContainerItem).mock.calls[0]).toEqual([
-      "1006", "40001", { itemName: "SteelBar", quantity: 50, confirmation: "FILL ITEM TO STORAGE" }
+      "1006", "40001", { itemId: "SteelBar", quantity: 50, confirmation: "FILL ITEM TO STORAGE" }
     ]);
     await waitFor(() => expect(vi.mocked(basesApi.inventory).mock.calls.length).toBeGreaterThan(1));
+  });
+
+  // FILLABLE_GROUPS filtering (adminCatalog.js) is enforced client-side too:
+  // the Fill combobox must never even offer a non-fillable item like a
+  // weapon, matching the server's own group check.
+  it("only offers fillable items (raw/refined resources, components) in the Fill combobox", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    const fillInput = screen.getByRole("combobox", { name: "Item to fill" });
+    fireEvent.change(fillInput, { target: { value: "" } });
+    fireEvent.focus(fillInput);
+    await waitFor(() => expect(screen.getByRole("option", { name: /SteelBar/ })).toBeTruthy());
+    expect(screen.queryByRole("option", { name: /SilverSword_Ranger/ })).toBeNull();
   });
 
   it("does not offer Give/Fill for crafting or refining containers", async () => {
@@ -1019,8 +1095,8 @@ describe("BaseInventoryTab", () => {
     await loaded();
     await openVaultContents();
 
-    expect(screen.queryByLabelText("Item name or ID to give")).toBeNull();
-    expect(screen.queryByLabelText("Item name or ID to fill")).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Item to give" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Item to fill" })).toBeNull();
   });
 
   // Per INC-2026-07-31-001: the engine only claims dune.items rows at
@@ -1145,7 +1221,7 @@ describe("BaseInventoryTab", () => {
     expect(screen.queryByRole("button", { name: /Delete Selected/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete All" })).toBeNull();
     // Give/Fill are pure inserts and stay available regardless of map safety.
-    expect(screen.getByLabelText("Item name or ID to give")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Item to give" })).toBeTruthy();
   });
 
   it("reports a failed bulk delete through onError without clearing the selection state silently", async () => {

@@ -3190,6 +3190,44 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bases-inventory-add-row input[type="text"],
 .bases-inventory-add-row input:not([type]) { flex: 1 1 auto; min-width: 0; }
 .bases-inventory-add-row button { width: auto; flex: 0 0 auto; }
+.bases-inventory-add-row .item-combobox { flex: 1 1 auto; min-width: 0; }
+/* Compact type-to-search dropdown (ItemCatalogCombobox) -- positioned
+   relative to its own wrapper so the results list can float over
+   whatever sits below it in the contents modal (the quantity input, the
+   action buttons, the batch list) without shifting layout while open. */
+.item-combobox { position: relative; }
+.item-combobox-input:disabled { opacity: .6; cursor: not-allowed; }
+.item-combobox-list {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid #302b25;
+  border-radius: 8px;
+  background: #101316;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+.item-combobox-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.item-combobox-list li:hover,
+.item-combobox-list li.highlighted { background: #211b16; }
+.item-combobox-list li span { min-width: 0; display: grid; gap: 1px; }
+.item-combobox-list li strong, .item-combobox-list li small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item-combobox-list li small { color: #ad9f89; }
+.item-combobox-empty { color: #ad9f89; cursor: default; }
+.item-combobox-empty:hover { background: transparent; }
 .bases-inventory-add-batch {
   list-style: none;
   margin: 0 0 10px;

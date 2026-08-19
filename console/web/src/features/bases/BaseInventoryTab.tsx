@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Boxes, ChevronDown, ChevronRight, LayoutGrid, List, Trash2, TriangleAlert, X } from "lucide-react";
-import { CatalogItemThumb } from "../../components/common/ItemCatalog";
+import { CatalogItemThumb, ItemCatalogCombobox, type CatalogItem } from "../../components/common/ItemCatalog";
 import {
   basesApi,
   type BaseContainerSlots,
@@ -10,6 +10,10 @@ import {
   type BaseInventoryItem,
   type BaseInventorySlot
 } from "../../api/bases";
+
+// Mirrors FILLABLE_GROUPS in adminCatalog.js exactly -- the Fill combobox
+// must never offer an item the server would reject anyway.
+const FILLABLE_GROUPS = new Set(["refined_resource", "component", "raw_resource"]);
 
 type BaseInventoryTabProps = {
   baseId: string;
@@ -113,11 +117,14 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
   const giveFillAllowed = slots?.group === "storage";
   const [checkedItemIds, setCheckedItemIds] = useState<Set<string>>(new Set());
   const [bulkDeleteRunning, setBulkDeleteRunning] = useState(false);
-  const [addItemName, setAddItemName] = useState("");
+  const [addItem, setAddItem] = useState<CatalogItem | null>(null);
   const [addQuantityText, setAddQuantityText] = useState("1");
   const [addRunning, setAddRunning] = useState(false);
-  const [addBatch, setAddBatch] = useState<{ itemName: string; quantity: number }[]>([]);
-  const [fillItemName, setFillItemName] = useState("");
+  // Queued batch entries keep the item's real in-game name for display
+  // (the batch list, and the confirm dialog below) alongside itemId, which
+  // is all that ever reaches the server -- see giveItems().
+  const [addBatch, setAddBatch] = useState<{ itemName: string; itemId: string; quantity: number }[]>([]);
+  const [fillItem, setFillItem] = useState<CatalogItem | null>(null);
   const [fillQuantityText, setFillQuantityText] = useState("100");
   const [fillRunning, setFillRunning] = useState(false);
 
@@ -283,10 +290,10 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       setSelectedSlotId("");
       setAmount("");
       setCheckedItemIds(new Set());
-      setAddItemName("");
+      setAddItem(null);
       setAddQuantityText("1");
       setAddBatch([]);
-      setFillItemName("");
+      setFillItem(null);
       setFillQuantityText("100");
       return;
     }
@@ -467,14 +474,14 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     return Math.max(1, Math.min(1000000, Number(addQuantityText) || 1));
   }
 
-  // Queues the currently-typed item into the batch rather than giving it
+  // Queues the currently-selected item into the batch rather than giving it
   // immediately -- lets an operator add several distinct templates and
   // confirm them all in one give-items call, matching giveMultipleItemsToStorage's
   // "one transaction, all or nothing" batch semantics on the backend.
   function queueAddItem() {
-    if (!addItemName.trim()) return;
-    setAddBatch((current) => [...current, { itemName: addItemName.trim(), quantity: addQuantity() }]);
-    setAddItemName("");
+    if (!addItem) return;
+    setAddBatch((current) => [...current, { itemName: addItem.name, itemId: addItem.itemId || addItem.id, quantity: addQuantity() }]);
+    setAddItem(null);
     setAddQuantityText("1");
   }
 
@@ -484,11 +491,11 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
 
   async function giveItems(containerName: string) {
     if (!giveFillAllowed) return;
-    // A single typed-but-not-yet-queued item is folded in at confirm time --
-    // an operator should not have to click "Add to batch" before giving just
-    // one item.
-    const pending = addItemName.trim()
-      ? [...addBatch, { itemName: addItemName.trim(), quantity: addQuantity() }]
+    // A single selected-but-not-yet-queued item is folded in at confirm
+    // time -- an operator should not have to click "Add to batch" before
+    // giving just one item.
+    const pending = addItem
+      ? [...addBatch, { itemName: addItem.name, itemId: addItem.itemId || addItem.id, quantity: addQuantity() }]
       : addBatch;
     if (pending.length === 0) return;
     const confirmed = await confirmAction(
@@ -511,14 +518,14 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     setDeleteError("");
     try {
       const response = pending.length === 1
-        ? await basesApi.giveContainerItem(baseId, contentsFor, { itemName: pending[0].itemName, quantity: pending[0].quantity, confirmation: "GIVE ITEM TO STORAGE" })
+        ? await basesApi.giveContainerItem(baseId, contentsFor, { itemId: pending[0].itemId, quantity: pending[0].quantity, confirmation: "GIVE ITEM TO STORAGE" })
         : await basesApi.giveContainerItems(baseId, contentsFor, pending, "GIVE ITEMS TO STORAGE");
       if (!response.supported || !response.result?.ok) {
         throw new Error(response.error || response.reason || "The item(s) could not be given.");
       }
       setDeleteNotice(pending.length === 1 ? `${pending[0].itemName} was given to the container.` : `${pending.length} items were given to the container.`);
       setAddBatch([]);
-      setAddItemName("");
+      setAddItem(null);
       setAddQuantityText("1");
       await Promise.all([loadSlots(contentsFor), load()]);
     } catch (error) {
@@ -534,17 +541,17 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     return Math.max(1, Math.min(1000000, Number(fillQuantityText) || 1));
   }
 
-  async function fillItem(containerName: string) {
-    if (!giveFillAllowed || !fillItemName.trim()) return;
+  async function submitFill(containerName: string) {
+    if (!giveFillAllowed || !fillItem) return;
     const confirmed = await confirmAction(
-      `Fill container with ${fillQuantity()} x ${fillItemName}? Only raw resources, refined resources, and components are allowed.`,
+      `Fill container with ${fillQuantity()} x ${fillItem.name}? Only raw resources, refined resources, and components are allowed.`,
       {
         title: "Fill Container",
         confirmLabel: "Fill",
         details: [
           { label: "Base", value: baseName },
           { label: "Container", value: containerName, tone: "accent" },
-          { label: fillItemName, value: `x${fillQuantity().toLocaleString()}` }
+          { label: fillItem.name, value: `x${fillQuantity().toLocaleString()}` }
         ]
       }
     );
@@ -553,12 +560,12 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     setDeleteNotice("");
     setDeleteError("");
     try {
-      const response = await basesApi.fillContainerItem(baseId, contentsFor, { itemName: fillItemName.trim(), quantity: fillQuantity(), confirmation: "FILL ITEM TO STORAGE" });
+      const response = await basesApi.fillContainerItem(baseId, contentsFor, { itemId: fillItem.itemId || fillItem.id, quantity: fillQuantity(), confirmation: "FILL ITEM TO STORAGE" });
       if (!response.supported || !response.result?.ok) {
         throw new Error(response.error || response.reason || "The container could not be filled.");
       }
-      setDeleteNotice(`${fillItemName} was filled into the container.`);
-      setFillItemName("");
+      setDeleteNotice(`${fillItem.name} was filled into the container.`);
+      setFillItem(null);
       setFillQuantityText("100");
       await Promise.all([loadSlots(contentsFor), load()]);
     } catch (error) {
@@ -796,22 +803,27 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                                     the button below already says what it is. */}
                                 <dt className="bases-inventory-spacer-label" aria-hidden="true">Contents</dt>
                                 <dd>
-                                  {!container.items.length
-                                    ? <span className="muted">Empty</span>
-                                    : <button
-                                        className="bases-inventory-view-contents"
-                                        onClick={() => setContentsFor(container.placeableId)}
-                                      >
-                                        <Boxes size={14} aria-hidden="true" />
-                                        View Contents
-                                        {/* "distinct", never "stacks": the backend merges rows
-                                            of the same template, so this is below usedSlots
-                                            whenever a template occupies more than one slot
-                                            (8 slots collapsing to 3 templates is common). */}
-                                        <span className="muted">
-                                          {container.items.length.toLocaleString()} distinct
-                                        </span>
-                                      </button>}
+                                  {/* Always a real button, even for an empty container
+                                      (issue #347's own manual UI review) -- an empty
+                                      Storage container is exactly the case an operator
+                                      most needs to open, to Give/Fill something into it.
+                                      The old "Empty" bare-text state had no click target
+                                      at all, making an empty container permanently
+                                      unreachable through this card. */}
+                                  <button
+                                    className="bases-inventory-view-contents"
+                                    onClick={() => setContentsFor(container.placeableId)}
+                                  >
+                                    <Boxes size={14} aria-hidden="true" />
+                                    View Contents
+                                    {/* "distinct", never "stacks": the backend merges rows
+                                        of the same template, so this is below usedSlots
+                                        whenever a template occupies more than one slot
+                                        (8 slots collapsing to 3 templates is common). */}
+                                    <span className="muted">
+                                      {container.items.length > 0 ? `${container.items.length.toLocaleString()} distinct` : "Empty"}
+                                    </span>
+                                  </button>
                                 </dd>
                               </dl>
                             </div>
@@ -1054,11 +1066,11 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
             </p>
             <h4>Add Item</h4>
             <div className="bases-inventory-add-row">
-              <input
-                value={addItemName}
-                onChange={(event) => setAddItemName(event.target.value)}
-                placeholder="Item name or ID"
-                aria-label="Item name or ID to give"
+              <ItemCatalogCombobox
+                value={addItem}
+                onChange={setAddItem}
+                ariaLabel="Item to give"
+                placeholder="Type to search items…"
                 disabled={addRunning}
               />
               <input
@@ -1073,17 +1085,17 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
               />
               <button
                 type="button"
-                disabled={!addItemName.trim() || addRunning}
+                disabled={!addItem || addRunning}
                 onClick={queueAddItem}
               >Add to Batch</button>
               <button
-                disabled={(!addItemName.trim() && addBatch.length === 0) || addRunning}
+                disabled={(!addItem && addBatch.length === 0) || addRunning}
                 onClick={() => void giveItems(containerLabel(openContainer))}
-              >{addRunning ? "Giving…" : addBatch.length > 0 ? `Give ${addBatch.length + (addItemName.trim() ? 1 : 0)} Items` : "Give Item"}</button>
+              >{addRunning ? "Giving…" : addBatch.length > 0 ? `Give ${addBatch.length + (addItem ? 1 : 0)} Items` : "Give Item"}</button>
             </div>
             {addBatch.length > 0 && <ul className="bases-inventory-add-batch">
               {addBatch.map((item, index) => (
-                <li key={`${item.itemName}-${index}`}>
+                <li key={`${item.itemId}-${index}`}>
                   {item.itemName} ×{item.quantity.toLocaleString()}
                   <button type="button" className="icon-toggle-button" aria-label={`Remove ${item.itemName} from batch`} onClick={() => removeQueuedItem(index)} disabled={addRunning}>
                     <X size={12} />
@@ -1095,11 +1107,12 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
             <h4>Fill Container</h4>
             <p className="muted bases-inventory-note">Only raw resources, refined resources, and components are accepted, respecting slot and volume limits.</p>
             <div className="bases-inventory-add-row">
-              <input
-                value={fillItemName}
-                onChange={(event) => setFillItemName(event.target.value)}
-                placeholder="Item name or ID"
-                aria-label="Item name or ID to fill"
+              <ItemCatalogCombobox
+                value={fillItem}
+                onChange={setFillItem}
+                filterGroups={FILLABLE_GROUPS}
+                ariaLabel="Item to fill"
+                placeholder="Type to search fillable items…"
                 disabled={fillRunning}
               />
               <input
@@ -1113,8 +1126,8 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                 disabled={fillRunning}
               />
               <button
-                disabled={!fillItemName.trim() || fillRunning}
-                onClick={() => void fillItem(containerLabel(openContainer))}
+                disabled={!fillItem || fillRunning}
+                onClick={() => void submitFill(containerLabel(openContainer))}
               >{fillRunning ? "Filling…" : "Fill"}</button>
             </div>
           </div>}
