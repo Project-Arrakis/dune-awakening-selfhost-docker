@@ -3181,12 +3181,32 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 }
 .bases-inventory-add-panel h4 { margin: 0 0 6px; font-size: 13px; }
 .bases-inventory-add-panel h4 + p.bases-inventory-note { margin-bottom: 8px; }
+/* Give/Fill mode-hint + toggle, grouped into one shared, lightly-bordered
+   container (2026-08-19, third UI/UX-hat pass -- see the comment above
+   this group's usage in BaseInventoryTab.tsx for the full history of why
+   this exists). Deliberately uses the NEUTRAL --border token, not
+   --warning, and no icon -- this is "low-weight information," visually
+   distinct from .bases-inventory-restart-warning below, which stays the
+   one element in this panel that should read as urgent. Reuses
+   --panel-muted the same way .bases-inventory-add-batch li already does,
+   rather than inventing a new background color for this one group. */
+.bases-inventory-mode-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: var(--panel-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
 /* Give/Fill mode toggle (consolidated 2026-08-19, "Alternative A" from the
    UI/UX hat's design review) -- reuses .bases-inventory-views/.bases-inventory-view's
    existing segmented-button look for visual consistency with the contents
    overlay's own List/Grid toggle above, but is not right-aligned the way
-   that one is (this panel has no sibling control to push away from). */
-.bases-inventory-add-panel .bases-inventory-views { margin: 0 0 10px; }
+   that one is (this panel has no sibling control to push away from).
+   Spacing between the hint and the toggle is now owned by
+   .bases-inventory-mode-group's own `gap`, not a margin on either child. */
 .bases-inventory-add-row {
   display: flex;
   align-items: center;
@@ -3287,8 +3307,11 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    deliberately lighter than .bases-inventory-restart-warning above (no
    border, no icon, muted color) so the visual hierarchy matches the real
    importance gap between "here's what the two modes mean" (skippable
-   after a first read) and the warning banner (must-read every time). */
-.bases-inventory-mode-hint { margin: 0 0 10px; font-size: 12px; }
+   after a first read) and the warning banner (must-read every time).
+   Sits inside .bases-inventory-mode-group now (2026-08-19, third UI/UX-hat
+   pass), which owns the spacing between this and the toggle via its own
+   `gap` -- no margin on this element itself. */
+.bases-inventory-mode-hint { margin: 0; font-size: 12px; }
 
 /* Delete Selected / Delete All, above the single-slot detail strip -- both
    are Storage-group-only and reuse the same danger button styling the

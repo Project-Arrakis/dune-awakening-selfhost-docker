@@ -1178,25 +1178,46 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                 rather than opening a second, visually-identical box. Never
                 more than two notice elements are visible at once now, in
                 either mode (one caption line, one warning banner), down
-                from three. */}
-            <p className="muted bases-inventory-mode-hint">
-              <strong>Give</strong> inserts a new stack, and can queue several items at once.{" "}
-              <strong>Fill</strong> tops up one item toward capacity, including filling it in one click.
-            </p>
+                from three.
 
-            <div className="bases-inventory-views" role="group" aria-label="Give or Fill">
-              <button
-                type="button"
-                className={`bases-inventory-view${addFillMode === "give" ? " active" : ""}`}
-                aria-pressed={addFillMode === "give"}
-                onClick={() => selectAddFillMode("give")}
-              >Give</button>
-              <button
-                type="button"
-                className={`bases-inventory-view${addFillMode === "fill" ? " active" : ""}`}
-                aria-pressed={addFillMode === "fill"}
-                onClick={() => selectAddFillMode("fill")}
-              >Fill</button>
+                CORRECTED 2026-08-19 (real operator report, same day):
+                content-wise there were at most two notice elements, but
+                the two prior passes above only ever addressed WHAT text
+                renders and WHEN -- neither touched VISUAL TREATMENT, so
+                the mode-hint (bare text, no border/padding/icon) and the
+                warning banner (bordered, padded, iconed) sat directly
+                above and below the same toggle with no shared visual
+                language, reading as unpolished/thrown-together rather
+                than deliberately designed. Per a third dispatched UI/UX-
+                hat review: grouped the mode-hint and the toggle into one
+                shared, lightly-bordered/padded container (neutral --border
+                token, NOT the warning's amber --warning token, so this
+                group reads as "low-weight information," not a second
+                alert) -- eliminating the bare-text-sandwiched-between-two-
+                bordered-things sequence entirely, while leaving the
+                warning banner's own visual weight untouched, since it is
+                correctly the one element in this panel that most needs to
+                keep looking urgent. */}
+            <div className="bases-inventory-mode-group">
+              <p className="muted bases-inventory-mode-hint">
+                <strong>Give</strong> inserts a new stack, and can queue several items at once.{" "}
+                <strong>Fill</strong> tops up one item toward capacity, including filling it in one click.
+              </p>
+
+              <div className="bases-inventory-views" role="group" aria-label="Give or Fill">
+                <button
+                  type="button"
+                  className={`bases-inventory-view${addFillMode === "give" ? " active" : ""}`}
+                  aria-pressed={addFillMode === "give"}
+                  onClick={() => selectAddFillMode("give")}
+                >Give</button>
+                <button
+                  type="button"
+                  className={`bases-inventory-view${addFillMode === "fill" ? " active" : ""}`}
+                  aria-pressed={addFillMode === "fill"}
+                  onClick={() => selectAddFillMode("fill")}
+                >Fill</button>
+              </div>
             </div>
 
             {/* Per INC-2026-07-31-001: the game engine claims dune.items rows

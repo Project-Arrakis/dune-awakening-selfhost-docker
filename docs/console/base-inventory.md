@@ -295,6 +295,18 @@ toggle rather than appearing above it, and the restart warning and the Fill-only
 sentence to that same element instead of opening a second, visually-identical box. At most two notice
 elements are visible at once now, in either mode (one caption line, one warning banner), never three.
 
+**The mode-hint caption and the Give/Fill toggle are grouped in one lightly-bordered container, separate
+from the warning banner.** **Corrected 2026-08-19** — the two fixes above addressed *content* (how many
+notices, what text) but left a real visual inconsistency a real operator caught directly: the bare, unboxed
+mode-hint caption sat immediately above the Give/Fill toggle (itself a bordered control), which in turn sat
+immediately above the bordered, iconed warning banner — "one has a bounding border with a ! icon and the
+other does not... looks amateurish." Fixed per a third dispatched UI/UX-hat review: the mode-hint caption
+and the toggle are now wrapped in one shared container (`.bases-inventory-mode-group`) using the *neutral*
+`--border` token and the existing `--panel-muted` background (the same background `.bases-inventory-add-batch`
+list items already use) — deliberately **not** the warning's `--warning` amber token, so this group reads
+as "low-weight information," not a second alert competing with the one banner that should keep looking
+urgent. The warning banner itself is untouched, both in content and in visual weight.
+
 | Action | Route | Backend function | Confirmation phrase |
 |---|---|---|---|
 | Give one item | `POST …/containers/{placeableId}/give-item` | `duneDb.giveItemToStorage()` | `GIVE ITEM TO STORAGE` |

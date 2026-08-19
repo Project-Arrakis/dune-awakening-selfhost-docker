@@ -488,6 +488,24 @@ Keep a Changelog style, grouped by upstream base version, newest first.
     sentence to the same element instead of opening a second, visually
     identical box. At most two notice elements are ever visible now, in
     either mode.
+- **The two content fixes directly above still left a real visual
+  inconsistency, caught by a real operator on the very next look:** the
+  mode-hint caption (bare text, no border/padding/icon) sat immediately
+  above the Give/Fill toggle, which sat immediately above the warning
+  banner (bordered, padded, iconed) -- "one has a bounding border with a !
+  icon and the other does not... looks amateurish," in the operator's own
+  words. Both prior fixes addressed *what text renders and when*, never
+  *visual treatment*. Fixed per a third dispatched UI/UX-hat review: the
+  mode-hint caption and the toggle are now grouped into one shared,
+  lightly-bordered container (`.bases-inventory-mode-group`, neutral
+  `--border` token and the same `--panel-muted` background
+  `.bases-inventory-add-batch` list items already use) -- deliberately
+  **not** the warning's amber `--warning` token, so the group reads as
+  low-weight information rather than a second alert diluting the one
+  banner that should keep looking urgent. The warning banner itself is
+  unchanged in both content and visual weight. New regression-guard test
+  asserts the mode-hint and toggle share one container, distinct from the
+  warning banner.
 
 ### Security
 

@@ -1367,6 +1367,28 @@ describe("BaseInventoryTab", () => {
     expect(screen.getByText(/can land on the same slot and be lost on the next restart/)).toBeTruthy();
   });
 
+  // Regression guard for a second real operator report the same day: the
+  // mode-hint caption and the Give/Fill toggle sat directly above/below
+  // the warning banner with no shared visual container, reading as
+  // "unpolished" (bare text next to a bordered control next to a
+  // bordered-and-iconed banner). Both must now share one grouped
+  // container, distinct from the warning banner itself.
+  it("groups the mode-hint caption and the Give/Fill toggle into one shared container, separate from the warning banner", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    const group = document.querySelector(".bases-inventory-mode-group");
+    expect(group).toBeTruthy();
+    expect(group?.querySelector(".bases-inventory-mode-hint")).toBeTruthy();
+    expect(group?.querySelector(".bases-inventory-views")).toBeTruthy();
+    // The warning banner must NOT be inside the same grouped container --
+    // it is deliberately the one heavier-weight element in this panel.
+    expect(group?.querySelector(".bases-inventory-restart-warning")).toBeNull();
+    expect(document.querySelectorAll(".bases-inventory-mode-group").length).toBe(1);
+  });
+
   // Give/Fill panel consolidation (2026-08-19, "Alternative A" from the
   // UI/UX hat's dispatched design review): one shared item combobox and
   // quantity field, switched by a Give/Fill mode toggle, replacing the
