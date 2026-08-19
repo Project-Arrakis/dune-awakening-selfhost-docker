@@ -23,7 +23,15 @@ The scheduler ticks with the console's other background tasks. A due buyback run
 
 A due reseed always takes a backup (`DB_BACKUP_ORIGIN=market-bot-seed`), clears
 only the bot's listings on the selected exchange, and writes the bundled seed
-plan. Seed and buyback share a running lock, so they cannot mutate the exchange
+plan.
+
+Market Bot backups (`market-bot-seed`, `market-bot-buyback`,
+`market-bot-unseed`) carry their origin in the backup filename and are capped
+by count, not age: after every successful Market Bot backup only the 5 newest
+remain (override with `DUNE_MARKET_BOT_BACKUP_KEEP`). Candidates are matched by
+the sidecar's `backup_origin`, so unlabeled Market Bot backups from earlier
+releases are pruned too. Manual, automatic, and safety backups are never
+touched. Seed and buyback share a running lock, so they cannot mutate the exchange
 at the same time. Player listings are never removed by reseeding.
 
 The SQL is built server-side from validated schedule parameters. SQL text from a

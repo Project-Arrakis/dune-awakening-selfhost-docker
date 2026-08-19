@@ -14,7 +14,8 @@ vi.mock("../../api/marketBot", () => ({
     saveBuybackSchedule: vi.fn(),
     saveSeedSchedule: vi.fn(),
     runBuyback: vi.fn(),
-    runSeed: vi.fn()
+    runSeed: vi.fn(),
+    unseed: vi.fn()
   }
 }));
 
@@ -253,6 +254,41 @@ describe("MarketBotOverlay", () => {
     const runSeed = await screen.findByRole("button", { name: "Run reseed now" });
     expect(runSeed).toBeDisabled();
     expect(await screen.findByRole("button", { name: "Run sweep now" })).toBeEnabled();
+  });
+
+  it("confirms before removing NPC listings and reports the removed count", async () => {
+    vi.mocked(marketBotApi.unseed).mockResolvedValue({ status: "unseeded", removedListings: "180", removedItems: "180", exchangeId: "42" });
+    const props = renderOverlay();
+
+    // Unlike Run reseed now, the unseed targets the exchange selected in the
+    // dropdown, so it works without a saved seed schedule.
+    fireEvent.click(await screen.findByRole("button", { name: "Remove NPC listings" }));
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalled());
+    await waitFor(() => expect(marketBotApi.unseed).toHaveBeenCalledWith({ exchangeId: "42" }));
+    expect(await screen.findByText(/removed 180 NPC listing\(s\) from exchange 42/)).toBeInTheDocument();
+  });
+
+  it("reports an empty market without claiming anything was removed", async () => {
+    vi.mocked(marketBotApi.unseed).mockResolvedValue({
+      status: "empty", removedListings: "0", removedItems: "0", exchangeId: "42",
+      detail: "No bot listings on exchange 42; nothing removed and no backup was taken."
+    });
+    renderOverlay();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove NPC listings" }));
+
+    expect(await screen.findByText(/No bot listings on exchange 42/)).toBeInTheDocument();
+  });
+
+  it("does not remove NPC listings when the confirmation is declined", async () => {
+    const props = renderOverlay();
+    props.confirmAction.mockResolvedValue(false);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove NPC listings" }));
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalled());
+    expect(marketBotApi.unseed).not.toHaveBeenCalled();
   });
 
   it("explains an unsupported schema instead of rendering controls", async () => {

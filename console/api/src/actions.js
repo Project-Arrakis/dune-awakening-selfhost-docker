@@ -172,6 +172,7 @@ export const ROUTE_ACTIONS = {
   "POST /api/exchange/market/seed/schedule":   "exchange:market-write",
   "POST /api/exchange/market/buyback/run":     "exchange:market-write",
   "POST /api/exchange/market/seed/run":        "exchange:market-write",
+  "POST /api/exchange/market/seed/clear":      "exchange:market-write",
 
   // --- Players (mutations) ---
   "POST /api/players/kick-all-online":         "players:kick-all",
