@@ -81,6 +81,7 @@ Two overlapping doc sets — start with whichever matches your role:
   - [admin-guide.md](integrations/discord-integration/admin-guide.md) — Walkthrough for getting the bot running on your server.
   - [faq.md](integrations/discord-integration/faq.md) — Frequently asked questions.
   - [troubleshooting.md](integrations/discord-integration/troubleshooting.md) — Common problems and fixes.
+  - [contributing-upstream.md](integrations/discord-integration/contributing-upstream.md) — Current. Contributor workflow for companion-bot features that require Core adapter/API changes, including ownership boundaries, upstream-based branches, validation, and coordinated bot/Core PRs.
 - [discord-control-bot/admin-guide.md](integrations/discord-control-bot/admin-guide.md) — Current, **internal**. Admin guide for the experimental read-only companion bot.
   - [setup-guide.md](integrations/discord-control-bot/setup-guide.md) — Validating the command layer and adapter without a live Discord connection.
   - [user-guide.md](integrations/discord-control-bot/user-guide.md) — Command reference for end users.
