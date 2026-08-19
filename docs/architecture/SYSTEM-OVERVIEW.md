@@ -41,12 +41,12 @@ by shell scripts under `runtime/scripts/`:
                     └─────────────────────────────┘
 ```
 
-Only the `orchestrator` and web console services are defined as named
-Compose services; the actual game-server processes (Postgres, RabbitMQ, the
-Director, the Gateway, and every dynamic map partition) are started as raw
-`docker run` containers by `runtime/scripts/start-all.sh` and related
-scripts, not by Compose — Compose is used only for the two always-on sidecar
-containers.
+The always-on core path uses Compose for the `orchestrator` and web console;
+the opt-in metrics and public-probe stacks also define named Compose services
+in their own Compose projects. The actual game-server processes (Postgres,
+RabbitMQ, the Director, the Gateway, and every dynamic map partition) are
+started as raw `docker run` containers by `runtime/scripts/start-all.sh` and
+related scripts, not by Compose.
 
 ### 1.1 The `orchestrator` container
 
