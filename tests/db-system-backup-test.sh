@@ -59,6 +59,15 @@ SECRET_ADMIN_PASSWORD="admin-pw-8f2a-real"
 SECRET_SIETCH_PASSWORD="sietch-pw-9f2a-real"
 SECRET_FUNCOM_TOKEN="funcom-token-77bb-real"
 TEST_PASSPHRASE="correct-horse-battery-staple-9f2a"
+# Stage 2 of the age-based secrets library: a placeholder enc:v2:
+# payload and its migration marker, seeded to prove db backup-system's
+# existing verbatim tar of
+# runtime/secrets/ (and, separately, runtime/generated/) already covers
+# both artifact types this stage introduces -- not just plain .txt
+# secrets. Not real ciphertext (no age/KEK setup in this test file, which
+# predates Stage 2) -- this test only proves byte-for-byte survival
+# through the backup/restore round-trip, not that it decrypts.
+STAGE2_ENC_PAYLOAD="enc:v2:1:cGxhY2Vob2xkZXItd3JhcHBlZC1kZWs=:cGxhY2Vob2xkZXItY2lwaGVydGV4dA=="
 
 seed_repo_tree() {
   local root="$1"
@@ -89,6 +98,15 @@ EOF
 
   printf '%s\n' "$SECRET_FUNCOM_TOKEN" > "$root/runtime/secrets/funcom-token.txt"
   printf 'admin-web-secret-value\n' > "$root/runtime/secrets/admin-web-password.txt"
+
+  # Stage 2 deliverable #4: seed a .enc file and its migration marker
+  # alongside the plain .txt secrets above, so the happy-path assertions
+  # below can confirm both new artifact types survive the same tar
+  # staging this test already exercises for runtime/secrets/ and
+  # runtime/generated/, with zero changes needed to db.sh itself.
+  printf '%s' "$STAGE2_ENC_PAYLOAD" > "$root/runtime/secrets/server-login-password-secret.enc"
+  mkdir -p "$root/runtime/generated/.secrets-migrated"
+  printf '2026-08-17T00:00:00Z' > "$root/runtime/generated/.secrets-migrated/server-login-password-secret.done"
 }
 
 decrypt_and_extract() {
@@ -166,6 +184,20 @@ if ! grep -q "$SECRET_SIETCH_PASSWORD" "$case1_extract/generated/sietch-config.j
 fi
 if ! grep -q "$SECRET_FUNCOM_TOKEN" "$case1_extract/secrets/funcom-token.txt" 2>/dev/null; then
   echo "FAIL happy-path: Funcom token did not survive decryption"
+  exit 1
+fi
+# Stage 2 deliverable #4: confirm the .enc file and its migration
+# marker survive the backup/restore round-trip byte-for-byte, closing
+# the design doc's own NEEDS-MORE-EVIDENCE grade for "backup and
+# restore" -- this was previously an unverified-but-plausible code-read
+# claim (db.sh:924-932 tars runtime/secrets/ verbatim), not an actual
+# tested assertion.
+if [ "$(cat "$case1_extract/secrets/server-login-password-secret.enc" 2>/dev/null)" != "$STAGE2_ENC_PAYLOAD" ]; then
+  echo "FAIL happy-path: Stage 2 .enc secret did not survive the backup/restore round-trip byte-for-byte"
+  exit 1
+fi
+if [ ! -f "$case1_extract/generated/.secrets-migrated/server-login-password-secret.done" ]; then
+  echo "FAIL happy-path: Stage 2 migration marker did not survive the backup/restore round-trip"
   exit 1
 fi
 if [ -d "$case1_extract/generated/dune-fake-k8s-serviceaccount-director-12345" ]; then

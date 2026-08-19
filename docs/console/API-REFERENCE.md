@@ -263,8 +263,9 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 | GET | `/api/bases/auto-refill-water` | Get per-base water auto-refill enrollment state | None |
 | POST | `/api/bases/{baseId}/auto-refill-water` | Enable/disable water auto-refill for a base | `baseId`, `enabled` |
 | GET | `/api/bases/{baseId}/inventory` | Get a base's stored items, rolled up by item template and by container (storage, refining, crafting, other). Merged per template, not per slot | `baseId` |
-| GET | `/api/bases/{baseId}/containers/{placeableId}` | Get one container's inventories and their individual slots (item id, slot number, quantity, quality, durability), plus `deleteSafety`. Answers `found: false` when that container is not at the base | `baseId`, `placeableId` |
+| GET | `/api/bases/{baseId}/containers/{placeableId}` | Get one container's inventories and their individual slots (item id, slot number, quantity, quality, durability, applied augments with their own per-augment quality), plus `deleteSafety` and `addSafety`. Answers `found: false` when that container is not at the base | `baseId`, `placeableId` |
 | DELETE | `/api/bases/{baseId}/containers/{placeableId}/items/{itemId}` | Delete an item from a plain Storage container, or part of its stack with `count`. Refused unless the owning map is verifiably and safely stopped; Crafting and Refining contents are read-only. Requires `{ confirmation: "DELETE ITEM" }` | `baseId`, `placeableId`, `itemId`, `count?` |
+| POST | `/api/bases/{baseId}/containers/{placeableId}/items` | Add a new item to a plain Storage container. Always creates a new row at the next free slot — never merges into an existing stack, and the slot cannot be chosen. Refused unless the owning map is verifiably and safely stopped; Crafting and Refining contents are read-only. Requires `{ confirmation: "ADD ITEM TO CONTAINER" }` | `baseId`, `placeableId`, `itemId`\|`itemName`, `quantity`, `quality?`, `augments?`, `augmentQuality?` |
 | GET | `/api/bases/{baseId}/permissions` | Get a base's permission roster (Owner, Co-Owners, Associates) | `baseId` |
 | POST | `/api/bases/{baseId}/system-custodian` | Transfer ownership to the Server or detected GM system custodian while preserving the roster; provisions Server when no custodian exists | `baseId` |
 | PUT | `/api/bases/{baseId}/permissions` | Replace a base's permission roster | `baseId`, `entries[]` (`playerId`, `rank`) |
@@ -320,13 +321,17 @@ routes above. Its `containers[].items[]` is merged per item template, not per
 slot — `GET /api/bases/{baseId}/containers/{placeableId}` is the per-slot view,
 fetched one container at a time because slots roughly triple the response.
 
-`DELETE /api/bases/{baseId}/containers/{placeableId}/items/{itemId}` is refused
-unless `baseRefillTarget` can verify that the owning map is safely stopped. An
-unknown state fails closed, and the route repeats the check immediately before
-the write. Only plain Storage contents are mutable; Crafting and Refining remain
+`DELETE …/containers/{placeableId}/items/{itemId}` and
+`POST …/containers/{placeableId}/items` are both refused unless
+`baseRefillTarget` can verify that the owning map is safely stopped. An unknown
+state fails closed, and each route repeats the check immediately before the
+write. Only plain Storage contents are mutable; Crafting and Refining remain
 read-only because active jobs can reference their item rows. The same allowlist
-that keeps fuel inventories out of the read keeps them out of the delete. It
-needs `bases:delete-item`, not `bases:mutate`. See
+that keeps fuel inventories out of the read keeps them out of both writes. They
+need `bases:delete-item` and `bases:add-item` respectively, not `bases:mutate` —
+this tab shipped read-only, so a `bases:mutate` grant cannot be read as consent
+to destroy or fabricate items. The add never merges into an existing stack and
+always appends to `max(position_index) + 1`; the caller cannot pick a slot. See
 [base-inventory.md](base-inventory.md).
 
 Both `GET /api/bases/{baseId}/water` and `GET /api/bases/{baseId}/inventory`
@@ -438,11 +443,14 @@ blacklist behaves.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/exchange/market` | Market Bot status: seed-plan availability and both schedules | None |
+| GET | `/api/exchange/market` | Market Bot status: seed-plan availability, both schedules, and the commodity-stack catalog | None |
 | GET | `/api/exchange/market/exchanges` | Discover exchanges (BIGINT ids as strings; access-pointed exchanges first) | None |
 | POST | `/api/exchange/market/buyback/probe` | Read-only buyback diagnostics: total, recognized, eligible, above-threshold, unknown-template, and invalid price/stack listing counts (no backup taken) | body: `exchangeId?`, `priceMultiplier?`, `augmentMultiplier?`, `rankedArmorMultiplier?`, `rankedWeaponMultiplier?`, `buybackPercent?`, `buybackPriceBasis?`, `maxBuys?` |
+| GET | `/api/exchange/market/buyback/log` | Stored Buyback Sweep Log batches (purchased and skipped listings with reasons). Batches older than 5 days are omitted; the scheduler deletes them from disk at most hourly. | None |
+| POST | `/api/exchange/market/buyback/log` | Read-only dry-run classify of player sell listings (eligible first, then skip reasons; capped at 1000 stored rows with leftovers reserved); appends a log batch (no backup taken). Rate-limited. | body: same optional overrides as the probe |
+| POST | `/api/exchange/market/buyback/log/clear` | Clear stored Buyback Sweep Log batches. Requires `exchange:market-write`. Rate-limited. | None |
 | POST | `/api/exchange/market/buyback/schedule` | Save the buyback schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `buybackPercent`, `buybackPriceBasis`, `maxBuys` |
-| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `augmentPricing` (`discounted`\|`original`) |
+| POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `augmentPricing` (`discounted`\|`original`), `commodityStacks` (object of templateId → 1–20 listing counts for allowlisted commodities) |
 | POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |
 | POST | `/api/exchange/market/seed/run` | Run a market reseed now with the saved schedule (backup → clear bot listings → seed) | None |
 
@@ -451,12 +459,21 @@ The three category multipliers (`augmentMultiplier`, `rankedArmorMultiplier`,
 and scale prices on top of the base `priceMultiplier` for augments & augment
 schematics, ranked (grade 1–5) armor including stillsuits, and ranked weapons
 respectively. On the seed schedule they raise the seeded sell prices; on the
-buyback schedule they reprice the reconstructed "seeded" price basis the same
-way, so `buybackPercent` keeps meaning a percentage of the real market price.
+buyback schedule they reprice the reconstructed "seeded" price basis. Ready-made
+augment item caps also follow the reseed schedule's `augmentPricing`
+(`discounted` vs `original`) so `buybackPercent` is a percentage of what the bot
+actually lists, even when the two schedules use different augment multipliers.
+
+The seed schedule's `commodityStacks` map overrides how many full stacks of
+allowlisted commodities a reseed lists (1–20, default 2). Unknown template ids
+are ignored. Units per stack stay at the plan `stack_size`. The catalog of
+editable items is returned on `GET /api/exchange/market` as
+`commodityStackCatalog` / `commodityStackGroups`.
 
 Unlike the board above, these routes **do write the game database** through the
-native Market Bot engine (`addonJobs.js` / `addonSeedJob.js`). Reads and the probe require `exchange:market`; mutations
-require `exchange:market-write` (the admin tier's `exchange:*` covers both).
+native Market Bot engine (`addonJobs.js` / `addonSeedJob.js`). Reads, the probe, and
+dry-run log refresh require `exchange:market`; schedule saves, run-now, and log
+clear require `exchange:market-write` (the admin tier's `exchange:*` covers both).
 Schedules saved here are marked `source: "console"`, run unattended inside the
 console API process, and do not require an addon; the seed plan is the bundled
 `runtime/data/market-seed-plan.json`. Every write is preceded by a database

@@ -64,9 +64,14 @@ def apply_host_ownership(path: Path) -> None:
         os.chown(path, *owner)
 
 BUILDING_SETTINGS_SECTION = "/Script/DuneSandbox.BuildingSettings"
+CORIOLIS_SUBSYSTEM_SECTION = "/Script/DuneSandbox.CoriolisSubsystem"
 LANDSRAAD_SETTINGS_SECTION = "/Script/DuneSandbox.LandsraadSettings"
 LANDSRAAD_DATA_KEY = "Data"
 LANDSRAAD_DATA_TEMPLATE = '(m_NumberOfWeeksTermRetention=4,m_NumberOfDecreesToNominate=3,m_NumberOfGuildsInHighscoreList=5,m_TermStartedMessage=(Name="LandsraadTermStarted"),m_VotingStartedMessage=(Name="LandsraadVotingStarted"),m_TaskProgressedMessage=(Name="LandsraadProgressNotification"),m_DecreeActivatedMessage=(Name="LandsraadDecreeActivated"),m_bIsPlayerVotingEnabled=True,m_bIsTerritoryControlEnabled=True,m_BoardLayouts=(/Script/DuneSandbox.BoardLayoutDataAsset\'"/Game/Dune/Systems/Landsraad/BoardLayouts/DefaultLandsraadBoardLayout.DefaultLandsraadBoardLayout"\'),m_LandsraadVotingPeriodDurationInSec=118500,m_LandsraadCycleDurationInSeconds=604800,m_LandsraadSuspendedPeriodDurationInSeconds=300,m_FirstTaskRevealDelayFromCompetitionStartInSeconds=0.000000,m_LandsraadRevealedTaskTimestampMinuteDifference=1,m_LandsraadTaskProgressUpdateFrequency=15.000000,m_LandsraadTaskDailyRevealFrequency=25.000000,m_LandsraadProgressFactionBalanceCurve=/Script/Engine.CurveFloat\'"/Game/Dune/Systems/Landsraad/Curve_LandsraadProgressFactionBalanceCurve.Curve_LandsraadProgressFactionBalanceCurve"\',m_LandsraadContractsPerVotingBlock=3,m_LandsraadContractsRepeatCooldownSeconds=14400,m_LandsraadContractsMaxActiveAmount=3,m_LandsraadContractsAbandonCooldownSeconds=2,m_LandsraadContractsDailyBonusPerDay=35,m_LandsraadContractsDailyBonusMax=35,m_LandsraadContractsDailyBonusReferenceTimestamp=1760572800,m_LandsraadContractsDailyBonusRefreshCycleLength=7200,m_LandsraadContractsTimeToShowRewardInteractiveNotification=30.000000,m_LandsraadContractsTimeToShowErrorNotification=70.000000,m_LandsraadContractsTimeToShowPendingClaimRewardTutorial=300,m_LandsraadTaskRewardsData="/Game/Dune/Systems/Landsraad/DA_TaskRewardsDataAsset.DA_TaskRewardsDataAsset",m_LandsraadHouseSelectContractDialogContentWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadHouseSelectContractDialog.W_LandsraadHouseSelectContractDialog_C",m_LandsraadContractReportDialogContentWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadContractReportDialog.W_LandsraadContractReportDialog_C",m_LandsraadClaimHouseRewardDialogWidget="/Game/Dune/GUI/Widgets/Menus/Gameplay/PlayerMenu/Landsraad/W_LandsraadHouseRewardClaimDialog.W_LandsraadHouseRewardClaimDialog_C",m_TaskGoalAmount=56000,m_ControlPointsPerCycle=2,m_LandsraadContractsUnlockGameplayTag=(TagName="Journey.LandsraadContractsUnlocked"),m_LandsraadContractsNewMarkerGameplayTags=(GameplayTags=((TagName="DialogueFlags.Factions.LandsraadOnboardingActive"))),m_ControlPointAreaMaterial="/Game/Dune/Systems/Landsraad/Materials/M_LandsRaadControlPointCapsule.M_LandsRaadControlPointCapsule")'
+LANDSRAAD_DATA_TEMPLATE = LANDSRAAD_DATA_TEMPLATE.replace(
+    "m_LandsraadVotingPeriodDurationInSec=118500,",
+    "m_LandsraadVotingPeriodDurationInSec=118500,m_VotingPeriodStartBeforeCoriolisCycleInSec=118800,",
+)
 LANDSRAAD_DATA_FIELDS = {
     "landsraad_term_retention_weeks": ("m_NumberOfWeeksTermRetention", "4", "integer", 1, 52),
     "landsraad_decrees_to_nominate": ("m_NumberOfDecreesToNominate", "3", "integer", 1, 20),
@@ -74,6 +79,7 @@ LANDSRAAD_DATA_FIELDS = {
     "landsraad_player_voting_enabled": ("m_bIsPlayerVotingEnabled", "True", "boolean", None, None),
     "landsraad_territory_control_enabled": ("m_bIsTerritoryControlEnabled", "True", "boolean", None, None),
     "landsraad_voting_period_seconds": ("m_LandsraadVotingPeriodDurationInSec", "118500", "integer", 60, 6048000),
+    "landsraad_voting_start_before_coriolis_seconds": ("m_VotingPeriodStartBeforeCoriolisCycleInSec", "118800", "integer", 0, 6048000),
     "landsraad_cycle_duration_seconds": ("m_LandsraadCycleDurationInSeconds", "604800", "integer", 3600, 31536000),
     "landsraad_suspended_period_seconds": ("m_LandsraadSuspendedPeriodDurationInSeconds", "300", "integer", 0, 604800),
     "landsraad_first_task_reveal_delay_seconds": ("m_FirstTaskRevealDelayFromCompetitionStartInSeconds", "0", "number", 0, 604800),
@@ -125,8 +131,26 @@ FIELD_TYPE_OVERRIDES = {
     # Empty default (no override) would otherwise infer as "text" -- this holds a
     # float number of seconds, so force the numeric input/validation.
     "deathstill_conversion_time_override": "number",
+    # Zero-valued integer defaults otherwise infer as 0/1 toggles.
+    "coriolis_cycle_start_year": "integer",
+    "coriolis_cycle_start_month": "integer",
+    "coriolis_cycle_start_day": "integer",
+    "coriolis_cycle_start_hour": "integer",
+    "coriolis_cycle_start_minute": "integer",
+    "coriolis_cycle_start_seed_index": "integer",
     # Derived rather than listed so the select and the 1/0 conversion cannot drift.
     **{field_id: "boolean" for field_id in NUMERIC_BOOLEAN_ENGINE_FIELDS},
+}
+
+# Bounds for the Coriolis cycle fields shipped in Funcom's UserGame.ini
+# template. Day is a UTC weekday (1=Sunday through 7=Saturday), not a calendar
+# day. The server validates these values for Web UI, API, and CLI callers.
+CORIOLIS_CYCLE_START_BOUNDS = {
+    "coriolis_cycle_start_year": (1, 9999),
+    "coriolis_cycle_start_month": (1, 12),
+    "coriolis_cycle_start_day": (1, 7),
+    "coriolis_cycle_start_hour": (0, 23),
+    "coriolis_cycle_start_minute": (0, 59),
 }
 
 # UserGame properties that older community catalogues presented as numeric
@@ -330,10 +354,22 @@ FIELD_DESCRIPTIONS = {
     "force_pvp_all_partitions": "If enabled, forces PvP on for every map partition regardless of each partition's individual PvP/PvE setting.",
     "security_zones_enabled": "Master toggle for Security Zones. Disable to allow PvP and combat abilities everywhere on the map (no safe zones).",
     "coriolis_auto_spawn_enabled": "Whether Coriolis storms spawn automatically on their normal cycle.",
+    "coriolis_cycle_start_year": "Base year shipped in the Coriolis configuration. Normally leave this unchanged when matching a regional schedule.",
+    "coriolis_cycle_start_month": "Base month (1-12) shipped in the Coriolis configuration. Normally leave this unchanged when matching a regional schedule.",
+    "coriolis_cycle_start_day": "UTC weekday: 1=Sunday through 7=Saturday. Europe, North America, and South America use Tuesday (3); Asia and Oceania use Monday (2). The region/farm selection does not automatically rewrite it.",
+    "coriolis_cycle_start_hour": "UTC hour (0-23). Regional master schedules: Europe 05, North America 11, South America 08, Asia 09, and Oceania 19.",
+    "coriolis_cycle_start_minute": "UTC minute (0-59) for the Coriolis cycle start.",
+    "coriolis_cycle_start_seed_index": "Funcom's seed index for the base Coriolis cycle. Leave at 0 unless intentionally coordinating a different cycle seed.",
 }
 
 FIELD_LABELS = {
     "restart_server_on_coriolis_cycle_end": "Restart Map Process At Coriolis Cycle End",
+    "coriolis_cycle_start_year": "Cycle Start Year",
+    "coriolis_cycle_start_month": "Cycle Start Month",
+    "coriolis_cycle_start_day": "Cycle Start Day",
+    "coriolis_cycle_start_hour": "Cycle Start Hour",
+    "coriolis_cycle_start_minute": "Cycle Start Minute",
+    "coriolis_cycle_start_seed_index": "Cycle Start Seed Index",
 }
 
 # Maps a field id to the client-side ini filename it also must be applied to
@@ -406,10 +442,16 @@ MAP_FIELDS = {
     "storm_duration": ("/Script/DuneSandbox.SandStormConfig", "m_StormDuration", "600"),
     "storm_warning_duration": ("/Script/DuneSandbox.SandStormConfig", "m_StormWarningDuration", "120"),
     "storm_cycle_wait": ("/Script/DuneSandbox.SandStormConfig", "m_StormCycleWait", "300"),
-    "coriolis_cycle_duration_days": ("/Script/DuneSandbox.CoriolisSubsystem", "m_CycleDurationInDays", "7"),
-    "forced_coriolis_world_seed": ("/Script/DuneSandbox.CoriolisSubsystem", "m_ForcedCoriolisWorldSeed", "-1"),
-    "restart_server_on_coriolis_cycle_end": ("/Script/DuneSandbox.CoriolisSubsystem", "m_bShouldRestartServerOnCycleEnd", "True"),
-    "coriolis_db_wipe_enabled": ("/Script/DuneSandbox.CoriolisSubsystem", "m_bIsDbWipeEnabled", "True"),
+    "coriolis_cycle_start_year": (CORIOLIS_SUBSYSTEM_SECTION, "m_CycleStartYear", "2024"),
+    "coriolis_cycle_start_month": (CORIOLIS_SUBSYSTEM_SECTION, "m_CycleStartMonth", "12"),
+    "coriolis_cycle_start_day": (CORIOLIS_SUBSYSTEM_SECTION, "m_CycleStartDay", "3"),
+    "coriolis_cycle_start_hour": (CORIOLIS_SUBSYSTEM_SECTION, "m_CycleStartHour", "5"),
+    "coriolis_cycle_start_minute": (CORIOLIS_SUBSYSTEM_SECTION, "m_CycleStartMinute", "0"),
+    "coriolis_cycle_duration_days": (CORIOLIS_SUBSYSTEM_SECTION, "m_CycleDurationInDays", "7"),
+    "coriolis_cycle_start_seed_index": (CORIOLIS_SUBSYSTEM_SECTION, "m_CycleStartSeedIndex", "0"),
+    "forced_coriolis_world_seed": (CORIOLIS_SUBSYSTEM_SECTION, "m_ForcedCoriolisWorldSeed", "-1"),
+    "restart_server_on_coriolis_cycle_end": (CORIOLIS_SUBSYSTEM_SECTION, "m_bShouldRestartServerOnCycleEnd", "True"),
+    "coriolis_db_wipe_enabled": (CORIOLIS_SUBSYSTEM_SECTION, "m_bIsDbWipeEnabled", "True"),
     "max_landclaim_segments": (BUILDING_SETTINGS_SECTION, "m_MaxNumLandclaimSegments", "6"),
     "building_blueprint_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BuildingBlueprintMaxExtensions", "4"),
     "base_backup_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BaseBackupMaxExtensions", "8"),
@@ -1016,6 +1058,17 @@ def normalize_landsraad_data_value(field_id: str, value: str) -> str:
     return format(number, ".6f").rstrip("0").rstrip(".") or "0"
 
 
+def normalize_coriolis_cycle_start_value(field_id: str, value: str) -> str:
+    minimum, maximum = CORIOLIS_CYCLE_START_BOUNDS[field_id]
+    raw = str(value).strip()
+    if not re.fullmatch(r"-?\d+", raw):
+        raise SystemExit(f"{FIELD_LABELS[field_id]} must be a whole number.")
+    number = int(raw)
+    if number < minimum or number > maximum:
+        raise SystemExit(f"{FIELD_LABELS[field_id]} must be between {minimum} and {maximum}.")
+    return str(number)
+
+
 def landsraad_data_for_scope(profile: dict, scope: str, map_name: str = "", partition_id: str = "") -> str:
     value = profile_get_key(profile, scope, LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY, map_name, partition_id)
     if not value:
@@ -1558,6 +1611,9 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
             )
         return
 
+    if field_id in CORIOLIS_CYCLE_START_BOUNDS:
+        value = normalize_coriolis_cycle_start_value(field_id, value)
+
     if scope == "global":
         if field_id in GLOBAL_ARRAY_FIELD_IDS:
             partition_value = str(value or "").strip()
@@ -1805,6 +1861,7 @@ def infer_field_type(default: str | None) -> str:
 def metadata() -> int:
     def row(scope: str, field_id: str, spec: tuple[str | None, str | None, str | None]) -> dict:
         section, key, default = spec
+        minimum, maximum = CORIOLIS_CYCLE_START_BOUNDS.get(field_id, (None, None))
         return {
             "scope": scope,
             "id": field_id,
@@ -1816,6 +1873,8 @@ def metadata() -> int:
             "category": ENGINE_FIELD_CATEGORIES.get(field_id, ""),
             "description": FIELD_DESCRIPTIONS.get(field_id, ""),
             "label": FIELD_LABELS.get(field_id, ""),
+            "minimum": minimum,
+            "maximum": maximum,
         }
 
     # A login password has no public default and is managed by the Sietch

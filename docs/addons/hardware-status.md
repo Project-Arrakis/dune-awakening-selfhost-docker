@@ -12,11 +12,28 @@ The Console collects the data itself from fixed Linux interfaces. It never execu
 
 ## Response
 
+Version 2 is additive: all version 1 telemetry fields keep the same names and meanings. Addons should ignore fields they do not recognize.
+
 ```json
 {
-  "version": 1,
+  "version": 2,
   "temperatures": [
-    { "name": "coretemp Package id 0", "temperature": 47.5 }
+    { "name": "coretemp Package id 0", "temperature": 47.5, "device_id": "cpu:0" },
+    { "name": "nvme Composite", "temperature": 39.9, "device_id": "block:nvme0n1" }
+  ],
+  "cpu": {
+    "id": "cpu:0",
+    "manufacturer": "GenuineIntel",
+    "model": "Intel(R) Xeon(R) CPU E3-1220 v3 @ 3.10GHz"
+  },
+  "storage": [
+    {
+      "id": "block:nvme0n1",
+      "name": "nvme0n1",
+      "manufacturer": "Samsung",
+      "model": "Samsung SSD 990 PRO 2TB",
+      "bus": "nvme"
+    }
   ],
   "memory": {
     "total_kb": 16777216,
@@ -35,7 +52,11 @@ The Console collects the data itself from fixed Linux interfaces. It never execu
 }
 ```
 
-Temperatures are degrees Celsius read from `/sys/class/hwmon`. Memory and swap are read from `/proc/meminfo`, load from `/proc/loadavg`, and uptime from `/proc/uptime`. Missing or unreadable sources return an empty temperature list or zero-valued section rather than failing the whole request. Temperature output is capped at 128 validated sensors.
+Temperatures are degrees Celsius read from `/sys/class/hwmon`. CPU identification comes from `/proc/cpuinfo`, and storage identification comes from bounded reads under `/sys/class/block`. Memory and swap are read from `/proc/meminfo`, load from `/proc/loadavg`, and uptime from `/proc/uptime`.
+
+Identification fields are optional and omitted when Linux does not expose them. A temperature's optional `device_id` matches the CPU or a storage entry's `id`; `cpu:0` and `block:<name>` are local correlation keys and must not be treated as persistent hardware identities. The bridge does not read or return serial numbers, WWNs, filesystem UUIDs, or other persistent device identifiers.
+
+Missing or unreadable sources return empty identification/temperature data or a zero-valued telemetry section rather than failing the whole request. Output is capped at 64 storage devices and 128 validated temperature sensors.
 
 The addon manifest must request:
 

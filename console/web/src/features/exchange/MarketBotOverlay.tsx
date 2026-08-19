@@ -4,7 +4,10 @@ import {
   marketBotApi,
   type MarketAugmentPricing,
   type MarketBotStatus,
+  type MarketBuybackLogBatch,
   type MarketCategoryMultipliers,
+  type CommodityStackGroup,
+  type CommodityStackItem,
   type MarketExchange,
   type MarketPriceBasis,
   type MarketProbeResult
@@ -45,6 +48,72 @@ function categoryMultipliersFrom(schedule: Partial<MarketCategoryMultipliers>): 
     rankedArmorMultiplier: schedule.rankedArmorMultiplier ?? 1,
     rankedWeaponMultiplier: schedule.rankedWeaponMultiplier ?? 1
   };
+}
+
+const COMMODITY_STACK_MIN = 1;
+const COMMODITY_STACK_MAX = 20;
+const COMMODITY_STACK_DEFAULT = 2;
+
+function commodityStacksFrom(saved: Record<string, number> | undefined, catalog: CommodityStackItem[]): Record<string, number> {
+  const next: Record<string, number> = {};
+  for (const item of catalog) {
+    const value = saved?.[item.templateId];
+    next[item.templateId] = Number.isInteger(value) ? Number(value) : COMMODITY_STACK_DEFAULT;
+  }
+  return next;
+}
+
+function catalogGroups(catalog: CommodityStackItem[], groups: CommodityStackGroup[]): CommodityStackGroup[] {
+  if (groups.length) {
+    return groups.filter((group) => catalog.some((item) => item.group === group.id));
+  }
+  const seen = new Set<string>();
+  const derived: CommodityStackGroup[] = [];
+  for (const item of catalog) {
+    if (seen.has(item.group)) continue;
+    seen.add(item.group);
+    derived.push({ id: item.group, label: item.group });
+  }
+  return derived;
+}
+
+type CommodityStackInputsProps = {
+  catalog: CommodityStackItem[];
+  groups: CommodityStackGroup[];
+  values: Record<string, number>;
+  onChange: (next: Record<string, number>) => void;
+};
+
+function CommodityStackInputs({ catalog, groups, values, onChange }: CommodityStackInputsProps) {
+  if (!catalog.length) return null;
+  return (
+    <div className="market-bot-commodity-stacks">
+      {catalogGroups(catalog, groups).map((group) => (
+        <div key={group.id} className="market-bot-commodity-group">
+          <strong>{group.label}</strong>
+          <div className="market-bot-commodity-grid">
+            {catalog.filter((item) => item.group === group.id).map((item) => {
+              const stacks = values[item.templateId] ?? COMMODITY_STACK_DEFAULT;
+              const units = stacks * item.stackSize;
+              return (
+                <label key={item.templateId}>{item.label}
+                  <input
+                    aria-label={`${item.label} stacks`}
+                    type="number"
+                    min={COMMODITY_STACK_MIN}
+                    max={COMMODITY_STACK_MAX}
+                    value={stacks}
+                    onChange={(event) => onChange({ ...values, [item.templateId]: Number(event.target.value) })}
+                  />
+                  <span className="stack-hint">{stacks} × {item.stackSize.toLocaleString()} = {units.toLocaleString()} units</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 type CategoryMultiplierInputsProps = {
@@ -89,6 +158,97 @@ function runSummary(schedule: { lastRunAt: string; lastRunStatus: string; lastRu
   return parts.length ? parts.join(" | ") : "No runs yet.";
 }
 
+function buybackOverrides(exchangeId: string, priceMultiplier: number, category: MarketCategoryMultipliers, buybackPercent: number, buybackPriceBasis: MarketPriceBasis, maxBuys: number) {
+  return {
+    ...(exchangeId ? { exchangeId } : {}),
+    priceMultiplier,
+    ...category,
+    buybackPercent,
+    buybackPriceBasis,
+    maxBuys
+  };
+}
+
+function logExchangeLabel(batch: MarketBuybackLogBatch) {
+  return batch.exchangeId ? `Exchange ${batch.exchangeId}` : "Exchange unknown";
+}
+
+function formatLogTime(value: string) {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : value;
+}
+
+function BuybackSweepLog({
+  batches,
+  busy,
+  onRefresh,
+  onClear
+}: {
+  batches: MarketBuybackLogBatch[];
+  busy: string;
+  onRefresh: () => void;
+  onClear: () => void;
+}) {
+  const latest = batches[0];
+  return (
+    <div className="market-bot-section market-bot-log-section">
+      <strong>Buyback Sweep Log</strong>
+      <p className="action-help-note">Purchases and leftover eligible listings are recorded on a write sweep (<code>0x0</code>, <code>0x5</code> Max Buys, <code>0x6</code> skipped locked). Idle ticks with player listings and <strong>Refresh log (dry-run)</strong> also classify eligible rows (<code>0x0</code>), Max Buys leftovers (<code>0x5</code>), and skip reasons (<code>0x1</code>–<code>0x4</code>); dry-run never emits <code>0x6</code>. Results are capped at 1000 stored rows (leftovers keep a reserved share). Batches older than 5 days are removed automatically (up to 20 recent batches are kept).</p>
+      <div className="confirm-modal-actions market-bot-actions">
+        <button onClick={onRefresh} disabled={Boolean(busy)}>{busy === "refresh-log" ? "Refreshing…" : "Refresh log (dry-run)"}</button>
+        <button onClick={onClear} disabled={Boolean(busy) || !batches.length}>{busy === "clear-log" ? "Clearing…" : "Clear log"}</button>
+      </div>
+      <p className="muted">Codes: <code>0x0</code> bought / eligible, <code>0x1</code> price too high, <code>0x2</code> no reference price, <code>0x3</code> invalid price, <code>0x4</code> invalid stack, <code>0x5</code> max buys limit, <code>0x6</code> skipped locked.</p>
+      <p className="muted" role="status">
+        {batches.length
+          ? `${batches.length} log batch(es) stored. Latest: ${latest.source} on ${logExchangeLabel(latest)} at ${formatLogTime(latest.at)} — ${latest.summary || `${latest.entries?.length || 0} listings`}.`
+          : "No buyback sweep attempts logged yet."}
+      </p>
+      <div className="market-bot-log" aria-label="Buyback sweep log">
+        {!batches.length && <p className="muted market-bot-log-empty">Run a buyback sweep or Refresh log (dry-run) to classify player sell listings.</p>}
+        {batches.map((batch, index) => (
+          <div className="market-bot-log-batch" key={`${batch.at}-${batch.exchangeId}-${index}`}>
+            <h4>{batch.source} <span className="badge">{logExchangeLabel(batch)}</span> <span className="muted">{formatLogTime(batch.at)}</span></h4>
+            <p className="muted">{batch.summary}{batch.note ? ` — ${batch.note}` : ""}</p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Code</th>
+                  <th>Result</th>
+                  <th>Item</th>
+                  <th>Grade</th>
+                  <th>Ask/unit</th>
+                  <th>Stack</th>
+                  <th>Cap</th>
+                  <th>Order</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(batch.entries || []).length ? batch.entries.map((entry) => (
+                  <tr key={`${entry.orderId}-${entry.resultHex}`} className={entry.resultCode === 0 ? "ok" : "skip"}>
+                    <td><code>{entry.resultHex}</code></td>
+                    <td>{entry.resultLabel}</td>
+                    <td>{entry.displayName || entry.templateId}</td>
+                    <td>{entry.qualityLevel}</td>
+                    <td>{entry.itemPrice}</td>
+                    <td>{entry.stackSize}</td>
+                    <td>{entry.maxUnitPrice || "—"}</td>
+                    <td>{entry.orderId}</td>
+                    <td>{entry.detail}</td>
+                  </tr>
+                )) : (
+                  <tr><td colSpan={9} className="muted">No player sell listings on this exchange.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotOverlayProps) {
   const [status, setStatus] = useState<MarketBotStatus | null>(null);
   const [exchanges, setExchanges] = useState<MarketExchange[]>([]);
@@ -96,6 +256,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [probeResult, setProbeResult] = useState<MarketProbeResult | null>(null);
+  const [logBatches, setLogBatches] = useState<MarketBuybackLogBatch[]>([]);
 
   const [exchangeId, setExchangeId] = useState("");
   const [buybackEnabled, setBuybackEnabled] = useState(false);
@@ -110,9 +271,16 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
   const [seedMultiplier, setSeedMultiplier] = useState(5);
   const [seedCategoryMultipliers, setSeedCategoryMultipliers] = useState(defaultCategoryMultipliers);
   const [augmentPricing, setAugmentPricing] = useState<MarketAugmentPricing>("discounted");
+  const [commodityCatalog, setCommodityCatalog] = useState<CommodityStackItem[]>([]);
+  const [commodityGroups, setCommodityGroups] = useState<CommodityStackGroup[]>([]);
+  const [commodityStacks, setCommodityStacks] = useState<Record<string, number>>({});
 
   function applyStatus(next: MarketBotStatus, options: { populateForm?: boolean } = {}) {
     setStatus(next);
+    const catalog = next.commodityStackCatalog || [];
+    const groups = next.commodityStackGroups || [];
+    setCommodityCatalog(catalog);
+    setCommodityGroups(groups);
     if (options.populateForm) {
       setBuybackEnabled(Boolean(next.buyback.enabled));
       setBuybackInterval(next.buyback.intervalMinutes);
@@ -126,18 +294,24 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
       setSeedMultiplier(next.seed.priceMultiplier);
       setSeedCategoryMultipliers(categoryMultipliersFrom(next.seed));
       setAugmentPricing(next.seed.augmentPricing === "original" ? "original" : "discounted");
+      setCommodityStacks(commodityStacksFrom(next.seed.commodityStacks, catalog));
       setExchangeId((current) => current || next.buyback.exchangeId || next.seed.exchangeId || "");
     }
   }
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([marketBotApi.status(), marketBotApi.exchanges()])
-      .then(([nextStatus, exchangeList]) => {
+    void Promise.all([
+      marketBotApi.status(),
+      marketBotApi.exchanges(),
+      marketBotApi.buybackLog().catch(() => ({ batches: [] as MarketBuybackLogBatch[] }))
+    ])
+      .then(([nextStatus, exchangeList, log]) => {
         if (cancelled) return;
         applyStatus(nextStatus, { populateForm: true });
         setExchanges(exchangeList.rows || []);
         setExchangeId((current) => current || exchangeList.rows?.[0]?.exchangeId || "");
+        setLogBatches(log.batches || []);
         setLoading(false);
       })
       .catch((error) => {
@@ -148,9 +322,32 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
     return () => { cancelled = true; };
   }, [onError]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void marketBotApi.buybackLog()
+        .then((log) => {
+          if (!cancelled) setLogBatches(log.batches || []);
+        })
+        .catch(() => { /* keep the last successful log view */ });
+    }, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   async function refreshStatus() {
     try {
       applyStatus(await marketBotApi.status());
+    } catch {
+      // Non-fatal: the action that triggered the refresh already reported.
+    }
+  }
+
+  async function refreshLog() {
+    try {
+      setLogBatches((await marketBotApi.buybackLog()).batches || []);
     } catch {
       // Non-fatal: the action that triggered the refresh already reported.
     }
@@ -163,6 +360,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
     try {
       setNotice(await action());
       await refreshStatus();
+      await refreshLog();
     } catch (error) {
       onError(errorText(error));
     } finally {
@@ -196,6 +394,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
         priceMultiplier: seedMultiplier,
         ...seedCategoryMultipliers,
         augmentPricing,
+        commodityStacks,
         ...(exchangeId ? { exchangeId } : {})
       });
       return saved.enabled
@@ -206,14 +405,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
 
   function probe() {
     return run("probe", async () => {
-      const result = await marketBotApi.probeBuyback({
-        ...(exchangeId ? { exchangeId } : {}),
-        priceMultiplier: buybackMultiplier,
-        ...buybackCategoryMultipliers,
-        buybackPercent,
-        buybackPriceBasis: buybackBasis,
-        maxBuys
-      });
+      const result = await marketBotApi.probeBuyback(buybackOverrides(exchangeId, buybackMultiplier, buybackCategoryMultipliers, buybackPercent, buybackBasis, maxBuys));
       setProbeResult(result);
       return `${result.eligible.toLocaleString()} eligible player listing(s) on exchange ${result.exchangeId} at ${result.buybackPercent}% (read-only; no backup taken).`;
     });
@@ -231,6 +423,22 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
         return `Sweep finished: bought ${result.purchased ?? 0} listing(s), ${result.totalUnits ?? "0"} units for ${result.totalSolari ?? "0"} Solari.`;
       }
       return result.detail || "Nothing eligible; no backup was taken.";
+    });
+  }
+
+  function refreshLogDryRun() {
+    return run("refresh-log", async () => {
+      const result = await marketBotApi.refreshBuybackLog(buybackOverrides(exchangeId, buybackMultiplier, buybackCategoryMultipliers, buybackPercent, buybackBasis, maxBuys));
+      setLogBatches(result.batches || []);
+      const count = result.entries?.length ?? result.batches?.[0]?.entries?.length ?? 0;
+      return `Buyback log refreshed: ${count.toLocaleString()} player sell listing(s) classified on exchange ${result.exchangeId || exchangeId} (dry-run).`;
+    });
+  }
+
+  function clearLog() {
+    return run("clear-log", async () => {
+      setLogBatches((await marketBotApi.clearBuybackLog()).batches || []);
+      return "Buyback sweep log cleared.";
     });
   }
 
@@ -267,7 +475,8 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
         {!loading && !supported && <p className="muted">{status?.reason || "The Market Bot is unsupported by the detected database schema."}</p>}
         {!loading && supported && !planReady && <p className="muted">The bundled market seed plan is missing. Repair or reinstall the console release.</p>}
         {!loading && supported && planReady && status && (
-          <>
+          <div className="market-bot-layout">
+            <div>
             <p className="muted">
               Seed plan: {status.plan.rows.toLocaleString()} rows
               {status.plan.panelVersion ? ` (v${status.plan.panelVersion})` : ""} from the bundled console copy.
@@ -285,7 +494,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
 
             <div className="market-bot-section">
               <strong>Buyback sweeps</strong>
-              <p className="action-help-note">Buys player sell listings whose per-unit ask is at or below the buyback percentage of the price basis (seeded NPC price at that grade, or live market average / lowest with seeded fallback). Whole listed stacks are bought in one pass. Every run probes eligibility read-only first and only backs up + sweeps when something qualifies. The category multipliers reprice the seeded basis the same way the reseed does — keep them matched with the reseed section so the buyback percentage tracks the real market prices.</p>
+              <p className="action-help-note">Buys player sell listings whose per-unit ask is at or below the buyback percentage of the price basis (seeded NPC price at that grade, or live market average / lowest with seeded fallback). Whole listed stacks are bought in one pass. Every run probes eligibility read-only first and only backs up + sweeps when something qualifies. The seeded basis uses this section's category multipliers and the reseed section's augment pricing (discounted vs original), so 60% of seeded tracks what the bot actually lists for ready-made augments. Category multipliers can still differ from reseed on purpose.</p>
               <div className="market-bot-grid">
                 <label>Interval (minutes)
                   <input aria-label="Buyback interval minutes" type="number" min={10} max={1440} value={buybackInterval} onChange={(event) => setBuybackInterval(Number(event.target.value))} />
@@ -339,6 +548,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
               <strong>Market reseed</strong>
               <p className="action-help-note">Replaces the bot's own NPC sell listings from the seed plan at the chosen price multiplier. Every run is backup, clear bot listings on that exchange, seed. Player listings are never touched. Augment items always seed as bottom-of-range rolls; the augment pricing option chooses whether they undercut their schematics (half the pattern's price) or keep the plan's original prices.</p>
               <p className="action-help-note">Category multipliers (1-5x, 1 = no change) additionally scale the seeded prices of augments &amp; augment schematics, ranked (grade 1-5) armor including stillsuits, and ranked weapons — on top of the base price multiplier. Grade-0 stock and everything else keeps the base multiplier alone.</p>
+              <p className="action-help-note">Number of stacks is how many full listings of that commodity each reseed writes. Units per stack stay at the plan maximum (so 10 fuel-cell stacks is 5,000 units). Unlisted commodities keep the plan default of 2 stacks.</p>
               <div className="market-bot-grid">
                 <label>Interval (minutes)
                   <input aria-label="Seed interval minutes" type="number" min={10} max={1440} value={seedInterval} onChange={(event) => setSeedInterval(Number(event.target.value))} />
@@ -354,6 +564,7 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
                   </select>
                 </label>
               </div>
+              <CommodityStackInputs catalog={commodityCatalog} groups={commodityGroups} values={commodityStacks} onChange={setCommodityStacks} />
               <label className="market-bot-toggle">
                 <input aria-label="Run reseed on a schedule" type="checkbox" checked={seedEnabled} onChange={(event) => setSeedEnabled(event.target.checked)} />
                 Run market reseed on a schedule (unattended)
@@ -366,7 +577,14 @@ export function MarketBotOverlay({ onClose, onError, confirmAction }: MarketBotO
             </div>
 
             {notice && <p className="market-bot-notice" role="status">{notice}</p>}
-          </>
+            </div>
+            <BuybackSweepLog
+              batches={logBatches}
+              busy={busy}
+              onRefresh={() => void refreshLogDryRun()}
+              onClear={() => void clearLog()}
+            />
+          </div>
         )}
         <div className="confirm-modal-actions">
           <button onClick={onClose} disabled={Boolean(busy)}>Close</button>
