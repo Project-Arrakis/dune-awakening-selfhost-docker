@@ -54,6 +54,10 @@ function renderOverlay() {
   return props;
 }
 
+async function selectTab(name: "Buyback" | "Reseed" | "Activity") {
+  fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${name}`) }));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(marketBotApi.status).mockResolvedValue(statusFixture());
@@ -64,11 +68,13 @@ beforeEach(() => {
 });
 
 describe("MarketBotOverlay", () => {
-  it("loads status and exchanges, showing plan info and both sections", async () => {
+  it("loads status and exchanges with organized settings tabs", async () => {
     renderOverlay();
 
-    expect(await screen.findByText(/Seed plan: 2,910 rows \(v0\.14\.0\) from the bundled console copy/)).toBeInTheDocument();
+    expect(await screen.findByText(/2,910 rows · v0\.14\.0/)).toBeInTheDocument();
     expect(screen.getByText("Buyback sweeps")).toBeInTheDocument();
+    expect(screen.queryByText("Market reseed")).not.toBeInTheDocument();
+    await selectTab("Reseed");
     expect(screen.getByText("Market reseed")).toBeInTheDocument();
     // BIGINT-sized ids stay intact as strings in the selector.
     expect(screen.getByText(/Global \(ID 9007199254740993\)/)).toBeInTheDocument();
@@ -162,6 +168,7 @@ describe("MarketBotOverlay", () => {
       ...statusFixture().seed, ...schedule, exchangeId: String(schedule.exchangeId || "42"), enabled: Boolean(schedule.enabled)
     }));
     renderOverlay();
+    await selectTab("Reseed");
 
     const pricing = await screen.findByLabelText("Augment pricing");
     expect(pricing).toHaveValue("discounted");
@@ -190,6 +197,7 @@ describe("MarketBotOverlay", () => {
       ...statusFixture().seed, ...schedule, exchangeId: String(schedule.exchangeId || "42"), enabled: Boolean(schedule.enabled)
     }));
     renderOverlay();
+    await selectTab("Reseed");
 
     const augment = await screen.findByLabelText("Seed augment multiplier");
     expect(augment).toHaveValue(2);
@@ -227,6 +235,7 @@ describe("MarketBotOverlay", () => {
       ...statusFixture().seed, ...schedule, exchangeId: String(schedule.exchangeId || "42"), enabled: Boolean(schedule.enabled)
     }));
     renderOverlay();
+    await selectTab("Reseed");
 
     const fuel = await screen.findByLabelText("Fuel Cell stacks");
     expect(fuel).toHaveValue(2);
@@ -250,15 +259,18 @@ describe("MarketBotOverlay", () => {
 
   it("disables Run reseed now until a seed schedule has a saved exchange", async () => {
     renderOverlay();
+    await selectTab("Reseed");
 
     const runSeed = await screen.findByRole("button", { name: "Run reseed now" });
     expect(runSeed).toBeDisabled();
+    await selectTab("Buyback");
     expect(await screen.findByRole("button", { name: "Run sweep now" })).toBeEnabled();
   });
 
   it("confirms before removing NPC listings and reports the removed count", async () => {
     vi.mocked(marketBotApi.unseed).mockResolvedValue({ status: "unseeded", removedListings: "180", removedItems: "180", exchangeId: "42" });
     const props = renderOverlay();
+    await selectTab("Reseed");
 
     // Unlike Run reseed now, the unseed targets the exchange selected in the
     // dropdown, so it works without a saved seed schedule.
@@ -275,6 +287,7 @@ describe("MarketBotOverlay", () => {
       detail: "No bot listings on exchange 42; nothing removed and no backup was taken."
     });
     renderOverlay();
+    await selectTab("Reseed");
 
     fireEvent.click(await screen.findByRole("button", { name: "Remove NPC listings" }));
 
@@ -284,6 +297,7 @@ describe("MarketBotOverlay", () => {
   it("does not remove NPC listings when the confirmation is declined", async () => {
     const props = renderOverlay();
     props.confirmAction.mockResolvedValue(false);
+    await selectTab("Reseed");
 
     fireEvent.click(await screen.findByRole("button", { name: "Remove NPC listings" }));
 
@@ -327,6 +341,7 @@ describe("MarketBotOverlay", () => {
       }]
     });
     renderOverlay();
+    await selectTab("Activity");
 
     expect(await screen.findByLabelText("Buyback sweep log")).toBeInTheDocument();
     expect(screen.getByText("Buyback Sweep Log")).toBeInTheDocument();
@@ -335,7 +350,9 @@ describe("MarketBotOverlay", () => {
     expect(screen.getByText("bought stack 10 at 100/unit (cap 600)")).toBeInTheDocument();
     expect(screen.getByText("ask 900 > cap 600")).toBeInTheDocument();
     expect(screen.getByText("Water Bottle")).toBeInTheDocument();
-    expect(screen.getByText(/older than 5 days/)).toBeInTheDocument();
+    expect(screen.getByLabelText("About Buyback Sweep Log")).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(screen.getByLabelText("About Buyback Sweep Log"));
+    expect(screen.getByText(/retained for five days/)).toBeInTheDocument();
   });
 
   it("refreshes the log with a dry-run classify and can clear it", async () => {
@@ -360,6 +377,7 @@ describe("MarketBotOverlay", () => {
       return { batches: [] };
     });
     renderOverlay();
+    await selectTab("Activity");
 
     fireEvent.click(await screen.findByRole("button", { name: "Refresh log (dry-run)" }));
     await waitFor(() => expect(marketBotApi.refreshBuybackLog).toHaveBeenCalledWith({
