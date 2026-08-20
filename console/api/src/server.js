@@ -23,6 +23,8 @@ import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
 import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon } from "./addons.js";
 import { hardwareStatusSnapshot, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
+import { createSecondFactorStore } from "./auth/secondFactorStore.js";
+import { generateTotpSecret, provisioningUri, verifyTotp } from "./auth/totp.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
 import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
 import { createMemoryBalancer } from "./services/memoryBalancer.js";
@@ -84,6 +86,10 @@ try {
 }
 loadPolicies(config.repoRoot);
 const auth = createAuth(config);
+// One second-factor store instance for the process (the store enforces this;
+// constructing a second one for the same file would defeat serialization).
+const secondFactor = createSecondFactorStore({ filePath: config.secondFactorFile });
+const nowSeconds = () => Math.floor(Date.now() / 1000);
 const loginRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
@@ -488,7 +494,16 @@ async function handleApi(req, res) {
   if (path === "/api/health") return json(res, 200, { ok: true, app: config.appName });
   if (path === "/api/auth/state") {
     const session = auth.readSession(req);
-    return json(res, 200, { authenticated: Boolean(session), csrfToken: session?.csrf || null, config: publicConfig(config) });
+    return json(res, 200, {
+      authenticated: Boolean(session),
+      // An enroll-scoped session is not a usable console session -- the client
+      // must route to setup, not render the console (UI can also treat any
+      // enrollmentRequired 403 as the same signal).
+      scope: session?.scope || null,
+      enrollmentRequired: session?.scope === "enroll",
+      csrfToken: session?.csrf || null,
+      config: publicConfig(config),
+    });
   }
   if (path === "/api/auth/login" && req.method === "POST") {
     const rateKey = loginRateLimitKey(req);
@@ -501,18 +516,132 @@ async function handleApi(req, res) {
       loginRateLimiter.recordFailure(rateKey);
       return json(res, 401, { error: "Incorrect password. Please try again!" });
     }
+    // Password OK. Tier 3 (RFC §2.3/§4): the password tier requires a mandatory
+    // TOTP second factor -- but only when enabled (see config.consoleTotpEnabled;
+    // gated off during incremental rollout until the console UI can drive
+    // enrollment). authDisabled (dev) also keeps the old single-factor path.
+    if (config.authDisabled || !config.consoleTotpEnabled) {
+      loginRateLimiter.recordSuccess(rateKey);
+      const session = auth.makeSession();
+      setSessionCookie(res, session, config);
+      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: true });
+      return json(res, 200, { authenticated: true, csrfToken: session.csrf });
+    }
+    let configured;
+    try {
+      configured = await secondFactor.isConfigured();
+    } catch {
+      // Corrupt / newer-version second-factor state -> fail closed, grant nothing
+      // (a corrupt file must never let the password through without the factor).
+      loginRateLimiter.recordFailure(rateKey);
+      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: false, reason: "second_factor_unavailable" });
+      return json(res, 503, { error: "Two-factor state on this console is unreadable, so sign-in is blocked. An operator with server access must inspect runtime/generated/console-second-factor.json -- restore it from backup, or remove it to re-enroll a fresh authenticator on the next password sign-in." });
+    }
+    if (!configured) {
+      // §4: first post-upgrade login with no TOTP state -> mandatory enrollment.
+      // Issue a short-lived, non-renewable enrollment-only session. tier "enroll"
+      // is not a valid policy tier (evaluate() default-denies it), so even if the
+      // scope allowlist guard were ever bypassed the session grants nothing --
+      // containment is defense-in-depth, not solely the guard.
+      loginRateLimiter.recordSuccess(rateKey);
+      const session = auth.makeSession({ tier: "enroll", scope: "enroll", ttlMs: config.enrollmentSessionTtlMs, renewable: false });
+      setSessionCookie(res, session, config, { maxAgeSeconds: Math.floor(config.enrollmentSessionTtlMs / 1000) });
+      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: true, enrollment: true });
+      return json(res, 200, { enrollmentRequired: true, csrfToken: session.csrf });
+    }
+    // Enrolled: a TOTP code must accompany the password. A missing code is not a
+    // failed attempt (the password was right) -- prompt for the second factor.
+    // It IS audited: a correct-password/no-device request is a compromised-
+    // password signal worth a trail (no recordFailure, so no legit-user lockout).
+    const totpCode = String(body.totpCode || "").trim();
+    if (!totpCode) {
+      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: false, reason: "totp_missing" });
+      return json(res, 401, { totpRequired: true, error: "Enter your authenticator code to finish signing in." });
+    }
+    const verify = await secondFactor.verifyTotpToken(totpCode, nowSeconds());
+    if (!verify.ok) {
+      loginRateLimiter.recordFailure(rateKey);
+      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: false, reason: `totp_${verify.reason}` });
+      return json(res, 401, { totpRequired: true, error: "That authenticator code was not accepted. Check your device's clock and enter the current code." });
+    }
     loginRateLimiter.recordSuccess(rateKey);
     const session = auth.makeSession();
     setSessionCookie(res, session, config);
-    audit(config, req, "auth.login");
+    audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: true });
     return json(res, 200, { authenticated: true, csrfToken: session.csrf });
+  }
+  // Enrollment-only sessions (RFC §4) may reach ONLY the enrollment endpoints
+  // plus /me and /logout. This single allowlist guard sits above every
+  // authenticated route -- including the pre-gate /api/auth/* data routes (e.g.
+  // /characters) that only call requireAuth -- so a restricted session can never
+  // escape its scope through a route handled before the central policy gate.
+  // (/health, /state, /login are public and sit above this.) Skipped entirely
+  // when the flag is off -- no enroll session can exist, so the readSession is
+  // pure overhead.
+  if (config.consoleTotpEnabled) {
+    const enrollSession = auth.readSession(req);
+    if (enrollSession && enrollSession.scope === "enroll") {
+      const ENROLL_ALLOWED = new Set([
+        "/api/auth/2fa/setup",
+        "/api/auth/2fa/confirm",
+        "/api/auth/logout",
+        "/api/auth/me",
+      ]);
+      if (!ENROLL_ALLOWED.has(path)) {
+        return json(res, 403, { enrollmentRequired: true, error: "Finish setting up two-factor authentication before using the console." });
+      }
+    }
   }
   if (path === "/api/auth/logout" && req.method === "POST") {
     const session = auth.requireAuth(req, res);
     if (!session) return;
+    auth.invalidateSession(session.id); // destroy server-side, not just the cookie
     clearSessionCookie(res, config);
     audit(config, req, "auth.logout");
     return json(res, 200, { ok: true });
+  }
+  // ---- Tier 3 mandatory-TOTP enrollment (RFC §4) ----
+  // Reachable only with the short-lived enrollment-only session issued by /login
+  // when no second factor is configured. Two steps: setup (generate + show the
+  // secret/QR) then confirm (verify a code, commit the factor, show recovery
+  // codes once, end the enrollment session and force a fresh password+TOTP login).
+  if (path === "/api/auth/2fa/setup" && req.method === "POST") {
+    const session = requireEnrollmentSession(req, res);
+    if (!session) return;
+    const { secretBytes, base32 } = generateTotpSecret();
+    session.pendingTotpSecret = secretBytes; // held server-side on the in-memory session only
+    const otpauthUri = provisioningUri({ secretBase32: base32, accountName: "console-admin", issuer: config.totpIssuer });
+    audit(config, sanitizedUrl(req, "/api/auth/2fa/setup"), "auth.2fa.setup", { ok: true });
+    return json(res, 200, { secret: base32, otpauthUri });
+  }
+  if (path === "/api/auth/2fa/confirm" && req.method === "POST") {
+    const session = requireEnrollmentSession(req, res);
+    if (!session) return;
+    if (!session.pendingTotpSecret) {
+      return json(res, 400, { error: "Start two-factor setup first, then enter a code from your authenticator." });
+    }
+    const body = await readJson(req);
+    const code = String(body.code || "").trim();
+    if (!verifyTotp(session.pendingTotpSecret, code, nowSeconds())) {
+      audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: "invalid_code" });
+      return json(res, 401, { error: "That code was not accepted. Check your device's clock and enter the current code." });
+    }
+    const enrolled = await secondFactor.enroll(session.pendingTotpSecret);
+    if (!enrolled.ok) {
+      // already_configured: another session enrolled first. End this one; the
+      // operator logs in normally with the factor that won.
+      auth.invalidateSession(session.id);
+      clearSessionCookie(res, config);
+      audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: enrolled.reason });
+      return json(res, 409, { error: "Two-factor was already set up on this console. Sign in again with your authenticator." });
+    }
+    // Commit succeeded: show the recovery codes ONCE, end the enrollment session,
+    // and require a fresh password+TOTP login.
+    auth.invalidateSession(session.id);
+    clearSessionCookie(res, config);
+    audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: true });
+    audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "settings.totp-setup", { ok: true });
+    return json(res, 200, { enrolled: true, recoveryCodes: enrolled.codes });
   }
   if (path === "/api/auth/me") {
     const session = auth.requireAuth(req, res);
@@ -528,8 +657,9 @@ async function handleApi(req, res) {
         tier: session.tier || "owner",
         guildId: session.guildId || ""
       },
+      scope: session.scope || null,
       linkedCharacters,
-      allowedActions: resolveAllowedActions(session.tier || "owner")
+      allowedActions: session.scope === "enroll" ? [] : resolveAllowedActions(session.tier || "owner")
     });
   }
   if (path === "/api/auth/characters" && req.method === "GET") {
@@ -4992,6 +5122,24 @@ function loginRateLimitKey(req) {
 // log. server.js's audit() logs req.url verbatim otherwise.
 function sanitizedUrl(req, path) {
   return { ...req, url: path };
+}
+
+// Gate for the Tier 3 enrollment endpoints: requires a valid, enroll-scoped
+// session (the short-lived one issued by /login when no factor is configured),
+// and enforces CSRF on the POST the same way requireAuth does for normal
+// sessions. Returns the live session (so callers can stash the pending secret on
+// it) or null after writing the response.
+function requireEnrollmentSession(req, res) {
+  const session = auth.readSession(req);
+  if (!session || session.scope !== "enroll") {
+    json(res, 403, { error: "Sign in to begin two-factor setup." });
+    return null;
+  }
+  if (!config.authDisabled && req.headers["x-csrf-token"] !== session.csrf) {
+    json(res, 403, { error: "Your setup session expired. Sign in again to restart two-factor setup." });
+    return null;
+  }
+  return session;
 }
 
 async function handleDiscordTokenExchange(req, res) {
