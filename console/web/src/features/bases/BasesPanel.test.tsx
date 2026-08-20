@@ -45,6 +45,16 @@ vi.mock("../../api/maps", () => ({
   }
 }));
 
+// BaseInventoryTab's Give/Fill panels use ItemCatalogCombobox, which fetches
+// the catalog via adminApi.itemCatalog() on mount -- needed by this file's
+// own inventory-tab-related tests, the same way BaseInventoryTab.test.tsx
+// mocks it directly.
+vi.mock("../../api/admin", () => ({
+  adminApi: {
+    itemCatalog: vi.fn().mockResolvedValue({ rows: [] })
+  }
+}));
+
 function renderPanel(overrides: Partial<Parameters<typeof BasesPanel>[0]> = {}) {
   const props = {
     onError: vi.fn(),

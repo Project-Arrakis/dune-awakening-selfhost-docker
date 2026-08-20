@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+const FILLABLE_GROUPS = new Set(["refined_resource", "component", "raw_resource"]);
+
 export function resolveCatalogItem(repoRoot, { itemName = "", itemId = "" } = {}) {
   const value = String(itemId || itemName || "").trim();
   if (!value || value.length > 240 || /[\r\n]/.test(value)) throw new Error("Item name or id is required");
@@ -22,6 +24,43 @@ export function resolveCatalogItem(repoRoot, { itemName = "", itemId = "" } = {}
   const exactId = items.find((item) => String(item.id || "") === value);
   if (exactId) return normalizeItem(exactId, repoRoot);
   throw new Error(`No item found for: ${value}`);
+}
+
+export function resolveFillableCatalogItem(repoRoot, query = {}) {
+  const resolved = resolveCatalogItem(repoRoot, query);
+  if (!resolved.group || !FILLABLE_GROUPS.has(resolved.group)) {
+    throw new Error("Item type not allowed for fill operation");
+  }
+  // Every FILLABLE_GROUPS item is expected to carry real, individually
+  // verified catalog volume data (raw_resource/refined_resource/component
+  // -- see the 19-item tagging this restriction shipped with). Found during
+  // code review (2026-08-19): a catalog entry missing or reset to 0 volume
+  // would silently resolve here anyway, and every downstream volume-cap
+  // check in giveItemToBaseContainer/fillItemToBaseContainer/
+  // giveMultipleItemsToBaseContainer treats itemVolume <= 0 as "this item
+  // is not volume-tracked, skip the cap" -- correct for the standalone
+  // Storage tab's much broader catalog (most weapons/gear/schematics
+  // genuinely have no volume data, by design), but wrong here: it would let
+  // an operator give/fill an unbounded quantity of a fillable resource into
+  // a volume-capped container. Not currently triggerable (today's 19
+  // fillable items all have real, verified volumes), but this closes the
+  // gap at the one layer both Give and Fill share, rather than trusting
+  // every future catalog edit to keep that invariant by hand.
+  const volume = Number(resolved.volume) || resolveItemVolume(repoRoot, resolved.itemId);
+  if (!(volume > 0)) {
+    throw new Error(`Item ${resolved.itemId} is missing catalogued volume data and cannot be given or filled into a volume-tracked container.`);
+  }
+  return resolved;
+}
+
+export function isFillableItem(item = {}) {
+  return FILLABLE_GROUPS.has(String(item.group || ""));
+}
+
+export function resolveItemVolume(repoRoot, templateId) {
+  const items = JSON.parse(readFileSync(resolve(repoRoot, "runtime/data/admin-items.json"), "utf8"));
+  const match = items.find((item) => String(item.id || "") === templateId);
+  return Number(match?.volume) || 0;
 }
 
 export function listCatalogItems(repoRoot, { q = "", limit = 500 } = {}) {
@@ -134,7 +173,7 @@ function normalizeItem(item, repoRoot = "") {
   const id = String(item.id || "").trim();
   if (!/^[A-Za-z0-9_./:-]{1,240}$/.test(id)) throw new Error("Invalid resolved item id");
   const image = itemImagePath(repoRoot, id);
-  return {
+  const result = {
     id,
     itemId: id,
     name: String(item.name || id),
@@ -142,6 +181,9 @@ function normalizeItem(item, repoRoot = "") {
     source: String(item.source || "manual"),
     image
   };
+  if (item.group) result.group = String(item.group);
+  if (item.volume !== undefined && item.volume !== null) result.volume = Number(item.volume);
+  return result;
 }
 
 // repoRoot -> item id -> resolved path. The existsSync below is the entire cost

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Grid2X2, List } from "lucide-react";
 import { adminApi } from "../../api/admin";
 import { titleCase } from "../../lib/display";
@@ -11,7 +11,27 @@ export type CatalogItem = {
   category?: string;
   source?: string;
   image?: string;
+  group?: string;
 };
+
+// Shared module-level cache: the full catalog (~2,600 items) is identical
+// for every consumer within one page load, and both ItemCatalogSelector and
+// ItemCatalogCombobox below fetch it independently -- without this, opening
+// a container's contents overlay (which renders the Give and Fill comboboxes
+// side by side) would issue two redundant full-catalog requests every time.
+let cachedCatalog: CatalogItem[] | null = null;
+let cachedCatalogPromise: Promise<CatalogItem[]> | null = null;
+
+export async function loadFullCatalog(): Promise<CatalogItem[]> {
+  if (cachedCatalog) return cachedCatalog;
+  if (!cachedCatalogPromise) {
+    cachedCatalogPromise = adminApi.itemCatalog("", 10000).then((result) => {
+      cachedCatalog = (result.rows || []).map((item) => ({ ...item, id: item.itemId || item.id }));
+      return cachedCatalog;
+    });
+  }
+  return cachedCatalogPromise;
+}
 
 export function ItemCatalogSelector({ label = "Select Item", selected, onSelect, placeholder = "Filter loaded item catalog" }: { label?: string; selected: CatalogItem | null; onSelect: (item: CatalogItem | null) => void; placeholder?: string }) {
   const [query, setQuery] = useState("");
@@ -92,6 +112,159 @@ export function ItemCatalogSelector({ label = "Select Item", selected, onSelect,
       <CatalogItemThumb item={selected} large />
       <KeyValueGrid items={[["Item Name", selected.name], ["Item ID", selected.id], ["Category", selected.category ? titleCase(selected.category) : ""], ["Source", selected.source || ""]]} />
     </div>}
+  </div>;
+}
+
+// Compact type-to-search dropdown, distinct from ItemCatalogSelector above:
+// that component is a full-page category/grid browser (Player Give Items),
+// too heavy to stack two-of inside an already-dense modal like the Base
+// Inventory contents overlay's Give + Fill panels. This renders as a single
+// text input with a short, keyboard-navigable results list -- the same
+// underlying catalog data and the same real in-game display name
+// (item.name, e.g. "Fuel Cell" for template id "Oil"), just a lighter
+// presentation. Found during manual UI review of PR #349 (issue #347): the
+// prior plain "Item name or ID" text input required already knowing the
+// exact template id or exact in-game name, and offered no way to discover
+// what's actually in the catalog.
+//
+// Search and the results list are both name-only -- the catalog id
+// (template id, e.g. "Oil") is a database/backend concept a player never
+// sees in-game and is never typed here, so it is neither searched nor
+// displayed. Give/Fill still submit `itemId` under the hood (the exact
+// catalog id of whichever item was chosen), just never as something the
+// player types or reads.
+//
+// `filterGroups`, when set, restricts results to catalog items whose
+// `group` field is in the set -- used by the Fill panel to show only
+// raw/refined resources and components, mirroring FILLABLE_GROUPS
+// (adminCatalog.js) so a player never sees an option the server would
+// reject anyway.
+const MAX_COMBOBOX_RESULTS = 40;
+
+export function ItemCatalogCombobox({
+  value,
+  onChange,
+  filterGroups,
+  ariaLabel,
+  placeholder = "Type to search items…",
+  disabled = false
+}: {
+  value: CatalogItem | null;
+  onChange: (item: CatalogItem | null) => void;
+  filterGroups?: Set<string>;
+  ariaLabel: string;
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  const [items, setItems] = useState<CatalogItem[]>([]);
+  const [query, setQuery] = useState(value?.name || "");
+  const [open, setOpen] = useState(false);
+  const [highlighted, setHighlighted] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const listId = useMemo(() => `item-combobox-list-${Math.random().toString(36).slice(2)}`, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadFullCatalog().then((loaded) => { if (!cancelled) setItems(loaded); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Keeps the visible text in sync when a parent clears the selection (e.g.
+  // after a successful give/fill resets the form) without fighting the
+  // user's own typing the rest of the time -- only reacts to value becoming
+  // null/changing identity from outside, not to local query edits.
+  useEffect(() => {
+    setQuery(value?.name || "");
+  }, [value]);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const pool = filterGroups ? items.filter((item) => item.group && filterGroups.has(item.group)) : items;
+  const term = query.trim().toLowerCase();
+  const results = (term
+    ? pool.filter((item) => item.name.toLowerCase().includes(term))
+    : pool
+  ).slice(0, MAX_COMBOBOX_RESULTS);
+
+  function choose(item: CatalogItem) {
+    onChange(item);
+    setQuery(item.name);
+    setOpen(false);
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (!open && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      setOpen(true);
+      return;
+    }
+    if (!open) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setHighlighted((current) => Math.min(current + 1, results.length - 1));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHighlighted((current) => Math.max(current - 1, 0));
+    } else if (event.key === "Enter") {
+      if (results[highlighted]) {
+        event.preventDefault();
+        choose(results[highlighted]);
+      }
+    } else if (event.key === "Escape") {
+      setOpen(false);
+    }
+  }
+
+  return <div className="item-combobox" ref={containerRef}>
+    <input
+      type="text"
+      role="combobox"
+      aria-expanded={open}
+      aria-controls={listId}
+      aria-autocomplete="list"
+      aria-label={ariaLabel}
+      className="item-combobox-input"
+      value={query}
+      placeholder={placeholder}
+      disabled={disabled}
+      onChange={(event) => {
+        setQuery(event.target.value);
+        setHighlighted(0);
+        setOpen(true);
+        // Typing after a selection un-commits it -- the previously chosen
+        // item's id must never be submitted alongside now-different text,
+        // which would silently give/fill the wrong item.
+        if (value) onChange(null);
+      }}
+      onFocus={() => setOpen(true)}
+      onKeyDown={handleKeyDown}
+    />
+    {open && <ul className="item-combobox-list" id={listId} role="listbox">
+      {results.map((item, index) => (
+        <li
+          key={item.id}
+          role="option"
+          aria-selected={index === highlighted}
+          className={index === highlighted ? "highlighted" : ""}
+          onMouseDown={(event) => { event.preventDefault(); choose(item); }}
+          onMouseEnter={() => setHighlighted(index)}
+        >
+          <CatalogItemThumb item={item} small />
+          <span>
+            <strong>{item.name}</strong>
+            {item.category && <small>{titleCase(item.category)}</small>}
+          </span>
+        </li>
+      ))}
+      {results.length === 0 && <li className="item-combobox-empty" aria-disabled="true">
+        {term ? "No matching items." : "Start typing to search…"}
+      </li>}
+    </ul>}
   </div>;
 }
 
