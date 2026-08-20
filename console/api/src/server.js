@@ -90,6 +90,11 @@ const auth = createAuth(config);
 // constructing a second one for the same file would defeat serialization).
 const secondFactor = createSecondFactorStore({ filePath: config.secondFactorFile });
 const nowSeconds = () => Math.floor(Date.now() / 1000);
+// Restricted second-factor setup scopes (RFC §4 enrollment, §2.3 recovery
+// re-setup). Both are confined by the allowlist guard to the /2fa/* endpoints;
+// they differ only in how /2fa/confirm persists (enroll = if-absent, resetup =
+// overwrite an existing factor whose device was lost).
+const SETUP_SCOPES = new Set(["enroll", "resetup"]);
 const loginRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
@@ -500,7 +505,7 @@ async function handleApi(req, res) {
       // must route to setup, not render the console (UI can also treat any
       // enrollmentRequired 403 as the same signal).
       scope: session?.scope || null,
-      enrollmentRequired: session?.scope === "enroll",
+      enrollmentRequired: SETUP_SCOPES.has(session?.scope),
       csrfToken: session?.csrf || null,
       config: publicConfig(config),
     });
@@ -549,14 +554,35 @@ async function handleApi(req, res) {
       audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: true, enrollment: true });
       return json(res, 200, { enrollmentRequired: true, csrfToken: session.csrf });
     }
-    // Enrolled: a TOTP code must accompany the password. A missing code is not a
-    // failed attempt (the password was right) -- prompt for the second factor.
-    // It IS audited: a correct-password/no-device request is a compromised-
-    // password signal worth a trail (no recordFailure, so no legit-user lockout).
+    // Enrolled: a TOTP code OR a recovery code must accompany the password.
     const totpCode = String(body.totpCode || "").trim();
-    if (!totpCode) {
+    const recoveryCode = String(body.recoveryCode || "").trim();
+    if (!totpCode && !recoveryCode) {
+      // A missing second factor is not a failed attempt (the password was right)
+      // -- prompt for it. It IS audited: a correct-password/no-device request is
+      // a compromised-password signal worth a trail (no recordFailure, so no
+      // legit-user lockout).
       audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: false, reason: "totp_missing" });
-      return json(res, 401, { totpRequired: true, error: "Enter your authenticator code to finish signing in." });
+      return json(res, 401, { totpRequired: true, error: "Enter your authenticator code, or use a recovery code if you have lost your device." });
+    }
+    if (recoveryCode) {
+      // Recovery login (RFC §2.3): password + one unused recovery code. The code
+      // substitutes for the TOTP factor ONLY, never the password. Because the
+      // operator's authenticator is presumed lost, a successful recovery login
+      // does NOT grant a normal session -- it issues a restricted re-setup
+      // session that forces enrolling a fresh TOTP secret (and regenerates the
+      // recovery-code set), per §2.3.
+      const consumed = await secondFactor.consumeRecoveryCode(recoveryCode);
+      if (!consumed.ok) {
+        loginRateLimiter.recordFailure(rateKey);
+        audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: false, reason: `recovery_${consumed.reason}` });
+        return json(res, 401, { recoveryFailed: true, error: "That recovery code was not accepted. Check for typos, or use a different unused code." });
+      }
+      loginRateLimiter.recordSuccess(rateKey);
+      const session = auth.makeSession({ tier: "enroll", scope: "resetup", ttlMs: config.enrollmentSessionTtlMs, renewable: false });
+      setSessionCookie(res, session, config, { maxAgeSeconds: Math.floor(config.enrollmentSessionTtlMs / 1000) });
+      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.recovery-code-consumed", { ok: true });
+      return json(res, 200, { resetupRequired: true, csrfToken: session.csrf });
     }
     const verify = await secondFactor.verifyTotpToken(totpCode, nowSeconds());
     if (!verify.ok) {
@@ -580,7 +606,7 @@ async function handleApi(req, res) {
   // pure overhead.
   if (config.consoleTotpEnabled) {
     const enrollSession = auth.readSession(req);
-    if (enrollSession && enrollSession.scope === "enroll") {
+    if (enrollSession && SETUP_SCOPES.has(enrollSession.scope)) {
       const ENROLL_ALLOWED = new Set([
         "/api/auth/2fa/setup",
         "/api/auth/2fa/confirm",
@@ -626,22 +652,29 @@ async function handleApi(req, res) {
       audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: "invalid_code" });
       return json(res, 401, { error: "That code was not accepted. Check your device's clock and enter the current code." });
     }
-    const enrolled = await secondFactor.enroll(session.pendingTotpSecret);
-    if (!enrolled.ok) {
-      // already_configured: another session enrolled first. End this one; the
-      // operator logs in normally with the factor that won.
+    // First-time enrollment uses enroll() (create-if-absent, so a concurrent
+    // enrollment can't be clobbered); recovery re-setup uses commit() (the factor
+    // already exists but its device is lost, so overwrite the secret and issue a
+    // fresh recovery-code set, invalidating any remaining old codes -- §2.3).
+    const isResetup = session.scope === "resetup";
+    const result = isResetup
+      ? await secondFactor.commit(session.pendingTotpSecret)
+      : await secondFactor.enroll(session.pendingTotpSecret);
+    if (!result.ok) {
+      // enroll() only: already_configured -- another session enrolled first. End
+      // this one; the operator logs in with the factor that won.
       auth.invalidateSession(session.id);
       clearSessionCookie(res, config);
-      audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: enrolled.reason });
+      audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: result.reason });
       return json(res, 409, { error: "Two-factor was already set up on this console. Sign in again with your authenticator." });
     }
-    // Commit succeeded: show the recovery codes ONCE, end the enrollment session,
-    // and require a fresh password+TOTP login.
+    // Succeeded: show the recovery codes ONCE, end the setup session, and require
+    // a fresh password+TOTP login.
     auth.invalidateSession(session.id);
     clearSessionCookie(res, config);
-    audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: true });
-    audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "settings.totp-setup", { ok: true });
-    return json(res, 200, { enrolled: true, recoveryCodes: enrolled.codes });
+    audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: true, resetup: isResetup });
+    audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), isResetup ? "settings.totp-regenerated" : "settings.totp-setup", { ok: true });
+    return json(res, 200, { [isResetup ? "reconfigured" : "enrolled"]: true, recoveryCodes: result.codes });
   }
   if (path === "/api/auth/me") {
     const session = auth.requireAuth(req, res);
@@ -659,7 +692,7 @@ async function handleApi(req, res) {
       },
       scope: session.scope || null,
       linkedCharacters,
-      allowedActions: session.scope === "enroll" ? [] : resolveAllowedActions(session.tier || "owner")
+      allowedActions: SETUP_SCOPES.has(session.scope) ? [] : resolveAllowedActions(session.tier || "owner")
     });
   }
   if (path === "/api/auth/characters" && req.method === "GET") {
@@ -5131,7 +5164,7 @@ function sanitizedUrl(req, path) {
 // it) or null after writing the response.
 function requireEnrollmentSession(req, res) {
   const session = auth.readSession(req);
-  if (!session || session.scope !== "enroll") {
+  if (!session || !SETUP_SCOPES.has(session.scope)) {
     json(res, 403, { error: "Sign in to begin two-factor setup." });
     return null;
   }
