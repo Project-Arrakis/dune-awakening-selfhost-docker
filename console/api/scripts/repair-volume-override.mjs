@@ -64,7 +64,23 @@ const repoRoot = resolve(process.env.DUNE_DOCKER_DIR || process.env.RUNTIME_DIR 
 const catalog = JSON.parse(readFileSync(resolve(repoRoot, "runtime/data/admin-items.json"), "utf8"));
 const volumeByTemplateId = new Map();
 for (const item of catalog) {
-  if (item && item.id) volumeByTemplateId.set(String(item.id), Number(item.volume) || 0);
+  if (!item || !item.id) continue;
+  // Only set a Map entry when this item actually HAS a catalogued volume --
+  // `Number(item.volume) || 0` (the previous version of this line) could
+  // not distinguish "no volume field at all" (NaN, uncatalogued) from a
+  // real, explicit `volume: 0` entry, both collapsing to 0. That made the
+  // first pass below "correct" an uncatalogued item's real stored
+  // volume_override to 0 instead of leaving it alone -- reproduced live
+  // against dune-dev (issue #413): two real items with no `volume` field
+  // (Combat_Heavy_Unique_PowerEfficient_Gloves_06,
+  // Combat_Heavy_Unique_PowerIncrease_Top_06) had their real, non-zero
+  // stored volume_override values flagged for silent overwrite to 0 -- the
+  // exact bug class #396 exists to fix, reintroduced by this repair script
+  // itself. Leaving no Map entry for an uncatalogued item makes `.get()`
+  // correctly return `undefined`, routing it into the existing
+  // "unknownTemplate, leave untouched" path below instead.
+  const volume = Number(item.volume);
+  if (Number.isFinite(volume) && volume >= 0) volumeByTemplateId.set(String(item.id), volume);
 }
 
 const db = createDb({ repoRoot });
