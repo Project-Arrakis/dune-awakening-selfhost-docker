@@ -43,7 +43,22 @@ export function createHandoff(config) {
   if (missing.length > 0) {
     return { ...disabledHandoff(), misconfigured: true, missing };
   }
+  // Presence alone is not enough: a typo'd scheme or garbage URL would
+  // boot a live handoff that can never resolve -- the same silent-deny
+  // failure mode the presence check exists to prevent.
+  if (!isUsableHttpUrl(botUrl)) {
+    return { ...disabledHandoff(), misconfigured: true, missing: [], invalid: ["botUrl"] };
+  }
   return liveHandoff(config);
+}
+
+function isUsableHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 // ---- Signature helpers (also exported for tests) ----
@@ -129,7 +144,7 @@ function liveHandoff(config) {
       return { tier: "", reason: "bad_signature" };
     }
 
-    if (!isFresh(payloadCheck.payload, MAX_HANDOFF_AGE_MS)) {
+    if (!isFresh(payloadCheck.payload, MAX_HANDOFF_AGE_MS, now)) {
       return { tier: "", reason: "stale_handoff" };
     }
 
