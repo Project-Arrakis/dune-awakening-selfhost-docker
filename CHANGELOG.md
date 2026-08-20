@@ -24,9 +24,11 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   `docs/console/base-inventory.md`'s curation note before adding more) and
   enforced everywhere the console inserts item rows, case-insensitively:
   Storage/Base-container Give and Fill and player Give **split** an
-  oversized quantity across multiple rows of at most one full stack each
-  (bounded by the container's remaining slots and a 50-row cap shared by
-  the whole operation, including across a Give Multiple batch), while the
+  oversized quantity across full stacks plus one final remainder stack,
+  completing in one action bounded by the container's real capacity
+  (remaining slots/volume; a 1,000-row runaway backstop shared by the
+  whole operation, including across a Give Multiple batch, exists only to
+  stop pathological million-row transactions), while the
   slot-grid Add Item path **clamps** to one full stack, matching its
   deliberate one-row-one-slot placement. Responses report the outcome
   honestly: `requested`/`given`/`clamped` plus new `stacks`,

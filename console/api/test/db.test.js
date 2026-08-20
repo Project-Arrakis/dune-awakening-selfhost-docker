@@ -5235,9 +5235,9 @@ test("storage give-item validates capacity and inserts parameterized item rows",
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
   assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 0, 29]);
-  const positionCall = calls.find((call) => call.text.includes("generate_series"));
-  assert.ok(positionCall, "give-item must use the high-end position query, not the plain lowest-next-free one");
-  assert.deepEqual(positionCall.values, [7, 30]);
+  const positionCall = calls.find((call) => call.text === "select position_index from dune.items where inventory_id = $1");
+  assert.ok(positionCall, "give-item must read the occupied-slot set once and claim the highest free in-range slot from it");
+  assert.deepEqual(positionCall.values, [7]);
 });
 
 // The fallback path: an uncapped/unknown-capacity container (max_item_count
@@ -5256,7 +5256,7 @@ test("storage give-item falls back to lowest-next-free position when max_item_co
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
   assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 0, 2]);
-  assert.ok(!calls.some((call) => call.text.includes("generate_series")), "must not run the high-end query when max_item_count is 0");
+  assert.ok(!calls.some((call) => call.text === "select position_index from dune.items where inventory_id = $1"), "must not read the occupied set when max_item_count is 0 -- the max+1 fallback applies");
 });
 
 // Found during code review (2026-08-19): nextHighPositionIndex's own
@@ -5276,11 +5276,11 @@ test("give-item throws rather than silently exceeding capacity when nextHighPosi
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 2, max_item_volume: 0 }],
     countRows: [{ count: 1 }],
-    // null makes the mock's generate_series branch return no rows, matching
-    // "every slot below max_item_count is already claimed" -- the mock's
-    // own max(position_index) fallback always returns 2, which is >= this
-    // test's max_item_count (2), so the guard must trip.
-    highPositionRowsSequence: [null]
+    // Every slot below max_item_count is already claimed even though the
+    // count looks like there is room (corrupted position data + stale
+    // count -- the one scenario that breaks the pigeonhole argument), so
+    // the claimer must throw rather than exceed the range.
+    existingPositionIndexRows: [0, 1]
   });
   await assert.rejects(
     () => giveItemToBaseContainer(db, 16836, 42, { templateId: "WaterBottle_1", quantity: 1 }),
@@ -5877,7 +5877,6 @@ test("storage give-item splits a quantity above the item's catalog stack size in
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
     countRows: [{ count: 1 }],
-    highPositionRowsSequence: [29, 28, 27],
     insertedRowsSequence: [
       { id: 601, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 29, inventory_id: 7 },
       { id: 602, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 28, inventory_id: 7 },
@@ -5904,7 +5903,6 @@ test("storage give-item clamps a split to the container's remaining slots and re
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
     countRows: [{ count: 28 }],
-    highPositionRowsSequence: [29, 28],
     insertedRowsSequence: [
       { id: 604, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 29, inventory_id: 7 },
       { id: 605, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 28, inventory_id: 7 }
@@ -5920,11 +5918,13 @@ test("storage give-item clamps a split to the container's remaining slots and re
   assert.deepEqual(inserts.map((call) => call.values[2]), [500, 500]);
 });
 
-test("storage give-item cut by the per-operation stack-row cap reports the stack-rows reason and a repeat hint", async () => {
-  // Uncapped container: 100,000 requested at 500/stack needs 200 rows; the
-  // 50-row cap gives 25,000. The container is NOT full -- the message must
-  // say the cap stopped it and that repeating adds more, not imply the
-  // request "didn't fit".
+test("storage give-item completes a realistic oversized request in one operation, full stacks plus remainder", async () => {
+  // Per explicit operator direction (2026-08-20): a give/fill must compute
+  // the number of full stacks plus one final remainder stack and complete
+  // in ONE action bounded only by the container's real capacity -- never
+  // stop partway at an artificial cap and tell the operator to rerun.
+  // 100,000 at 500/stack = 200 full stacks, well under the 1,000-row
+  // runaway backstop.
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 0 }],
@@ -5932,10 +5932,27 @@ test("storage give-item cut by the per-operation stack-row cap reports the stack
     insertedRowsSequence: [{ id: 671, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 29, inventory_id: 7 }]
   });
   const result = await giveItemToStorage(db, 222, { templateId: "MelangeSpice", quantity: 100000 });
-  assert.equal(result.given, 25000);
+  assert.equal(result.given, 100000);
+  assert.equal(result.clamped, false);
+  assert.equal(result.stacks, 200);
+  assert.equal(calls.filter((call) => call.text.includes("insert into dune.items")).length, 200);
+});
+
+test("storage give-item hitting the 1,000-row runaway backstop still reports it honestly", async () => {
+  // Only a pathological request reaches the backstop: 1,000,000 at
+  // 500/stack needs 2,000 rows. The backstop protects the database from a
+  // runaway transaction; the honest stack-rows report is retained for it.
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [{ id: 672, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 29, inventory_id: 7 }]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "MelangeSpice", quantity: 1000000 });
+  assert.equal(result.given, 500000);
   assert.equal(result.clamped, true);
   assert.equal(result.clampReason, "stack-rows");
-  assert.match(String(result.message), /50-stack per-operation limit/);
+  assert.match(String(result.message), /1,?000-stack per-operation limit/);
   assert.match(String(result.message), /repeat/i);
 });
 
@@ -5948,7 +5965,6 @@ test("storage give-item enforces the stack limit for a case-variant of a catalog
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
     countRows: [{ count: 1 }],
-    highPositionRowsSequence: [29, 28, 27],
     insertedRowsSequence: [{ id: 681, template_id: "melangespice", stack_size: 500, quality_level: 0, position_index: 29, inventory_id: 7 }]
   });
   const result = await giveItemToStorage(db, 222, { templateId: "melangespice", quantity: 1200 });
@@ -5957,28 +5973,27 @@ test("storage give-item enforces the stack limit for a case-variant of a catalog
   assert.deepEqual(inserts.map((call) => call.values[2]), [500, 500, 200]);
 });
 
-test("storage fill-item to capacity splits into stack-size rows and caps the row count", async () => {
-  // Uncapped container (no slot or volume limit): fill-to-capacity for a
-  // stack-capped item now gives 50 full stacks (the per-operation row cap,
-  // matching the existing 50-item batch bound) instead of the previous
-  // single 1,000,000-unit row.
+test("storage fill-item to capacity splits into stack-size rows bounded by the runaway backstop", async () => {
+  // Uncapped container with no volume data: fill-to-capacity for a
+  // stack-capped item gives full stacks up to the 1,000-row runaway
+  // backstop instead of the previous single 1,000,000-unit row.
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 0 }],
     countRows: [{ count: 1 }],
-    insertedRowsSequence: Array.from({ length: 50 }, (_, index) => (
+    insertedRowsSequence: Array.from({ length: 1000 }, (_, index) => (
       { id: 700 + index, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 2 + index, inventory_id: 7 }
     ))
   });
   const result = await fillItemToStorage(db, "/tmp", 222, { templateId: "MelangeSpice", quantity: 0, itemVolume: 0.2 });
-  assert.equal(result.given, 25000);
+  assert.equal(result.given, 500000);
   assert.equal(result.requested, null);
-  assert.equal(result.stacks, 50);
+  assert.equal(result.stacks, 1000);
   const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
-  assert.equal(inserts.length, 50);
+  assert.equal(inserts.length, 1000);
   assert.ok(inserts.every((call) => call.values[2] === 500));
-  assert.equal(inserts[0].values[4], 2, "fill keeps its lowest-next-free position convention for the first stack");
-  assert.equal(inserts[49].values[4], 51, "later stacks take consecutive positions after the first");
+  assert.equal(inserts[0].values[4], 2, "uncapped fill keeps its max+1 position convention for the first stack");
+  assert.equal(inserts[999].values[4], 1001, "later stacks take consecutive positions after the first");
 });
 
 test("base container fill-item splits an explicit quantity above the stack size without reporting a clamp", async () => {
@@ -6037,7 +6052,7 @@ test("fill-item to capacity cut by the stack-row cap reports clamped with a stac
     insertedRowsSequence: [{ id: 660, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 2, inventory_id: 7 }]
   });
   const result = await fillItemToStorage(db, "/tmp", 222, { templateId: "MelangeSpice", quantity: 0, itemVolume: 0.2 });
-  assert.equal(result.given, 25000);
+  assert.equal(result.given, 500000);
   assert.equal(result.clamped, true, "a row-cap cut is not 'as much as fit' -- it must be reported");
   assert.equal(result.clampReason, "stack-rows");
 });
@@ -6145,13 +6160,15 @@ test("player give-item clamped by free slots reports the shortfall in its own me
 // must be per OPERATION in the batch path too -- previously it was per
 // entry, letting a 50-entry batch insert up to 2,500 rows in one
 // transaction under the inventory lock.
-test("give-multiple-items shares one 50-row budget across the whole batch", async () => {
+test("give-multiple-items completes realistic split entries in one batch and shares the runaway backstop", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 0 }],
     countRows: [{ count: 1 }],
     insertedRowsSequence: [{ id: 701, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 2, inventory_id: 7 }]
   });
+  // Realistic case first: both split entries and the plain one complete
+  // fully in one batch (40 + 20 + 1 rows, far under the shared backstop).
   const result = await giveMultipleItemsToBaseContainer(db, 16836, 42, {
     items: [
       { templateId: "MelangeSpice", quantity: 20000 },
@@ -6159,11 +6176,36 @@ test("give-multiple-items shares one 50-row budget across the whole batch", asyn
       { templateId: "AzuriteOre", quantity: 5 }
     ]
   });
-  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
-  assert.equal(inserts.length, 50, "40 rows for entry 1 + 10 rows for entry 2 exhausts the shared budget");
+  assert.equal(calls.filter((call) => call.text.includes("insert into dune.items")).length, 61);
   assert.equal(result.results[0].given, 20000);
+  assert.equal(result.results[1].given, 10000);
+  assert.equal(result.results[2].given, 5);
+  assert.ok(result.results.every((entry) => entry.attempted && !entry.clamped));
+});
+
+test("give-multiple-items shares the 1,000-row runaway backstop across the whole batch", async () => {
+  // Pathological batch: entry 1 needs 800 rows, entry 2 needs 400 -- only
+  // 200 remain in the SHARED budget (previously each entry had its own,
+  // allowing up to 50 x 1,000 rows in one transaction); entry 3 is never
+  // attempted, with a reason naming the cap rather than a full container.
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [{ id: 702, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 2, inventory_id: 7 }]
+  });
+  const result = await giveMultipleItemsToBaseContainer(db, 16836, 42, {
+    items: [
+      { templateId: "MelangeSpice", quantity: 400000 },
+      { templateId: "MelangeSpice", quantity: 200000 },
+      { templateId: "AzuriteOre", quantity: 5 }
+    ]
+  });
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 1000, "800 rows for entry 1 + 200 rows for entry 2 exhausts the shared backstop");
+  assert.equal(result.results[0].given, 400000);
   assert.equal(result.results[0].clamped, false);
-  assert.equal(result.results[1].given, 5000, "entry 2 gets only the 10 rows left in the budget");
+  assert.equal(result.results[1].given, 100000, "entry 2 gets only the 200 rows left in the budget");
   assert.equal(result.results[1].clamped, true);
   assert.equal(result.results[2].attempted, false, "budget exhausted -- the batch stops");
   assert.match(String(result.results[2].reason), /per-operation stack-row limit|stack-row/i, "the stop reason must name the cap, not claim the container is full");

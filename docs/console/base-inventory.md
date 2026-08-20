@@ -585,8 +585,11 @@ left" genuinely cannot be partially satisfied and remains a hard rejection (`"St
 count"`). For an item **with** catalogued stack data (e.g. `MelangeSpice` at 500/stack), an oversized
 quantity is **split across multiple rows of at most one full stack each** — the game engine itself enforces
 per-item stack limits (the generator-refill path always respected them; give/fill now does too), so each
-stack row consumes its own slot, and the split is bounded by the container's remaining slots and a 50-row
-per-operation cap (shared across a whole Give Multiple batch, matching its 50-item bound). The response
+stack row consumes its own slot, and the split completes in **one action** bounded by the container's real
+capacity (remaining slots/volume) — full stacks plus one final remainder stack, per explicit operator
+direction (2026-08-20). A 1,000-row runaway backstop (shared across a whole Give Multiple batch) exists
+solely to stop pathological transactions (e.g. 1,000,000 units of a 1-per-stack item); realistic
+operations never reach it. The response
 carries `stacks` (row count) and `insertedStacks` (all rows) alongside the pre-existing `inserted` (the
 first row), plus `clampReason` distinguishing WHY a shortfall happened — `"volume"` and `"slots"` mean the
 container's real capacity bound it (final), `"stack-rows"` means only the per-operation cap did (the
@@ -600,9 +603,11 @@ case clamping cannot help: truly zero room left, where even 1 unit does not fit.
 (`nextHighPositionIndex`, the 2026-08-19 collision mitigation). Fill and player Give — which previously used
 `max(position_index) + 1` — now claim the **lowest free in-range** slots for a slot-capped inventory from a
 one-time occupied-set read (the same pigeonhole-guarded pattern Give Multiple's `claimPositionIndex` uses),
-because after any high-end Give, `max + 1` starts **at** `max_item_count` and a 50-row split would have
-written an entire operation's rows outside the engine's slot grid. Uncapped inventories keep `max + 1`,
-which cannot go out of range.
+because after any high-end Give, `max + 1` starts **at** `max_item_count` and a split would have written an
+entire operation's rows outside the engine's slot grid. Give also claims from the same one-time
+occupied-set read now (replacing its per-row `generate_series` re-query — one round trip per operation
+instead of two per stack row under the inventory lock). Uncapped inventories keep `max + 1`, which cannot
+go out of range.
 
 **Curating `stackSize` values:** every value added to `admin-items.json` must have a **stated, verified
 source** — read the limit from the live game (hover an item's full stack in-game, or observe the largest
