@@ -153,6 +153,7 @@ export const ROUTE_ACTIONS = {
 
   // --- Vehicles ---
   "GET /api/vehicles":                         "vehicles:read",
+  "GET /api/vehicles/permission-candidates":   "vehicles:read",
 
   // --- Exchange (Market Board) — read-only board + console-local filter config ---
   "GET /api/exchange/items":                   "exchange:read",
@@ -172,6 +173,10 @@ export const ROUTE_ACTIONS = {
   "POST /api/exchange/market/seed/schedule":   "exchange:market-write",
   "POST /api/exchange/market/buyback/run":     "exchange:market-write",
   "POST /api/exchange/market/seed/run":        "exchange:market-write",
+  "POST /api/exchange/market/seed/clear":      "exchange:market-write",
+  "GET /api/exchange/market/items":            "exchange:market",
+  "GET /api/exchange/market/items/catalog":    "exchange:market",
+  "POST /api/exchange/market/items":           "exchange:market-write",
 
   // --- Players (mutations) ---
   "POST /api/players/kick-all-online":         "players:kick-all",
@@ -331,6 +336,9 @@ export const REGEX_ACTIONS = [
   // Bases (parameterized)
   ["/api/bases/", "bases:read"],
 
+  // Vehicles (parameterized)
+  ["/api/vehicles/", "vehicles:read"],
+
   // Storage (parameterized)
   ["/api/storage/", "storage:read"],
 
@@ -364,6 +372,8 @@ export const REGEX_ACTIONS_BY_METHOD = {
   "POST /api/bases/":      "bases:mutate",
   "DELETE /api/bases/":    "bases:mutate",
   "PUT /api/bases/":       "bases:mutate",
+
+  "PUT /api/vehicles/":    "vehicles:mutate",
 
   "POST /api/storage/":    "storage:mutate",
 
@@ -414,7 +424,44 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // to fabricate them. Note this entry is also what keeps the route off the
   // "POST /api/bases/" → bases:mutate prefix rule; without it the route would
   // resolve to bases:mutate silently rather than failing closed.
-  { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items$/, action: "bases:add-item" }
+  { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items$/, action: "bases:add-item" },
+  // DELETE /api/bases/{baseId}/containers/{placeableId}/items — deleting
+  // several selected stacks in one call, and .../all-items — clearing every
+  // item in the container. Same consent argument as bases:delete-item above,
+  // same narrow action so a policy granting bases:delete-item does not
+  // silently also grant bulk/delete-all destruction (and vice versa) without
+  // being written that way on purpose.
+  //
+  // Named bases:bulk-delete-items rather than the more obvious
+  // bases:delete-items deliberately (issue #351, found during PR #349's own
+  // Layer 3 audit, Architect hat): policy.js's matchAction() supports a
+  // "prefix-*" wildcard style where "bases:delete-item*" matches ANY action
+  // starting with that string, including "bases:delete-items" -- so a
+  // hand-authored policy using that wildcard style near bases:delete-item
+  // (e.g. intending "just delete-item, with room to grow") would have
+  // silently and non-obviously also granted bulk/delete-all destruction.
+  // bases:bulk-delete-items shares no string prefix with bases:delete-item,
+  // so no "-*" wildcard pattern can match both. No shipped default policy
+  // used the old name (this action was still unreleased when found), so this
+  // is a rename with zero migration impact, not a breaking change for any
+  // operator's existing hand-authored policy.
+  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items$/, action: "bases:bulk-delete-items" },
+  { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/all-items$/, action: "bases:bulk-delete-items" },
+  // POST /api/bases/{baseId}/containers/{placeableId}/give-item(s) and
+  // fill-item — adding items to a Storage-group container. Own actions for
+  // the same reason bases:delete-item is its own action: base inventory
+  // shipped read-only, so bases:mutate (refills, permission edits) was never
+  // agreed to cover item creation either. Kept separate from each other
+  // (give-item vs fill-item) rather than one combined "bases:add-item" so a
+  // policy author can grant/revoke them independently, even though, as of
+  // 2026-08-19, Give and Fill are both restricted to the same
+  // raw_resource/refined_resource/component groups (FILLABLE_GROUPS) --
+  // Give previously accepted any catalog item, corrected after a real
+  // catalog item ("Robe of the Sisterhood", clothing) showed up in the Give
+  // combobox despite being out of scope for this feature.
+  { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/give-item$/, action: "bases:give-item" },
+  { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/give-items$/, action: "bases:give-item" },
+  { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/fill-item$/, action: "bases:fill-item" }
 ];
 
 // ---- Action resolution ----

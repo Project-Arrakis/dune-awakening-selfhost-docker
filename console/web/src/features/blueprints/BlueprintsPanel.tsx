@@ -242,6 +242,7 @@ export function BlueprintsPanel({ onError, confirmAction, dbPlayerId = "", playe
     setImporting(true);
     let imported = 0;
     const failures: string[] = [];
+    const safetyAdjustments: string[] = [];
     try {
       for (let index = 0; index < importFiles.length; index += 1) {
         const file = importFiles[index];
@@ -250,9 +251,23 @@ export function BlueprintsPanel({ onError, confirmAction, dbPlayerId = "", playe
         form.append("file", file);
         form.append("player_id", dbPlayerId);
         try {
-          const response = await api<{ ok: boolean; message?: string; error?: string }>("/api/blueprints/import", { method: "POST", body: form });
+          const response = await api<{
+            ok: boolean;
+            message?: string;
+            error?: string;
+            removedClaimConsoles?: number;
+            removedPentashields?: number;
+          }>("/api/blueprints/import", { method: "POST", body: form });
           if (!response.ok) throw new Error(response.error || "Import failed");
           imported += 1;
+          const removedClaims = Number(response.removedClaimConsoles) || 0;
+          const removedShields = Number(response.removedPentashields) || 0;
+          if (removedClaims > 0) {
+            safetyAdjustments.push(
+              `${file.name}: removed ${removedClaims} Sub-Fief claim console${removedClaims === 1 ? "" : "s"}`
+              + `${removedShields > 0 ? ` and ${removedShields} linked pentashield row${removedShields === 1 ? "" : "s"}` : ""}.`
+            );
+          }
         } catch (error) {
           failures.push(`${file.name}: ${errorText(error)}`);
         }
@@ -268,13 +283,14 @@ export function BlueprintsPanel({ onError, confirmAction, dbPlayerId = "", playe
         status: "failed",
         title: "Some Blueprints Could Not Be Imported",
         message: `${imported} imported and ${failures.length} failed. A relog is required for imported blueprints to appear in-game.`,
-        details: failures.join("\n")
+        details: [...failures, ...safetyAdjustments].join("\n")
       });
     } else {
       showResult({
         status: "succeeded",
-        title: "Blueprints Imported Successfully",
-        message: `${imported} blueprint${imported === 1 ? " was" : "s were"} added to ${playerName || "the player"}'s inventory. A relog is required.`
+        title: safetyAdjustments.length ? "Blueprints Imported with Safety Adjustments" : "Blueprints Imported Successfully",
+        message: `${imported} blueprint${imported === 1 ? " was" : "s were"} added to ${playerName || "the player"}'s inventory. A relog is required.`,
+        details: safetyAdjustments.length ? safetyAdjustments.join("\n") : undefined
       });
     }
     await load(false);

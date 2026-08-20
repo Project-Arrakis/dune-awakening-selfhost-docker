@@ -374,11 +374,14 @@ FIELD_LABELS = {
 
 # Maps a field id to the client-side ini filename it also must be applied to
 # (players copy the exported client file into their own Saved/Config/WindowsClient/
-# folder). "Engine.ini" values drive client_engine_ini()'s selection below; a
-# "Game.ini" entry only drives the console's "Client Required" badge, since
-# client_game_ini() already exports every saved UserGame value unconditionally.
+# folder). Both client INI generators use this as an explicit allowlist: server-
+# only and unknown Advanced-editor values must never be offered to players.
 CLIENT_FILE_REQUIRED = {
     "vehicle_max_per_player": "Engine.ini",
+    # Funcom's shipped self-host setup template explicitly requires these
+    # building values to match on every player's client.
+    "max_landclaim_segments": "Game.ini",
+    "building_restriction_limits_enabled": "Game.ini",
     "hydration_enabled": "Game.ini",
     "water_consumption_rate": "Game.ini",
     "player_starting_water": "Game.ini",
@@ -2281,65 +2284,33 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
 def client_game_ini(profile: dict, map_name: str, partition_id: str | None = None) -> str:
     target_map = canonical_map(map_name) if str(map_name or "").strip() else ""
     target_partition = str(partition_id or "")
-    section_lines: dict[str, list[str]] = {}
-    replace_indexes: dict[tuple[str, str, str], int] = {}
-    retired = known_keys_by_section(RETIRED_USERGAME_FIELDS)
-
-    def block_applies(block: dict) -> bool:
-        scope = block.get("scope")
-        if scope == "Global":
-            return True
-        if scope == "Map":
-            return bool(target_map) and block.get("map") == target_map
-        if scope == "Partition":
-            return bool(target_map and target_partition) and block.get("map") == target_map and str(block.get("partition", "")) == target_partition
-        return False
-
-    for block in sorted_profile_sections(profile.get("sections", [])):
-        if not block_applies(block):
-            continue
-        section = str(block.get("ini_section", ""))
-        if not section:
-            continue
-        entries = section_lines.setdefault(section, [])
-        for raw in block.get("lines", []):
-            parsed = split_ini_assignment(raw)
-            if not parsed:
-                entries.append(raw)
-                continue
-            prefix, key, _ = parsed
-            if key in retired.get(section, set()):
-                continue
-            if key.startswith("Bgd."):
-                continue
-            if prefix:
-                entries.append(raw)
-                continue
-            replacement_key = (section, prefix, key)
-            previous_index = replace_indexes.get(replacement_key)
-            if previous_index is None:
-                replace_indexes[replacement_key] = len(entries)
-                entries.append(raw)
-            else:
-                entries[previous_index] = raw
-
-    if BUILDING_SETTINGS_SECTION in section_lines:
-        section_lines[BUILDING_SETTINGS_SECTION] = strip_unsafe_staking_extension_lines(
-            section_lines[BUILDING_SETTINGS_SECTION]
-        )
     if target_map and target_partition:
-        staking_values = profile_partition_values(profile, target_map, target_partition)
+        values = profile_partition_values(profile, target_map, target_partition)
     elif target_map:
-        staking_values = profile_map_values(profile, target_map)
+        values = profile_map_values(profile, target_map)
     else:
-        staking_values = profile_global_values(profile)
-    append_safe_staking_extension_arrays(section_lines, staking_values)
+        values = profile_global_values(profile)
+
+    section_lines: dict[str, list[str]] = {}
+    for field_id, spec in MAP_FIELDS.items():
+        if CLIENT_FILE_REQUIRED.get(field_id) != "Game.ini":
+            continue
+        section, key, default = spec
+        if not section or not key:
+            continue
+        default_str = "" if default is None else str(default)
+        value = str(values.get(field_id, default_str))
+        if field_value_is_default(field_id, value, default):
+            continue
+        section_lines.setdefault(section, []).append(f"{key}={value}")
 
     target_label = "global UserGame" if not target_map else target_map if not target_partition else f"{target_map} partition {target_partition}"
     return render_ini_sections(section_lines, [
         "; Game.ini for the Dune: Awakening client.",
-        f"; Generated from Docker UserGame.ini values for {target_label}.",
-        "; Copy these sections into Saved/Config/WindowsClient/Game.ini while the game is closed.",
+        f"; Client-required settings generated from Docker UserGame.ini values for {target_label}.",
+        "; Merge these sections into Saved/Config/WindowsClient/Game.ini while the game is closed.",
+        "; Only settings changed from the default and known to require client configuration are listed.",
+        "; Remove keys from an earlier copy when they are no longer listed here.",
     ])
 
 
@@ -2368,10 +2339,11 @@ def client_engine_ini(profile: dict, map_name: str = "", partition_id: str | Non
 
     target_label = "global UserEngine" if not target_map else target_map if not target_partition else f"{target_map} partition {target_partition}"
     return render_ini_sections(section_lines, [
-        "; Experimental: Engine.ini for the Dune: Awakening client.",
-        f"; Generated from Docker UserEngine.ini values for {target_label}.",
-        "; Copy these sections into Saved/Config/WindowsClient/Engine.ini while the game is closed.",
-        "; Only settings changed from the default are listed. Delete any keys from an earlier copy that are not here.",
+        "; Engine.ini for the Dune: Awakening client.",
+        f"; Client-required settings generated from Docker UserEngine.ini values for {target_label}.",
+        "; Merge these sections into Saved/Config/WindowsClient/Engine.ini while the game is closed.",
+        "; Only settings changed from the default and known to require client configuration are listed.",
+        "; Remove keys from an earlier generated copy when they are no longer listed here.",
     ])
 
 
@@ -3019,12 +2991,16 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
     client_game = client_game_ini(reparsed, "Survival_1", "3")
     if "[Global:" in client_game or "[Map:" in client_game or "[Partition:" in client_game:
         raise SystemExit("Client Game.ini export contains scoped Docker profile headers.")
-    if "m_DefaultReconnectGracePeriodSeconds=600" not in client_game or "UnknownGlobal=abc" not in client_game or "CustomPartitionKey=True" not in client_game:
-        raise SystemExit("Client Game.ini export dropped applicable saved UserGame values.")
-    if "m_GlobalXPMultiplier=" in client_game:
-        raise SystemExit("Retired unsupported UserGame field leaked into client Game.ini export.")
-    if "m_MaxNumLandclaimSegments=" in client_game:
-        raise SystemExit("Client Game.ini export included unsaved UserGame defaults.")
+    for server_only in ("m_DefaultReconnectGracePeriodSeconds", "UnknownGlobal", "CustomPartitionKey", "m_GlobalXPMultiplier"):
+        if server_only in client_game:
+            raise SystemExit(f"Server-only UserGame value leaked into client Game.ini export: {server_only}")
+    profile_set_key(reparsed, "global", BUILDING_SETTINGS_SECTION, "m_MaxNumLandclaimSegments", "20")
+    profile_set_key(reparsed, "global", BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "False")
+    matched_building_client_game = client_game_ini(reparsed, "Survival_1", "3")
+    if "m_MaxNumLandclaimSegments=20" not in matched_building_client_game:
+        raise SystemExit("Client-required landclaim segment limit did not carry into the client Game.ini export.")
+    if "m_bBuildingRestrictionLimitsEnabled=False" not in matched_building_client_game:
+        raise SystemExit("Client-required building restriction setting did not carry into the client Game.ini export.")
     profile_set_key(reparsed, "global", "ConsoleVariables", "Bgd.ServerDisplayName", quote_ini_string("Do Not Export"))
     profile_set_key(reparsed, "global", "ConsoleVariables", "Bgd.ServerLoginPassword", quote_ini_string("Do Not Export"))
     bgd_filtered_client_game = client_game_ini(reparsed, "Survival_1", "3")
@@ -3130,20 +3106,20 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         "+m_StakingUnitVerticalExtensionDefaultTimes=120.000000\n"
     )
     compiled_staking = compiled_usergame_ini(legacy_staking, "Survival_1")
-    client_staking = client_game_ini(legacy_staking, "Survival_1")
     expected_staking_values = {
         "m_StakingUnitExtensionDefaultTimes": "2.000000",
         "m_StakingUnitVerticalExtensionDefaultTimes": "3.000000",
     }
-    for rendered in (compiled_staking, client_staking):
-        rendered_lines = rendered.splitlines()
-        for key, expected in expected_staking_values.items():
-            if rendered_lines.count(f"!{key}=ClearArray") != 1:
-                raise SystemExit(f"Safe staking array did not clear the packaged values exactly once: {key}")
-            if rendered_lines.count(f".{key}={expected}") != STAKING_EXTENSION_ARRAY_LENGTH:
-                raise SystemExit(f"Safe staking array did not preserve all extension levels: {key}")
-            if any(line.startswith((f"{key}=", f"+{key}=", f"-{key}=")) for line in rendered_lines):
-                raise SystemExit(f"Unsafe legacy staking array syntax was materialized: {key}")
+    rendered_lines = compiled_staking.splitlines()
+    for key, expected in expected_staking_values.items():
+        if rendered_lines.count(f"!{key}=ClearArray") != 1:
+            raise SystemExit(f"Safe staking array did not clear the packaged values exactly once: {key}")
+        if rendered_lines.count(f".{key}={expected}") != STAKING_EXTENSION_ARRAY_LENGTH:
+            raise SystemExit(f"Safe staking array did not preserve all extension levels: {key}")
+        if any(line.startswith((f"{key}=", f"+{key}=", f"-{key}=")) for line in rendered_lines):
+            raise SystemExit(f"Unsafe legacy staking array syntax was materialized: {key}")
+        if key in client_game_ini(legacy_staking, "Survival_1"):
+            raise SystemExit(f"Server-only staking array leaked into client Game.ini export: {key}")
     cleaned_staking = parse_profile_text(
         f"[Global:{BUILDING_SETTINGS_SECTION}]\n"
         "m_StakingUnitExtensionDefaultTimes=1\n"

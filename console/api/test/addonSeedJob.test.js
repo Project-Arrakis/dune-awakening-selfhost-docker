@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { EDA_EXCHANGE_BOT_ADDON_ID, buildMarketSeedSql, createListedMarketUnitPrice, loadMarketSeedPlan, normalizeSeedSchedule, seedRowCategoryMultiplier, seedRowListingCount, COMMODITY_STACK_CATALOG, COMMODITY_STACK_DEFAULT, COMMODITY_STACK_MAX } from "../src/addonSeedJob.js";
+import { EDA_EXCHANGE_BOT_ADDON_ID, buildBotListingCountSql, buildMarketSeedSql, buildMarketUnseedSql, createListedMarketUnitPrice, loadMarketSeedPlan, normalizeSeedSchedule, seedRowCategoryMultiplier, seedRowListingCount, COMMODITY_STACK_CATALOG, COMMODITY_STACK_DEFAULT, COMMODITY_STACK_MAX } from "../src/addonSeedJob.js";
 
 const REPO_ROOT = resolve(import.meta.dirname, "../../..");
 
@@ -92,6 +92,46 @@ test("rejects augment schematic grades with no matching augmentation item", () =
       () => loadMarketSeedPlan({ repoRoot }),
       /unsupported augment schematic grade: T6_Augment_Armor1_Schematic quality 1/
     );
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("unseed SQL clears only the bot's own orders and reports removal counts", () => {
+  const sql = buildMarketUnseedSql("42");
+  // Targets the bot's 'Revy' actor on the requested exchange only.
+  assert.match(sql, /SELECT id INTO v_owner_id FROM dune\.actors WHERE class = 'Revy' LIMIT 1;/);
+  assert.match(sql, /v_exchange_id := 42;/);
+  assert.match(sql, /DELETE FROM dune\.dune_exchange_orders WHERE owner_id = v_owner_id AND exchange_id = v_exchange_id;/);
+  // Counts what it removed for the run result.
+  assert.match(sql, /GET DIAGNOSTICS v_removed = ROW_COUNT;/);
+  assert.match(sql, /INSERT INTO market_unseed_result/);
+  assert.match(sql, /SELECT removed_listings, removed_items, exchange_id FROM market_unseed_result;/);
+  // Unseed never reseeds and never opens its own transaction (executeUnseedRun
+  // wraps it in db.transaction, like the seed run).
+  assert.doesNotMatch(sql, /INSERT INTO dune\.items/);
+  assert.doesNotMatch(sql, /INSERT INTO dune\.dune_exchange_orders/);
+  assert.doesNotMatch(sql, /^BEGIN;/m);
+  assert.doesNotMatch(sql, /^COMMIT;/m);
+});
+
+test("unseed SQL builders reject malformed exchange ids", () => {
+  for (const bad of ["", "0", "-1", "abc", "1; DROP TABLE dune.items", "9223372036854775808"]) {
+    assert.throws(() => buildMarketUnseedSql(bad), /positive whole number/);
+    assert.throws(() => buildBotListingCountSql(bad), /positive whole number/);
+  }
+  // BIGINT max is still accepted as a decimal string.
+  assert.match(buildBotListingCountSql("9223372036854775807"), /o\.exchange_id = 9223372036854775807/);
+});
+
+test("seed SQL still clears the bot's listings before seeding after the clear was shared with unseed", () => {
+  const repoRoot = makeRepoRoot();
+  try {
+    const plan = loadMarketSeedPlan({ repoRoot });
+    const sql = buildMarketSeedSql(plan, { enabled: true, exchangeId: "7", priceMultiplier: 5 });
+    assert.match(sql, /DELETE FROM dune\.dune_exchange_orders WHERE owner_id = v_owner_id AND exchange_id = v_exchange_id;/);
+    // The seed path's clear does not report counts into the unseed result table.
+    assert.doesNotMatch(sql, /market_unseed_result/);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }

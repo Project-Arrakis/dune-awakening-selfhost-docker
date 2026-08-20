@@ -142,6 +142,8 @@ Imports one or more blueprint JSON files.
 - Player must exist in `dune.player_state`
 - Inventory must exist in `dune.inventories` (type 0)
 - Blueprint must have at least one `instances`, `placeables`, or `pentashields` array
+- `Totem_Small_Placeable` and `Totem_Placeable` claim consoles are removed before import; linked pentashield rows are removed with them
+- A blueprint containing only a claim console is rejected instead of creating an empty Solido item
 - Player can be online — import succeeds with relog warning
 
 **Response**:
@@ -155,9 +157,16 @@ Imports one or more blueprint JSON files.
   "pieces": 2217,
   "placeables": 188,
   "pentashields": 0,
+  "removedClaimConsoles": 0,
+  "removedPentashields": 0,
   "online": false
 }
 ```
+
+Live-base and stored-blueprint exports apply the same claim-console filter. The
+claim console defines ownership and build-area state; restoring it as ordinary
+Solido content can create a duplicate or malformed Sub-Fief claim. The actual
+base structures and ordinary placeables remain in the exported blueprint.
 
 ### DELETE /api/blueprints/:id
 
