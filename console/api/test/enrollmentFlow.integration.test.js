@@ -123,10 +123,16 @@ test("full enrollment: password login -> enroll -> TOTP login, with replay rejec
     assert.equal(login2.status, 401);
     assert.equal((await login2.json()).totpRequired, true);
 
-    // 6. Password + current TOTP -> authenticated.
-    const theCode = codeFor(secret);
+    // 5b. RFC §4: the code just used to CONFIRM enrollment cannot be reused at
+    // the forced first login (its step is seeded as already-consumed).
+    const confirmStepCode = codeFor(secret);
+    const replayConfirm = await api(port, "/api/auth/login", { body: { password: PASSWORD, totpCode: confirmStepCode } });
+    assert.equal(replayConfirm.status, 401, "the confirm-time code is rejected as a replay at first login");
+
+    // 6. Password + the NEXT step's TOTP -> authenticated.
+    const theCode = codeFor(secret, 1);
     const login3 = await api(port, "/api/auth/login", { body: { password: PASSWORD, totpCode: theCode } });
-    assert.equal(login3.status, 200, "password + valid TOTP signs in");
+    assert.equal(login3.status, 200, "password + the next step's TOTP signs in");
     assert.equal((await login3.json()).authenticated, true);
 
     // 7. Replay: the SAME code cannot be reused within its step.
