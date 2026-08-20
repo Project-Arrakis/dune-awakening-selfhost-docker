@@ -74,6 +74,7 @@ try {
     select id, template_id, stack_size, volume_override
     from dune.items
     where volume_override is not null
+      and volume_override <> 0
     order by id`);
 
   let correct = 0;
@@ -146,7 +147,10 @@ try {
       await tx.query("update dune.items set volume_override = $1 where id = $2", [change.to, change.id]);
     }
     if (zeroRows.rows.length > 0) {
-      await tx.query("update dune.items set volume_override = null where volume_override = 0");
+      await tx.query(
+        "update dune.items set volume_override = null where id = any($1::bigint[]) and volume_override = 0",
+        [zeroRows.rows.map((row) => String(row.id))]
+      );
     }
   });
   console.log(`\nApplied ${changes.length + zeroRows.rows.length} correction(s) (${changes.length} recomputed, ${zeroRows.rows.length} cleared to NULL).`);
