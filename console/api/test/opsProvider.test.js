@@ -115,23 +115,28 @@ test("opsCombatProvider returns the real empty shape when player_death_log doesn
 // opsResourcesProvider's own job: wrap the result in { ok, result} and
 // pass `config` through (needed for the real PvP/PvE resolver's
 // subprocess calls) -- a wiring concern, not a data-correctness one.
-test("opsResourcesProvider wraps addonOpsResourcesSummary's result in { ok, result }", async () => {
-  const db = mockDb({ tables: new Set() });
+test("opsResourcesProvider wraps addonOpsResourcesSummary's result in { ok, result } and forwards config", async () => {
+  const db = mockDb({ tables: new Set() }); // no world_partition/resourcefield_state -> both sections empty
   const response = await opsResourcesProvider({ repoRoot: "/tmp", duneScript: "/tmp/dune" }, db);
   assert.equal(response.ok, true);
-  assert.equal(response.result.totalFields, 0);
-  assert.equal(response.result.totalValueRemaining, 0);
+  assert.ok("deepDesert" in response.result);
+  assert.ok("haggaBasin" in response.result);
 });
 
 test("opsResourcesProvider returns the real empty shape (both sections, not a placeholder) when resourcefield_state doesn't exist", async () => {
   const db = mockDb({ tables: new Set() });
   const response = await opsResourcesProvider({}, db);
   assert.equal(response.ok, true);
+  // Issue #245 fix: opsResourcesProvider() now also computes and appends
+  // a top-level totalValueRemaining field (opsProvider.js's own comment:
+  // "so the bot's statsPusher fetchAggregate can populate spice_fields
+  // without needing to know the internal map structure (issue #95)") --
+  // a real, intentional feature this test's expected object was never
+  // updated for. With no instances in either section, the sum is 0.
   assert.deepEqual(response.result, {
-    totalFields: 0,
-    totalValueRemaining: 0,
-    resourcesByMap: [],
-    spiceFieldsBySize: []
+    deepDesert: { summary: { totalActiveFields: 0, totalRemainingSpice: 0, pvpInstances: 0, pveInstances: 0, bySize: [] }, instances: [] },
+    haggaBasin: { summary: { totalActiveFields: 0, totalRemainingSpice: 0, pvpInstances: 0, pveInstances: 0, bySize: [] }, instances: [] },
+    totalValueRemaining: 0
   });
 });
 
@@ -302,8 +307,8 @@ test("opsDashboardProvider aggregates a mix of real data and planned placeholder
   // dedicated test file covers the full instance/PvP-PvE/size-tier
   // behavior with a real mapCombatState.js resolver sandbox.
   assert.equal(response.dashboard.resources.ok, true);
-  assert.equal(response.dashboard.resources.result.totalFields, 3);
-  assert.equal(response.dashboard.resources.result.totalValueRemaining, 100);
+  assert.deepEqual(response.dashboard.resources.result.deepDesert.instances, []);
+  assert.deepEqual(response.dashboard.resources.result.haggaBasin.instances, []);
   assert.equal(response.dashboard.economy.result.totalCurrencyHolders, 1);
   assert.equal(response.dashboard.inventory.result.totalItems, 2);
   assert.equal(response.dashboard.inventory.result.totalCrafted, null);

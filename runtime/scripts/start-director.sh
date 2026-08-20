@@ -269,6 +269,7 @@ docker rm -f dune-director 2>/dev/null || true
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-director \
+  --label "com.docker.compose.project=${DUNE_COMPOSE_PROJECT_NAME}" \
   --network dune-net \
   --restart unless-stopped \
   -p "127.0.0.1:${DIRECTOR_PORT}:11717/tcp" \

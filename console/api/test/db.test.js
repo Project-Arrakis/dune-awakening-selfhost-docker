@@ -6,19 +6,188 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertIdentifier, bigintParam, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
+import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 import {
+  UnsupportedCapabilityError,
+  _resetPlayerTargetCacheForTests,
   _resetRefillPartitionDwellForTests,
+  addBaseContainerItem,
+  addCurrency,
+  addFactionReputation,
+  addGuildMember,
+  addIntel,
+  addSpecializationXp,
+  addonLeadershipPlayers,
+  addonOpsActivitySummary,
+  addonOpsCombatDeaths,
+  addonOpsEconomySummary,
+  addonOpsHealthFarms,
+  addonOpsHealthPlayers,
+  addonOpsHealthSummary,
+  addonOpsHealthSummaryV2,
+  addonOpsInventorySummary,
+  addonOpsPrometheusHealth,
+  addonOpsResourcesSummary,
+  addonOpsSocSummary,
+  adminBuildingMetadata,
+  adminItemMetadata,
+  adminVehicleMetadata,
+  applyLandsraadMilestonePreset,
+  augmentInventoryItem,
+  augmentNewestPlayerItem,
+  baseContainerSlots,
+  baseGeneratorFuelLevels,
+  baseGenerators,
+  baseIsBackedUp,
+  baseMapLocation,
+  basePermissionActor,
+  basePermissionCandidates,
+  basePermissionsSupported,
   baseRefillTarget,
+  baseWater,
+  baseWaterDevices,
+  baseWaterFuelLevels,
   cancelQueuedGeneratorRefill,
+  cancelQueuedWaterRefill,
+  changeDunePassword,
+  characterHasSteamId,
+  cleanupExpiredPendingLinks,
+  columnsFor,
+  completeJourneyNode,
+  completeTutorial,
+  consumePendingAccountLink,
+  consumePendingLink,
+  createPendingAccountLink,
+  createPendingLink,
+  dbStatus,
+  deleteAllBaseContainerItems,
+  deleteBaseContainerItem,
+  deleteInventoryItem,
+  deleteMultipleBaseContainerItems,
+  deletePendingAccountLink,
+  deletePendingLink,
+  demoteGuildMember,
+  disbandGuild,
+  discordPlayerLink,
+  discordPlayerUnlink,
+  exportBaseAsBlueprint,
+  exportRows,
+  fillItemToBaseContainer,
+  fillItemToStorage,
   flushGeneratorRefills,
+  flushWaterRefills,
+  generatorUptimePolicy,
+  getLinkedPlayer,
+  getAllLinkedPlayers,
+  giveItemToBaseContainer,
+  giveItemToPlayer,
+  giveItemToStorage,
+  giveMultipleItemsToBaseContainer,
+  grantAllSpecializationKeystones,
+  grantMaxSpecialization,
+  guildMembers,
+  guildStorageQuery,
+  landsraadOverview,
+  linkAdditionalAccount,
+  listAllPlayers,
+  listBasePermissions,
+  listBases,
+  listGuilds,
+  listLinkedAccounts,
+  listPlayers,
   listQueuedGeneratorRefills,
+  listQueuedWaterRefills,
+  listRoutines,
+  listSchemas,
+  listSpicefieldTypes,
+  listStorage,
+  listTables,
+  liveMapBases,
+  liveMapCapabilities,
+  liveMapConfigPayload,
+  liveMapMarkers,
+  liveMapPartitions,
+  liveMapPlayers,
+  liveMapServices,
+  liveMapStorage,
+  liveMapVehicles,
+  mapCombatPartitionRows,
+  matchSteamIdForCharacter,
+  maxPlayerInventoryItemId,
+  migrateDiscordAdapterSchema,
   observeRefillPartitions,
   partitionRestartTargets,
+  playerBuildingUnlockState,
+  playerCraftingRecipes,
+  playerCurrency,
+  playerFactions,
+  playerIntel,
+  playerInventory,
+  playerInventoryAll,
+  playerInventoryItemIds,
+  playerItemAugmentState,
+  playerJourney,
+  playerOwnedStorageQuery,
+  playerPortalSnapshots,
+  playerPosition,
+  playerProfile,
+  playerProgression,
+  playerResearchItems,
+  playerSolarisCoinTotal,
+  playerSpecs,
+  playerVitals,
+  portalGeneratorFuel,
+  portalStorage,
+  portalVehicles,
+  promoteGuildMember,
   queueGeneratorRefill,
-  supportsGeneratorRefillQueue
+  queueWaterRefill,
+  refillBaseGenerators,
+  refillBaseWater,
+  refuelVehicle,
+  removeGuildMember,
+  repairFactionReputation,
+  repairGear,
+  repairVehicleDecay,
+  resetAllSpecializationKeystones,
+  resetJourneyNode,
+  resetSpecialization,
+  resetTutorial,
+  resolveBuildingDisplayName,
+  resolvePlayerByName,
+  resolvePlayerTarget,
+  routineDefinition,
+  runSql,
+  searchDatabase,
+  searchItemsInContainers,
+  searchItemsInPlayerInventory,
+  setBasePermissions,
+  setDefaultLinkedAccount,
+  setLandsraadPlayerContribution,
+  setPlayerFaction,
+  storageCapabilities,
+  storageItems,
+  supportsGeneratorRefill,
+  supportsGeneratorRefillQueue,
+  supportsWaterRefill,
+  supportsWaterRefillQueue,
+  tableColumns,
+  tableCount,
+  tableExists,
+  tablePreview,
+  teleportOfflinePlayerToCoords,
+  trackPlayerPlaytime,
+  unlinkAdditionalAccount,
+  unlockCraftingRecipe,
+  unlockResearchItem,
+  unsupportedPlayerFeature,
+  updateInventoryItem,
+  updateLandsraadRewardTier,
+  updateLandsraadTaskGoal,
+  updateLandsraadTermTaskGoals,
+  updateSpicefieldType,
+  updateTableRow
 } from "../src/duneDb.js";
-import { addBaseContainerItem, addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteAllBaseContainerItems, deleteBaseContainerItem, deleteInventoryItem, deleteMultipleBaseContainerItems, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, fillItemToBaseContainer, fillItemToStorage, generatorUptimePolicy, giveItemToBaseContainer, giveItemToPlayer, giveItemToStorage, giveMultipleItemsToBaseContainer, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairVehicleDecay, resetJourneyNode, resetTutorial, resolvePlayerTarget, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
-import { listStorage, liveMapBases, liveMapStorage, portalStorage, trackPlayerPlaytime } from "../src/duneDb.js";
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
@@ -4126,15 +4295,27 @@ test("container item add never merges into an existing stack of the same templat
   assert.equal(insertCalls(calls)[0].values[4], 1);
 });
 
-test("container item add leaves a resource stack without invented durability", async () => {
+// CORRECTED 2026-08-19 during upstream reconciliation (issue #366): this
+// test originally came from upstream PR #172 (baseContainerItemAdd), which
+// asserts a resource stack gets a fully empty stats block. That directly
+// contradicts this fork's own, earlier, evidence-based fix (be5081a5,
+// 2026-07-30, see buildItemStats' own comment in duneDb.js): every real,
+// naturally-acquired resource row in this world's actual live database
+// carries a DecayedMaxDurability key (confirmed by diffing a raw insert
+// against a real, engine-verified reference row), and stamping a fully
+// empty stat block onto a resource does NOT match real items -- the
+// opposite of what upstream's test assumed. This fork's addBaseContainerItem
+// (via buildItemStats) deliberately keeps DecayedMaxDurability: 0.0 for
+// resources; only a real MaxDurability/CurrentDurability pair (weapons,
+// clothing) would be "invented" state worth avoiding. Kept as a real,
+// documented fork-specific divergence from upstream, not a silently
+// dropped test.
+test("container item add gives a resource stack the same DecayedMaxDurability-only shape every real resource row carries", async () => {
   const calls = [];
   const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
   await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 300 });
   const stats = JSON.parse(insertCalls(calls)[0].values[5]);
-  // Real ore rows carry an empty stat block. Stamping MaxDurability onto scrap
-  // would invent state the game never wrote, and the read path would then
-  // render a durability bar for it.
-  assert.deepEqual(stats.FItemStackAndDurabilityStats, [[], {}]);
+  assert.deepEqual(stats.FItemStackAndDurabilityStats, [[], { DecayedMaxDurability: 0 }]);
 });
 
 test("container item add gives a weapon full durability without being asked", async () => {
@@ -5664,7 +5845,14 @@ test("player give-item persists selected item grade", async () => {
   assert.ok(insert);
   assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 5, 2]);
   const stats = JSON.parse(insert.values[5]);
-  assert.deepEqual(stats.FCustomizationStats, [[], {}]);
+  // WaterBottle_1 is a plain item (neither weapon nor clothing), so
+  // FCustomizationStats must NOT be present -- confirmed 2026-07-31 by
+  // diffing against a real, engine-verified reference row (a live
+  // adminGiveItemId RCON grant of AzuriteOre) that has no
+  // FCustomizationStats key at all. This test previously asserted the
+  // old, incorrect behavior (an unconditional empty
+  // FCustomizationStats: [[], {}] on every item).
+  assert.equal(stats.FCustomizationStats, undefined);
   assert.equal(stats.FItemStackAndDurabilityStats[1].CurrentDurability, 100);
   assert.equal(stats.FItemStackAndDurabilityStats[1].MaxDurability, 100);
 });
@@ -5750,7 +5938,11 @@ test("player give-item with augments writes normal acquisition metadata when sup
   assert.ok(insert);
   assert.match(insert.text, /is_new/);
   assert.match(insert.text, /acquisition_time/);
-  assert.equal(insert.values[6], false);
+  // is_new must be true, matching dune.items' own column default and a
+  // real, engine-verified reference row (a live adminGiveItemId RCON
+  // grant) -- confirmed 2026-07-31. Was previously hardcoded false for
+  // every admin-inserted item; this test asserted that incorrect value.
+  assert.equal(insert.values[6], true);
   assert.ok(Number(insert.values[7]) > 0);
 });
 
@@ -7139,6 +7331,112 @@ function fakeMutationDb(calls, fixtures = {}) {
   return db;
 }
 
+// ─── characterHasSteamId / matchSteamIdForCharacter ────────────────────────
+// See docs/steam-link-implementation-prompt.md Part 1 and duneDb.js's own
+// comments on both functions for the full design rationale.
+
+function createSteamCharacterDb(fixturePlayers = []) {
+  return {
+    async query(text, values = []) {
+      if (text.includes("from dune.accounts ac") && text.includes("ps.player_controller_id::text = $1") && !text.includes("any(")) {
+        // characterHasSteamId(playerControllerId)
+        const player = fixturePlayers.find((p) => p.player_controller_id === values[0]);
+        const has = Boolean(player?.platform_name?.toLowerCase() === "steam" && player.platform_id);
+        return { rows: has ? [{ "?column?": 1 }] : [], rowCount: has ? 1 : 0 };
+      }
+      if (text.includes("from dune.accounts ac") && text.includes("any($1::text[])")) {
+        // matchSteamIdForCharacter(playerControllerId, steamId64List)
+        const player = fixturePlayers.find((p) => p.player_controller_id === values[1]);
+        const matched = Boolean(
+          player?.platform_name?.toLowerCase() === "steam" &&
+          player.platform_id &&
+          (values[0] || []).includes(player.platform_id)
+        );
+        return { rows: matched ? [{ "?column?": 1 }] : [], rowCount: matched ? 1 : 0 };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    }
+  };
+}
+
+test("characterHasSteamId returns true for a character with a non-empty steam platform_id", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "Steam", platform_id: "76561198000000042" }
+  ]);
+  assert.equal(await characterHasSteamId(db, "42"), true);
+});
+
+test("characterHasSteamId is case-insensitive on platform_name", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "STEAM", platform_id: "76561198000000042" }
+  ]);
+  assert.equal(await characterHasSteamId(db, "42"), true);
+});
+
+test("characterHasSteamId returns false for a non-Steam platform", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "PSN", platform_id: "some-psn-id" }
+  ]);
+  assert.equal(await characterHasSteamId(db, "42"), false);
+});
+
+test("characterHasSteamId returns false for a character with no account row at all", async () => {
+  const db = createSteamCharacterDb([]);
+  assert.equal(await characterHasSteamId(db, "999"), false);
+});
+
+test("characterHasSteamId returns false (not throw) for a missing playerControllerId", async () => {
+  const db = createSteamCharacterDb([]);
+  assert.equal(await characterHasSteamId(db, ""), false);
+  assert.equal(await characterHasSteamId(db, null), false);
+  assert.equal(await characterHasSteamId(db, undefined), false);
+});
+
+test("matchSteamIdForCharacter returns true when the character's Steam ID appears in a multi-element list", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "steam", platform_id: "76561198000000042" }
+  ]);
+  const matched = await matchSteamIdForCharacter(db, "42", [
+    "76561198111111111",
+    "76561198000000042",
+    "76561198222222222"
+  ]);
+  assert.equal(matched, true);
+});
+
+test("matchSteamIdForCharacter returns false for a well-formed but non-matching list", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "steam", platform_id: "76561198000000042" }
+  ]);
+  assert.equal(await matchSteamIdForCharacter(db, "42", ["76561198999999999"]), false);
+});
+
+test("matchSteamIdForCharacter silently ignores malformed SteamID64 entries rather than throwing", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "steam", platform_id: "76561198000000042" }
+  ]);
+  const matched = await matchSteamIdForCharacter(db, "42", [
+    "not-a-steam-id",
+    "12345", // too short
+    "76561198000000042999", // too long
+    "76561198000000042" // the real one, still present
+  ]);
+  assert.equal(matched, true);
+});
+
+test("matchSteamIdForCharacter returns false for an empty or all-malformed list", async () => {
+  const db = createSteamCharacterDb([
+    { player_controller_id: "42", platform_name: "steam", platform_id: "76561198000000042" }
+  ]);
+  assert.equal(await matchSteamIdForCharacter(db, "42", []), false);
+  assert.equal(await matchSteamIdForCharacter(db, "42", ["not-valid", "also-not-valid"]), false);
+});
+
+test("matchSteamIdForCharacter returns false (not throw) for a missing playerControllerId", async () => {
+  const db = createSteamCharacterDb([]);
+  assert.equal(await matchSteamIdForCharacter(db, "", ["76561198000000042"]), false);
+  assert.equal(await matchSteamIdForCharacter(db, null, ["76561198000000042"]), false);
+});
 // --- Generator refill -------------------------------------------------------
 
 // lockDelayMs, when set, holds a newly-acquired FOR UPDATE lock open for that
@@ -7868,4 +8166,87 @@ test("baseGeneratorFuelLevels reports null rather than zero for a base with no g
   // null must not read as "empty" to a caller deciding whether to refill.
   assert.equal(levels.lowestPercent, null);
   assert.equal(levels.deviceCount, 0);
+});
+
+// Issue #245 fix: all three tests below previously called `testDb()`/
+// `closeDb()`, which do not exist anywhere in this codebase (a real,
+// simple ReferenceError, confirmed via a full-tree grep for either
+// identifier's definition). discoverDbConfig()'s own defaults
+// (host/port/user/password/database) already match CI's real Postgres
+// service exactly (see .github/workflows/ci.yml's postgres:17-alpine
+// service on 15432/dune/dune/dune) -- this repo already has an
+// established, working pattern for exactly this kind of real-Postgres
+// integration test (test-support/pgIntegrationDb.js's
+// withIsolatedDatabase()/pgTransactionalDb(), used successfully by
+// basePermissions.integration.test.js, generatorRefill.integration.test.js,
+// and refillBaseWater.integration.test.js), so these three tests now use
+// that instead of inventing a new, one-off helper. Also fixed a secondary
+// issue: the original two "linked chars" tests never inserted a matching
+// dune.player_state row for getAllLinkedPlayers()'s inner join to find,
+// so their `rows.length >= 0` assertions were tautologies that would
+// have passed regardless of correctness -- both now insert a real
+// player_state row and assert the actual expected row content.
+test("real PostgreSQL getAllLinkedPlayers: returns [] for an unlinked Discord user", async (t) => {
+  await withIsolatedDatabase(t, {
+    namePrefix: "dune_get_all_linked_players",
+    unavailableLabel: "the getAllLinkedPlayers test",
+    createFailLabel: "the getAllLinkedPlayers test"
+  }, async (pool) => {
+    await pool.query(`
+      create schema dune;
+      create schema console;
+      create table dune.player_state (player_controller_id text primary key, character_name text);
+      create table console.discord_account_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, is_default boolean default false, linked_at timestamptz default now());
+      create table console.discord_player_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, linked_at timestamptz default now());
+    `);
+    const db = pgTransactionalDb(pool);
+    const rows = await getAllLinkedPlayers(db, "discord-user-nonexistent");
+    assert.deepEqual(rows, []);
+  });
+});
+
+test("real PostgreSQL getAllLinkedPlayers: returns the linked character from discord_account_links", async (t) => {
+  await withIsolatedDatabase(t, {
+    namePrefix: "dune_get_all_linked_players",
+    unavailableLabel: "the getAllLinkedPlayers test",
+    createFailLabel: "the getAllLinkedPlayers test"
+  }, async (pool) => {
+    const userId = "test-discord-123";
+    const cid = "999999999";
+    await pool.query(`
+      create schema dune;
+      create schema console;
+      create table dune.player_state (player_controller_id text primary key, character_name text);
+      create table console.discord_account_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, is_default boolean default false, linked_at timestamptz default now());
+      create table console.discord_player_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, linked_at timestamptz default now());
+    `);
+    await pool.query("insert into dune.player_state (player_controller_id, character_name) values ($1, $2)", [cid, "Chani"]);
+    await pool.query("insert into console.discord_account_links (discord_user_id, player_controller_id, is_default) values ($1, $2, true)", [userId, cid]);
+    const db = pgTransactionalDb(pool);
+    const rows = await getAllLinkedPlayers(db, userId);
+    assert.deepEqual(rows, [{ player_controller_id: cid, character_name: "Chani" }]);
+  });
+});
+
+test("real PostgreSQL getAllLinkedPlayers: returns the linked character from the legacy discord_player_links table", async (t) => {
+  await withIsolatedDatabase(t, {
+    namePrefix: "dune_get_all_linked_players",
+    unavailableLabel: "the getAllLinkedPlayers test",
+    createFailLabel: "the getAllLinkedPlayers test"
+  }, async (pool) => {
+    const userId = "test-legacy-456";
+    const cid = "888888888";
+    await pool.query(`
+      create schema dune;
+      create schema console;
+      create table dune.player_state (player_controller_id text primary key, character_name text);
+      create table console.discord_account_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, is_default boolean default false, linked_at timestamptz default now());
+      create table console.discord_player_links (id bigint generated always as identity primary key, discord_user_id text not null, player_controller_id text not null, linked_at timestamptz default now());
+    `);
+    await pool.query("insert into dune.player_state (player_controller_id, character_name) values ($1, $2)", [cid, "Paul"]);
+    await pool.query("insert into console.discord_player_links (discord_user_id, player_controller_id) values ($1, $2)", [userId, cid]);
+    const db = pgTransactionalDb(pool);
+    const rows = await getAllLinkedPlayers(db, userId);
+    assert.deepEqual(rows, [{ player_controller_id: cid, character_name: "Paul" }]);
+  });
 });

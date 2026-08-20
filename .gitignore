@@ -32,3 +32,4 @@ console/web/dist/
 __pycache__/
 *.pyc
 .security-reports/
+runtime/local-static/

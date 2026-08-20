@@ -1,30 +1,51 @@
 import { useEffect, useState } from "react";
+import { serverApi } from "../../api/server";
+import { type Task } from "../../api/setup";
 import { worldDataApi } from "../../api/worldData";
 import { DataTable } from "../../components/common/DataTable";
 
+type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) => Promise<boolean>;
+
 type StoragePanelProps = {
   onError: (text: string) => void;
-  confirmAction: (message: string) => Promise<boolean>;
+  confirmAction: ConfirmAction;
   formatMutationResult: (result: unknown) => string;
+  waitForTask: (task: Task) => Promise<Task>;
 };
 
-export function StoragePanel({ onError, confirmAction, formatMutationResult }: StoragePanelProps) {
+export function StoragePanel({ onError, confirmAction, formatMutationResult, waitForTask }: StoragePanelProps) {
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Record<string, unknown> | null>(null);
   const [items, setItems] = useState<Record<string, unknown>[]>([]);
   const [itemName, setItemName] = useState("");
+  const [quantityText, setQuantityText] = useState("100");
   const [canGiveItem, setCanGiveItem] = useState(false);
-  const [storageResult, setStorageResult] = useState("Give Item to Storage runs only when the backend verifies the storage schema.");
+  const [canFillItem, setCanFillItem] = useState(false);
+  const [storageResult, setStorageResult] = useState("");
+  const [storageResultIsError, setStorageResultIsError] = useState(false);
+  const [restartStatus, setRestartStatus] = useState("");
+  const [restartRunning, setRestartRunning] = useState(false);
 
   async function load() {
     onError("");
+    setLoading(true);
     try {
       const result = await worldDataApi.storage();
       setRows(result.rows || []);
       setCanGiveItem(Boolean(result.capabilities?.storageGiveItem));
-      if (!result.capabilities?.storageGiveItem) setStorageResult("Storage give-item is unsupported until this database exposes compatible dune.inventories and dune.items insert columns.");
+      setCanFillItem(Boolean(result.capabilities?.storageFillItem));
+      setStorageResult("");
+      setStorageResultIsError(false);
+      if (!result.capabilities?.storageGiveItem && !result.capabilities?.storageFillItem) {
+        setStorageResult("Storage operations require compatible dune.inventories and dune.items tables.");
+      }
     } catch (error) {
+      setStorageResult(error instanceof Error ? error.message : String(error));
+      setStorageResultIsError(true);
       onError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -33,17 +54,80 @@ export function StoragePanel({ onError, confirmAction, formatMutationResult }: S
     setItems((await worldDataApi.storageItems(String(row.id))).rows || []);
   }
 
+  function quantity() {
+    return Math.max(1, Math.min(1000000, Number(quantityText) || 1));
+  }
+
   async function giveStorageItem() {
     if (!selected) return;
     onError("");
     try {
-      if (!(await confirmAction(`Give 1 x ${itemName} to storage ${String(selected.id)}?`))) return;
-      const response = await worldDataApi.storageGiveItem(String(selected.id), { itemName, quantity: 1, confirmation: "GIVE ITEM TO STORAGE" });
+      if (!(await confirmAction(`Give ${quantity()} x ${itemName} to storage ${String(selected.id)}?`))) return;
+      const response = await worldDataApi.storageGiveItem(String(selected.id), { itemName, quantity: quantity(), confirmation: "GIVE ITEM TO STORAGE" });
       setStorageResult(formatMutationResult(response));
+      setStorageResultIsError(false);
       setItems((await worldDataApi.storageItems(String(selected.id))).rows || []);
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       setStorageResult(text);
+      setStorageResultIsError(true);
+      onError(text);
+    }
+  }
+
+  async function fillStorageItem() {
+    if (!selected) return;
+    onError("");
+    try {
+      if (!(await confirmAction(`Fill container ${String(selected.id)} with ${quantity()} x ${itemName}? Only refined resources and components are allowed.`))) return;
+      const response = await worldDataApi.storageFillItem(String(selected.id), { itemName, quantity: quantity(), confirmation: "FILL ITEM TO STORAGE" });
+      setStorageResult(formatMutationResult(response));
+      setStorageResultIsError(false);
+      setItems((await worldDataApi.storageItems(String(selected.id))).rows || []);
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      setStorageResult(text);
+      setStorageResultIsError(true);
+      onError(text);
+    }
+  }
+
+  async function applyRestart() {
+    onError("");
+    try {
+      if (!(await confirmAction("Restart the Survival server to apply pending fills? All connected players will be disconnected for a few minutes.", { title: "Restart Survival Server", confirmLabel: "Restart Survival", danger: true }))) return;
+      setRestartRunning(true);
+      setRestartStatus("Restarting the Survival server...");
+      const dispatched = await serverApi.restartService("survival");
+      // restartService() may queue the restart instead of dispatching it
+      // immediately (the restart-queue/gating feature merged from upstream
+      // during #279's reconciliation) -- .task is only present for an
+      // immediate dispatch. This button does not yet use restartGate/
+      // runGatedRestart the way Server Control's/Services'/Bases' restart
+      // actions do (see restartQueueGuard.ts), so a queued response is
+      // surfaced as a status message rather than the full gating dialog
+      // those panels show. Tracked as a follow-up to give this button the
+      // same restartGate treatment.
+      if (!dispatched.task) {
+        setRestartRunning(false);
+        setRestartStatus(dispatched.queued
+          ? "Restart was queued instead of applied immediately (players are currently online). Check the Server Control tab to manage the queued restart."
+          : "Restart could not be dispatched. Check the Server Control tab for details.");
+        return;
+      }
+      const final = await waitForTask(dispatched.task);
+      setRestartRunning(false);
+      if (final.status === "succeeded") {
+        setRestartStatus("Restart completed. Container fills are now visible in-game.");
+      } else if (final.status === "failed") {
+        setRestartStatus(`Restart failed: ${final.errorMessage || final.progressMessage || "check the task log for details."}`);
+      } else {
+        setRestartStatus("Restart is still running. Check the Server Control tab for the latest status.");
+      }
+    } catch (error) {
+      setRestartRunning(false);
+      const text = error instanceof Error ? error.message : String(error);
+      setRestartStatus(text);
       onError(text);
     }
   }
@@ -52,5 +136,5 @@ export function StoragePanel({ onError, confirmAction, formatMutationResult }: S
     void load();
   }, []);
 
-  return <section className="panel"><div className="panel-title"><h2>Storage</h2><button onClick={() => void load()}>Refresh Storage</button></div><p className="danger-note">{storageResult}</p><DataTable rows={rows} onRowClick={open} />{selected && <section className="drawer"><h3>Storage {String(selected.id)}</h3><div className="action-row"><a className="button-link" href={worldDataApi.storageExportUrl(String(selected.id))}>Export JSON</a><input value={itemName} onChange={(event) => setItemName(event.target.value)} placeholder="Item name" /><button disabled={!canGiveItem} onClick={() => void giveStorageItem()}>Give Item to Storage</button></div><DataTable rows={items} /></section>}</section>;
+  return <section className="panel"><div className="panel-title"><h2>Storage</h2><button onClick={() => void load()}>Refresh Storage</button><button disabled={restartRunning} onClick={() => void applyRestart()}>Apply Fills (Restart Survival)</button></div>{storageResultIsError && <p className="danger-note">{storageResult}</p>}{!storageResultIsError && storageResult && <p className="info-note">{storageResult}</p>}{restartStatus && <p className="info-note">{restartStatus}</p>}<p className="info-note">Fills become visible in-game after the Survival server restarts; the restart disconnects players for a few minutes.</p>{loading ? <p className="info-note"><span className="spinner" aria-hidden="true" /> Loading storage containers...</p> : <DataTable rows={rows} onRowClick={open} />}{selected && <section className="drawer"><h3>Storage {String(selected.id)}</h3><div className="action-row"><a className="button-link" href={worldDataApi.storageExportUrl(String(selected.id))}>Export JSON</a><input value={itemName} onChange={(event) => setItemName(event.target.value)} placeholder="Item name or ID" /><input value={quantityText} onChange={(event) => setQuantityText(event.target.value)} className="small-input" type="number" min={1} max={1000000} placeholder="Qty" /><button disabled={!canGiveItem || restartRunning} onClick={() => void giveStorageItem()} title={!canGiveItem ? "Storage give-item schema not detected" : ""}>Give Item</button><button disabled={!canFillItem || restartRunning} onClick={() => void fillStorageItem()} title={!canFillItem ? "Storage fill-item schema not detected" : ""}>Fill Container</button></div><p className="info-note">Fill Container accepts refined resources and components only, respecting slot and volume limits.</p><DataTable rows={items} /></section>}</section>;
 }

@@ -5,7 +5,7 @@ import { SecretInput } from "./SecretInput";
 import { TaskProgress } from "./TaskProgress";
 import { getServerPorts, getAdminPort } from "../api/serverPorts";
 
-type StepId = "welcome" | "host" | "docker" | "runtime" | "identity" | "token" | "ports" | "review" | "install" | "finish";
+type StepId = "welcome" | "host" | "docker" | "runtime" | "identity" | "token" | "discord" | "ports" | "review" | "install" | "finish";
 const firstRunSteps: { id: StepId; label: string }[] = [
   { id: "welcome", label: "Welcome" },
   { id: "host", label: "Host Check" },
@@ -13,6 +13,7 @@ const firstRunSteps: { id: StepId; label: string }[] = [
   { id: "runtime", label: "Runtime Location" },
   { id: "identity", label: "Server Identity" },
   { id: "token", label: "Funcom Token" },
+  { id: "discord", label: "Discord Auth" },
   { id: "ports", label: "Ports" },
   { id: "review", label: "Review" },
   { id: "install", label: "Install" },
@@ -21,12 +22,15 @@ const firstRunSteps: { id: StepId; label: string }[] = [
 const redeploySteps: { id: StepId; label: string }[] = [
   { id: "identity", label: "Server Identity" },
   { id: "token", label: "Funcom Token" },
+  { id: "discord", label: "Discord Auth" },
   { id: "review", label: "Review" },
   { id: "install", label: "Install" },
   { id: "finish", label: "Finish" }
 ];
 const regions = ["Europe", "North America", "South America", "Asia", "Oceania", "Africa"];
 type SetupConfig = { SERVER_TITLE: string; SERVER_REGION: string; SERVER_IP: string; SERVER_IP_MODE: string; SERVER_PROVIDER: string; STEAM_APP_ID: string };
+type OAuthConfig = { DISCORD_HOME_GUILD_ID: string; DISCORD_OAUTH_CLIENT_ID: string; DISCORD_OAUTH_REDIRECT_URI: string; DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: string; DISCORD_OAUTH_OWNER_ALLOWLIST: string };
+type ServerConfigValues = Record<string, unknown> & { _discordOAuthSecretSaved?: string };
 const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
 const completionRedirectSeconds = 10;
 const deploymentSuccessHoldMs = 3000;
@@ -47,6 +51,9 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
   const [token, setToken] = useState("");
   const [existingToken, setExistingToken] = useState(false);
   const [config, setConfig] = useState<SetupConfig>(defaultSetupConfig);
+  const [oauthConfig, setOAuthConfig] = useState<OAuthConfig>(defaultOAuthConfig);
+  const [oauthSecret, setOAuthSecret] = useState("");
+  const [oauthSecretSaved, setOAuthSecretSaved] = useState(false);
   const onSetupCompleteRef = useRef(onSetupComplete);
 
   useEffect(() => {
@@ -63,8 +70,11 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
     let cancelled = false;
     setupApi.state().then((state) => {
       if (cancelled) return;
+      const values = state.serverConfig as ServerConfigValues | undefined;
       setExistingToken(Boolean(state.files?.token));
-      setConfig(configFromSetupState(state.serverConfig));
+      setConfig(configFromSetupState(values));
+      setOAuthConfig(oauthConfigFromSetupState(values));
+      setOAuthSecretSaved(Boolean(values?._discordOAuthSecretSaved));
     }).catch(() => undefined);
     return () => { cancelled = true; };
   }, []);
@@ -110,6 +120,34 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
   async function saveConfig() {
     await setupApi.writeConfig(config);
     if (token) await setupApi.saveToken(token);
+    await saveOAuthConfig();
+  }
+
+  async function saveOAuthConfig() {
+    const oauthFields = nonEmptyOAuthFields();
+    if (Object.keys(oauthFields).length > 0) {
+      await setupApi.writeOAuthConfig(oauthFields);
+    }
+    if (oauthSecret) await setupApi.saveOAuthSecret(oauthSecret);
+  }
+
+  function nonEmptyOAuthFields(): Record<string, string> {
+    const fields: Record<string, string> = {};
+    for (const key of Object.keys(oauthConfig) as Array<keyof OAuthConfig>) {
+      if (oauthConfig[key].trim()) fields[key] = oauthConfig[key].trim();
+    }
+    return fields;
+  }
+
+  function sanitizeForReview() {
+    const oauthSanitized = { ...oauthConfig };
+    if (oauthSecret) (oauthSanitized as Record<string, unknown>)._DISCORD_OAUTH_CLIENT_SECRET = "(will be saved)";
+    else if (oauthSecretSaved) (oauthSanitized as Record<string, unknown>)._DISCORD_OAUTH_CLIENT_SECRET = "(already saved)";
+    return {
+      server: config,
+      token: token ? "(ready to save)" : "(not entered)",
+      discordOAuth: oauthSanitized
+    };
   }
 
   async function init() {
@@ -147,6 +185,7 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
     runtime: true,
     identity: configReady,
     token: hasToken,
+    discord: true,
     ports: true,
     review: configReady && hasToken,
     install: deploymentSucceeded,
@@ -214,6 +253,28 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
           <SecretInput value={token} onChange={(event) => setToken(event.target.value)} placeholder="Paste token" />
           {!hasToken && <p className="theme-note">Paste your Funcom self-host token to continue to deployment.</p>}
         </>}
+        {activeStep === "discord" && <>
+          <h2>Discord Authentication (Optional)</h2>
+          <p>Let admins sign in with Discord. Skip this step for password-only auth. <a href="https://discord.com/developers/applications" target="_blank" rel="noopener">Create a Discord OAuth application</a> to get started.</p>
+          <div className="setup-form-grid">
+            <label>Client ID<input value={oauthConfig.DISCORD_OAUTH_CLIENT_ID} placeholder="Discord application client ID" onChange={(event) => setOAuthConfig({ ...oauthConfig, DISCORD_OAUTH_CLIENT_ID: event.target.value })} /></label>
+            <label>Redirect URI<input value={oauthConfig.DISCORD_OAUTH_REDIRECT_URI} placeholder="https://your-host:8088/api/auth/discord/callback" onChange={(event) => setOAuthConfig({ ...oauthConfig, DISCORD_OAUTH_REDIRECT_URI: event.target.value })} /></label>
+            <label>Client Secret<SecretInput value={oauthSecret} placeholder="Paste client secret" onChange={(event) => setOAuthSecret(event.target.value)} /></label>
+            <label>Home Guild ID<input value={oauthConfig.DISCORD_HOME_GUILD_ID} placeholder="Discord server ID (snowflake)" onChange={(event) => setOAuthConfig({ ...oauthConfig, DISCORD_HOME_GUILD_ID: event.target.value })} /></label>
+            <label>Owner Allowlist<input value={oauthConfig.DISCORD_OAUTH_OWNER_ALLOWLIST} placeholder="Comma-separated Discord user IDs" onChange={(event) => setOAuthConfig({ ...oauthConfig, DISCORD_OAUTH_OWNER_ALLOWLIST: event.target.value })} /></label>
+          </div>
+          <label className="setup-checkbox-row">
+            <input type="checkbox" checked={oauthConfig.DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP === "1"} onChange={(event) => setOAuthConfig({ ...oauthConfig, DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: event.target.checked ? "1" : "0" })} />
+            <span>Allow owner bootstrap (first admin signs in via Discord)</span>
+          </label>
+          {((!oauthConfig.DISCORD_OAUTH_CLIENT_ID || !oauthConfig.DISCORD_OAUTH_REDIRECT_URI || !oauthSecret) && (oauthConfig.DISCORD_OAUTH_CLIENT_ID || oauthConfig.DISCORD_OAUTH_REDIRECT_URI || oauthSecret)) && (
+            <p className="theme-note">Discord sign-in will not work until Client ID, Client Secret, and Redirect URI are all provided.</p>
+          )}
+          {oauthConfig.DISCORD_OAUTH_CLIENT_ID && oauthConfig.DISCORD_OAUTH_REDIRECT_URI && (oauthSecret || oauthSecretSaved) && (
+            <p className="success-note">Discord OAuth appears fully configured. Changes will be saved on deploy.</p>
+          )}
+          <p className="muted">These values are saved only during deployment. You can skip this step now and configure Discord auth later from Settings.</p>
+        </>}
         {activeStep === "ports" && <>
           <h2>Ports and Firewall</h2>
           <div className="action-sections">
@@ -277,6 +338,19 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
                 ["Secret storage", "Saved privately on this server"]
               ]} />
             </section>
+            {(oauthConfig.DISCORD_OAUTH_CLIENT_ID || oauthConfig.DISCORD_OAUTH_REDIRECT_URI || oauthSecret || oauthSecretSaved) && (
+              <section className="action-section">
+                <h4>Discord OAuth</h4>
+                <ReviewGrid items={[
+                  ["Client ID", oauthConfig.DISCORD_OAUTH_CLIENT_ID || "Not set"],
+                  ["Redirect URI", oauthConfig.DISCORD_OAUTH_REDIRECT_URI || "Not set"],
+                  ["Client Secret", oauthSecret ? "Will be saved" : oauthSecretSaved ? "Already saved" : "Not set"],
+                  ["Home Guild", oauthConfig.DISCORD_HOME_GUILD_ID || "Not set"],
+                  ["Bootstrap", oauthConfig.DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP === "1" ? "Enabled" : "Disabled"],
+                  ["Status", oauthConfig.DISCORD_OAUTH_CLIENT_ID && oauthConfig.DISCORD_OAUTH_REDIRECT_URI && (oauthSecret || oauthSecretSaved) ? "Ready" : "Incomplete"]
+                ]} />
+              </section>
+            )}
             <section className="action-section warning-panel">
               <h4>Warnings / Missing Values</h4>
               <ul className="requirements">
@@ -288,7 +362,7 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
           </div>
           <details className="technical-details">
             <summary>Advanced review data</summary>
-            <pre className="mini-output">{JSON.stringify(config, null, 2)}</pre>
+            <pre className="mini-output">{JSON.stringify(sanitizeForReview(), null, 2)}</pre>
           </details>
         </>}
         {activeStep === "install" && <>
@@ -322,10 +396,22 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
   );
 }
 
+const defaultOAuthConfig: OAuthConfig = { DISCORD_HOME_GUILD_ID: "", DISCORD_OAUTH_CLIENT_ID: "", DISCORD_OAUTH_REDIRECT_URI: "", DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "0", DISCORD_OAUTH_OWNER_ALLOWLIST: "" };
+
 function configFromSetupState(values: Record<string, unknown> | undefined): SetupConfig {
   const next = { ...defaultSetupConfig };
   for (const key of Object.keys(next) as Array<keyof SetupConfig>) {
     const value = values?.[key];
+    if (value !== undefined && String(value).trim()) next[key] = String(value);
+  }
+  return next;
+}
+
+function oauthConfigFromSetupState(values: ServerConfigValues | undefined): OAuthConfig {
+  const next = { ...defaultOAuthConfig };
+  if (!values) return next;
+  for (const key of Object.keys(next) as Array<keyof OAuthConfig>) {
+    const value = values[key];
     if (value !== undefined && String(value).trim()) next[key] = String(value);
   }
   return next;

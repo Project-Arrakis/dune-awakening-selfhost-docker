@@ -167,6 +167,17 @@ test("real PostgreSQL: an add never merges into an existing stack of the same te
   });
 });
 
+// CORRECTED 2026-08-19 during upstream reconciliation (issue #366): this
+// test's original last assertion (from upstream PR #172) asserted a
+// resource stack gets a fully empty stats block. That's the opposite of
+// this fork's own, earlier, evidence-based fix (be5081a5, 2026-07-30, see
+// buildItemStats' own comment in duneDb.js): a real, engine-verified
+// reference row for a plain resource in this world's actual live database
+// DOES carry a DecayedMaxDurability key, and this fork's
+// addBaseContainerItem (via buildItemStats) deliberately matches that real
+// shape. Kept as a documented fork-specific divergence, not a silently
+// dropped assertion -- the rest of this test (non-null stats column) is
+// unchanged and still real upstream coverage.
 test("real PostgreSQL: the inserted row always carries non-null stats", async (t) => {
   await withDatabase(t, async (pool) => {
     const db = pgTransactionalDb(pool);
@@ -177,8 +188,10 @@ test("real PostgreSQL: the inserted row always carries non-null stats", async (t
     const { rows } = await pool.query("select stats from dune.items where id = $1", [result.added.itemId]);
     assert.equal(rows.length, 1);
     assert.notEqual(rows[0].stats, null);
-    // A resource gets an empty stat block, not invented durability.
-    assert.deepEqual(rows[0].stats.FItemStackAndDurabilityStats, [[], {}]);
+    // A resource gets the same DecayedMaxDurability-only shape every real
+    // resource row in this fork's live database carries -- not a fully
+    // empty stat block (see this fork's own buildItemStats comment).
+    assert.deepEqual(rows[0].stats.FItemStackAndDurabilityStats, [[], { DecayedMaxDurability: 0 }]);
   });
 });
 

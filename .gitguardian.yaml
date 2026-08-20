@@ -1,25 +1,21 @@
-# GitGuardian Shield configuration
-# See: https://docs.gitguardian.com/ggshield-docs/reference/config
-
-# Ignore known test files and development artifacts
-paths-ignore:
-  - "**/test/**"
-  - "**/tests/**"
-  - "**/dist/**"
-  - "**/node_modules/**"
-  - "**/.cache_ggshield/**"
-  - "**/.security-reports/**"
-  - "**/runtime/secrets/**"
-  - "**/secrets/**"
-  - "**/ops-observability/evidence/**"
-
-# Ignore known patterns in documentation examples
-matches-ignore:
-  - name: "Nu6VmPWUMvdPMeB7qErr"
-    match: "Nu6VmPWUMvdPMeB7qErr"
-  - name: "test JWT fixture"
-    match: "eyJaaaaaaaaaaaaaaaaaaaaaaaa"
-  - name: "sample admin password"
-    match: "Arrakeen\\*Fremen\\d{4}"
-  - name: "Discord webhook URL in dev-notify script"
-    match: "https://discord.com/api/webhooks/"
+secret:
+  ignored_matches:
+  - match: Nu6VmPWUMvdPMeB7qErr
+    name: Nu6VmPWUMvdPMeB7qErr
+  - match: eyJaaaaaaaaaaaaaaaaaaaaaaaa
+    name: test JWT fixture
+  - match: Arrakeen\*Fremen\d{4}
+    name: sample admin password
+  - match: https://discord.com/api/webhooks/
+    name: Discord webhook URL in dev-notify script
+  ignored_paths:
+  - '**/runtime/secrets/**'
+  - '**/node_modules/**'
+  - '**/tests/**'
+  - '**/secrets/**'
+  - '**/ops-observability/evidence/**'
+  - '**/test/**'
+  - '**/dist/**'
+  - '**/.security-reports/**'
+  - '**/.cache_ggshield/**'
+version: 2

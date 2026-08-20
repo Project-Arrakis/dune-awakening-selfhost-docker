@@ -4,6 +4,51 @@
 
 Branch: `security/generated-command-auth-token-fix`
 
+> **STATUS (2026-07-25): REVERTED. Do not treat this document as
+> describing the current, active architecture.**
+>
+> The change this document describes was merged (commit `c079434`,
+> merging `security/generated-command-auth-token-fix`), then explicitly
+> **reverted by the upstream maintainer** in commit `52008a7`
+> ("Restore built-in command auth token fallback," `Red-Blink`,
+> 2026-07-07), confirmed as an ancestor of current upstream `main`.
+>
+> **Why it was reverted:** the command envelope's `AuthToken` field is
+> validated independently by the Funcom Director/game-server consumer,
+> not by RabbitMQ itself. A locally-generated token on the Console/
+> shell-publisher side only works if that same value is also configured
+> on the Director/game-server side. This project has no mechanism to
+> synchronize a generated token to both sides today, so generating a
+> local token unilaterally desynchronized the two, and RabbitMQ
+> continued to report a successful publish (`publish=ok`) while the
+> Funcom consumer silently rejected the message afterward -- breaking
+> kicks, item grants, broadcasts, teleports, and other server commands
+> for deployments whose game-server side still expected the original
+> built-in value. Per the upstream maintainer's own account, this root
+> cause was previously discussed in
+> `Red-Blink/dune-awakening-selfhost-docker#72`; that reference could
+> not be independently re-verified while writing this correction
+> (GitHub Discussions are not accessible via the API on this
+> repository), so it is cited as the maintainer's stated source, not as
+> independently confirmed by this document.
+>
+> **Current, actually-active state:** `BUILTIN_COMMAND_AUTH_TOKEN`
+> (`console/api/src/rmq.js`) and the matching constant in
+> `runtime/scripts/admin-tools.sh` are both present and in active use
+> in current upstream `main`. `DUNE_COMMAND_AUTH_TOKEN` remains
+> available as an explicit override, but it is **only safe to set if
+> the Director/game-server consumer is independently configured to
+> expect that exact same value** -- setting it on the Console/publisher
+> side alone reproduces the same breakage this revert fixed.
+>
+> **Do not re-attempt producer-only token generation or rotation.**
+> Any future fix in this area needs to first identify where the
+> Director/world-server image reads its own expected command-auth
+> token and design a synchronized override mechanism covering both
+> sides together. The rest of this document is preserved below as a
+> historical record of the reverted implementation and its
+> verification evidence, not as current guidance.
+
 ## Purpose
 
 Remove the shared built-in RabbitMQ server-command auth token and generate a deployment-local secret on first use.

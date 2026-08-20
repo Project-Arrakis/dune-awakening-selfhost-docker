@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DISCORD_ADAPTER_ROUTES, DISCORD_LIVE_ADAPTER_ROUTES } from "../src/integrations/discord/adapter.js";
-import { DISCORD_ROLE_TIERS } from "../src/integrations/discord/policy.js";
+import { DISCORD_CAPABILITIES, DISCORD_ROLE_TIERS } from "../src/integrations/discord/policy.js";
 import { buildCommandCatalog, CATALOG_VERSION, COMMAND_METADATA } from "../src/integrations/discord/commandCatalog.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -13,9 +13,7 @@ const routesSrc = readFileSync(join(__dirname, "../src/integrations/discord/rout
 // Flattens the fan-out catalog shape (subcommand.routes[]) into one entry
 // per real backing route, for tests that only care about per-route
 // properties (capability, params, etc.) and don't need the grouping shape
-// itself. Kept local to this test file rather than exported from
-// commandCatalog.js -- production code (routes.js) has no need to flatten,
-// only tests do.
+// itself.
 function flattenRoutes(catalog) {
   const flat = [];
   for (const group of catalog.groups) {
@@ -38,7 +36,7 @@ test("catalog has an entry for every live route, and no entry for a non-live rou
 
   const liveSet = new Set(DISCORD_LIVE_ADAPTER_ROUTES);
   assert.deepEqual([...routesInCatalog].sort(), [...liveSet].sort(),
-    "catalog route set must exactly match DISCORD_LIVE_ADAPTER_ROUTES -- this is the drift-detection assertion this file exists to add");
+    "catalog route set must exactly match DISCORD_LIVE_ADAPTER_ROUTES -- this is the drift-detection assertion issue #337 exists to add");
 });
 
 test("catalog throws when a live route is genuinely missing metadata (real simulated drift)", () => {
@@ -115,6 +113,20 @@ test("every catalog route entry's route is a real member of DISCORD_ADAPTER_ROUT
   }
 });
 
+test("self-scoped routes (player-link:write, account-link:write) are all marked selfScoped", () => {
+  const catalog = buildCommandCatalog();
+  const selfScopedCapabilities = new Set([
+    DISCORD_CAPABILITIES.PLAYER_LINK_WRITE,
+    DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE
+  ]);
+  for (const entry of flattenRoutes(catalog)) {
+    if (selfScopedCapabilities.has(entry.capability)) {
+      assert.equal(entry.selfScoped, true,
+        `${entry.group}.${entry.name} (${entry.route}) uses a self-scoped capability but selfScoped is not true`);
+    }
+  }
+});
+
 test("broadcast is the only route entry requiring DUNE_DISCORD_WRITES_ENABLED", () => {
   const catalog = buildCommandCatalog();
   const writeGated = [];
@@ -140,10 +152,9 @@ test("route entries with routeEnforcesCapability: false are exactly the known, d
   for (const entry of flattenRoutes(catalog)) {
     if (!entry.routeEnforcesCapability) unenforced.push(entry.route);
   }
-  // HEALTH added by an L3 integration audit (issue tracked in PR #171) --
-  // discordAdapterHealth() never calls requireDiscordCapability(), so it
-  // was already unenforced in practice; this entry's routeEnforcesCapability
-  // had incorrectly defaulted to true because no explicit override was set.
+  // HEALTH added per issue #360, porting the same L3-audit finding already
+  // fixed on the upstream PR #171 branch (issue #358) -- main's
+  // discordAdapterHealth() never calls requireDiscordCapability() either.
   assert.deepEqual(unenforced.sort(), [
     DISCORD_ADAPTER_ROUTES.HEALTH,
     DISCORD_ADAPTER_ROUTES.BACKUPS_LIST,
@@ -151,32 +162,65 @@ test("route entries with routeEnforcesCapability: false are exactly the known, d
   ].sort());
 });
 
-// Found by an independent Layer 2 re-audit of this same catalog on the
-// author's fork (yacketrj/dune-awakening-selfhost-docker#342): one entry's
-// description was accidentally copy-pasted verbatim from an unrelated
-// route describing a similarly-named but functionally different command.
-// A future editor of COMMAND_METADATA copy-pasting an entry as a starting
-// point and forgetting to update its description text would reproduce this
-// silently -- this test catches that class of mistake generically, not
-// just the one specific instance that was found.
+// Issue #342: an independent re-audit of #337/PR #341 found 3 catalog
+// entries describing Core routes that are genuinely live but have no
+// current bot-side caller in arrakis-control-panel, one of which
+// (PLAYERS_ACCOUNTS_SET_DEFAULT) had a description verbatim-borrowed from
+// the bot's real, but entirely different and separately-routed, "/dune
+// player default" command. This test locks the routeHasNoCurrentBotCaller
+// flag to exactly the known set so a future addition/removal must be a
+// deliberate, reviewed change to this test, not a silent catalog edit.
+test("routes with routeHasNoCurrentBotCaller: true are exactly the known, documented exceptions (#342)", () => {
+  const catalog = buildCommandCatalog();
+  const unwired = [];
+  for (const entry of flattenRoutes(catalog)) {
+    if (entry.routeHasNoCurrentBotCaller) unwired.push(entry.route);
+  }
+  assert.deepEqual(unwired.sort(), [
+    DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK,
+    DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_VERIFY,
+    DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_SET_DEFAULT
+  ].sort());
+});
+
 test("no two catalog route entries share a verbatim-identical description (would indicate an accidentally copy-pasted/borrowed description)", () => {
   const catalog = buildCommandCatalog();
   const descriptions = flattenRoutes(catalog).map((entry) => entry.description);
   const uniqueDescriptions = new Set(descriptions);
   assert.equal(uniqueDescriptions.size, descriptions.length,
-    "two catalog entries share an identical description -- verify neither was accidentally copy-pasted from an unrelated route");
+    "two catalog entries share an identical description -- verify neither was accidentally copy-pasted from an unrelated route (see issue #342)");
 });
 
-// --- Findings from upstream PR #171's review (Red-Blink), 2026-08-18 ---
+// --- Findings from issue #360 (porting upstream PR #171's fixes to main,
+// which has 3 additional multi-account-specific duplicate pairs beyond
+// what that upstream branch has) ---
 
-// Finding 1: the player group had 3 duplicate (group, subcommand) pairs
-// (inventory, storage, find), each silently colliding two backing routes
-// with different capabilities into what looked like one flat entry. Fixed
-// by grouping route entries under their shared (group, subcommand) pair
-// into a routes[] array instead of one array element per route -- this
-// test asserts that grouping is exhaustive: no (group, subcommand) pair is
-// ever represented by more than one top-level subcommand object.
-test("no (group, subcommand) pair appears as more than one top-level subcommand entry", () => {
+// Finding 1: 6 duplicate (group, subcommand) pairs existed before this
+// fix -- 3 shared with the upstream PR #171 branch (storage/find/inventory,
+// genuine live fan-outs) plus 3 specific to this fork's multi-account
+// routes (link/verify/unlink). Of those 3, only "unlink" is a genuine live
+// fan-out (verified against arrakis-control-panel's real commands.js:
+// "/dune player unlink <character>" calls PLAYERS_ACCOUNTS_UNLINK when a
+// playerControllerId is given, else PLAYERS_UNLINK) -- "link"/"verify"
+// collided with PLAYERS_ACCOUNTS_LINK/LINK_VERIFY, which have NO live bot
+// caller at all (confirmed via routeHasNoCurrentBotCaller, unchanged from
+// #342), so those two were renamed (link-account/verify-account) rather
+// than fanned out, since there is no real single subcommand picking
+// between them and their single-account counterpart.
+// NOTE on this test's real detection scope (found during issue #360's own
+// Layer 2 QA audit): buildCommandCatalog()'s grouping is Map-keyed by
+// (group, subcommand), so two metadata entries sharing a key are ALWAYS
+// merged into one subcommand.routes[] array by construction -- they can
+// never produce two separate top-level entries with the same key. This
+// test therefore cannot, by itself, catch "route X and route Y should not
+// have been merged" (that's what the dedicated fan-out-count test below,
+// and the PLAYERS_ACCOUNTS_LINK-specific rename test, are for) -- it only
+// guards the grouping invariant itself (no key ever appears twice at the
+// top level), which would only break if a future refactor of the Map
+// construction logic itself regressed. Kept as a structural invariant
+// check, not a stand-alone regression catch for the #360 rename/fan-out
+// design decisions.
+test("no (group, subcommand) pair appears as more than one top-level subcommand entry (structural invariant of the Map-based grouping)", () => {
   const catalog = buildCommandCatalog();
   const seen = new Map();
   const duplicates = [];
@@ -191,15 +235,10 @@ test("no (group, subcommand) pair appears as more than one top-level subcommand 
     }
   }
   assert.deepEqual(duplicates, [],
-    "a (group, subcommand) pair was split across two separate top-level subcommand entries instead of being merged into one subcommand.routes[] array");
+    "a (group, subcommand) pair was split across two separate top-level subcommand entries instead of being merged into one subcommand.routes[] array (or given a distinct name, for the two dead multi-account routes with no genuine fan-out behind them)");
 });
 
-// The inverse of the above: a genuine fan-out (two routes sharing one
-// (group, subcommand) pair) must still produce exactly the 3 documented
-// pairs, not more or fewer -- catches both a regression (a 4th route
-// accidentally merged into an existing pair) and someone "fixing" the fan
-// out by incorrectly re-splitting it back into duplicates.
-test("exactly the 3 documented (group, subcommand) pairs fan out to more than one route", () => {
+test("exactly the 4 documented (group, subcommand) pairs fan out to more than one route", () => {
   const catalog = buildCommandCatalog();
   const fannedOut = [];
   for (const group of catalog.groups) {
@@ -207,7 +246,31 @@ test("exactly the 3 documented (group, subcommand) pairs fan out to more than on
       if (subcommand.routes.length > 1) fannedOut.push(`${group.name}.${subcommand.name}`);
     }
   }
-  assert.deepEqual(fannedOut.sort(), ["player.find", "player.inventory", "player.storage"]);
+  assert.deepEqual(fannedOut.sort(), ["player.find", "player.inventory", "player.storage", "player.unlink"]);
+});
+
+test("PLAYERS_ACCOUNTS_LINK and PLAYERS_ACCOUNTS_LINK_VERIFY (no live bot caller) were renamed, not fanned out, and don't collide with their single-account counterparts", () => {
+  const catalog = buildCommandCatalog();
+  // Find each route's OWNING subcommand (not just the flattened route
+  // entry) so we can check the real routes[] array length on the
+  // subcommand itself, not the per-route flattened object (which has no
+  // `routes` property of its own).
+  function findSubcommandForRoute(route) {
+    for (const group of catalog.groups) {
+      for (const subcommand of group.subcommands) {
+        if (subcommand.routes.some((r) => r.route === route)) return subcommand;
+      }
+    }
+    return null;
+  }
+  const linkAccountSub = findSubcommandForRoute(DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK);
+  const verifyAccountSub = findSubcommandForRoute(DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_VERIFY);
+  assert.ok(linkAccountSub, "PLAYERS_ACCOUNTS_LINK missing from catalog");
+  assert.ok(verifyAccountSub, "PLAYERS_ACCOUNTS_LINK_VERIFY missing from catalog");
+  assert.notEqual(linkAccountSub.name, "link", "PLAYERS_ACCOUNTS_LINK must not reuse the live 'link' subcommand name");
+  assert.notEqual(verifyAccountSub.name, "verify", "PLAYERS_ACCOUNTS_LINK_VERIFY must not reuse the live 'verify' subcommand name");
+  assert.equal(linkAccountSub.routes.length, 1, "PLAYERS_ACCOUNTS_LINK has no genuine fan-out partner");
+  assert.equal(verifyAccountSub.routes.length, 1, "PLAYERS_ACCOUNTS_LINK_VERIFY has no genuine fan-out partner");
 });
 
 // Finding 2 (part A): declared param names must match the real body field
@@ -221,25 +284,12 @@ test("exactly the 3 documented (group, subcommand) pairs fan out to more than on
 // Known, documented scope limit: only catches literal `body.<field>` read
 // expressions. A future refactor of a route handler to destructure the
 // body (`const { characterName } = body`) would need this regex extended,
-// and would silently stop being checked here until someone notices --
-// this is a real limitation of a source-text-regex approach (the same
-// approach rbacParity.test.js already uses elsewhere in this suite), not
-// something this test can detect about itself.
+// and would silently stop being checked here until someone notices.
 //
 // Also does not cover the opsRoutes lookup-table dispatch (OPS_ACTIVITY,
 // OPS_COMBAT, etc.), which doesn't use the `path === DISCORD_ADAPTER_ROUTES.X`
 // literal pattern this extraction looks for. Safe today because none of
-// those routes declare any params in COMMAND_METADATA (verified below) --
-// flagged explicitly so a future ops-route param addition doesn't silently
-// go unchecked.
-// True if the character at routesSrc[index] is a JS identifier character
-// ([A-Za-z0-9_]) -- used below to reject a marker match that's actually a
-// PREFIX of a longer route constant name (e.g. "PLAYERS_LINK" is a true
-// string prefix of "PLAYERS_LINK_VERIFY"; a bare indexOf() without this
-// boundary check would silently match the wrong route's block if file
-// order ever put the longer name's block first -- found during this fix's
-// own Layer 2 QA audit, verified with a live repro before being fixed
-// here, not a hypothetical concern).
+// those routes declare any params in COMMAND_METADATA (verified below).
 function isIdentifierChar(ch) {
   return ch !== undefined && /[A-Za-z0-9_]/.test(ch);
 }
@@ -247,22 +297,16 @@ function isIdentifierChar(ch) {
 function extractBodyFieldsForRoute(routeConstantName) {
   // Find the specific `if (path === DISCORD_ADAPTER_ROUTES.<NAME>` marker
   // via a plain, fixed-string search (not a dynamically-built RegExp --
-  // routeConstantName always comes from this file's own
-  // Object.entries(DISCORD_ADAPTER_ROUTES) iteration, never external input,
-  // but a hardcoded-pattern-only approach sidesteps the ReDoS-shaped-code
-  // flag entirely rather than relying on that always being true), then walk
-  // forward to the block's opening `{` and track brace depth to the
-  // matching closing `}` -- mirroring rbacParity.test.js's own technique
-  // for extracting handleApi's body, just scoped per-route-block here
-  // instead of per-function.
-  //
-  // Scans ALL occurrences of the base marker, not just the first, and
-  // requires the character immediately following routeConstantName to NOT
-  // be an identifier character -- otherwise a marker for "PLAYERS_LINK"
-  // would also match inside "PLAYERS_LINK_VERIFY"'s own marker text,
-  // silently extracting the wrong route's body-field block if the two
-  // constants were ever declared/dispatched in a different order than
-  // today's file happens to have them in.
+  // avoids a real, blocking semgrep ReDoS-shaped-code finding found and
+  // fixed on the upstream PR #171 branch's version of this test), then
+  // walk forward to the block's opening `{` and track brace depth to the
+  // matching closing `}`. Scans ALL occurrences of the base marker, not
+  // just the first, and requires the character immediately following
+  // routeConstantName to NOT be an identifier character -- otherwise a
+  // marker for "PLAYERS_LINK" would also match inside
+  // "PLAYERS_LINK_VERIFY"'s own marker text (a real bug found and fixed
+  // during issue #358's own Layer 2 audit, ported here rather than
+  // reintroduced).
   const marker = `if (path === DISCORD_ADAPTER_ROUTES.${routeConstantName}`;
   let markerIndex = -1;
   let searchFrom = 0;
@@ -302,11 +346,6 @@ test("every param's real body field (bodyField, or its own name when unset) is a
     const constName = routeConstantByPath[route];
     const realFields = extractBodyFieldsForRoute(constName);
     if (realFields === null) {
-      // Route doesn't use the literal `path === DISCORD_ADAPTER_ROUTES.X`
-      // dispatch pattern (e.g. the opsRoutes lookup table) -- out of scope
-      // for this extraction technique. Assert it has no params today, so a
-      // future param addition to one of these routes fails loudly instead
-      // of silently skipping this check forever.
       assert.equal(meta.params.length, 0,
         `${route} has params but is not dispatched via the literal "path === DISCORD_ADAPTER_ROUTES.X" pattern this test's extraction depends on -- extend extractBodyFieldsForRoute() or the opsRoutes-specific dispatch before adding params here`);
       continue;
@@ -321,12 +360,6 @@ test("every param's real body field (bodyField, or its own name when unset) is a
   assert.ok(checked.length > 0, "this test found zero params to check -- COMMAND_METADATA may have changed shape");
 });
 
-// Finding 2 (part B): every param's OUTPUT bodyField (post-buildCommandCatalog(),
-// after the default-to-name fallback is applied) must also be a real field,
-// covering the case where a future param is added with no explicit
-// bodyField and no matching real body field either -- the case above
-// checks COMMAND_METADATA directly; this one checks the real catalog
-// output a consumer would actually receive.
 test("every catalog route entry's params[].bodyField is present on the output (never silently undefined)", () => {
   const catalog = buildCommandCatalog();
   for (const entry of flattenRoutes(catalog)) {
@@ -338,22 +371,16 @@ test("every catalog route entry's params[].bodyField is present on the output (n
 });
 
 // Finding 3: a metadata field defined on a COMMAND_METADATA entry
-// (diagnosticCapability on STATUS was the real, found case) must never be
-// silently dropped from buildCommandCatalog()'s real output. Generalized
-// so it protects ANY future metadata field, not just this one field name --
-// iterates the real, live COMMAND_METADATA object's own keys per entry
-// rather than a hardcoded field-name list, so a newly-added field is
-// automatically covered without a test edit.
-//
-// Deliberately checks the catalog's real JSON-serialized output (the wire
-// shape routes.js actually sends), not the bare in-memory return value --
-// routes.js does `json(res, 200, { ..., catalog: buildCommandCatalog() })`,
-// and JSON.stringify silently drops undefined-valued keys, which is
-// correct behavior for a field genuinely left undefined but would mask a
-// real drop if this test only inspected the in-memory object.
+// (diagnosticCapability on STATUS, and disabledPendingSecurityReview on
+// PLAYERS_ACCOUNTS_LINK_STEAM -- the latter specific to this fork's
+// superset, doesn't exist at all on the upstream PR #171 branch) must
+// never be silently dropped from buildCommandCatalog()'s real output.
+// Generalized so it protects ANY future metadata field, not just these
+// two -- iterates the real, live COMMAND_METADATA object's own keys per
+// entry rather than a hardcoded field-name list.
 const RENAMED_METADATA_FIELDS = new Set(["group", "subcommand"]);
 
-test("every non-renamed COMMAND_METADATA field for a route reaches that route's real catalog JSON output, unchanged", () => {
+test("every non-renamed/non-transformed COMMAND_METADATA field for a route reaches that route's real catalog JSON output, unchanged", () => {
   const wireJson = JSON.parse(JSON.stringify(buildCommandCatalog()));
   const outputByRoute = new Map();
   for (const group of wireJson.groups) {
@@ -371,12 +398,12 @@ test("every non-renamed COMMAND_METADATA field for a route reaches that route's 
     for (const key of Object.keys(meta)) {
       if (RENAMED_METADATA_FIELDS.has(key)) continue;
       if (meta[key] === undefined) continue; // JSON correctly drops undefined -- not a bug to check for
-      // params/requiresWritesEnabled/routeEnforcesCapability/method are
-      // deliberately transformed (defaulted/coerced/normalized) between
-      // metadata and output, not passed through byte-for-byte -- checked
-      // by their own dedicated tests elsewhere in this file/routes.js's
-      // coverage, not here.
-      if (["params", "requiresWritesEnabled", "routeEnforcesCapability", "method"].includes(key)) continue;
+      // params/selfScoped/requiresWritesEnabled/routeEnforcesCapability/
+      // routeHasNoCurrentBotCaller/method are deliberately transformed
+      // (defaulted/coerced/normalized) between metadata and output, not
+      // passed through byte-for-byte -- checked by their own dedicated
+      // tests elsewhere in this file, not here.
+      if (["params", "selfScoped", "requiresWritesEnabled", "routeEnforcesCapability", "routeHasNoCurrentBotCaller", "method"].includes(key)) continue;
       assert.ok(key in outputEntry,
         `COMMAND_METADATA field "${key}" on route ${route} was silently dropped from the catalog's real JSON output`);
       assert.deepEqual(outputEntry[key], meta[key],
@@ -392,8 +419,26 @@ test("STATUS's diagnosticCapability specifically reaches the real catalog output
   const statusEntry = flattenRoutes(catalog).find((entry) => entry.route === DISCORD_ADAPTER_ROUTES.STATUS);
   assert.ok(statusEntry, "STATUS route entry not found in catalog");
   assert.equal(statusEntry.diagnosticCapability, COMMAND_METADATA[DISCORD_ADAPTER_ROUTES.STATUS].diagnosticCapability);
+});
+
+// Issue #370: STATUS's diagnosticCapability implies a second capability
+// the primary minTier computation doesn't cover -- a bot has no other way
+// to know what tier "logs:read" requires without private knowledge of
+// Core's policy table. Ports Red-Blink's post-merge fix on the upstream
+// PR #171 branch (commit 144aa84d) to main's copy of this function.
+test("STATUS's diagnosticMinTier is derived from diagnosticCapability, so consumers don't need a private copy of Core's policy table", () => {
+  const catalog = buildCommandCatalog();
+  const statusEntry = flattenRoutes(catalog).find((entry) => entry.route === DISCORD_ADAPTER_ROUTES.STATUS);
+  assert.ok(statusEntry, "STATUS route entry not found in catalog");
   assert.equal(statusEntry.diagnosticMinTier, "admin",
     "the catalog must expose the conditional capability's effective tier so consumers do not need a private copy of Core's policy table");
+});
+
+test("PLAYERS_ACCOUNTS_LINK_STEAM's disabledPendingSecurityReview specifically reaches the real catalog output (main-only field, doesn't exist on the upstream PR #171 branch)", () => {
+  const catalog = buildCommandCatalog();
+  const linkSteamEntry = flattenRoutes(catalog).find((entry) => entry.route === DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_STEAM);
+  assert.ok(linkSteamEntry, "PLAYERS_ACCOUNTS_LINK_STEAM route entry not found in catalog");
+  assert.equal(linkSteamEntry.disabledPendingSecurityReview, true);
 });
 
 test("every fanned-out route entry (routes.length > 1) has a selector, and exactly one route per pair has selector: null (the default)", () => {
