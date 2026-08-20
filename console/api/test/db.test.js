@@ -5191,6 +5191,51 @@ test("storage give-multiple-items inserts every item in one transaction", async 
   assert.equal(calls.filter((call) => call.text === "begin").length, 1, "single shared transaction");
 });
 
+// DBA hat finding (Layer 2 audit, 2026-08-19): every existing volume/slot
+// test above stops the batch after item 1 (clamped or full), so item 2
+// never actually exercises the carried-forward currentVolume/currentCount
+// this function's round-trip fix relies on -- the arithmetic was correct
+// by inspection, but nothing proved it end-to-end across more than one
+// successful, non-terminal insert. This test's three items are chosen so
+// each later item's correct clamp/no-clamp outcome is only reachable if
+// the earlier items' consumption was genuinely carried forward in memory,
+// not left at its initial static value.
+test("storage give-multiple-items carries volume consumption forward across multiple successful inserts, not just a static initial reading", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 5, max_item_volume: 10 }],
+    countRows: [{ count: 0 }],
+    volumeRows: [{ total_volume: 0 }],
+    insertedRowsSequence: [
+      { id: 701, template_id: "AzuriteOre", stack_size: 3, quality_level: 0, position_index: 4, inventory_id: 7 },
+      { id: 702, template_id: "PlantFiber", stack_size: 3, quality_level: 0, position_index: 3, inventory_id: 7 },
+      { id: 703, template_id: "SteelBar", stack_size: 1, quality_level: 0, position_index: 2, inventory_id: 7 }
+    ]
+  });
+  const result = await giveMultipleItemsToBaseContainer(db, 16836, 42, {
+    items: [
+      { templateId: "AzuriteOre", quantity: 3, itemVolume: 2 }, // 3*2=6 of 10 -- fits fully
+      { templateId: "PlantFiber", quantity: 3, itemVolume: 1 }, // needs 3 of the remaining 4 -- fits fully ONLY if item 1's 6 carried forward
+      { templateId: "SteelBar", quantity: 2, itemVolume: 1 }    // needs 2 of the remaining 1 -- must clamp to 1 ONLY if items 1+2's combined 9 carried forward
+    ]
+  });
+  assert.equal(result.results[0].given, 3, "item 1 fits fully: 3*2=6 of 10");
+  assert.equal(result.results[0].clamped, false);
+  assert.equal(result.results[1].given, 3, "item 2 must see item 1's just-consumed 6 volume (not a stale 0) to correctly find room for all 3");
+  assert.equal(result.results[1].clamped, false);
+  assert.equal(result.results[2].given, 1, "item 3 must see items 1+2's combined 9 volume consumed, leaving only 1 of 10 -- clamped down from the requested 2");
+  assert.equal(result.results[2].clamped, true);
+  // Only ONE live count(*) and ONE live volume-sum query for the whole
+  // 3-item batch proves this is genuinely carried-forward in-memory state,
+  // not re-queried (and only coincidentally correct) per item.
+  const countCalls = calls.filter((call) => call.text.includes("count(*)::int"));
+  const volumeCalls = calls.filter((call) => call.text.includes("sum(coalesce(volume_override"));
+  assert.equal(countCalls.length, 1, "count(*) must run once for the whole batch, not once per item");
+  assert.equal(volumeCalls.length, 1, "the volume sum must run once for the whole batch, not once per item");
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 3, "all three items, including the clamped-but-nonzero third, are inserted");
+});
+
 // Same high-end position mitigation as the single-item give test above --
 // giveMultipleItemsToBaseContainer must pick the highest unused slot for
 // every item it inserts in the batch, the same as a single Give would.

@@ -386,6 +386,46 @@ test("real HTTP: give-items batches several real inserts in one call", async (t)
   });
 });
 
+// DBA hat finding (Layer 2 audit, 2026-08-19): the round-trip fix in
+// giveMultipleItemsToBaseContainer computes count/volume/position ONCE per
+// batch and tracks them in memory afterward -- correct by inspection, but
+// the give-items test above never proves it against a real Postgres
+// instance because both its items fit easily inside CHEST's real
+// max_item_volume (500) with no clamping at all. This test uses three
+// distinct fillable items, each real-catalog volume exactly 1.0/unit
+// (SteelBar, FremenComponent1, T6RefinedResourceA -- chosen to keep the
+// arithmetic exact, avoiding float-precision edge cases a fractional
+// per-unit volume like AzuriteOre's 0.2 could introduce), sized so each
+// later item's correct outcome is reachable ONLY if the earlier items'
+// real, Postgres-computed volume consumption was genuinely carried forward
+// in memory, not left at its initial reading.
+test("real HTTP: give-items correctly clamps a later item based on earlier items' real, carried-forward volume consumption", async (t) => {
+  await withServer(t, async ({ pool, getOutput }) => {
+    const { status, body } = await call("POST", `/api/bases/${BUILDING_ACTOR}/containers/${CHEST}/give-items`, {
+      confirmation: "GIVE ITEMS TO STORAGE",
+      items: [
+        { itemId: "SteelBar", quantity: 200 },            // 200 * 1.0 = 200 of 500 -- fits fully
+        { itemId: "FremenComponent1", quantity: 200 },     // needs 200 of the remaining 300 -- fits fully ONLY if item 1's 200 carried forward
+        { itemId: "T6RefinedResourceA", quantity: 150 }    // needs 150 of the remaining 100 -- must clamp to 100 ONLY if items 1+2's combined 400 carried forward
+      ]
+    });
+    assert.equal(status, 200, `unexpected status ${status}. Server output:\n${getOutput()}`);
+    assert.equal(body?.result?.ok, true);
+    const results = body.result.results;
+    assert.equal(results[0].given, 200, "item 1 fits fully");
+    assert.equal(results[0].clamped, false);
+    assert.equal(results[1].given, 200, "item 2 must see item 1's real, just-inserted 200 volume, not a stale 0, to correctly find room for all 200");
+    assert.equal(results[1].clamped, false);
+    assert.equal(results[2].given, 100, "item 3 must see items 1+2's combined 400 volume consumed against the real 500 cap, clamped down from the requested 150");
+    assert.equal(results[2].clamped, true);
+
+    const rows = await itemsIn(pool, CHEST * 10);
+    assert.ok(rows.some((row) => row.template_id === "SteelBar" && Number(row.stack_size) === 200));
+    assert.ok(rows.some((row) => row.template_id === "FremenComponent1" && Number(row.stack_size) === 200));
+    assert.ok(rows.some((row) => row.template_id === "T6RefinedResourceA" && Number(row.stack_size) === 100));
+  });
+});
+
 // Issue #352's own fix (batch-size validation runs BEFORE any per-item
 // catalog resolution) is asserted textually in baseContainerMutationRoutes.
 // test.js already; this proves the OUTCOME through the real HTTP path --

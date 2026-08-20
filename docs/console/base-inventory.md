@@ -474,9 +474,29 @@ panel hidden and the item unselected.
 
 | Action | Route | Backend function | Confirmation phrase |
 |---|---|---|---|
-| Give one item | `POST …/containers/{placeableId}/give-item` | `duneDb.giveItemToStorage()` | `GIVE ITEM TO STORAGE` |
-| Give several items in one call | `POST …/containers/{placeableId}/give-items` | `duneDb.giveMultipleItemsToStorage()` | `GIVE ITEMS TO STORAGE` |
-| Fill with a raw/refined resource or component | `POST …/containers/{placeableId}/fill-item` | `duneDb.fillItemToStorage()` | `FILL ITEM TO STORAGE` |
+| Give one item | `POST …/containers/{placeableId}/give-item` | `duneDb.giveItemToBaseContainer()` | `GIVE ITEM TO STORAGE` |
+| Give several items in one call | `POST …/containers/{placeableId}/give-items` | `duneDb.giveMultipleItemsToBaseContainer()` | `GIVE ITEMS TO STORAGE` |
+| Fill with a raw/refined resource or component | `POST …/containers/{placeableId}/fill-item` | `duneDb.fillItemToBaseContainer()` | `FILL ITEM TO STORAGE` |
+
+**Corrected 2026-08-19** (code-review follow-up, issue #347): these three
+functions used to be `giveItemToStorage()`/`giveMultipleItemsToStorage()`/
+`fillItemToStorage()` — the same functions the standalone Storage tab's own
+routes still use — resolving their target inventory by a bare, unscoped
+`actor_id` lookup with no ownership re-check and no guard against a
+container backing more than one qualifying inventory. That was a real
+TOCTOU gap (ownership/group verified in a separate, unlocked query, then
+written in a completely separate transaction) and a real multi-inventory
+ambiguity gap for these three Bases-scoped routes specifically. Give/Fill
+now resolve ownership, lock the row, and write in one atomic transaction
+via `resolveOwnedStorageContainer()` — the same claim-CTE path Delete
+already used — through three new, Bases-scoped functions
+(`giveItemToBaseContainer`/`fillItemToBaseContainer`/
+`giveMultipleItemsToBaseContainer`, the last renamed from
+`giveMultipleItemsToStorage`, which never had a standalone-tab caller in
+the first place). `giveItemToStorage()`/`fillItemToStorage()` are
+unchanged and still used by the standalone Storage tab's own routes
+(`storageGiveItemRoute` etc.), which operate on an operator-supplied
+storage id directly and have no base+placeable ownership chain to verify.
 
 **Both Give and Fill are restricted to raw resources, refined resources, and components only.**
 `baseContainerGiveItemRoute`/`baseContainerGiveItemsRoute`/`baseContainerFillItemRoute` all resolve items
@@ -492,10 +512,20 @@ only to this Base Inventory tab's Give/Give Multiple actions** — the older, se
 tab's own "Give Item" action (`storageGiveItemRoute`) is unaffected and still accepts any catalog item,
 unchanged.
 
-**Give Multiple is one transaction, capped at 50 distinct items.** Every check `giveItemToStorage` performs
-(slot cap, volume cap) is repeated fresh for each item in the batch — re-queried after each insert, not
-computed once up front — so item 3 correctly sees the slots/volume items 1 and 2 already consumed within
-the same call.
+**Give Multiple is one transaction, capped at 50 distinct items.** Every check `giveItemToBaseContainer`
+performs (slot cap, volume cap, high-end position selection) is repeated fresh for each item in the batch,
+so item 3 correctly sees the slots/volume/positions items 1 and 2 already consumed within the same call.
+
+**Corrected 2026-08-19** (code-review follow-up, issue #347): this used to say each check was re-queried
+against the database after every single item's insert. `giveMultipleItemsToBaseContainer` now fetches the
+container's current slot count, volume total, and occupied position-index set **once**, up front, and tracks
+all three in memory as the batch inserts rows, instead of re-querying per item — the same round-trip
+reduction the bulk-delete functions above already had (`finishDeletingLockedItems`), applied here to bulk
+give. This is safe under the same guarantee bulk-delete already relies on: `resolveOwnedStorageContainer`'s
+`for update of inv` lock is held for the whole transaction, and every other mutation path in this file takes
+that same lock before touching `dune.items`, so nothing else can insert/delete rows in this inventory between
+the initial read and the batch's own inserts. Round-trips drop from ~3-4 per item (~150-300 for a 50-item
+batch) to ~4 total plus one insert per item (~54 for the same batch).
 
 ### Give fills from the high end of a container; Fill does not (and cannot)
 
@@ -539,7 +569,7 @@ left, where even 1 unit does not fit.
 
 **Give Multiple's batch-clamping design is deliberately left-to-right, not best-effort.** Once one item in
 the batch does not fully fit (clamped, or reduced all the way to zero), the batch **stops there** —
-`giveMultipleItemsToStorage` does not skip ahead to try whether a later, smaller item in the same batch
+`giveMultipleItemsToBaseContainer` does not skip ahead to try whether a later, smaller item in the same batch
 might have had room. This is a design choice for predictability, not a limitation: an operator reading a
 per-item breakdown top-to-bottom should be able to reason about "gave everything up to X, then stopped,"
 rather than "gave some subset of the batch in an order that does not match what was typed." Like the
@@ -554,7 +584,8 @@ error condition, and the response's `results` array is the accounting instead.
 
 **Fill offers two distinct actions, not one quantity field with a hidden meaning.** "Fill Amount" sends the
 operator's typed quantity (clamped as above if it does not fully fit). "Fill to Capacity" sends the
-`quantity: 0` sentinel `fillItemToStorage` has always supported — insert as much as fits in whatever volume
+`quantity: 0` sentinel `fillItemToBaseContainer` (and the standalone Storage tab's `fillItemToStorage`, which
+it shares this convention with) has always supported — insert as much as fits in whatever volume
 remains, in one call — but that sentinel was unreachable from any UI before this fix, since both this tab's
 own quantity field and the standalone Storage tab's clamp to a minimum of 1. `requested` is `null` in a
 Fill-to-Capacity response (there was never a specific number to compare against); the UI reports the real
@@ -570,10 +601,11 @@ see "`volume_override` is per-unit, not per-stack" immediately below for why it 
 ### `volume_override` is per-unit, not per-stack
 
 **A real, live in-game bug, not a design choice.** `dune.items.volume_override` is stored as
-the item's PER-UNIT volume, and every volume total (the running total `giveItemToStorage`/
-`fillItemToStorage`/`giveMultipleItemsToStorage` check against a container's `max_item_volume`, and every
-read-side total in `baseInventory`, the standalone Storage tab's `listStorage`, and `baseContainerSlots`)
-is computed as `volume_override × stack_size`, summed across rows.
+the item's PER-UNIT volume, and every volume total (the running total `giveItemToBaseContainer`/
+`fillItemToBaseContainer`/`giveMultipleItemsToBaseContainer` check against a container's `max_item_volume`
+on this tab, the standalone Storage tab's own `giveItemToStorage`/`fillItemToStorage` checking the same
+thing, and every read-side total in `baseInventory`, the standalone Storage tab's `listStorage`, and
+`baseContainerSlots`) is computed as `volume_override × stack_size`, summed across rows.
 
 An earlier version of this code stored `volume_override` as the stack's **total** volume
 (`perUnitVolume × stackSize`) instead, on the theory that this kept the console's own internal volume sums
@@ -647,15 +679,23 @@ is **not** gated by this toggle and stays exactly as exposed as it was before th
 
 **Ownership is re-resolved once per batch, not once per item** — both share a `resolveOwnedStorageContainer()`
 helper that runs the same claim-CTE/allowlist/`is_hologram`/`max_item_count >= 0` resolution the single-item
-delete uses, explicitly *not* the unscoped, actor_id-only lookup Give/Fill use internally (that shape has no
-group filter and could otherwise reach a Refining/Crafting inventory). Ownership is checked once, the
-resulting inventory row locked (`for update of inv`) for the duration of the whole batch.
+delete uses. Ownership is checked once, the resulting inventory row locked (`for update of inv`) for the
+duration of the whole batch.
+
+**Corrected 2026-08-19** (code-review follow-up, issue #347): this used to say Give/Fill deliberately used a
+different, unscoped, actor_id-only lookup instead of this same helper (on the theory that shape had no group
+filter and could otherwise reach a Refining/Crafting inventory). That was true of the standalone Storage
+tab's `giveItemToStorage`/`fillItemToStorage` at the time, and still is — but the Bases-scoped
+`giveItemToBaseContainer`/`fillItemToBaseContainer`/`giveMultipleItemsToBaseContainer` now share this exact
+`resolveOwnedStorageContainer()` helper too, closing a real TOCTOU gap and multi-inventory ambiguity gap
+those three had (see "Adding items: Give, Give Multiple, and Fill" above for the full functions table).
 
 **This query was completely broken against a real database from the moment it was introduced** (issue
 #353): it combined `SELECT DISTINCT` with `FOR UPDATE OF inv`, which Postgres flatly rejects
-(`FOR UPDATE is not allowed with DISTINCT clause`) — every real call to Delete Selected, Delete All, Give,
-Give Multiple, and Fill (Give/Fill reach the same query indirectly, through `baseContainerOwnedStorageId()`'s
-own `baseContainerSlots()` call in `server.js`) would have 500'd in production. This was invisible to every
+(`FOR UPDATE is not allowed with DISTINCT clause`) — every real call to Delete Selected and Delete All
+would have 500'd in production. (At the time this was found, Give/Fill did not yet call this query at all —
+they used their own, separate actor_id-only lookup; they were brought onto this same query, and so onto
+this same fix, later — see the correction immediately above.) This was invisible to every
 mocked unit test in `db.test.js`, since the fake `db.query()` those tests use never actually parses SQL —
 it only pattern-matches the query *text*, so a syntactically invalid query and a valid one with the same
 substrings are indistinguishable to that kind of test. It was found only once a real-HTTP integration test
