@@ -9,18 +9,33 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.3.95)
 
+### Fixed
+
+- **Corrected two wrong `stackSize` values shipped in the #430 give/fill
+  stack-limit work: `Oil` and `SpicedFuelCell` are 500, not 499** (issue
+  #430 follow-up). Both were seeded from `GENERATOR_TYPES`' refill table,
+  which turned out to be a refill *policy* value, not the engine's real
+  per-item cap. An operator challenge to validate against an external
+  source (dune.gaming.tools's own item data feed) found the true limit is
+  500 for both, matching `addonSeedJob.js`'s pre-existing value (issue #432
+  had already flagged this exact contradiction). `MelangeSpice` 500 and
+  both lubricants at 100 were independently confirmed correct against the
+  same source. The generator-refill table's own 499 is left unchanged —
+  it's a separate, already-live system; whether it should be raised to 500
+  is its own live-verified decision. See
+  `docs/console/base-inventory.md`'s curation note.
+
 ### Changed
 
 - **Give/Fill item paths now adhere to the game's per-item stack limits**
   (issue #430). The game engine enforces a per-item max stack size (Spice
-  Melange 500, Fuel Cell/Spice-infused Fuel Cell 499, lubricants 100), but
-  every console give/fill path previously wrote the full requested quantity —
-  up to 1,000,000 units — into a single `dune.items` row, bypassing the
-  engine's own stack validation. Stack limits are now curated in
-  `runtime/data/admin-items.json`'s new optional `stackSize` field (exactly
-  like `volume`; seeding provenance: the four fuel/lubricant values match
-  the generator-refill table that has been feeding real accepted refills,
-  and Spice Melange 500 was operator-stated from the live game — see
+  Melange, Fuel Cell, and Spice-infused Fuel Cell all 500, lubricants 100 —
+  externally verified against dune.gaming.tools, see the Fixed entry above
+  for the correction of an initial wrong value), but every console give/fill
+  path previously wrote the full requested quantity — up to 1,000,000
+  units — into a single `dune.items` row, bypassing the engine's own stack
+  validation. Stack limits are now curated in `runtime/data/admin-items.json`'s
+  new optional `stackSize` field (exactly like `volume`; see
   `docs/console/base-inventory.md`'s curation note before adding more) and
   enforced everywhere the console inserts item rows, case-insensitively:
   Storage/Base-container Give and Fill and player Give **split** an
