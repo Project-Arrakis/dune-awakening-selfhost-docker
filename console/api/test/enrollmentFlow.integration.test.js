@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer as createTcpServer } from "node:net";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -165,6 +165,76 @@ test("the 2fa endpoints reject a request with no enrollment session", async () =
     await waitForHealth(port);
     assert.equal((await api(port, "/api/auth/2fa/setup")).status, 403);
     assert.equal((await api(port, "/api/auth/2fa/confirm", { body: { code: "123456" } })).status, 403);
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("2fa/setup rejects a valid enrollment session that omits the CSRF token", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "enroll-e2e-csrf-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const login = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+    const cookie = cookieFrom(login);
+    const csrf = (await login.json()).csrfToken;
+    // valid enroll cookie, NO csrf header -> rejected
+    assert.equal((await api(port, "/api/auth/2fa/setup", { cookie })).status, 403);
+    // with the csrf header -> accepted (proves the cookie itself is valid)
+    assert.equal((await api(port, "/api/auth/2fa/setup", { cookie, csrf })).status, 200);
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("login fails closed (503, no session) when the second-factor state file is corrupt", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "enroll-e2e-corrupt-"));
+  // plant a corrupt second-factor file before the server reads it on login
+  const genDir = join(tempDir, "runtime", "generated");
+  mkdirSync(genDir, { recursive: true });
+  writeFileSync(join(genDir, "console-second-factor.json"), "{ not valid json", { mode: 0o600 });
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const res = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+    assert.equal(res.status, 503, "corrupt 2FA state must fail closed, never grant a session");
+    const body = await res.json();
+    assert.equal(body.authenticated, undefined);
+    assert.equal(body.enrollmentRequired, undefined);
+    assert.ok(!cookieFrom(res), "no session cookie on the fail-closed path");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("a second enrollment that loses the race gets 409 already_configured", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "enroll-e2e-race-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    // two independent enrollment sessions (no factor configured yet, so each
+    // password login yields an enroll session)
+    const la = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+    const ca = cookieFrom(la), sa = (await la.json()).csrfToken;
+    const lb = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+    const cb = cookieFrom(lb), sb = (await lb.json()).csrfToken;
+
+    const setupA = await (await api(port, "/api/auth/2fa/setup", { cookie: ca, csrf: sa })).json();
+    const setupB = await (await api(port, "/api/auth/2fa/setup", { cookie: cb, csrf: sb })).json();
+
+    // A enrolls first -> 200
+    const confA = await api(port, "/api/auth/2fa/confirm", { cookie: ca, csrf: sa, body: { code: codeFor(setupA.secret) } });
+    assert.equal(confA.status, 200);
+    // B's confirm now loses -> 409, and B's session is ended
+    const confB = await api(port, "/api/auth/2fa/confirm", { cookie: cb, csrf: sb, body: { code: codeFor(setupB.secret) } });
+    assert.equal(confB.status, 409, "the losing enrollment gets already_configured");
+    assert.equal((await api(port, "/api/auth/2fa/setup", { cookie: cb, csrf: sb })).status, 403, "loser's session is invalidated");
   } finally {
     await stopProcess(console.child);
     rmSync(tempDir, { recursive: true, force: true });

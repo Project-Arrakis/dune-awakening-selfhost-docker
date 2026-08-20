@@ -494,7 +494,16 @@ async function handleApi(req, res) {
   if (path === "/api/health") return json(res, 200, { ok: true, app: config.appName });
   if (path === "/api/auth/state") {
     const session = auth.readSession(req);
-    return json(res, 200, { authenticated: Boolean(session), csrfToken: session?.csrf || null, config: publicConfig(config) });
+    return json(res, 200, {
+      authenticated: Boolean(session),
+      // An enroll-scoped session is not a usable console session -- the client
+      // must route to setup, not render the console (UI can also treat any
+      // enrollmentRequired 403 as the same signal).
+      scope: session?.scope || null,
+      enrollmentRequired: session?.scope === "enroll",
+      csrfToken: session?.csrf || null,
+      config: publicConfig(config),
+    });
   }
   if (path === "/api/auth/login" && req.method === "POST") {
     const rateKey = loginRateLimitKey(req);
@@ -515,7 +524,7 @@ async function handleApi(req, res) {
       loginRateLimiter.recordSuccess(rateKey);
       const session = auth.makeSession();
       setSessionCookie(res, session, config);
-      audit(config, req, "auth.login", { ok: true });
+      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: true });
       return json(res, 200, { authenticated: true, csrfToken: session.csrf });
     }
     let configured;
@@ -525,35 +534,40 @@ async function handleApi(req, res) {
       // Corrupt / newer-version second-factor state -> fail closed, grant nothing
       // (a corrupt file must never let the password through without the factor).
       loginRateLimiter.recordFailure(rateKey);
-      audit(config, req, "auth.login", { ok: false, reason: "second_factor_unavailable" });
-      return json(res, 503, { error: "Two-factor state is unavailable on this console. Contact the server administrator." });
+      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: false, reason: "second_factor_unavailable" });
+      return json(res, 503, { error: "Two-factor state on this console is unreadable, so sign-in is blocked. An operator with server access must inspect runtime/generated/console-second-factor.json -- restore it from backup, or remove it to re-enroll a fresh authenticator on the next password sign-in." });
     }
     if (!configured) {
       // §4: first post-upgrade login with no TOTP state -> mandatory enrollment.
-      // Issue a short-lived, non-renewable enrollment-only session (the gate
-      // restricts it to /api/auth/2fa/*). No normal session is granted yet.
+      // Issue a short-lived, non-renewable enrollment-only session. tier "enroll"
+      // is not a valid policy tier (evaluate() default-denies it), so even if the
+      // scope allowlist guard were ever bypassed the session grants nothing --
+      // containment is defense-in-depth, not solely the guard.
       loginRateLimiter.recordSuccess(rateKey);
-      const session = auth.makeSession({ scope: "enroll", ttlMs: config.enrollmentSessionTtlMs, renewable: false });
-      setSessionCookie(res, session, config);
-      audit(config, req, "auth.login", { ok: true, enrollment: true });
+      const session = auth.makeSession({ tier: "enroll", scope: "enroll", ttlMs: config.enrollmentSessionTtlMs, renewable: false });
+      setSessionCookie(res, session, config, { maxAgeSeconds: Math.floor(config.enrollmentSessionTtlMs / 1000) });
+      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: true, enrollment: true });
       return json(res, 200, { enrollmentRequired: true, csrfToken: session.csrf });
     }
     // Enrolled: a TOTP code must accompany the password. A missing code is not a
     // failed attempt (the password was right) -- prompt for the second factor.
+    // It IS audited: a correct-password/no-device request is a compromised-
+    // password signal worth a trail (no recordFailure, so no legit-user lockout).
     const totpCode = String(body.totpCode || "").trim();
     if (!totpCode) {
+      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: false, reason: "totp_missing" });
       return json(res, 401, { totpRequired: true, error: "Enter your authenticator code to finish signing in." });
     }
     const verify = await secondFactor.verifyTotpToken(totpCode, nowSeconds());
     if (!verify.ok) {
       loginRateLimiter.recordFailure(rateKey);
-      audit(config, req, "auth.login", { ok: false, reason: `totp_${verify.reason}` });
+      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: false, reason: `totp_${verify.reason}` });
       return json(res, 401, { totpRequired: true, error: "That authenticator code was not accepted. Check your device's clock and enter the current code." });
     }
     loginRateLimiter.recordSuccess(rateKey);
     const session = auth.makeSession();
     setSessionCookie(res, session, config);
-    audit(config, req, "auth.login", { ok: true });
+    audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: true });
     return json(res, 200, { authenticated: true, csrfToken: session.csrf });
   }
   // Enrollment-only sessions (RFC §4) may reach ONLY the enrollment endpoints
@@ -561,8 +575,10 @@ async function handleApi(req, res) {
   // authenticated route -- including the pre-gate /api/auth/* data routes (e.g.
   // /characters) that only call requireAuth -- so a restricted session can never
   // escape its scope through a route handled before the central policy gate.
-  // (/health, /state, /login are public and sit above this.)
-  {
+  // (/health, /state, /login are public and sit above this.) Skipped entirely
+  // when the flag is off -- no enroll session can exist, so the readSession is
+  // pure overhead.
+  if (config.consoleTotpEnabled) {
     const enrollSession = auth.readSession(req);
     if (enrollSession && enrollSession.scope === "enroll") {
       const ENROLL_ALLOWED = new Set([

@@ -96,9 +96,9 @@ export function createAuth(config) {
   return { makeSession, readSession, passwordMatches, requireAuth, invalidateSession };
 }
 
-export function setSessionCookie(res, session, config = {}) {
+export function setSessionCookie(res, session, config = {}, { maxAgeSeconds = 43200 } = {}) {
   const secure = config.secureCookies ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `asc_session=${encodeURIComponent(session.cookie)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200${secure}`);
+  res.setHeader("Set-Cookie", `asc_session=${encodeURIComponent(session.cookie)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAgeSeconds}${secure}`);
 }
 
 export function clearSessionCookie(res, config = {}) {
