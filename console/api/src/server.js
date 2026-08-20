@@ -563,9 +563,9 @@ async function handleApi(req, res) {
       // a compromised-password signal worth a trail (no recordFailure, so no
       // legit-user lockout).
       audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: false, reason: "totp_missing" });
-      return json(res, 401, { totpRequired: true, error: "Enter your authenticator code, or use a recovery code if you have lost your device." });
+      return json(res, 401, { totpRequired: true, recoveryAvailable: true, error: "Enter your authenticator code, or use a recovery code if you have lost your device." });
     }
-    if (recoveryCode) {
+    if (recoveryCode && !totpCode) {
       // Recovery login (RFC §2.3): password + one unused recovery code. The code
       // substitutes for the TOTP factor ONLY, never the password. Because the
       // operator's authenticator is presumed lost, a successful recovery login
@@ -588,7 +588,7 @@ async function handleApi(req, res) {
     if (!verify.ok) {
       loginRateLimiter.recordFailure(rateKey);
       audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: false, reason: `totp_${verify.reason}` });
-      return json(res, 401, { totpRequired: true, error: "That authenticator code was not accepted. Check your device's clock and enter the current code." });
+      return json(res, 401, { totpRequired: true, recoveryAvailable: true, error: "That authenticator code was not accepted. Check your device's clock and enter the current code." });
     }
     loginRateLimiter.recordSuccess(rateKey);
     const session = auth.makeSession();

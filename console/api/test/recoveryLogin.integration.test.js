@@ -175,3 +175,25 @@ test("a malformed recovery code is rejected without a server error", async () =>
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("failed recovery-code attempts are rate-limited (recordFailure fires)", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "recovery-e2e-ratelimit-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    await enrollFresh(port);
+    // Correct password + wrong recovery codes must be metered so recovery codes
+    // can't be brute-forced: hammering eventually trips the 429 login limiter.
+    let saw429 = false;
+    for (let i = 0; i < 12; i++) {
+      const r = await api(port, "/api/auth/login", { body: { password: PASSWORD, recoveryCode: `0000-0000-0000-0000-0000-0000-0000-0000-0${i}` } });
+      if (r.status === 429) { saw429 = true; break; }
+      assert.equal(r.status, 401, "each bad code is a 401 until the limiter trips");
+    }
+    assert.ok(saw429, "repeated bad recovery codes must eventually 429 -- the failure path calls recordFailure");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
