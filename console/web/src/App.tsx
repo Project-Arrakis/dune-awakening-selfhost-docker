@@ -1,5 +1,5 @@
 import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Archive, Building2, Car, CircleArrowUp, Database, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
+import { Archive, Bug, Building2, Car, CircleArrowUp, CircleHelp, Database, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, post, setCsrfToken } from "./api/client";
 import { setServerPorts, setAdminPort, type ServerPorts } from "./api/serverPorts";
 import { serverApi, type RestartQueueTarget } from "./api/server";
@@ -828,7 +828,11 @@ export function App() {
                 </Fragment>
               ))}
               {group.title === "Community" && (
-                <a className="sidebar-request-button" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer"><MessageCircle size={18} />Requests</a>
+                <>
+                  <a className="sidebar-request-button" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer"><MessageCircle size={18} />Requests</a>
+                  <a className="sidebar-request-button" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer"><Bug size={18} />Report Issues</a>
+                  <a className="sidebar-request-button" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer"><CircleHelp size={18} />Get Help</a>
+                </>
               )}
             </section>
           ))}

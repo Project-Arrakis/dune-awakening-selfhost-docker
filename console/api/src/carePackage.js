@@ -472,13 +472,13 @@ export async function retryCarePackageGrant(config, grantId, body = {}, context 
 }
 
 export function validateCarePackageConfig(body = {}) {
-  const enabled = Boolean(body.enabled);
   const kits = validateCarePackages(body);
   const activeKitId = validKitId(body.activeKitId, kits) || kits[0]?.id || "";
   const autoGrantKitId = validKitId(body.autoGrantKitId, kits) || activeKitId;
   const activeKit = kits.find((kit) => kit.id === activeKitId) || kits[0] || { id: "", items: [], xp: 0 };
   const grantWhen = validateGrantWhen(body.grantWhen || DEFAULT_CONFIG.grantWhen);
   const autoGrantRules = validateAutoGrantRules(body, kits, autoGrantKitId, grantWhen);
+  const enabled = Boolean(body.enabled) || autoGrantRules.some((rule) => rule.enabled);
   return {
     enabled,
     version: activeKit.id,
