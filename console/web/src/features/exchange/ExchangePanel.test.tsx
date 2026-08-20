@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { exchangeApi, type ExchangeItemsResponse } from "../../api/exchange";
 import { marketBotApi } from "../../api/marketBot";
+import { marketBotItemsApi } from "../../api/marketBotItems";
 import { ExchangePanel, _resetExchangeCacheForTests } from "./ExchangePanel";
 
 vi.mock("../../api/exchange", () => ({
@@ -26,6 +27,14 @@ vi.mock("../../api/marketBot", () => ({
   }
 }));
 
+vi.mock("../../api/marketBotItems", () => ({
+  marketBotItemsApi: {
+    list: vi.fn(),
+    catalog: vi.fn(),
+    save: vi.fn()
+  }
+}));
+
 function renderPanel(overrides: Partial<Parameters<typeof ExchangePanel>[0]> = {}) {
   const props = {
     onError: vi.fn(),
@@ -47,8 +56,8 @@ function itemsResponse(overrides: Partial<ExchangeItemsResponse> = {}): Exchange
       {
         template_id: "PartialStabilizationBelt",
         quality_level: 0,
-        display_name: "Partial Stabilization Belt",
-        category: "utility",
+        display_name: "partial stabilization belt",
+        category: "ranked_weapons",
         tier: null,
         lowest_price: 45084,
         total_stock: 4,
@@ -68,6 +77,21 @@ beforeEach(() => {
   vi.mocked(exchangeApi.listings).mockResolvedValue({ capabilities: { exchange: true }, rows: [] });
   // Default: no exchange:market permission — the Market Bot button stays hidden.
   vi.mocked(marketBotApi.status).mockRejectedValue(new Error("Forbidden"));
+  vi.mocked(marketBotItemsApi.list).mockResolvedValue({
+    capabilities: { exchangeMarket: true },
+    rows: [{
+      templateId: "TestWeapon",
+      displayName: "Test Weapon",
+      category: "ranked_weapons",
+      qualityLevel: 0,
+      price: 100,
+      listings: 1,
+      enabled: true,
+      overridden: false,
+      isNew: false,
+      unsafe: false
+    }]
+  });
 });
 
 describe("ExchangePanel", () => {
@@ -77,6 +101,7 @@ describe("ExchangePanel", () => {
 
     expect(await screen.findByText("Partial Stabilization Belt")).toBeInTheDocument();
     expect(screen.getByText("45,084")).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "Ranked Weapons" })).toBeInTheDocument();
   });
 
   it("defaults the owner filter to all listings", async () => {
@@ -103,7 +128,7 @@ describe("ExchangePanel", () => {
 
     await screen.findByText("Partial Stabilization Belt");
     const categorySelect = screen.getByRole("combobox", { name: /Category/ });
-    expect(within(categorySelect).getByRole("option", { name: "weapons" })).toBeInTheDocument();
+    expect(within(categorySelect).getByRole("option", { name: "Weapons" })).toHaveValue("weapons");
     fireEvent.change(categorySelect, { target: { value: "utility" } });
 
     await waitFor(() => expect(vi.mocked(exchangeApi.items)).toHaveBeenCalledWith(expect.objectContaining({ category: "utility" })));
@@ -126,7 +151,7 @@ describe("ExchangePanel", () => {
     renderPanel();
 
     await screen.findByText("Partial Stabilization Belt");
-    fireEvent.change(screen.getByPlaceholderText("Search item name, category, or template"), { target: { value: "belt" } });
+    fireEvent.change(screen.getByPlaceholderText("Search Item Name, Category, or Template"), { target: { value: "belt" } });
     fireEvent.click(screen.getByText("Search"));
 
     await waitFor(() => expect(vi.mocked(exchangeApi.items)).toHaveBeenCalledWith(expect.objectContaining({ q: "belt" })));
@@ -160,7 +185,7 @@ describe("ExchangePanel", () => {
     await screen.findByText("Partial Stabilization Belt");
     fireEvent.click(screen.getByLabelText("Configure bots and blacklist"));
 
-    expect(await screen.findByText("Exchange filter settings")).toBeInTheDocument();
+    expect(await screen.findByText("Exchange Filter Settings")).toBeInTheDocument();
     expect(vi.mocked(exchangeApi.getConfig)).toHaveBeenCalled();
   });
 
@@ -175,6 +200,7 @@ describe("ExchangePanel", () => {
     fireEvent.click(await screen.findByLabelText("Show listings for Partial Stabilization Belt"));
 
     expect(await screen.findByText("Halfmoondee")).toBeInTheDocument();
+    expect(screen.getByText("Player")).toBeInTheDocument();
     // Drill-down respects the current owner filter (default: all).
     expect(vi.mocked(exchangeApi.listings)).toHaveBeenCalledWith("PartialStabilizationBelt", 0, "all");
   });
@@ -191,7 +217,7 @@ describe("ExchangePanel", () => {
     renderPanel();
 
     expect(await screen.findByText(/Missing required table/)).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("Search item name, category, or template")).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Search Item Name, Category, or Template")).not.toBeInTheDocument();
   });
 
   it("shows the Market Bot button only when the market status endpoint is reachable", async () => {
@@ -213,5 +239,26 @@ describe("ExchangePanel", () => {
 
     await screen.findByText("Partial Stabilization Belt");
     expect(screen.queryByLabelText("Market Bot settings")).not.toBeInTheDocument();
+  });
+
+  it("confirms before leaving Bot Items with unsaved changes", async () => {
+    vi.mocked(exchangeApi.items).mockResolvedValue(itemsResponse());
+    const confirmAction = vi.fn().mockResolvedValue(false);
+    renderPanel({ confirmAction });
+
+    await screen.findByText("Partial Stabilization Belt");
+    fireEvent.click(screen.getByRole("tab", { name: "Bot Items" }));
+    fireEvent.click(await screen.findByLabelText("Test Weapon On"));
+    fireEvent.click(screen.getByRole("tab", { name: "Exchange" }));
+
+    await waitFor(() => expect(confirmAction).toHaveBeenCalledWith(
+      "You have unsaved Bot Item changes. Leave this tab and discard them?",
+      expect.objectContaining({ confirmLabel: "Discard and Leave" })
+    ));
+    expect(screen.getByText("Test Weapon")).toBeInTheDocument();
+
+    confirmAction.mockResolvedValueOnce(true);
+    fireEvent.click(screen.getByRole("tab", { name: "Exchange" }));
+    expect(await screen.findByText("Partial Stabilization Belt")).toBeInTheDocument();
   });
 });

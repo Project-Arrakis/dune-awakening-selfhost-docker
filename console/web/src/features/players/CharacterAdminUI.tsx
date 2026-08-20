@@ -1214,14 +1214,14 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
               : `No gear needed repair (${scanned} item${scanned === 1 ? "" : "s"} scanned).`
           };
         }, `${playerName}'s gear was repaired. Relog required.`, { actionType: "Repair Gear", target: playerName, amount: "1" });
-      }}>Repair Gear</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairGear" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Vehicle Red Bar</span><label className="playerAdmin_vehicleDecayField"><span>Threshold</span><input value={playerAdmin_vehicleDecayThreshold} onChange={(event) => playerAdmin_setVehicleDecayThreshold(event.target.value)} inputMode="numeric" aria-label="Vehicle red-bar repair threshold percent" /><span>%</span></label><em>{playerAdmin_isOnline ? "The player must be offline." : "Owned vehicle modules below the threshold. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
+      }}>Repair Gear</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairGear" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span className="playerAdmin_labelWithInfo"><span>Repair Vehicle Durability</span><InfoTooltip id="repair-vehicle-durability-help" label="About Repair Vehicle Durability">Repairs owned vehicle modules whose current durability is below the selected percentage of their stored maximum. Modules without a trustworthy stored maximum are skipped rather than guessed. The player must be offline and should relog afterward.</InfoTooltip></span><label className="playerAdmin_vehicleDecayField"><span>Repair Below</span><input value={playerAdmin_vehicleDecayThreshold} onChange={(event) => playerAdmin_setVehicleDecayThreshold(event.target.value)} inputMode="numeric" aria-label="Vehicle durability repair threshold percent" /><span>%</span></label><em>{playerAdmin_isOnline ? "The player must be offline." : "Repairs eligible owned vehicle modules below this percentage. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
         const threshold = Number(playerAdmin_vehicleDecayThreshold);
         if (!Number.isFinite(threshold) || threshold < 1 || threshold > 100) {
           playerAdmin_showResult("repairVehicleDecay", "Use a threshold from 1 to 100.", "danger");
           return;
         }
-        if (!(await confirmAction(`Repair vehicle red-bar decay below ${threshold}% for ${playerName}? The player must be offline and should relog after this.`, {
-          title: "Repair Vehicle Decay",
+        if (!(await confirmAction(`Repair owned vehicle modules below ${threshold}% durability for ${playerName}? Modules without a trustworthy stored maximum will be skipped.`, {
+          title: "Repair Vehicle Durability",
           confirmLabel: "Repair Vehicles",
           details: [{ label: "Threshold", value: `${threshold}%`, tone: "accent" }]
         }))) return;
@@ -1238,7 +1238,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           return {
             message: repaired > 0
               ? `Repaired ${repaired} vehicle module${repaired === 1 ? "" : "s"} across ${repairedVehicles} vehicle${repairedVehicles === 1 ? "" : "s"}. Relog required.${skippedNote}`
-              : `No comparable vehicle modules were below ${threshold}% red-bar threshold (${scanned} module${scanned === 1 ? "" : "s"} across ${vehicles} vehicle${vehicles === 1 ? "" : "s"} scanned; ${comparable} had a trustworthy maximum).${skippedNote}`
+              : `No comparable vehicle modules were below the ${threshold}% durability threshold (${scanned} module${scanned === 1 ? "" : "s"} across ${vehicles} vehicle${vehicles === 1 ? "" : "s"} scanned; ${comparable} had a trustworthy maximum).${skippedNote}`
           };
         }, `${playerName}'s vehicle decay was repaired. Relog required.`, { actionType: "Repair Vehicle Decay", target: playerName, amount: `${threshold}%` });
       }}>Repair Vehicles</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairVehicleDecay" /></div></div><div className="playerAdmin_section playerAdmin_dangerSection"><h5>Danger Zone</h5><div className="playerAdmin_buttonRow"><button className="danger" disabled={!actionPlayerId || playerAdmin_actionResult?.pending} onClick={async () => {

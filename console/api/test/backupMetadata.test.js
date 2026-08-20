@@ -38,6 +38,19 @@ test("imported official BattleGroup YAML is normalized with source battlegroup",
   assert.equal(metadata.backup_origin, "external");
 });
 
+test("backup rows type market-bot backups from the sidecar origin, covering unlabeled legacy names", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-backup-marketbot-"));
+  const backupDir = join(repoRoot, "runtime/backups/db");
+  mkdirSync(backupDir, { recursive: true });
+  // A legacy name with no market-bot label: only the sidecar knows the origin.
+  writeFileSync(join(backupDir, "dune-db-all_maps-20260819-010203.backup"), Buffer.alloc(10));
+  writeFileSync(join(backupDir, "dune-db-all_maps-20260819-010203.backup.yaml"), "backup_origin: market-bot-buyback\n");
+
+  const rows = enrichBackupRows({ repoRoot }, [{ name: "dune-db-all_maps-20260819-010203.backup", backupName: "dune-db-all_maps-20260819-010203.backup", type: "Manual Backup" }]);
+
+  assert.equal(rows[0].type, "Market Bot Backup");
+});
+
 test("backup rows include human-readable file sizes", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "dune-backup-size-"));
   const backupDir = join(repoRoot, "runtime/backups/db");

@@ -321,18 +321,29 @@ routes above. Its `containers[].items[]` is merged per item template, not per
 slot — `GET /api/bases/{baseId}/containers/{placeableId}` is the per-slot view,
 fetched one container at a time because slots roughly triple the response.
 
-`DELETE …/containers/{placeableId}/items/{itemId}` and
-`POST …/containers/{placeableId}/items` are both refused unless
-`baseRefillTarget` can verify that the owning map is safely stopped. An unknown
-state fails closed, and each route repeats the check immediately before the
-write. Only plain Storage contents are mutable; Crafting and Refining remain
-read-only because active jobs can reference their item rows. The same allowlist
-that keeps fuel inventories out of the read keeps them out of both writes. They
-need `bases:delete-item` and `bases:add-item` respectively, not `bases:mutate` —
-this tab shipped read-only, so a `bases:mutate` grant cannot be read as consent
-to destroy or fabricate items. The add never merges into an existing stack and
-always appends to `max(position_index) + 1`; the caller cannot pick a slot. See
-[base-inventory.md](base-inventory.md).
+`POST …/containers/{placeableId}/items` (Add Item to Container, upstream's own
+route) is refused unless `baseRefillTarget` can verify that the owning map is
+safely stopped — an unknown state fails closed, and the route repeats the
+check immediately before the write. It needs `bases:add-item`, not
+`bases:mutate`. The add never merges into an existing stack and always
+appends to `max(position_index) + 1`; the caller cannot pick a slot.
+
+`DELETE …/containers/{placeableId}/items/{itemId}` (and the bulk
+`DELETE …/items` / `DELETE …/all-items` routes), plus
+`POST …/containers/{placeableId}/give-item`, `give-items`, and `fill-item`
+(this fork's own #347 work), do **not** require the owning map to be
+stopped — these are pure database writes with no live-sync path to a running
+map (see [base-inventory.md](base-inventory.md)'s "Deletion does not require
+a stopped map" section for the live-tested evidence this rests on). They need
+`bases:delete-item`/`bases:bulk-delete-items`/`bases:give-item`/
+`bases:fill-item` respectively, not `bases:mutate`.
+
+Across all of the above, only plain Storage contents are mutable; Crafting
+and Refining remain read-only because active jobs can reference their item
+rows. The same allowlist that keeps fuel inventories out of the read keeps
+them out of every write. This tab shipped read-only, so a `bases:mutate`
+grant cannot be read as consent to destroy or fabricate items in any of these
+routes. See [base-inventory.md](base-inventory.md).
 
 Both `GET /api/bases/{baseId}/water` and `GET /api/bases/{baseId}/inventory`
 answer **200 with `supported: false` and a `reason`** when the detected schema
@@ -358,11 +369,24 @@ tab can offer a retry only where retrying could actually help.
 |--------|-------|-------------|------------|
 | GET | `/api/vehicles` | List all player vehicles (paginated), each with owner, shared-with roster, lowest-component condition %, fuel %, map/partition, coordinates, and per-component durability | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?` |
 | GET | `/api/players/{playerId}/vehicles` | List the selected player's owned and shared vehicles using the same vehicle details | `playerId` |
+| GET | `/api/vehicles/{vehicleId}/permissions` | Get a vehicle's permission roster (Owner, Co-Owners, Associates) | `vehicleId` |
+| PUT | `/api/vehicles/{vehicleId}/permissions` | Replace a vehicle's permission roster | `vehicleId`, `entries[]` (`playerId`, `rank`) |
+| GET | `/api/vehicles/permission-candidates` | Search players eligible to be added to a vehicle roster | `q?`, `limit?` |
 
-Read-only. `GET /api/vehicles` reports `capabilities.vehicles`; it is false (with a
+`GET /api/vehicles` and the player-scoped list are read-only; the three
+permission routes above are the only vehicle mutations, and they share their
+implementation with the base permission routes -- see
+[vehicle-permissions.md](vehicle-permissions.md). Unlike bases, there is no
+vehicle transfer/system-custodian route by design.
+
+`GET /api/vehicles` reports `capabilities.vehicles`; it is false (with a
 `reason`) when the schema lacks the required tables (`vehicles`, `vehicle_modules`,
 `actors`, `permission_actor`, `permission_actor_rank`, `player_state`,
-`actor_fgl_entities`, `fgl_entities`). Sortable `sortColumn` values: `id`, `name`,
+`actor_fgl_entities`, `fgl_entities`). It also reports
+`capabilities.vehiclePermissions` (the schema additionally has `dune.map_names`
+and the game's `permission_set_player_rank` / `permission_remove_player_rank`
+procedures) -- the permission routes and the Permissions tab are unavailable
+when it is false. Sortable `sortColumn` values: `id`, `name`,
 `type`, `owner`, `condition_percent`, `fuel_percent`, `map`; `q` matches vehicle
 name, type, owner, map, and exact id. Response fields mirror the paginated-list
 convention (`rows`, `totalCount`, unfiltered `totalVehicles`). Owner resolves from
@@ -453,6 +477,10 @@ blacklist behaves.
 | POST | `/api/exchange/market/seed/schedule` | Save the market reseed schedule (audited, rate-limited) | body: `enabled`, `intervalMinutes`, `exchangeId`, `priceMultiplier`, `augmentMultiplier`, `rankedArmorMultiplier`, `rankedWeaponMultiplier`, `augmentPricing` (`discounted`\|`original`), `commodityStacks` (object of templateId → 1–20 listing counts for allowlisted commodities) |
 | POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |
 | POST | `/api/exchange/market/seed/run` | Run a market reseed now with the saved schedule (backup → clear bot listings → seed) | None |
+| POST | `/api/exchange/market/seed/clear` | Remove the bot's NPC listings from one exchange without reseeding (probe → backup → clear; no backup when the bot has none). Player listings and pending seller payments are never touched. Requires `exchange:market-write`. Rate-limited. | body: `exchangeId?` (defaults to the saved seed schedule's exchange) |
+| GET | `/api/exchange/market/items` | Merged, display-ready bot item catalog (bundled plan rows + admin-added new items), annotated with `overridden`/`isNew`/`unsafe` per row | None |
+| GET | `/api/exchange/market/items/catalog` | Item picker for "add item": `admin-items.json` filtered to allowed categories and unsafe-id-free | query: `q?`, `category?` |
+| POST | `/api/exchange/market/items` | Save per-item overrides/new items/removals in one batch (audited, rate-limited). Requires `exchange:market-write`. | body: `overrides?` (object of templateId → `{enabled?, price?, listings?}`), `newItems?` (object of templateId → `{name?, price, listings, enabled?, qualityLevel?, stackSize?}`), `removedNewItems?` (array of templateId) |
 
 The three category multipliers (`augmentMultiplier`, `rankedArmorMultiplier`,
 `rankedWeaponMultiplier`) accept 1–5 (up to two decimals, default 1 = no change)
@@ -469,6 +497,16 @@ allowlisted commodities a reseed lists (1–20, default 2). Unknown template ids
 are ignored. Units per stack stay at the plan `stack_size`. The catalog of
 editable items is returned on `GET /api/exchange/market` as
 `commodityStackCatalog` / `commodityStackGroups`.
+
+The `/api/exchange/market/items*` routes are a separate, per-item override layer
+on top of the bundled seed plan (`runtime/generated/market-bot/items.json`, never
+written back into `market-seed-plan.json`). They are merged in at read time for
+both the seed run and the buyback price caps, so a disabled or repriced item
+behaves the same in both jobs. New items may only reference a template id already
+present in `runtime/data/admin-items.json` (never free text); `buildings`,
+`contracts`, and `emotes` categories and any id in the seed plan's
+`unsafe_template_ids` are rejected outright. See
+[exchange.md](exchange.md#bot-items-catalog-overrides) for the full behavior.
 
 Unlike the board above, these routes **do write the game database** through the
 native Market Bot engine (`addonJobs.js` / `addonSeedJob.js`). Reads, the probe, and
