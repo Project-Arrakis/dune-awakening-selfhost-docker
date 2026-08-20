@@ -275,15 +275,20 @@ test("resolveCatalogItem passes stackSize through for catalogued items", () => {
   assert.equal(resolveCatalogItem(root, { itemId: "PlantFiber" }).stackSize, undefined);
 });
 
-// Seeded-value provenance: Oil and SpicedFuelCell 499 and the two
-// lubricants 100 match GENERATOR_TYPES' refill block +
-// docs/console/generator-refill-caps.md; MelangeSpice 500 was stated by the
-// operator from the live game (2026-08-20, issue #430) and has no other
-// in-repo source.
+// Seeded-value provenance, externally re-verified 2026-08-20 against
+// dune.gaming.tools's own item data feed (cdn-hosted.gaming.tools/dune/data,
+// the maxStackSize field, not just the rendered page) after an operator
+// challenge: MelangeSpice 500 and both lubricants 100 were already correct.
+// Oil and SpicedFuelCell were WRONG at 499 -- GENERATOR_TYPES' refill
+// "stackSize" is a refill-policy value (possibly a deliberate margin below
+// the true cap), not the engine's real per-item limit; the external source
+// confirms the true limit for both is 500, matching addonSeedJob.js's
+// pre-existing value (see issue #432, which tracked this exact
+// contradiction before it was externally resolved).
 test("real catalog carries the verified stack sizes for the seeded items", () => {
   assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "MelangeSpice"), 500);
-  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "Oil"), 499);
-  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "SpicedFuelCell"), 499);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "Oil"), 500);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "SpicedFuelCell"), 500);
   assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "WindTurbineLubricant1"), 100);
   assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "WindTurbineLubricant2"), 100);
 });
