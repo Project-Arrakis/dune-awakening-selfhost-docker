@@ -25,13 +25,22 @@ beforeEach(() => {
 });
 
 describe("BuildingUnlocksTab", () => {
-  it("separates verified unlocks, hides experimental entries, and prevents duplicate grants", async () => {
+  it("shows experimental entries by default and prevents duplicate grants", async () => {
     render(<BuildingUnlocksTab dbPlayerId="123" playerName="Chani" confirmAction={vi.fn().mockResolvedValue(true)} />);
 
     expect(await screen.findByText("Basic Lighting")).toBeInTheDocument();
     expect(screen.getByText("Windtrap")).toBeInTheDocument();
-    expect(screen.queryByText("Developer Storage Container")).not.toBeInTheDocument();
+    expect(screen.getByText("Developer Storage Container")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Show Experimental" })).toBeChecked();
     expect(screen.getByRole("button", { name: "Owned" })).toBeDisabled();
+  });
+
+  it("can hide experimental entries", async () => {
+    render(<BuildingUnlocksTab dbPlayerId="123" playerName="Chani" confirmAction={vi.fn().mockResolvedValue(true)} />);
+
+    expect(await screen.findByText("Developer Storage Container")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show Experimental" }));
+    expect(screen.queryByText("Developer Storage Container")).not.toBeInTheDocument();
   });
 
   it("grants one real token and changes the row to pending", async () => {
@@ -39,6 +48,7 @@ describe("BuildingUnlocksTab", () => {
     vi.mocked(playersApi.grantBuildingUnlock).mockResolvedValue({ ok: true, status: "Pending" });
     render(<BuildingUnlocksTab dbPlayerId="123" playerName="Chani" confirmAction={confirmAction} />);
 
+    fireEvent.change(await screen.findByLabelText("Filter Building Sets"), { target: { value: "Basic Lighting" } });
     fireEvent.click(await screen.findByRole("button", { name: "Grant" }));
     await waitFor(() => expect(playersApi.grantBuildingUnlock).toHaveBeenCalledWith("123", {
       itemId: "BasicLighting_Patent",

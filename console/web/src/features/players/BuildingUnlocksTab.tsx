@@ -31,7 +31,7 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
   const [group, setGroup] = useState("");
-  const [showExperimental, setShowExperimental] = useState(false);
+  const [showExperimental, setShowExperimental] = useState(true);
   const [ownershipSupported, setOwnershipSupported] = useState(true);
   const [busyItemId, setBusyItemId] = useState("");
   const [result, setResult] = useState<InlineActionResultState | null>(null);
