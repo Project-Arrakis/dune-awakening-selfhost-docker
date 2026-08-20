@@ -5379,6 +5379,35 @@ test("storage give-item does not check volume when itemVolume is omitted (backwa
   assert.equal(volumeCall, undefined, "volume sum query must not run when itemVolume is not provided");
 });
 
+// Regression test for a real bug found during post-merge review of upstream
+// PR #182 (2026-08-20): itemVolume defaults to 0 for any item with no
+// catalogued volume data (see server.js's storageGiveItemRoute/
+// baseContainerGiveItemRoute/baseContainerFillItemRoute, which resolve
+// itemVolume via `resolved.volume || resolveItemVolume(...)`), but every
+// insert site wrote that 0 straight into volume_override instead of NULL.
+// NULL means "use the engine's own catalog volume" (see the 2026-08-19
+// correction comment above giveItemToStorage's insert); a stored 0 makes
+// the engine display the item as having zero volume instead of falling
+// back to its real catalog value -- the same class of display corruption
+// INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED fixed, just in the
+// opposite (zero, not inflated) direction. Covers all 4 single-item Give/
+// Fill entry points; giveMultipleItemsToBaseContainer's batch path shares
+// the same volumeOverrideForInsert() helper, not independently re-tested
+// here.
+test("storage give-item stores volume_override as NULL, not 0, when itemVolume is omitted (uncatalogued item)", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRows: [{ id: 599, template_id: "SomeUncatalogedWeapon", stack_size: 1, quality_level: 0, position_index: 5, inventory_id: 7, volume_override: null }]
+  });
+  await giveItemToStorage(db, 222, { templateId: "SomeUncatalogedWeapon", quantity: 1 });
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  assert.ok(insert);
+  const volIdx = insert.values.length - 1;
+  assert.equal(insert.values[volIdx], null, "volume_override must be stored as NULL for an uncatalogued item, not 0");
+});
+
 test("storage give-multiple-items inserts every item in one transaction", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
@@ -5401,6 +5430,28 @@ test("storage give-multiple-items inserts every item in one transaction", async 
   const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
   assert.equal(inserts.length, 2, "one insert per item");
   assert.equal(calls.filter((call) => call.text === "begin").length, 1, "single shared transaction");
+});
+
+// Batch-path coverage for the same NULL-vs-0 fix as giveItemToStorage's own
+// regression test above (QA hat finding, post-merge review of PR #182:
+// giveMultipleItemsToBaseContainer shares volumeOverrideForInsert() with the
+// 4 single-item entry points but had no independent test of its own).
+test("storage give-multiple-items stores volume_override as NULL, not 0, for an uncatalogued item", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 0 }],
+    insertedRowsSequence: [
+      { id: 601, template_id: "SomeUncatalogedWeapon", stack_size: 1, quality_level: 0, position_index: 2, inventory_id: 7, volume_override: null }
+    ]
+  });
+  await giveMultipleItemsToBaseContainer(db, 16836, 42, {
+    items: [{ templateId: "SomeUncatalogedWeapon", quantity: 1 }]
+  });
+  const insert = calls.find((call) => call.text.includes("insert into dune.items"));
+  assert.ok(insert);
+  const volIdx = insert.values.length - 1;
+  assert.equal(insert.values[volIdx], null, "volume_override must be stored as NULL for an uncatalogued item, not 0");
 });
 
 // DBA hat finding (Layer 2 audit, 2026-08-19): every existing volume/slot
