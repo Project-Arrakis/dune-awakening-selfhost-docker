@@ -7,6 +7,7 @@ import { ExchangeTable } from "./ExchangeTable";
 import { ExchangeConfigOverlay } from "./ExchangeConfigOverlay";
 import { MarketBotOverlay } from "./MarketBotOverlay";
 import { BotItemsTab } from "./BotItemsTab";
+import { exchangeDisplayLabel } from "./display";
 
 type ExchangePanelProps = {
   onError: (text: string) => void;
@@ -20,20 +21,10 @@ const EXCHANGE_AUTO_REFRESH_MS = 5 * 60_000; // 5 minutes — the market changes
 const EXCHANGE_PAGE_SIZES = [25, 50, 100, 200] as const;
 const EXCHANGE_DEFAULT_PAGE_SIZE = 50;
 const OWNER_OPTIONS: { value: ExchangeOwner; label: string }[] = [
-  { value: "all", label: "All listings" },
-  { value: "player", label: "Player listings" },
-  { value: "bot", label: "Bot listings" }
+  { value: "all", label: "All Listings" },
+  { value: "player", label: "Player Listings" },
+  { value: "bot", label: "Bot Listings" }
 ];
-
-function categoryLabel(category: string) {
-  return String(category || "")
-    .trim()
-    .replace(/[_-]+/g, " ")
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((word) => `${word.charAt(0).toLocaleUpperCase()}${word.slice(1)}`)
-    .join(" ");
-}
 
 type ExchangeView = { q: string; page: number; pageSize: number; sortColumn: string; sortDirection: SortDirection; owner: ExchangeOwner; category: string };
 
@@ -282,7 +273,7 @@ export function ExchangePanel({ onError, confirmAction }: ExchangePanelProps) {
               value={q}
               onChange={(event) => setQ(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Enter") submitSearch(); }}
-              placeholder="Search item name, category, or template"
+              placeholder="Search Item Name, Category, or Template"
             />
             <button onClick={submitSearch}>Search</button>
             <button onClick={handleClearSearch} disabled={!q && !submittedQ}>Clear</button>
@@ -290,7 +281,7 @@ export function ExchangePanel({ onError, confirmAction }: ExchangePanelProps) {
               Category
               <select value={categories.includes(category) ? category : ""} onChange={(event) => setCategory(event.target.value)}>
                 <option value="">All Categories</option>
-                {categories.map((name) => <option key={name} value={name}>{categoryLabel(name)}</option>)}
+                {categories.map((name) => <option key={name} value={name}>{exchangeDisplayLabel(name, true)}</option>)}
               </select>
             </label>
             <label className="compact-select exchange-owner-select">
