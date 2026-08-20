@@ -12,6 +12,7 @@ import {
   counterForTime,
   totpCode,
   verifyTotp,
+  verifyTotpMatch,
   provisioningUri,
 } from "../src/auth/totp.js";
 
@@ -78,6 +79,19 @@ test("6-digit code is the low 6 digits of the 8-digit RFC vector", () => {
   assert.equal(totpCode(RFC_SECRET, 1234567890), "005924");
 });
 
+test("64-bit counter high word is written correctly (counters > 2^32)", () => {
+  // No RFC vector reaches a nonzero high word, so pin it directly: counters
+  // that differ ONLY in the high 32 bits must produce different codes, and a
+  // counter's low/high words must not be interchangeable. Guards against a
+  // hi/lo swap or a 32-bit-truncated counter encoding.
+  const HI = 0x100000000; // 2^32
+  assert.notEqual(hotp(RFC_SECRET, HI, 8), hotp(RFC_SECRET, 0, 8), "hi-word bit changes the code");
+  assert.notEqual(hotp(RFC_SECRET, HI + 1, 8), hotp(RFC_SECRET, 1, 8), "same lo word, different hi word -> different code");
+  assert.notEqual(hotp(RFC_SECRET, HI, 8), hotp(RFC_SECRET, 1, 8), "swapping hi<->lo would collide these; they must differ");
+  // sanity: still deterministic
+  assert.equal(hotp(RFC_SECRET, HI, 8), hotp(RFC_SECRET, HI, 8));
+});
+
 test("counterForTime floors to the period", () => {
   assert.equal(counterForTime(0), 0);
   assert.equal(counterForTime(29), 0);
@@ -94,16 +108,50 @@ test("verifyTotp accepts the current code and rejects a wrong one", () => {
   assert.equal(verifyTotp(RFC_SECRET, "000000", t), false);
 });
 
-test("verifyTotp accepts ±1 step (clock drift) but not ±2", () => {
+test("verifyTotp accepts ±1 step (clock drift) but not ±2 on either side", () => {
   const t = 1234567890;
   const prev = totpCode(RFC_SECRET, t - TOTP_PERIOD_SECONDS);
   const next = totpCode(RFC_SECRET, t + TOTP_PERIOD_SECONDS);
   const twoBack = totpCode(RFC_SECRET, t - 2 * TOTP_PERIOD_SECONDS);
+  const twoFwd = totpCode(RFC_SECRET, t + 2 * TOTP_PERIOD_SECONDS);
   assert.equal(verifyTotp(RFC_SECRET, prev, t), true, "previous step within ±1");
   assert.equal(verifyTotp(RFC_SECRET, next, t), true, "next step within ±1");
-  assert.equal(verifyTotp(RFC_SECRET, twoBack, t), false, "two steps away is outside the window");
+  assert.equal(verifyTotp(RFC_SECRET, twoBack, t), false, "two steps back is outside the window");
+  assert.equal(verifyTotp(RFC_SECRET, twoFwd, t), false, "two steps forward is outside the window");
   // window: 0 rejects even the adjacent step
   assert.equal(verifyTotp(RFC_SECRET, prev, t, { window: 0 }), false);
+});
+
+test("verifyTotpMatch returns the matched step counter (for replay prevention)", () => {
+  const t = 1234567890;
+  const center = counterForTime(t);
+  // current-step code matches at the center counter
+  assert.deepEqual(verifyTotpMatch(RFC_SECRET, totpCode(RFC_SECRET, t), t), { valid: true, counter: center });
+  // a code from the previous step matches at center-1, NOT center -- the login
+  // phase must record this matched counter, not the center, to prevent replay.
+  assert.deepEqual(
+    verifyTotpMatch(RFC_SECRET, totpCode(RFC_SECRET, t - TOTP_PERIOD_SECONDS), t),
+    { valid: true, counter: center - 1 }
+  );
+  assert.deepEqual(verifyTotpMatch(RFC_SECRET, "000000", t), { valid: false, counter: null });
+  assert.deepEqual(verifyTotpMatch(RFC_SECRET, "bad", t), { valid: false, counter: null });
+});
+
+test("hotp/verifyTotp throw on a base32 string mistakenly passed as the secret", () => {
+  const { base32 } = generateTotpSecret((len) => Buffer.alloc(len, 0x2a));
+  assert.throws(() => hotp(base32, 1), /Buffer\/Uint8Array/, "hotp rejects a string secret");
+  assert.throws(() => verifyTotp(base32, "123456", 1700000000), /Buffer\/Uint8Array/, "verify rejects a string secret");
+});
+
+test("hotp rejects a negative or non-integer counter", () => {
+  assert.throws(() => hotp(RFC_SECRET, -1), /non-negative integer/);
+  assert.throws(() => hotp(RFC_SECRET, 1.5), /non-negative integer/);
+});
+
+test("verifyTotpMatch does not throw for a pre-epoch time (small timeSeconds)", () => {
+  // center-window can go below 0; those steps are skipped, not thrown on.
+  assert.doesNotThrow(() => verifyTotpMatch(RFC_SECRET, "123456", 0, { window: 1 }));
+  assert.equal(verifyTotpMatch(RFC_SECRET, "123456", 0, { window: 1 }).valid, false);
 });
 
 test("verifyTotp rejects malformed tokens (wrong length, non-digit, non-string)", () => {
@@ -126,8 +174,18 @@ test("generateTotpSecret returns a 160-bit secret and its base32", () => {
   const { secretBytes, base32 } = generateTotpSecret(seq);
   assert.equal(secretBytes.length, TOTP_SECRET_BYTES);
   assert.equal(TOTP_SECRET_BYTES, 20);
-  assert.equal(base32, base32Encode(secretBytes));
+  // Independent checks (not base32 == base32Encode(secretBytes), which is a
+  // tautology since generate produced base32 via base32Encode): the base32 is
+  // well-formed RFC 4648, and it decodes back to the exact secret.
+  assert.match(base32, /^[A-Z2-7]+$/, "base32 uses only the RFC 4648 alphabet");
+  assert.equal(base32.length, 32, "20 bytes -> 32 base32 chars");
   assert.deepEqual(base32Decode(base32), secretBytes, "base32 round-trips the secret");
+});
+
+test("base32Decode returns null for non-string input (no garbage coercion)", () => {
+  for (const bad of [null, undefined, 12345, {}, []]) {
+    assert.equal(base32Decode(bad), null, `base32Decode(${JSON.stringify(bad)}) is null`);
+  }
 });
 
 test("generateTotpSecret rejects a bad random source", () => {
