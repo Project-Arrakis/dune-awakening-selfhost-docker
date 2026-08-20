@@ -150,11 +150,15 @@ export async function fetchDiscordIdentity({ accessToken, apiBaseUrl = DISCORD_O
   return { userId, username, guildIds };
 }
 
-// ---- Tier decision (Phase 3: signed handoff with Phase 2 owner-bootstrap fallback) ----
-// Phase 2 resolveBootstrapTier is kept as a pure fallback function — it only
-// ever produces "owner" or "" and is used only when the handoff is not
-// configured. Phase 3 resolveOAuthTier delegates to the signed handoff when
-// available and falls back to the bootstrap gates when it isn't.
+// ---- Tier decision (Phase 3: signed handoff, authoritative when configured) ----
+// Phase 2 resolveBootstrapTier is kept as a pure first-owner-bootstrap
+// function — it only ever produces "owner" or "" and applies only to
+// installs that have never configured a handoff at all. When the handoff
+// is configured its result is authoritative: an empty result means deny
+// (bot unreachable, or bot said no), never "fall through to the static
+// allowlist" (rfc-console-auth.md §1.1/§2.1 — the previous fallthrough
+// silently restored owner access from a stale allowlist entry whenever
+// the bot had any hiccup).
 export function resolveBootstrapTier({ userId, guildIds, allowOwnerBootstrap, homeGuildId, ownerAllowlist = [] }) {
   if (!allowOwnerBootstrap) return "";
   if (!homeGuildId) return "";
@@ -163,22 +167,27 @@ export function resolveBootstrapTier({ userId, guildIds, allowOwnerBootstrap, ho
   return "owner";
 }
 
+// Resolves to { tier, source, reason }. source is "handoff" or
+// "bootstrap"; reason is "" on success and names the denial cause for
+// the audit log only — it must never influence the authorization
+// decision, which is tier-empty-means-deny regardless of reason.
 export function createOAuthTierResolver({ bootstrap = {}, handoff = null } = {}) {
   return async function resolveOAuthTier(identity) {
     const { userId, guildIds } = identity;
 
     if (handoff && handoff.enabled) {
-      const tier = await handoff.resolveTier({ userId, username: identity.username });
-      if (tier) return tier;
+      const { tier, reason } = await handoff.resolveTier({ userId, username: identity.username });
+      return { tier, source: "handoff", reason: tier ? "" : (reason || "denied") };
     }
 
-    return resolveBootstrapTier({
+    const tier = resolveBootstrapTier({
       userId,
       guildIds,
       allowOwnerBootstrap: bootstrap.allowOwnerBootstrap || false,
       homeGuildId: bootstrap.homeGuildId || "",
       ownerAllowlist: bootstrap.ownerAllowlist || []
     });
+    return { tier, source: "bootstrap", reason: tier ? "" : "not_authorized" };
   };
 }
 

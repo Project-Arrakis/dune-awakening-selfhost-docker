@@ -126,12 +126,19 @@ the implementation and testing contract for the Core-side work (Phases 2-4).
   reads it through the signed handoff. Consequence: when RBAC is enabled, a
   tiered login depends on the bot being reachable — which is exactly why the
   fallback (below) is the default until the handoff is configured.
-- **Fallback (explicit operator requirement):** if Discord OAuth has NOT been
-  established (no home guild configured, no handoff secret, or Discord
-  unavailable during initial setup), the console **falls back to today's
-  behavior: a single full-access user authenticated by `ADMIN_PASSWORD`
-  (+ the owner tier), no RBAC tiers, everything permitted.** The fallback is
-  the *default*; RBAC only activates once the mapping+handoff are standing.
+- **Fallback (explicit operator requirement, revised by issue #401 /
+  `docs/rfc-console-auth.md` §2.1):** if Discord OAuth has NOT been
+  established (no home guild configured, no handoff secret), the console
+  **falls back to today's behavior: a single full-access user authenticated
+  by `ADMIN_PASSWORD` (+ the owner tier), no RBAC tiers, everything
+  permitted.** The fallback is the *default*; RBAC only activates once the
+  mapping+handoff are standing. **Once the handoff IS configured, its answer
+  is authoritative: a bot outage or handoff failure denies new Discord
+  sign-ins rather than reverting to any fallback** (already-active sessions
+  are unaffected; password sign-in is always available). A half-configured
+  handoff (some but not all of secret/URL/guild set, or an unusable URL)
+  disables Discord sign-in entirely with a boot warning naming the problem
+  -- it does not silently degrade to the owner-bootstrap allowlist.
 - Mechanism table (for the record, all were considered):
 
 | Mechanism | Decision | Notes |
@@ -232,9 +239,17 @@ explicitly public); a **parity test** (§8.1) mechanically enforces coverage.
 4. OAuth callback now resolves tier by calling `resolve-role-tier` and
    verifying the signature before storing a tiered session; fail-closed
    (no verified handoff ⇒ no tiered session; fallback per §3.3).
-5. Fallback job: whenever the handoff is unconfigured (no home guild, no
-   handoff secret, bot unreachable, or Discord unavailable at first setup),
-   the console serves exactly today's single-admin full-access model.
+5. Fallback job: whenever the handoff is **unconfigured** (no home guild or
+   no handoff secret/URL set at all), the console serves exactly today's
+   single-admin full-access model. **Revised by issue #401: "bot
+   unreachable" is no longer a fallback condition** -- with a configured
+   handoff, an unreachable bot denies new Discord sign-ins (recorded as
+   `auth.handoff-denied` with a reason code in the audit log); the static
+   owner-bootstrap allowlist applies only to installs that never configured
+   a handoff. Operators who configure the handoff should prune
+   `DISCORD_OAUTH_OWNER_ALLOWLIST` down to the minimum intended
+   first-owner-bootstrap set: each entry is a standing owner credential
+   that becomes live again if the handoff configuration is ever removed.
 
 ### Phase 4 — Route & panel gating
 
