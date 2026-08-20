@@ -339,3 +339,102 @@ test("half-configured handoff disables Discord sign-in at /start with the HTML e
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+// ---- POST /api/auth/discord/exchange (issue #403: fail closed, no owner) ----
+
+function exchangeAuditRows(tempDir) {
+  try {
+    return readFileSync(join(tempDir, "runtime", "generated", "web-admin-audit.jsonl"), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+async function exchangeStatus(consolePort, token) {
+  return fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/exchange`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` }
+  });
+}
+
+test("exchange denies (fail closed) when ATRIUM_ALLOWED_DISCORD_USER_ID is unset", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-e2e-exch-unset-"));
+  const console = startConsole(consolePort, discordPort, tempDir); // gate not set
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const res = await exchangeStatus(consolePort, "validtoken");
+    assert.equal(res.status, 403, "unset gate must deny, never mint a session");
+    const body = await res.json();
+    assert.equal(body.authenticated, undefined);
+    assert.ok(!res.headers.getSetCookie().some((c) => c.startsWith("asc_session=")), "no session cookie may be set");
+    const rows = exchangeAuditRows(tempDir);
+    assert.match(rows, /"reason":"exchange_not_configured"/, "the unset-gate denial must be audited with its own reason code");
+    assert.doesNotMatch(rows, /"reason":"not_authorized"/, "unset-gate path must not be confused with a wrong-user denial");
+
+    // Deny paths must be metered (recordFailure) so the endpoint can't be an
+    // unmetered Discord-token oracle: hammering trips the login limiter.
+    let sawRateLimit = false;
+    for (let i = 0; i < 12; i++) {
+      const r = await exchangeStatus(consolePort, "validtoken");
+      if (r.status === 429) { sawRateLimit = true; break; }
+    }
+    assert.ok(sawRateLimit, "repeated denials must eventually 429 -- deny paths call recordFailure");
+  } finally {
+    await stopProcess(console.child);
+    await closeDiscordServer(discordServer);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("exchange denies a Discord account that does not match the configured allowlist", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-e2e-exch-wrong-"));
+  const console = startConsole(consolePort, discordPort, tempDir, {
+    ATRIUM_ALLOWED_DISCORD_USER_ID: "999999999999999999"
+  });
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const res = await exchangeStatus(consolePort, "validtoken"); // fake Discord returns USER_ID
+    assert.equal(res.status, 403, "non-matching Discord user must be denied");
+    assert.ok(!res.headers.getSetCookie().some((c) => c.startsWith("asc_session=")));
+    const rows = exchangeAuditRows(tempDir);
+    assert.match(rows, /"reason":"not_authorized"/, "wrong-user denial must be audited as not_authorized");
+    assert.match(rows, /"userId":"222222222222222222"/, "wrong-user denial must record the attempted userId for forensics");
+  } finally {
+    await stopProcess(console.child);
+    await closeDiscordServer(discordServer);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("exchange grants the allowlisted user a read-only observer session, never owner", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-e2e-exch-ok-"));
+  const console = startConsole(consolePort, discordPort, tempDir, {
+    ATRIUM_ALLOWED_DISCORD_USER_ID: USER_ID
+  });
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const res = await exchangeStatus(consolePort, "validtoken");
+    assert.equal(res.status, 200, "the configured Atrium user must be allowed in");
+    const sessionValue = sessionCookieValue(res.headers.getSetCookie(), "asc_session");
+    assert.ok(sessionValue, "a session cookie must be set");
+
+    const me = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, {
+      headers: { cookie: `asc_session=${sessionValue}` }
+    })).json();
+    assert.equal(me.user.tier, "observer", "exchange must mint observer, not owner (issue #403)");
+    assert.equal(me.user.id, USER_ID);
+    assert.match(exchangeAuditRows(tempDir), /"tier":"observer"/, "successful exchange must audit the granted observer tier (only the success path writes tier:observer)");
+  } finally {
+    await stopProcess(console.child);
+    await closeDiscordServer(discordServer);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});

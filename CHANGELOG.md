@@ -28,6 +28,18 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   Password sign-in and installs without any handoff config are unaffected.
   OAuth callback failures now render an HTML error page with a link back to
   the sign-in screen instead of raw JSON.
+- **Security (CRITICAL, issue #403): `POST /api/auth/discord/exchange` no longer
+  mints an owner session for any valid Discord token.** The endpoint (the
+  fork-only Atrium single-auth flow) previously granted a full **owner** console
+  session to anyone who could complete a Discord OAuth whenever the optional
+  `ATRIUM_ALLOWED_DISCORD_USER_ID` gate was unset -- an unauthenticated-to-owner
+  privilege escalation. It now (1) **fails closed** when that gate is unset
+  (denies rather than granting a session) and (2) mints a read-only **observer**
+  session instead of owner, even for the configured user -- the Atrium page gate
+  authorizes on user id, not tier, so observer suffices. Operators using the
+  Atrium flow must set `ATRIUM_ALLOWED_DISCORD_USER_ID`; console administration
+  uses the password or Discord sign-in flows, not this endpoint. See
+  `.env.example`.
 
 - Merged `upstream/main` into this fork's `main` (issue #279), resolving 198
   commits of divergence and 23 real file conflicts (auth/policy/RBAC/Discord
