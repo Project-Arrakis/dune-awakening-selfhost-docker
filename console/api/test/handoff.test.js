@@ -173,6 +173,22 @@ test("createHandoff flags half-configuration when only botUrl is set", () => {
   assert.deepEqual(h.missing, ["secret"]);
 });
 
+test("createHandoff flags half-configuration when only botUrl is missing", () => {
+  const h = createHandoff({ secret: SECRET, botUrl: "", homeGuildId: "143064109775060993" });
+  assert.equal(h.enabled, false);
+  assert.equal(h.misconfigured, true);
+  assert.deepEqual(h.missing, ["botUrl"]);
+});
+
+test("createHandoff flags a present-but-unusable botUrl as invalid", () => {
+  for (const bad of ["not a url", "ftp://bot.example", "localhost:9876"]) {
+    const h = createHandoff({ secret: SECRET, botUrl: bad, homeGuildId: "143064109775060993" });
+    assert.equal(h.enabled, false, `botUrl ${bad} must not boot a live handoff`);
+    assert.equal(h.misconfigured, true);
+    assert.deepEqual(h.invalid, ["botUrl"]);
+  }
+});
+
 test("createHandoff does not flag bootstrap-only config (homeGuildId alone)", () => {
   // homeGuildId doubles as bootstrap config; setting it without any
   // handoff-specific value is not a handoff attempt.
@@ -379,6 +395,7 @@ test("createOAuthTierResolver denies on explicit bot refusal without consulting 
   const result = await resolve({ userId: "143064109775060993", username: "test", guildIds: ["143064109775060993"] });
   assert.equal(result.tier, "");
   assert.equal(result.source, "handoff");
+  assert.equal(result.reason, "http_403");
 });
 
 test("createOAuthTierResolver reason codes never change the authorization outcome", async () => {
@@ -431,6 +448,28 @@ test("createOAuthTierResolver denies via bootstrap when handoff was never config
   assert.equal(result.tier, "");
   assert.equal(result.source, "bootstrap");
   assert.equal(result.reason, "not_authorized");
+});
+
+test("createHandoff resolveTier sends the expected request to the bot", async () => {
+  const ts = Date.now();
+  const captured = {};
+  const response = signedResponse({ userId: "143064109775060993", guildId: "143064109775060993", tier: "admin", ts });
+  const h = createHandoff({
+    secret: SECRET,
+    botUrl: "http://localhost:9876",
+    homeGuildId: "143064109775060993",
+    fetchImpl: async (url, init) => {
+      captured.url = url;
+      captured.init = init;
+      return { ok: true, status: 200, json: async () => response };
+    }
+  });
+  const result = await h.resolveTier({ userId: "143064109775060993" });
+  assert.equal(result.tier, "admin");
+  assert.equal(captured.url, "http://localhost:9876/resolve-console-tier");
+  assert.equal(captured.init.method, "POST");
+  assert.ok(captured.init.signal, "request must carry the timeout abort signal");
+  assert.deepEqual(JSON.parse(captured.init.body), { userId: "143064109775060993", guildId: "143064109775060993" });
 });
 
 test("createOAuthTierResolver treats a half-configured handoff as not configured (bootstrap applies)", async () => {

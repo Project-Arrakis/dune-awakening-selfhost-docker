@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { signPayload } from "../src/integrations/discord/handoff.js";
 
 const apiRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 const repoRoot = dirname(dirname(apiRoot));
@@ -56,7 +58,7 @@ function startFakeDiscord(port) {
   return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve(server)));
 }
 
-function startConsole(consolePort, discordPort, tempDir) {
+function startConsole(consolePort, discordPort, tempDir, extraEnv = {}) {
   const child = spawn(process.execPath, ["server.js"], {
     cwd: apiRoot,
     env: {
@@ -71,7 +73,8 @@ function startConsole(consolePort, discordPort, tempDir) {
       DISCORD_OAUTH_BASE_URL: `http://127.0.0.1:${discordPort}`,
       DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "1",
       DISCORD_OAUTH_OWNER_ALLOWLIST: USER_ID,
-      DISCORD_HOME_GUILD_ID: HOME_GUILD
+      DISCORD_HOME_GUILD_ID: HOME_GUILD,
+      ...extraEnv
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -178,7 +181,11 @@ test("Discord OAuth callback denies a user outside the home guild", async () => 
       { redirect: "manual", headers: { cookie: `discord_oauth_state=${pendingStateValue}` } }
     );
     assert.equal(callback.status, 403, "non-member must be denied");
-    assert.equal((await callback.json()).authenticated, undefined);
+    assert.match(callback.headers.get("content-type") || "", /text\/html/, "callback failures render an HTML page, not raw JSON");
+    const denyBody = await callback.text();
+    assert.match(denyBody, /not authorized/i);
+    assert.match(denyBody, /href="\/"/, "denial page must link back to the console sign-in");
+    assert.ok(!callback.headers.getSetCookie().some((c) => c.startsWith("asc_session=")), "denial must not set a session cookie");
   } finally {
     await stopProcess(console.child);
     await closeDiscordServer(discordServer);
@@ -210,6 +217,125 @@ test("Discord OAuth start returns 404 when OAuth is not configured", async () =>
   } finally {
     child.kill();
     await new Promise((resolve) => child.once("exit", resolve));
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// ---- Tier 1 (issue #401): handoff-configured callback behavior ----
+
+const HANDOFF_SECRET = "e2e-handoff-shared-secret";
+
+function startFakeBot(port, { tier = "admin", secret = HANDOFF_SECRET } = {}) {
+  const server = createServer((req, res) => {
+    if (new URL(req.url, "http://localhost").pathname === "/resolve-console-tier") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        const { userId, guildId } = JSON.parse(body || "{}");
+        const payload = { userId, guildId, tier, ts: Date.now() };
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ...payload, signature: signPayload(payload, secret) }));
+      });
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve(server)));
+}
+
+test("handoff configured but bot unreachable denies with the HTML error page -- even with a permissive allowlist", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const deadBotPort = await getFreePort(); // freed immediately -- nothing listens
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-e2e-handoff-down-"));
+  const console = startConsole(consolePort, discordPort, tempDir, {
+    DISCORD_BOT_HANDOFF_SECRET: HANDOFF_SECRET,
+    DISCORD_BOT_HANDOFF_URL: `http://127.0.0.1:${deadBotPort}`
+  });
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" });
+    const pendingStateValue = sessionCookieValue(start.headers.getSetCookie() || [], "discord_oauth_state");
+
+    const callback = await fetch(
+      `http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=validcode&state=${encodeURIComponent(pendingStateValue)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${pendingStateValue}` } }
+    );
+    assert.equal(callback.status, 403, "handoff failure must deny -- never fall through to the bootstrap allowlist");
+    assert.match(callback.headers.get("content-type") || "", /text\/html/);
+    const body = await callback.text();
+    assert.match(body, /could not verify your current Discord role/i);
+    assert.match(body, /href="\/"/, "error page must link back to sign-in");
+    assert.ok(!callback.headers.getSetCookie().some((c) => c.startsWith("asc_session=")), "no session may be minted");
+
+    const auditRows = readFileSync(join(tempDir, "runtime", "generated", "web-admin-audit.jsonl"), "utf8");
+    assert.match(auditRows, /"auth\.handoff-denied"/, "denial must be recorded under auth.handoff-denied");
+    assert.match(auditRows, /"reason":"unreachable"/, "audit row must carry the reason code");
+  } finally {
+    await stopProcess(console.child);
+    await closeDiscordServer(discordServer);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("handoff configured with bootstrap disabled completes sign-in via the bot (gate no longer requires bootstrap)", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const botPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-e2e-handoff-up-"));
+  const console = startConsole(consolePort, discordPort, tempDir, {
+    DISCORD_BOT_HANDOFF_SECRET: HANDOFF_SECRET,
+    DISCORD_BOT_HANDOFF_URL: `http://127.0.0.1:${botPort}`,
+    DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "",
+    DISCORD_OAUTH_OWNER_ALLOWLIST: ""
+  });
+  const discordServer = await startFakeDiscord(discordPort);
+  const botServer = await startFakeBot(botPort, { tier: "admin" });
+  try {
+    await waitForHealth(consolePort);
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" });
+    const pendingStateValue = sessionCookieValue(start.headers.getSetCookie() || [], "discord_oauth_state");
+
+    const callback = await fetch(
+      `http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=validcode&state=${encodeURIComponent(pendingStateValue)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${pendingStateValue}` } }
+    );
+    assert.equal(callback.status, 200, "handoff-backed sign-in must complete without owner bootstrap");
+    const sessionValue = sessionCookieValue(callback.headers.getSetCookie(), "asc_session");
+    assert.ok(sessionValue, "callback must set the session cookie");
+
+    const me = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, {
+      headers: { cookie: `asc_session=${sessionValue}` }
+    })).json();
+    assert.equal(me.user.tier, "admin", "tier must come from the bot handoff, not the bootstrap allowlist");
+  } finally {
+    await stopProcess(console.child);
+    await closeDiscordServer(discordServer);
+    await closeDiscordServer(botServer);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("half-configured handoff disables Discord sign-in at /start with the HTML error page", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-e2e-handoff-half-"));
+  const console = startConsole(consolePort, discordPort, tempDir, {
+    DISCORD_BOT_HANDOFF_SECRET: HANDOFF_SECRET
+    // no DISCORD_BOT_HANDOFF_URL -- half-configured on purpose
+  });
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" });
+    assert.equal(start.status, 403, "half-configured handoff must disable Discord sign-in, not degrade to the allowlist");
+    assert.match(await start.text(), /partially configured/i);
+    assert.match(console.logs(), /half-configured/, "boot must log the misconfiguration warning");
+  } finally {
+    await stopProcess(console.child);
+    await closeDiscordServer(discordServer);
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
