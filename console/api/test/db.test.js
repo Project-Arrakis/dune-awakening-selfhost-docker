@@ -477,6 +477,9 @@ test("player portal snapshot bases report generatorUnstockedCount and generatorA
           actor_id: "123",
           online_status: "Offline",
           last_seen: "2026-07-26",
+          home_sietch_dimension_index: "1",
+          home_sietch_partition_id: "2",
+          home_sietch_label: "Alraab",
           player_map: "TheDeepDesert",
           player_partition_id: "0",
           player_x: "100",
@@ -606,6 +609,7 @@ test("player portal snapshot bases report generatorUnstockedCount and generatorA
   assert.equal(JSON.stringify(result[0].data.marketBot).includes("Private"), false);
   assert.equal(result[0].data.exchangeOverview.available, true);
   assert.equal(result[0].data.exchangeOverview.items[0].listingCount, 2);
+  assert.deepEqual(result[0].data.overview.homeSietch, { name: "Sietch Alraab", partitionId: 2, dimensionIndex: 1 });
   assert.equal(result[0].data.specializations.unspentSkillPoints, 0);
   assert.equal(Object.hasOwn(result[0].data.specializations, "unspentPoints"), false, "portal payload must not misname skill points as generic specialization points");
 });
