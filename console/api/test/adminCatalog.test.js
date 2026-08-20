@@ -292,3 +292,13 @@ test("real catalog carries the verified stack sizes for the seeded items", () =>
   assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "WindTurbineLubricant1"), 100);
   assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "WindTurbineLubricant2"), 100);
 });
+
+// T2MuaddibComponent ("Muad'Dib Corpse" -- Muad'Dib is Fremen for kangaroo
+// mouse) is a corpse-type item and doesn't stack, matching the same pattern
+// as Mouse_Corpse/Corpse (both externally confirmed stackSize 1, see #431's
+// stack-size/resource-type correlation analysis). Operator-stated from the
+// live game (2026-08-20, issue #441) after the item 404'd against the
+// external source used to verify the rest of this catalog.
+test("real catalog carries the verified stack size for T2MuaddibComponent", () => {
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "T2MuaddibComponent"), 1);
+});
