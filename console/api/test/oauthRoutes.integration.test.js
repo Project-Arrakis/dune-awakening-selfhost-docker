@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -217,6 +217,14 @@ test("Discord OAuth start returns 404 when OAuth is not configured", async () =>
 
 // ---- POST /api/auth/discord/exchange (issue #403: fail closed, no owner) ----
 
+function auditRows(tempDir) {
+  try {
+    return readFileSync(join(tempDir, "runtime", "generated", "web-admin-audit.jsonl"), "utf8");
+  } catch {
+    return "";
+  }
+}
+
 async function exchangeStatus(consolePort, token) {
   return fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/exchange`, {
     method: "POST",
@@ -237,6 +245,18 @@ test("exchange denies (fail closed) when ATRIUM_ALLOWED_DISCORD_USER_ID is unset
     const body = await res.json();
     assert.equal(body.authenticated, undefined);
     assert.ok(!res.headers.getSetCookie().some((c) => c.startsWith("asc_session=")), "no session cookie may be set");
+    const rows = auditRows(tempDir);
+    assert.match(rows, /"reason":"exchange_not_configured"/, "the unset-gate denial must be audited with its own reason code");
+    assert.doesNotMatch(rows, /"reason":"not_authorized"/, "unset-gate path must not be confused with a wrong-user denial");
+
+    // Deny paths must be metered (recordFailure) so the endpoint can't be an
+    // unmetered Discord-token oracle: hammering trips the login limiter.
+    let sawRateLimit = false;
+    for (let i = 0; i < 12; i++) {
+      const r = await exchangeStatus(consolePort, "validtoken");
+      if (r.status === 429) { sawRateLimit = true; break; }
+    }
+    assert.ok(sawRateLimit, "repeated denials must eventually 429 -- deny paths call recordFailure");
   } finally {
     await stopProcess(console.child);
     await closeDiscordServer(discordServer);
@@ -257,6 +277,9 @@ test("exchange denies a Discord account that does not match the configured allow
     const res = await exchangeStatus(consolePort, "validtoken"); // fake Discord returns USER_ID
     assert.equal(res.status, 403, "non-matching Discord user must be denied");
     assert.ok(!res.headers.getSetCookie().some((c) => c.startsWith("asc_session=")));
+    const rows = auditRows(tempDir);
+    assert.match(rows, /"reason":"not_authorized"/, "wrong-user denial must be audited as not_authorized");
+    assert.match(rows, /"userId":"222222222222222222"/, "wrong-user denial must record the attempted userId for forensics");
   } finally {
     await stopProcess(console.child);
     await closeDiscordServer(discordServer);
@@ -284,6 +307,7 @@ test("exchange grants the allowlisted user a read-only observer session, never o
     })).json();
     assert.equal(me.user.tier, "observer", "exchange must mint observer, not owner (issue #403)");
     assert.equal(me.user.id, USER_ID);
+    assert.match(auditRows(tempDir), /"tier":"observer"/, "successful exchange must audit the granted observer tier (only the success path writes tier:observer)");
   } finally {
     await stopProcess(console.child);
     await closeDiscordServer(discordServer);
