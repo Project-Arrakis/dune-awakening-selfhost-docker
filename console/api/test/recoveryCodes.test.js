@@ -43,10 +43,19 @@ test("generated code round-trips: format -> parse -> digest equals stored digest
   }
 });
 
-test("plaintext codes never equal their stored digests", () => {
-  const { codes, digests } = generateRecoveryCodes(2, seqRandom());
+test("stored digest is one-way and domain-separated (not derivable from the code without the separator)", () => {
+  // The real property is "the store holds only an irreversible, domain-separated
+  // hash." Verify the digest is NOT any transform an attacker could compute
+  // straight from the visible code: not the token hex, not a bare SHA-256 of
+  // the token, not a SHA-256 of the full displayed string.
+  const { codes, digests } = generateRecoveryCodes(3, seqRandom());
   for (let i = 0; i < codes.length; i++) {
-    assert.notEqual(codes[i].replace(/[-\s]/g, ""), digests[i]);
+    const tokenHex = codes[i].replace(/[-\s]/g, "").slice(0, 32);
+    const tokenBytes = Buffer.from(tokenHex, "hex");
+    assert.notEqual(digests[i], tokenHex, "digest is not the plaintext token");
+    assert.notEqual(digests[i], createHash("sha256").update(tokenBytes).digest("hex"), "digest is not a bare SHA-256");
+    assert.notEqual(digests[i], createHash("sha256").update(codes[i]).digest("hex"), "digest is not a hash of the displayed string");
+    assert.equal(digests[i].length, 64, "digest is a 32-byte hash");
   }
 });
 
@@ -77,14 +86,32 @@ test("parseRecoveryCode rejects wrong length and non-hex", () => {
   assert.equal(parseRecoveryCode(123), null);
 });
 
-test("isChecksumValid rejects a single transcription error", () => {
+test("isChecksumValid rejects a corrupted checksum", () => {
   const s = formatRecoveryCode(TOKEN);
   assert.equal(isChecksumValid(s), true);
-  // flip one hex digit in the token body
+  // Corrupt the 2-char checksum itself -> guaranteed mismatch against the token
+  // (no dependency on a 1/256 body-flip checksum collision).
   const cleaned = s.replace(/[-\s]/g, "");
-  const flipped = (cleaned[0] === "a" ? "b" : "a") + cleaned.slice(1);
-  const regrouped = flipped.slice(0, 32).match(/.{1,4}/g).join("-") + "-" + flipped.slice(32);
-  assert.equal(isChecksumValid(regrouped), false, "a flipped digit fails the checksum");
+  const token = cleaned.slice(0, 32);
+  const goodCk = cleaned.slice(32, 34);
+  const badCk = (goodCk[0] === "a" ? "b" : "a") + goodCk[1];
+  assert.notEqual(badCk, goodCk);
+  const corrupted = token.match(/.{1,4}/g).join("-") + "-" + badCk;
+  assert.equal(isChecksumValid(corrupted), false, "a wrong checksum is rejected");
+});
+
+test("isChecksumValid rejects a body transcription error (verified non-colliding for this vector)", () => {
+  const s = formatRecoveryCode(TOKEN);
+  const cleaned = s.replace(/[-\s]/g, "");
+  const flippedToken = (cleaned[0] === "a" ? "b" : "a") + cleaned.slice(1, 32);
+  // Keep the ORIGINAL checksum; this catches the error unless the flipped token
+  // collides on the 1-byte checksum. Assert the precondition so a future TOKEN
+  // change can't silently make this a false-pass.
+  const flippedBytes = Buffer.from(flippedToken, "hex");
+  const flippedCk = createHash("sha256").update(flippedBytes).digest("hex").slice(0, 2);
+  assert.notEqual(flippedCk, cleaned.slice(32, 34), "precondition: flip must change the checksum");
+  const regrouped = flippedToken.match(/.{1,4}/g).join("-") + "-" + cleaned.slice(32, 34);
+  assert.equal(isChecksumValid(regrouped), false, "a flipped body digit fails the checksum");
 });
 
 // ---- hashing / domain separation ----
@@ -151,4 +178,36 @@ test("consumeRecoveryCode does not mutate the input list", () => {
 
 test("token size is 128-bit", () => {
   assert.equal(RECOVERY_TOKEN_BYTES, 16);
+});
+
+// ---- defensive branches / guards ----
+
+test("digestInSet and consumeRecoveryCode tolerate a corrupt (non-string / non-hex) store entry", () => {
+  const { codes, digests } = generateRecoveryCodes(3, seqRandom());
+  const corrupt = [null, "not-hex", 42, ...digests];
+  // present digest still found despite corrupt neighbors
+  assert.equal(digestInSet(digests[1], corrupt), true);
+  // a valid code still consumes, dropping only its digest; corrupt rows preserved
+  const res = consumeRecoveryCode(codes[1], corrupt);
+  assert.equal(res.ok, true);
+  assert.equal(res.remaining.includes(digests[1]), false, "used digest removed");
+  assert.equal(res.remaining.includes("not-hex"), true, "corrupt row preserved, not silently dropped");
+  assert.equal(res.remaining.length, corrupt.length - 1);
+});
+
+test("digestInSet / consumeRecoveryCode handle an empty unused-digest list", () => {
+  assert.equal(digestInSet("a".repeat(64), []), false);
+  const other = formatRecoveryCode(Buffer.alloc(16, 0xcd));
+  assert.deepEqual(consumeRecoveryCode(other, []), { ok: false, reason: "unknown" });
+});
+
+test("generateRecoveryCodes rejects an out-of-range or non-integer count", () => {
+  assert.throws(() => generateRecoveryCodes(0), /count must be an integer/);
+  assert.throws(() => generateRecoveryCodes(101), /count must be an integer/);
+  assert.throws(() => generateRecoveryCodes(2.5), /count must be an integer/);
+});
+
+test("generateRecoveryCodes rejects a random source of the wrong length or type", () => {
+  assert.throws(() => generateRecoveryCodes(1, () => Buffer.alloc(4)), /expected 16/, "short source rejected");
+  assert.throws(() => generateRecoveryCodes(1, () => "notbytes"), /Buffer\/Uint8Array/, "non-buffer source rejected");
 });

@@ -48,6 +48,11 @@ export function formatRecoveryCode(tokenBytes) {
 // dashes and whitespace are ignored.
 export function parseRecoveryCode(input) {
   if (typeof input !== "string") return null;
+  // A real code is 34 hex chars; even with generous dash/space padding it is
+  // never long. Cap before the O(n) replace so a multi-megabyte body can't
+  // burn scan/alloc time on this path (bounded anyway by the HTTP body limit
+  // and login limiter, but the primitive shouldn't rely on that).
+  if (input.length > 256) return null;
   const cleaned = input.replace(/[\s-]/g, "").toLowerCase();
   // 32 hex token chars + 2 hex checksum chars.
   if (!/^[0-9a-f]{34}$/.test(cleaned)) return null;
@@ -89,10 +94,24 @@ export function digestFromInput(input) {
 // Generate a fresh set: the operator-facing code strings (shown once) and the
 // digests to persist. The plaintext codes are never stored.
 export function generateRecoveryCodes(count = RECOVERY_CODE_COUNT, random = randomBytes) {
+  // count is server-fixed in real use; guard so a bad caller can't request an
+  // absurd allocation (DoS) or a non-integer.
+  if (!Number.isInteger(count) || count < 1 || count > 100) {
+    throw new RangeError(`recovery-code count must be an integer in [1,100], got ${count}`);
+  }
   const codes = [];
   const digests = [];
   for (let i = 0; i < count; i++) {
     const tokenBytes = random(RECOVERY_TOKEN_BYTES);
+    // Defend the entropy contract: an injected source must return exactly the
+    // requested CSPRNG bytes. A short/weak source would silently produce
+    // guessable recovery credentials, so fail loudly instead.
+    if (!Buffer.isBuffer(tokenBytes) && !(tokenBytes instanceof Uint8Array)) {
+      throw new TypeError("random source must return a Buffer/Uint8Array");
+    }
+    if (tokenBytes.length !== RECOVERY_TOKEN_BYTES) {
+      throw new RangeError(`random source returned ${tokenBytes.length} bytes, expected ${RECOVERY_TOKEN_BYTES}`);
+    }
     codes.push(formatRecoveryCode(tokenBytes));
     digests.push(hashRecoveryToken(tokenBytes));
   }
