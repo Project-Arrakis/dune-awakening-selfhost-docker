@@ -635,8 +635,10 @@ non-stackable corpse/bulky-canister items (`Mouse_Corpse`, `Corpse`, all 3 `Fuel
 the two lubricants, and 1000–2500 for bulk sand/residue raw materials (`FlourSand`, `SpiceResidue`,
 `SpiceSand`). Three items (`T4ShieldWallComponent`, `ExperimentalWindTurbineComponent`, and originally
 `T2MuaddibComponent` before the operator statement above) 404 against the external source and need direct
-live-game verification — see issue #441. This makes bulk curation of the remaining ~93 unseeded items in
-these three groups cheap: default to 500, verify only genuine outliers.
+live-game verification — see issue #441. This made bulk curation cheap: all 91 remaining externally-resolved
+items were curated 2026-08-20 (issue #431), so **every `raw_resource`/`refined_resource`/`component` item
+now has a `stackSize` except the two still awaiting live-game verification** (`T4ShieldWallComponent`,
+`ExperimentalWindTurbineComponent`, issue #441) — 97 of 99 items resolved.
 
 **Give Multiple's batch-clamping design is deliberately left-to-right, not best-effort.** Once one item in
 the batch does not fully fit (clamped, or reduced all the way to zero), the batch **stops there** —

@@ -4034,10 +4034,16 @@ test("container item add clamps quantity to the item's catalog stack size for it
   assert.equal(insert.values[2], 500, "the single placed stack must not exceed the game's stack limit");
 });
 
+// A synthetic, never-real id -- not a real catalog item like ScrapMetal --
+// because maxStackSizeForTemplate reads the REAL runtime/data/admin-items.json
+// (this test's db fixture is faked, but that lookup isn't), so a real item id
+// here is fragile against future curation (L2 audit QA hat L-7's predicted
+// failure mode: #431's bulk curation broke this exact test when it curated
+// ScrapMetal's stackSize, 2026-08-20).
 test("container item add leaves items without catalog stack data unclamped", async () => {
   const calls = [];
   const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
-  const result = await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1200 });
+  const result = await addBaseContainerItem(db, 16836, 42, { itemId: "TotallyUncataloguedTestItem", quantity: 1200 });
   assert.equal(result.clamped, false);
   const insert = insertCalls(calls)[0];
   assert.equal(insert.values[2], 1200);
