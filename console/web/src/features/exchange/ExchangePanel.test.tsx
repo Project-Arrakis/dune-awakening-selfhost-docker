@@ -56,8 +56,8 @@ function itemsResponse(overrides: Partial<ExchangeItemsResponse> = {}): Exchange
       {
         template_id: "PartialStabilizationBelt",
         quality_level: 0,
-        display_name: "Partial Stabilization Belt",
-        category: "utility",
+        display_name: "partial stabilization belt",
+        category: "ranked_weapons",
         tier: null,
         lowest_price: 45084,
         total_stock: 4,
@@ -101,6 +101,7 @@ describe("ExchangePanel", () => {
 
     expect(await screen.findByText("Partial Stabilization Belt")).toBeInTheDocument();
     expect(screen.getByText("45,084")).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "Ranked Weapons" })).toBeInTheDocument();
   });
 
   it("defaults the owner filter to all listings", async () => {
@@ -150,7 +151,7 @@ describe("ExchangePanel", () => {
     renderPanel();
 
     await screen.findByText("Partial Stabilization Belt");
-    fireEvent.change(screen.getByPlaceholderText("Search item name, category, or template"), { target: { value: "belt" } });
+    fireEvent.change(screen.getByPlaceholderText("Search Item Name, Category, or Template"), { target: { value: "belt" } });
     fireEvent.click(screen.getByText("Search"));
 
     await waitFor(() => expect(vi.mocked(exchangeApi.items)).toHaveBeenCalledWith(expect.objectContaining({ q: "belt" })));
@@ -199,6 +200,7 @@ describe("ExchangePanel", () => {
     fireEvent.click(await screen.findByLabelText("Show listings for Partial Stabilization Belt"));
 
     expect(await screen.findByText("Halfmoondee")).toBeInTheDocument();
+    expect(screen.getByText("Player")).toBeInTheDocument();
     // Drill-down respects the current owner filter (default: all).
     expect(vi.mocked(exchangeApi.listings)).toHaveBeenCalledWith("PartialStabilizationBelt", 0, "all");
   });
@@ -215,7 +217,7 @@ describe("ExchangePanel", () => {
     renderPanel();
 
     expect(await screen.findByText(/Missing required table/)).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("Search item name, category, or template")).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Search Item Name, Category, or Template")).not.toBeInTheDocument();
   });
 
   it("shows the Market Bot button only when the market status endpoint is reachable", async () => {
