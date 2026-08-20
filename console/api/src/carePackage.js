@@ -401,7 +401,13 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
               augmentQuality: payload.augmentQuality,
               allowOnlinePreAugmented: source === "manual"
             });
-        results.push({ ok: true, operation: "dbGiveItemToPlayer", item: payload, result, warning: result?.requiresRelog ? "Relog required before the item appears correctly." : undefined });
+        // A clamped grant (per-item stack limit x free-slot budget, issue
+        // #430) must surface here -- care-package summaries otherwise
+        // report full delivery for a partial one.
+        const clampWarning = result?.clamped ? `Only ${result.given} of the requested ${item.quantity} could be granted (limited by the player's free inventory slots and the item's stack size).` : "";
+        const relogWarning = result?.requiresRelog ? "Relog required before the item appears correctly." : "";
+        const combinedWarning = [clampWarning, relogWarning].filter(Boolean).join(" ");
+        results.push({ ok: true, operation: "dbGiveItemToPlayer", item: payload, result, warning: combinedWarning || undefined });
       } else {
         const command = buildDuneArgs(operation, payload);
         const result = config.mockMode ? { code: 0, stdout: "mock package item grant\n", stderr: "" } : await runDune(config, command);
@@ -472,13 +478,13 @@ export async function retryCarePackageGrant(config, grantId, body = {}, context 
 }
 
 export function validateCarePackageConfig(body = {}) {
-  const enabled = Boolean(body.enabled);
   const kits = validateCarePackages(body);
   const activeKitId = validKitId(body.activeKitId, kits) || kits[0]?.id || "";
   const autoGrantKitId = validKitId(body.autoGrantKitId, kits) || activeKitId;
   const activeKit = kits.find((kit) => kit.id === activeKitId) || kits[0] || { id: "", items: [], xp: 0 };
   const grantWhen = validateGrantWhen(body.grantWhen || DEFAULT_CONFIG.grantWhen);
   const autoGrantRules = validateAutoGrantRules(body, kits, autoGrantKitId, grantWhen);
+  const enabled = Boolean(body.enabled) || autoGrantRules.some((rule) => rule.enabled);
   return {
     enabled,
     version: activeKit.id,

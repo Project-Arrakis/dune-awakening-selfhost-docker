@@ -70,6 +70,28 @@ export function resolveItemVolume(repoRoot, templateId) {
   return Number(match?.volume) || 0;
 }
 
+// Per-item max stack size the game engine itself enforces. Curated
+// incrementally in admin-items.json exactly like `volume`: 0 means "no
+// catalogued stack data", which downstream give/fill treats as "insert a
+// single row", the pre-existing behavior. Every curated value needs a
+// stated, verified source (see duneDb's matching comment and
+// docs/console/base-inventory.md's curation note) -- a wrong value silently
+// mis-splits or over-clamps every grant of that item.
+export function resolveItemStackSize(repoRoot, templateId) {
+  const items = JSON.parse(readFileSync(resolve(repoRoot, "runtime/data/admin-items.json"), "utf8"));
+  const match = items.find((item) => String(item.id || "") === templateId);
+  return isValidStackSize(match?.stackSize) ? match.stackSize : 0;
+}
+
+// Only a real positive-integer number counts as curated stack data --
+// strings, booleans, floats, and negatives are rejected outright rather
+// than coerced (true would otherwise coerce to a max stack of 1 and shred
+// every give of that item into 1-unit rows). duneDb's adminItemMetadata
+// applies the identical rule; keep the two in sync.
+function isValidStackSize(value) {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
 export function listCatalogItems(repoRoot, { q = "", limit = 500 } = {}) {
   const items = JSON.parse(readFileSync(resolve(repoRoot, "runtime/data/admin-items.json"), "utf8"));
   const term = String(q || "").trim().toLowerCase();
@@ -190,6 +212,7 @@ function normalizeItem(item, repoRoot = "") {
   };
   if (item.group) result.group = String(item.group);
   if (item.volume !== undefined && item.volume !== null) result.volume = Number(item.volume);
+  if (isValidStackSize(item.stackSize)) result.stackSize = item.stackSize;
   return result;
 }
 

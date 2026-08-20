@@ -125,7 +125,10 @@ actually landed, which is a statement of fact rather than a promise.
 
 **Capacity is refused at `count(*) >= max_item_count`.** Rows, not summed stack sizes — correct precisely
 because nothing merges, so one add always consumes exactly one slot. A `max_item_count` of 0 is treated as
-uncapped, matching `giveItemToStorage` and `giveItemToPlayer`; no shipped storage type has one.
+uncapped, matching `giveItemToStorage` and `giveItemToPlayer`; no shipped storage type has one. Because this
+path deliberately places exactly one row in one slot, an item with catalogued stack data (issue #430) has an
+oversized quantity **clamped to one full stack** (reported via `requested`/`clamped` and named in the
+response message) rather than split across rows the way Give/Fill splits.
 
 **Durability is left alone.** The insert calls `buildItemStats` without a durability argument, so clothing
 and weapons get the usual 100/100 fallback while ore, spice and salvage get an empty stat block — which is
@@ -439,7 +442,7 @@ operator should be able to check Fill without losing in-progress batch work.
 
 **Below the toggle sits one lightly-bordered mode-hint group and, below that, one bordered warning
 banner** — never more than two notice elements at once, in either mode. The mode-hint group
-(`.bases-inventory-mode-group`) pairs a single muted caption line ("Give inserts a new stack…Fill tops up
+(`.bases-inventory-mode-group`) pairs a single muted caption line ("Give inserts one or more new stacks…Fill tops up
 one item toward capacity…") with the toggle itself, using the neutral `--border` token and the
 `--panel-muted` background rather than the warning's amber `--warning` token, so it reads as low-weight
 context rather than a second alert. The warning banner (`.bases-inventory-restart-warning`) always states
@@ -575,11 +578,44 @@ and retry. Both functions now **clamp the requested quantity down to whatever ac
 that instead — asking for 500 of an item that only has room for 375 gives 375, not 0. The response always
 reports `requested`, `given`, and `clamped` (`clamped: true` whenever `given < requested`), and the UI
 surfaces exactly that outcome (`"Only 375 of the requested 500 x X fit and was given to the container."`)
-rather than silently implying the full request succeeded. **Slot count is the one capacity axis this does
-NOT apply to** — a single give/fill always consumes exactly one slot regardless of quantity, so "no slots
+rather than silently implying the full request succeeded. **Slot count** works differently depending on
+whether the item has catalogued stack data (issue #430): for an item with **no** `stackSize` in
+`admin-items.json`, a single give/fill still consumes exactly one slot regardless of quantity, so "no slots
 left" genuinely cannot be partially satisfied and remains a hard rejection (`"Storage is full by item slot
-count"`). Volume itself is still a hard rejection in the one case clamping cannot help: truly zero room
-left, where even 1 unit does not fit.
+count"`). For an item **with** catalogued stack data (e.g. `MelangeSpice` at 500/stack), an oversized
+quantity is **split across multiple rows of at most one full stack each** — the game engine itself enforces
+per-item stack limits (the generator-refill path always respected them; give/fill now does too), so each
+stack row consumes its own slot, and the split completes in **one action** bounded by the container's real
+capacity (remaining slots/volume) — full stacks plus one final remainder stack, per explicit operator
+direction (2026-08-20). A 1,000-row runaway backstop (shared across a whole Give Multiple batch) exists
+solely to stop pathological transactions (e.g. 1,000,000 units of a 1-per-stack item); realistic
+operations never reach it. The response
+carries `stacks` (row count) and `insertedStacks` (all rows) alongside the pre-existing `inserted` (the
+first row), plus `clampReason` distinguishing WHY a shortfall happened — `"volume"` and `"slots"` mean the
+container's real capacity bound it (final), `"stack-rows"` means only the per-operation cap did (the
+container has room; repeating the action adds more) — and a human-readable `message` stating the outcome,
+which the standalone Storage tab renders directly. Fill-to-capacity reports `clamped` **only** for the
+`"stack-rows"` case: a fill bounded by real capacity genuinely is "as much as fit". A genuinely full
+container is still the same hard rejection as before. Volume itself is still a hard rejection in the one
+case clamping cannot help: truly zero room left, where even 1 unit does not fit.
+
+**Split-row slot placement (L2 audit fix):** Give keeps claiming the highest free in-range slots per row
+(`nextHighPositionIndex`, the 2026-08-19 collision mitigation). Fill and player Give — which previously used
+`max(position_index) + 1` — now claim the **lowest free in-range** slots for a slot-capped inventory from a
+one-time occupied-set read (the same pigeonhole-guarded pattern Give Multiple's `claimPositionIndex` uses),
+because after any high-end Give, `max + 1` starts **at** `max_item_count` and a split would have written an
+entire operation's rows outside the engine's slot grid. Give also claims from the same one-time
+occupied-set read now (replacing its per-row `generate_series` re-query — one round trip per operation
+instead of two per stack row under the inventory lock). Uncapped inventories keep `max + 1`, which cannot
+go out of range.
+
+**Curating `stackSize` values:** every value added to `admin-items.json` must have a **stated, verified
+source** — read the limit from the live game (hover an item's full stack in-game, or observe the largest
+naturally-occurring `stack_size` for that template in a real world database) and record where the number
+came from in the PR/commit that adds it. A wrong value silently mis-splits or over-clamps every future
+grant of that item. Provenance of the initial five: `Oil`/`SpicedFuelCell` 499 and the two lubricants 100
+match the generator-refill table (`GENERATOR_TYPES`) that has been feeding real accepted refills; `MelangeSpice`
+500 was operator-stated from the live game (2026-08-20, issue #430).
 
 **Give Multiple's batch-clamping design is deliberately left-to-right, not best-effort.** Once one item in
 the batch does not fully fit (clamped, or reduced all the way to zero), the batch **stops there** —

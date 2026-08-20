@@ -891,9 +891,14 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
         // is clamped to whatever fits (issue #347 follow-up). The
         // clamped case is reported plainly rather than claiming the full
         // requested amount was given when it was not.
-        const { given, requested, clamped } = response.result;
+        const { given, requested, clamped, clampReason } = response.result;
+        // "stack-rows" = only the runaway row backstop stopped it (the
+        // container has room) -- saying it "fit" would be false. See the
+        // fill handler's matching note.
         setDeleteNotice(clamped
-          ? `Only ${given.toLocaleString()} of the requested ${requested.toLocaleString()} x ${pending[0].itemName} fit and was given to the container.`
+          ? (clampReason === "stack-rows"
+            ? `${given.toLocaleString()} of the requested ${requested.toLocaleString()} x ${pending[0].itemName} was given -- stopped at the per-operation stack cap, not because the container is full; run Give again to add more.`
+            : `Only ${given.toLocaleString()} of the requested ${requested.toLocaleString()} x ${pending[0].itemName} fit and was given to the container.`)
           : `${pending[0].itemName} was given to the container.`);
       } else {
         const response = await basesApi.giveContainerItems(baseId, contentsFor, pending, "GIVE ITEMS TO STORAGE");
@@ -967,12 +972,22 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       // manually against this feature ("Fill Container said it filled 100
       // when only 100 of a larger request fit -- and separately, sending
       // 100 when the operator meant 'fill it up' at all").
-      const { given, clamped } = response.result;
+      const { given, clamped, clampReason } = response.result;
       const filledName = selectedItem.name;
+      // clampReason "stack-rows" means only the per-operation stack-row cap
+      // stopped the fill -- the container still has room, so claiming
+      // "(as much as fit)" or "fit" would be false and would steer the
+      // operator away from the correct recovery: running the action again
+      // (issue #430 L2 audit, UI hat).
+      const stackRowCapped = clamped && clampReason === "stack-rows";
       setDeleteNotice(toCapacity
-        ? `${given.toLocaleString()} x ${filledName} was filled into the container (as much as fit).`
+        ? (stackRowCapped
+          ? `${given.toLocaleString()} x ${filledName} was filled into the container -- stopped at the per-operation stack cap, not because the container is full; run Fill again to add more.`
+          : `${given.toLocaleString()} x ${filledName} was filled into the container (as much as fit).`)
         : clamped
-          ? `Only ${given.toLocaleString()} of the requested ${quantity.toLocaleString()} x ${filledName} fit and was filled into the container.`
+          ? (stackRowCapped
+            ? `${given.toLocaleString()} of the requested ${quantity.toLocaleString()} x ${filledName} was filled -- stopped at the per-operation stack cap, not because the container is full; run Fill again to add more.`
+            : `Only ${given.toLocaleString()} of the requested ${quantity.toLocaleString()} x ${filledName} fit and was filled into the container.`)
           : `${filledName} was filled into the container.`);
       setSelectedItem(null);
       setQuantityText("100");
@@ -1661,7 +1676,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                 keep looking urgent. */}
             <div className="bases-inventory-mode-group">
               <p className="muted bases-inventory-mode-hint">
-                <strong>Give</strong> inserts a new stack, and can queue several items at once.{" "}
+                <strong>Give</strong> inserts one or more new stacks (quantities above an item's stack limit are split), and can queue several items at once.{" "}
                 <strong>Fill</strong> tops up one item toward capacity, including filling it in one click.
               </p>
 

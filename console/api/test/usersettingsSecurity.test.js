@@ -56,6 +56,13 @@ test("usersettings keeps password-bearing files private and metadata secret-free
     const metadata = runUsersettings(["metadata"], env);
     assert.equal(metadata.status, 0, metadata.stderr);
     assert.doesNotMatch(metadata.stdout, /server_login_password|Bgd\.ServerLoginPassword|private-test-password|legacy-secret/);
+    const fields = JSON.parse(metadata.stdout);
+    const legacyGuildFields = ["guild_creation_cost", "max_guilds_allowed", "max_guild_members_allowed"];
+    for (const scope of ["game", "partition"]) {
+      assert.deepEqual(fields[scope].filter((field) => legacyGuildFields.includes(field.id)), []);
+      assert.equal(fields[scope].filter((field) => field.id === "guild_settings_max_guild_members_allowed").length, 1);
+      assert.equal(fields[scope].find((field) => field.id === "guild_settings_max_guild_members_allowed").label, "Max Guild Members Allowed");
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
