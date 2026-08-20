@@ -4915,6 +4915,20 @@ async function handleDiscordTokenExchange(req, res) {
     return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
   }
 
+  // Fail closed: this endpoint's only purpose is the Atrium single-auth
+  // flow for one operator-designated Discord account. With no allowlist
+  // configured it must deny, never grant a session to anyone who can
+  // complete a Discord OAuth -- an unset gate previously minted an owner
+  // session for any valid Discord token (issue #403, EoP/CRITICAL).
+  // Checked before the bearer/identity handling so a disabled endpoint
+  // does zero outbound work to Discord (L2 audit, Network finding).
+  const allowedUserId = String(process.env.ATRIUM_ALLOWED_DISCORD_USER_ID || "").trim();
+  if (!allowedUserId) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, req, "auth.oauth.exchange", { ok: false, reason: "exchange_not_configured" });
+    return json(res, 403, { error: "The Atrium exchange is not configured on this console. Sign in with Discord or the admin password instead." });
+  }
+
   const authHeader = (req.headers.authorization || "").trim();
   if (!authHeader.startsWith("Bearer ") || authHeader.length <= 7) {
     loginRateLimiter.recordFailure(rateKey);
@@ -4931,17 +4945,6 @@ async function handleDiscordTokenExchange(req, res) {
     return json(res, 401, { error: "Discord token validation failed." });
   }
 
-  // Fail closed: this endpoint's only purpose is the Atrium single-auth
-  // flow for one operator-designated Discord account. With no allowlist
-  // configured it must deny, never grant a session to anyone who can
-  // complete a Discord OAuth -- an unset gate previously minted an owner
-  // session for any valid Discord token (issue #403, EoP/CRITICAL).
-  const allowedUserId = String(process.env.ATRIUM_ALLOWED_DISCORD_USER_ID || "").trim();
-  if (!allowedUserId) {
-    loginRateLimiter.recordFailure(rateKey);
-    audit(config, req, "auth.oauth.exchange", { ok: false, reason: "exchange_not_configured", userId: identity.userId });
-    return json(res, 403, { error: "The Atrium exchange is not configured on this console. Sign in with Discord or the admin password instead." });
-  }
   if (identity.userId !== allowedUserId) {
     loginRateLimiter.recordFailure(rateKey);
     audit(config, req, "auth.oauth.exchange", { ok: false, reason: "not_authorized", userId: identity.userId });
