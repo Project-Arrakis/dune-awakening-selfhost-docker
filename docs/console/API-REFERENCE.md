@@ -321,18 +321,29 @@ routes above. Its `containers[].items[]` is merged per item template, not per
 slot — `GET /api/bases/{baseId}/containers/{placeableId}` is the per-slot view,
 fetched one container at a time because slots roughly triple the response.
 
-`DELETE …/containers/{placeableId}/items/{itemId}` and
-`POST …/containers/{placeableId}/items` are both refused unless
-`baseRefillTarget` can verify that the owning map is safely stopped. An unknown
-state fails closed, and each route repeats the check immediately before the
-write. Only plain Storage contents are mutable; Crafting and Refining remain
-read-only because active jobs can reference their item rows. The same allowlist
-that keeps fuel inventories out of the read keeps them out of both writes. They
-need `bases:delete-item` and `bases:add-item` respectively, not `bases:mutate` —
-this tab shipped read-only, so a `bases:mutate` grant cannot be read as consent
-to destroy or fabricate items. The add never merges into an existing stack and
-always appends to `max(position_index) + 1`; the caller cannot pick a slot. See
-[base-inventory.md](base-inventory.md).
+`POST …/containers/{placeableId}/items` (Add Item to Container, upstream's own
+route) is refused unless `baseRefillTarget` can verify that the owning map is
+safely stopped — an unknown state fails closed, and the route repeats the
+check immediately before the write. It needs `bases:add-item`, not
+`bases:mutate`. The add never merges into an existing stack and always
+appends to `max(position_index) + 1`; the caller cannot pick a slot.
+
+`DELETE …/containers/{placeableId}/items/{itemId}` (and the bulk
+`DELETE …/items` / `DELETE …/all-items` routes), plus
+`POST …/containers/{placeableId}/give-item`, `give-items`, and `fill-item`
+(this fork's own #347 work), do **not** require the owning map to be
+stopped — these are pure database writes with no live-sync path to a running
+map (see [base-inventory.md](base-inventory.md)'s "Deletion does not require
+a stopped map" section for the live-tested evidence this rests on). They need
+`bases:delete-item`/`bases:bulk-delete-items`/`bases:give-item`/
+`bases:fill-item` respectively, not `bases:mutate`.
+
+Across all of the above, only plain Storage contents are mutable; Crafting
+and Refining remain read-only because active jobs can reference their item
+rows. The same allowlist that keeps fuel inventories out of the read keeps
+them out of every write. This tab shipped read-only, so a `bases:mutate`
+grant cannot be read as consent to destroy or fabricate items in any of these
+routes. See [base-inventory.md](base-inventory.md).
 
 Both `GET /api/bases/{baseId}/water` and `GET /api/bases/{baseId}/inventory`
 answer **200 with `supported: false` and a `reason`** when the detected schema

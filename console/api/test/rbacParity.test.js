@@ -178,3 +178,19 @@ test("parity: DELETE /api/bases/{baseId} resolves to bases:delete, distinct from
   assert.equal(actionForRoute("/api/bases/12858/queued-refill", "DELETE"), "bases:mutate");
   assert.equal(actionForRoute("/api/bases/12858/queued-water-refill", "DELETE"), "bases:mutate");
 });
+
+test("parity: base container give/fill/bulk-delete routes resolve to their own narrow actions, not bases:mutate", () => {
+  // Same consent argument as bases:delete-item: base inventory shipped
+  // read-only, so an operator's existing bases:mutate grant (refills,
+  // permission edits) must not silently widen to cover item creation or
+  // bulk/delete-all destruction just because these routes share the
+  // /api/bases/ prefix.
+  assert.equal(actionForRoute("/api/bases/12858/containers/42/give-item", "POST"), "bases:give-item");
+  assert.equal(actionForRoute("/api/bases/12858/containers/42/give-items", "POST"), "bases:give-item");
+  assert.equal(actionForRoute("/api/bases/12858/containers/42/fill-item", "POST"), "bases:fill-item");
+  assert.equal(actionForRoute("/api/bases/12858/containers/42/items", "DELETE"), "bases:bulk-delete-items");
+  assert.equal(actionForRoute("/api/bases/12858/containers/42/all-items", "DELETE"), "bases:bulk-delete-items");
+  // The existing single-item delete route must be unaffected by these new
+  // sibling routes/regexes.
+  assert.equal(actionForRoute("/api/bases/12858/containers/42/items/99", "DELETE"), "bases:delete-item");
+});
