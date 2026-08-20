@@ -4017,6 +4017,32 @@ const CONTAINER_ADD_ROW = {
 
 const insertCalls = (calls) => calls.filter((call) => call.text.includes("insert into dune.items"));
 
+// Per-item stack-limit adherence (issue #430) for the slot-grid Add Item
+// path: unlike Give/Fill, this UX deliberately places exactly one row in one
+// slot, so an oversized quantity is CLAMPED to the game's per-item stack
+// limit rather than split across rows -- and reported honestly.
+test("container item add clamps quantity to the item's catalog stack size for its single-slot placement", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, {
+    containerRows: [CONTAINER_ADD_ROW],
+    insertedRows: [{ id: 640, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 0, inventory_id: 7 }]
+  });
+  const result = await addBaseContainerItem(db, 16836, 42, { itemId: "MelangeSpice", quantity: 1200 });
+  assert.equal(result.requested, 1200);
+  assert.equal(result.clamped, true);
+  const insert = insertCalls(calls)[0];
+  assert.equal(insert.values[2], 500, "the single placed stack must not exceed the game's stack limit");
+});
+
+test("container item add leaves items without catalog stack data unclamped", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
+  const result = await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1200 });
+  assert.equal(result.clamped, false);
+  const insert = insertCalls(calls)[0];
+  assert.equal(insert.values[2], 1200);
+});
+
 test("container item add resolves ownership through the base before inserting", async () => {
   const calls = [];
   const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
@@ -5653,6 +5679,157 @@ test("storage fill-item rejects when slot limit would be exceeded", async () => 
     () => fillItemToStorage(db, "/tmp", 222, { templateId: "T6RefinedResourceA", quantity: 50, itemVolume: 1.0 }),
     /Storage is full by item slot/
   );
+});
+
+// ---- Per-item stack-limit adherence (issue #430) ----
+// The game engine enforces a per-item max stack size (MelangeSpice 500,
+// Oil/SpicedFuelCell 499, lubricants 100 -- see GENERATOR_TYPES' refill
+// block and docs/console/generator-refill-caps.md, "the per-row stack the
+// game accepts"). Raw give/fill inserts bypass the engine's own stack
+// validation (the RCON path's "Verified inventory stack increased"), so
+// these paths must split an oversized quantity across multiple rows using
+// the catalog's stackSize metadata. Items without stackSize data keep the
+// pre-existing single-row behavior, locked by the older tests above.
+
+test("storage give-item splits a quantity above the item's catalog stack size into multiple stacks", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    highPositionRowsSequence: [29, 28, 27],
+    insertedRowsSequence: [
+      { id: 601, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 29, inventory_id: 7 },
+      { id: 602, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 28, inventory_id: 7 },
+      { id: 603, template_id: "MelangeSpice", stack_size: 200, quality_level: 0, position_index: 27, inventory_id: 7 }
+    ]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "MelangeSpice", quantity: 1200 });
+  assert.equal(result.given, 1200);
+  assert.equal(result.requested, 1200);
+  assert.equal(result.clamped, false, "splitting alone is not a clamp -- the full requested quantity was given");
+  assert.equal(result.stacks, 3);
+  assert.equal(result.inserted.id, 601, "inserted stays the first row for response-shape compatibility");
+  assert.equal(result.insertedStacks.length, 3);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 3);
+  assert.deepEqual(inserts.map((call) => call.values[2]), [500, 500, 200]);
+  assert.deepEqual(inserts.map((call) => call.values[4]), [29, 28, 27], "each stack claims its own distinct slot");
+});
+
+test("storage give-item clamps a split to the container's remaining slots and reports it honestly", async () => {
+  // 30 slots, 28 used -> only 2 stacks fit; 1200 requested at 500/stack ->
+  // 1000 given across 2 stacks, clamped, instead of one over-limit row.
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 28 }],
+    highPositionRowsSequence: [29, 28],
+    insertedRowsSequence: [
+      { id: 604, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 29, inventory_id: 7 },
+      { id: 605, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 28, inventory_id: 7 }
+    ]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "MelangeSpice", quantity: 1200 });
+  assert.equal(result.given, 1000);
+  assert.equal(result.clamped, true);
+  assert.equal(result.stacks, 2);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 2);
+  assert.deepEqual(inserts.map((call) => call.values[2]), [500, 500]);
+});
+
+test("storage fill-item to capacity splits into stack-size rows and caps the row count", async () => {
+  // Uncapped container (no slot or volume limit): fill-to-capacity for a
+  // stack-capped item now gives 50 full stacks (the per-operation row cap,
+  // matching the existing 50-item batch bound) instead of the previous
+  // single 1,000,000-unit row.
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: Array.from({ length: 50 }, (_, index) => (
+      { id: 700 + index, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 2 + index, inventory_id: 7 }
+    ))
+  });
+  const result = await fillItemToStorage(db, "/tmp", 222, { templateId: "MelangeSpice", quantity: 0, itemVolume: 0.2 });
+  assert.equal(result.given, 25000);
+  assert.equal(result.requested, null);
+  assert.equal(result.stacks, 50);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 50);
+  assert.ok(inserts.every((call) => call.values[2] === 500));
+  assert.equal(inserts[0].values[4], 2, "fill keeps its lowest-next-free position convention for the first stack");
+  assert.equal(inserts[49].values[4], 51, "later stacks take consecutive positions after the first");
+});
+
+test("base container fill-item splits an explicit quantity above the stack size without reporting a clamp", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [
+      { id: 611, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 2, inventory_id: 7 },
+      { id: 612, template_id: "MelangeSpice", stack_size: 100, quality_level: 0, position_index: 3, inventory_id: 7 }
+    ]
+  });
+  const result = await fillItemToBaseContainer(db, "/tmp", 16836, 42, { templateId: "MelangeSpice", quantity: 600, itemVolume: 0.2 });
+  assert.equal(result.given, 600);
+  assert.equal(result.requested, 600);
+  assert.equal(result.clamped, false);
+  assert.equal(result.stacks, 2);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.deepEqual(inserts.map((call) => call.values[2]), [500, 100]);
+  assert.deepEqual(inserts.map((call) => call.values[4]), [2, 3]);
+});
+
+test("give-multiple-items splits an oversized entry across stacks and slots before the next entry", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [
+      { id: 621, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 29, inventory_id: 7 },
+      { id: 622, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 28, inventory_id: 7 },
+      { id: 623, template_id: "MelangeSpice", stack_size: 200, quality_level: 0, position_index: 27, inventory_id: 7 },
+      { id: 624, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 26, inventory_id: 7 }
+    ]
+  });
+  const result = await giveMultipleItemsToBaseContainer(db, 16836, 42, {
+    items: [
+      { templateId: "MelangeSpice", quantity: 1200 },
+      { templateId: "AzuriteOre", quantity: 20 }
+    ]
+  });
+  assert.equal(result.results.length, 2);
+  assert.equal(result.results[0].given, 1200);
+  assert.equal(result.results[0].clamped, false, "a fully-satisfied split entry must not stop the batch");
+  assert.equal(result.results[0].stacks, 3);
+  assert.equal(result.results[0].inserted.id, 621);
+  assert.equal(result.results[1].attempted, true);
+  assert.equal(result.results[1].given, 20);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 4);
+  assert.deepEqual(inserts.map((call) => call.values[4]), [29, 28, 27, 26], "each stack claims its own slot from the shared high-end pool");
+});
+
+test("player give-item splits a quantity above the item's catalog stack size", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 123, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [
+      { id: 631, template_id: "MelangeSpice", stack_size: 500, quality_level: 1, position_index: 2, inventory_id: 7 },
+      { id: 632, template_id: "MelangeSpice", stack_size: 500, quality_level: 1, position_index: 3, inventory_id: 7 },
+      { id: 633, template_id: "MelangeSpice", stack_size: 200, quality_level: 1, position_index: 4, inventory_id: 7 }
+    ]
+  });
+  const result = await giveItemToPlayer(db, 123, { templateId: "MelangeSpice", quantity: 1200 });
+  assert.equal(result.given, 1200);
+  assert.equal(result.stacks, 3);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 3);
+  assert.deepEqual(inserts.map((call) => call.values[2]), [500, 500, 200]);
+  assert.deepEqual(inserts.map((call) => call.values[4]), [2, 3, 4]);
 });
 
 test("player give-item persists selected item grade", async () => {

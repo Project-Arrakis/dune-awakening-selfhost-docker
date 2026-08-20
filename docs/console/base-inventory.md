@@ -125,7 +125,10 @@ actually landed, which is a statement of fact rather than a promise.
 
 **Capacity is refused at `count(*) >= max_item_count`.** Rows, not summed stack sizes — correct precisely
 because nothing merges, so one add always consumes exactly one slot. A `max_item_count` of 0 is treated as
-uncapped, matching `giveItemToStorage` and `giveItemToPlayer`; no shipped storage type has one.
+uncapped, matching `giveItemToStorage` and `giveItemToPlayer`; no shipped storage type has one. Because this
+path deliberately places exactly one row in one slot, an item with catalogued stack data (issue #430) has an
+oversized quantity **clamped to one full stack** (reported via `requested`/`clamped` and named in the
+response message) rather than split across rows the way Give/Fill splits.
 
 **Durability is left alone.** The insert calls `buildItemStats` without a durability argument, so clothing
 and weapons get the usual 100/100 fallback while ore, spice and salvage get an empty stat block — which is
@@ -575,11 +578,19 @@ and retry. Both functions now **clamp the requested quantity down to whatever ac
 that instead — asking for 500 of an item that only has room for 375 gives 375, not 0. The response always
 reports `requested`, `given`, and `clamped` (`clamped: true` whenever `given < requested`), and the UI
 surfaces exactly that outcome (`"Only 375 of the requested 500 x X fit and was given to the container."`)
-rather than silently implying the full request succeeded. **Slot count is the one capacity axis this does
-NOT apply to** — a single give/fill always consumes exactly one slot regardless of quantity, so "no slots
+rather than silently implying the full request succeeded. **Slot count** works differently depending on
+whether the item has catalogued stack data (issue #430): for an item with **no** `stackSize` in
+`admin-items.json`, a single give/fill still consumes exactly one slot regardless of quantity, so "no slots
 left" genuinely cannot be partially satisfied and remains a hard rejection (`"Storage is full by item slot
-count"`). Volume itself is still a hard rejection in the one case clamping cannot help: truly zero room
-left, where even 1 unit does not fit.
+count"`). For an item **with** catalogued stack data (e.g. `MelangeSpice` at 500/stack), an oversized
+quantity is **split across multiple rows of at most one full stack each** — the game engine itself enforces
+per-item stack limits (the generator-refill path always respected them; give/fill now does too), so each
+stack row consumes its own slot, the split is bounded by the container's remaining slots (and a 50-row
+per-operation cap matching Give Multiple's batch bound), and a quantity cut down by that budget is reported
+as `clamped` like any volume clamp. The response carries `stacks` (row count) and `insertedStacks` (all
+rows) alongside the pre-existing `inserted` (the first row). A genuinely full container is still the same
+hard rejection as before. Volume itself is still a hard rejection in the one case clamping cannot help:
+truly zero room left, where even 1 unit does not fit.
 
 **Give Multiple's batch-clamping design is deliberately left-to-right, not best-effort.** Once one item in
 the batch does not fully fit (clamped, or reduced all the way to zero), the batch **stops there** —

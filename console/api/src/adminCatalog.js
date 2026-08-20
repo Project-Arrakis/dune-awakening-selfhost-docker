@@ -70,6 +70,20 @@ export function resolveItemVolume(repoRoot, templateId) {
   return Number(match?.volume) || 0;
 }
 
+// Per-item max stack size the game engine itself enforces (e.g. MelangeSpice
+// 500, Oil/SpicedFuelCell 499, lubricants 100 -- the same values
+// GENERATOR_TYPES' refill block and docs/console/generator-refill-caps.md
+// already document as "the per-row stack the game accepts"). Curated
+// incrementally in admin-items.json exactly like `volume`: 0 means "no
+// catalogued stack data", which downstream give/fill treats as "insert a
+// single row", the pre-existing behavior.
+export function resolveItemStackSize(repoRoot, templateId) {
+  const items = JSON.parse(readFileSync(resolve(repoRoot, "runtime/data/admin-items.json"), "utf8"));
+  const match = items.find((item) => String(item.id || "") === templateId);
+  const value = Number(match?.stackSize);
+  return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
 export function listCatalogItems(repoRoot, { q = "", limit = 500 } = {}) {
   const items = JSON.parse(readFileSync(resolve(repoRoot, "runtime/data/admin-items.json"), "utf8"));
   const term = String(q || "").trim().toLowerCase();
@@ -190,6 +204,7 @@ function normalizeItem(item, repoRoot = "") {
   };
   if (item.group) result.group = String(item.group);
   if (item.volume !== undefined && item.volume !== null) result.volume = Number(item.volume);
+  if (Number.isInteger(Number(item.stackSize)) && Number(item.stackSize) > 0) result.stackSize = Number(item.stackSize);
   return result;
 }
 
