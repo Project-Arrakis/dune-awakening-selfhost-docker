@@ -449,6 +449,7 @@ export function publicConfig(config) {
     secureCookies: config.secureCookies,
     allowHostBootstrap: config.allowHostBootstrap,
     mockMode: config.mockMode,
-    discordOAuthConfigured: config.discordOAuthConfigured
+    discordOAuthConfigured: config.discordOAuthConfigured,
+    consoleTotpEnabled: config.consoleTotpEnabled
   };
 }
