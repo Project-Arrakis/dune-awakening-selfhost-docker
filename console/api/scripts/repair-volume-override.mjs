@@ -30,6 +30,21 @@
 // item) is left untouched and reported separately -- there is nothing safe
 // to recompute it to.
 //
+// SECOND PASS (added 2026-08-20, post-merge review of upstream PR #182):
+// every Give/Fill insert site also had a related bug where an item with NO
+// catalogued volume at all (not a stale/wrong value -- genuinely never had
+// one) got volume_override stored as the number 0 instead of SQL NULL. Per
+// this same script's header comment above, the live engine NEVER itself
+// writes a non-null volume_override -- so any row with volume_override = 0
+// (exactly, not just non-null) is presumptively a console-inserted row from
+// this bug, safe to correct to NULL universally without needing to trace
+// which specific route created it. This pass finds every such row and
+// clears it to NULL, regardless of whether template_id is in today's
+// catalog (a 0 for a catalogued item with a real non-zero catalog volume is
+// still wrong -- correcting to NULL, not to the catalog value, matches the
+// insert-side fix: NULL, not a recomputed number, is what a fresh insert
+// would write today).
+//
 // Usage:
 //   node scripts/repair-volume-override.mjs            (dry run, default)
 //   node scripts/repair-volume-override.mjs --apply     (writes changes)
@@ -59,6 +74,7 @@ try {
     select id, template_id, stack_size, volume_override
     from dune.items
     where volume_override is not null
+      and volume_override <> 0
     order by id`);
 
   let correct = 0;
@@ -88,7 +104,22 @@ try {
   console.log(`  Unknown template_id (left untouched): ${unknownTemplate}`);
   console.log(`  To correct: ${toFix}`);
 
-  if (toFix === 0) {
+  // Second pass (2026-08-20): rows with volume_override exactly 0, from the
+  // uncatalogued-item Give/Fill insert bug fixed alongside this pass -- see
+  // this file's header comment. Scanned separately from the pass above
+  // because these rows need no catalog lookup at all: a stored 0 is never
+  // correct regardless of what the catalog says (a fresh insert today would
+  // write NULL, not a recomputed number), so every such row is corrected to
+  // NULL unconditionally.
+  const zeroRows = await db.query(`
+    select id, template_id, stack_size
+    from dune.items
+    where volume_override = 0
+    order by id`);
+
+  console.log(`\nScanned ${zeroRows.rows.length} row(s) with volume_override = 0 (the separate NULL-vs-0 bug).`);
+
+  if (toFix === 0 && zeroRows.rows.length === 0) {
     console.log("Nothing to do.");
     process.exit(0);
   }
@@ -102,6 +133,9 @@ try {
       `(engine-displayed volume ${displayedBefore} -> ${displayedAfter})`
     );
   }
+  for (const row of zeroRows.rows) {
+    console.log(`  id=${row.id} template_id=${row.template_id} stack_size=${row.stack_size} volume_override 0 -> NULL`);
+  }
 
   if (!apply) {
     console.log("\nDry run only -- no changes written. Re-run with --apply to write these corrections.");
@@ -112,8 +146,14 @@ try {
     for (const change of changes) {
       await tx.query("update dune.items set volume_override = $1 where id = $2", [change.to, change.id]);
     }
+    if (zeroRows.rows.length > 0) {
+      await tx.query(
+        "update dune.items set volume_override = null where id = any($1::bigint[]) and volume_override = 0",
+        [zeroRows.rows.map((row) => String(row.id))]
+      );
+    }
   });
-  console.log(`\nApplied ${changes.length} correction(s).`);
+  console.log(`\nApplied ${changes.length + zeroRows.rows.length} correction(s) (${changes.length} recomputed, ${zeroRows.rows.length} cleared to NULL).`);
 } finally {
   await db.close?.();
 }
