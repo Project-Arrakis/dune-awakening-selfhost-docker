@@ -11,6 +11,18 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Changed
 
+- **Tier 3 recovery-code login (BETA, behind `CONSOLE_TOTP_ENABLED`)** (RFC
+  `docs/rfc-console-auth.md` §2.3). An operator who has lost their authenticator
+  signs in with their password plus one unused recovery code (the code
+  substitutes for the TOTP factor only, never the password). A successful
+  recovery login does not grant a normal session -- it forces a restricted
+  re-setup that enrolls a fresh TOTP secret and issues a fresh 10-code recovery
+  set, invalidating all remaining old codes (§2.3). Recovery codes are
+  single-use; a wrong password never consumes one. New audit events
+  `auth.recovery-code-consumed` and `settings.totp-regenerated`. Inert while the
+  flag is off (default). Credential rotation with scoped session invalidation is
+  a later phase.
+
 - **Tier 3 console auth (BETA, behind `CONSOLE_TOTP_ENABLED`, default OFF):
   password + mandatory TOTP with authenticator enrollment** (RFC
   `docs/rfc-console-auth.md` §2.3/§4). Adds the backend flow: a first password
