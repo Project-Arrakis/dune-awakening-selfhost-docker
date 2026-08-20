@@ -36,17 +36,23 @@ export function createAuth(config) {
     return a.length > 0 && a.length === b.length && timingSafeEqual(a, b);
   }
 
-  function makeSession({ tier = "owner", userId = "", username = "", guildId = "" } = {}) {
+  const DEFAULT_TTL_MS = 12 * 60 * 60 * 1000;
+
+  // scope: null for a normal session; "enroll" for the short-lived, non-renewable
+  // second-factor enrollment session (RFC §4) that the route gate restricts to
+  // the enrollment endpoints only. renewable:false keeps the enrollment window
+  // fixed so it can't be extended by activity.
+  function makeSession({ tier = "owner", userId = "", username = "", guildId = "", scope = null, ttlMs = DEFAULT_TTL_MS, renewable = true } = {}) {
     const id = randomBytes(32).toString("base64url");
     const csrf = randomBytes(24).toString("base64url");
-    const expiresAt = now() + 12 * 60 * 60 * 1000;
-    const session = { id, csrf, expiresAt, tier, userId, username, guildId };
+    const expiresAt = now() + ttlMs;
+    const session = { id, csrf, expiresAt, tier, userId, username, guildId, scope, renewable };
     sessions.set(id, session);
     return { ...session, cookie: `${id}.${sign(id)}` };
   }
 
   function readSession(req) {
-    if (config.authDisabled) return { id: "dev", csrf: "dev", expiresAt: Number.MAX_SAFE_INTEGER, tier: "owner" };
+    if (config.authDisabled) return { id: "dev", csrf: "dev", expiresAt: Number.MAX_SAFE_INTEGER, tier: "owner", scope: null, renewable: true };
     const raw = parseCookies(req.headers.cookie || "").get("asc_session");
     if (!raw) return null;
     const [id, sig] = raw.split(".");
@@ -56,8 +62,13 @@ export function createAuth(config) {
       sessions.delete(id);
       return null;
     }
-    session.expiresAt = now() + 12 * 60 * 60 * 1000;
+    if (session.renewable !== false) session.expiresAt = now() + DEFAULT_TTL_MS;
     return session;
+  }
+
+  // Invalidate one session by id (enrollment completion, logout, rotation).
+  function invalidateSession(id) {
+    return sessions.delete(id);
   }
 
   function passwordMatches(value) {
@@ -82,7 +93,7 @@ export function createAuth(config) {
     return session;
   }
 
-  return { makeSession, readSession, passwordMatches, requireAuth };
+  return { makeSession, readSession, passwordMatches, requireAuth, invalidateSession };
 }
 
 export function setSessionCookie(res, session, config = {}) {

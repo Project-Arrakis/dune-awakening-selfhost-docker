@@ -11,6 +11,23 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Changed
 
+- **Tier 3 console auth (BETA, behind `CONSOLE_TOTP_ENABLED`, default OFF):
+  password + mandatory TOTP with authenticator enrollment** (RFC
+  `docs/rfc-console-auth.md` §2.3/§4). Adds the backend flow: a first password
+  login with no second factor set up issues a short-lived, restricted enrollment
+  session and returns `enrollmentRequired`; `POST /api/auth/2fa/setup` returns a
+  TOTP secret + `otpauth://` URI; `POST /api/auth/2fa/confirm` verifies a code,
+  commits the factor, and shows 10 one-time recovery codes once. Once enrolled,
+  password login also requires a 6-digit code, verified with per-step replay
+  prevention. **With the flag unset (default), password login is byte-identical
+  to today (single factor)** -- the flag is off during incremental rollout until
+  the console UI that drives enrollment lands (a later phase), and becomes the
+  default then. Enrollment sessions are confined by an allowlist gate to the
+  `/api/auth/2fa/*`, `/me`, and `/logout` endpoints only. New audit events:
+  `auth.2fa.setup`, `auth.2fa.confirm`, `settings.totp-setup`, and `auth.login`
+  now carries an outcome/reason. Recovery-code login and credential rotation are
+  later phases.
+
 - **Discord OAuth tier resolution is now fail-closed when the bot handoff is
   configured** (issue #401, RFC `docs/rfc-console-auth.md` §2.1). Three
   operator-visible behavior changes for handoff-configured installs:
