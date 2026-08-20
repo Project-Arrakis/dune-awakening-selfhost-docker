@@ -91,6 +91,12 @@ const handoff = createHandoff({
   botUrl: config.discordBotHandoffUrl,
   homeGuildId: config.discordHomeGuildId
 });
+if (handoff.misconfigured) {
+  console.warn(
+    `Discord bot handoff is half-configured (missing: ${handoff.missing.join(", ")}) and will be treated as NOT configured. ` +
+    "Set all of DISCORD_BOT_HANDOFF_SECRET (or discord-bot-handoff-secret.txt), DISCORD_BOT_HANDOFF_URL, and the Discord home guild id -- or unset the handoff values entirely."
+  );
+}
 const resolveOAuthTier = createOAuthTierResolver({
   bootstrap: {
     allowOwnerBootstrap: config.discordOAuthAllowOwnerBootstrap,
@@ -4605,7 +4611,10 @@ async function handleOAuthCallback(req, res) {
     return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
   }
   const consumed = oauthPendingStates.consume(state, cookieState);
-  if (!config.discordOAuthAllowOwnerBootstrap) {
+  // With a configured handoff, the bot is the tier source and owner
+  // bootstrap is not required. Without one, bootstrap is the only
+  // possible tier source, so its being disabled is an early deny.
+  if (!handoff.enabled && !config.discordOAuthAllowOwnerBootstrap) {
     loginRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "bootstrap_disabled" });
     return json(res, 403, { error: "Discord sign-in is enabled but owner bootstrap is disabled. Sign in with the admin password." });
@@ -4633,15 +4642,23 @@ async function handleOAuthCallback(req, res) {
     const status = error.statusCode && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 400;
     return json(res, status, { error: "Discord sign-in failed. Please try again, or sign in with your password." });
   }
-  const tier = await resolveOAuthTier(identity);
-  if (!tier) {
+  const resolved = await resolveOAuthTier(identity);
+  if (!resolved.tier) {
     loginRateLimiter.recordFailure(rateKey);
+    if (resolved.source === "handoff") {
+      // The reason code is recorded for forensics/debugging only; the
+      // response deliberately does not distinguish outage from an
+      // explicit deny, but does point an operator at the real
+      // remediation (rfc-console-auth.md §2.1).
+      audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.handoff-denied", { ok: false, reason: resolved.reason });
+      return json(res, 403, { error: "The console could not verify your current Discord role, so sign-in was denied. If you administer this install, check that the companion bot is running and reachable, then try again — or sign in with the admin password." });
+    }
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "not_authorized" });
     return json(res, 403, { error: "Discord sign-in succeeded, but this account is not authorized to sign in to this console." });
   }
-  const session = auth.makeSession({ tier, userId: identity.userId, username: identity.username, guildId: config.discordHomeGuildId });
+  const session = auth.makeSession({ tier: resolved.tier, userId: identity.userId, username: identity.username, guildId: config.discordHomeGuildId });
   res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie(config.secureCookies)]);
-  audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier });
+  audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: resolved.tier });
   return html(res, 200, oauthReturnPage());
 }
 
