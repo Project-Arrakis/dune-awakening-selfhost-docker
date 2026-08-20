@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildingUnlockStatus, isFillableItem, itemImagePath, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "../src/adminCatalog.js";
+import { buildingUnlockStatus, isFillableItem, itemImagePath, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemStackSize, resolveItemVolume } from "../src/adminCatalog.js";
 
 const REAL_REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -16,7 +16,7 @@ function fixtureRepo() {
     { id: "CupOfWater", name: "Cup of Water", category: "consumables", source: "Survival" },
     { id: "ChoamHeavyLasgunSchematic", name: "Arhun K-28 Lasgun", category: "schematics", source: "Schematics" },
     { id: "ArmorPiercingAugment", name: "Armor Piercing Augment", category: "augments", source: "Items" },
-    { id: "SteelBar", name: "Steel Ingot", category: "resources", source: "Resources", group: "refined_resource", volume: 1.0 },
+    { id: "SteelBar", name: "Steel Ingot", category: "resources", source: "Resources", group: "refined_resource", volume: 1.0, stackSize: 500 },
     { id: "T6RefinedResourceA", name: "Plastanium Ingot", category: "resources", source: "Resources", group: "refined_resource", volume: 1.0 },
     { id: "FremenComponent1", name: "EMF Generator", category: "resources", source: "Resources", group: "component", volume: 1.0 },
     { id: "AzuriteOre", name: "Copper Ore", category: "resources", source: "Resources", group: "raw_resource", volume: 0.2 },
@@ -238,4 +238,29 @@ test("resolveItemVolume returns volume for catalogued items", () => {
 test("resolveItemVolume returns 0 for unknown templates", () => {
   const root = fixtureRepo();
   assert.equal(resolveItemVolume(root, "NonExistent"), 0);
+});
+
+test("resolveItemStackSize returns the catalogued per-item max stack size", () => {
+  const root = fixtureRepo();
+  assert.equal(resolveItemStackSize(root, "SteelBar"), 500);
+  assert.equal(resolveItemStackSize(root, "PlantFiber"), 0);
+  assert.equal(resolveItemStackSize(root, "NonExistent"), 0);
+});
+
+test("resolveCatalogItem passes stackSize through for catalogued items", () => {
+  const root = fixtureRepo();
+  assert.equal(resolveCatalogItem(root, { itemId: "SteelBar" }).stackSize, 500);
+  assert.equal(resolveCatalogItem(root, { itemId: "PlantFiber" }).stackSize, undefined);
+});
+
+// The seeded values are the ones already verified against the live game
+// elsewhere in this repo: MelangeSpice 500 (operator-verified), Oil and
+// SpicedFuelCell 499 and the two lubricants 100 (GENERATOR_TYPES' refill
+// block + docs/console/generator-refill-caps.md).
+test("real catalog carries the verified stack sizes for the seeded items", () => {
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "MelangeSpice"), 500);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "Oil"), 499);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "SpicedFuelCell"), 499);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "WindTurbineLubricant1"), 100);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "WindTurbineLubricant2"), 100);
 });
