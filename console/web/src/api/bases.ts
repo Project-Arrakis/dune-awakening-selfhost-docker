@@ -548,7 +548,7 @@ export const basesApi = {
   giveContainerItem: (baseId: string, placeableId: string, body: { itemName?: string; itemId?: string; quantity: number; confirmation: string }) =>
     api<{
       supported: boolean;
-      result?: { ok: boolean; inserted: { id: string; template_id: string; stack_size: number; quality_level: number; position_index: number; inventory_id: string; volume_override: number | null }; requested: number; given: number; clamped: boolean };
+      result?: { ok: boolean; inserted: { id: string; template_id: string; stack_size: number; quality_level: number; position_index: number; inventory_id: string; volume_override: number | null }; insertedStacks?: { id: string; template_id: string; stack_size: number; quality_level: number; position_index: number; inventory_id: string; volume_override: number | null }[]; stacks?: number; requested: number; given: number; clamped: boolean; clampReason?: "volume" | "slots" | "stack-rows" | null; message?: string };
       error?: string;
       reason?: string;
     }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/give-item`,
@@ -573,10 +573,13 @@ export const basesApi = {
           // snake_case shape, not the camelCase this type previously (and
           // incorrectly) declared.
           inserted?: { id: string; template_id: string; stack_size: number; quality_level: number; position_index: number; inventory_id: string; volume_override: number | null };
+          insertedStacks?: { id: string; template_id: string; stack_size: number; quality_level: number; position_index: number; inventory_id: string; volume_override: number | null }[];
+          stacks?: number;
           templateId: string;
           requested: number;
           given: number;
           clamped: boolean;
+          clampReason?: "volume" | "slots" | "stack-rows" | null;
           attempted: boolean;
           reason?: string;
         }[];
@@ -598,7 +601,7 @@ export const basesApi = {
   fillContainerItem: (baseId: string, placeableId: string, body: { itemName?: string; itemId?: string; quantity: number; confirmation: string }) =>
     api<{
       supported: boolean;
-      result?: { ok: boolean; inserted: { id: string; template_id: string; stack_size: number; quality_level: number; position_index: number; inventory_id: string; volume_override: number | null }; requested: number | null; given: number; clamped: boolean };
+      result?: { ok: boolean; inserted: { id: string; template_id: string; stack_size: number; quality_level: number; position_index: number; inventory_id: string; volume_override: number | null }; insertedStacks?: { id: string; template_id: string; stack_size: number; quality_level: number; position_index: number; inventory_id: string; volume_override: number | null }[]; stacks?: number; requested: number | null; given: number; clamped: boolean; clampReason?: "volume" | "slots" | "stack-rows" | null; message?: string };
       error?: string;
       reason?: string;
     }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/fill-item`,
