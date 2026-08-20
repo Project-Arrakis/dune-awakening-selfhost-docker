@@ -31,6 +31,25 @@ export function resolveFillableCatalogItem(repoRoot, query = {}) {
   if (!resolved.group || !FILLABLE_GROUPS.has(resolved.group)) {
     throw new Error("Item type not allowed for fill operation");
   }
+  // Every FILLABLE_GROUPS item is expected to carry real, individually
+  // verified catalog volume data (raw_resource/refined_resource/component
+  // -- see the 19-item tagging this restriction shipped with). Found during
+  // code review (2026-08-19): a catalog entry missing or reset to 0 volume
+  // would silently resolve here anyway, and every downstream volume-cap
+  // check in giveItemToBaseContainer/fillItemToBaseContainer/
+  // giveMultipleItemsToBaseContainer treats itemVolume <= 0 as "this item
+  // is not volume-tracked, skip the cap" -- correct for the standalone
+  // Storage tab's much broader catalog (most weapons/gear/schematics
+  // genuinely have no volume data, by design), but wrong here: it would let
+  // an operator give/fill an unbounded quantity of a fillable resource into
+  // a volume-capped container. Not currently triggerable (today's 19
+  // fillable items all have real, verified volumes), but this closes the
+  // gap at the one layer both Give and Fill share, rather than trusting
+  // every future catalog edit to keep that invariant by hand.
+  const volume = Number(resolved.volume) || resolveItemVolume(repoRoot, resolved.itemId);
+  if (!(volume > 0)) {
+    throw new Error(`Item ${resolved.itemId} is missing catalogued volume data and cannot be given or filled into a volume-tracked container.`);
+  }
   return resolved;
 }
 

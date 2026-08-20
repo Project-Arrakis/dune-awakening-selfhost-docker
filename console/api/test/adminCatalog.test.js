@@ -175,6 +175,38 @@ test("resolveFillableCatalogItem rejects unknown item ids", () => {
   );
 });
 
+// Found during code review (2026-08-19): every downstream volume-cap check
+// (giveItemToBaseContainer/fillItemToBaseContainer/
+// giveMultipleItemsToBaseContainer) treats itemVolume <= 0 as "not
+// volume-tracked, skip the cap" -- correct for the standalone Storage tab's
+// much broader catalog, but wrong for this narrower, fillable-only surface,
+// where every real item is expected to carry real volume data. A catalog
+// entry missing `volume` (or explicitly set to 0) must be rejected HERE,
+// not silently allowed through to bypass a container's volume cap.
+test("resolveFillableCatalogItem rejects a fillable-group item with no catalogued volume", () => {
+  const root = fixtureRepo();
+  const file = join(root, "runtime/data/admin-items.json");
+  const rows = JSON.parse(readFileSync(file, "utf8"));
+  rows.push({ id: "NoVolumeComponent", name: "No Volume Component", category: "resources", source: "Resources", group: "component" });
+  writeFileSync(file, JSON.stringify(rows));
+  assert.throws(
+    () => resolveFillableCatalogItem(root, { itemId: "NoVolumeComponent" }),
+    /missing catalogued volume data/
+  );
+});
+
+test("resolveFillableCatalogItem rejects a fillable-group item with volume explicitly 0", () => {
+  const root = fixtureRepo();
+  const file = join(root, "runtime/data/admin-items.json");
+  const rows = JSON.parse(readFileSync(file, "utf8"));
+  rows.push({ id: "ZeroVolumeComponent", name: "Zero Volume Component", category: "resources", source: "Resources", group: "component", volume: 0 });
+  writeFileSync(file, JSON.stringify(rows));
+  assert.throws(
+    () => resolveFillableCatalogItem(root, { itemId: "ZeroVolumeComponent" }),
+    /missing catalogued volume data/
+  );
+});
+
 test("resolveItemVolume returns volume for catalogued items", () => {
   const root = fixtureRepo();
   assert.equal(resolveItemVolume(root, "SteelBar"), 1.0);

@@ -88,24 +88,37 @@ test("every new mutation route checks baseDeletePending and baseBackedUp", () =>
 // give/fill route -- these must never accept a bare storage/inventory id
 // from the caller the way the standalone Storage tab's routes do, since
 // that shape has no base-ownership check at all.
-test("give/fill routes resolve the storage id through base+placeable ownership, not a bare body field", () => {
-  for (const name of GIVE_FILL_ROUTES) {
+//
+// CORRECTED 2026-08-19 (code-review follow-up, issue #347): this used to
+// assert each route called baseContainerOwnedStorageId(baseId, placeableId)
+// -- a separate, unlocked ownership pre-check that resolved to a bare
+// storageId, later handed into giveItemToStorage/fillItemToStorage/
+// giveMultipleItemsToStorage's own actor_id-only lookup in a completely
+// separate transaction. That shape was a real TOCTOU gap and a real
+// multi-inventory-ambiguity gap (see duneDb.js's own
+// resolveOwnedStorageContainer comment and its "backs 2 separate
+// inventories" test coverage in db.test.js, now also exercised for Give/
+// Give-Multiple/Fill directly). baseContainerOwnedStorageId is removed;
+// each route now passes (baseId, placeableId) straight into
+// giveItemToBaseContainer/giveMultipleItemsToBaseContainer/
+// fillItemToBaseContainer, which resolve ownership, lock the row, and
+// write in one atomic transaction via resolveOwnedStorageContainer --
+// exactly like the bulk-delete routes already do.
+test("give/fill routes resolve ownership atomically through duneDb's base-container functions, not a bare storage id", () => {
+  const expectedCalls = {
+    baseContainerGiveItemRoute: /duneDb\.giveItemToBaseContainer\(db, baseId, placeableId,/,
+    baseContainerGiveItemsRoute: /duneDb\.giveMultipleItemsToBaseContainer\(db, baseId, placeableId,/,
+    baseContainerFillItemRoute: /duneDb\.fillItemToBaseContainer\(db, config\.repoRoot, baseId, placeableId,/
+  };
+  for (const [name, pattern] of Object.entries(expectedCalls)) {
     const body = routeBody(name);
-    assert.match(body, /baseContainerOwnedStorageId\(baseId, placeableId\)/, `${name} must verify ownership via baseContainerOwnedStorageId`);
+    assert.match(body, pattern, `${name} must resolve ownership atomically via its duneDb base-container function`);
   }
-});
-
-// baseContainerOwnedStorageId itself must reject anything that is not a
-// storage-group container -- this is what keeps Give/Fill off Refining and
-// Crafting inventories when reached through the Bases surface, mirroring
-// deleteBaseContainerItem's own group_key check.
-test("baseContainerOwnedStorageId rejects non-storage-group containers", () => {
-  const start = serverSource.indexOf("async function baseContainerOwnedStorageId(");
-  assert.notEqual(start, -1, "baseContainerOwnedStorageId not found in server.js");
-  const end = serverSource.indexOf("\n}\n", start);
-  const body = serverSource.slice(start, end);
-  assert.match(body, /slots\.group !== "storage"/);
-  assert.match(body, /Crafting and Refining contents are read-only/);
+  // Historical/explanatory comments are allowed to still name the removed
+  // function; only its definition or an actual call site would mean it
+  // (and the TOCTOU/multi-inventory gap it caused) is still live.
+  assert.doesNotMatch(serverSource, /async function baseContainerOwnedStorageId\(/, "baseContainerOwnedStorageId must not be redefined");
+  assert.doesNotMatch(serverSource, /[^.\w]baseContainerOwnedStorageId\(baseId, placeableId\)/, "baseContainerOwnedStorageId must not still be called from any route");
 });
 
 // Every mutation route must be phrase-gated via directDbMutation -- an

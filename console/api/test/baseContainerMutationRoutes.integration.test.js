@@ -360,7 +360,13 @@ test("real HTTP: give-item refuses to reach a refining-group container", async (
       quantity: 20
     });
     assert.equal(status, 400);
-    assert.match(body?.error || "", /can only be given or filled into Storage containers/);
+    // CORRECTED 2026-08-19 (code-review follow-up, issue #347): this group
+    // check used to run in baseContainerOwnedStorageId (server.js), which
+    // shared one generic "given or filled into" wording across Give and
+    // Fill. It now runs inside resolveOwnedStorageContainer (duneDb.js),
+    // shared with Delete too, so the wording is action-specific ("given
+    // to" / "filled into" / "deleted from") via its actionLabel parameter.
+    assert.match(body?.error || "", /can only be given to Storage containers/);
     assert.equal((await itemsIn(pool, REFINERY * 10)).length, 1, "the refinery's real inventory must be untouched");
   });
 });

@@ -17,7 +17,7 @@ import {
   queueGeneratorRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
-import { addBaseContainerItem, addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteAllBaseContainerItems, deleteBaseContainerItem, deleteInventoryItem, deleteMultipleBaseContainerItems, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, fillItemToStorage, generatorUptimePolicy, giveItemToPlayer, giveItemToStorage, giveMultipleItemsToStorage, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairVehicleDecay, resetJourneyNode, resetTutorial, resolvePlayerTarget, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addBaseContainerItem, addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteAllBaseContainerItems, deleteBaseContainerItem, deleteInventoryItem, deleteMultipleBaseContainerItems, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, fillItemToBaseContainer, fillItemToStorage, generatorUptimePolicy, giveItemToBaseContainer, giveItemToPlayer, giveItemToStorage, giveMultipleItemsToBaseContainer, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairVehicleDecay, resetJourneyNode, resetTutorial, resolvePlayerTarget, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 import { listStorage, liveMapBases, liveMapStorage, portalStorage, trackPlayerPlaytime } from "../src/duneDb.js";
 
 beforeEach(() => {
@@ -5048,6 +5048,36 @@ test("storage give-item falls back to lowest-next-free position when max_item_co
   assert.ok(!calls.some((call) => call.text.includes("generate_series")), "must not run the high-end query when max_item_count is 0");
 });
 
+// Found during code review (2026-08-19): nextHighPositionIndex's own
+// fallback (reached when the high-end generate_series query finds no free
+// slot below max_item_count) previously returned max(position_index)+1
+// unconditionally, even if that value was itself at or beyond
+// max_item_count -- silently inserting a row outside the container's
+// stated capacity instead of failing loudly. Fixed to throw, matching this
+// file's established "throw rather than guess" precedent
+// (resolveOwnedStorageContainer's own multi-inventory guard). Exercised
+// here via giveItemToBaseContainer, whose real single-item Give path still
+// calls nextHighPositionIndex directly (giveMultipleItemsToBaseContainer's
+// own in-memory equivalent, claimPositionIndex, carries the identical
+// guard -- see its own test coverage above).
+test("give-item throws rather than silently exceeding capacity when nextHighPositionIndex's fallback is itself out of range", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 2, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    // null makes the mock's generate_series branch return no rows, matching
+    // "every slot below max_item_count is already claimed" -- the mock's
+    // own max(position_index) fallback always returns 2, which is >= this
+    // test's max_item_count (2), so the guard must trip.
+    highPositionRowsSequence: [null]
+  });
+  await assert.rejects(
+    () => giveItemToBaseContainer(db, 16836, 42, { templateId: "WaterBottle_1", quantity: 1 }),
+    /item slot indexes appear inconsistent/
+  );
+  assert.equal(calls.some((call) => call.text.includes("insert into dune.items")), false);
+});
+
 test("storage give-item records PER-UNIT volume_override when itemVolume is provided", async () => {
   // Parity fix: give-item previously never checked or recorded volume at
   // all, unlike fill-item -- an operator could give an item whose declared
@@ -5147,7 +5177,7 @@ test("storage give-multiple-items inserts every item in one transaction", async 
       { id: 602, template_id: "PlantFiber", stack_size: 5, quality_level: 0, position_index: 3, inventory_id: 7 }
     ]
   });
-  const result = await giveMultipleItemsToStorage(db, 222, {
+  const result = await giveMultipleItemsToBaseContainer(db, 16836, 42, {
     items: [
       { templateId: "AzuriteOre", quantity: 20 },
       { templateId: "PlantFiber", quantity: 5 }
@@ -5162,20 +5192,28 @@ test("storage give-multiple-items inserts every item in one transaction", async 
 });
 
 // Same high-end position mitigation as the single-item give test above --
-// giveMultipleItemsToStorage must use nextHighPositionIndex too, not the
-// plain lowest-next-free query, for every item it inserts in the batch.
-test("storage give-multiple-items uses the high-end position query for every inserted item", async () => {
+// giveMultipleItemsToBaseContainer must pick the highest unused slot for
+// every item it inserts in the batch, the same as a single Give would.
+// Round-trip fix (issue #347 code-review follow-up, 2026-08-19): this no
+// longer re-runs nextHighPositionIndex's own generate_series query per
+// item -- it fetches every currently-occupied position_index ONCE up
+// front and computes each item's slot in memory, updating that in-memory
+// state as the batch claims slots, so this test seeds two pre-existing
+// occupied slots (29 and 28) to prove the in-memory computation still
+// starts from the real occupied set, not an empty one, and that the seed
+// query itself only runs once regardless of batch size.
+test("storage give-multiple-items claims the highest unused slot for every inserted item, from one seed query", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
-    countRows: [{ count: 1 }],
-    highPositionRowsSequence: [29, 28],
+    countRows: [{ count: 2 }],
+    existingPositionIndexRows: [29, 28],
     insertedRowsSequence: [
-      { id: 601, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 29, inventory_id: 7 },
-      { id: 602, template_id: "PlantFiber", stack_size: 5, quality_level: 0, position_index: 28, inventory_id: 7 }
+      { id: 601, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 27, inventory_id: 7 },
+      { id: 602, template_id: "PlantFiber", stack_size: 5, quality_level: 0, position_index: 26, inventory_id: 7 }
     ]
   });
-  const result = await giveMultipleItemsToStorage(db, 222, {
+  const result = await giveMultipleItemsToBaseContainer(db, 16836, 42, {
     items: [
       { templateId: "AzuriteOre", quantity: 20 },
       { templateId: "PlantFiber", quantity: 5 }
@@ -5183,11 +5221,12 @@ test("storage give-multiple-items uses the high-end position query for every ins
   });
   assert.equal(result.results[0].inserted.id, 601);
   assert.equal(result.results[1].inserted.id, 602);
-  const positionCalls = calls.filter((call) => call.text.includes("generate_series"));
-  assert.equal(positionCalls.length, 2, "one high-end position lookup per inserted item");
+  const seedCalls = calls.filter((call) => call.text === "select position_index from dune.items where inventory_id = $1");
+  assert.equal(seedCalls.length, 1, "the occupied-position seed query must run once for the whole batch, not once per item");
+  assert.equal(calls.filter((call) => call.text.includes("generate_series")).length, 0, "must not fall back to nextHighPositionIndex's own per-item query");
   const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
-  assert.equal(inserts[0].values[4], 29);
-  assert.equal(inserts[1].values[4], 28);
+  assert.equal(inserts[0].values[4], 27, "slots 29/28 are already occupied -- item 1 must claim the next highest free slot");
+  assert.equal(inserts[1].values[4], 26, "item 2 must see item 1's just-claimed slot 27 and skip it");
 });
 
 test("storage give-multiple-items rejects an empty item list", async () => {
@@ -5196,7 +5235,7 @@ test("storage give-multiple-items rejects an empty item list", async () => {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }]
   });
   await assert.rejects(
-    () => giveMultipleItemsToStorage(db, 222, { items: [] }),
+    () => giveMultipleItemsToBaseContainer(db, 16836, 42, { items: [] }),
     /At least one item is required/
   );
 });
@@ -5208,7 +5247,7 @@ test("storage give-multiple-items rejects more than 50 distinct items", async ()
   });
   const items = Array.from({ length: 51 }, (_, index) => ({ templateId: `Item${index}`, quantity: 1 }));
   await assert.rejects(
-    () => giveMultipleItemsToStorage(db, 222, { items }),
+    () => giveMultipleItemsToBaseContainer(db, 16836, 42, { items }),
     /Cannot give more than 50 distinct items/
   );
 });
@@ -5232,7 +5271,7 @@ test("storage give-multiple-items stops the batch (without throwing) when slot c
       { id: 701, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 2, inventory_id: 7 }
     ]
   });
-  const result = await giveMultipleItemsToStorage(db, 222, {
+  const result = await giveMultipleItemsToBaseContainer(db, 16836, 42, {
     items: [
       { templateId: "AzuriteOre", quantity: 20 },
       { templateId: "PlantFiber", quantity: 5 }
@@ -5262,7 +5301,7 @@ test("storage give-multiple-items stops the whole batch when the slot cap is alr
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 1, max_item_volume: 0 }],
     countRows: [{ count: 1 }]
   });
-  const result = await giveMultipleItemsToStorage(db, 222, {
+  const result = await giveMultipleItemsToBaseContainer(db, 16836, 42, {
     items: [
       { templateId: "AzuriteOre", quantity: 20 },
       { templateId: "PlantFiber", quantity: 5 }
@@ -5290,7 +5329,7 @@ test("storage give-multiple-items clamps an item that only partially fits by vol
     volumeRows: [{ total_volume: 4 }],
     insertedRows: [{ id: 702, template_id: "AzuriteOre", stack_size: 5, quality_level: 0, position_index: 2, inventory_id: 7, volume_override: 0.2 }]
   });
-  const result = await giveMultipleItemsToStorage(db, 222, {
+  const result = await giveMultipleItemsToBaseContainer(db, 16836, 42, {
     items: [
       { templateId: "AzuriteOre", quantity: 20, itemVolume: 0.2 },
       { templateId: "PlantFiber", quantity: 5, itemVolume: 0.1 }
@@ -5317,7 +5356,7 @@ test("storage give-multiple-items records a zero-fit item as given: 0 and stops,
     countRows: [{ count: 1 }],
     volumeRows: [{ total_volume: 5 }]
   });
-  const result = await giveMultipleItemsToStorage(db, 222, {
+  const result = await giveMultipleItemsToBaseContainer(db, 16836, 42, {
     items: [{ templateId: "AzuriteOre", quantity: 20, itemVolume: 0.2 }]
   });
   assert.equal(result.ok, true);
@@ -5326,6 +5365,81 @@ test("storage give-multiple-items records a zero-fit item as given: 0 and stops,
   assert.match(result.results[0].reason, /full by volume/);
   const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
   assert.equal(inserts.length, 0, "a zero-fit item must not be inserted as an empty/zero-size row");
+});
+
+// Give/Fill/Give-Multiple base-container variants must refuse to guess an
+// inventory the same way delete-multiple/delete-all already do (see
+// "delete-multiple/delete-all refuses to guess when a container backs more
+// than one qualifying inventory" above), instead of giveItemToStorage/
+// fillItemToStorage/the old giveMultipleItemsToStorage's own actor_id-only
+// lookup (`order by id limit 1`, no such guard). Found during code review
+// (2026-08-19): giveItemToBaseContainer/fillItemToBaseContainer/
+// giveMultipleItemsToBaseContainer now resolve their target inventory
+// through resolveOwnedStorageContainer, the same ownership+lock+guard path,
+// so they must throw the identical error rather than silently writing into
+// whichever inventory row sorts first.
+test("give-item refuses to guess when a container backs more than one qualifying inventory", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    containerRows: [
+      { placeable_id: "42", inventory_id: 7, group_key: "storage", type_name: "Medium Storage Container" },
+      { placeable_id: "42", inventory_id: 8, group_key: "storage", type_name: "Medium Storage Container" }
+    ]
+  });
+  await assert.rejects(
+    () => giveItemToBaseContainer(db, 16836, 42, { templateId: "WaterBottle_1", quantity: 1 }),
+    /backs 2 separate inventories/
+  );
+  assert.equal(calls.some((call) => call.text.includes("insert into dune.items")), false);
+});
+
+test("give-multiple-items refuses to guess when a container backs more than one qualifying inventory", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    containerRows: [
+      { placeable_id: "42", inventory_id: 7, group_key: "storage", type_name: "Medium Storage Container" },
+      { placeable_id: "42", inventory_id: 8, group_key: "storage", type_name: "Medium Storage Container" }
+    ]
+  });
+  await assert.rejects(
+    () => giveMultipleItemsToBaseContainer(db, 16836, 42, { items: [{ templateId: "WaterBottle_1", quantity: 1 }] }),
+    /backs 2 separate inventories/
+  );
+  assert.equal(calls.some((call) => call.text.includes("insert into dune.items")), false);
+});
+
+test("fill-item refuses to guess when a container backs more than one qualifying inventory", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    containerRows: [
+      { placeable_id: "42", inventory_id: 7, group_key: "storage", type_name: "Medium Storage Container" },
+      { placeable_id: "42", inventory_id: 8, group_key: "storage", type_name: "Medium Storage Container" }
+    ]
+  });
+  await assert.rejects(
+    () => fillItemToBaseContainer(db, "/tmp", 16836, 42, { templateId: "T6RefinedResourceA", quantity: 1, itemVolume: 1.0 }),
+    /backs 2 separate inventories/
+  );
+  assert.equal(calls.some((call) => call.text.includes("insert into dune.items")), false);
+});
+
+// Belt-and-suspenders around the same lookup: a container from the wrong
+// group (Refining/Crafting) must still be rejected the same way Delete's
+// resolveOwnedStorageContainer already rejects it, now with wording that
+// matches the actual verb (given to / filled into), not delete's "deleted
+// from" default.
+test("give-item and fill-item reject a non-storage-group container with an action-specific message", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { containerRows: [{ placeable_id: "42", inventory_id: 7, group_key: "refining", type_name: "Refinery" }] });
+  await assert.rejects(
+    () => giveItemToBaseContainer(db, 16836, 42, { templateId: "WaterBottle_1", quantity: 1 }),
+    /Items can only be given to Storage containers/
+  );
+  await assert.rejects(
+    () => fillItemToBaseContainer(db, "/tmp", 16836, 42, { templateId: "T6RefinedResourceA", quantity: 1, itemVolume: 1.0 }),
+    /Items can only be filled into Storage containers/
+  );
+  assert.equal(calls.some((call) => call.text.includes("insert into dune.items")), false);
 });
 
 test("storage fill-item inserts with PER-UNIT volume_override and respects slot limit", async () => {
@@ -6765,14 +6879,49 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("ContractsCoordinatorComponent,m_TrackedContractItemUid") && text.includes("update dune.actors")) return { rows: [], rowCount: fixtures.trackedContractRows ?? 0 };
       if (text.includes("FSpiceAddictionComponent") && text.includes("update dune.fgl_entities")) return { rows: [], rowCount: fixtures.spiceVisionRows ?? 1 };
       if (text.includes("dune.delete_item")) return { rows: [{ ok: true }] };
+      // resolveOwnedStorageContainer's own ownership-CTE query, now also
+      // used by giveItemToBaseContainer/fillItemToBaseContainer/
+      // giveMultipleItemsToBaseContainer (issue #347 code-review follow-up,
+      // 2026-08-19), not just the bulk-delete paths fakeBulkContainerDeleteDb
+      // above already mocks it for. Derives its single container/inventory
+      // row from the existing storageRows fixture by default, so every
+      // existing give/fill test keeps its storageRows fixture unchanged and
+      // only needs its call site updated to pass (baseId, placeableId)
+      // instead of a bare storageId. containerRows overrides this entirely,
+      // the same way fakeBulkContainerDeleteDb's own fixture does, for tests
+      // that need to exercise the not-found/multi-inventory/wrong-group
+      // paths.
+      if (text.includes("select c.placeable_id::text as placeable_id, c.inventory_id") && text.includes("for update of inv")) {
+        if (fixtures.containerRows) return { rows: fixtures.containerRows };
+        const storageRow = (fixtures.storageRows && fixtures.storageRows[0]) || {};
+        return {
+          rows: [{
+            placeable_id: String(values[4] ?? ""),
+            inventory_id: storageRow.id ?? 7,
+            group_key: fixtures.containerGroup || "storage",
+            type_name: fixtures.containerTypeName || "Small Storage Container",
+            actor_id: storageRow.actor_id,
+            max_item_count: storageRow.max_item_count ?? 0,
+            max_item_volume: storageRow.max_item_volume ?? 0
+          }]
+        };
+      }
       if (text.includes("from dune.inventories") && text.includes("where actor_id")) return { rows: fixtures.storageRows || [] };
       if (text.includes("from dune.vehicle_modules vm") && text.includes("count(*)::int as scanned")) return { rows: fixtures.vehicleModuleScanRows || [{ scanned: 0, vehicles: 0 }] };
       if (text.includes("update dune.vehicle_modules vm")) return { rows: fixtures.repairedVehicleModuleRows || [] };
       if (text.includes("sum(coalesce(volume_override")) {
-        // volumeRowsSequence mirrors countRowsSequence: needed for batch-give
-        // tests that must prove the running volume total reflects an
-        // earlier item's own just-inserted row on the NEXT item's check,
-        // not a static fixture value repeated for every item in the batch.
+        // volumeRowsSequence mirrors countRowsSequence below. Both predate
+        // the issue #347 code-review round-trip fix that made
+        // giveMultipleItemsToBaseContainer query count/volume ONCE per
+        // batch and track them in memory afterward, rather than
+        // re-querying per item -- for that function specifically, only
+        // index 0 of either sequence is ever consumed now. The sequence
+        // mechanism itself is left in place (harmless, and still real
+        // infrastructure a future per-item-requerying caller could use),
+        // it just no longer reflects how giveMultipleItemsToBaseContainer
+        // proves a batch stops partway through -- that is proven via the
+        // in-memory counters advancing correctly instead, not via this
+        // mock seeing multiple live queries.
         if (fixtures.volumeRowsSequence) {
           const index = volumeCallCount++;
           return { rows: [fixtures.volumeRowsSequence[index] || fixtures.volumeRowsSequence[fixtures.volumeRowsSequence.length - 1]] };
@@ -6780,18 +6929,26 @@ function fakeMutationDb(calls, fixtures = {}) {
         return { rows: fixtures.volumeRows || [{ total_volume: 0 }] };
       }
       if (text.includes("count(*)::int")) {
-        // countRowsSequence supports tests that need count(*) to reflect a
-        // just-inserted row on the NEXT loop iteration (e.g. proving a
-        // multi-item give batch actually stops partway through, not just
-        // rejects every item identically from iteration 1) -- each count(*)
-        // call consumes the next entry, rather than every call seeing the
-        // same static countRows value. Falls back to the original static
-        // behavior for every existing test that only needs one fixed count.
+        // countRowsSequence: see volumeRowsSequence's comment above for why
+        // this sequence mechanism now only ever consumes index 0 for
+        // giveMultipleItemsToBaseContainer specifically. Falls back to the
+        // original static behavior for every existing test that only needs
+        // one fixed count.
         if (fixtures.countRowsSequence) {
           const index = countCallCount++;
           return { rows: [fixtures.countRowsSequence[index] || fixtures.countRowsSequence[fixtures.countRowsSequence.length - 1]] };
         }
         return { rows: fixtures.countRows || [{ count: 0 }] };
+      }
+      // giveMultipleItemsToBaseContainer's own occupied-position-index seed
+      // query -- fetched once up front, not per item (issue #347
+      // code-review round-trip fix), then tracked in memory for the rest of
+      // the batch. Matched on its exact, distinct literal (no "max(" or
+      // "generate_series", so it can never collide with either of the
+      // single-item queries below). existingPositionIndexRows lets a test
+      // seed pre-existing occupied slots; defaults to none.
+      if (text === "select position_index from dune.items where inventory_id = $1") {
+        return { rows: (fixtures.existingPositionIndexRows || []).map((position_index) => ({ position_index })) };
       }
       // nextHighPositionIndex's high-end query (Give/Give Multiple only --
       // see its own comment in duneDb.js). Distinguished from the plain

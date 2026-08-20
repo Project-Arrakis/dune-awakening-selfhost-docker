@@ -3408,6 +3408,28 @@ async function baseContainerAddSafety(baseId, group = "storage") {
 // function, and `deleteSafety` kept as the response shape every caller
 // already expects, so this stays a single, easy-to-find place if a real
 // live-sync hazard is ever found and the map-state check needs to come back.
+//
+// Found during code review (2026-08-19): every mutation-route caller below
+// (baseContainerItemDeleteRoute, baseContainerItemsDeleteRoute,
+// baseContainerAllItemsDeleteRoute) calls this with only `baseId`, so
+// `group` always defaults to "storage" and the `group !== "storage"` branch
+// below can never actually fire from any of them -- misleading, dead code
+// at those three call sites specifically (harmless, not a real gap: every
+// one of them still goes on to call a duneDb function --
+// deleteBaseContainerItem/deleteMultipleBaseContainerItems/
+// deleteAllBaseContainerItems -- that re-verifies the same group
+// restriction itself, atomically, inside resolveOwnedStorageContainer or
+// its own equivalent check, so a non-storage container is still correctly
+// rejected either way). Only baseContainerSlotsRoute (below) passes a real,
+// already-known group and gets a real answer from this check -- that
+// caller uses the result purely for display (whether the UI should show
+// delete as available), not as a gate before a mutation. Left unchanged
+// rather than "fixed" to add a real group check to the three mutation
+// routes above: doing so would mean fetching the container's group via an
+// extra, non-authoritative query before every delete purely to produce a
+// slightly friendlier error message on a path the atomic downstream check
+// already covers correctly -- not worth the added round trip for a
+// pre-check whose verdict was never actually load-bearing.
 function baseContainerDeleteSafety(baseId, group = "storage") {
   if (group && group !== "storage") {
     return {
@@ -3546,19 +3568,27 @@ async function baseContainerAllItemsDeleteRoute(req, res, path) {
 // 2026-08-19 for the same reason (see its comment) -- neither Give/Fill nor
 // Delete require a stopped map now (Add, above, is the one exception that
 // still does -- it is upstream's own route/design, kept as upstream shipped
-// it). giveItemToStorage/fillItemToStorage/giveMultipleItemsToStorage all
-// key off the container's own actor_id, the same as the standalone Storage
-// tab -- this route only adds the ownership verification the standalone tab
-// never needed (it operates on operator-supplied storage ids directly, not
-// a base+placeable pair).
-async function baseContainerOwnedStorageId(baseId, placeableId) {
-  const slots = await duneDb.baseContainerSlots(db, baseId, placeableId);
-  if (!slots.supported) throw new Error(slots.reason || "This game database cannot verify container ownership.");
-  if (!slots.found) throw new Error("That container was not found at the selected base.");
-  if (slots.group !== "storage") throw new Error("Items can only be given or filled into Storage containers. Crafting and Refining contents are read-only to protect active jobs.");
-  return placeableId;
-}
-
+// it).
+//
+// Ownership verification previously happened here, via a separate,
+// unlocked baseContainerOwnedStorageId() call to baseContainerSlots()
+// *before* opening the write transaction, then handed the bare placeableId
+// into giveItemToStorage/fillItemToStorage/giveMultipleItemsToStorage's own
+// actor_id-only lookup (`order by id limit 1`, no group filter, no
+// multi-inventory guard). Found during code review (2026-08-19): that was a
+// real TOCTOU gap (ownership/group verified in one query, the row resolved
+// and written in a later, completely separate transaction, with nothing
+// preventing the base's ownership or the container's group from changing in
+// between) and a real multi-inventory ambiguity gap (that actor_id lookup
+// silently picks whichever inventory row sorts first if a storage-group
+// placeable is ever found to back more than one qualifying inventory,
+// instead of throwing the way resolveOwnedStorageContainer already does for
+// Delete). baseContainerOwnedStorageId() is removed; each route below now
+// calls giveItemToBaseContainer/fillItemToBaseContainer/
+// giveMultipleItemsToBaseContainer directly with (baseId, placeableId),
+// which resolve ownership, lock the row, and write in one atomic
+// transaction via resolveOwnedStorageContainer -- exactly like Delete
+// already does.
 async function baseContainerGiveItemRoute(req, res, path) {
   const parsed = parseBaseContainerPath(path);
   if (!parsed) return json(res, 400, { error: "Invalid base or container ID" });
@@ -3566,7 +3596,6 @@ async function baseContainerGiveItemRoute(req, res, path) {
   if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
   if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.container-give-item", "GIVE ITEM TO STORAGE", async (body) => {
-    const storageId = await baseContainerOwnedStorageId(baseId, placeableId);
     // Restricted to raw_resource/refined_resource/component (issue #347
     // follow-up, per explicit operator direction, found via a real catalog
     // item -- "Robe of the Sisterhood" -- appearing in the Give combobox
@@ -3579,7 +3608,7 @@ async function baseContainerGiveItemRoute(req, res, path) {
     // touch.
     const resolved = resolveFillableCatalogItem(config.repoRoot, body);
     const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
-    return duneDb.giveItemToStorage(db, storageId, { ...body, templateId: resolved.itemId, itemVolume });
+    return duneDb.giveItemToBaseContainer(db, baseId, placeableId, { ...body, templateId: resolved.itemId, itemVolume });
   }, { baseId, placeableId });
 }
 
@@ -3595,15 +3624,14 @@ async function baseContainerGiveItemsRoute(req, res, path) {
     // (Security hat): resolveCatalogItem/resolveItemVolume each do a
     // synchronous readFileSync+JSON.parse of the ~2600-item admin catalog per
     // call, so validating the 50-item cap only inside
-    // giveMultipleItemsToStorage (after every item below had already been
-    // resolved against the catalog) let an oversized batch force tens of
-    // seconds of synchronous, event-loop-blocking file I/O before ever being
-    // rejected -- a real, trivially reachable DoS against every other
+    // giveMultipleItemsToBaseContainer (after every item below had already
+    // been resolved against the catalog) let an oversized batch force tens
+    // of seconds of synchronous, event-loop-blocking file I/O before ever
+    // being rejected -- a real, trivially reachable DoS against every other
     // console user's request, not just this one's.
     if (!Array.isArray(body?.items) || body.items.length < 1 || body.items.length > 50) {
       throw new Error("Give Multiple Items requires 1-50 items");
     }
-    const storageId = await baseContainerOwnedStorageId(baseId, placeableId);
     // Same raw_resource/refined_resource/component restriction as
     // baseContainerGiveItemRoute above -- see its comment for why.
     const items = body.items.map((item) => {
@@ -3611,7 +3639,7 @@ async function baseContainerGiveItemsRoute(req, res, path) {
       const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
       return { ...item, templateId: resolved.itemId, itemVolume };
     });
-    return duneDb.giveMultipleItemsToStorage(db, storageId, { items });
+    return duneDb.giveMultipleItemsToBaseContainer(db, baseId, placeableId, { items });
   }, { baseId, placeableId });
 }
 
@@ -3622,10 +3650,9 @@ async function baseContainerFillItemRoute(req, res, path) {
   if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
   if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
   return directDbMutation(req, res, "bases.container-fill-item", "FILL ITEM TO STORAGE", async (body) => {
-    const storageId = await baseContainerOwnedStorageId(baseId, placeableId);
     const resolved = resolveFillableCatalogItem(config.repoRoot, body);
     const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
-    return duneDb.fillItemToStorage(db, config.repoRoot, storageId, { ...body, templateId: resolved.itemId, itemVolume });
+    return duneDb.fillItemToBaseContainer(db, config.repoRoot, baseId, placeableId, { ...body, templateId: resolved.itemId, itemVolume });
   }, { baseId, placeableId });
 }
 
