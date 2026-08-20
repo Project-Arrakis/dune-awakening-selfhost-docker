@@ -40,7 +40,12 @@ export function base32Encode(bytes) {
 }
 
 export function base32Decode(input) {
-  const cleaned = String(input).replace(/[\s=-]/g, "").toUpperCase();
+  // Non-string input returns null rather than coercing to a garbage buffer:
+  // the later store-read path feeds a persisted secret through here, and a
+  // null/undefined/corrupt stored value must fail cleanly, not silently
+  // decode to a short wrong buffer.
+  if (typeof input !== "string") return null;
+  const cleaned = input.replace(/[\s=-]/g, "").toUpperCase();
   if (cleaned.length === 0 || /[^A-Z2-7]/.test(cleaned)) return null;
   let bits = 0;
   let value = 0;
@@ -76,7 +81,21 @@ export function generateTotpSecret(random = randomBytes) {
 
 // RFC 4226 HOTP: HMAC-SHA1(secret, counter) → dynamic truncation → zero-padded
 // `digits`-length decimal string.
+function assertSecretBytes(secretBytes) {
+  // A caller mistake -- passing the base32 *string* where raw bytes are
+  // expected -- must fail loudly, not silently reinterpret the string as
+  // UTF-8 bytes and produce wrong codes. This is a programming error, not
+  // untrusted input, so throwing is correct.
+  if (!Buffer.isBuffer(secretBytes) && !(secretBytes instanceof Uint8Array)) {
+    throw new TypeError("secretBytes must be a Buffer/Uint8Array of raw secret bytes (not base32)");
+  }
+}
+
 export function hotp(secretBytes, counter, digits = TOTP_DIGITS) {
+  assertSecretBytes(secretBytes);
+  if (!Number.isInteger(counter) || counter < 0) {
+    throw new RangeError(`counter must be a non-negative integer, got ${counter}`);
+  }
   const counterBuf = Buffer.alloc(8);
   // 64-bit big-endian counter; JS bitops are 32-bit so split hi/lo.
   counterBuf.writeUInt32BE(Math.floor(counter / 0x100000000), 0);
@@ -105,25 +124,39 @@ export function totpCode(secretBytes, timeSeconds, { period = TOTP_PERIOD_SECOND
 // Compares with timingSafeEqual and checks every step in the window without
 // short-circuiting, so a valid token is accepted regardless of which step it
 // landed on and the check does not leak the matching offset via timing.
-export function verifyTotp(secretBytes, token, timeSeconds, {
+// Verify and return the matched step counter: { valid, counter }. `counter` is
+// the specific step (center+offset) the token matched, or null. The login phase
+// MUST persist this per principal and reject any counter <= the last consumed
+// one, so a code is not replayable across two logins within the same 30s step
+// (the ±1 window means the matched step, not the center, is what must be
+// recorded). Iterates the full window without short-circuiting so total work
+// (and thus timing) is independent of which step, or whether any, matched.
+export function verifyTotpMatch(secretBytes, token, timeSeconds, {
   period = TOTP_PERIOD_SECONDS,
   digits = TOTP_DIGITS,
   window = TOTP_DEFAULT_WINDOW,
 } = {}) {
-  if (typeof token !== "string") return false;
+  if (typeof token !== "string") return { valid: false, counter: null };
   const candidate = token.replace(/\s/g, "");
-  if (!new RegExp(`^\\d{${digits}}$`).test(candidate)) return false;
+  if (!new RegExp(`^\\d{${digits}}$`).test(candidate)) return { valid: false, counter: null };
   const candidateBuf = Buffer.from(candidate, "utf8");
   const center = counterForTime(timeSeconds, period);
-  let matched = false;
+  let matchedCounter = null;
   for (let offset = -window; offset <= window; offset++) {
-    const expected = hotp(secretBytes, center + offset, digits);
-    const expectedBuf = Buffer.from(expected, "utf8");
+    const step = center + offset;
+    if (step < 0) continue; // pre-epoch step (only reachable for tiny timeSeconds)
+    const expectedBuf = Buffer.from(hotp(secretBytes, step, digits), "utf8");
     if (expectedBuf.length === candidateBuf.length && timingSafeEqual(expectedBuf, candidateBuf)) {
-      matched = true; // no break: keep timing independent of the matching step
+      matchedCounter = step; // no break: timing independent of the matching step
     }
   }
-  return matched;
+  return { valid: matchedCounter !== null, counter: matchedCounter };
+}
+
+// Boolean convenience wrapper for callers that only need yes/no (e.g. the
+// enrollment-confirm step, which has no prior counter to compare against).
+export function verifyTotp(secretBytes, token, timeSeconds, options = {}) {
+  return verifyTotpMatch(secretBytes, token, timeSeconds, options).valid;
 }
 
 // ---- provisioning URI ----
