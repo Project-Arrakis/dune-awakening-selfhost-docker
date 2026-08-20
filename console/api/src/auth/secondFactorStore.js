@@ -33,11 +33,15 @@
 // transcends console auth (RFC §3.4); encryption-at-rest is deferred to the
 // separate KEK/DEK secrets system (Requirement 27), a deferral recorded in #407.
 //
-// Backup/restore integrity (RFC §2.3.1) is a wired-phase obligation, not the
-// store's: restoring an older file un-consumes recovery codes (and rolls
-// lastUsedCounter back, which self-heals since TOTP validates near wall-clock
-// time), so the wired phase must emit the reset-detected audit event and tell
-// operators to regenerate recovery codes after any restore.
+// Backup/restore integrity (RFC §2.3.1) is NOT handled here and is NOT yet
+// handled anywhere: restoring an older file un-consumes recovery codes (and
+// rolls lastUsedCounter back, which self-heals since TOTP validates near
+// wall-clock time). As of the recovery-code-login phase (#426), recovery codes
+// are consumable at login, so a restored old file resurrecting a spent code is
+// directly exploitable -- the restore-detection + `auth.second-factor-reset-
+// detected` audit event + "regenerate after restore" operator guidance remain
+// UNWIRED and are tracked in #425 (re-scoped to the rotation phase). Do not
+// read this comment as a claim that any reset-detection exists today.
 
 import { resolve as resolvePath } from "node:path";
 import { readFile, rm } from "node:fs/promises";
