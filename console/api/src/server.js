@@ -24,7 +24,7 @@ import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityA
 import { hardwareStatusSnapshot, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { createSecondFactorStore } from "./auth/secondFactorStore.js";
-import { generateTotpSecret, provisioningUri, verifyTotp } from "./auth/totp.js";
+import { generateTotpSecret, provisioningUri, verifyTotpMatch } from "./auth/totp.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
 import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
 import { createMemoryBalancer } from "./services/memoryBalancer.js";
@@ -90,6 +90,31 @@ const auth = createAuth(config);
 // constructing a second one for the same file would defeat serialization).
 const secondFactor = createSecondFactorStore({ filePath: config.secondFactorFile });
 const nowSeconds = () => Math.floor(Date.now() / 1000);
+// Restricted second-factor setup scopes (RFC §4 enrollment, §2.3 recovery
+// re-setup). Both are confined by the allowlist guard to the /2fa/* endpoints;
+// they differ only in how /2fa/confirm persists (enroll = if-absent, resetup =
+// overwrite an existing factor whose device was lost).
+const SETUP_SCOPES = new Set(["enroll", "resetup"]);
+// Routes a restricted setup-scope session may reach (allowlist guard below).
+const ENROLL_ALLOWED = new Set([
+  "/api/auth/2fa/setup",
+  "/api/auth/2fa/confirm",
+  "/api/auth/logout",
+  "/api/auth/me",
+]);
+
+// Fail-closed responder for a second-factor store error on the login path.
+// Distinguishes a NEWER-version file (deploy rollback: the state is GOOD -- the
+// operator must upgrade, NOT delete) from genuine corruption, so the 503 text
+// can never instruct an operator to destroy valid 2FA state (store #415's
+// SecondFactorVersionError exists precisely for this).
+function secondFactorUnavailable(res, loginUrl, req, err) {
+  audit(config, loginUrl, "auth.login", { ok: false, reason: err?.name === "SecondFactorVersionError" ? "second_factor_version" : "second_factor_unavailable" });
+  if (err?.name === "SecondFactorVersionError") {
+    return json(res, 503, { error: "This console's two-factor state was written by a NEWER console version. Do not delete runtime/generated/console-second-factor.json -- upgrade the console instead, then sign in again." });
+  }
+  return json(res, 503, { error: "Two-factor state on this console is unreadable, so sign-in is blocked. An operator with server access must inspect runtime/generated/console-second-factor.json -- restore it from backup, or remove it to re-enroll a fresh authenticator on the next password sign-in." });
+}
 const loginRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
@@ -494,18 +519,20 @@ async function handleApi(req, res) {
   if (path === "/api/health") return json(res, 200, { ok: true, app: config.appName });
   if (path === "/api/auth/state") {
     const session = auth.readSession(req);
+    // A setup-scoped (enroll/resetup) session is NOT a usable console session:
+    // report authenticated:false with enrollmentRequired so no client that
+    // branches on `authenticated` alone renders the console mid-enrollment.
+    const pendingSetup = SETUP_SCOPES.has(session?.scope);
     return json(res, 200, {
-      authenticated: Boolean(session),
-      // An enroll-scoped session is not a usable console session -- the client
-      // must route to setup, not render the console (UI can also treat any
-      // enrollmentRequired 403 as the same signal).
+      authenticated: Boolean(session) && !pendingSetup,
       scope: session?.scope || null,
-      enrollmentRequired: session?.scope === "enroll",
+      enrollmentRequired: pendingSetup,
       csrfToken: session?.csrf || null,
       config: publicConfig(config),
     });
   }
   if (path === "/api/auth/login" && req.method === "POST") {
+    const loginUrl = sanitizedUrl(req, "/api/auth/login");
     const rateKey = loginRateLimitKey(req);
     const rate = loginRateLimiter.check(rateKey);
     if (!rate.allowed) {
@@ -524,18 +551,18 @@ async function handleApi(req, res) {
       loginRateLimiter.recordSuccess(rateKey);
       const session = auth.makeSession();
       setSessionCookie(res, session, config);
-      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: true });
+      audit(config, loginUrl, "auth.login", { ok: true });
       return json(res, 200, { authenticated: true, csrfToken: session.csrf });
     }
     let configured;
     try {
       configured = await secondFactor.isConfigured();
-    } catch {
-      // Corrupt / newer-version second-factor state -> fail closed, grant nothing
-      // (a corrupt file must never let the password through without the factor).
+    } catch (err) {
+      // Corrupt or newer-version second-factor state -> fail closed, grant
+      // nothing (a corrupt file must never let the password through without the
+      // factor; a newer-version file must never be "fixed" by deletion).
       loginRateLimiter.recordFailure(rateKey);
-      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: false, reason: "second_factor_unavailable" });
-      return json(res, 503, { error: "Two-factor state on this console is unreadable, so sign-in is blocked. An operator with server access must inspect runtime/generated/console-second-factor.json -- restore it from backup, or remove it to re-enroll a fresh authenticator on the next password sign-in." });
+      return secondFactorUnavailable(res, loginUrl, req, err);
     }
     if (!configured) {
       // §4: first post-upgrade login with no TOTP state -> mandatory enrollment.
@@ -546,28 +573,63 @@ async function handleApi(req, res) {
       loginRateLimiter.recordSuccess(rateKey);
       const session = auth.makeSession({ tier: "enroll", scope: "enroll", ttlMs: config.enrollmentSessionTtlMs, renewable: false });
       setSessionCookie(res, session, config, { maxAgeSeconds: Math.floor(config.enrollmentSessionTtlMs / 1000) });
-      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: true, enrollment: true });
+      audit(config, loginUrl, "auth.login", { ok: true, enrollment: true });
       return json(res, 200, { enrollmentRequired: true, csrfToken: session.csrf });
     }
-    // Enrolled: a TOTP code must accompany the password. A missing code is not a
-    // failed attempt (the password was right) -- prompt for the second factor.
-    // It IS audited: a correct-password/no-device request is a compromised-
-    // password signal worth a trail (no recordFailure, so no legit-user lockout).
+    // Enrolled: a TOTP code OR a recovery code must accompany the password.
     const totpCode = String(body.totpCode || "").trim();
-    if (!totpCode) {
-      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: false, reason: "totp_missing" });
-      return json(res, 401, { totpRequired: true, error: "Enter your authenticator code to finish signing in." });
+    const recoveryCode = String(body.recoveryCode || "").trim();
+    if (!totpCode && !recoveryCode) {
+      // Prompt for the second factor. This branch is METERED (recordFailure):
+      // without it, a password-holder could probe/write audit lines unbounded.
+      // The normal two-step UI flow is unaffected -- completing the login calls
+      // recordSuccess, which clears the bucket; only 8 abandoned password-only
+      // posts inside 15 minutes (never finishing a login) would trip the limit.
+      loginRateLimiter.recordFailure(rateKey);
+      audit(config, loginUrl, "auth.login", { ok: false, reason: "totp_missing" });
+      return json(res, 401, { totpRequired: true, recoveryAvailable: true, error: "Enter your authenticator code, or use a recovery code if you have lost your device." });
     }
-    const verify = await secondFactor.verifyTotpToken(totpCode, nowSeconds());
+    if (recoveryCode && !totpCode) {
+      // Recovery login (RFC §2.3): password + one unused recovery code. The code
+      // substitutes for the TOTP factor ONLY, never the password. Because the
+      // operator's authenticator is presumed lost, a successful recovery login
+      // does NOT grant a normal session -- it issues a restricted re-setup
+      // session that forces enrolling a fresh TOTP secret (and regenerates the
+      // recovery-code set), per §2.3.
+      let consumed;
+      try {
+        consumed = await secondFactor.consumeRecoveryCode(recoveryCode);
+      } catch (err) {
+        loginRateLimiter.recordFailure(rateKey);
+        return secondFactorUnavailable(res, loginUrl, req, err);
+      }
+      if (!consumed.ok) {
+        loginRateLimiter.recordFailure(rateKey);
+        audit(config, loginUrl, "auth.login", { ok: false, reason: `recovery_${consumed.reason}` });
+        return json(res, 401, { recoveryFailed: true, error: "That recovery code was not accepted. Check for typos, or use a different unused code." });
+      }
+      loginRateLimiter.recordSuccess(rateKey);
+      const session = auth.makeSession({ tier: "enroll", scope: "resetup", ttlMs: config.enrollmentSessionTtlMs, renewable: false });
+      setSessionCookie(res, session, config, { maxAgeSeconds: Math.floor(config.enrollmentSessionTtlMs / 1000) });
+      audit(config, loginUrl, "auth.recovery-code-consumed", { ok: true });
+      return json(res, 200, { resetupRequired: true, csrfToken: session.csrf });
+    }
+    let verify;
+    try {
+      verify = await secondFactor.verifyTotpToken(totpCode, nowSeconds());
+    } catch (err) {
+      loginRateLimiter.recordFailure(rateKey);
+      return secondFactorUnavailable(res, loginUrl, req, err);
+    }
     if (!verify.ok) {
       loginRateLimiter.recordFailure(rateKey);
-      audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: false, reason: `totp_${verify.reason}` });
-      return json(res, 401, { totpRequired: true, error: "That authenticator code was not accepted. Check your device's clock and enter the current code." });
+      audit(config, loginUrl, "auth.login", { ok: false, reason: `totp_${verify.reason}` });
+      return json(res, 401, { totpRequired: true, recoveryAvailable: true, error: "That authenticator code was not accepted. Check your device's clock and enter the current code." });
     }
     loginRateLimiter.recordSuccess(rateKey);
     const session = auth.makeSession();
     setSessionCookie(res, session, config);
-    audit(config, sanitizedUrl(req, "/api/auth/login"), "auth.login", { ok: true });
+    audit(config, loginUrl, "auth.login", { ok: true });
     return json(res, 200, { authenticated: true, csrfToken: session.csrf });
   }
   // Enrollment-only sessions (RFC §4) may reach ONLY the enrollment endpoints
@@ -580,13 +642,7 @@ async function handleApi(req, res) {
   // pure overhead.
   if (config.consoleTotpEnabled) {
     const enrollSession = auth.readSession(req);
-    if (enrollSession && enrollSession.scope === "enroll") {
-      const ENROLL_ALLOWED = new Set([
-        "/api/auth/2fa/setup",
-        "/api/auth/2fa/confirm",
-        "/api/auth/logout",
-        "/api/auth/me",
-      ]);
+    if (enrollSession && SETUP_SCOPES.has(enrollSession.scope)) {
       if (!ENROLL_ALLOWED.has(path)) {
         return json(res, 403, { enrollmentRequired: true, error: "Finish setting up two-factor authentication before using the console." });
       }
@@ -622,26 +678,38 @@ async function handleApi(req, res) {
     }
     const body = await readJson(req);
     const code = String(body.code || "").trim();
-    if (!verifyTotp(session.pendingTotpSecret, code, nowSeconds())) {
+    const confirmMatch = verifyTotpMatch(session.pendingTotpSecret, code, nowSeconds());
+    if (!confirmMatch.valid) {
       audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: "invalid_code" });
       return json(res, 401, { error: "That code was not accepted. Check your device's clock and enter the current code." });
     }
-    const enrolled = await secondFactor.enroll(session.pendingTotpSecret);
-    if (!enrolled.ok) {
-      // already_configured: another session enrolled first. End this one; the
-      // operator logs in normally with the factor that won.
+    // First-time enrollment uses enroll() (create-if-absent, so a concurrent
+    // enrollment can't be clobbered); recovery re-setup uses commit() (the factor
+    // already exists but its device is lost, so overwrite the secret and issue a
+    // fresh recovery-code set, invalidating any remaining old codes -- §2.3).
+    const isResetup = session.scope === "resetup";
+    // Seed lastUsedCounter with the confirm code's matched step: the RFC (§4)
+    // forbids reusing the confirm-time code at the forced first login, and the
+    // seed makes the store reject it as a replay (UI copy: wait for the next
+    // code).
+    const result = isResetup
+      ? await secondFactor.commit(session.pendingTotpSecret, { initialCounter: confirmMatch.counter })
+      : await secondFactor.enroll(session.pendingTotpSecret, { initialCounter: confirmMatch.counter });
+    if (!result.ok) {
+      // enroll() only: already_configured -- another session enrolled first. End
+      // this one; the operator logs in with the factor that won.
       auth.invalidateSession(session.id);
       clearSessionCookie(res, config);
-      audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: enrolled.reason });
+      audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: result.reason });
       return json(res, 409, { error: "Two-factor was already set up on this console. Sign in again with your authenticator." });
     }
-    // Commit succeeded: show the recovery codes ONCE, end the enrollment session,
-    // and require a fresh password+TOTP login.
+    // Succeeded: show the recovery codes ONCE, end the setup session, and require
+    // a fresh password+TOTP login.
     auth.invalidateSession(session.id);
     clearSessionCookie(res, config);
-    audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: true });
-    audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "settings.totp-setup", { ok: true });
-    return json(res, 200, { enrolled: true, recoveryCodes: enrolled.codes });
+    audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: true, resetup: isResetup });
+    audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), isResetup ? "settings.totp-regenerated" : "settings.totp-setup", { ok: true });
+    return json(res, 200, { [isResetup ? "reconfigured" : "enrolled"]: true, recoveryCodes: result.codes });
   }
   if (path === "/api/auth/me") {
     const session = auth.requireAuth(req, res);
@@ -659,7 +727,7 @@ async function handleApi(req, res) {
       },
       scope: session.scope || null,
       linkedCharacters,
-      allowedActions: session.scope === "enroll" ? [] : resolveAllowedActions(session.tier || "owner")
+      allowedActions: SETUP_SCOPES.has(session.scope) ? [] : resolveAllowedActions(session.tier || "owner")
     });
   }
   if (path === "/api/auth/characters" && req.method === "GET") {
@@ -5131,7 +5199,7 @@ function sanitizedUrl(req, path) {
 // it) or null after writing the response.
 function requireEnrollmentSession(req, res) {
   const session = auth.readSession(req);
-  if (!session || session.scope !== "enroll") {
+  if (!session || !SETUP_SCOPES.has(session.scope)) {
     json(res, 403, { error: "Sign in to begin two-factor setup." });
     return null;
   }
@@ -5233,9 +5301,9 @@ function html(res, status, body, headers = {}) {
   res.end(body);
 }
 
-function sessionCookieValue(session, config = {}) {
+function sessionCookieValue(session, config = {}, { maxAgeSeconds = 43200 } = {}) {
   const secure = config.secureCookies ? "; Secure" : "";
-  return `asc_session=${encodeURIComponent(session.cookie)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200${secure}`;
+  return `asc_session=${encodeURIComponent(session.cookie)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAgeSeconds}${secure}`;
 }
 
 async function handleOAuthCallback(req, res) {
