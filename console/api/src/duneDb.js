@@ -7392,6 +7392,23 @@ function quantityThatFitsByVolume(maxVolume, currentVolume, unitVolume) {
   return Math.max(0, Math.floor(Math.max(0, max - current) / unit));
 }
 
+// FIX (found during upstream PR #182 post-merge review, 2026-08-20):
+// every Give/Fill insert site computed itemVolumeNum as `Number(itemVolume)
+// || 0` (see each function's own param default below) and then wrote that
+// value straight into volume_override -- indistinguishable, at the
+// database level, from a real, catalogued, exactly-zero volume. server.js's
+// own route handlers already document this exact gap ("itemVolume defaults
+// to 0 for any item without catalogued volume data") but the fix belongs
+// here, at the one place that actually writes the column: NULL means "use
+// the engine's own catalog volume" (the resolvedItemUnitVolume()/
+// inventoryVolumeState() convention this file already established above),
+// so an uncatalogued item's per-unit volume must be stored as NULL, not 0
+// -- storing 0 makes the engine display the item as having no volume at
+// all, rather than falling back to its own real catalog value.
+function volumeOverrideForInsert(itemVolumeNum) {
+  return itemVolumeNum > 0 ? itemVolumeNum : null;
+}
+
 export async function giveItemToStorage(db, storageId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 0, itemVolume = 0, augments = [], augmentQuality = 1 }) {
   await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns including volume_override.");
   const target = intParam(storageId, "storage id", 1);
@@ -7486,7 +7503,7 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
     // a total, matching this corrected per-unit convention.
     if (itemColumns.has("volume_override")) {
       insertColumns.push("volume_override");
-      insertValues.push(itemVolumeNum);
+      insertValues.push(volumeOverrideForInsert(itemVolumeNum));
     }
     const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
     const inserted = await tx.query(`
@@ -7579,7 +7596,7 @@ export async function giveItemToBaseContainer(db, baseId, placeableId, { itemNam
     const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, positionIndex, JSON.stringify(stats)];
     if (itemColumns.has("volume_override")) {
       insertColumns.push("volume_override");
-      insertValues.push(itemVolumeNum);
+      insertValues.push(volumeOverrideForInsert(itemVolumeNum));
     }
     const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
     const inserted = await tx.query(`
@@ -7711,7 +7728,7 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
     // against this container correct too.
     if (itemColumns.has("volume_override")) {
       insertColumns.push("volume_override");
-      insertValues.push(itemVolumeNum);
+      insertValues.push(volumeOverrideForInsert(itemVolumeNum));
     }
     const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
     const inserted = await tx.query(`
@@ -7801,7 +7818,7 @@ export async function fillItemToBaseContainer(db, repoRoot, baseId, placeableId,
     const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
     if (itemColumns.has("volume_override")) {
       insertColumns.push("volume_override");
-      insertValues.push(itemVolumeNum);
+      insertValues.push(volumeOverrideForInsert(itemVolumeNum));
     }
     const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
     const inserted = await tx.query(`
@@ -8034,7 +8051,7 @@ export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, 
       // giveItemToBaseContainer's matching comment for the full explanation.
       if (itemColumns.has("volume_override")) {
         insertColumns.push("volume_override");
-        insertValues.push(entry.itemVolumeNum);
+        insertValues.push(volumeOverrideForInsert(entry.itemVolumeNum));
       }
       const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
       const inserted = await tx.query(`

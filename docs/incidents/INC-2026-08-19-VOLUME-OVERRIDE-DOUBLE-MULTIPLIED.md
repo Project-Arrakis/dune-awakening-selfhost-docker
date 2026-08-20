@@ -173,3 +173,35 @@ green after the fix; `tsc --noEmit` clean.
 Investigation complete, root cause proven, code and catalog data fixed, data-repair script
 written. **This incident is resolved for the code and catalog; the existing-data repair on
 `dune-dev` itself is a tracked follow-up action to run after this fix deploys.**
+
+## Addendum (2026-08-20): a related, second `volume_override` bug survived this fix
+
+Found during post-merge review of upstream PR #182 (`giveItemToStorage`/
+`giveItemToBaseContainer`/`fillItemToStorage`/`fillItemToBaseContainer`/
+`giveMultipleItemsToBaseContainer`, tracked in
+`yacketrj/dune-awakening-selfhost-docker#396`): the "Fix the write-side
+convention" closure criterion above was correct for the bug this incident
+investigated (total-vs-per-unit), but it did not cover a second, related
+convention violation in the same insert sites -- an item with **no
+catalogued volume at all** (not a wrong value; genuinely never had one) had
+`volume_override` written as the number `0` instead of SQL `NULL`. Per this
+incident's own root-cause finding (a genuinely in-game-created row always
+has `volume_override = NULL`, meaning "use the engine's own catalog
+volume"), storing `0` for an uncatalogued item causes the same class of
+engine-display inaccuracy this incident fixed, just in the opposite
+direction (0 instead of inflated), and was independently confirmed to also
+under-count the console's own internal volume-capacity math for the same
+rows (`resolvedItemUnitVolume` treats an explicit `0` as a real, known
+value, not "unknown" -- it only falls back to catalog data for `NULL`).
+
+Fixed alongside this addendum: all 5 insert sites now write `NULL` (via a
+shared `volumeOverrideForInsert()` helper), and
+`repair-volume-override.mjs` gained a second pass correcting existing rows
+with `volume_override = 0` to `NULL` (no catalog lookup needed for this
+pass -- the engine never itself writes a non-null override, so any stored
+`0` is presumptively from this bug). **This addendum does not reopen this
+incident's own closure criteria** (they were accurate for the bug
+investigated here) -- it corrects the closure table's implicit claim of
+"the write-side convention is now fully correct," which was not true until
+this addendum's fix. See `#396` for the full fix and the rest of that
+review's findings.
