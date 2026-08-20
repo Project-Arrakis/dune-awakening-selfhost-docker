@@ -30,7 +30,13 @@ function row(overrides = {}) {
   };
 }
 
-function createDb({ rows = [], missingTable = "" } = {}) {
+// Column-probed the same way baseContainerSlots's own itemColumns fixture
+// works (db.test.js): defaults to a schema WITHOUT max_item_volume/
+// volume_override, since the fake db's information_schema.columns query
+// falls through to the generic `{ rows }` branch below otherwise, which
+// would carry no column_name field and degrade to false regardless -- this
+// makes that default explicit rather than accidental.
+function createDb({ rows = [], missingTable = "", inventoryColumns = [], itemColumns = [] } = {}) {
   const calls = [];
   const db = {
     calls,
@@ -39,6 +45,10 @@ function createDb({ rows = [], missingTable = "" } = {}) {
       if (text.includes("to_regclass")) {
         const table = String(values[0] || "");
         return { rows: [{ exists: REQUIRED_TABLES.includes(table) && table !== missingTable }] };
+      }
+      if (text.includes("information_schema.columns")) {
+        const columns = values[1] === "inventories" ? inventoryColumns : itemColumns;
+        return { rows: columns.map((column_name) => ({ column_name })) };
       }
       return { rows };
     }
@@ -84,7 +94,7 @@ test("baseInventory rolls items up by template and by container", async () => {
     ["40001", 2, 45],
     ["40003", 1, 5]
   ]);
-  assert.deepEqual(result.totals, { items: 45, distinct: 2, containers: 3, usedSlots: 4, maxSlots: 70 });
+  assert.deepEqual(result.totals, { items: 45, distinct: 2, containers: 3, usedSlots: 4, maxSlots: 70, currentVolume: 0, maxVolume: 0 });
   assert.deepEqual(result.groups, [
     { key: "storage", name: "Storage", containerCount: 2, itemCount: 38 },
     { key: "refining", name: "Refining", containerCount: 1, itemCount: 7 },
@@ -109,6 +119,8 @@ test("baseInventory keeps an empty container instead of dropping it", async () =
     group: "other",
     usedSlots: 0,
     maxSlots: 5,
+    currentVolume: 0,
+    maxVolume: 0,
     itemCount: 0,
     items: []
   }]);
@@ -213,7 +225,7 @@ test("baseInventory reports unsupported when a required table is missing", async
     // every field before reading it.
     assert.deepEqual(result.containers, []);
     assert.deepEqual(result.items, []);
-    assert.deepEqual(result.totals, { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0 });
+    assert.deepEqual(result.totals, { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0, currentVolume: 0, maxVolume: 0 });
   }
 });
 
@@ -221,4 +233,52 @@ test("baseInventory rejects an invalid base id", async () => {
   const db = createDb({ rows: [] });
   await assert.rejects(() => baseInventory(db, 0));
   await assert.rejects(() => baseInventory(db, "not-a-base"));
+});
+
+// Issue #356 (found during PR #349's Layer 3 audit): items given before the
+// volume-checking fix landed have a permanent NULL volume_override, which
+// every sum(volume_override) query already treats as 0 -- so the console's
+// own volume accounting silently undercounts a container's real usage for
+// pre-existing rows. A backfill was judged too risky to run against every
+// operator's live dune.items table for a LOW-MEDIUM accuracy gap (Strict
+// Requirement 0/26 territory); this feature makes the current, real volume
+// total visible on every container instead, so an operator can see it
+// directly rather than trusting an implicit, possibly-stale number.
+//
+// CORRECTED 2026-08-19 (real live in-game bug, see
+// docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md):
+// volume_override is a PER-UNIT value, not the stack's total -- the total
+// contribution of a row is volume_override * stack_size.
+test("baseInventory reports current and max volume per container, summed once per inventory", async () => {
+  const db = createDb({
+    inventoryColumns: ["id", "actor_id", "max_item_count", "max_item_volume"],
+    itemColumns: ["id", "inventory_id", "template_id", "stack_size", "volume_override"],
+    rows: [
+      row({ placeable_id: "40001", inventory_id: "500", max_item_count: 45, max_item_volume: 500, template_id: "TestOre", stack_size: 10, volume_override: 4 }),
+      row({ placeable_id: "40001", inventory_id: "500", max_item_count: 45, max_item_volume: 500, template_id: "TestBar", stack_size: 3, volume_override: 5 })
+    ]
+  });
+
+  const result = await baseInventory(db, BASE_ID);
+
+  assert.equal(result.containers[0].maxVolume, 500, "max volume is read once per inventory, not summed per item row");
+  assert.equal(result.containers[0].currentVolume, 55, "current volume sums volume_override (a per-unit value) * stack_size across every row");
+  assert.equal(result.totals.currentVolume, 55);
+  assert.equal(result.totals.maxVolume, 500);
+});
+
+test("baseInventory degrades volume to 0/0 on a schema without max_item_volume/volume_override, rather than failing", async () => {
+  const db = createDb({
+    inventoryColumns: ["id", "actor_id", "max_item_count"],
+    itemColumns: ["id", "inventory_id", "template_id", "stack_size"],
+    rows: [row({ template_id: "TestOre", stack_size: 10 })]
+  });
+
+  const result = await baseInventory(db, BASE_ID);
+
+  assert.equal(result.containers[0].currentVolume, 0);
+  assert.equal(result.containers[0].maxVolume, 0);
+  const query = mainQuery(db);
+  assert.match(query.text, /0::real as max_item_volume/);
+  assert.match(query.text, /0::real as volume_override/);
 });
