@@ -610,12 +610,20 @@ instead of two per stack row under the inventory lock). Uncapped inventories kee
 go out of range.
 
 **Curating `stackSize` values:** every value added to `admin-items.json` must have a **stated, verified
-source** — read the limit from the live game (hover an item's full stack in-game, or observe the largest
-naturally-occurring `stack_size` for that template in a real world database) and record where the number
-came from in the PR/commit that adds it. A wrong value silently mis-splits or over-clamps every future
-grant of that item. Provenance of the initial five: `Oil`/`SpicedFuelCell` 499 and the two lubricants 100
-match the generator-refill table (`GENERATOR_TYPES`) that has been feeding real accepted refills; `MelangeSpice`
-500 was operator-stated from the live game (2026-08-20, issue #430).
+source**, preferably an independent, external reference (see below) rather than another in-repo system's
+own policy value — read the limit from the live game (hover an item's full stack in-game, or observe the
+largest naturally-occurring `stack_size` for that template in a real world database) and record where the
+number came from in the PR/commit that adds it. A wrong value silently mis-splits or over-clamps every
+future grant of that item — this happened for real: `Oil`/`SpicedFuelCell` were initially seeded at 499,
+copied from the generator-refill table (`GENERATOR_TYPES`), and were **wrong**. An operator challenge
+(2026-08-20) to validate against an external source — [dune.gaming.tools](https://dune.gaming.tools)'s own
+item data feed, the `maxStackSize` field, not just its rendered page — found the true limit for both is
+**500**, matching `addonSeedJob.js`'s pre-existing (and, it turns out, correct) value; see issue #432, which
+had already flagged this exact contradiction before it was externally resolved. The refill table's 499 is a
+refill *policy* value, not necessarily the engine's real cap, and was left unchanged (changing an
+already-live, already-tested system is its own separately-verified decision, not a data-correction one).
+Current provenance of the five seeded items, all confirmed against dune.gaming.tools's `maxStackSize` field
+as of 2026-08-20: `MelangeSpice` 500, `Oil` 500, `SpicedFuelCell` 500, both lubricants 100.
 
 **Give Multiple's batch-clamping design is deliberately left-to-right, not best-effort.** Once one item in
 the batch does not fully fit (clamped, or reduced all the way to zero), the batch **stops there** —

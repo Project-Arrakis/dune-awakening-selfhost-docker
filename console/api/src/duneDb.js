@@ -6996,11 +6996,20 @@ export async function playerItemAugmentState(db, playerId, itemId, expectedAugme
 // optional stackSize field, exactly like volume; an item with no stackSize
 // keeps the pre-existing single-row behavior. Seed-value provenance (each
 // value needs a stated source -- see docs/console/base-inventory.md's
-// curation note before adding more): Oil/SpicedFuelCell 499 and the two
-// lubricants 100 come from GENERATOR_TYPES' refill block ("the per-row
-// stack the game accepts"); MelangeSpice 500 was stated by the operator
-// from the live game (2026-08-20, issue #430) and is NOT independently
-// derivable from anything else in this repo.
+// curation note before adding more), externally re-verified 2026-08-20
+// against dune.gaming.tools's item data feed (the maxStackSize field,
+// after an operator challenge to validate against an external source):
+// MelangeSpice 500 (operator-stated from the live game, 2026-08-20,
+// issue #430) and both lubricants 100 confirmed correct. Oil and
+// SpicedFuelCell were initially seeded at 499 from GENERATOR_TYPES'
+// refill block -- WRONG; that refill value is a policy choice (possibly
+// a deliberate margin below the true cap), not the engine's real limit.
+// The true limit for both is 500, matching addonSeedJob.js's pre-existing
+// value (issue #432 tracked this exact contradiction before it was
+// externally resolved). GENERATOR_TYPES' own 499 refill value is left
+// unchanged here -- it is a separate, already-live system; whether it
+// should be raised to 500 is a live-verified change of its own, not a
+// data-correction one.
 // Case-insensitive (L2 audit, Architect hat): the engine/DB treats
 // template ids case-insensitively (refillBaseGenerators matches fuels with
 // lower()), so a case-variant of a catalogued id must hit the same limit

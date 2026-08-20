@@ -5683,9 +5683,10 @@ test("storage fill-item rejects when slot limit would be exceeded", async () => 
 
 // ---- Per-item stack-limit adherence (issue #430) ----
 // The game engine enforces a per-item max stack size (MelangeSpice 500,
-// Oil/SpicedFuelCell 499, lubricants 100 -- see GENERATOR_TYPES' refill
-// block and docs/console/generator-refill-caps.md, "the per-row stack the
-// game accepts"). Raw give/fill inserts bypass the engine's own stack
+// Oil/SpicedFuelCell 500, lubricants 100 -- externally verified against
+// dune.gaming.tools 2026-08-20; see adminCatalog's resolveItemStackSize
+// comment for the full provenance, including a correction of an initial
+// 499 for Oil/SpicedFuelCell). Raw give/fill inserts bypass the engine's own stack
 // validation (the RCON path's "Verified inventory stack increased"), so
 // these paths must split an oversized quantity across multiple rows using
 // the catalog's stackSize metadata. Items without stackSize data keep the
