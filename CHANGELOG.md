@@ -7,9 +7,28 @@ whatever upstream version is currently checked out, per the versioning
 convention documented in this account's operating docs. Entries are in
 Keep a Changelog style, grouped by upstream base version, newest first.
 
-## Unreleased (on top of upstream v1.3.88)
+## Unreleased (on top of upstream v1.3.95)
 
 ### Changed
+
+- **Give/Fill item paths now adhere to the game's per-item stack limits**
+  (issue #430). The game engine enforces a per-item max stack size (Spice
+  Melange 500, Fuel Cell/Spice-infused Fuel Cell 499, lubricants 100), but
+  every console give/fill path previously wrote the full requested quantity —
+  up to 1,000,000 units — into a single `dune.items` row, bypassing the
+  engine's own stack validation. Stack limits are now curated in
+  `runtime/data/admin-items.json`'s new optional `stackSize` field (exactly
+  like `volume`; seeded with the five values already verified against the
+  live game) and enforced everywhere the console inserts item rows:
+  Storage/Base-container Give and Fill and player Give **split** an oversized
+  quantity across multiple rows of at most one full stack each (bounded by
+  the container's remaining slots and a 50-row per-operation cap, reported
+  via the existing `requested`/`given`/`clamped` response fields plus new
+  `stacks`/`insertedStacks`), while the slot-grid Add Item path **clamps** to
+  one full stack, matching its deliberate one-row-one-slot placement. Items
+  without catalogued stack data keep the previous single-row behavior
+  unchanged. Operators upgrading need no migration; pre-existing over-limit
+  stacks are not rewritten.
 
 - **Tier 3 recovery-code login (BETA, behind `CONSOLE_TOTP_ENABLED`)** (RFC
   `docs/rfc-console-auth.md` §2.3). An operator who has lost their authenticator
