@@ -99,6 +99,38 @@ test("care package config can persist zero auto grant rules", () => {
   }
 });
 
+test("enabled auto grant rules turn on Care Package without turning it off later", () => {
+  const config = tempConfig();
+  try {
+    const base = {
+      activeKitId: "package-a",
+      autoGrantKitId: "package-a",
+      kits: [{ id: "package-a", name: "Package A", xp: 10, items: [] }]
+    };
+    const enabledByRule = saveCarePackageConfig(config, {
+      ...base,
+      enabled: false,
+      autoGrantRules: [{ id: "first-online", enabled: true, kitId: "package-a", grantWhen: "first_online", lastSeenDays: 30 }]
+    });
+    assert.equal(enabledByRule.enabled, true);
+
+    const ruleDisabled = saveCarePackageConfig(config, {
+      ...enabledByRule,
+      autoGrantRules: [{ ...enabledByRule.autoGrantRules[0], enabled: false }]
+    });
+    assert.equal(ruleDisabled.enabled, true);
+
+    const remainsDisabled = saveCarePackageConfig(config, {
+      ...base,
+      enabled: false,
+      autoGrantRules: []
+    });
+    assert.equal(remainsDisabled.enabled, false);
+  } finally {
+    rmSync(config.repoRoot, { recursive: true, force: true });
+  }
+});
+
 test("care package eligibility skips missing action ids, offline players, and already granted players", async () => {
   const config = tempConfig();
   try {

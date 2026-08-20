@@ -5689,6 +5689,21 @@ export async function portalLandsraad(db, playerControllerId) {
   };
 }
 
+function portalHomeSietch(identity) {
+  const dimensionIndex = Number(identity.home_sietch_dimension_index);
+  if (!Number.isInteger(dimensionIndex) || dimensionIndex < 0) return null;
+  const partitionId = Number(identity.home_sietch_partition_id) || 0;
+  const label = String(identity.home_sietch_label || "").trim();
+  const name = label
+    ? (/^sietch\b/i.test(label) ? label : `Sietch ${label}`)
+    : dimensionIndex === 0
+      ? "Sietch Abbir"
+      : dimensionIndex === 1
+        ? "Sietch Alraab"
+        : `Sietch ${dimensionIndex + 1}`;
+  return { name, partitionId, dimensionIndex };
+}
+
 // Build private, read-only snapshots only for Steam identities requested by the
 // directory. Raw platform IDs and local Market Bot seller IDs never leave the
 // battlegroup.
@@ -5705,6 +5720,9 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
       ps.character_name, ps.player_controller_id::text controller_id,
       ps.player_pawn_id::text actor_id, ps.online_status::text online_status,
       coalesce(ps.last_avatar_activity, ps.last_login_time) last_seen,
+      coalesce(ps.home_dimension_index, -1) home_sietch_dimension_index,
+      coalesce(home_sietch.partition_id, 0) home_sietch_partition_id,
+      coalesce(home_sietch.label, '') home_sietch_label,
       coalesce(a.map, '') player_map, coalesce(a.partition_id, 0) player_partition_id,
       ((a.transform).location).x player_x,
       ((a.transform).location).y player_y,
@@ -5712,6 +5730,14 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
     from dune.accounts ac
     join dune.player_state ps on ps.account_id=ac.id
     join dune.actors a on a.id=ps.player_pawn_id
+    left join lateral (
+      select wp.partition_id, wp.label
+      from dune.world_partition wp
+      where lower(wp.map)=lower('Survival_1')
+        and wp.dimension_index=ps.home_dimension_index
+      order by wp.partition_id
+      limit 1
+    ) home_sietch on true
     where lower(coalesce(ac.platform_name,''))='steam'
       and ac.platform_id ~ '^[0-9]{17}$'
       and ps.player_pawn_id is not null
@@ -5777,6 +5803,7 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
           guild: leader.guild || "Unavailable",
           online: String(identity.online_status || "").toLowerCase() === "online",
           lastSeen: identity.last_seen || "",
+          homeSietch: portalHomeSietch(identity),
           map: identity.player_map || "",
           partitionId: Number(identity.player_partition_id) || 0,
           x: Number(identity.player_x) || 0,
@@ -10706,15 +10733,19 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
       select count(*)::int as scanned,
              count(distinct vehicle_id)::int as vehicles,
              count(*) filter (
-               where durability ? 'DecayedMaxDurability'
-                 and (durability->>'DecayedMaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+               where durability ? 'CurrentDurability'
+                 and (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
                  and effective_max > 0
              )::int as comparable,
              count(*) filter (
-               where durability ? 'DecayedMaxDurability'
-                 and (durability->>'DecayedMaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+               where durability ? 'CurrentDurability'
+                 and (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
                  and effective_max is null
-             )::int as missing_maximum
+             )::int as missing_maximum,
+             count(*) filter (
+               where not (durability ? 'CurrentDurability')
+                  or not coalesce((durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$', false)
+             )::int as missing_current
       from owned_modules`, ownerValues);
     const repaired = await tx.query(`
       with ${VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE}, eligible as (
@@ -10741,8 +10772,8 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
           and jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
           and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
           and jsonb_typeof(durability) = 'object'
-          and durability ? 'DecayedMaxDurability'
-          and (durability->>'DecayedMaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+          and durability ? 'CurrentDurability'
+          and (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
           and coalesce(
                 case
                   when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
@@ -10750,7 +10781,7 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
                 end,
                 tm.max_durability
               ) > 0
-          and (durability->>'DecayedMaxDurability')::numeric < (coalesce(
+          and (durability->>'CurrentDurability')::numeric < (coalesce(
                 case
                   when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
                     then nullif((durability->>'MaxDurability')::numeric, 0)
@@ -10759,15 +10790,23 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
               ) * $${thresholdParam})
       )
       update dune.vehicle_modules vm
-      set stats = jsonb_set(
-        jsonb_set(
+      set stats = case
+        when (vm.stats->'FVehicleModuleDurabilityStats'->1->>'DecayedMaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+          then jsonb_set(
+            jsonb_set(
+              vm.stats,
+              '{FVehicleModuleDurabilityStats,1,CurrentDurability}',
+              to_jsonb(eligible.max_durability)
+            ),
+            '{FVehicleModuleDurabilityStats,1,DecayedMaxDurability}',
+            to_jsonb(eligible.max_durability)
+          )
+        else jsonb_set(
           vm.stats,
           '{FVehicleModuleDurabilityStats,1,CurrentDurability}',
           to_jsonb(eligible.max_durability)
-        ),
-        '{FVehicleModuleDurabilityStats,1,DecayedMaxDurability}',
-        to_jsonb(eligible.max_durability)
-      )
+        )
+      end
       from eligible
       where vm.id = eligible.id
       returning vm.id, vm.vehicle_id`, [...ownerValues, thresholdRatio]);
@@ -10780,6 +10819,7 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
       vehicles: Number(scanned.rows[0]?.vehicles || 0),
       comparable: Number(scanned.rows[0]?.comparable || 0),
       missingMaximum: Number(scanned.rows[0]?.missing_maximum || 0),
+      missingCurrent: Number(scanned.rows[0]?.missing_current || 0),
       repaired: repaired.rows.length,
       repairedVehicles
     };
