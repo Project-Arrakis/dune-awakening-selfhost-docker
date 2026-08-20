@@ -14,20 +14,39 @@
 // persist are one uninterruptible critical section. Closes the carried-forward
 // obligations from the recovery-code (#408) and TOTP (#412) module audits.
 //
+// SERIALIZATION IS IN-PROCESS AND PER-FILE. The queue only serializes callers of
+// ONE store instance. Two instances over the same file would each have their own
+// queue and could interleave -- reintroducing the exact double-spend/replay race
+// this module prevents -- so construction is guarded to one live store per
+// resolved path (see the registry below). The design assumes a single console
+// process (RFC: sessions are in-memory); a future multi-process deployment would
+// need file-level locking, not just this queue.
+//
 // On-disk shape (runtime/generated/console-second-factor.json, mode 0600):
 //   { "version": 1,
 //     "totp": { "secret": "<base64 raw bytes>", "lastUsedCounter": <int> },
 //     "recoveryCodes": ["<64-hex digest>", ...] }
 // The TOTP secret is stored as base64 of the RAW bytes and decoded to a Buffer
 // at the verify boundary -- verifyTotpMatch is never handed base32 (#411 audit).
+// The secret is stored reversibly (base64 is encoding, not encryption) in a 0600
+// file: acceptable for this phase because host-filesystem access already
+// transcends console auth (RFC §3.4); encryption-at-rest is deferred to the
+// separate KEK/DEK secrets system (Requirement 27), a deferral recorded in #407.
+//
+// Backup/restore integrity (RFC §2.3.1) is a wired-phase obligation, not the
+// store's: restoring an older file un-consumes recovery codes (and rolls
+// lastUsedCounter back, which self-heals since TOTP validates near wall-clock
+// time), so the wired phase must emit the reset-detected audit event and tell
+// operators to regenerate recovery codes after any restore.
 
-import { readFile, writeFile, rename, rm, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { resolve as resolvePath } from "node:path";
+import { readFile, rm } from "node:fs/promises";
+import { writeJsonAtomicAsync } from "../jsonStore.js";
 import {
   generateRecoveryCodes,
   consumeRecoveryCode as consumeRecoveryCodePure,
 } from "./recoveryCodes.js";
-import { verifyTotpMatch } from "./totp.js";
+import { verifyTotpMatch, TOTP_SECRET_BYTES } from "./totp.js";
 
 export const SECOND_FACTOR_VERSION = 1;
 const NO_COUNTER = -1; // lastUsedCounter sentinel: no TOTP code consumed yet
@@ -43,51 +62,91 @@ export class SecondFactorCorruptError extends Error {
   }
 }
 
+// Thrown when the file's version is NEWER than this binary understands (e.g. a
+// deploy rollback reading a version:2 file). Distinct from corruption because the
+// remedy is the opposite: do NOT delete the file (it is good, live 2FA state) --
+// upgrade the binary. Keeping this separate stops an operator following §3.4's
+// "delete a corrupt file" guidance from destroying working state on a downgrade.
+export class SecondFactorVersionError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "SecondFactorVersionError";
+  }
+}
+
+// One live store per resolved file path (see header). A second construction for
+// the same path throws, turning the "singleton per file" contract into an
+// enforced one rather than a comment a future wiring change could silently break.
+const openPaths = new Set();
+
 export function createSecondFactorStore({ filePath }) {
   if (!filePath) throw new Error("createSecondFactorStore requires a filePath");
+  const key = resolvePath(filePath);
+  if (openPaths.has(key)) {
+    throw new Error(
+      `a second-factor store is already open for ${key}; construct one store per file at boot and share it (concurrent stores would defeat serialization)`
+    );
+  }
+  openPaths.add(key);
+  let closed = false;
 
   // Serializing queue (Promise chain), not a boolean lock: each op appends its
   // read-modify-write to the tail and awaits its own link, so ops run one at a
   // time in arrival order and never interleave across an await. A thrown op does
   // not break the chain for the next caller.
   let tail = Promise.resolve();
-  let tmpSeq = 0;
   function runExclusive(fn) {
+    if (closed) return Promise.reject(new Error("second-factor store is closed"));
     const run = tail.then(fn, fn); // run regardless of the prior op's outcome
     tail = run.then(() => {}, () => {}); // keep the chain alive on rejection
     return run;
   }
 
-  async function writeAtomic(value) {
-    await mkdir(dirname(filePath), { recursive: true });
-    const tmp = `${filePath}.${process.pid}.${tmpSeq++}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-    await rename(tmp, filePath); // atomic replace on the same filesystem
+  function persist(state) {
+    return writeJsonAtomicAsync(filePath, state, 0o600);
   }
 
   // Read + validate the current state. Returns null when genuinely absent
-  // (enrollment should trigger); throws SecondFactorCorruptError when present
-  // but unusable (must fail closed).
+  // (enrollment should trigger); throws SecondFactorCorruptError when present but
+  // unusable, or SecondFactorVersionError when present but newer than supported.
   async function loadRaw() {
     let raw;
     try {
       raw = await readFile(filePath, "utf8");
     } catch (err) {
       if (err.code === "ENOENT") return null;
-      throw new SecondFactorCorruptError(`second-factor store is unreadable: ${err.message}`);
+      throw new SecondFactorCorruptError(`second-factor store is unreadable (${err.code || "read error"})`);
     }
     let parsed;
     try {
       parsed = JSON.parse(raw);
-    } catch (err) {
-      throw new SecondFactorCorruptError(`second-factor store is not valid JSON: ${err.message}`);
+    } catch {
+      // Deliberately does NOT echo the parser message (which can include file
+      // content on some runtimes) -- a corrupt-file error must not leak the seed.
+      throw new SecondFactorCorruptError("second-factor store is not valid JSON");
     }
-    if (!parsed || typeof parsed !== "object" || parsed.version !== SECOND_FACTOR_VERSION) {
-      throw new SecondFactorCorruptError("second-factor store has an unexpected shape/version");
+    if (!parsed || typeof parsed !== "object" || !Number.isInteger(parsed.version)) {
+      throw new SecondFactorCorruptError("second-factor store has an unexpected shape");
+    }
+    if (parsed.version > SECOND_FACTOR_VERSION) {
+      throw new SecondFactorVersionError(
+        `second-factor store is version ${parsed.version}, newer than this console supports (${SECOND_FACTOR_VERSION}); upgrade the console -- do NOT delete this file`
+      );
+    }
+    if (parsed.version !== SECOND_FACTOR_VERSION) {
+      // Older, unknown version -- no migration path defined yet (v1 is the first).
+      throw new SecondFactorCorruptError(`second-factor store has unsupported version ${parsed.version}`);
     }
     const totp = parsed.totp;
     if (!totp || typeof totp.secret !== "string" || !Number.isInteger(totp.lastUsedCounter)) {
       throw new SecondFactorCorruptError("second-factor store TOTP section is malformed");
+    }
+    // The secret must be valid base64 decoding to a plausible key length; a
+    // corrupt-but-string secret would otherwise silently self-lock the operator
+    // (every code invalid) instead of surfacing as corruption.
+    const secretBytes = Buffer.from(totp.secret, "base64");
+    if (secretBytes.length < 10 || secretBytes.length > 64 || secretBytes.toString("base64") !== totp.secret) {
+      throw new SecondFactorCorruptError("second-factor store TOTP secret is not valid base64 of a key");
     }
     if (!Array.isArray(parsed.recoveryCodes) || parsed.recoveryCodes.some((d) => typeof d !== "string")) {
       throw new SecondFactorCorruptError("second-factor store recoveryCodes section is malformed");
@@ -95,32 +154,55 @@ export function createSecondFactorStore({ filePath }) {
     return parsed;
   }
 
+  function assertSecretBytes(secretBytes) {
+    if (!Buffer.isBuffer(secretBytes) && !(secretBytes instanceof Uint8Array)) {
+      throw new TypeError("second-factor store requires raw TOTP secret bytes (not base32)");
+    }
+    if (secretBytes.length !== TOTP_SECRET_BYTES) {
+      throw new RangeError(`TOTP secret must be ${TOTP_SECRET_BYTES} bytes, got ${secretBytes.length}`);
+    }
+  }
+
+  function makeState(secretBytes, digests) {
+    return {
+      version: SECOND_FACTOR_VERSION,
+      totp: { secret: Buffer.from(secretBytes).toString("base64"), lastUsedCounter: NO_COUNTER },
+      recoveryCodes: digests,
+    };
+  }
+
   // ---- public API (all mutating ops serialized through runExclusive) ----
 
-  // True iff a usable TOTP state exists. Throws on corruption (fail closed) --
-  // callers must not treat a throw as "not configured".
+  // True iff a usable TOTP state exists. Throws on corruption/newer-version (fail
+  // closed) -- callers must not treat a throw as "not configured".
   function isConfigured() {
     return runExclusive(async () => (await loadRaw()) !== null);
   }
 
-  // Commit a freshly-enrolled second factor: persist the TOTP secret (raw bytes)
-  // and a fresh recovery-code set. Returns the one-time plaintext recovery codes
-  // for display. Overwrites any prior state (used by enrollment and by rotation).
+  // Atomic first-time enrollment: create the second factor ONLY if none exists,
+  // in one critical section (no check-then-act gap). Returns { ok:true, codes }
+  // with the one-time plaintext recovery codes, or { ok:false, reason:
+  // "already_configured" } without touching existing state. Use this for setup;
+  // use commit() only for a deliberate rotation that overwrites.
+  function enroll(secretBytes, { count } = {}) {
+    return runExclusive(async () => {
+      assertSecretBytes(secretBytes);
+      if ((await loadRaw()) !== null) return { ok: false, reason: "already_configured" };
+      const { codes, digests } = count ? generateRecoveryCodes(count) : generateRecoveryCodes();
+      await persist(makeState(secretBytes, digests));
+      return { ok: true, codes };
+    });
+  }
+
+  // Overwrite the second factor with a fresh TOTP secret + recovery-code set
+  // (deliberate rotation / re-key). Unconditional -- callers wanting
+  // enroll-if-absent must use enroll(). Returns { ok:true, codes }.
   function commit(secretBytes, { count } = {}) {
     return runExclusive(async () => {
-      if (!Buffer.isBuffer(secretBytes) && !(secretBytes instanceof Uint8Array)) {
-        throw new TypeError("commit requires raw TOTP secret bytes");
-      }
+      assertSecretBytes(secretBytes);
       const { codes, digests } = count ? generateRecoveryCodes(count) : generateRecoveryCodes();
-      await writeAtomic({
-        version: SECOND_FACTOR_VERSION,
-        totp: {
-          secret: Buffer.from(secretBytes).toString("base64"),
-          lastUsedCounter: NO_COUNTER,
-        },
-        recoveryCodes: digests,
-      });
-      return { codes };
+      await persist(makeState(secretBytes, digests));
+      return { ok: true, codes };
     });
   }
 
@@ -137,7 +219,7 @@ export function createSecondFactorStore({ filePath }) {
       if (!valid) return { ok: false, reason: "invalid" };
       if (counter <= state.totp.lastUsedCounter) return { ok: false, reason: "replay" };
       state.totp.lastUsedCounter = counter;
-      await writeAtomic(state);
+      await persist(state);
       return { ok: true };
     });
   }
@@ -152,25 +234,27 @@ export function createSecondFactorStore({ filePath }) {
       const result = consumeRecoveryCodePure(code, state.recoveryCodes);
       if (!result.ok) return { ok: false, reason: result.reason };
       state.recoveryCodes = result.remaining;
-      await writeAtomic(state);
+      await persist(state);
       return { ok: true, remaining: result.remaining.length };
     });
   }
 
   // Regenerate the recovery-code set (invalidating all current codes). Returns
-  // the one-time plaintext codes. TOTP secret/counter are untouched.
+  // { ok:true, codes } with the one-time plaintext codes, or
+  // { ok:false, reason:"not_configured" }. TOTP secret/counter are untouched.
   function regenerateRecoveryCodes({ count } = {}) {
     return runExclusive(async () => {
       const state = await loadRaw();
       if (state === null) return { ok: false, reason: "not_configured" };
       const { codes, digests } = count ? generateRecoveryCodes(count) : generateRecoveryCodes();
       state.recoveryCodes = digests;
-      await writeAtomic(state);
+      await persist(state);
       return { ok: true, codes };
     });
   }
 
-  // How many unused recovery codes remain (for the settings UI). Throws on corruption.
+  // How many unused recovery codes remain (for the settings UI). Throws on
+  // corruption/newer-version.
   function remainingRecoveryCodes() {
     return runExclusive(async () => {
       const state = await loadRaw();
@@ -187,13 +271,22 @@ export function createSecondFactorStore({ filePath }) {
     });
   }
 
+  // Release this store's hold on its path (for teardown / tests). After close(),
+  // further ops reject and the path can be re-opened.
+  function close() {
+    closed = true;
+    openPaths.delete(key);
+  }
+
   return {
     isConfigured,
+    enroll,
     commit,
     verifyTotpToken,
     consumeRecoveryCode,
     regenerateRecoveryCodes,
     remainingRecoveryCodes,
     clear,
+    close,
   };
 }

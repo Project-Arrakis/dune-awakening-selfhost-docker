@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, statSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createSecondFactorStore, SecondFactorCorruptError, SECOND_FACTOR_VERSION } from "../src/auth/secondFactorStore.js";
+import { createSecondFactorStore, SecondFactorCorruptError, SecondFactorVersionError, SECOND_FACTOR_VERSION } from "../src/auth/secondFactorStore.js";
 import { totpCode, counterForTime, TOTP_PERIOD_SECONDS } from "../src/auth/totp.js";
 
 const SECRET = Buffer.from("12345678901234567890", "utf8"); // 20 bytes
@@ -172,10 +172,33 @@ test("a corrupt store file throws SecondFactorCorruptError -- never silently 'no
   } finally { cleanup(dir); }
 });
 
-test("a wrong-shape / wrong-version store file also fails closed", async () => {
+test("a wrong-shape or unsupported-old-version store file fails closed as corrupt", async () => {
   const { store, filePath, dir } = freshStore();
   try {
-    writeFileSync(filePath, JSON.stringify({ version: 999, totp: {}, recoveryCodes: [] }), { mode: 0o600 });
+    writeFileSync(filePath, JSON.stringify({ notWhatWeExpect: true }), { mode: 0o600 });
+    await assert.rejects(() => store.isConfigured(), SecondFactorCorruptError);
+    // an older/unknown version (0) is corrupt (no migration path defined)
+    writeFileSync(filePath, JSON.stringify({ version: 0, totp: { secret: "x", lastUsedCounter: 0 }, recoveryCodes: [] }), { mode: 0o600 });
+    await assert.rejects(() => store.isConfigured(), SecondFactorCorruptError);
+  } finally { cleanup(dir); }
+});
+
+test("a NEWER-version file throws SecondFactorVersionError, NOT corrupt (do not delete on downgrade)", async () => {
+  const { store, filePath, dir } = freshStore();
+  try {
+    writeFileSync(filePath, JSON.stringify({ version: SECOND_FACTOR_VERSION + 1, totp: {}, recoveryCodes: [] }), { mode: 0o600 });
+    await assert.rejects(() => store.isConfigured(), SecondFactorVersionError);
+    // distinct from corruption so §3.4's "delete a corrupt file" guidance can't
+    // destroy live-but-newer state on a binary rollback.
+    await assert.rejects(() => store.isConfigured(), (e) => !(e instanceof SecondFactorCorruptError));
+  } finally { cleanup(dir); }
+});
+
+test("a corrupt-but-string TOTP secret (not valid base64 of a key) fails closed as corrupt", async () => {
+  const { store, filePath, dir } = freshStore();
+  try {
+    // valid shape, but the secret string is not base64 of a 10-64 byte key
+    writeFileSync(filePath, JSON.stringify({ version: 1, totp: { secret: "!!!not-base64!!!", lastUsedCounter: -1 }, recoveryCodes: [] }), { mode: 0o600 });
     await assert.rejects(() => store.isConfigured(), SecondFactorCorruptError);
   } finally { cleanup(dir); }
 });
@@ -206,5 +229,91 @@ test("the serialized queue survives a throwing op and keeps serving later ops", 
     await store.clear();
     await store.commit(SECRET);
     assert.equal(await store.isConfigured(), true);
+  } finally { cleanup(dir); }
+});
+
+// ---- enroll (atomic, if-absent) ----
+
+test("enroll creates state only when absent; a second enroll reports already_configured", async () => {
+  const { store, dir } = freshStore();
+  try {
+    const first = await store.enroll(SECRET);
+    assert.equal(first.ok, true);
+    assert.equal(first.codes.length, 10);
+    const second = await store.enroll(Buffer.alloc(20, 9));
+    assert.deepEqual(second, { ok: false, reason: "already_configured" });
+    // the original codes still work -> the second enroll did NOT overwrite
+    const t = totpCode(SECRET, T);
+    assert.deepEqual(await store.verifyTotpToken(t, T), { ok: true });
+    // after clear, enroll works again
+    await store.clear();
+    assert.equal((await store.enroll(SECRET)).ok, true);
+  } finally { cleanup(dir); }
+});
+
+// ---- commit as deliberate rotation (overwrite) ----
+
+test("commit overwrites live state: new secret + codes, counter reset, old codes invalid", async () => {
+  const { store, dir } = freshStore();
+  try {
+    const { codes: oldCodes } = await store.commit(SECRET);
+    // advance the TOTP counter
+    await store.verifyTotpToken(totpCode(SECRET, T), T);
+    // rotate to a different secret
+    const NEW = Buffer.alloc(20, 0x5a);
+    const { codes: newCodes } = await store.commit(NEW);
+    // old recovery codes no longer work; new ones do
+    assert.deepEqual(await store.consumeRecoveryCode(oldCodes[0]), { ok: false, reason: "unknown" });
+    assert.equal((await store.consumeRecoveryCode(newCodes[0])).ok, true);
+    // counter was reset: a code for the NEW secret at the same step T is accepted
+    assert.deepEqual(await store.verifyTotpToken(totpCode(NEW, T), T), { ok: true });
+    // a code for the OLD secret is now invalid
+    assert.deepEqual(await store.verifyTotpToken(totpCode(SECRET, T + TOTP_PERIOD_SECONDS), T + TOTP_PERIOD_SECONDS), { ok: false, reason: "invalid" });
+  } finally { cleanup(dir); }
+});
+
+// ---- input guards ----
+
+test("enroll/commit reject a non-Buffer or wrong-length secret", async () => {
+  const { store, dir } = freshStore();
+  try {
+    await assert.rejects(() => store.commit("GEZDGNBVGY"), TypeError, "base32 string rejected");
+    await assert.rejects(() => store.enroll(Buffer.alloc(8)), RangeError, "short secret rejected");
+    await assert.rejects(() => store.commit(Buffer.alloc(32)), RangeError, "long secret rejected");
+    assert.equal(await store.isConfigured(), false, "no state written by a rejected input");
+  } finally { cleanup(dir); }
+});
+
+// ---- error paths on the read-side ops ----
+
+test("regenerate and remaining report not_configured / throw before commit and on corruption", async () => {
+  const { store, filePath, dir } = freshStore();
+  try {
+    assert.deepEqual(await store.regenerateRecoveryCodes(), { ok: false, reason: "not_configured" });
+    assert.equal(await store.remainingRecoveryCodes(), 0);
+    await store.commit(SECRET);
+    writeFileSync(filePath, "corrupt", { mode: 0o600 });
+    await assert.rejects(() => store.regenerateRecoveryCodes(), SecondFactorCorruptError);
+    await assert.rejects(() => store.remainingRecoveryCodes(), SecondFactorCorruptError);
+  } finally { cleanup(dir); }
+});
+
+// ---- singleton-per-file guard (Architect H1: split-brain prevention) ----
+
+test("a second store for the SAME file throws; close() releases the path", async () => {
+  const { store, filePath, dir } = freshStore();
+  try {
+    assert.throws(() => createSecondFactorStore({ filePath }), /already open/);
+    // a store for a DIFFERENT file is fine
+    const other = join(dir, "other.json");
+    const s2 = createSecondFactorStore({ filePath: other });
+    s2.close();
+    // after close, the original path can be re-opened
+    store.close();
+    const reopened = createSecondFactorStore({ filePath });
+    assert.equal(await reopened.isConfigured(), false);
+    reopened.close();
+    // a closed store rejects further ops
+    await assert.rejects(() => store.isConfigured(), /closed/);
   } finally { cleanup(dir); }
 });
