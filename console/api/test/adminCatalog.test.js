@@ -302,3 +302,41 @@ test("real catalog carries the verified stack sizes for the seeded items", () =>
 test("real catalog carries the verified stack size for T2MuaddibComponent", () => {
   assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "T2MuaddibComponent"), 1);
 });
+
+// Bulk curation (2026-08-20, issue #431): all 91 remaining externally
+// resolvable raw_resource/refined_resource/component items, seeded from
+// dune.gaming.tools's maxStackSize field the same way the original five
+// were. One spot-check per outlier bucket the correlation analysis found
+// (base-inventory.md's curation note), plus one ordinary 500-default item
+// per group -- not all 91, to keep this test a drift sentinel rather than a
+// second copy of the data file.
+test("bulk-curated catalog carries the verified stack size for a representative item per bucket", () => {
+  // 500 default, one per group
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "AzuriteOre"), 500); // raw_resource
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "SteelBar"), 500); // refined_resource
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "FremenComponent1"), 500); // component
+  // Outliers
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "Mouse_Corpse"), 1);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "Corpse"), 1);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "FuelCanister"), 1);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "WindTrapFilter1"), 5);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "FlourSand"), 1000);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "SpiceResidue"), 1000);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "SpiceSand"), 2500);
+});
+
+// Coverage sentinel: every raw_resource/refined_resource/component item
+// must now carry a curated stackSize EXCEPT the two still awaiting live-game
+// verification (issue #441). Catches a future catalog edit silently
+// dropping a curated value, or a new item added to these groups without
+// stackSize curation being remembered.
+test("every fillable-group item has a curated stackSize except the two still under verification", () => {
+  const items = JSON.parse(readFileSync(join(REAL_REPO_ROOT, "runtime/data/admin-items.json"), "utf8"));
+  const stillUnverified = new Set(["T4ShieldWallComponent", "ExperimentalWindTurbineComponent"]);
+  const missing = items
+    .filter((item) => ["raw_resource", "refined_resource", "component"].includes(item.group))
+    .filter((item) => !stillUnverified.has(item.id))
+    .filter((item) => !(Number.isInteger(item.stackSize) && item.stackSize > 0))
+    .map((item) => item.id);
+  assert.deepEqual(missing, []);
+});
