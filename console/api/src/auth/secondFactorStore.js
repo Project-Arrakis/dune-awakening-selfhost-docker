@@ -167,10 +167,16 @@ export function createSecondFactorStore({ filePath }) {
     }
   }
 
-  function makeState(secretBytes, digests) {
+  // initialCounter seeds totp.lastUsedCounter so the enrollment-confirm code's
+  // own step is already "used" -- the RFC (§4) forbids reusing the confirm code
+  // at the forced first login, and seeding the matched step enforces that.
+  function makeState(secretBytes, digests, initialCounter = NO_COUNTER) {
+    if (!Number.isInteger(initialCounter) || initialCounter < NO_COUNTER) {
+      throw new RangeError(`initialCounter must be an integer >= ${NO_COUNTER}, got ${initialCounter}`);
+    }
     return {
       version: SECOND_FACTOR_VERSION,
-      totp: { secret: Buffer.from(secretBytes).toString("base64"), lastUsedCounter: NO_COUNTER },
+      totp: { secret: Buffer.from(secretBytes).toString("base64"), lastUsedCounter: initialCounter },
       recoveryCodes: digests,
     };
   }
@@ -188,12 +194,12 @@ export function createSecondFactorStore({ filePath }) {
   // with the one-time plaintext recovery codes, or { ok:false, reason:
   // "already_configured" } without touching existing state. Use this for setup;
   // use commit() only for a deliberate rotation that overwrites.
-  function enroll(secretBytes, { count } = {}) {
+  function enroll(secretBytes, { count, initialCounter } = {}) {
     return runExclusive(async () => {
       assertSecretBytes(secretBytes);
       if ((await loadRaw()) !== null) return { ok: false, reason: "already_configured" };
       const { codes, digests } = count ? generateRecoveryCodes(count) : generateRecoveryCodes();
-      await persist(makeState(secretBytes, digests));
+      await persist(makeState(secretBytes, digests, initialCounter));
       return { ok: true, codes };
     });
   }
@@ -201,11 +207,11 @@ export function createSecondFactorStore({ filePath }) {
   // Overwrite the second factor with a fresh TOTP secret + recovery-code set
   // (deliberate rotation / re-key). Unconditional -- callers wanting
   // enroll-if-absent must use enroll(). Returns { ok:true, codes }.
-  function commit(secretBytes, { count } = {}) {
+  function commit(secretBytes, { count, initialCounter } = {}) {
     return runExclusive(async () => {
       assertSecretBytes(secretBytes);
       const { codes, digests } = count ? generateRecoveryCodes(count) : generateRecoveryCodes();
-      await persist(makeState(secretBytes, digests));
+      await persist(makeState(secretBytes, digests, initialCounter));
       return { ok: true, codes };
     });
   }

@@ -59,8 +59,8 @@ function api(port, path, { method = "POST", cookie, csrf, body } = {}) {
   return fetch(`http://127.0.0.1:${port}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined, redirect: "manual" });
 }
 
-function codeFor(secretBase32) {
-  return totpCode(base32Decode(secretBase32), Math.floor(Date.now() / 1000));
+function codeFor(secretBase32, offsetSteps = 0) {
+  return totpCode(base32Decode(secretBase32), Math.floor(Date.now() / 1000) + offsetSteps * TOTP_PERIOD_SECONDS);
 }
 
 // Enroll a fresh authenticator and return { secret, recoveryCodes }.
@@ -105,8 +105,9 @@ test("recovery login: password + recovery code -> forced re-setup -> new TOTP + 
     assert.equal(confirmBody.recoveryCodes.length, 10, "a fresh recovery-code set is issued");
     assert.notDeepEqual(confirmBody.recoveryCodes, recoveryCodes, "the old codes are replaced");
 
-    // New TOTP works; old recovery codes are all invalidated.
-    const login = await api(port, "/api/auth/login", { body: { password: PASSWORD, totpCode: codeFor(setup.secret) } });
+    // New TOTP works (next step -- the confirm-time code's step is consumed);
+    // old recovery codes are all invalidated.
+    const login = await api(port, "/api/auth/login", { body: { password: PASSWORD, totpCode: codeFor(setup.secret, 1) } });
     assert.equal(login.status, 200);
     assert.equal((await login.json()).authenticated, true);
     const oldCodeAttempt = await api(port, "/api/auth/login", { body: { password: PASSWORD, recoveryCode: recoveryCodes[5] } });
