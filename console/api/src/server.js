@@ -4931,23 +4931,39 @@ async function handleDiscordTokenExchange(req, res) {
     return json(res, 401, { error: "Discord token validation failed." });
   }
 
+  // Fail closed: this endpoint's only purpose is the Atrium single-auth
+  // flow for one operator-designated Discord account. With no allowlist
+  // configured it must deny, never grant a session to anyone who can
+  // complete a Discord OAuth -- an unset gate previously minted an owner
+  // session for any valid Discord token (issue #403, EoP/CRITICAL).
   const allowedUserId = String(process.env.ATRIUM_ALLOWED_DISCORD_USER_ID || "").trim();
-  if (allowedUserId && identity.userId !== allowedUserId) {
+  if (!allowedUserId) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, req, "auth.oauth.exchange", { ok: false, reason: "exchange_not_configured", userId: identity.userId });
+    return json(res, 403, { error: "The Atrium exchange is not configured on this console. Sign in with Discord or the admin password instead." });
+  }
+  if (identity.userId !== allowedUserId) {
     loginRateLimiter.recordFailure(rateKey);
     audit(config, req, "auth.oauth.exchange", { ok: false, reason: "not_authorized", userId: identity.userId });
     return json(res, 403, { error: "Discord account not authorized for the Atrium exchange." });
   }
 
   loginRateLimiter.recordSuccess(rateKey);
+  // Mint a read-only observer session, not owner. The Atrium page gate
+  // (`/atrium/`) authorizes on session userId, not tier, so observer is
+  // sufficient for the page's purpose; granting owner would hand full
+  // console-admin rights to a page-access credential (issue #403). An
+  // operator who needs console administration uses the password or the
+  // tier-resolving Discord callback flow, not this endpoint.
   const session = auth.makeSession({
-    tier: "owner",
+    tier: "observer",
     userId: identity.userId,
     username: identity.username,
     guildId: config.discordHomeGuildId
   });
 
   setSessionCookie(res, session, config);
-  audit(config, req, "auth.oauth.exchange", { ok: true, userId: identity.userId });
+  audit(config, req, "auth.oauth.exchange", { ok: true, userId: identity.userId, tier: "observer" });
   return json(res, 200, { ok: true, authenticated: true, csrfToken: session.csrf });
 }
 
