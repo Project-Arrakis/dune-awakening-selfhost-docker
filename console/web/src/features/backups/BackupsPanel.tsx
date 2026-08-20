@@ -430,6 +430,9 @@ function backupDisplayTimestampSort(value: string) {
 }
 
 function friendlyBackupType(name: string, line: string) {
+  // Keep in sync with statusParsers.js: market-bot names must not fall
+  // through to the substring-based classifiers below.
+  if (/market[-_ ]?bot/i.test(name) || /market[-_ ]?bot/i.test(line)) return "Market Bot Backup";
   if (/auto|scheduled/i.test(name) || /auto|scheduled/i.test(line)) return "Automatic Backup";
   if (/restore[-_ ]?safety/i.test(name) || /restore[-_ ]?safety/i.test(line)) return "Restore Safety Backup";
   if (/pre[-_ ]?update/i.test(name) || /pre[-_ ]?update/i.test(line)) return "Pre-update Backup";

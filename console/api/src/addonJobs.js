@@ -30,6 +30,7 @@ import {
   writeSeedSchedule,
   persistSeedRunCompletion,
   executeSeedRun,
+  executeUnseedRun,
   normalizeCategoryMultipliers,
   normalizeScheduleSource,
   normalizeAugmentPricing,
@@ -38,8 +39,19 @@ import {
   seedSchedulePath,
   createListedMarketUnitPrice
 } from "./addonSeedJob.js";
+import { readMarketItemOverrides, mergeBuybackSeedPlanWithOverrides, readUnsafeTemplateIds } from "./services/marketItemOverrides.js";
 
-export { CATEGORY_MULTIPLIER_FIELDS, COMMODITY_STACK_CATALOG, COMMODITY_STACK_GROUPS, COMMODITY_STACK_MIN, COMMODITY_STACK_MAX, COMMODITY_STACK_DEFAULT, readSeedSchedule, normalizeSeedSchedule, saveSeedSchedule, normalizeCategoryMultipliers, normalizeCommodityStacks, normalizeScheduleSource, resolveMarketSeedPlanPath, legacySeedSchedulePath, seedSchedulePath, loadMarketSeedPlan, seedRowCategoryMultiplier, seedRowListingCount, createListedMarketUnitPrice, listedMarketUnitPrice, normalizeAugmentPricing } from "./addonSeedJob.js";
+// Applies the same admin-editable per-item overrides (enable/disable, price)
+// used by the reseed job, so a disabled/repriced item's buyback cap agrees
+// with what the bot actually lists rather than the bundled plan alone.
+function loadMergedBuybackSeedPlan(config, addonId) {
+  const plan = loadBuybackSeedPlan(config, addonId);
+  const overrides = readMarketItemOverrides(config.repoRoot);
+  const unsafeIds = readUnsafeTemplateIds(config.repoRoot);
+  return mergeBuybackSeedPlanWithOverrides(plan, overrides, unsafeIds);
+}
+
+export { CATEGORY_MULTIPLIER_FIELDS, COMMODITY_STACK_CATALOG, COMMODITY_STACK_GROUPS, COMMODITY_STACK_MIN, COMMODITY_STACK_MAX, COMMODITY_STACK_DEFAULT, readSeedSchedule, normalizeSeedSchedule, saveSeedSchedule, normalizeCategoryMultipliers, normalizeCommodityStacks, normalizeScheduleSource, resolveMarketSeedPlanPath, legacySeedSchedulePath, seedSchedulePath, loadMarketSeedPlan, seedRowCategoryMultiplier, seedRowListingCount, createListedMarketUnitPrice, listedMarketUnitPrice, normalizeAugmentPricing, buildMarketUnseedSql, buildBotListingCountSql, executeUnseedRun } from "./addonSeedJob.js";
 
 export const EDA_EXCHANGE_BOT_ADDON_ID = "eda-exchange-bot";
 export const ADDON_SCHEDULER_PERMISSION = "scheduler:server";
@@ -280,6 +292,7 @@ const BUYBACK_RESULT_DETAIL_SQL = `CASE
 // and JSON.parse would round order ids / prices past Number.MAX_SAFE_INTEGER.
 const BUYBACK_LOG_JSON_SQL = `jsonb_build_object(
         'order_id', l.order_id::text,
+        'seller_actor_id', l.seller_actor_id::text,
         'template_id', l.template_id,
         'quality_level', l.quality_level::text,
         'item_price', l.item_price::text,
@@ -303,7 +316,7 @@ const BUYBACK_PLAYER_SELL_SQL = "COALESCE(o.is_npc_order, FALSE) = FALSE AND (b.
 // run does, so the "seeded" basis tracks the boosted market. Ready-made
 // augment items also use the reseed schedule's augmentPricing (discounted vs
 // original) so 60% of seeded means 60% of what the bot actually lists.
-export function buybackPlanValuesSql(plan, schedule) {
+export function buybackPlanCeilings(plan, schedule) {
   const { buybackPercent } = schedule;
   const maxPrice = new Map();
   const listedUnitPrice = createListedMarketUnitPrice(plan, schedule);
@@ -321,7 +334,11 @@ export function buybackPlanValuesSql(plan, schedule) {
         maxUnitPrice: Math.max(1, Math.floor((price * buybackPercent + 99) / 100))
       };
     })
-    .sort((a, b) => a.templateId.localeCompare(b.templateId) || a.qualityLevel - b.qualityLevel)
+    .sort((a, b) => a.templateId.localeCompare(b.templateId) || a.qualityLevel - b.qualityLevel);
+}
+
+export function buybackPlanValuesSql(plan, schedule) {
+  return buybackPlanCeilings(plan, schedule)
     .map((entry) => `(${sqlLiteral(entry.templateId)},${entry.qualityLevel},${entry.maxUnitPrice})`)
     .join(",\n");
 }
@@ -447,6 +464,7 @@ WHERE o.exchange_id = ${exchangeId}
 
 function buybackClassifySelectSql() {
   return `o.id::text AS order_id,
+    o.owner_id::text AS seller_actor_id,
     COALESCE(o.template_id, '') AS template_id,
     (${BUYBACK_ORDER_GRADE_SQL})::text AS quality_level,
     COALESCE(o.item_price, 0)::text AS item_price,
@@ -493,10 +511,51 @@ skip_band AS (
       AND (${BUYBACK_ELIGIBLE_PREDICATE}) IS NOT TRUE
     ORDER BY (${BUYBACK_RESULT_CODE_SQL})::int ASC, o.item_price ASC NULLS LAST, o.id ASC
     LIMIT GREATEST(0, ${cap} - (SELECT n FROM n0))
+),
+classified AS (
+    SELECT * FROM eligible_band
+    UNION ALL
+    SELECT * FROM skip_band
 )
-SELECT * FROM eligible_band
-UNION ALL SELECT * FROM skip_band
+SELECT * FROM classified
 ORDER BY result_code::int ASC, item_price::bigint ASC, order_id::bigint ASC;`;
+}
+
+// Anonymous server-level market totals for the player portal. This is the
+// complete sell board, including Market Bot/NPC stock; only the private
+// Buyback evaluation below is restricted to player-owned listings. Keep this
+// query separate from that classification so either result can remain
+// available when the other feature encounters a database compatibility issue.
+export function buildPlayerPortalExchangeOverviewSql(schedule) {
+  const exchangeId = requireScheduleExchangeId(schedule);
+  return `SELECT COALESCE(o.template_id, '') AS template_id,
+       (${BUYBACK_ORDER_GRADE_SQL})::text AS quality_level,
+       COUNT(*)::text AS listing_count,
+       SUM(GREATEST(${BUYBACK_STACK_SQL}, 0))::text AS total_units,
+       MIN(o.item_price)::text AS lowest_price,
+       MAX(o.item_price)::text AS highest_price
+FROM ${BUYBACK_ORDERS_BASE_JOIN_SQL}
+WHERE o.exchange_id = ${exchangeId}
+  AND o.item_price >= 0
+GROUP BY o.template_id, ${BUYBACK_ORDER_GRADE_SQL}
+ORDER BY COUNT(*) DESC, o.template_id ASC, ${BUYBACK_ORDER_GRADE_SQL} ASC;`;
+}
+
+function normalizePlayerPortalExchangeOverview(rows, names) {
+  return (rows || []).map((row) => {
+    const templateId = String(row.template_id ?? row.templateId ?? "");
+    const qualityLevel = String(row.quality_level ?? row.qualityLevel ?? "");
+    return {
+      templateId,
+      displayName: displayNameFor(names, templateId, qualityLevel) || templateId || "Unknown Item",
+      qualityLevel,
+      listingCount: Math.max(0, Number(row.listing_count ?? row.listingCount) || 0),
+      totalUnits: Math.max(0, Number(row.total_units ?? row.totalUnits) || 0),
+      lowestPrice: String(row.lowest_price ?? row.lowestPrice ?? ""),
+      highestPrice: String(row.highest_price ?? row.highestPrice ?? ""),
+      maxUnitPrice: String(row.max_unit_price ?? row.maxUnitPrice ?? "")
+    };
+  });
 }
 
 export function buildBuybackSql(plan, schedule) {
@@ -509,6 +568,7 @@ CREATE TEMP TABLE market_buy_result (purchased INTEGER NOT NULL, total_units BIG
 CREATE TEMP TABLE market_buy_claim_snapshot (order_id BIGINT NOT NULL PRIMARY KEY) ON COMMIT DROP;
 CREATE TEMP TABLE market_buy_log (
     order_id BIGINT NOT NULL PRIMARY KEY,
+    seller_actor_id BIGINT NOT NULL,
     template_id TEXT NOT NULL,
     quality_level BIGINT NOT NULL,
     item_price BIGINT NOT NULL,
@@ -567,16 +627,16 @@ BEGIN
         DELETE FROM dune.dune_exchange_sell_orders WHERE order_id = rec.order_id;
         DELETE FROM dune.dune_exchange_orders WHERE id = rec.order_id;
         IF rec.item_id IS NOT NULL THEN DELETE FROM dune.items WHERE id = rec.item_id; END IF;
-        INSERT INTO market_buy_log (order_id, template_id, quality_level, item_price, stack_size, max_unit_price, result_code, result_label, detail)
-        VALUES (rec.order_id, COALESCE(rec.template_id, ''), rec.quality_level, COALESCE(rec.item_price, 0), rec.actual_stack, rec.max_unit_price, 0, 'success', 'bought stack ' || rec.actual_stack::text || ' at ' || rec.item_price::text || '/unit (cap ' || rec.max_unit_price::text || ')');
+        INSERT INTO market_buy_log (order_id, seller_actor_id, template_id, quality_level, item_price, stack_size, max_unit_price, result_code, result_label, detail)
+        VALUES (rec.order_id, rec.seller_actor_id, COALESCE(rec.template_id, ''), rec.quality_level, COALESCE(rec.item_price, 0), rec.actual_stack, rec.max_unit_price, 0, 'success', 'bought stack ' || rec.actual_stack::text || ' at ' || rec.item_price::text || '/unit (cap ' || rec.max_unit_price::text || ')');
         v_purchased := v_purchased + 1; v_units := v_units + rec.actual_stack; v_solari := v_solari + (rec.item_price * rec.actual_stack);
     END LOOP;
     -- Leftover eligible rows only from the pre-claim snapshot (still on the
     -- board, not purchased). Skip dumps stay on the read-only classify path so
     -- this write transaction does not copy the whole exchange into a temp
     -- table. 0x5 vs 0x6 is applied in JS from purchased-before-this-row.
-    INSERT INTO market_buy_log (order_id, template_id, quality_level, item_price, stack_size, max_unit_price, result_code, result_label, detail)
-    SELECT o.id, COALESCE(o.template_id, ''), ${BUYBACK_ORDER_GRADE_SQL}, COALESCE(o.item_price, 0), ${BUYBACK_STACK_SQL}, p.max_unit_price, 0, 'eligible', ${BUYBACK_RESULT_DETAIL_SQL}
+    INSERT INTO market_buy_log (order_id, seller_actor_id, template_id, quality_level, item_price, stack_size, max_unit_price, result_code, result_label, detail)
+    SELECT o.id, o.owner_id, COALESCE(o.template_id, ''), ${BUYBACK_ORDER_GRADE_SQL}, COALESCE(o.item_price, 0), ${BUYBACK_STACK_SQL}, p.max_unit_price, 0, 'eligible', ${BUYBACK_RESULT_DETAIL_SQL}
     FROM ${BUYBACK_ORDERS_JOIN_SQL}
     WHERE o.exchange_id = ${exchangeId}
       AND ${BUYBACK_SWEEP_PLAYER_SQL}
@@ -612,7 +672,7 @@ export async function probeBuybackEligibility(config, db, overrides = {}) {
     maxBuys: overrides.maxBuys
   }, saved));
   if (!schedule.exchangeId) throw new Error("An exchangeId is required to probe buyback eligibility.");
-  const plan = loadBuybackSeedPlan(config);
+  const plan = loadMergedBuybackSeedPlan(config);
   const result = await runSql(db, buildBuybackEligibilitySql(plan, schedule), false);
   const diagnostics = buybackDiagnostics(result?.rows?.[0]);
   return {
@@ -645,7 +705,7 @@ export async function classifyBuybackListings(config, db, overrides = {}) {
   const saved = readBuybackSchedule(config);
   const schedule = withReseedAugmentPricing(config, normalizeBuybackSchedule(buybackScheduleOverrides(overrides), saved));
   if (!schedule.exchangeId) throw new Error("An exchangeId is required to classify buyback listings.");
-  const plan = loadBuybackSeedPlan(config);
+  const plan = loadMergedBuybackSeedPlan(config);
   const result = await runSql(db, buildBuybackClassifySql(plan, schedule), false);
   const names = seedPlanDisplayNames(plan);
   const entries = applyDryRunMaxBuysRanking(
@@ -682,6 +742,64 @@ export async function refreshBuybackLog(config, db, overrides = {}) {
     });
     return { ...classified, ...readBuybackLogUnlocked(config) };
   });
+}
+
+// Read-only source for the private player portal. Current listings are
+// classified against the operator's effective settings on each requested
+// portal sync, while recent outcomes come from the bounded five-day local log.
+export async function playerPortalMarketSnapshot(config, db) {
+  const schedule = readBuybackSchedule(config);
+  const base = {
+    available: false,
+    configured: Boolean(schedule.exchangeId),
+    enabled: schedule.enabled === true,
+    exchangeId: schedule.exchangeId || "",
+    buybackPercent: schedule.buybackPercent,
+    buybackPriceBasis: schedule.buybackPriceBasis,
+    maxBuys: schedule.maxBuys,
+    evaluatedAt: "",
+    listings: [],
+    batches: readBuybackLog(config).batches,
+    overview: { available: false, evaluatedAt: "", items: [] }
+  };
+  if (!schedule.exchangeId) return base;
+  const effectiveSchedule = withReseedAugmentPricing(config, schedule);
+  let names = new Map();
+  const ceilingByItem = new Map();
+  try {
+    const plan = loadMergedBuybackSeedPlan(config);
+    names = seedPlanDisplayNames(plan);
+    for (const entry of buybackPlanCeilings(plan, effectiveSchedule)) {
+      ceilingByItem.set(`${entry.templateId}\0${entry.qualityLevel}`, String(entry.maxUnitPrice));
+    }
+  } catch {
+    // Display names and configured ceilings are optional for the anonymous
+    // raw Exchange aggregate.
+  }
+  const [overviewResult, classificationResult] = await Promise.allSettled([
+    runSql(db, buildPlayerPortalExchangeOverviewSql(effectiveSchedule), false),
+    classifyBuybackListings(config, db)
+  ]);
+  const now = new Date().toISOString();
+  for (const entry of classificationResult.status === "fulfilled" ? classificationResult.value.entries : []) {
+    if (entry.maxUnitPrice) ceilingByItem.set(`${entry.templateId}\0${entry.qualityLevel}`, String(entry.maxUnitPrice));
+  }
+  const overview = overviewResult.status === "fulfilled"
+    ? {
+        available: true,
+        evaluatedAt: now,
+        items: normalizePlayerPortalExchangeOverview(overviewResult.value?.rows, names).map((item) => ({
+          ...item,
+          maxUnitPrice: ceilingByItem.get(`${item.templateId}\0${item.qualityLevel}`) || ""
+        }))
+      }
+    : base.overview;
+  if (classificationResult.status === "fulfilled") {
+    return { ...base, available: true, evaluatedAt: now, listings: classificationResult.value.entries, overview };
+  }
+  // Portal data is optional. Never interrupt the heartbeat or expose local
+  // database/seed-plan errors in a player-facing snapshot.
+  return { ...base, overview };
 }
 
 function buybackDiagnostics(row = {}) {
@@ -872,8 +990,36 @@ export function createAddonJobScheduler(config, options = {}) {
     }
   }
 
-  async function runNow({ trigger = "manual", job = "buyback" } = {}) {
+  async function runNow({ trigger = "manual", job = "buyback", exchangeId = "" } = {}) {
     if (running) throw new Error("An exchange scheduled job is already in progress.");
+    if (job === "unseed") {
+      // Manual-only clear of the bot's NPC listings (no reseed). Targets the
+      // explicitly requested exchange, falling back to the saved seed
+      // schedule's only when none was requested — a malformed id is an error,
+      // never a silent retarget. Shares the running lock so it can never race
+      // a sweep or reseed, and deliberately leaves the seed schedule
+      // untouched: an enabled reseed schedule will repopulate on its next run.
+      const requested = String(exchangeId ?? "").trim();
+      const targetExchangeId = requested ? normalizeExchangeId(requested) : readSeedSchedule(config).exchangeId;
+      if (requested && !targetExchangeId) throw new Error("Unseed exchangeId must be a positive whole number (PostgreSQL BIGINT).");
+      if (!targetExchangeId) throw new Error("Select an exchange (or save a seed schedule) before removing the bot's NPC listings.");
+      running = true;
+      try {
+        const outcome = await executeUnseedRun(config, getDb(), targetExchangeId, { runDuneImpl, buildDuneArgs, runSql });
+        auditJob("unseed", trigger, {
+          status: outcome.status,
+          removedListings: outcome.removedListings,
+          exchangeId: targetExchangeId,
+          ok: true
+        });
+        return outcome;
+      } catch (error) {
+        auditJob("unseed", trigger, { status: "error", exchangeId: targetExchangeId, ok: false, error: redact(String(error?.message || "Unexpected error.")) });
+        throw error;
+      } finally {
+        running = false;
+      }
+    }
     if (job === "seed") {
       const schedule = readSeedSchedule(config);
       if (!schedule.exchangeId) throw new Error("Save a seed schedule with an exchangeId before running a manual reseed.");
@@ -930,7 +1076,7 @@ export function createAddonJobScheduler(config, options = {}) {
 }
 
 async function executeBuybackRun(config, db, schedule, { runDuneImpl, trigger = "manual" } = {}) {
-  const plan = loadBuybackSeedPlan(config);
+  const plan = loadMergedBuybackSeedPlan(config);
   const names = seedPlanDisplayNames(plan);
   const source = trigger === "schedule" ? "Scheduled buyback" : "Buyback sweep";
   const priced = withReseedAugmentPricing(config, schedule);
@@ -1124,6 +1270,9 @@ export function normalizeBuybackLogEntry(row = {}, names = new Map()) {
   const maxUnitPrice = row.maxUnitPrice ?? row.max_unit_price;
   return {
     orderId: decimalId(row.orderId ?? row.order_id),
+    // Retained only in the server-local log for private portal filtering.
+    // playerPortalSnapshots strips it before uploading any player data.
+    sellerActorId: decimalId(row.sellerActorId ?? row.seller_actor_id),
     templateId,
     displayName,
     qualityLevel,

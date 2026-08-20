@@ -54,6 +54,7 @@ test("baseWater reports unsupported when a required table is missing", async () 
 test("baseWater runs the query and reports supported when every table is present", async () => {
   const db = createDb({
     rows: [
+      { water_type: "largeWindtrap", container_count: 2, water_stored: 1000, blood_stored: null },
       { water_type: "windtrap", container_count: 4, water_stored: 6000, blood_stored: null },
       { water_type: "waterCistern", container_count: 1, water_stored: 1250, blood_stored: null }
     ]
@@ -65,8 +66,12 @@ test("baseWater runs the query and reports supported when every table is present
   assert.equal(result.baseId, BASE_ID);
   assert.ok(mainQuery(db), "the real query must still run on a supported schema");
   // WATER_TYPE_ORDER puts cisterns ahead of windtraps regardless of row order.
-  assert.deepEqual(result.containers.map((entry) => entry.type), ["waterCistern", "windtrap"]);
+  assert.deepEqual(result.containers.map((entry) => entry.type), ["waterCistern", "windtrap", "largeWindtrap"]);
   assert.equal(result.containers[0].stored, 1250);
+  assert.equal(result.containers[2].capacity, 1000);
+  assert.equal(result.containers[2].percent, 100);
+  const [, , buildingTypes] = mainQuery(db).values;
+  assert.ok(buildingTypes.includes("largewindtrap_placeable"));
 });
 
 test("baseWater rejects an invalid base id", async () => {

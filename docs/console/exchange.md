@@ -11,6 +11,11 @@ console's own theme and components.
 
 See [API-REFERENCE.md](API-REFERENCE.md#market-board) for the endpoint contract.
 
+The panel has two tabs: **Exchange** (the read-only board below) and **Bot
+items** (the Market Bot's editable catalog — see [Bot items](#bot-items-catalog-overrides)).
+The filter gear and Market Bot icons are unrelated to the tabs and work the
+same from either one.
+
 ## What it shows
 
 The board is **aggregated by item**: one row per `(template_id, quality_level)`,
@@ -116,6 +121,14 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
   sand), refining ingots, building materials, schematic pattern fragments, and
   iodine pills. Everything else keeps the plan default. Buyback caps are
   per-unit and do not change.
+- **Remove NPC listings** (unseed) empties the bot's own listings on the selected
+  exchange without reseeding — the "clear market" ability the EDA bot had before
+  Market Bot became console-native. The console counts the bot's listings
+  read-only first and only takes a backup + clears when there is something to
+  remove. Player listings and pending seller "Take Solari" payments are never
+  touched (payments are owned by the seller, not the bot). The seed schedule is
+  left as-is, so an **enabled** reseed schedule repopulates the market on its
+  next run; disable the schedule to keep the market unseeded.
 - **Buyback sweeps** buy player sell listings whose per-unit ask is at or below the
   buyback percentage of the chosen **price basis** — seeded NPC price at that
   listing's grade (default), or the live player-market average / lowest ask with
@@ -146,10 +159,58 @@ Exchange Bot addon drives through the scheduler bridge, now first-class):
   `runtime/generated/market-bot/buyback-log.json` (20 most recent, dropped
   after 5 days). The scheduler prunes expired batches at most hourly even when
   buyback is disabled.
+- **Dune Docker Player Portal** evaluates current listings during the existing
+  private portal sync (at most once per 60 seconds) and shows each Steam-linked
+  player their per-unit ask, the server's current maximum, eligibility or exact
+  skip reason, and recent buyback outcomes. Seller actor IDs remain local: the
+  console matches them against the requested Steam-linked character and removes
+  the IDs before uploading the player-scoped snapshot. Other players' listings
+  and raw Steam IDs are never published.
+- **Backup labeling and retention**: every Market Bot database write is preceded
+  by a backup whose filename carries the origin (for example
+  `dune-db-market-bot-buyback-<scope>-<timestamp>.backup`; the sidecar's
+  `backup_origin` records `market-bot-seed`, `market-bot-buyback`, or
+  `market-bot-unseed`), and the Backups page shows them as **Market Bot
+  Backup**. Because schedules mint backups unattended, only the **5 newest**
+  Market Bot backups are kept: after every successful Market Bot backup, older
+  ones are pruned by the sidecar origin — including unlabeled ones written by
+  earlier releases. Manual, automatic, and safety backups are never candidates.
+  Set `DUNE_MARKET_BOT_BACKUP_KEEP` to change the count.
 - **Schedules** run unattended inside the console API process (no browser page needs
   to stay open) and survive restarts. They are console-owned and authorized by RBAC
   at save time. Seed and buyback share one running lock, so they can never write the
   exchange concurrently.
+
+### Bot items (catalog overrides)
+
+The **Bot items** tab, alongside the read-only **Exchange** tab, lets an admin
+edit the Market Bot's sellable catalog per item, beyond the reseed schedule's
+category-wide multipliers and its ~30-item commodity stack allowlist:
+
+- **Overrides** — enable/disable, reprice, or change the listing count of any
+  bundled seed-plan row. A disabled item is dropped from both reseed and
+  buyback entirely, not just hidden in the UI.
+- **New items** — add a template not in the bundled plan at all. New items can
+  only be picked from `runtime/data/admin-items.json` (the same catalog behind
+  Give Items / Care Packages), never typed freely. `buildings`, `contracts`,
+  and `emotes` categories are excluded from the picker. Any template id in the
+  seed plan's own `unsafe_template_ids` list (NPC-only weapon variants,
+  story-unique items, etc., flagged by the upstream generator) is hard-blocked
+  from both the picker and from being edited if it already exists as an
+  override.
+- Overrides are stored console-side in `runtime/generated/market-bot/items.json`
+  (`{ overrides: { <template_id>: { enabled, price, listings } }, newItems: {
+  <template_id>: { name, category, price, listings, ... } } }`) and are never
+  written back into the bundled `market-seed-plan.json`. They are merged in at
+  read time for both the reseed run and the buyback price caps, so a
+  disabled/repriced item's buyback cap always agrees with what the bot
+  actually lists.
+- `GET /api/exchange/market/items` returns the merged, display-ready catalog;
+  `GET /api/exchange/market/items/catalog` backs the "add item" picker;
+  `POST /api/exchange/market/items` saves overrides/new items/removals in one
+  batch. Reads use the `exchange:market` action, saves use
+  `exchange:market-write` — the same actions as the reseed/buyback schedule
+  routes.
 
 ### EDA Exchange Bot retirement
 
