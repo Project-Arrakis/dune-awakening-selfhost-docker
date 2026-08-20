@@ -25,11 +25,40 @@ const HTTP_TIMEOUT_MS = 5_000;
 // ---- Public API ----
 
 export function createHandoff(config) {
-  const { secret, botUrl } = config;
-  if (!secret || !botUrl) {
+  const { secret, botUrl, homeGuildId } = config;
+  // A handoff attempt is signaled by either handoff-specific value being
+  // set (homeGuildId alone is legitimate bootstrap-only config and does
+  // not count as an attempt). A half-configured attempt is refused at
+  // boot rather than treated as live: under deny-on-empty semantics a
+  // live handoff that can never resolve (e.g. missing homeGuildId, see
+  // rfc-console-auth.md §2.1) would deny every Discord login forever,
+  // indistinguishable from a bot outage.
+  if (!secret && !botUrl) {
     return disabledHandoff();
   }
+  const missing = [];
+  if (!secret) missing.push("secret");
+  if (!botUrl) missing.push("botUrl");
+  if (!homeGuildId) missing.push("homeGuildId");
+  if (missing.length > 0) {
+    return { ...disabledHandoff(), misconfigured: true, missing };
+  }
+  // Presence alone is not enough: a typo'd scheme or garbage URL would
+  // boot a live handoff that can never resolve -- the same silent-deny
+  // failure mode the presence check exists to prevent.
+  if (!isUsableHttpUrl(botUrl)) {
+    return { ...disabledHandoff(), misconfigured: true, missing: [], invalid: ["botUrl"] };
+  }
   return liveHandoff(config);
+}
+
+function isUsableHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 // ---- Signature helpers (also exported for tests) ----
@@ -65,16 +94,21 @@ export function isFresh(payload, maxAgeMs = MAX_HANDOFF_AGE_MS, now = Date.now) 
 function disabledHandoff() {
   return {
     enabled: false,
-    async resolveTier() { return ""; }
+    async resolveTier() { return { tier: "", reason: "not_configured" }; }
   };
 }
 
 function liveHandoff(config) {
   const { secret, botUrl, homeGuildId, fetchImpl = globalThis.fetch, now = () => Date.now() } = config;
 
+  // Resolves to { tier, reason }. reason is "" on success; on denial it
+  // names the failure mode for the audit log only (rfc-console-auth.md
+  // §2.1) -- callers must never branch authorization on it. Every
+  // denial path returns tier: "" regardless of reason.
   async function resolveTier({ userId, username = "" } = {}) {
-    if (typeof userId !== "string" || !USER_SNOWFLAKE_RE.test(userId)) return "";
-    if (!homeGuildId) return "";
+    if (typeof userId !== "string" || !USER_SNOWFLAKE_RE.test(userId)) {
+      return { tier: "", reason: "invalid_user_id" };
+    }
 
     let response;
     try {
@@ -88,32 +122,36 @@ function liveHandoff(config) {
       });
       clearTimeout(timer);
     } catch {
-      return "";
+      return { tier: "", reason: "unreachable" };
     }
 
-    if (!response.ok) return "";
+    if (!response.ok) return { tier: "", reason: `http_${response.status}` };
 
     let body;
     try {
       body = await response.json();
     } catch {
-      return "";
+      return { tier: "", reason: "malformed_response" };
     }
 
-    if (!body || typeof body !== "object") return "";
+    if (!body || typeof body !== "object") return { tier: "", reason: "malformed_response" };
     const { signature, ...payload } = body;
 
     const payloadCheck = validatePayload(payload);
-    if (!payloadCheck.ok) return "";
+    if (!payloadCheck.ok) return { tier: "", reason: payloadCheck.reason };
 
-    if (!verifyPayload(payloadCheck.payload, body.signature, secret)) return "";
+    if (!verifyPayload(payloadCheck.payload, body.signature, secret)) {
+      return { tier: "", reason: "bad_signature" };
+    }
 
-    if (!isFresh(payloadCheck.payload, MAX_HANDOFF_AGE_MS)) return "";
+    if (!isFresh(payloadCheck.payload, MAX_HANDOFF_AGE_MS, now)) {
+      return { tier: "", reason: "stale_handoff" };
+    }
 
-    if (payloadCheck.payload.userId !== userId) return "";
-    if (payloadCheck.payload.guildId !== homeGuildId) return "";
+    if (payloadCheck.payload.userId !== userId) return { tier: "", reason: "user_mismatch" };
+    if (payloadCheck.payload.guildId !== homeGuildId) return { tier: "", reason: "guild_mismatch" };
 
-    return payloadCheck.payload.tier;
+    return { tier: payloadCheck.payload.tier, reason: "" };
   }
 
   return { enabled: true, resolveTier };

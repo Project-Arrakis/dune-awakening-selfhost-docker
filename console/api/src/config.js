@@ -248,11 +248,6 @@ export function loadConfig() {
     discordHomeGuildId: oauthHomeGuildId,
     discordBotHandoffSecret: readInlineOrFile(process.env.DISCORD_BOT_HANDOFF_SECRET, resolve(secretsDir, "discord-bot-handoff-secret.txt")),
     discordBotHandoffUrl: (process.env.DISCORD_BOT_HANDOFF_URL || "").replace(/\/+$/, ""),
-    discordHandoffEnabled: Boolean(
-      (process.env.DISCORD_BOT_HANDOFF_SECRET || existsSync(resolve(secretsDir, "discord-bot-handoff-secret.txt"))) &&
-      (process.env.DISCORD_BOT_HANDOFF_URL || "").trim() &&
-      (/^\d{17,19}$/.test(process.env.DISCORD_HOME_GUILD_ID || ""))
-    ),
     generatedDir,
     secretsDir,
     auditLog: resolve(generatedDir, "web-admin-audit.jsonl"),
