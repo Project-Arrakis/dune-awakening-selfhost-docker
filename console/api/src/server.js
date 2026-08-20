@@ -52,7 +52,7 @@ import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobSc
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
 import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
-import { listMarketExchanges, marketBotStatus, saveMarketBuybackSchedule, saveMarketSeedSchedule } from "./services/exchangeMarket.js";
+import { listMarketExchanges, marketBotStatus, saveMarketBuybackSchedule, saveMarketSeedSchedule, decodeSeedPlanCsvUpload, exportMarketSeedPlanCsv, importMarketSeedPlanFromCsv, renameMarketSeedPlan, setActiveMarketSeedPlan } from "./services/exchangeMarket.js";
 import { loadMarketSeedPlan } from "./addonSeedJob.js";
 import { readMarketItemOverrides, saveMarketItemOverrides, readUnsafeTemplateIds, listBotItemCatalogPickerItems, getOverrideRow } from "./services/marketItemOverrides.js";
 import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
@@ -93,6 +93,16 @@ const handoff = createHandoff({
   botUrl: config.discordBotHandoffUrl,
   homeGuildId: config.discordHomeGuildId
 });
+if (handoff.misconfigured) {
+  const detail = [
+    handoff.missing?.length ? `missing: ${handoff.missing.join(", ")}` : "",
+    handoff.invalid?.length ? `invalid: ${handoff.invalid.join(", ")}` : ""
+  ].filter(Boolean).join("; ");
+  console.warn(
+    `Discord bot handoff is half-configured (${detail}) -- Discord sign-in is disabled until this is fixed. ` +
+    "Set all of the handoff values -- runtime/secrets/discord-bot-handoff-secret.txt (or DISCORD_BOT_HANDOFF_SECRET), DISCORD_BOT_HANDOFF_URL (http/https), and the Discord home guild id -- or unset the handoff values entirely. Password sign-in is unaffected."
+  );
+}
 const resolveOAuthTier = createOAuthTierResolver({
   bootstrap: {
     allowOwnerBootstrap: config.discordOAuthAllowOwnerBootstrap,
@@ -533,6 +543,12 @@ async function handleApi(req, res) {
   if (path === "/api/auth/discord/start" && req.method === "GET") {
     if (!config.discordOAuthConfigured) {
       return json(res, 404, { error: "Discord sign-in is not configured for this console. Sign in with the admin password." });
+    }
+    if (handoff.misconfigured) {
+      // Don't send the user on a Discord round-trip the callback will
+      // refuse anyway (half-configured handoff -- see handleOAuthCallback).
+      audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: false, reason: "handoff_misconfigured" });
+      return html(res, 403, oauthErrorPage("Discord sign-in is disabled because this console's bot handoff is only partially configured. If you administer this install, check the console logs for the missing value, then either complete or remove the handoff configuration. Sign in with the admin password in the meantime."));
     }
     const rate = loginRateLimiter.check(loginRateLimitKey(req));
     if (!rate.allowed) {
@@ -1012,6 +1028,10 @@ async function handleApi(req, res) {
   if (path === "/api/exchange/market/buyback/run" && req.method === "POST") return marketRunNowRoute(req, res, "buyback");
   if (path === "/api/exchange/market/seed/run" && req.method === "POST") return marketRunNowRoute(req, res, "seed");
   if (path === "/api/exchange/market/seed/clear" && req.method === "POST") return marketUnseedRoute(req, res);
+  if (path === "/api/exchange/market/plans/csv" && req.method === "GET") return marketSeedPlanCsvDownloadRoute(req, res, url);
+  if (path === "/api/exchange/market/plans/csv" && req.method === "POST") return marketSeedPlanCsvUploadRoute(req, res);
+  if (path === "/api/exchange/market/plans/active" && req.method === "POST") return marketSeedPlanActiveRoute(req, res);
+  if (path === "/api/exchange/market/plans/name" && req.method === "POST") return marketSeedPlanRenameRoute(req, res);
   if (path === "/api/exchange/market/items" && req.method === "GET") return marketItemsListRoute(res);
   if (path === "/api/exchange/market/items" && req.method === "POST") return marketItemsSaveRoute(req, res);
   if (path === "/api/exchange/market/items/catalog" && req.method === "GET") return marketItemsCatalogRoute(res, url);
@@ -1644,6 +1664,72 @@ async function marketUnseedRoute(req, res) {
     return json(res, 200, result);
   } catch (error) {
     audit(config, req, "exchange.market", { op: "seed-clear", ok: false, error: redact(error?.message || "Unexpected error.") });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+function marketSeedPlanCsvDownloadRoute(req, res, url) {
+  try {
+    const result = exportMarketSeedPlanCsv(config, url.searchParams.get("planId") || "");
+    const filename = String(result.filename || "market-seed-plan.csv").replace(/[^A-Za-z0-9._-]/g, "_");
+    res.writeHead(200, withSecurityHeaders({
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="${filename}"`
+    }));
+    res.end(result.csv);
+  } catch (error) {
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketSeedPlanCsvUploadRoute(req, res) {
+  if (!applyMutationRateLimit(req, res, "exchange.market.plans.csv")) return;
+  try {
+    const form = await readMultipartForm(req, Math.min(config.maxUploadBytes, 10 * 1024 * 1024));
+    const file = form.files.find((entry) => entry.fieldName === "file") || form.files[0];
+    if (!file?.content?.length) return json(res, 400, { error: "Select a CSV file to import as a seed plan." });
+    const fileName = basename(file.fileName || "seed-plan.csv");
+    const csvText = decodeSeedPlanCsvUpload(file.content, fileName);
+    const result = importMarketSeedPlanFromCsv(config, {
+      csvText,
+      name: form.fields.name,
+      planId: form.fields.planId,
+      fileName
+    });
+    audit(config, req, "exchange.market", { op: "seed-plan-import", planId: result.id, name: result.name, rows: result.rows, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: "seed-plan-import", ok: false, error: redact(error?.message || "Unexpected error.") });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketSeedPlanActiveRoute(req, res) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "exchange.market.plans.active")) return;
+  try {
+    const plans = setActiveMarketSeedPlan(config, body?.planId);
+    audit(config, req, "exchange.market", { op: "seed-plan-active", planId: plans.activePlanId, ok: true });
+    return json(res, 200, plans);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: "seed-plan-active", ok: false, error: redact(error?.message || "Unexpected error.") });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+async function marketSeedPlanRenameRoute(req, res) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "exchange.market.plans.name")) return;
+  try {
+    const plans = renameMarketSeedPlan(config, body?.planId, body?.name);
+    audit(config, req, "exchange.market", { op: "seed-plan-rename", planId: body?.planId, name: body?.name, ok: true });
+    return json(res, 200, plans);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: "seed-plan-rename", ok: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }
@@ -4915,6 +5001,20 @@ async function handleDiscordTokenExchange(req, res) {
     return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
   }
 
+  // Fail closed: this endpoint's only purpose is the Atrium single-auth
+  // flow for one operator-designated Discord account. With no allowlist
+  // configured it must deny, never grant a session to anyone who can
+  // complete a Discord OAuth -- an unset gate previously minted an owner
+  // session for any valid Discord token (issue #403, EoP/CRITICAL).
+  // Checked before the bearer/identity handling so a disabled endpoint
+  // does zero outbound work to Discord (L2 audit, Network finding).
+  const allowedUserId = String(process.env.ATRIUM_ALLOWED_DISCORD_USER_ID || "").trim();
+  if (!allowedUserId) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, req, "auth.oauth.exchange", { ok: false, reason: "exchange_not_configured" });
+    return json(res, 403, { error: "The Atrium exchange is not configured on this console. Sign in with Discord or the admin password instead." });
+  }
+
   const authHeader = (req.headers.authorization || "").trim();
   if (!authHeader.startsWith("Bearer ") || authHeader.length <= 7) {
     loginRateLimiter.recordFailure(rateKey);
@@ -4931,28 +5031,44 @@ async function handleDiscordTokenExchange(req, res) {
     return json(res, 401, { error: "Discord token validation failed." });
   }
 
-  const allowedUserId = String(process.env.ATRIUM_ALLOWED_DISCORD_USER_ID || "").trim();
-  if (allowedUserId && identity.userId !== allowedUserId) {
+  if (identity.userId !== allowedUserId) {
     loginRateLimiter.recordFailure(rateKey);
     audit(config, req, "auth.oauth.exchange", { ok: false, reason: "not_authorized", userId: identity.userId });
     return json(res, 403, { error: "Discord account not authorized for the Atrium exchange." });
   }
 
   loginRateLimiter.recordSuccess(rateKey);
+  // Mint a read-only observer session, not owner. The Atrium page gate
+  // (`/atrium/`) authorizes on session userId, not tier, so observer is
+  // sufficient for the page's purpose; granting owner would hand full
+  // console-admin rights to a page-access credential (issue #403). An
+  // operator who needs console administration uses the password or the
+  // tier-resolving Discord callback flow, not this endpoint.
   const session = auth.makeSession({
-    tier: "owner",
+    tier: "observer",
     userId: identity.userId,
     username: identity.username,
     guildId: config.discordHomeGuildId
   });
 
   setSessionCookie(res, session, config);
-  audit(config, req, "auth.oauth.exchange", { ok: true, userId: identity.userId });
+  audit(config, req, "auth.oauth.exchange", { ok: true, userId: identity.userId, tier: "observer" });
   return json(res, 200, { ok: true, authenticated: true, csrfToken: session.csrf });
 }
 
 function oauthReturnPage() {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign-in complete</title></head><body><noscript><a href="/">Return to the console</a></noscript><script>window.location.replace("/");</script></body></html>`;
+}
+
+// The callback is reached by a top-level browser navigation (Discord
+// redirects the user's tab here), so failure responses must be readable
+// HTML with a way back to the sign-in screen -- a JSON body would be
+// rendered raw by the browser with no path to the password fallback the
+// message text offers (rfc-console-auth.md §2.1).
+function oauthErrorPage(message) {
+  const safe = String(message)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign-in failed</title></head><body><p>${safe}</p><p><a href="/">Return to the console sign-in</a></p></body></html>`;
 }
 
 // html/sessionCookieValue: local helpers for the OAuth callback route,
@@ -4982,18 +5098,31 @@ async function handleOAuthCallback(req, res) {
   const rateKey = loginRateLimitKey(req);
   const rate = loginRateLimiter.check(rateKey);
   if (!rate.allowed) {
-    return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
+    return html(res, 429, oauthErrorPage("Too many sign-in attempts. Please wait a few minutes, then try again."), { "retry-after": String(rate.retryAfterSeconds) });
   }
   const consumed = oauthPendingStates.consume(state, cookieState);
-  if (!config.discordOAuthAllowOwnerBootstrap) {
+  // A half-configured handoff is refused outright: the operator
+  // demonstrably intended handoff-authoritative auth, so silently
+  // degrading to the static bootstrap allowlist would reopen the exact
+  // stale-allowlist fail-open this change removes (L2 audit, Architect
+  // finding 2 on #401). Password sign-in is unaffected.
+  if (handoff.misconfigured) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "handoff_misconfigured" });
+    return html(res, 403, oauthErrorPage("Discord sign-in is disabled because this console's bot handoff is only partially configured. If you administer this install, check the console logs for the missing value, then either complete or remove the handoff configuration. Sign in with the admin password in the meantime."));
+  }
+  // With a configured handoff, the bot is the tier source and owner
+  // bootstrap is not required. Without one, bootstrap is the only
+  // possible tier source, so its being disabled is an early deny.
+  if (!handoff.enabled && !config.discordOAuthAllowOwnerBootstrap) {
     loginRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "bootstrap_disabled" });
-    return json(res, 403, { error: "Discord sign-in is enabled but owner bootstrap is disabled. Sign in with the admin password." });
+    return html(res, 403, oauthErrorPage("Discord sign-in is enabled but owner bootstrap is disabled. Sign in with the admin password."));
   }
   if (!consumed.ok) {
     loginRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: consumed.reason });
-    return json(res, 400, { error: "Discord sign-in could not be completed. The request was invalid or expired — start again." });
+    return html(res, 400, oauthErrorPage("Discord sign-in could not be completed. The request was invalid or expired — return to the console and start again."));
   }
   let token;
   let identity;
@@ -5011,17 +5140,27 @@ async function handleOAuthCallback(req, res) {
     loginRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: error.code || "oauth_error" });
     const status = error.statusCode && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 400;
-    return json(res, status, { error: "Discord sign-in failed. Please try again, or sign in with your password." });
+    return html(res, status, oauthErrorPage("Discord sign-in failed. Please try again, or sign in with the admin password."));
   }
-  const tier = await resolveOAuthTier(identity);
-  if (!tier) {
+  const resolved = await resolveOAuthTier(identity);
+  if (!resolved.tier) {
     loginRateLimiter.recordFailure(rateKey);
+    if (resolved.source === "handoff") {
+      // The reason code is recorded for forensics/debugging only; the
+      // response deliberately does not distinguish outage from an
+      // explicit deny, but does point an operator at the real
+      // remediation (rfc-console-auth.md §2.1). The denied userId is a
+      // public Discord snowflake, included so a bad_signature or
+      // user_mismatch row identifies the subject, not just a remote IP.
+      audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.handoff-denied", { ok: false, reason: resolved.reason, userId: identity.userId });
+      return html(res, 403, oauthErrorPage("The console could not verify your current Discord role, so sign-in was denied. If you administer this install, check that the companion bot is running and reachable, then try again in a few minutes — or sign in with the admin password. If you're a player, contact this server's administrator for console access."));
+    }
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "not_authorized" });
-    return json(res, 403, { error: "Discord sign-in succeeded, but this account is not authorized to sign in to this console." });
+    return html(res, 403, oauthErrorPage("Discord sign-in succeeded, but this account is not authorized to sign in to this console. If you believe it should be, contact this server's administrator."));
   }
-  const session = auth.makeSession({ tier, userId: identity.userId, username: identity.username, guildId: config.discordHomeGuildId });
+  const session = auth.makeSession({ tier: resolved.tier, userId: identity.userId, username: identity.username, guildId: config.discordHomeGuildId });
   res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie(config.secureCookies)]);
-  audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier });
+  audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: resolved.tier });
   return html(res, 200, oauthReturnPage());
 }
 

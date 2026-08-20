@@ -11,6 +11,36 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Changed
 
+- **Discord OAuth tier resolution is now fail-closed when the bot handoff is
+  configured** (issue #401, RFC `docs/rfc-console-auth.md` §2.1). Three
+  operator-visible behavior changes for handoff-configured installs:
+  (1) a handoff failure of any kind (bot down, bad signature, stale payload)
+  now denies the sign-in instead of silently falling through to the static
+  `DISCORD_OAUTH_OWNER_ALLOWLIST` -- the fail-open privilege escalation the
+  RFC's §1.1 describes; denials are recorded as `auth.handoff-denied` with a
+  reason code and the denied user's id in the audit log.
+  (2) `DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP` is no longer required to complete
+  Discord sign-in when the handoff is configured -- the bot is the tier
+  source; prune stale allowlist entries (see `.env.example`).
+  (3) a half-configured handoff (some but not all of secret/URL/guild set,
+  or a non-http(s) URL) disables Discord sign-in with a boot warning naming
+  the problem, instead of silently behaving as if no handoff existed.
+  Password sign-in and installs without any handoff config are unaffected.
+  OAuth callback failures now render an HTML error page with a link back to
+  the sign-in screen instead of raw JSON.
+- **Security (CRITICAL, issue #403): `POST /api/auth/discord/exchange` no longer
+  mints an owner session for any valid Discord token.** The endpoint (the
+  fork-only Atrium single-auth flow) previously granted a full **owner** console
+  session to anyone who could complete a Discord OAuth whenever the optional
+  `ATRIUM_ALLOWED_DISCORD_USER_ID` gate was unset -- an unauthenticated-to-owner
+  privilege escalation. It now (1) **fails closed** when that gate is unset
+  (denies rather than granting a session) and (2) mints a read-only **observer**
+  session instead of owner, even for the configured user -- the Atrium page gate
+  authorizes on user id, not tier, so observer suffices. Operators using the
+  Atrium flow must set `ATRIUM_ALLOWED_DISCORD_USER_ID`; console administration
+  uses the password or Discord sign-in flows, not this endpoint. See
+  `.env.example`.
+
 - Merged `upstream/main` into this fork's `main` (issue #279), resolving 198
   commits of divergence and 23 real file conflicts (auth/policy/RBAC/Discord
   adapter surface). Notable outcomes:
