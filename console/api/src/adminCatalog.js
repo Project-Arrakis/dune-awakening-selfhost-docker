@@ -70,18 +70,26 @@ export function resolveItemVolume(repoRoot, templateId) {
   return Number(match?.volume) || 0;
 }
 
-// Per-item max stack size the game engine itself enforces (e.g. MelangeSpice
-// 500, Oil/SpicedFuelCell 499, lubricants 100 -- the same values
-// GENERATOR_TYPES' refill block and docs/console/generator-refill-caps.md
-// already document as "the per-row stack the game accepts"). Curated
+// Per-item max stack size the game engine itself enforces. Curated
 // incrementally in admin-items.json exactly like `volume`: 0 means "no
 // catalogued stack data", which downstream give/fill treats as "insert a
-// single row", the pre-existing behavior.
+// single row", the pre-existing behavior. Every curated value needs a
+// stated, verified source (see duneDb's matching comment and
+// docs/console/base-inventory.md's curation note) -- a wrong value silently
+// mis-splits or over-clamps every grant of that item.
 export function resolveItemStackSize(repoRoot, templateId) {
   const items = JSON.parse(readFileSync(resolve(repoRoot, "runtime/data/admin-items.json"), "utf8"));
   const match = items.find((item) => String(item.id || "") === templateId);
-  const value = Number(match?.stackSize);
-  return Number.isInteger(value) && value > 0 ? value : 0;
+  return isValidStackSize(match?.stackSize) ? match.stackSize : 0;
+}
+
+// Only a real positive-integer number counts as curated stack data --
+// strings, booleans, floats, and negatives are rejected outright rather
+// than coerced (true would otherwise coerce to a max stack of 1 and shred
+// every give of that item into 1-unit rows). duneDb's adminItemMetadata
+// applies the identical rule; keep the two in sync.
+function isValidStackSize(value) {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
 export function listCatalogItems(repoRoot, { q = "", limit = 500 } = {}) {
@@ -204,7 +212,7 @@ function normalizeItem(item, repoRoot = "") {
   };
   if (item.group) result.group = String(item.group);
   if (item.volume !== undefined && item.volume !== null) result.volume = Number(item.volume);
-  if (Number.isInteger(Number(item.stackSize)) && Number(item.stackSize) > 0) result.stackSize = Number(item.stackSize);
+  if (isValidStackSize(item.stackSize)) result.stackSize = item.stackSize;
   return result;
 }
 

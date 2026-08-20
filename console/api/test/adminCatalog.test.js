@@ -247,16 +247,39 @@ test("resolveItemStackSize returns the catalogued per-item max stack size", () =
   assert.equal(resolveItemStackSize(root, "NonExistent"), 0);
 });
 
+// L2 audit (Security hat): only a real positive-integer number counts as
+// curated stack data -- a string "500", a boolean, a float, or a negative
+// value must be rejected outright rather than silently coerced (true would
+// otherwise coerce to a max stack of 1 and shred every give into 1-unit
+// rows).
+test("resolveItemStackSize rejects non-integer-number stackSize values instead of coercing them", () => {
+  const root = mkdtempSync(join(tmpdir(), "web-admin-catalog-strict-"));
+  mkdirSync(join(root, "runtime/data"), { recursive: true });
+  writeFileSync(join(root, "runtime/data/admin-items.json"), JSON.stringify([
+    { id: "StringStack", name: "String Stack", category: "resources", source: "Resources", stackSize: "500" },
+    { id: "BoolStack", name: "Bool Stack", category: "resources", source: "Resources", stackSize: true },
+    { id: "FloatStack", name: "Float Stack", category: "resources", source: "Resources", stackSize: 0.5 },
+    { id: "NegativeStack", name: "Negative Stack", category: "resources", source: "Resources", stackSize: -5 }
+  ]));
+  assert.equal(resolveItemStackSize(root, "StringStack"), 0);
+  assert.equal(resolveItemStackSize(root, "BoolStack"), 0);
+  assert.equal(resolveItemStackSize(root, "FloatStack"), 0);
+  assert.equal(resolveItemStackSize(root, "NegativeStack"), 0);
+  assert.equal(resolveCatalogItem(root, { itemId: "StringStack" }).stackSize, undefined);
+  assert.equal(resolveCatalogItem(root, { itemId: "BoolStack" }).stackSize, undefined);
+});
+
 test("resolveCatalogItem passes stackSize through for catalogued items", () => {
   const root = fixtureRepo();
   assert.equal(resolveCatalogItem(root, { itemId: "SteelBar" }).stackSize, 500);
   assert.equal(resolveCatalogItem(root, { itemId: "PlantFiber" }).stackSize, undefined);
 });
 
-// The seeded values are the ones already verified against the live game
-// elsewhere in this repo: MelangeSpice 500 (operator-verified), Oil and
-// SpicedFuelCell 499 and the two lubricants 100 (GENERATOR_TYPES' refill
-// block + docs/console/generator-refill-caps.md).
+// Seeded-value provenance: Oil and SpicedFuelCell 499 and the two
+// lubricants 100 match GENERATOR_TYPES' refill block +
+// docs/console/generator-refill-caps.md; MelangeSpice 500 was stated by the
+// operator from the live game (2026-08-20, issue #430) and has no other
+// in-repo source.
 test("real catalog carries the verified stack sizes for the seeded items", () => {
   assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "MelangeSpice"), 500);
   assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "Oil"), 499);

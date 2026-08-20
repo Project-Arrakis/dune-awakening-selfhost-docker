@@ -4374,12 +4374,19 @@ async function giveItemsRoute(req, res, path) {
     }
   }
   const ok = results.every((result) => result.ok);
+  // A clamped grant (per-item stack limit x free-slot budget, issue #430)
+  // must reach the operator: the Players UI shows this route's top-level
+  // message when present, and would otherwise report unconditional success
+  // for a partial delivery (L2 audit, Architect hat H-1).
+  const clampMessages = results
+    .map((entry) => (entry?.result?.clamped && entry?.result?.message ? String(entry.result.message) : null))
+    .filter(Boolean);
   audit(config, req, "players.give-items", { playerId, count: body.items.length, ok, results });
   if (body.historyScope === "admin-tools") {
     const friendly = body.historyFriendly || "Grant Items";
     recordAdminHistory(config, { command: "web-hydrate-all", target: "all", friendly, path: "players.give-items", result: ok ? "published" : "failed", message: `${friendly} for ${playerId}` });
   }
-  return json(res, ok ? 200 : 207, { ok, results });
+  return json(res, ok ? 200 : 207, { ok, results, message: clampMessages.length > 0 ? clampMessages.join(" ") : undefined });
 }
 
 async function giveSingleItemRoute(req, res, path, operation) {

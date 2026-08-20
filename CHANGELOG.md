@@ -18,15 +18,28 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   up to 1,000,000 units — into a single `dune.items` row, bypassing the
   engine's own stack validation. Stack limits are now curated in
   `runtime/data/admin-items.json`'s new optional `stackSize` field (exactly
-  like `volume`; seeded with the five values already verified against the
-  live game) and enforced everywhere the console inserts item rows:
-  Storage/Base-container Give and Fill and player Give **split** an oversized
-  quantity across multiple rows of at most one full stack each (bounded by
-  the container's remaining slots and a 50-row per-operation cap, reported
-  via the existing `requested`/`given`/`clamped` response fields plus new
-  `stacks`/`insertedStacks`), while the slot-grid Add Item path **clamps** to
-  one full stack, matching its deliberate one-row-one-slot placement. Items
-  without catalogued stack data keep the previous single-row behavior
+  like `volume`; seeding provenance: the four fuel/lubricant values match
+  the generator-refill table that has been feeding real accepted refills,
+  and Spice Melange 500 was operator-stated from the live game — see
+  `docs/console/base-inventory.md`'s curation note before adding more) and
+  enforced everywhere the console inserts item rows, case-insensitively:
+  Storage/Base-container Give and Fill and player Give **split** an
+  oversized quantity across multiple rows of at most one full stack each
+  (bounded by the container's remaining slots and a 50-row cap shared by
+  the whole operation, including across a Give Multiple batch), while the
+  slot-grid Add Item path **clamps** to one full stack, matching its
+  deliberate one-row-one-slot placement. Responses report the outcome
+  honestly: `requested`/`given`/`clamped` plus new `stacks`,
+  `insertedStacks`, `clampReason` (`volume`/`slots` = real capacity, final;
+  `stack-rows` = only the per-operation cap, repeat the action to add more)
+  and a human-readable `message`; the player-give path, care packages, and
+  the batch stop reason all state a shortfall instead of implying full
+  delivery, and fill-to-capacity claims "as much as fit" only when real
+  capacity — not the row cap — was the boundary. Split rows on slot-capped
+  inventories claim in-range free slots (Fill and player Give previously
+  used `max(position_index)+1`, which after any high-end Give would have
+  landed rows beyond `max_item_count`, outside the engine's slot grid).
+  Items without catalogued stack data keep the previous single-row behavior
   unchanged. Operators upgrading need no migration; pre-existing over-limit
   stacks are not rewritten.
 
