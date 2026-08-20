@@ -6987,44 +6987,6 @@ export async function playerItemAugmentState(db, playerId, itemId, expectedAugme
 // Falls back to the pre-existing lowest-next-free behavior when
 // max_item_count is 0 (unknown/uncapped on this schema), since there is
 // no known high end to start from in that case.
-async function nextHighPositionIndex(tx, inventoryId, maxItemCount) {
-  if (!maxItemCount || maxItemCount <= 0) {
-    const fallback = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventoryId]);
-    return Number(fallback.rows[0]?.position_index || 0);
-  }
-  const result = await tx.query(`
-    select gs.idx as position_index
-    from generate_series($2::int - 1, 0, -1) as gs(idx)
-    where not exists (
-      select 1 from dune.items i where i.inventory_id = $1 and i.position_index = gs.idx
-    )
-    order by gs.idx desc
-    limit 1`, [inventoryId, maxItemCount]);
-  if (result.rows[0]) return Number(result.rows[0].position_index);
-  // Every slot below max_item_count is already claimed by some
-  // position_index (including possibly out-of-range or duplicate values --
-  // see "position_index is not trustworthy" in the docs) -- fall back to
-  // the lowest-next-free convention rather than inserting with no index at
-  // all. The slot-count check above already rejects a genuinely full
-  // container before this is ever reached in the normal case, so this
-  // branch should be unreachable given that precondition holds -- but it is
-  // not this function's own precondition to enforce, so it does not trust
-  // the caller to have checked it. Found during code review (2026-08-19):
-  // this fallback previously returned max(position_index)+1 unconditionally,
-  // which -- if a caller ever reaches this function with corrupted
-  // position_index data AND a stale/wrong currentCount (the one scenario
-  // that breaks the pigeonhole argument the "unreachable in the normal
-  // case" claim above relies on) -- could silently return an index at or
-  // beyond max_item_count instead of failing loudly, matching this file's
-  // established "throw rather than guess" precedent
-  // (resolveOwnedStorageContainer's own multi-inventory guard).
-  const fallback = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventoryId]);
-  const fallbackIndex = Number(fallback.rows[0]?.position_index || 0);
-  if (fallbackIndex >= maxItemCount) {
-    throw new Error("Could not determine a safe item slot for this container -- its item slot indexes appear inconsistent. Please report this so it can be investigated.");
-  }
-  return fallbackIndex;
-}
 
 // Per-item max stack size adherence (issue #430). The game engine enforces a
 // per-item stack limit, but raw give/fill inserts bypass the engine's own
@@ -7061,13 +7023,15 @@ function maxStackSizeForTemplate(templateId) {
   return stackSizeByLowerTemplateId.get(key.toLowerCase()) || 0;
 }
 
-// Bounds how many stack rows one give/fill operation may insert, matching
-// giveMultipleItemsToBaseContainer's existing 50-distinct-items batch bound:
-// without this, fill-to-capacity on an uncapped inventory (or a give of the
-// full 1,000,000 quantity ceiling) for a 500-per-stack item would insert
-// thousands of rows in one transaction. An operator who genuinely wants more
-// than 50 full stacks repeats the action.
-const MAX_STACK_ROWS_PER_OPERATION = 50;
+// Runaway backstop, NOT an operational limit (revised per explicit operator
+// direction, 2026-08-20): a give/fill computes full stacks plus one final
+// remainder stack and completes in ONE action, bounded only by the
+// container's real capacity (slots/volume) -- stopping partway and telling
+// the operator to rerun is bad UX. This backstop exists solely to protect
+// the database from a pathological transaction (e.g. 1,000,000 units of a
+// 1-per-stack item = a million-row insert); realistic operations never
+// reach it (1,000 rows = 500,000 units of a 500-per-stack item).
+const MAX_STACK_ROWS_PER_OPERATION = 1000;
 
 // Splits a total quantity into per-row stack sizes of at most maxStack each,
 // bounded by the container's remaining slots (Infinity when uncapped) and
@@ -7096,16 +7060,20 @@ function planStackRows(totalQuantity, maxStack, slotsAvailable, rowCap = MAX_STA
   return { stacks, total, clamped, clampReason: clamped ? (slotBudget < rowCap ? "slots" : "stack-rows") : null };
 }
 
-// L2 audit H-1 fix (DBA hat): Give parks rows at the TOP of the slot range
-// (nextHighPositionIndex, the 2026-08-19 collision mitigation), so the old
-// Fill/player convention of max(position_index)+1 would start AT
-// max_item_count after any Give -- outside the engine's slot grid -- and a
-// split amplified that to up to 50 out-of-range rows per operation. For a
-// slot-capped inventory this claimer reads the occupied set once (the same
-// query and pigeonhole guard the batch path's claimPositionIndex uses) and
-// hands out the LOWEST free in-range slots; an uncapped inventory keeps the
-// pre-existing max+1 convention, which cannot go out of range.
-async function createSequentialPositionClaimer(tx, inventoryId, maxItemCount) {
+// L2 audit H-1 fix (DBA hat), generalized: for a slot-capped inventory,
+// every split path claims positions from a ONE-TIME occupied-set read (the
+// same query and pigeonhole guard the batch path's claimPositionIndex uses)
+// -- Give claims the HIGHEST free in-range slots (the 2026-08-19 collision
+// mitigation: the engine claims low slots at restart), Fill and player Give
+// claim the LOWEST -- so no path can ever write a row at or beyond
+// max_item_count (the old Fill/player max(position_index)+1 convention
+// started AT max_item_count after any high-end Give, and a split amplified
+// that to an entire operation's rows landing outside the engine's slot
+// grid). The single read also replaces Give's previous
+// per-row generate_series re-query (2 round trips per stack row under the
+// inventory lock). An uncapped inventory keeps the pre-existing max+1
+// convention for all paths, which cannot go out of range.
+async function createStackPositionClaimer(tx, inventoryId, maxItemCount, direction) {
   if (!maxItemCount || maxItemCount <= 0) {
     const fallback = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventoryId]);
     let next = Number(fallback.rows[0]?.position_index || 0);
@@ -7117,11 +7085,12 @@ async function createSequentialPositionClaimer(tx, inventoryId, maxItemCount) {
     const idx = Number(row.position_index);
     if (Number.isFinite(idx)) occupied.add(idx);
   }
-  let cursor = 0;
+  const step = direction === "high" ? -1 : 1;
+  let cursor = direction === "high" ? maxItemCount - 1 : 0;
   return () => {
-    while (cursor < maxItemCount) {
+    while (cursor >= 0 && cursor < maxItemCount) {
       const idx = cursor;
-      cursor += 1;
+      cursor += step;
       if (!occupied.has(idx)) return idx;
     }
     throw new Error("Could not determine a safe item slot for this container -- its item slot indexes appear inconsistent. Please report this so it can be investigated.");
@@ -7144,7 +7113,7 @@ function stackOutcomeMessage(verb, templateId, plan, requestedQuantity, clamped,
 
 // Shared insert loop for the four container give/fill paths: one dune.items
 // row per planned stack, each claiming its own position index via the
-// caller's own convention (nextHighPositionIndex for Give, sequential
+// caller's own convention (createStackPositionClaimer "high" for Give,
 // lowest-next-free for Fill, claimPositionIndex for the batch path). Returns
 // the inserted rows in insertion order.
 async function insertPlannedStackRows(tx, itemColumns, { inventoryId, templateId, qualityLevel, stats, itemVolumeNum, stacks, claimPosition }) {
@@ -7348,7 +7317,7 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
       stats,
       itemVolumeNum,
       stacks: plan.stacks,
-      claimPosition: () => nextHighPositionIndex(tx, inventory.id, inventory.max_item_count)
+      claimPosition: await createStackPositionClaimer(tx, inventory.id, inventory.max_item_count, "high")
     });
     return {
       ok: true,
@@ -7445,7 +7414,7 @@ export async function giveItemToBaseContainer(db, baseId, placeableId, { itemNam
       stats,
       itemVolumeNum,
       stacks: plan.stacks,
-      claimPosition: () => nextHighPositionIndex(tx, inventory.id, inventory.max_item_count)
+      claimPosition: await createStackPositionClaimer(tx, inventory.id, inventory.max_item_count, "high")
     });
     return {
       ok: true,
@@ -7559,7 +7528,7 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
       clamped = true;
       clampReason = plan.clampReason;
     }
-    const claimPosition = await createSequentialPositionClaimer(tx, inventory.id, inventory.max_item_count);
+    const claimPosition = await createStackPositionClaimer(tx, inventory.id, inventory.max_item_count, "low");
     const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
     const rollPayloads = await loadAugmentRollPayloads(
       tx,
@@ -7667,7 +7636,7 @@ export async function fillItemToBaseContainer(db, repoRoot, baseId, placeableId,
       clamped = true;
       clampReason = plan.clampReason;
     }
-    const claimPosition = await createSequentialPositionClaimer(tx, inventory.id, inventory.max_item_count);
+    const claimPosition = await createStackPositionClaimer(tx, inventory.id, inventory.max_item_count, "low");
     const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
     const rollPayloads = await loadAugmentRollPayloads(
       tx,
@@ -7803,7 +7772,7 @@ export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, 
       currentVolume = volume.currentVolume;
     }
 
-    // Occupied position_index state, mirroring nextHighPositionIndex's own
+    // Occupied position_index state, mirroring createStackPositionClaimer's own
     // two branches (see its comment for the collision-mitigation rationale)
     // so this batch's own claims stay consistent with a single-item Give
     // without re-running that function's query once per item.
@@ -7831,7 +7800,7 @@ export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, 
           return idx;
         }
       }
-      // Mirrors nextHighPositionIndex's own "throw rather than guess"
+      // Mirrors createStackPositionClaimer's own "throw rather than guess"
       // fallback guard (2026-08-19 code-review fix) instead of silently
       // returning an index at or beyond max_item_count.
       throw new Error("Could not determine a safe item slot for this container -- its item slot indexes appear inconsistent. Please report this so it can be investigated.");
@@ -7923,7 +7892,7 @@ export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, 
       // CORRECTED 2026-08-19: volume_override must be the item's PER-UNIT
       // volume, not entry.itemVolumeNum * stackSize -- see
       // giveItemToBaseContainer's matching comment for the full explanation.
-      // High-end position mitigation -- see nextHighPositionIndex's own
+      // High-end position mitigation -- see createStackPositionClaimer's own
       // comment (also used by giveItemToBaseContainer) for why Give, unlike
       // Fill, picks the highest unused slot instead of the lowest.
       const insertedRows = await insertPlannedStackRows(tx, itemColumns, {
@@ -10425,7 +10394,7 @@ export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "
     const plan = planStackRows(stackSize, maxStackSizeForTemplate(resolvedTemplate), slotsAvailable);
     // In-range position claiming, same H-1 fix as the fill paths -- see
     // createSequentialPositionClaimer's comment.
-    const claimPosition = await createSequentialPositionClaimer(tx, inv.id, inv.max_item_count);
+    const claimPosition = await createStackPositionClaimer(tx, inv.id, inv.max_item_count, "low");
     const slotUnlocks = await ensureAugmentSlotKeystones(tx, player, resolvedTemplate, augmentIds);
     const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
     const rollPayloads = await loadAugmentRollPayloads(

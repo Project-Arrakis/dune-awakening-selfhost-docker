@@ -891,9 +891,14 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
         // is clamped to whatever fits (issue #347 follow-up). The
         // clamped case is reported plainly rather than claiming the full
         // requested amount was given when it was not.
-        const { given, requested, clamped } = response.result;
+        const { given, requested, clamped, clampReason } = response.result;
+        // "stack-rows" = only the runaway row backstop stopped it (the
+        // container has room) -- saying it "fit" would be false. See the
+        // fill handler's matching note.
         setDeleteNotice(clamped
-          ? `Only ${given.toLocaleString()} of the requested ${requested.toLocaleString()} x ${pending[0].itemName} fit and was given to the container.`
+          ? (clampReason === "stack-rows"
+            ? `${given.toLocaleString()} of the requested ${requested.toLocaleString()} x ${pending[0].itemName} was given -- stopped at the per-operation stack cap, not because the container is full; run Give again to add more.`
+            : `Only ${given.toLocaleString()} of the requested ${requested.toLocaleString()} x ${pending[0].itemName} fit and was given to the container.`)
           : `${pending[0].itemName} was given to the container.`);
       } else {
         const response = await basesApi.giveContainerItems(baseId, contentsFor, pending, "GIVE ITEMS TO STORAGE");
