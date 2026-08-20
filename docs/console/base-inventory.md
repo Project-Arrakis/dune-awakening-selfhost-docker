@@ -625,6 +625,19 @@ already-live, already-tested system is its own separately-verified decision, not
 Current provenance of the five seeded items, all confirmed against dune.gaming.tools's `maxStackSize` field
 as of 2026-08-20: `MelangeSpice` 500, `Oil` 500, `SpicedFuelCell` 500, both lubricants 100.
 
+**Stack size correlates strongly with resource type, not per-item uniqueness** — an operator hypothesis
+tested 2026-08-20 by externally resolving all 96 (of 99) `raw_resource`/`refined_resource`/`component`
+catalog items against the same source. **500 is the default for 82/96 (85%)**, spanning raw ore, refined
+ingots, and components uniformly — no per-category split. The outliers, all semantically coherent: 1 for
+non-stackable corpse/bulky-canister items (`Mouse_Corpse`, `Corpse`, all 3 `FuelCanister` sizes, and
+`T2MuaddibComponent` — "Muad'Dib Corpse", Muad'Dib being Fremen for kangaroo mouse, operator-stated
+2026-08-20 after the item 404'd against the external source), 5 for all 4 `WindTrapFilter` tiers, 100 for
+the two lubricants, and 1000–2500 for bulk sand/residue raw materials (`FlourSand`, `SpiceResidue`,
+`SpiceSand`). Three items (`T4ShieldWallComponent`, `ExperimentalWindTurbineComponent`, and originally
+`T2MuaddibComponent` before the operator statement above) 404 against the external source and need direct
+live-game verification — see issue #441. This makes bulk curation of the remaining ~93 unseeded items in
+these three groups cheap: default to 500, verify only genuine outliers.
+
 **Give Multiple's batch-clamping design is deliberately left-to-right, not best-effort.** Once one item in
 the batch does not fully fit (clamped, or reduced all the way to zero), the batch **stops there** —
 `giveMultipleItemsToBaseContainer` does not skip ahead to try whether a later, smaller item in the same batch
