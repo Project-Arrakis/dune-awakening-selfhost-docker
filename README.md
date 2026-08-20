@@ -57,7 +57,7 @@ For public/internet hosting, forward these ports:
 |---|---|---|
 | `8088` | TCP | Web admin panel; allow access only for trusted administrators |
 | `31982` | TCP | RabbitMQ Game Messaging Endpoint |
-| `31983` | TCP | RabbitMQ Game HTTP Endpoint |
+| `31983` | TCP | RabbitMQ Game HTTP Endpoint. This endpoint can enumerate and purge queues, not just view counts -- treat it with the same care as `31982`. |
 | `7777-7810` | UDP | Game Traffic |
 
 Keep database and internal admin ports private. Do not expose the Web UI to untrusted users.

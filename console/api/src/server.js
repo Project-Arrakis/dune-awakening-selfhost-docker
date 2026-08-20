@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig, publicConfig, parseAllowedIps, resolvePorts } from "./config.js";
-import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders } from "./auth.js";
+import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders, parseCookies } from "./auth.js";
 import { createLoginRateLimiter, createMutationRateLimiter } from "./rateLimit.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
 import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, TaskManager, publicTask } from "./tasks.js";
@@ -26,17 +26,18 @@ import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
 import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
 import { createMemoryBalancer } from "./services/memoryBalancer.js";
-import { collectContainerHealth } from "./services/containerHealth.js";
 import { parseMemorySwapStatus } from "./services/memorySwap.js";
 import { createDeathPoller } from "./deathPoller.js";
 import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
+import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
+import { createHandoff } from "./integrations/discord/handoff.js";
+import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
+import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions } from "./policy.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
-import { actionForRoute, ROUTE_ACTIONS } from "./actions.js";
-import { evaluate, loadPolicies, getAllPolicies, setPolicies } from "./policy.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
@@ -86,6 +87,20 @@ const auth = createAuth(config);
 const loginRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
+const oauthPendingStates = createPendingStateStore();
+const handoff = createHandoff({
+  secret: config.discordBotHandoffSecret,
+  botUrl: config.discordBotHandoffUrl,
+  homeGuildId: config.discordHomeGuildId
+});
+const resolveOAuthTier = createOAuthTierResolver({
+  bootstrap: {
+    allowOwnerBootstrap: config.discordOAuthAllowOwnerBootstrap,
+    homeGuildId: config.discordHomeGuildId,
+    ownerAllowlist: config.discordOAuthOwnerAllowlist
+  },
+  handoff: handoff.enabled ? handoff : null
+});
 // Deferred db read: db is assigned below and is reassignable on reconnect.
 // Both flush paths go through flushQueuedGeneratorRefills/flushQueuedWaterRefills
 // so a write lands in the audit log no matter which one applied it.
@@ -154,6 +169,26 @@ process.on("unhandledRejection", (error) => {
   console.error(`Unhandled background rejection: ${redact(error?.message || "Unexpected error.")}`);
 });
 
+async function filterForPlayerScope(session, db, data, getter) {
+  const scope = await resolvePlayerScopedIds(session, db);
+  if (!scope.scoped) return data;
+  return data.filter(row => {
+    const id = getter(row);
+    return id && scope.ids.has(String(id));
+  });
+}
+
+async function resolvePlayerScopedIds(session, db) {
+  if (!session || !session.userId) return { scoped: true, ids: new Set() };
+  if (session.tier !== "player") return { scoped: false, ids: new Set() };
+  try {
+    const chars = await duneDb.getAllLinkedPlayers(db, session.userId);
+    return { scoped: true, ids: new Set(chars.map(c => c.player_controller_id)) };
+  } catch {
+    return { scoped: true, ids: new Set() };
+  }
+}
+
 createServer(async (req, res) => {
   if (config.allowedIps.length) {
     const remoteIp = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
@@ -166,6 +201,23 @@ createServer(async (req, res) => {
   try {
     if (req.url?.startsWith("/api/")) {
       await handleApi(req, res);
+      return;
+    }
+    if (req.url?.startsWith("/atrium/")) {
+      const allowedUser = String(process.env.ATRIUM_ALLOWED_USER_ID || "").trim();
+      if (allowedUser) {
+        const session = auth.readSession(req);
+        if (!session) {
+          json(res, 401, { error: "Authentication required. Sign in to the console first." });
+          return;
+        }
+        if (session.userId !== allowedUser) {
+          res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
+          res.end("<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>Access Denied</title><style>body{font-family:-apple-system,sans-serif;background:#0d0f12;color:#f3efe7;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center;padding:20px}h1{color:#e8a84c;font-size:1.5rem}p{color:#ad9f89;margin-top:8px}</style></head><body><div><h1>Access Denied</h1><p>This page is restricted. Contact the Discord server administration to request access.</p></div></body></html>");
+          return;
+        }
+      }
+      serveStatic(config, req, res);
       return;
     }
     serveStatic(config, req, res);
@@ -181,6 +233,11 @@ createServer(async (req, res) => {
   }
   if (!config.authDisabled) {
     console.log("Initial admin password is stored in runtime/secrets/admin-web-password.txt");
+  }
+  if (process.env.DISCORD_OAUTH_CLIENT_ID && !config.discordOAuthConfigured) {
+    console.warn("Warning: DISCORD_OAUTH_CLIENT_ID is set but Discord OAuth is incomplete.");
+    console.warn("Make sure DISCORD_HOME_GUILD_ID, DISCORD_OAUTH_REDIRECT_URI, and the client secret are all configured.");
+    console.warn("See .env.example for the full list of Discord OAuth environment variables.");
   }
   scheduleBootAutoStart();
   recoverRestartQueue();
@@ -447,6 +504,64 @@ async function handleApi(req, res) {
     audit(config, req, "auth.logout");
     return json(res, 200, { ok: true });
   }
+  if (path === "/api/auth/me") {
+    const session = auth.requireAuth(req, res);
+    if (!session) return;
+    let linkedCharacters = [];
+    if (session.userId) {
+      try { linkedCharacters = await duneDb.getAllLinkedPlayers(db, session.userId) || []; } catch { linkedCharacters = []; }
+    }
+    return json(res, 200, {
+      user: {
+        id: session.userId || "local-admin",
+        username: session.username || "Admin",
+        tier: session.tier || "owner",
+        guildId: session.guildId || ""
+      },
+      linkedCharacters,
+      allowedActions: resolveAllowedActions(session.tier || "owner")
+    });
+  }
+  if (path === "/api/auth/characters" && req.method === "GET") {
+    const session = auth.requireAuth(req, res);
+    if (!session) return;
+    try {
+      const chars = await duneDb.getAllLinkedPlayers(db, session.userId);
+      return json(res, 200, { characters: chars || [] });
+    } catch { return json(res, 200, { characters: [] }); }
+  }
+  if (path === "/api/auth/discord/start" && req.method === "GET") {
+    if (!config.discordOAuthConfigured) {
+      return json(res, 404, { error: "Discord sign-in is not configured for this console. Sign in with the admin password." });
+    }
+    const rate = loginRateLimiter.check(loginRateLimitKey(req));
+    if (!rate.allowed) {
+      return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
+    }
+    const pending = oauthPendingStates.issue();
+    if (!pending) {
+      return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
+    }
+    const { state, challenge } = pending;
+    res.setHeader("Set-Cookie", oauthStateCookie(state, config.secureCookies));
+    const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state, codeChallenge: challenge });
+    res.writeHead(302, { Location: authorizeUrl });
+    res.end();
+    audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true });
+    return;
+  }
+  if (path === "/api/auth/discord/exchange" && req.method === "POST") {
+    if (!config.discordOAuthConfigured) {
+      return json(res, 404, { error: "Discord sign-in is not configured for this console." });
+    }
+    return handleDiscordTokenExchange(req, res);
+  }
+  if (path === "/api/auth/discord/callback") {
+    if (!config.discordOAuthConfigured) {
+      return json(res, 404, { error: "Discord sign-in is not configured for this console. Sign in with the admin password." });
+    }
+    return handleOAuthCallback(req, res);
+  }
   if (isDiscordAdapterRoute(path)) {
     return handleDiscordAdapterRoute({ req, res, path, config, readJson, json, db });
   }
@@ -464,6 +579,8 @@ async function handleApi(req, res) {
   if (path === "/api/setup/preflight" && req.method === "POST") return json(res, 200, await preflight(config));
   if (path === "/api/setup/write-config" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/setup/save-token" && req.method === "POST") return saveToken(req, res);
+  if (path === "/api/setup/save-oauth-secret" && req.method === "POST") return saveOAuthClientSecret(req, res);
+  if (path === "/api/setup/write-oauth-config" && req.method === "POST") return writeOAuthConfig(req, res);
   if (path === "/api/setup/init" && req.method === "POST") return task(req, res, "setup", "init", {});
   if (path === "/api/setup/tasks") return json(res, 200, { tasks: tasks.list().map(publicTask) });
   if (path === "/api/public-directory/status") return json(res, 200, publicDirectory.publicState());
@@ -575,7 +692,13 @@ async function handleApi(req, res) {
   if (path === "/api/settings/admin-password" && req.method === "POST") return adminPasswordRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
   if (path === "/api/settings/iam/policies" && req.method === "GET") {
-    return json(res, 200, { policies: getAllPolicies() });
+    const policies = getAllPolicies();
+    return json(res, 200, {
+      policies,
+      actions: Object.keys(ROUTE_ACTIONS).sort(),
+      actionMap: ROUTE_ACTIONS,
+      namespaces: NAMESPACES
+    });
   }
   if (path === "/api/settings/iam/policy" && req.method === "PUT") {
     const body = await readJson(req);
@@ -592,15 +715,20 @@ async function handleApi(req, res) {
     return json(res, 200, { action: testAction, tier: testTier, allowed: evaluate({ tier: testTier }, testAction) });
   }
 
-  if (path === "/api/players") return dbJson(res, () => duneDb.listPlayers(db, {
-    q: url.searchParams.get("q") || "",
-    page: url.searchParams.get("page") || 0,
-    pageSize: url.searchParams.get("pageSize") || 50,
-    status: url.searchParams.get("status") || "all",
-    sortColumn: url.searchParams.get("sortColumn") || "character_name",
-    sortDirection: url.searchParams.get("sortDirection") || "asc",
-    bannedFlsIds: bannedFlsIds(config.repoRoot)
-  }));
+  if (path === "/api/players") return dbJson(res, async () => {
+    const session = auth.readSession(req);
+    const scope = await resolvePlayerScopedIds(session, db);
+    return duneDb.listPlayers(db, {
+      q: url.searchParams.get("q") || "",
+      page: url.searchParams.get("page") || 0,
+      pageSize: url.searchParams.get("pageSize") || 50,
+      status: url.searchParams.get("status") || "all",
+      sortColumn: url.searchParams.get("sortColumn") || "character_name",
+      sortDirection: url.searchParams.get("sortDirection") || "asc",
+      bannedFlsIds: bannedFlsIds(config.repoRoot),
+      controllerIds: scope.scoped ? Array.from(scope.ids) : undefined
+    });
+  });
   if (path === "/api/players/online") return dbJson(res, () => duneDb.listPlayers(db, {
     status: "online",
     page: url.searchParams.get("page") || 0,
@@ -782,6 +910,8 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/storage\/[^/]+$/)) return dbJson(res, async () => ({ storage: (await duneDb.listStorage(db)).rows.find((row) => String(row.id) === decodeURIComponent(path.split("/")[3])) || null }));
   if (path.match(/^\/api\/storage\/[^/]+\/items$/)) return dbJson(res, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path.match(/^\/api\/storage\/[^/]+\/give-item$/) && req.method === "POST") return storageGiveItemRoute(req, res, path);
+  if (path.match(/^\/api\/storage\/[^/]+\/fill-item$/) && req.method === "POST") return storageFillItemRoute(req, res, path);
+  if (path.match(/^\/api\/storage\/[^/]+\/remove-items$/) && req.method === "POST") return storageRemoveItemsRoute(req, res, path);
   if (path.match(/^\/api\/storage\/[^/]+\/export$/)) return exportJson(res, `storage-${decodeURIComponent(path.split("/")[3])}.json`, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path === "/api/blueprints" && req.method === "GET") return dbJson(res, () => listBlueprints(db));
   if (path === "/api/blueprints/export" && req.method === "POST") return blueprintBulkExportRoute(req, res);
@@ -950,9 +1080,15 @@ async function addonBridgeRoute(req, res, path) {
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
     return json(res, 200, { ok: true, result });
   }
+  if (action === "ops.location.activity") {
+    // Permanently out of scope — per-player location tracking belongs to the
+    // Console's map UI. The addon handles this gracefully by showing the
+    // Location tab as permanently unavailable.
+    return json(res, 200, { ok: true, status: "planned", reason: "not_implemented" });
+  }
   if (action === "ops.resources.summary") {
     const addon = assertInstalledAddonPermission(config, id, "ops:read");
-    const result = await duneDb.addonOpsResourcesSummary(db);
+    const result = await duneDb.addonOpsResourcesSummary(db, config);
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
     return json(res, 200, { ok: true, result });
   }
@@ -968,12 +1104,49 @@ async function addonBridgeRoute(req, res, path) {
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
     return json(res, 200, { ok: true, result });
   }
-  if (action === "ops.health.containers") {
+  if (action === "ops.inventory.summary") {
     const addon = assertInstalledAddonPermission(config, id, "ops:read");
-    const result = await collectContainerHealth();
+    const result = await duneDb.addonOpsInventorySummary(db);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "ops.soc.summary") {
+    const addon = assertInstalledAddonPermission(config, id, "ops:read");
+    const result = duneDb.addonOpsSocSummary();
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "ops.health.prometheus") {
+    const addon = assertInstalledAddonPermission(config, id, "ops:read");
+    const result = await duneDb.addonOpsPrometheusHealth();
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "ops.health.containers") {
+    // duneDb.addonOpsContainerHealth() (not services/containerHealth.js's
+    // collectContainerHealth(), an independent upstream implementation of
+    // the same feature) -- confirmed via live testing (issue #246) that
+    // `docker stats` has no --filter flag; only `docker ps` supports
+    // label filters. collectContainerHealth() passes --filter directly to
+    // `docker stats`, which does not work. See addonOpsContainerHealth()'s
+    // own comment in duneDb.js for the full verified detail.
+    const addon = assertInstalledAddonPermission(config, id, "ops:read");
+    const result = await duneDb.addonOpsContainerHealth();
     const ok = !result.error;
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok });
     return json(res, 200, { ok, result });
+  }
+  if (action === "ops.health.postgres") {
+    const addon = assertInstalledAddonPermission(config, id, "ops:read");
+    const result = await duneDb.addonOpsPostgresHealth();
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "ops.health.rabbitmq") {
+    const addon = assertInstalledAddonPermission(config, id, "ops:read");
+    const result = await duneDb.addonOpsRabbitmqHealth();
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
   }
   if (action === "server.hardware.status") {
     const addon = assertInstalledAddonPermission(config, id, "server:status");
@@ -1137,9 +1310,21 @@ function addonContentRoute(req, res, path) {
   const contentPath = decodeURIComponent(parts.slice(6).join("/"));
   const target = installedAddonContentPath(config, id, contentPath);
   if (!existsSync(target)) return json(res, 404, { error: "Addon content file not found." });
+  // No Cache-Control was previously sent here at all, which leaves browsers
+  // free to apply their own heuristic caching (RFC 7234) -- observed in
+  // practice to cause an addon's iframe to keep serving a stale addon.js
+  // well after the underlying file was updated and the file's own byte
+  // content confirmed correct via direct authenticated fetch, surviving
+  // even a full page hard-refresh and iframe close/reopen. Addon files are
+  // small, locally-served, and change on every addon update/manual
+  // install, so there is no real benefit to caching them here -- always
+  // revalidate instead of guessing.
   res.writeHead(200, withSecurityHeaders({
     "content-type": contentTypeForPath(target),
-    "x-frame-options": "SAMEORIGIN"
+    "x-frame-options": "SAMEORIGIN",
+    "cache-control": "no-cache, no-store, must-revalidate",
+    "pragma": "no-cache",
+    "expires": "0"
   }));
   createReadStream(target).pipe(res);
 }
@@ -1605,7 +1790,9 @@ async function databasePasswordRoute(req, res) {
     return json(res, 400, { error: "Database password changes are unavailable while ADMIN_DATABASE_URL is set. Update the connection URL instead." });
   }
   await duneDb.changeDunePassword(db, password);
-  updateEnvFileValue("DUNE_DB_PASSWORD", password);
+  const pwFile = resolve(config.secretsDir, "dune-db-password.txt");
+  writeFileSync(pwFile, `${password}\n`, { mode: 0o600 });
+  try { chmodSync(pwFile, 0o600); } catch {}
   process.env.DUNE_DB_PASSWORD = password;
   const previousDb = db;
   db = createDb(config);
@@ -2874,6 +3061,22 @@ async function storageGiveItemRoute(req, res, path) {
     // resources, components) gain the new volume enforcement.
     const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
     return duneDb.giveItemToStorage(db, storageId, { ...body, templateId: resolved.itemId, itemVolume });
+  }, { storageId });
+}
+
+async function storageFillItemRoute(req, res, path) {
+  const storageId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "storage.fill-item", "FILL ITEM TO STORAGE", async (body) => {
+    const resolved = resolveFillableCatalogItem(config.repoRoot, body);
+    const itemVolume = resolved.volume || resolveItemVolume(config.repoRoot, resolved.itemId);
+    return duneDb.fillItemToStorage(db, config.repoRoot, storageId, { ...body, templateId: resolved.itemId, itemVolume });
+  }, { storageId });
+}
+
+async function storageRemoveItemsRoute(req, res, path) {
+  const storageId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "storage.remove-items", "REMOVE ITEMS FROM STORAGE", async (body) => {
+    return duneDb.removeItemsFromStorage(db, storageId, body);
   }, { storageId });
 }
 
@@ -4306,7 +4509,8 @@ function publicDirectorySettings() {
 }
 
 function readSetupConfigValues() {
-  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID"];
+  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID",
+    "DISCORD_HOME_GUILD_ID", "DISCORD_OAUTH_CLIENT_ID", "DISCORD_OAUTH_REDIRECT_URI", "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP", "DISCORD_OAUTH_OWNER_ALLOWLIST"];
   const values = {};
   for (const file of [resolve(config.repoRoot, ".env"), resolve(config.generatedDir, "battlegroup.env")]) {
     if (!existsSync(file)) continue;
@@ -4315,6 +4519,9 @@ function readSetupConfigValues() {
       if (!parsed || !allowed.includes(parsed.key) || values[parsed.key] !== undefined) continue;
       values[parsed.key] = parsed.value;
     }
+  }
+  if (existsSync(resolve(config.secretsDir, "discord-oauth-client-secret.txt"))) {
+    values._discordOAuthSecretSaved = "1";
   }
   return values;
 }
@@ -4590,6 +4797,75 @@ async function saveToken(req, res) {
   return json(res, 200, { ok: true });
 }
 
+async function saveOAuthClientSecret(req, res) {
+  const body = await readJson(req);
+  const secret = body.secret;
+  if (!secret || String(secret).length < 20) {
+    return json(res, 400, { error: "Client secret must be at least 20 characters." });
+  }
+  const dir = config.secretsDir;
+  mkdirSync(dir, { recursive: true });
+  const path = resolve(dir, "discord-oauth-client-secret.txt");
+  if (existsSync(path) && readFileSync(path, "utf8").trim().length > 0 && !body.overwrite) {
+    return json(res, 409, { error: "A client secret already exists. Set 'overwrite: true' to replace it." });
+  }
+  try {
+    writeFileSync(path, `${String(secret).trim()}\n`, { mode: 0o600 });
+    chmodSync(path, 0o600);
+  } catch (error) {
+    return json(res, 500, { error: "Failed to save client secret." });
+  }
+  audit(config, req, "setup.save-oauth-secret", { secret: "<redacted>", overwrite: Boolean(body.overwrite) });
+  return json(res, 200, { ok: true });
+}
+
+const DISCORD_SNOWFLAKE_RE = /^\d{17,19}$/;
+
+function validateOAuthWriteConfigKey(key, value) {
+  const v = String(value || "").trim();
+  if (!v) return null;
+  switch (key) {
+    case "DISCORD_HOME_GUILD_ID":
+    case "DISCORD_OAUTH_CLIENT_ID":
+      if (!DISCORD_SNOWFLAKE_RE.test(v)) return `Invalid Discord snowflake for ${key}`;
+      break;
+    case "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP":
+      if (v !== "0" && v !== "1") return `${key} must be "0" or "1"`;
+      break;
+    case "DISCORD_OAUTH_OWNER_ALLOWLIST":
+      if (v) {
+        const items = v.split(",").map((item) => item.trim()).filter(Boolean);
+        if (items.some((item) => !DISCORD_SNOWFLAKE_RE.test(item))) return `${key} must be comma-separated Discord user IDs (17-19 digits each)`;
+      }
+      break;
+    case "DISCORD_OAUTH_REDIRECT_URI":
+      if (!/^https?:\/\/.+/.test(v)) return `${key} must be a valid URL`;
+      break;
+  }
+  return null;
+}
+
+async function writeOAuthConfig(req, res) {
+  const body = await readJson(req);
+  const allowed = [
+    "DISCORD_HOME_GUILD_ID",
+    "DISCORD_OAUTH_CLIENT_ID",
+    "DISCORD_OAUTH_REDIRECT_URI",
+    "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP",
+    "DISCORD_OAUTH_OWNER_ALLOWLIST"
+  ];
+  const changes = [];
+  for (const key of allowed) {
+    if (body[key] === undefined) continue;
+    const error = validateOAuthWriteConfigKey(key, body[key]);
+    if (error) return json(res, 400, { error });
+    updateEnvFileValue(key, String(body[key]));
+    changes.push(key);
+  }
+  audit(config, req, "setup.write-oauth-config", { keys: changes });
+  return json(res, 200, { ok: true, changes });
+}
+
 async function saveServerFuncomToken(req, res) {
   const body = await readJson(req);
   writeFuncomToken(config, body.token);
@@ -4623,6 +4899,130 @@ function mockCommand(operation) {
 
 function loginRateLimitKey(req) {
   return req.socket?.remoteAddress || "unknown";
+}
+
+// Strips query strings before an audit write so the Discord OAuth `code` and
+// `state` params (present in the browser redirect URL) never reach the audit
+// log. server.js's audit() logs req.url verbatim otherwise.
+function sanitizedUrl(req, path) {
+  return { ...req, url: path };
+}
+
+async function handleDiscordTokenExchange(req, res) {
+  const rateKey = loginRateLimitKey(req);
+  const rate = loginRateLimiter.check(rateKey);
+  if (!rate.allowed) {
+    return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
+  }
+
+  const authHeader = (req.headers.authorization || "").trim();
+  if (!authHeader.startsWith("Bearer ") || authHeader.length <= 7) {
+    loginRateLimiter.recordFailure(rateKey);
+    return json(res, 401, { error: "Bearer token required." });
+  }
+  const accessToken = authHeader.slice(7).trim();
+
+  let identity;
+  try {
+    identity = await fetchDiscordIdentity({ accessToken, apiBaseUrl: config.discordOAuthApiBaseUrl });
+  } catch (error) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, req, "auth.oauth.exchange", { ok: false, reason: "identity_fetch_failed" });
+    return json(res, 401, { error: "Discord token validation failed." });
+  }
+
+  const allowedUserId = String(process.env.ATRIUM_ALLOWED_DISCORD_USER_ID || "").trim();
+  if (allowedUserId && identity.userId !== allowedUserId) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, req, "auth.oauth.exchange", { ok: false, reason: "not_authorized", userId: identity.userId });
+    return json(res, 403, { error: "Discord account not authorized for the Atrium exchange." });
+  }
+
+  loginRateLimiter.recordSuccess(rateKey);
+  const session = auth.makeSession({
+    tier: "owner",
+    userId: identity.userId,
+    username: identity.username,
+    guildId: config.discordHomeGuildId
+  });
+
+  setSessionCookie(res, session, config);
+  audit(config, req, "auth.oauth.exchange", { ok: true, userId: identity.userId });
+  return json(res, 200, { ok: true, authenticated: true, csrfToken: session.csrf });
+}
+
+function oauthReturnPage() {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign-in complete</title></head><body><noscript><a href="/">Return to the console</a></noscript><script>window.location.replace("/");</script></body></html>`;
+}
+
+// html/sessionCookieValue: local helpers for the OAuth callback route,
+// which needs to set two cookies in one response (the session cookie AND
+// clearOAuthStateCookie) and render a raw HTML redirect page -- neither
+// need is shared with any other route. auth.js's exported html()/
+// sessionCookieValue() were removed upstream (fix 6dc988ab, "preserve
+// opaque sessions") since upstream has no route that needs them; kept
+// here, scoped to server.js, mirroring setSessionCookie()'s own cookie
+// string exactly, rather than re-adding them to auth.js's public surface
+// for this one caller.
+function html(res, status, body, headers = {}) {
+  res.writeHead(status, withSecurityHeaders({ "content-type": "text/html; charset=utf-8", ...headers }));
+  res.end(body);
+}
+
+function sessionCookieValue(session, config = {}) {
+  const secure = config.secureCookies ? "; Secure" : "";
+  return `asc_session=${encodeURIComponent(session.cookie)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200${secure}`;
+}
+
+async function handleOAuthCallback(req, res) {
+  const url = new URL(req.url || "", "http://localhost");
+  const code = url.searchParams.get("code") || "";
+  const state = url.searchParams.get("state") || "";
+  const cookieState = parseCookies(req.headers.cookie || "").get("discord_oauth_state") || "";
+  const rateKey = loginRateLimitKey(req);
+  const rate = loginRateLimiter.check(rateKey);
+  if (!rate.allowed) {
+    return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
+  }
+  const consumed = oauthPendingStates.consume(state, cookieState);
+  if (!config.discordOAuthAllowOwnerBootstrap) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "bootstrap_disabled" });
+    return json(res, 403, { error: "Discord sign-in is enabled but owner bootstrap is disabled. Sign in with the admin password." });
+  }
+  if (!consumed.ok) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: consumed.reason });
+    return json(res, 400, { error: "Discord sign-in could not be completed. The request was invalid or expired — start again." });
+  }
+  let token;
+  let identity;
+  try {
+    token = await exchangeDiscordAuthCode({
+      code,
+      redirectUri: config.discordOAuthRedirectUri,
+      clientId: config.discordOAuthClientId,
+      clientSecret: config.discordOAuthClientSecret,
+      codeVerifier: consumed.verifier,
+      apiBaseUrl: config.discordOAuthApiBaseUrl
+    });
+    identity = await fetchDiscordIdentity({ accessToken: token.access_token, apiBaseUrl: config.discordOAuthApiBaseUrl });
+  } catch (error) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: error.code || "oauth_error" });
+    const status = error.statusCode && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 400;
+    return json(res, status, { error: "Discord sign-in failed. Please try again, or sign in with your password." });
+  }
+  const tier = await resolveOAuthTier(identity);
+  if (!tier) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "not_authorized" });
+    return json(res, 403, { error: "Discord sign-in succeeded, but this account is not authorized to sign in to this console." });
+  }
+  const session = auth.makeSession({ tier, userId: identity.userId, username: identity.username, guildId: config.discordHomeGuildId });
+  res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie(config.secureCookies)]);
+  audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier });
+  return html(res, 200, oauthReturnPage());
 }
 
 function applyMutationRateLimit(req, res, scope) {

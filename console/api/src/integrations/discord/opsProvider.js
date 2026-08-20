@@ -85,8 +85,20 @@ export async function opsCombatProvider(config, db) {
 }
 
 export async function opsResourcesProvider(config, db) {
-  const result = await addonOpsResourcesSummary(db);
-  return { ok: true, result };
+  const result = await addonOpsResourcesSummary(db, config);
+  // Compute totalValueRemaining so the bot's statsPusher fetchAggregate
+  // can populate spice_fields without needing to know the internal map
+  // structure (issue #95).
+  let totalValueRemaining = 0;
+  for (const section of [result.deepDesert, result.haggaBasin]) {
+    if (!section || !Array.isArray(section.instances)) continue;
+    for (const inst of section.instances) {
+      if (typeof inst.totalValueRemaining === "number") {
+        totalValueRemaining += inst.totalValueRemaining;
+      }
+    }
+  }
+  return { ok: true, result: { ...result, totalValueRemaining } };
 }
 
 export async function opsEconomyProvider(config, db) {

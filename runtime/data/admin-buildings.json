@@ -1,0 +1,44 @@
+[
+  {
+    "id": "Totem_Small_Placeable",
+    "name": "Sub-Fief Console",
+    "category": "utilities",
+    "source": "dune.gaming.tools/placeables/totem_small_placeable"
+  },
+  {
+    "id": "SpiceSilo_Placeable",
+    "name": "Small Storage Container",
+    "category": "storage",
+    "source": "dune.gaming.tools/placeables/spicesilo_placeable"
+  },
+  {
+    "id": "Fabricator_Placeable",
+    "name": "Fabricator",
+    "category": "fabricators",
+    "source": "dune.gaming.tools/placeables/fabricator_placeable"
+  },
+  {
+    "id": "BloodWaterExtractor_Placeable",
+    "name": "Blood Purifier",
+    "category": "refineries",
+    "source": "dune.gaming.tools/placeables/bloodwaterextractor_placeable"
+  },
+  {
+    "id": "SmallOreRefinery_Placeable",
+    "name": "Small Ore Refinery",
+    "category": "refineries",
+    "source": "dune.gaming.tools/placeables/smallorerefinery_placeable"
+  },
+  {
+    "id": "MTX_Watershippers_Door_Placeable",
+    "name": "Water Shipper Door",
+    "category": "cosmetic",
+    "source": "dune.gaming.tools/buildables/watershippers_door_frame"
+  },
+  {
+    "id": "Developer_StorageContainer_Placeable",
+    "name": "Developer Storage Container",
+    "category": "storage",
+    "source": "not in the public dune.gaming.tools catalog -- confirmed live via dune.placeables on this world (2026-07-31), a real owned/inventoried container (inventory_type=4, max_item_count=1000, max_item_volume=50000) excluded from listStorage's building_type whitelist purely by string mismatch"
+  }
+]

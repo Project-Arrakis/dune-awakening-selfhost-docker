@@ -12,7 +12,6 @@ import { formatDisplayValue, formatUiSentence, friendlyColumnName, stripAnsi, su
 import { friendlyServiceName } from "../../lib/serviceDisplay";
 import { conciseTaskError, funcomTokenMismatchDetected } from "../../lib/taskDisplay";
 import { usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
-
 export type HomeLoadResult = { statusLoaded: boolean; readinessLoaded: boolean; statusError: string; readinessError: string; statusText: string; readinessText: string };
 export type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 export type RestartLifecycleState = { stopObserved: boolean; startObserved: boolean };
@@ -1048,6 +1047,7 @@ export function ServerPanel(props: {
       />
       {networkBindResult && <HomeTaskResultCard result={networkBindResult} />}
       {storageCleanupResult && <HomeTaskResultCard result={storageCleanupResult} />}
+
     </section>
   );
 }

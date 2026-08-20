@@ -183,6 +183,7 @@ mapfile -t MEMORY_SWAP_ARGS < <(memory_swap_docker_args "$MEMORY")
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-server-survival-1 \
+  --label "com.docker.compose.project=${DUNE_COMPOSE_PROJECT_NAME}" \
   --network host \
   --restart unless-stopped \
   --privileged \

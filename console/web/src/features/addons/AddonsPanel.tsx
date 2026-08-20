@@ -460,7 +460,8 @@ function formatLifecycleLabel(lifecycle: AddonLifecycle) {
 }
 
 function addonContentUrl(addon: InstalledAddon) {
-  return `/api/addons/installed/${encodeURIComponent(addon.id)}/content/${addon.entryPath.split("/").map(encodeURIComponent).join("/")}`;
+  const base = `/api/addons/installed/${encodeURIComponent(addon.id)}/content/${addon.entryPath.split("/").map(encodeURIComponent).join("/")}`;
+  return `${base}?v=1786155481`;
 }
 
 function formatAddonError(value: unknown) {

@@ -72,9 +72,60 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # ── Alertmanager: alert routing to Discord ──
+  dune-alertmanager:
+    image: ${METRICS_ALERTMANAGER_IMAGE:-quay.io/prometheus/alertmanager:v0.28.0}
+    container_name: dune-alertmanager
+    restart: unless-stopped
+    networks:
+      - dune-net
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      - "--web.listen-address=:9093"
+    volumes:
+      - ./runtime/metrics/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      # yacketrj/arrakis-control-panel#167: shared secret sent as this
+      # receiver's Authorization: Bearer header (see alertmanager.yml's
+      # discord-relay receiver). Must match the bot's own
+      # DUNE_ALERT_RELAY_TOKEN/_FILE exactly. See
+      # docs/runtime/METRICS-ALERTMANAGER-DISCORD-RELAY.md for setup --
+      # this file does not exist until an operator creates it, which is
+      # deliberate: Alertmanager fails closed (refuses to start) rather
+      # than silently sending unauthenticated requests if it's missing.
+      - ./runtime/secrets/alert-relay-token.txt:/etc/alertmanager/secrets/alert-relay-token.txt:ro
+      - dune-alertmanager-data:/alertmanager
+
+  # ── Grafana: dashboards (DevOps / NOC / SOC) ──
+  dune-grafana:
+    image: ${METRICS_GRAFANA_IMAGE:-grafana/grafana:11.1.0}
+    container_name: dune-grafana
+    restart: unless-stopped
+    networks:
+      - dune-net
+    ports:
+      - "127.0.0.1:${METRICS_GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${METRICS_GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${METRICS_GRAFANA_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_NAME: Main Org.
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_ANONYMOUS_HIDE_VERSION: "true"
+      GF_USERS_DEFAULT_THEME: dark
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - dune-grafana-data:/var/lib/grafana
+      - ./runtime/metrics/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./runtime/metrics/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./runtime/metrics/grafana/dashboard-definitions:/var/lib/grafana/dashboards:ro
+      - ./runtime/metrics/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+
 networks:
   dune-net:
     external: true
 
 volumes:
   dune-prometheus-data:
+  dune-alertmanager-data:
+  dune-grafana-data:
