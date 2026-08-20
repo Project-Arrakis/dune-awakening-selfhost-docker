@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildingUnlockStatus, itemImagePath, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "../src/adminCatalog.js";
+import { fileURLToPath } from "node:url";
+import { buildingUnlockStatus, isFillableItem, itemImagePath, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "../src/adminCatalog.js";
+
+const REAL_REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
 function fixtureRepo() {
   const root = mkdtempSync(join(tmpdir(), "web-admin-catalog-"));
@@ -152,6 +155,25 @@ test("resolveFillableCatalogItem accepts raw resources", () => {
   const item = resolveFillableCatalogItem(root, { itemId: "AzuriteOre" });
   assert.equal(item.group, "raw_resource");
   assert.equal(item.volume, 0.2);
+});
+
+// Regression guard for the finding in resolveFillableCatalogItem's own
+// comment (found during post-merge review of upstream PR #182, 2026-08-20:
+// the comment previously claimed "today's 19 fillable items" -- stale, the
+// real count is 99 once raw_resource was added to FILLABLE_GROUPS). The
+// runtime safety check (throws on missing/zero volume) already covers this
+// at request time, but this test catches a bad catalog edit at CI time
+// instead of waiting for an operator to trip the runtime error -- and keeps
+// the comment's "not currently triggerable" claim honest as the catalog
+// grows.
+test("every real, currently-fillable catalog item has a non-zero catalogued volume", () => {
+  const items = JSON.parse(readFileSync(join(REAL_REPO_ROOT, "runtime/data/admin-items.json"), "utf8"));
+  const missing = items
+    .filter((item) => isFillableItem(item))
+    .filter((item) => !(Number(item.volume) > 0))
+    .map((item) => item.id);
+  assert.deepEqual(missing, [],
+    `${missing.length} fillable-group item(s) have no catalogued volume and would fail resolveFillableCatalogItem() at request time: ${missing.join(", ")}`);
 });
 
 test("resolveFillableCatalogItem rejects untagged/unfillable items", () => {
