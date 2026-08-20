@@ -151,6 +151,9 @@ export type BaseInventoryContainer = {
   // double-multiply and show absurdly inflated in-game item volumes).
   currentVolume: number;
   maxVolume: number;
+  // False when at least one occupied stack has neither an explicit override
+  // nor a catalog volume. currentVolume is then the known minimum, not zero.
+  volumeComplete?: boolean;
   itemCount: number;
   items: BaseInventoryEntry[];
 };
@@ -188,6 +191,7 @@ export type BaseContainerInventory = {
   // Same degrade-to-0 convention as BaseInventoryContainer's fields above.
   currentVolume: number;
   maxVolume: number;
+  volumeComplete?: boolean;
   slots: BaseInventorySlot[];
 };
 
@@ -207,6 +211,7 @@ export type BaseContainerSlots = {
   usedSlots?: number;
   currentVolume?: number;
   maxVolume?: number;
+  volumeComplete?: boolean;
   inventories: BaseContainerInventory[];
   reason?: string;
   deleteSafety?: BaseContainerDeleteSafety;
@@ -287,7 +292,7 @@ export type BaseInventory = {
   groups: BaseInventoryGroup[];
   containers: BaseInventoryContainer[];
   items: BaseInventoryItem[];
-  totals: { items: number; distinct: number; containers: number; usedSlots: number; maxSlots: number; currentVolume: number; maxVolume: number };
+  totals: { items: number; distinct: number; containers: number; usedSlots: number; maxSlots: number; currentVolume: number; maxVolume: number; volumeComplete?: boolean };
   // Only set alongside supported: false.
   reason?: string;
 };

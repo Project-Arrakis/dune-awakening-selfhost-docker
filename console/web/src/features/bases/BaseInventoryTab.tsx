@@ -1038,7 +1038,10 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
           <div className="summary-stat"><dt>Distinct</dt><dd>{totals.distinct.toLocaleString()}</dd></div>
           <div className="summary-stat"><dt>Containers</dt><dd>{totals.containers.toLocaleString()}</dd></div>
           <div className="summary-stat"><dt>Slots used</dt><dd>{totals.maxSlots > 0 ? `${slotPercent}%` : "—"}</dd></div>
-          <div className="summary-stat"><dt>Volume used</dt><dd>{totals.maxVolume > 0 ? `${volumePercent}%` : "—"}</dd></div>
+          <div className="summary-stat">
+            <dt>{totals.volumeComplete === false ? "Known volume" : "Volume used"}</dt>
+            <dd>{totals.maxVolume > 0 ? `${totals.volumeComplete === false ? "≥" : ""}${volumePercent}%` : "—"}</dd>
+          </div>
         </dl>
 
         <div className="bases-inventory-controls">
@@ -1200,13 +1203,13 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                                   </div>
                                 </dd>
                                 {container.maxVolume > 0 && <>
-                                  <dt>Volume Used</dt>
+                                  <dt>{container.volumeComplete === false ? "Known Volume" : "Volume Used"}</dt>
                                   <dd>
                                     <div className="progress-row">
                                       <div className="progress-track">
                                         <div className="progress-fill" style={{ width: `${Math.min(100, volumePercent)}%` }} />
                                       </div>
-                                      <span>{container.currentVolume.toFixed(1)} / {container.maxVolume.toFixed(1)}</span>
+                                      <span>{container.volumeComplete === false ? "≥" : ""}{container.currentVolume.toFixed(1)} / {container.maxVolume.toFixed(1)}</span>
                                     </div>
                                   </dd>
                                 </>}
@@ -1291,8 +1294,8 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
             {/* Withheld on a schema without volume tracking (issue #356),
                 same as the container card's own Volume Used row. */}
             {openContainer.maxVolume > 0 && <div>
-              <dt>Volume Used</dt>
-              <dd>{openContainer.currentVolume.toFixed(1)} / {openContainer.maxVolume.toFixed(1)}</dd>
+              <dt>{openContainer.volumeComplete === false ? "Known Volume" : "Volume Used"}</dt>
+              <dd>{openContainer.volumeComplete === false ? "≥" : ""}{openContainer.currentVolume.toFixed(1)} / {openContainer.maxVolume.toFixed(1)}</dd>
             </div>}
             <div><dt>Items</dt><dd>{openContainer.itemCount.toLocaleString()}</dd></div>
             {/* Distinct templates, not stacks -- the count below the list is
@@ -1342,7 +1345,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
               <div className="bases-inventory-slots" key={inventory.inventoryId}>
                 {slots.inventories.length > 1 && <p className="bases-inventory-card-subtitle">
                   Inventory #{inventory.inventoryId} · {inventory.usedSlots.toLocaleString()} / {inventory.maxSlots.toLocaleString()} slots
-                  {inventory.maxVolume > 0 && ` · ${inventory.currentVolume.toFixed(1)} / ${inventory.maxVolume.toFixed(1)} volume`}
+                  {inventory.maxVolume > 0 && ` · ${inventory.volumeComplete === false ? "≥" : ""}${inventory.currentVolume.toFixed(1)} / ${inventory.maxVolume.toFixed(1)} ${inventory.volumeComplete === false ? "known volume" : "volume"}`}
                 </p>}
 
                 {showGrid && <div

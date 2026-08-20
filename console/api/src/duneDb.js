@@ -4876,7 +4876,14 @@ export function adminItemMetadata() {
     for (const item of Array.isArray(items) ? items : []) {
       const id = String(item.id || "").trim();
       if (!id) continue;
-      metadata.set(id, { name: String(item.name || ""), category: String(item.category || ""), source: String(item.source || "") });
+      metadata.set(id, {
+        name: String(item.name || ""),
+        category: String(item.category || ""),
+        source: String(item.source || ""),
+        volume: item.volume !== null && item.volume !== undefined && Number.isFinite(Number(item.volume)) && Number(item.volume) >= 0
+          ? Number(item.volume)
+          : null
+      });
     }
   } catch {
     // Inventory still works without the optional local catalog metadata.
@@ -6982,8 +6989,61 @@ async function nextHighPositionIndex(tx, inventoryId, maxItemCount) {
   return fallbackIndex;
 }
 
+// Game-created rows normally leave volume_override NULL, which means "use the
+// template's catalog volume" rather than zero. Capacity checks must therefore
+// resolve each occupied stack instead of summing only explicit overrides.
+function resolvedItemUnitVolume(templateId, volumeOverride) {
+  if (volumeOverride !== null && volumeOverride !== undefined) {
+    const explicit = Number(volumeOverride);
+    if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+  }
+  const catalogValue = adminItemMetadata().get(String(templateId || ""))?.volume;
+  if (catalogValue !== null && catalogValue !== undefined) {
+    const catalog = Number(catalogValue);
+    if (Number.isFinite(catalog) && catalog >= 0) return catalog;
+  }
+  return null;
+}
+
+async function inventoryVolumeState(tx, inventoryId) {
+  const result = await tx.query(
+    "select template_id, stack_size, volume_override from dune.items where inventory_id = $1",
+    [inventoryId]
+  );
+  let currentVolume = 0;
+  const unknownTemplates = new Set();
+  for (const row of result.rows) {
+    const templateId = String(row.template_id || "");
+    const quantity = Math.max(0, Number(row.stack_size) || 0);
+    if (!templateId || quantity === 0) continue;
+    const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override);
+    if (unitVolume === null) unknownTemplates.add(templateId);
+    else currentVolume += unitVolume * quantity;
+  }
+  return { currentVolume, unknownTemplates: [...unknownTemplates] };
+}
+
+function requireCompleteInventoryVolume(state) {
+  if (state.unknownTemplates.length === 0) return;
+  const preview = state.unknownTemplates.slice(0, 3).join(", ");
+  const more = state.unknownTemplates.length > 3 ? ` and ${state.unknownTemplates.length - 3} more` : "";
+  throw new Error(`Storage volume cannot be calculated safely because ${preview}${more} has no known item volume. Remove the unknown item or update the item catalog before adding more.`);
+}
+
+// Volumes originate in PostgreSQL REAL columns, so a mathematically exact
+// final unit can arrive as 0.999999999999 of a unit. Compare fixed micro-units
+// to avoid rejecting that valid last item while still never exceeding capacity.
+function quantityThatFitsByVolume(maxVolume, currentVolume, unitVolume) {
+  const scale = 1_000_000;
+  const max = Math.round(maxVolume * scale);
+  const current = Math.round(currentVolume * scale);
+  const unit = Math.round(unitVolume * scale);
+  if (unit <= 0) return Number.MAX_SAFE_INTEGER;
+  return Math.max(0, Math.floor(Math.max(0, max - current) / unit));
+}
+
 export async function giveItemToStorage(db, storageId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 0, itemVolume = 0, augments = [], augmentQuality = 1 }) {
-  await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns.");
+  await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns including volume_override.");
   const target = intParam(storageId, "storage id", 1);
   const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
   const requestedQuantity = intParam(quantity, "quantity", 1, 1000000);
@@ -7034,9 +7094,10 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
       // volume_override is a PER-UNIT value (see the 2026-08-19 correction
       // below) -- the running total for the inventory is volume_override *
       // stack_size, summed across rows, never volume_override alone.
-      const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0) * stack_size), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
-      const currentVolume = Number(volume.rows[0]?.total_volume || 0);
-      const maxFit = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
+      const volume = await inventoryVolumeState(tx, inventory.id);
+      requireCompleteInventoryVolume(volume);
+      const currentVolume = volume.currentVolume;
+      const maxFit = quantityThatFitsByVolume(inventory.max_item_volume, currentVolume, itemVolumeNum);
       if (stackSize > maxFit) {
         if (maxFit < 1) {
           throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, no room for even 1 unit of ${resolvedTemplate})`);
@@ -7121,7 +7182,7 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
 // unchanged: it operates on an operator-supplied storage id directly, with
 // no base+placeable ownership chain to verify in the first place.
 export async function giveItemToBaseContainer(db, baseId, placeableId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 0, itemVolume = 0, augments = [], augmentQuality = 1 } = {}) {
-  await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns.");
+  await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns including volume_override.");
   const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
   const requestedQuantity = intParam(quantity, "quantity", 1, 1000000);
   const qualityLevel = normalizeStandaloneAugmentQuality(resolvedTemplate, intParam(quality, "quality", 0, 1000000));
@@ -7143,9 +7204,10 @@ export async function giveItemToBaseContainer(db, baseId, placeableId, { itemNam
     let stackSize = requestedQuantity;
     let clamped = false;
     if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
-      const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0) * stack_size), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
-      const currentVolume = Number(volume.rows[0]?.total_volume || 0);
-      const maxFit = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
+      const volume = await inventoryVolumeState(tx, inventory.id);
+      requireCompleteInventoryVolume(volume);
+      const currentVolume = volume.currentVolume;
+      const maxFit = quantityThatFitsByVolume(inventory.max_item_volume, currentVolume, itemVolumeNum);
       if (stackSize > maxFit) {
         if (maxFit < 1) {
           throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, no room for even 1 unit of ${resolvedTemplate})`);
@@ -7250,9 +7312,9 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
     if (toCapacity) {
       let volumeRemaining = 1000000;
       if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
-        const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0) * stack_size), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
-        const currentVolume = Number(volume.rows[0]?.total_volume || 0);
-        volumeRemaining = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
+        const volume = await inventoryVolumeState(tx, inventory.id);
+        requireCompleteInventoryVolume(volume);
+        volumeRemaining = quantityThatFitsByVolume(inventory.max_item_volume, volume.currentVolume, itemVolumeNum);
       }
       stackSize = Math.min(volumeRemaining, 1000000);
       if (stackSize < 1) throw new Error("Container is full (no volume remaining)");
@@ -7262,9 +7324,10 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
       // -- filling 375 of a requested 500 is strictly better than filling
       // 0 of 500 and forcing the operator to guess a smaller number and
       // retry. Genuinely zero room is still a real rejection.
-      const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0) * stack_size), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
-      const currentVolume = Number(volume.rows[0]?.total_volume || 0);
-      const maxFit = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
+      const volume = await inventoryVolumeState(tx, inventory.id);
+      requireCompleteInventoryVolume(volume);
+      const currentVolume = volume.currentVolume;
+      const maxFit = quantityThatFitsByVolume(inventory.max_item_volume, currentVolume, itemVolumeNum);
       if (stackSize > maxFit) {
         if (maxFit < 1) {
           throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, no room for even 1 unit of ${resolvedTemplate})`);
@@ -7356,16 +7419,17 @@ export async function fillItemToBaseContainer(db, repoRoot, baseId, placeableId,
     if (toCapacity) {
       let volumeRemaining = 1000000;
       if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
-        const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0) * stack_size), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
-        const currentVolume = Number(volume.rows[0]?.total_volume || 0);
-        volumeRemaining = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
+        const volume = await inventoryVolumeState(tx, inventory.id);
+        requireCompleteInventoryVolume(volume);
+        volumeRemaining = quantityThatFitsByVolume(inventory.max_item_volume, volume.currentVolume, itemVolumeNum);
       }
       stackSize = Math.min(volumeRemaining, 1000000);
       if (stackSize < 1) throw new Error("Container is full (no volume remaining)");
     } else if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
-      const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0) * stack_size), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
-      const currentVolume = Number(volume.rows[0]?.total_volume || 0);
-      const maxFit = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
+      const volume = await inventoryVolumeState(tx, inventory.id);
+      requireCompleteInventoryVolume(volume);
+      const currentVolume = volume.currentVolume;
+      const maxFit = quantityThatFitsByVolume(inventory.max_item_volume, currentVolume, itemVolumeNum);
       if (stackSize > maxFit) {
         if (maxFit < 1) {
           throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, no room for even 1 unit of ${resolvedTemplate})`);
@@ -7467,7 +7531,7 @@ export async function fillItemToBaseContainer(db, repoRoot, baseId, placeableId,
 //
 // items: [{ itemName?, itemId?, templateId?, quantity?, quality?, itemVolume?, augments?, augmentQuality? }]
 export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, { items = [] } = {}) {
-  await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns.");
+  await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns including volume_override.");
   if (!Array.isArray(items) || items.length === 0) throw new Error("At least one item is required");
   if (items.length > 50) throw new Error("Cannot give more than 50 distinct items in a single batch");
 
@@ -7508,8 +7572,9 @@ export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, 
 
     let currentVolume = 0;
     if (inventory.max_item_volume > 0) {
-      const volumeRow = await tx.query("select coalesce(sum(coalesce(volume_override, 0) * stack_size), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
-      currentVolume = Number(volumeRow.rows[0]?.total_volume || 0);
+      const volume = await inventoryVolumeState(tx, inventory.id);
+      requireCompleteInventoryVolume(volume);
+      currentVolume = volume.currentVolume;
     }
 
     // Occupied position_index state, mirroring nextHighPositionIndex's own
@@ -7582,7 +7647,7 @@ export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, 
       if (inventory.max_item_volume > 0 && entry.itemVolumeNum > 0) {
         // volume_override is a PER-UNIT value -- see giveItemToBaseContainer's
         // 2026-08-19 correction comment. Total is volume_override * stack_size.
-        const maxFit = Math.max(0, Math.floor((inventory.max_item_volume - currentVolume) / entry.itemVolumeNum));
+        const maxFit = quantityThatFitsByVolume(inventory.max_item_volume, currentVolume, entry.itemVolumeNum);
         if (stackSize > maxFit) {
           stackSize = maxFit;
           clamped = true;
@@ -8870,7 +8935,7 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
       groups: [],
       containers: [],
       items: [],
-      totals: { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0, currentVolume: 0, maxVolume: 0 }
+      totals: { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0, currentVolume: 0, maxVolume: 0, volumeComplete: false }
     };
   }
   const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
@@ -8952,6 +9017,7 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
         maxSlots: 0,
         currentVolume: 0,
         maxVolume: 0,
+        volumeComplete: hasMaxItemVolume && hasVolumeOverride,
         itemCount: 0,
         items: []
       };
@@ -8976,7 +9042,11 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
     // (see giveItemToStorage's correction comment) -- the total for this
     // row is volume_override * quantity, matching what the live game
     // engine itself computes for display.
-    container.currentVolume += (Number(row.volume_override) || 0) * quantity;
+    if (hasMaxItemVolume && hasVolumeOverride) {
+      const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override);
+      if (unitVolume === null) container.volumeComplete = false;
+      else container.currentVolume += unitVolume * quantity;
+    }
 
     const metadata = itemMetadata.get(templateId);
     const name = metadata?.name || templateId;
@@ -9055,7 +9125,8 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
       usedSlots: containers.reduce((total, container) => total + container.usedSlots, 0),
       maxSlots: containers.reduce((total, container) => total + container.maxSlots, 0),
       currentVolume: containers.reduce((total, container) => total + container.currentVolume, 0),
-      maxVolume: containers.reduce((total, container) => total + container.maxVolume, 0)
+      maxVolume: containers.reduce((total, container) => total + container.maxVolume, 0),
+      volumeComplete: containers.every((container) => container.volumeComplete)
     }
   };
 }
@@ -9201,6 +9272,7 @@ export async function baseContainerSlots(db, baseId, placeableId) {
         usedSlots: 0,
         maxVolume: Math.max(0, Number(row.max_item_volume) || 0),
         currentVolume: 0,
+        volumeComplete: hasMaxItemVolume && hasVolumeOverride,
         slots: []
       };
       inventoriesById.set(inventoryId, inventory);
@@ -9233,7 +9305,11 @@ export async function baseContainerSlots(db, baseId, placeableId) {
     // (see giveItemToStorage's correction comment), matching baseInventory's
     // own accumulation -- multiplied by quantity here to get this row's
     // total contribution.
-    inventory.currentVolume += (Number(row.volume_override) || 0) * slotQuantity;
+    if (hasMaxItemVolume && hasVolumeOverride) {
+      const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override);
+      if (unitVolume === null) inventory.volumeComplete = false;
+      else inventory.currentVolume += unitVolume * slotQuantity;
+    }
     inventory.slots.push({
       itemId: String(row.item_id),
       templateId,
@@ -9265,6 +9341,7 @@ export async function baseContainerSlots(db, baseId, placeableId) {
     usedSlots: inventories.reduce((total, inventory) => total + inventory.usedSlots, 0),
     maxVolume: inventories.reduce((total, inventory) => total + inventory.maxVolume, 0),
     currentVolume: inventories.reduce((total, inventory) => total + inventory.currentVolume, 0),
+    volumeComplete: inventories.every((inventory) => inventory.volumeComplete),
     inventories
   };
 }
@@ -10699,7 +10776,7 @@ async function supportsBaseContainerItemAdd(db) {
     ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"].every((column) => itemColumns.has(column));
 }
 
-async function supportsStorageGiveItem(db) {
+async function supportsStorageItemInsert(db) {
   if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories"))) return false;
   const inventoryColumns = await columnsFor(db, "inventories");
   const itemColumns = await columnsFor(db, "items");
@@ -10707,11 +10784,16 @@ async function supportsStorageGiveItem(db) {
     ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"].every((column) => itemColumns.has(column));
 }
 
+async function supportsStorageGiveItem(db) {
+  if (!(await supportsStorageItemInsert(db))) return false;
+  return (await columnsFor(db, "items")).has("volume_override");
+}
+
 // Refill writes the same items/inventories shape a storage grant does, plus it
 // has to resolve placeables to classify each device.
 export async function supportsGeneratorRefill(db) {
   if (!(await tableExists(db, "placeables"))) return false;
-  if (!(await supportsStorageGiveItem(db))) return false;
+  if (!(await supportsStorageItemInsert(db))) return false;
   const placeableColumns = await columnsFor(db, "placeables");
   return ["id", "owner_entity_id", "building_type"].every((column) => placeableColumns.has(column));
 }

@@ -5106,9 +5106,9 @@ test("storage give-item records PER-UNIT volume_override when itemVolume is prov
   assert.ok(insert);
   const volIdx = insert.values.length - 1;
   assert.equal(insert.values[volIdx], 0.2, "volume_override stored is the per-unit value, not per-unit * stackSize");
-  const volumeCall = calls.find((call) => call.text.includes("sum(coalesce(volume_override"));
+  const volumeCall = calls.find((call) => call.text.includes("select template_id, stack_size, volume_override"));
   assert.ok(volumeCall, "volume sum query must run when itemVolume is provided");
-  assert.match(volumeCall.text, /\* stack_size/, "the running total must multiply volume_override by stack_size, since volume_override is per-unit");
+  assert.ok(volumeCall, "capacity reads every stack so NULL overrides can fall back to catalog volume");
 });
 
 // Never rejects on a partial volume fit (issue #347 follow-up, per explicit
@@ -5138,6 +5138,37 @@ test("storage give-item clamps a requested quantity down to whatever volume actu
   assert.equal(insert.values[2], 25);
 });
 
+test("storage give-item counts game-created NULL overrides from catalog volume and permits an exact final unit", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 500 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ template_id: "AzuriteOre", stack_size: 2499, volume_override: null }],
+    insertedRows: [{ id: 506, template_id: "AzuriteOre", stack_size: 1, inventory_id: 7, volume_override: 0.2 }]
+  });
+
+  const result = await giveItemToStorage(db, 222, { templateId: "AzuriteOre", quantity: 1, itemVolume: 0.2 });
+
+  assert.equal(result.given, 1);
+  assert.equal(result.clamped, false);
+  assert.ok(calls.some((call) => call.text.includes("insert into dune.items")));
+});
+
+test("storage give-item refuses to guess when an existing stack has no known volume", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 500 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ template_id: "UnknownTemplate", stack_size: 1, volume_override: null }]
+  });
+
+  await assert.rejects(
+    () => giveItemToStorage(db, 222, { templateId: "AzuriteOre", quantity: 1, itemVolume: 0.2 }),
+    /cannot be calculated safely/
+  );
+  assert.equal(calls.some((call) => call.text.includes("insert into dune.items")), false);
+});
+
 // The one case that IS still a real rejection: truly zero room left, where
 // clamping would mean giving 0 -- there is nothing useful to insert or
 // report as given.
@@ -5163,7 +5194,7 @@ test("storage give-item does not check volume when itemVolume is omitted (backwa
   });
   const result = await giveItemToStorage(db, 222, { templateId: "WaterBottle_1", quantity: 100 });
   assert.equal(result.inserted.id, 504);
-  const volumeCall = calls.find((call) => call.text.includes("sum(coalesce(volume_override"));
+  const volumeCall = calls.find((call) => call.text.includes("select template_id, stack_size, volume_override"));
   assert.equal(volumeCall, undefined, "volume sum query must not run when itemVolume is not provided");
 });
 
@@ -5229,7 +5260,7 @@ test("storage give-multiple-items carries volume consumption forward across mult
   // 3-item batch proves this is genuinely carried-forward in-memory state,
   // not re-queried (and only coincidentally correct) per item.
   const countCalls = calls.filter((call) => call.text.includes("count(*)::int"));
-  const volumeCalls = calls.filter((call) => call.text.includes("sum(coalesce(volume_override"));
+  const volumeCalls = calls.filter((call) => call.text.includes("select template_id, stack_size, volume_override"));
   assert.equal(countCalls.length, 1, "count(*) must run once for the whole batch, not once per item");
   assert.equal(volumeCalls.length, 1, "the volume sum must run once for the whole batch, not once per item");
   const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
@@ -5516,9 +5547,9 @@ test("storage fill-item inserts with PER-UNIT volume_override and respects slot 
   assert.ok(insert);
   const volIdx = insert.values.length - 1;
   assert.equal(insert.values[volIdx], 1.0, "volume_override stored is the per-unit value, not per-unit * quantity");
-  const volumeCall = calls.find((call) => call.text.includes("sum(coalesce(volume_override"));
+  const volumeCall = calls.find((call) => call.text.includes("select template_id, stack_size, volume_override"));
   assert.ok(volumeCall, "volume sum query must run");
-  assert.match(volumeCall.text, /\* stack_size/, "the running total must multiply volume_override by stack_size, since volume_override is per-unit");
+  assert.ok(volumeCall, "capacity reads every stack so NULL overrides can fall back to catalog volume");
 });
 
 // Never rejects on a partial volume fit, same fix as give-item (issue #347
@@ -6056,6 +6087,19 @@ test("storage give-item reports unsupported capability when schema functions are
     transaction: async (fn) => fn(db)
   };
   await assert.rejects(() => giveItemToStorage(db, 222, { templateId: "WaterBottle_1", quantity: 1 }), UnsupportedCapabilityError);
+});
+
+test("storage give-item reports unsupported when volume_override cannot be written", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    itemColumns: ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"]
+  });
+
+  await assert.rejects(
+    () => giveItemToStorage(db, 222, { templateId: "AzuriteOre", quantity: 1, itemVolume: 0.2 }),
+    UnsupportedCapabilityError
+  );
+  assert.equal(calls.some((call) => call.text.includes("insert into dune.items")), false);
 });
 
 test("currency mutation resolves Solaris and calls adjust function in a transaction", async () => {
@@ -6954,7 +6998,7 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("from dune.inventories") && text.includes("where actor_id")) return { rows: fixtures.storageRows || [] };
       if (text.includes("from dune.vehicle_modules vm") && text.includes("count(*)::int as scanned")) return { rows: fixtures.vehicleModuleScanRows || [{ scanned: 0, vehicles: 0 }] };
       if (text.includes("update dune.vehicle_modules vm")) return { rows: fixtures.repairedVehicleModuleRows || [] };
-      if (text.includes("sum(coalesce(volume_override")) {
+      if (text.includes("select template_id, stack_size, volume_override from dune.items where inventory_id")) {
         // volumeRowsSequence mirrors countRowsSequence below. Both predate
         // the issue #347 code-review round-trip fix that made
         // giveMultipleItemsToBaseContainer query count/volume ONCE per
@@ -6969,9 +7013,14 @@ function fakeMutationDb(calls, fixtures = {}) {
         // mock seeing multiple live queries.
         if (fixtures.volumeRowsSequence) {
           const index = volumeCallCount++;
-          return { rows: [fixtures.volumeRowsSequence[index] || fixtures.volumeRowsSequence[fixtures.volumeRowsSequence.length - 1]] };
+          const rows = fixtures.volumeRowsSequence[index] || fixtures.volumeRowsSequence[fixtures.volumeRowsSequence.length - 1];
+          return { rows: rows.flatMap((row) => "total_volume" in row
+            ? [{ template_id: "__fixture__", stack_size: 1, volume_override: row.total_volume }]
+            : [row]) };
         }
-        return { rows: fixtures.volumeRows || [{ total_volume: 0 }] };
+        return { rows: (fixtures.volumeRows || []).flatMap((row) => "total_volume" in row
+          ? [{ template_id: "__fixture__", stack_size: 1, volume_override: row.total_volume }]
+          : [row]) };
       }
       if (text.includes("count(*)::int")) {
         // countRowsSequence: see volumeRowsSequence's comment above for why
