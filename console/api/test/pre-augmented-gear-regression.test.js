@@ -31,7 +31,7 @@ function fakePlayerDb(calls) {
           : table === "actors"
             ? ["id", "class", "owner_account_id", "properties"]
             : table === "items"
-              ? ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"]
+              ? ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats", "volume_override"]
               : ["id"];
         return { rows: names.map((column_name) => ({ column_name })) };
       }

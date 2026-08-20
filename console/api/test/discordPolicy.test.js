@@ -193,3 +193,50 @@ test("minTierForCapability rejects an unsupported capability string, matching di
     (error) => error.code === "invalid_capability"
   );
 });
+
+// minTierForCapability() (added alongside the command catalog work so a
+// consumer has a real, exported way to derive "minimum tier for this
+// capability" instead of hand-maintaining a second, parallel table that
+// could silently drift the moment a capability is added/moved here.
+test("minTierForCapability returns the lowest tier that actually grants each capability, independently cross-checked against discordActorCan", () => {
+  // Cross-check against discordActorCan() directly, rather than re-reading
+  // CAPABILITY_BY_TIER's shape a second time -- this is an independent
+  // verification path, not a restatement of the same table.
+  const roleIdForTier = { public: null, observer: "role-observer", moderator: "role-moderator", admin: "role-admin", owner: "role-owner" };
+  for (const capability of Object.values(DISCORD_CAPABILITIES)) {
+    const claimedMinTier = minTierForCapability(capability);
+    // Self-scoped capabilities (PLAYER_LINK_WRITE, ACCOUNT_LINK_WRITE) are
+    // deliberately excluded from every tier's CAPABILITY_BY_TIER set --
+    // they're authorized by identity via requireSelfScopedCapability(), not
+    // the tier ladder -- so null is the correct, documented result here,
+    // not a gap in this test's coverage.
+    if (SELF_SCOPED_CAPABILITIES.has(capability)) {
+      assert.equal(claimedMinTier, null, `${capability} is self-scoped and should return null from minTierForCapability()`);
+      continue;
+    }
+    assert.ok(DISCORD_ROLE_TIERS.includes(claimedMinTier), `${capability}'s minTierForCapability() result "${claimedMinTier}" is not a real tier`);
+
+    // Every tier at or above the claimed min tier must be granted the capability.
+    const claimedIndex = DISCORD_ROLE_TIERS.indexOf(claimedMinTier);
+    for (let i = claimedIndex; i < DISCORD_ROLE_TIERS.length; i++) {
+      const tier = DISCORD_ROLE_TIERS[i];
+      assert.equal(discordActorCan(actor(roleIdForTier[tier]), mapping, capability), true,
+        `minTierForCapability(${capability}) claims "${claimedMinTier}" but tier "${tier}" (>= claimed) is not actually granted the capability per discordActorCan`);
+    }
+
+    // The tier immediately below the claimed min tier must NOT be granted
+    // the capability (otherwise the claimed min tier is too high/strict).
+    if (claimedIndex > 0) {
+      const belowTier = DISCORD_ROLE_TIERS[claimedIndex - 1];
+      assert.equal(discordActorCan(actor(roleIdForTier[belowTier]), mapping, capability), false,
+        `minTierForCapability(${capability}) claims "${claimedMinTier}" but the tier below it, "${belowTier}", is ALSO granted the capability per discordActorCan -- claimed min tier is too high`);
+    }
+  }
+});
+
+test("minTierForCapability rejects an unsupported capability string, matching discordActorCan's own validation", () => {
+  assert.throws(
+    () => minTierForCapability("not:a:real:capability"),
+    (error) => error.code === "invalid_capability"
+  );
+});

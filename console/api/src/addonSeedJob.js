@@ -11,6 +11,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { readMarketItemOverrides, mergeMarketSeedPlanWithOverrides, readUnsafeTemplateIds } from "./services/marketItemOverrides.js";
 
 // Keep identity helpers local so this module does not circular-import addonJobs.js.
 export const EDA_EXCHANGE_BOT_ADDON_ID = "eda-exchange-bot";
@@ -372,6 +373,58 @@ function augmentStatRollCounts(config) {
   return counts;
 }
 
+// The bot's own listings for one exchange: every order owned by the bot's
+// 'Revy' actor. Player listings are never matched, and neither are seller
+// "Take Solari" payment entries — buyback writes those with the seller as
+// owner, so a clear can never destroy a pending payout.
+function botListingsClearSql(exchangeId, { countInto = "" } = {}) {
+  return `
+DO $$
+DECLARE
+    v_owner_id BIGINT;
+    v_exchange_id BIGINT;
+    v_item_ids BIGINT[];
+    v_removed BIGINT := 0;
+BEGIN
+    v_exchange_id := ${exchangeId};
+    SELECT id INTO v_owner_id FROM dune.actors WHERE class = 'Revy' LIMIT 1;
+    IF v_owner_id IS NOT NULL THEN
+        SELECT ARRAY_AGG(item_id) INTO v_item_ids
+        FROM dune.dune_exchange_orders
+        WHERE owner_id = v_owner_id AND exchange_id = v_exchange_id AND item_id IS NOT NULL;
+        DELETE FROM dune.dune_exchange_sell_orders WHERE order_id IN (SELECT id FROM dune.dune_exchange_orders WHERE owner_id = v_owner_id AND exchange_id = v_exchange_id);
+        DELETE FROM dune.dune_exchange_orders WHERE owner_id = v_owner_id AND exchange_id = v_exchange_id;
+        GET DIAGNOSTICS v_removed = ROW_COUNT;
+        IF v_item_ids IS NOT NULL THEN DELETE FROM dune.items WHERE id = ANY(v_item_ids); END IF;
+    END IF;
+${countInto ? `    INSERT INTO ${countInto} (removed_listings, removed_items, exchange_id) VALUES (v_removed, COALESCE(ARRAY_LENGTH(v_item_ids, 1), 0), v_exchange_id);` : "    -- Seed path: the removed count is not reported."}
+END $$;`;
+}
+
+// Read-only probe for the manual unseed: how many listings the bot currently
+// has on this exchange. Zero means the clear (and its backup) can be skipped.
+export function buildBotListingCountSql(exchangeId) {
+  const id = normalizeExchangeId(exchangeId);
+  if (!id) throw new Error("Unseed exchangeId must be a positive whole number (PostgreSQL BIGINT).");
+  return `SELECT COUNT(*)::bigint AS bot_listings
+FROM dune.dune_exchange_orders o
+JOIN dune.actors a ON a.id = o.owner_id
+WHERE a.class = 'Revy' AND o.exchange_id = ${id};`;
+}
+
+// Manual "unseed": the seed run's clear step alone, without reseeding.
+// Restores the EDA Exchange Bot's ability to empty the NPC market that was
+// lost when the bot became console-native (reseed always clears + seeds).
+export function buildMarketUnseedSql(exchangeId) {
+  const id = normalizeExchangeId(exchangeId);
+  if (!id) throw new Error("Unseed exchangeId must be a positive whole number (PostgreSQL BIGINT).");
+  // No outer BEGIN/COMMIT: executeUnseedRun wraps this in db.transaction(),
+  // matching buildMarketSeedSql.
+  return `CREATE TEMP TABLE market_unseed_result (removed_listings BIGINT NOT NULL, removed_items BIGINT NOT NULL, exchange_id BIGINT NOT NULL) ON COMMIT DROP;
+${botListingsClearSql(id, { countInto: "market_unseed_result" })}
+SELECT removed_listings, removed_items, exchange_id FROM market_unseed_result;`;
+}
+
 export function buildMarketSeedSql(plan, schedule) {
   const exchangeId = requireSeedExchangeId(schedule);
   const multiplier = schedule.priceMultiplier;
@@ -386,24 +439,7 @@ export function buildMarketSeedSql(plan, schedule) {
   }).join(",\n") || "(NULL,1,0,0,0,0,'equippable',0,'{}')";
 
   // Always clear the bot's own listings for this exchange before seeding.
-  const clearSql = `
-DO $$
-DECLARE
-    v_owner_id BIGINT;
-    v_exchange_id BIGINT;
-    v_item_ids BIGINT[];
-BEGIN
-    v_exchange_id := ${exchangeId};
-    SELECT id INTO v_owner_id FROM dune.actors WHERE class = 'Revy' LIMIT 1;
-    IF v_owner_id IS NOT NULL THEN
-        SELECT ARRAY_AGG(item_id) INTO v_item_ids
-        FROM dune.dune_exchange_orders
-        WHERE owner_id = v_owner_id AND exchange_id = v_exchange_id AND item_id IS NOT NULL;
-        DELETE FROM dune.dune_exchange_sell_orders WHERE order_id IN (SELECT id FROM dune.dune_exchange_orders WHERE owner_id = v_owner_id AND exchange_id = v_exchange_id);
-        DELETE FROM dune.dune_exchange_orders WHERE owner_id = v_owner_id AND exchange_id = v_exchange_id;
-        IF v_item_ids IS NOT NULL THEN DELETE FROM dune.items WHERE id = ANY(v_item_ids); END IF;
-    END IF;
-END $$;`;
+  const clearSql = botListingsClearSql(exchangeId);
 
   // No outer BEGIN/COMMIT: executeSeedRun wraps this in db.transaction(),
   // matching buildBuybackSql. Nested transaction delimiters end the outer txn
@@ -455,7 +491,10 @@ SELECT r.status, r.exchange_id, r.access_point_id, r.owner_id, r.inventory_id, S
 }
 
 export async function executeSeedRun(config, db, schedule, { runDuneImpl, buildDuneArgs, runSql }) {
-  const plan = loadMarketSeedPlan(config);
+  const basePlan = loadMarketSeedPlan(config);
+  const overrides = readMarketItemOverrides(config.repoRoot);
+  const unsafeIds = readUnsafeTemplateIds(config.repoRoot);
+  const plan = mergeMarketSeedPlanWithOverrides(basePlan, overrides, unsafeIds);
   if (typeof db?.transaction !== "function") {
     throw new Error("Exchange seed requires database transaction support.");
   }
@@ -474,6 +513,40 @@ export async function executeSeedRun(config, db, schedule, { runDuneImpl, buildD
     priceMultiplier: schedule.priceMultiplier,
     exchangeId: schedule.exchangeId,
     detail: `Seeded ${listingCount} listings on exchange ${schedule.exchangeId} at ${schedule.priceMultiplier}x${describeCategoryMultipliers(schedule)}${describeCommodityStacks(schedule)} (bot listings cleared first).`
+  };
+}
+
+// Manual unseed run: probe read-only first and only back up + clear when the
+// bot actually has listings on the exchange, mirroring buyback's
+// probe-before-backup behavior. Never scheduled; runNow-only.
+export async function executeUnseedRun(config, db, exchangeId, { runDuneImpl, buildDuneArgs, runSql }) {
+  const id = normalizeExchangeId(exchangeId);
+  if (!id) throw new Error("An exchangeId is required to remove the bot's NPC listings.");
+  if (typeof db?.transaction !== "function") {
+    throw new Error("Exchange unseed requires database transaction support.");
+  }
+  const probe = await runSql(db, buildBotListingCountSql(id), false);
+  if (decimalString(probe?.rows?.[0]?.bot_listings) === "0") {
+    return {
+      status: "empty",
+      removedListings: "0",
+      removedItems: "0",
+      exchangeId: id,
+      detail: `No bot listings on exchange ${id}; nothing removed and no backup was taken.`
+    };
+  }
+  if (!config.mockMode) {
+    await runDuneImpl(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "market-bot-unseed" } });
+  }
+  const result = await db.transaction((tx) => runSql(tx, buildMarketUnseedSql(id), true));
+  const row = result?.rows?.[0] || {};
+  const removedListings = decimalString(row.removed_listings);
+  return {
+    status: "unseeded",
+    removedListings,
+    removedItems: decimalString(row.removed_items),
+    exchangeId: id,
+    detail: `Removed ${removedListings} bot listing(s) from exchange ${id}. Player listings and pending seller payments were not touched.`
   };
 }
 

@@ -600,6 +600,8 @@ backup_db() {
   local scope
   local scope_maps
   local artifact_id
+  local server_title
+  local server_slug
   local backup_file
   local sidecar_file
   local staged_backup_file
@@ -621,7 +623,20 @@ backup_db() {
   scope="$(backup_scope_slug)"
   [ -n "$scope" ] || scope="all_maps"
   scope_maps="$(backup_scope_maps)"
-  artifact_id="dune-db-$scope"
+  server_title="$(config_value .env SERVER_TITLE || true)"
+  [ -n "$server_title" ] || server_title="Dune Server"
+  server_slug="$(printf '%s' "$server_title" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')"
+  [ -n "$server_slug" ] || server_slug="dune-server"
+  artifact_id="$server_slug"
+  # Market Bot backups carry their origin in the filename so a plain ls of the
+  # backup directory shows what minted them (the sidecar's backup_origin is
+  # authoritative but not visible without opening it), e.g.
+  # kovalt-sietch-market-bot-buyback-20260819-020000.backup
+  case "${DB_BACKUP_ORIGIN:-manual}" in
+    market-bot-*)
+      artifact_id="$server_slug-$(printf '%s' "${DB_BACKUP_ORIGIN}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')"
+      ;;
+  esac
   backup_file="$out_dir/$artifact_id-$ts.backup"
   sidecar_file="$backup_file.yaml"
   staged_backup_file="$backup_file.partial.$$"
@@ -666,7 +681,7 @@ backup_db() {
     echo "format: pg_dump_custom"
     echo "scope: $scope"
     echo "maps: ${scope_maps:-unknown}"
-    echo "server_title: $(config_value .env SERVER_TITLE || echo unknown)"
+    echo "server_title: $server_title"
     echo "server_region: $(config_value .env SERVER_REGION || echo unknown)"
     echo "server_ip_mode: $(config_value .env SERVER_IP_MODE || echo unknown)"
     echo "battlegroup_id: $(config_value runtime/generated/battlegroup.env BATTLEGROUP_ID || echo unknown)"
@@ -703,6 +718,15 @@ backup_db() {
   if [ "${DB_BACKUP_PRUNE_AFTER_SUCCESS:-0}" = "1" ]; then
     prune_old_db_backups "$out_dir" "${DB_AUTO_BACKUP_RETENTION_DAYS:-0}"
   fi
+
+  # Market Bot schedules mint backups unattended before every write, so they
+  # are capped by count after every successful Market Bot backup. Other
+  # origins (manual, automatic, safety) are never candidates.
+  case "${DB_BACKUP_ORIGIN:-manual}" in
+    market-bot-*)
+      prune_market_bot_backups "$out_dir"
+      ;;
+  esac
 }
 
 SYSTEM_BACKUP_DIR_DEFAULT="runtime/backups/system"
@@ -1183,6 +1207,65 @@ delete_all_backups() {
   done <<< "$names"
 
   echo "Deleted $deleted database backups."
+}
+
+# How many Market Bot backups survive a prune. Market Bot backups are matched
+# by the sidecar's backup_origin (market-bot-seed / market-bot-buyback /
+# market-bot-unseed), not the filename, so unlabeled backups written by older
+# releases are cleaned up too.
+MARKET_BOT_BACKUP_KEEP="${DUNE_MARKET_BOT_BACKUP_KEEP:-5}"
+
+backup_origin_value() {
+  local backup_file="$1"
+  local origin=""
+
+  origin="$(backup_metadata_value "$backup_file" backup_origin || true)"
+  [ -n "$origin" ] || origin="$(backup_metadata_value "$backup_file" origin || true)"
+  printf '%s' "$origin"
+}
+
+backup_is_market_bot() {
+  case "$(backup_origin_value "$1" | tr '[:upper:]' '[:lower:]')" in
+    market-bot-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Keep only the newest $keep Market Bot backups (by the timestamp embedded in
+# the backup name, which is stable even if file mtimes were touched). Runs
+# after every successful Market Bot backup; count-based rather than age-based
+# because unattended seed/buyback schedules mint backups indefinitely.
+prune_market_bot_backups() {
+  local backup_dir="${1:-$BACKUP_DIR_DEFAULT}"
+  local keep="${2:-$MARKET_BOT_BACKUP_KEEP}"
+  local removed=0
+  local index=0
+  local name
+
+  validate_positive_integer "$keep" || return 0
+  [ -d "$backup_dir" ] || return 0
+
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    index=$((index + 1))
+    [ "$index" -gt "$keep" ] || continue
+    if delete_backup_files_for_name "$name" "$backup_dir" >/dev/null; then
+      removed=$((removed + 1))
+    fi
+  done < <(
+    iter_valid_backup_names "$backup_dir" \
+      | while IFS= read -r candidate; do
+          [ -n "$candidate" ] || continue
+          backup_is_market_bot "$(backup_path_for_name "$candidate" "$backup_dir")" || continue
+          printf '%s\t%s\n' "$(backup_timestamp_from_name "$candidate")" "$candidate"
+        done \
+      | sort -r \
+      | cut -f2-
+  )
+
+  if [ "$removed" -gt 0 ]; then
+    echo "Pruned $removed Market Bot backup(s); the newest $keep are kept."
+  fi
 }
 
 prune_old_db_backups() {

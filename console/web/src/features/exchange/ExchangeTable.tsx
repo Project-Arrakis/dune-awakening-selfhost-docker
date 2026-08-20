@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { exchangeApi, type ExchangeItem, type ExchangeListing, type ExchangeOwner } from "../../api/exchange";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
+import { exchangeDisplayLabel } from "./display";
 
 const COLUMNS = ["display_name", "quality_level", "category", "tier", "lowest_price", "total_stock", "listing_count"];
 const COLUMN_LABELS: Record<string, string> = {
@@ -35,6 +36,10 @@ function gradeLabel(quality: number) {
   return quality > 0 ? `Q${quality}` : "Standard";
 }
 
+function itemDisplayName(item: ExchangeItem) {
+  return item.display_name ? exchangeDisplayLabel(item.display_name) : item.template_id;
+}
+
 function renderCell(row: Record<string, unknown>, column: string) {
   const item = row as ExchangeItem;
   if (column === "display_name") {
@@ -44,14 +49,14 @@ function renderCell(row: Record<string, unknown>, column: string) {
           ? <img className="exchange-item-icon" src={item.icon} alt="" loading="lazy" />
           : <span className="exchange-item-icon exchange-item-icon-empty" aria-hidden="true" />}
         <span className="exchange-item-text">
-          <span className="exchange-item-name">{item.display_name || item.template_id}</span>
+          <span className="exchange-item-name">{itemDisplayName(item)}</span>
           <span className="exchange-item-template" title={item.template_id}>{item.template_id}</span>
         </span>
       </div>
     );
   }
   if (column === "quality_level") return gradeLabel(item.quality_level);
-  if (column === "category") return item.category ? String(item.category) : <span className="muted">—</span>;
+  if (column === "category") return item.category ? exchangeDisplayLabel(item.category, true) : <span className="muted">—</span>;
   if (column === "tier") return item.tier ? `T${item.tier}` : <span className="muted">—</span>;
   if (column === "lowest_price") return <span className="exchange-price">{fmt(item.lowest_price)}</span>;
   if (column === "total_stock") return fmt(item.total_stock);
@@ -77,7 +82,7 @@ function ListingRows({ listings }: { listings: ExchangeListing[] }) {
           <tr key={listing.order_id}>
             <td>
               <span className="exchange-seller-name">{listing.owner_name}</span>
-              <span className={`exchange-owner-badge exchange-owner-${listing.owner_type}`}>{listing.owner_type}</span>
+              <span className={`exchange-owner-badge exchange-owner-${listing.owner_type}`}>{exchangeDisplayLabel(listing.owner_type)}</span>
             </td>
             <td className="exchange-num exchange-price">{fmt(listing.price)}</td>
             <td className="exchange-num">{fmt(listing.stock)}</td>
@@ -142,7 +147,7 @@ export function ExchangeTable({ rows, owner, sortColumn, sortDirection, onSort, 
         const item = row as ExchangeItem;
         const key = itemKey(item);
         const isExpanded = expandedKey === key;
-        const label = `${isExpanded ? "Hide" : "Show"} listings for ${item.display_name || item.template_id}`;
+        const label = `${isExpanded ? "Hide" : "Show"} listings for ${itemDisplayName(item)}`;
         return (
           <button className="exchange-expand-button" title={label} aria-label={label} aria-expanded={isExpanded} onClick={(event) => { event.stopPropagation(); void toggle(item); }}>
             {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
@@ -157,7 +162,7 @@ export function ExchangeTable({ rows, owner, sortColumn, sortDirection, onSort, 
         const key = itemKey(item);
         return (
           <div className="exchange-listings">
-            <p className="exchange-listings-header">{item.display_name || item.template_id} · {gradeLabel(item.quality_level)} · {item.listing_count} listing{item.listing_count === 1 ? "" : "s"}</p>
+            <p className="exchange-listings-header">{itemDisplayName(item)} · {gradeLabel(item.quality_level)} · {item.listing_count} Listing{item.listing_count === 1 ? "" : "s"}</p>
             {loadingKey === key
               ? <p className="muted">Loading listings…</p>
               : errorKey === key

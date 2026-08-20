@@ -16,6 +16,7 @@ function fixtureRepo() {
     { id: "SteelBar", name: "Steel Ingot", category: "resources", source: "Resources", group: "refined_resource", volume: 1.0 },
     { id: "T6RefinedResourceA", name: "Plastanium Ingot", category: "resources", source: "Resources", group: "refined_resource", volume: 1.0 },
     { id: "FremenComponent1", name: "EMF Generator", category: "resources", source: "Resources", group: "component", volume: 1.0 },
+    { id: "AzuriteOre", name: "Copper Ore", category: "resources", source: "Resources", group: "raw_resource", volume: 0.2 },
     { id: "BasicLighting_Patent", name: "Basic Lighting", category: "buildings", source: "BuildingSets" },
     { id: "Developer_Storage_Container_Patent", name: "Developer Storage Container", category: "buildings", source: "BuildingSets" }
   ]));
@@ -146,10 +147,22 @@ test("resolveFillableCatalogItem accepts components", () => {
   assert.equal(item.group, "component");
 });
 
-test("resolveFillableCatalogItem rejects unfillable items", () => {
+test("resolveFillableCatalogItem accepts raw resources", () => {
   const root = fixtureRepo();
+  const item = resolveFillableCatalogItem(root, { itemId: "AzuriteOre" });
+  assert.equal(item.group, "raw_resource");
+  assert.equal(item.volume, 0.2);
+});
+
+test("resolveFillableCatalogItem rejects untagged/unfillable items", () => {
+  const root = fixtureRepo();
+  // CupOfWater deliberately carries no `group` in the fixture -- PlantFiber
+  // is intentionally NOT used here since it is a real raw_resource in the
+  // production catalog (see runtime/data/admin-items.json) and reusing it
+  // as the "should be rejected" case would misleadingly suggest raw
+  // resources are unfillable, which is no longer true.
   assert.throws(
-    () => resolveFillableCatalogItem(root, { itemId: "PlantFiber" }),
+    () => resolveFillableCatalogItem(root, { itemId: "CupOfWater" }),
     /Item type not allowed for fill/
   );
 });
@@ -159,6 +172,38 @@ test("resolveFillableCatalogItem rejects unknown item ids", () => {
   assert.throws(
     () => resolveFillableCatalogItem(root, { itemId: "NonExistentItem" }),
     /Item type not allowed for fill/
+  );
+});
+
+// Found during code review (2026-08-19): every downstream volume-cap check
+// (giveItemToBaseContainer/fillItemToBaseContainer/
+// giveMultipleItemsToBaseContainer) treats itemVolume <= 0 as "not
+// volume-tracked, skip the cap" -- correct for the standalone Storage tab's
+// much broader catalog, but wrong for this narrower, fillable-only surface,
+// where every real item is expected to carry real volume data. A catalog
+// entry missing `volume` (or explicitly set to 0) must be rejected HERE,
+// not silently allowed through to bypass a container's volume cap.
+test("resolveFillableCatalogItem rejects a fillable-group item with no catalogued volume", () => {
+  const root = fixtureRepo();
+  const file = join(root, "runtime/data/admin-items.json");
+  const rows = JSON.parse(readFileSync(file, "utf8"));
+  rows.push({ id: "NoVolumeComponent", name: "No Volume Component", category: "resources", source: "Resources", group: "component" });
+  writeFileSync(file, JSON.stringify(rows));
+  assert.throws(
+    () => resolveFillableCatalogItem(root, { itemId: "NoVolumeComponent" }),
+    /missing catalogued volume data/
+  );
+});
+
+test("resolveFillableCatalogItem rejects a fillable-group item with volume explicitly 0", () => {
+  const root = fixtureRepo();
+  const file = join(root, "runtime/data/admin-items.json");
+  const rows = JSON.parse(readFileSync(file, "utf8"));
+  rows.push({ id: "ZeroVolumeComponent", name: "Zero Volume Component", category: "resources", source: "Resources", group: "component", volume: 0 });
+  writeFileSync(file, JSON.stringify(rows));
+  assert.throws(
+    () => resolveFillableCatalogItem(root, { itemId: "ZeroVolumeComponent" }),
+    /missing catalogued volume data/
   );
 });
 

@@ -1226,8 +1226,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const engineDirty = changedKeys(engineValues, engineDraft, engineFields);
   const gameDirty = changedKeys(gameValues, gameDraft, userGameFields);
   // The download buttons report how many settings each client ini actually carries.
-  // Count the generated file rather than the drafts: the download reflects saved
-  // state, and client_game_ini emits whatever was saved rather than a diff.
+  // Count the generated file rather than the drafts: downloads reflect saved state
+  // and include only non-default values explicitly classified as client-required.
   useEffect(() => {
     if (!modifiersOpen || (settingsTab !== "engine" && settingsTab !== "game")) return undefined;
     let cancelled = false;
@@ -2133,7 +2133,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
           <button className={settingsTab === "choam" ? "active" : ""} role="tab" aria-selected={settingsTab === "choam"} onClick={() => { setSettingsTab("choam"); void loadChoamTerminals().catch(() => undefined); }}>CHOAM Terminals</button>
         </div>
         {(settingsTab === "engine" || settingsTab === "game") && <div className="settings-download-buttons">
-          <button className="settings-download-button" type="button" title={!isEngineGlobal ? "Download experimental client Engine.ini for the selected UserEngine target" : "Download experimental client Engine.ini for global UserEngine values"} onClick={() => run(downloadClientEngineIni)}><Download size={16} /> Engine.ini{clientIniCounts.engine === null ? "" : ` (${clientIniCounts.engine})`}</button>
+          <InfoTooltip id="client-ini-download-help" label="About Client Configuration Downloads">Some modifiers must match on the server and each player&apos;s client. Save changes first, then download the files, close Dune: Awakening, back up the existing client INIs, and merge the generated sections into Saved/Config/WindowsClient. Only non-default settings known to require client configuration are included.</InfoTooltip>
+          <button className="settings-download-button" type="button" title={!isEngineGlobal ? "Download client Engine.ini for the selected UserEngine target" : "Download client Engine.ini for global UserEngine values"} onClick={() => run(downloadClientEngineIni)}><Download size={16} /> Engine.ini{clientIniCounts.engine === null ? "" : ` (${clientIniCounts.engine})`}</button>
           <button className="settings-download-button" type="button" title={userGameName && !isUserGameGlobal ? "Download client Game.ini for the selected UserGame target" : "Download client Game.ini for global UserGame values"} onClick={() => run(downloadClientGameIni)}><Download size={16} /> Game.ini{clientIniCounts.game === null ? "" : ` (${clientIniCounts.game})`}</button>
         </div>}
       </div>
