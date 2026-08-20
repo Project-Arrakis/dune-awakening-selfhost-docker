@@ -493,10 +493,24 @@ already used — through three new, Bases-scoped functions
 (`giveItemToBaseContainer`/`fillItemToBaseContainer`/
 `giveMultipleItemsToBaseContainer`, the last renamed from
 `giveMultipleItemsToStorage`, which never had a standalone-tab caller in
-the first place). `giveItemToStorage()`/`fillItemToStorage()` are
-unchanged and still used by the standalone Storage tab's own routes
-(`storageGiveItemRoute` etc.), which operate on an operator-supplied
-storage id directly and have no base+placeable ownership chain to verify.
+the first place). `giveItemToStorage()` is unchanged and still used by
+the standalone Storage tab's own `storageGiveItemRoute`
+(`POST /api/storage/{storageId}/give-item`), which operates on an
+operator-supplied storage id directly and has no base+placeable
+ownership chain to verify.
+
+**Corrected 2026-08-20** (post-merge review of upstream PR #182): the
+paragraph above previously also claimed `fillItemToStorage()` is "still
+used by the standalone Storage tab's own routes" -- verified directly
+against `server.js` (`grep -n "fillItemToStorage(" console/api/src/server.js`
+returns nothing) that this was never true: there is no
+`POST /api/storage/{storageId}/fill-item` route, and no other route
+calls `fillItemToStorage()` either. The function is fully implemented
+and unit-tested in `duneDb.js`, but unreachable via any real HTTP
+route today -- the standalone Storage tab only has a Give action, not
+a Fill action. Any operator or future contributor reading the previous
+wording would reasonably believe the Storage tab supports Fill; it
+does not.
 
 **Both Give and Fill are restricted to raw resources, refined resources, and components only.**
 `baseContainerGiveItemRoute`/`baseContainerGiveItemsRoute`/`baseContainerFillItemRoute` all resolve items
@@ -603,8 +617,9 @@ see "`volume_override` is per-unit, not per-stack" immediately below for why it 
 **A real, live in-game bug, not a design choice.** `dune.items.volume_override` is stored as
 the item's PER-UNIT volume, and every volume total (the running total `giveItemToBaseContainer`/
 `fillItemToBaseContainer`/`giveMultipleItemsToBaseContainer` check against a container's `max_item_volume`
-on this tab, the standalone Storage tab's own `giveItemToStorage`/`fillItemToStorage` checking the same
-thing, and every read-side total in `baseInventory`, the standalone Storage tab's `listStorage`, and
+on this tab, the standalone Storage tab's own `giveItemToStorage` checking the same thing (`fillItemToStorage`
+exists in `duneDb.js` and follows the same convention, but has no live HTTP route today -- see the Give/Fill
+route table above), and every read-side total in `baseInventory`, the standalone Storage tab's `listStorage`, and
 `baseContainerSlots`) is computed as `volume_override × stack_size`, summed across rows.
 
 An earlier version of this code stored `volume_override` as the stack's **total** volume
