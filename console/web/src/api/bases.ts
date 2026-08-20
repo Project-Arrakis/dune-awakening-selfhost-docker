@@ -532,10 +532,23 @@ export const basesApi = {
   // inserted -- never rejected outright -- so `given` can be less than
   // `requested`. Only genuinely zero room left (not even 1 unit fits) is
   // still a real error, surfaced via `error`/`reason` as before.
+  // `inserted` below is intentionally snake_case (id/template_id/stack_size/
+  // quality_level/position_index/inventory_id/volume_override), not
+  // camelCase like the rest of this API surface -- found during post-merge
+  // review of upstream PR #182 (2026-08-20): duneDb.js's giveItemToStorage/
+  // giveItemToBaseContainer/fillItemToStorage/fillItemToBaseContainer/
+  // giveMultipleItemsToBaseContainer all return `inserted: inserted.rows[0]`
+  // straight from a `returning ...` query, unlike addBaseContainerItem
+  // (a few lines below in duneDb.js), which explicitly builds a camelCase
+  // object for exactly this reason. This type previously declared the
+  // camelCase shape the rest of the codebase uses, which was never true at
+  // runtime -- currently latent (no caller here reads `.inserted` yet), but
+  // any future caller trusting the old declared type would have gotten
+  // `undefined` silently instead of a compile error.
   giveContainerItem: (baseId: string, placeableId: string, body: { itemName?: string; itemId?: string; quantity: number; confirmation: string }) =>
     api<{
       supported: boolean;
-      result?: { ok: boolean; inserted: { id: string; templateId: string; stackSize: number }; requested: number; given: number; clamped: boolean };
+      result?: { ok: boolean; inserted: { id: string; template_id: string; stack_size: number; quality_level: number; position_index: number; inventory_id: string; volume_override: number | null }; requested: number; given: number; clamped: boolean };
       error?: string;
       reason?: string;
     }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/give-item`,
@@ -556,7 +569,10 @@ export const basesApi = {
       result?: {
         ok: boolean;
         results: {
-          inserted?: { id: string; templateId: string; stackSize: number };
+          // See giveContainerItem's own comment above -- same real
+          // snake_case shape, not the camelCase this type previously (and
+          // incorrectly) declared.
+          inserted?: { id: string; template_id: string; stack_size: number; quality_level: number; position_index: number; inventory_id: string; volume_override: number | null };
           templateId: string;
           requested: number;
           given: number;
@@ -576,10 +592,13 @@ export const basesApi = {
   // null for a "Fill to Capacity" call (quantity: 0, no specific amount was
   // ever asked for to compare against) and a real number for "Fill
   // Amount" (an explicit quantity that may itself get clamped down).
+  // See giveContainerItem's own comment above -- same real snake_case
+  // shape, not the camelCase this type previously (and incorrectly)
+  // declared.
   fillContainerItem: (baseId: string, placeableId: string, body: { itemName?: string; itemId?: string; quantity: number; confirmation: string }) =>
     api<{
       supported: boolean;
-      result?: { ok: boolean; inserted: { id: string; templateId: string; stackSize: number; volumeOverride?: number }; requested: number | null; given: number; clamped: boolean };
+      result?: { ok: boolean; inserted: { id: string; template_id: string; stack_size: number; quality_level: number; position_index: number; inventory_id: string; volume_override: number | null }; requested: number | null; given: number; clamped: boolean };
       error?: string;
       reason?: string;
     }>(`/api/bases/${encodeURIComponent(baseId)}/containers/${encodeURIComponent(placeableId)}/fill-item`,
