@@ -251,6 +251,18 @@ export function loadConfig() {
     generatedDir,
     secretsDir,
     auditLog: resolve(generatedDir, "web-admin-audit.jsonl"),
+    // Tier 3 password + mandatory TOTP (RFC docs/rfc-console-auth.md §2.3/§4).
+    // Gated OFF by default during incremental rollout: the backend enrollment/
+    // login flow lands before the console UI that drives it (a later phase), so
+    // activating it on every upgrade now would strand operators at an
+    // enrollment prompt the UI can't yet complete. With the flag unset, password
+    // login is byte-identical to today (single factor) -- Requirement 0. The
+    // flag flips to default-on / is removed once the frontend ships, restoring
+    // the RFC's mandatory behavior for the release.
+    consoleTotpEnabled: process.env.CONSOLE_TOTP_ENABLED === "1",
+    secondFactorFile: resolve(generatedDir, "console-second-factor.json"),
+    totpIssuer: APP_NAME,
+    enrollmentSessionTtlMs: 10 * 60 * 1000, // §4: short-lived, non-renewable enrollment session
     spicefieldOverridesFile: resolve(generatedDir, "spicefield-overrides.json"),
     landsraadMilestonePresetFile: resolve(generatedDir, "landsraad-milestones.json"),
     taskRetention: Number(process.env.ADMIN_TASK_RETENTION || 200),
@@ -437,6 +449,7 @@ export function publicConfig(config) {
     secureCookies: config.secureCookies,
     allowHostBootstrap: config.allowHostBootstrap,
     mockMode: config.mockMode,
-    discordOAuthConfigured: config.discordOAuthConfigured
+    discordOAuthConfigured: config.discordOAuthConfigured,
+    consoleTotpEnabled: config.consoleTotpEnabled
   };
 }
