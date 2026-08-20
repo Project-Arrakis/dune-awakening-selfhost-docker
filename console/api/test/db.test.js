@@ -6109,7 +6109,7 @@ test("augment inventory item requires valid augment IDs", async () => {
 test("vehicle decay repair is scoped to the selected player's owned vehicles", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
-    vehicleModuleScanRows: [{ scanned: 4, vehicles: 2, comparable: 3, missing_maximum: 1 }],
+    vehicleModuleScanRows: [{ scanned: 4, vehicles: 2, comparable: 3, missing_maximum: 1, missing_current: 2 }],
     repairedVehicleModuleRows: [{ id: 10, vehicle_id: 900 }, { id: 11, vehicle_id: 900 }, { id: 12, vehicle_id: 901 }]
   });
   const result = await repairVehicleDecay(db, 123, { thresholdPercent: 50 });
@@ -6117,8 +6117,13 @@ test("vehicle decay repair is scoped to the selected player's owned vehicles", a
   assert.equal(result.vehicles, 2);
   assert.equal(result.comparable, 3);
   assert.equal(result.missingMaximum, 1);
+  assert.equal(result.missingCurrent, 2);
   assert.equal(result.repaired, 3);
   assert.equal(result.repairedVehicles, 2);
+  const scan = calls.find((call) => call.text.includes("count(*)::int as scanned"));
+  assert.ok(scan);
+  assert.match(scan.text, /durability->>'CurrentDurability'/);
+  assert.match(scan.text, /missing_current/);
   const update = calls.find((call) => call.text.includes("update dune.vehicle_modules vm"));
   assert.ok(update);
   assert.match(update.text, /join dune\.actors a on a\.id = vm\.vehicle_id/);
@@ -6129,6 +6134,7 @@ test("vehicle decay repair is scoped to the selected player's owned vehicles", a
   assert.match(update.text, /template_maxima/);
   assert.match(update.text, /DecayedMaxDurability/);
   assert.match(update.text, /CurrentDurability/);
+  assert.match(update.text, /durability->>'CurrentDurability'\)::numeric </);
   assert.deepEqual(update.values, [44, 55, 0.5]);
 });
 
