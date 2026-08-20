@@ -3369,21 +3369,30 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bases-inventory-contents-head-actions { display: flex; align-items: center; gap: 8px; }
 
 /* Adds a 24px checkbox track between the thumbnail and the item name only
-   when bulk-select is offered at all (deleteAllowed) -- the base
+   when bulk-select is offered at all (deleteAllowed AND the destructive-
+   controls toggle below is on -- issue #371, widened same day) -- the base
    .bases-inventory-contents-row grid stays 5 columns for containers where
-   deletion is unavailable, so this modifier inserts one track rather than
-   redefining the whole grid unconditionally. */
+   deletion is unavailable, or where it is available but the toggle is
+   still off, so this modifier inserts one track rather than redefining
+   the whole grid unconditionally. */
 .bases-inventory-contents-row.with-checkbox {
   grid-template-columns: 40px 24px minmax(0, 1fr) 48px 64px 38px;
 }
 .bases-inventory-contents-row input[type="checkbox"] { width: 16px; height: 16px; margin: 0 auto; }
 
-/* Give/Fill visibility toggle (issue #371) -- hides the whole
-   .bases-inventory-givefill-panel below by default. Reuses the shared
-   .switch-checkbox pattern (AdminToolsPanel's Daily Restart/Restart Queue
-   toggles, addon pin/status toggles) rather than inventing a new control;
-   scoped margin only, no other overrides needed since the shared component
-   already carries its own enabled/disabled styling. */
+/* Give/Fill/Delete visibility toggle (issue #371; widened same day to also
+   gate Delete Selected/Delete All and their per-row checkboxes, after an
+   operator-reported oversight -- those previously rendered whenever
+   deleteAllowed was true regardless of this toggle) -- hides the whole
+   .bases-inventory-givefill-panel below, plus the bulk-delete surface,
+   by default. Reuses the shared .switch-checkbox pattern (AdminToolsPanel's
+   Daily Restart/Restart Queue toggles, addon pin/status toggles) rather
+   than inventing a new control; scoped margin only, no other overrides
+   needed since the shared component already carries its own
+   enabled/disabled styling. Class name kept as -givefill- rather than
+   renamed -- it is a CSS selector only, invisible to the operator, and
+   renaming it would touch this stylesheet for zero behavioral or visible
+   gain. */
 .bases-inventory-givefill-toggle { margin: 4px 0 10px; }
 
 /* Give/Give-Multiple/Fill, added below the slot list. Two stacked sections

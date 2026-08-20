@@ -241,18 +241,26 @@ function switchToFillMode() {
   fireEvent.click(screen.getByRole("button", { name: "Fill" }));
 }
 
-// The whole Give/Fill panel is hidden by default (issue #371) behind a
-// visibility toggle that requires acknowledging a confirmAction() dialog
-// before it reveals anything -- confirmAction is mocked to always resolve
-// true (see the const above), so this just needs to click the toggle and
-// wait for the panel to actually mount. Any test targeting the combobox,
-// quantity field, mode toggle, or batch list must call this first.
+// The whole Give/Fill panel, AND the bulk-delete surface (per-row
+// multi-select checkboxes, Delete Selected, Delete All), are hidden by
+// default (issue #371, widened same day to also cover bulk delete) behind
+// one shared visibility toggle that requires acknowledging a
+// confirmAction() dialog before it reveals anything -- confirmAction is
+// mocked to always resolve true (see the const above), so this just needs
+// to click the toggle and wait for the Give/Fill panel to actually mount.
+// Any test targeting the combobox, quantity field, mode toggle, batch
+// list, bulk-select checkboxes, Delete Selected, or Delete All must call
+// this first. Named showGiveFill (not renamed to something more generic)
+// since every existing call site already reads that way and it still
+// accurately describes what it waits for (the Give/Fill panel's own
+// "Give" button) even though the toggle it clicks now gates more than
+// that panel.
 async function showGiveFill() {
   // The checkbox's accessible name includes its own ON/OFF state text
-  // (a sibling <strong>), not just the "Give / Fill Controls" label --
-  // matched with a substring rather than the exact string so this does
-  // not need updating if the state text changes.
-  fireEvent.click(screen.getByRole("checkbox", { name: /Give \/ Fill Controls/ }));
+  // (a sibling <strong>), not just the "Give / Fill / Delete Controls"
+  // label -- matched with a substring rather than the exact string so
+  // this does not need updating if the state text changes.
+  fireEvent.click(screen.getByRole("checkbox", { name: /Give \/ Fill \/ Delete Controls/ }));
   await waitFor(() => expect(screen.getByRole("button", { name: "Give" })).toBeTruthy());
 }
 
@@ -747,6 +755,9 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    // bulk-select (and its "with-checkbox" column) is now gated behind the
+    // destructive-controls toggle (issue #371) -- must be revealed first.
+    await showGiveFill();
 
     const header = document.querySelector(".bases-inventory-contents-row.head");
     const dataRow = document.querySelector(".bases-inventory-contents-row:not(.head)");
@@ -1919,7 +1930,7 @@ describe("BaseInventoryTab", () => {
     // The visibility toggle itself is disabled for a non-storage container
     // (giveFillAllowed is false) -- clicking it must do nothing, matching
     // the existing disabled-control convention elsewhere in this overlay.
-    const toggle = screen.getByRole("checkbox", { name: /Give \/ Fill Controls/ }) as HTMLInputElement;
+    const toggle = screen.getByRole("checkbox", { name: /Give \/ Fill \/ Delete Controls/ }) as HTMLInputElement;
     expect(toggle.disabled).toBe(true);
     expect(screen.queryByRole("combobox", { name: "Item to give" })).toBeNull();
     expect(screen.queryByRole("combobox", { name: "Item to fill" })).toBeNull();
@@ -2131,7 +2142,7 @@ describe("BaseInventoryTab", () => {
     expect(screen.queryByRole("combobox", { name: "Item to give" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Give" })).toBeNull();
     expect(screen.queryByText(/not visible in-game until the Survival server restarts/)).toBeNull();
-    const toggle = screen.getByRole("checkbox", { name: /Give \/ Fill Controls/ }) as HTMLInputElement;
+    const toggle = screen.getByRole("checkbox", { name: /Give \/ Fill \/ Delete Controls/ }) as HTMLInputElement;
     expect(toggle.checked).toBe(false);
   });
 
@@ -2141,7 +2152,7 @@ describe("BaseInventoryTab", () => {
     await loaded();
     await openVaultContents();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: /Give \/ Fill Controls/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Give \/ Fill \/ Delete Controls/ }));
     await waitFor(() => expect(confirmAction).toHaveBeenCalled());
     const [message, options] = vi.mocked(confirmAction).mock.calls.at(-1) ?? [];
     expect(message).toMatch(/NOT visible in-game until the Survival server restarts/);
@@ -2156,10 +2167,10 @@ describe("BaseInventoryTab", () => {
     await loaded();
     await openVaultContents();
 
-    fireEvent.click(screen.getByRole("checkbox", { name: /Give \/ Fill Controls/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Give \/ Fill \/ Delete Controls/ }));
     await waitFor(() => expect(confirmAction).toHaveBeenCalled());
     expect(screen.queryByRole("combobox", { name: "Item to give" })).toBeNull();
-    const toggle = screen.getByRole("checkbox", { name: /Give \/ Fill Controls/ }) as HTMLInputElement;
+    const toggle = screen.getByRole("checkbox", { name: /Give \/ Fill \/ Delete Controls/ }) as HTMLInputElement;
     expect(toggle.checked).toBe(false);
   });
 
@@ -2172,7 +2183,7 @@ describe("BaseInventoryTab", () => {
     expect(screen.getByRole("combobox", { name: "Item to give" })).toBeTruthy();
     const callsBeforeToggleOff = vi.mocked(confirmAction).mock.calls.length;
 
-    fireEvent.click(screen.getByRole("checkbox", { name: /Give \/ Fill Controls/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Give \/ Fill \/ Delete Controls/ }));
     expect(screen.queryByRole("combobox", { name: "Item to give" })).toBeNull();
     // Turning it back off must not have triggered a second confirmation --
     // hiding a capability is never the risky direction.
@@ -2206,6 +2217,41 @@ describe("BaseInventoryTab", () => {
     expect(screen.queryByRole("combobox", { name: "Item to give" })).toBeNull();
   });
 
+  // Bulk delete (Delete Selected/Delete All, and the per-row multi-select
+  // checkboxes that feed Delete Selected) is gated behind the same
+  // destructive-controls toggle as Give/Fill (issue #371, widened same day
+  // after an operator-reported oversight -- these previously rendered
+  // whenever deleteAllowed was true regardless of the toggle). Every test
+  // below that exercises bulk delete must reveal the toggle first via
+  // showGiveFill(), exactly like every Give/Fill test already does.
+
+  it("hides the per-row bulk-select checkboxes and the Delete Selected/Delete All buttons by default", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+
+    expect(screen.queryAllByRole("checkbox", { name: /Select Granite Stone for bulk delete/ }).length).toBe(0);
+    expect(screen.queryByRole("button", { name: /Delete Selected/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete All" })).toBeNull();
+    // The single-item delete strip (per-row trash icon) is a distinct,
+    // pre-existing capability this toggle does NOT gate -- it must stay
+    // available even while the toggle is off.
+    expect(screen.getAllByRole("button", { name: /^Delete Granite Stone/ }).length).toBeGreaterThan(0);
+  });
+
+  it("reveals the per-row bulk-select checkboxes and Delete Selected/Delete All once the destructive-controls toggle is on", async () => {
+    mockInventory();
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    await showGiveFill();
+
+    expect(screen.getAllByRole("checkbox", { name: /Select Granite Stone for bulk delete/ }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /Delete Selected \(0\)/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete All" })).toBeTruthy();
+  });
+
   it("selects several items and deletes only the checked ones", async () => {
     mockInventory();
     vi.mocked(basesApi.deleteContainerItems).mockResolvedValue({
@@ -2224,6 +2270,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     const checkboxes = screen.getAllByRole("checkbox", { name: /Select Granite Stone for bulk delete/ });
     expect(checkboxes.length).toBe(2);
@@ -2243,6 +2290,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     const deleteSelected = screen.getByRole("button", { name: /Delete Selected \(0\)/ }) as HTMLButtonElement;
     expect(deleteSelected.disabled).toBe(true);
@@ -2250,10 +2298,13 @@ describe("BaseInventoryTab", () => {
 
   it("does not call the bulk-delete API when the confirmation is declined", async () => {
     mockInventory();
-    confirmAction.mockResolvedValue(false);
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
+    // showGiveFill()'s own toggle-on confirmation already resolved true
+    // above; only bulk delete's own confirmation should be declined here.
+    confirmAction.mockResolvedValue(false);
 
     const checkboxes = screen.getAllByRole("checkbox", { name: /Select Granite Stone for bulk delete/ });
     fireEvent.click(checkboxes[0]);
@@ -2281,6 +2332,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete All" }));
     await waitFor(() => expect(basesApi.deleteAllContainerItems).toHaveBeenCalled());
@@ -2288,7 +2340,7 @@ describe("BaseInventoryTab", () => {
     await waitFor(() => expect(vi.mocked(basesApi.inventory).mock.calls.length).toBeGreaterThan(1));
   });
 
-  it("does not offer bulk-delete controls when the map cannot be verified safe", async () => {
+  it("does not offer bulk-delete controls when the map cannot be verified safe, even with the destructive-controls toggle on", async () => {
     mockInventory();
     mockSlots({
       ...SLOTS,
@@ -2303,9 +2355,13 @@ describe("BaseInventoryTab", () => {
 
     expect(screen.queryByRole("button", { name: /Delete Selected/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete All" })).toBeNull();
-    // Give/Fill are pure inserts and stay available regardless of map safety.
+    // Give/Fill are pure inserts and stay available regardless of map
+    // safety -- and turning the shared toggle on must still not reveal
+    // bulk delete, since that half of the gate (deleteAllowed) is false.
     await showGiveFill();
     expect(screen.getByRole("combobox", { name: "Item to give" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Delete Selected/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete All" })).toBeNull();
   });
 
   it("reports a failed bulk delete through onError without clearing the selection state silently", async () => {
@@ -2314,6 +2370,7 @@ describe("BaseInventoryTab", () => {
     renderTab();
     await loaded();
     await openVaultContents();
+    await showGiveFill();
 
     const checkboxes = screen.getAllByRole("checkbox", { name: /Select Granite Stone for bulk delete/ });
     fireEvent.click(checkboxes[0]);

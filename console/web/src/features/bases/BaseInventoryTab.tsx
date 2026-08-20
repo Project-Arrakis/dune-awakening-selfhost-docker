@@ -160,20 +160,29 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
   // exactly, so this stays a single, easy-to-find place to reintroduce a
   // real delete-specific gate if one is ever needed again.
   const giveFillAllowed = slots?.group === "storage";
-  // Per explicit operator direction (issue #371): Give/Fill is a powerful,
-  // item-creating capability, and an operator who only wants to view/delete
-  // container contents should not have to see (or accidentally interact
-  // with) it every time a container is opened. This toggle hides the whole
-  // Give/Fill panel -- item picker, quantity field, mode toggle, mode-hint,
-  // warning banner, batch list, everything inside .bases-inventory-givefill-panel
-  // -- by default, per-open (not persisted across closing/reopening the
-  // overlay or switching containers, matching every other piece of this
-  // overlay's own reset-on-open state, e.g. selectedSlotId/checkedItemIds).
-  // Turning it ON requires acknowledging an explicit confirm dialog (see
-  // confirmEnableGiveFill below) before it actually reveals the panel --
-  // turning it back OFF is instant, no confirmation needed, since hiding a
-  // capability is never the risky direction.
-  const [giveFillVisible, setGiveFillVisible] = useState(false);
+  // Per explicit operator direction (issue #371, widened same day after an
+  // operator-reported oversight): Give/Fill/Delete-Selected/Delete-All are
+  // all powerful, destructive-or-item-creating capabilities, and an
+  // operator who only wants to view a container's contents should not have
+  // to see (or accidentally interact with) any of them every time a
+  // container is opened. This toggle hides the whole Give/Fill panel --
+  // item picker, quantity field, mode toggle, mode-hint, warning banner,
+  // batch list, everything inside .bases-inventory-givefill-panel -- AND
+  // the bulk-delete surface -- the per-row multi-select checkboxes plus the
+  // Delete Selected / Delete All buttons themselves -- by default, per-open
+  // (not persisted across closing/reopening the overlay or switching
+  // containers, matching every other piece of this overlay's own
+  // reset-on-open state, e.g. selectedSlotId/checkedItemIds). It does NOT
+  // gate the single-item delete strip (the per-row trash icon, or the
+  // selected-slot detail panel's own Remove/Delete stack button) -- that
+  // was already one deliberate click on an already-visible item, not a
+  // bulk or item-creating action, and stays exactly as exposed as it was
+  // before this toggle existed. Turning this ON requires acknowledging an
+  // explicit confirm dialog (see requestDestructiveControlsVisible below)
+  // before it actually reveals anything -- turning it back OFF is instant,
+  // no confirmation needed, since hiding a capability is never the risky
+  // direction.
+  const [destructiveControlsVisible, setDestructiveControlsVisible] = useState(false);
   const [checkedItemIds, setCheckedItemIds] = useState<Set<string>>(new Set());
   const [bulkDeleteRunning, setBulkDeleteRunning] = useState(false);
   // Give and Fill share one item picker and one quantity field, switched by
@@ -235,44 +244,49 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     setQuantityText(mode === "fill" ? "100" : "1");
   }
 
-  // Per explicit operator direction (issue #371): turning Give/Fill ON
-  // requires acknowledging an explicit warning first -- the same restart-
-  // visibility fact the in-panel banner already states (see
-  // INC-2026-07-31-001), plus an explicit, actionable recommendation to
-  // configure the Daily Restart schedule so given/filled items do not sit
-  // invisible in-game indefinitely. Turning it back OFF is instant and
-  // asks nothing -- hiding a capability is never the risky direction, only
-  // revealing it is. Cancelling leaves giveFillVisible unset, matching
-  // every other confirmAction() call in this file that no-ops on cancel
-  // rather than partially applying a change.
+  // Per explicit operator direction (issue #371, widened same day to also
+  // cover bulk delete -- see destructiveControlsVisible's own comment
+  // above): turning this toggle ON requires acknowledging an explicit
+  // warning first. The warning covers BOTH capabilities it now gates --
+  // the pre-existing restart-visibility fact for Give/Fill (see
+  // INC-2026-07-31-001) plus an actionable Daily Restart recommendation,
+  // AND a new sentence stating plainly that Delete Selected/Delete All are
+  // irreversible, since a single toggle now controls both an insert-only
+  // and a destructive capability and an operator must not be able to
+  // mistake one warning for having covered both risks. Turning it back OFF
+  // is instant and asks nothing -- hiding a capability is never the risky
+  // direction, only revealing it is. Cancelling leaves
+  // destructiveControlsVisible unset, matching every other confirmAction()
+  // call in this file that no-ops on cancel rather than partially applying
+  // a change.
   //
-  // Returns whether the panel ended up visible -- callers that need to act
-  // immediately after (e.g. selectSlotForGiveFill pre-filling an item) must
-  // use this return value, not read giveFillVisible itself right after
-  // calling this: setGiveFillVisible is an async state update, so the
-  // enclosing closure's own giveFillVisible would still read the pre-call
-  // value until the next render.
-  async function requestGiveFillVisible(): Promise<boolean> {
-    if (giveFillVisible) return true;
+  // Returns whether the controls ended up visible -- callers that need to
+  // act immediately after (e.g. selectSlotForGiveFill pre-filling an item)
+  // must use this return value, not read destructiveControlsVisible itself
+  // right after calling this: setDestructiveControlsVisible is an async
+  // state update, so the enclosing closure's own destructiveControlsVisible
+  // would still read the pre-call value until the next render.
+  async function requestDestructiveControlsVisible(): Promise<boolean> {
+    if (destructiveControlsVisible) return true;
     const confirmed = await confirmAction(
-      "Given and filled items are inserted directly into the database and are NOT visible in-game until the Survival server restarts -- there is no way to make them appear without one. Strongly consider configuring an automated Daily Restart from Admin Tools \u2192 Schedule Server Restart \u2192 Daily Restart before relying on Give/Fill regularly, so given/filled items do not sit invisible indefinitely.",
+      "Given and filled items are inserted directly into the database and are NOT visible in-game until the Survival server restarts -- there is no way to make them appear without one. Strongly consider configuring an automated Daily Restart from Admin Tools \u2192 Schedule Server Restart \u2192 Daily Restart before relying on Give/Fill regularly, so given/filled items do not sit invisible indefinitely. Delete Selected and Delete All are also revealed by this toggle -- both permanently destroy items from the database with no undo.",
       {
-        title: "Show Give/Fill Controls",
-        confirmLabel: "Show Give/Fill",
+        title: "Show Give / Fill / Delete Controls",
+        confirmLabel: "Show Controls",
         warning: "Fill also carries a separate, documented risk: while the owning map stays running, a filled item can land on the same slot a live in-game move/pickup claims at the same time, and the row that loses that race is permanently orphaned on the next restart. See the Base Inventory documentation for details."
       }
     );
     if (!confirmed) return false;
-    setGiveFillVisible(true);
+    setDestructiveControlsVisible(true);
     return true;
   }
 
-  function toggleGiveFillVisible() {
-    if (giveFillVisible) {
-      setGiveFillVisible(false);
+  function toggleDestructiveControlsVisible() {
+    if (destructiveControlsVisible) {
+      setDestructiveControlsVisible(false);
       return;
     }
-    void requestGiveFillVisible();
+    void requestDestructiveControlsVisible();
   }
 
   // Per explicit operator direction (2026-08-19): clicking an item already
@@ -312,11 +326,11 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     if (!giveFillAllowed) return;
     const match = catalog.find((item) => (item.itemId || item.id) === slot.templateId);
     if (!match || !match.group || !FILLABLE_GROUPS.has(match.group)) return;
-    // requestGiveFillVisible() shows the same confirm-and-warn dialog the
-    // toggle button uses when the panel is currently hidden -- if the
-    // operator cancels, the item must not be pre-filled into a panel that
-    // never actually became visible.
-    const visible = await requestGiveFillVisible();
+    // requestDestructiveControlsVisible() shows the same confirm-and-warn
+    // dialog the toggle button uses when the panel is currently hidden --
+    // if the operator cancels, the item must not be pre-filled into a
+    // panel that never actually became visible.
+    const visible = await requestDestructiveControlsVisible();
     if (!visible) return;
     setSelectedItem(match);
   }
@@ -454,6 +468,18 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       ? "Item deletion is available only for Storage containers. Crafting and Refining contents are read-only to protect active jobs."
       : `${slots.deleteSafety?.reason || "Item deletion is unavailable for this container."}${giveFillAllowed ? " Giving and filling items are unaffected -- they only add rows." : ""}`
     : "";
+  // Delete Selected/Delete All (and the per-row multi-select checkboxes that
+  // feed Delete Selected) additionally require destructiveControlsVisible
+  // (issue #371, widened same day -- see its own comment above) -- unlike
+  // the single-item delete strip (the per-row trash icon, and the
+  // selected-slot detail panel's Remove/Delete stack button), which stays
+  // gated on deleteAllowed alone and is NOT hidden by this toggle. This was
+  // an explicit oversight fix: bulk delete previously rendered whenever
+  // deleteAllowed was true regardless of the toggle, defeating the
+  // toggle's own "an operator who only wants to view a container's
+  // contents should not have to see a destructive control" purpose for
+  // every container that permitted deletion at all.
+  const bulkDeleteAllowed = deleteAllowed && destructiveControlsVisible;
 
   // Same shape and the same fail-closed default as the delete gate above. The
   // server re-checks this immediately before the write regardless.
@@ -572,7 +598,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
       setSelectedItem(null);
       setQuantityText("1");
       setAddBatch([]);
-      setGiveFillVisible(false);
+      setDestructiveControlsVisible(false);
       return;
     }
     setSelectedSlotId("");
@@ -584,7 +610,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
     setAddNotice("");
     resetAddForm();
     setCheckedItemIds(new Set());
-    setGiveFillVisible(false);
+    setDestructiveControlsVisible(false);
     void loadSlots(contentsFor);
   }, [contentsFor, loadSlots]);
 
@@ -1369,21 +1395,24 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
                 </p>}
 
                 {rows.length > 0 && <div className="bases-inventory-contents-list">
-                  {!showGrid && <div className={`bases-inventory-contents-row head${deleteAllowed ? " with-checkbox" : ""}`}>
+                  {!showGrid && <div className={`bases-inventory-contents-row head${bulkDeleteAllowed ? " with-checkbox" : ""}`}>
                     <span />
-                    {deleteAllowed && <span />}
+                    {bulkDeleteAllowed && <span />}
                     <span>Item</span><span>Slot</span><span>Qty</span><span />
                   </div>}
                   {rows.map((slot) => (
                     <div
-                      className={`bases-inventory-contents-row${deleteAllowed ? " with-checkbox" : ""}${selectedSlotId === slot.itemId ? " selected" : ""}`}
+                      className={`bases-inventory-contents-row${bulkDeleteAllowed ? " with-checkbox" : ""}${selectedSlotId === slot.itemId ? " selected" : ""}`}
                       key={slot.itemId}
                     >
                       <CatalogItemThumb item={{ id: slot.templateId, itemId: slot.templateId, name: slot.name, image: itemImage(slot.templateId) }} small />
                       {/* Multi-select checkbox, shown only when deletion is
-                          possible at all -- a container that cannot be
-                          deleted from has nothing to select for. */}
-                      {deleteAllowed && <input
+                          possible at all AND the destructive-controls
+                          toggle is on (issue #371) -- a container that
+                          cannot be deleted from has nothing to select for,
+                          and a hidden Delete Selected button has nothing
+                          for a checked item to feed. */}
+                      {bulkDeleteAllowed && <input
                         type="checkbox"
                         checked={checkedItemIds.has(slot.itemId)}
                         aria-label={`Select ${slot.name} for bulk delete`}
@@ -1490,7 +1519,7 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
             </div>
           </div>}
 
-          {deleteAllowed && openContainer.itemCount > 0 && <div className="bases-inventory-bulk-actions">
+          {bulkDeleteAllowed && openContainer.itemCount > 0 && <div className="bases-inventory-bulk-actions">
             <button
               className="danger"
               disabled={checkedItemIds.size === 0 || bulkDeleteRunning}
@@ -1542,27 +1571,37 @@ export function BaseInventoryTab({ baseId, baseName, onError, confirmAction }: B
             Enter an amount between 1 and {selectedSlot.quantity.toLocaleString()}.
           </p>}
 
-          {/* Give/Fill visibility toggle (issue #371, per explicit operator
-              direction) -- hides the entire panel below by default on every
-              fresh open of this overlay. Rendered even when giveFillAllowed
-              is false (Crafting/Refining containers), disabled with an
-              explanatory title, so an operator does not wonder why the
-              toggle itself disappeared rather than merely being unusable --
-              matching how deleteAllowed-gated controls elsewhere in this
-              file stay visible-but-disabled rather than vanishing. */}
-          <label className={`switch-checkbox bases-inventory-givefill-toggle ${giveFillVisible ? "enabled" : "disabled"}`}>
+          {/* Give/Fill/Delete visibility toggle (issue #371, per explicit
+              operator direction; widened same day to also gate bulk delete
+              after an operator-reported oversight -- Delete Selected/
+              Delete All previously rendered whenever deleteAllowed was
+              true regardless of this toggle) -- hides the entire Give/Fill
+              panel below AND the bulk-delete surface (per-row multi-select
+              checkboxes, Delete Selected, Delete All) by default on every
+              fresh open of this overlay. Does NOT gate the single-item
+              delete strip (the per-row trash icon, or the selected-slot
+              detail panel's own Remove/Delete stack button) -- that stays
+              exactly as exposed as before this toggle existed. Rendered
+              even when giveFillAllowed is false (Crafting/Refining
+              containers, where neither gated capability is available
+              either), disabled with an explanatory title, so an operator
+              does not wonder why the toggle itself disappeared rather than
+              merely being unusable -- matching how deleteAllowed-gated
+              controls elsewhere in this file stay visible-but-disabled
+              rather than vanishing. */}
+          <label className={`switch-checkbox bases-inventory-givefill-toggle ${destructiveControlsVisible ? "enabled" : "disabled"}`}>
             <input
               type="checkbox"
-              checked={giveFillVisible}
+              checked={destructiveControlsVisible}
               disabled={!giveFillAllowed}
-              title={giveFillAllowed ? "" : "Give and Fill are available only for Storage containers."}
-              onChange={toggleGiveFillVisible}
+              title={giveFillAllowed ? "" : "Give, Fill, and bulk delete are available only for Storage containers."}
+              onChange={toggleDestructiveControlsVisible}
             />
-            <span className="switch-label">Give / Fill Controls</span>
-            <strong className="switch-state">{giveFillVisible ? "ON" : "OFF"}</strong>
+            <span className="switch-label">Give / Fill / Delete Controls</span>
+            <strong className="switch-state">{destructiveControlsVisible ? "ON" : "OFF"}</strong>
           </label>
 
-          {giveFillAllowed && giveFillVisible && <div className="bases-inventory-givefill-panel">
+          {giveFillAllowed && destructiveControlsVisible && <div className="bases-inventory-givefill-panel">
             {/* Consolidated 2026-08-19 (per the UI/UX hat's dispatched design
                 review, "Alternative A") from two separately-stacked
                 panels -- one full combobox+quantity+button row for Give,

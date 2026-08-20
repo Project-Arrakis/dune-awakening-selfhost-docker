@@ -381,25 +381,37 @@ Give/Fill panel is offered whenever `group === "storage"`; it does not additiona
 `deleteSafety.safe`, unlike every delete action on this page. See "Why Give/Fill do not require a stopped
 map" below for why that asymmetry is deliberate, not an oversight.
 
-**The whole Give/Fill panel is hidden by default, behind an explicit visibility toggle.** Added 2026-08-19
-per explicit operator direction: Give/Fill is a powerful, item-creating capability, and an operator who
-only wants to view or delete a container's contents should not have to see (or accidentally interact with)
-it every time a container is opened. A labeled checkbox (`Give / Fill Controls`, reusing the app's shared
-`.switch-checkbox` pattern already used by Admin Tools' Daily Restart/Restart Queue toggles) sits above the
-panel; it defaults to **off** every time the contents overlay is freshly opened — the toggle's own state is
-not persisted across closing and reopening the overlay, or across switching to a different container,
-matching every other piece of this overlay's own reset-on-open state (`selectedSlotId`, `checkedItemIds`,
-`addFillMode`, `selectedItem`, `addBatch`).
+**The whole Give/Fill panel, AND the bulk-delete surface (Delete Selected, Delete All, and the per-row
+multi-select checkboxes that feed Delete Selected), are hidden by default, behind one shared explicit
+visibility toggle.** Added 2026-08-19 per explicit operator direction: Give/Fill is a powerful,
+item-creating capability, and Delete Selected/Delete All are powerful, irreversible, multi-item destructive
+capabilities — an operator who only wants to view a container's contents should not have to see (or
+accidentally interact with) any of them every time a container is opened. Widened the same day to also
+cover bulk delete, correcting a real oversight: the toggle originally gated only the Give/Fill panel, and
+Delete Selected/Delete All continued to render whenever the container's existing `deleteAllowed` check
+passed, regardless of the toggle's own state. A labeled checkbox (`Give / Fill / Delete Controls`, reusing
+the app's shared `.switch-checkbox` pattern already used by Admin Tools' Daily Restart/Restart Queue
+toggles) sits above the panel; it defaults to **off** every time the contents overlay is freshly opened —
+the toggle's own state is not persisted across closing and reopening the overlay, or across switching to a
+different container, matching every other piece of this overlay's own reset-on-open state
+(`selectedSlotId`, `checkedItemIds`, `addFillMode`, `selectedItem`, `addBatch`).
+
+**This toggle does NOT gate the single-item delete strip** — the per-row trash icon next to each item, or
+the selected-slot detail panel's own Remove/Delete-stack button. That is a single, already-visible-item,
+one-click action, not a bulk or item-creating one, and stays exactly as exposed as it was before this
+toggle existed.
 
 Turning the toggle **on** requires acknowledging an explicit confirm dialog first — it does not silently
-reveal the panel. The dialog restates the restart-visibility fact the in-panel warning banner already
-states (see "Why Give/Fill do not require a stopped map" below and `INC-2026-07-31-001`), and adds an
-explicit, actionable recommendation: configure an automated **Daily Restart** from **Admin Tools → Schedule
-Server Restart → Daily Restart**, so given/filled items do not sit invisible in-game indefinitely. The
-dialog's own `warning` field additionally restates Fill's documented position_index collision risk (see
-"Give fills from the high end..." below). Declining the dialog leaves the toggle off and the panel hidden.
-Turning the toggle back **off** is instant and asks nothing — hiding a capability is never the risky
-direction, only revealing it is.
+reveal anything. The dialog restates the restart-visibility fact the in-panel warning banner already
+states (see "Why Give/Fill do not require a stopped map" below and `INC-2026-07-31-001`), adds an
+explicit, actionable recommendation to configure an automated **Daily Restart** from **Admin Tools →
+Schedule Server Restart → Daily Restart** so given/filled items do not sit invisible in-game indefinitely,
+and — since widening the toggle to also cover bulk delete — states plainly that Delete Selected and Delete
+All are also revealed by this same toggle and are irreversible. The dialog's own `warning` field
+additionally restates Fill's documented position_index collision risk (see "Give fills from the high
+end..." below). Declining the dialog leaves the toggle off and everything it gates hidden. Turning the
+toggle back **off** is instant and asks nothing — hiding a capability is never the risky direction, only
+revealing it is.
 
 Clicking an item already in the container (see "Clicking an item already in the container..." below) reveals
 the panel through this same confirm-and-warn path if it is currently hidden, with that item already
@@ -617,6 +629,16 @@ a third place was judged riskier than one extra tab switch.
 
 Both are Storage-group-only and require `deleteSafety.safe`, identically to the single-item delete above —
 neither is a separate code path with its own, looser safety check.
+
+**In the console UI, both buttons (and the per-row multi-select checkboxes that feed Delete Selected) are
+additionally hidden behind the same `Give / Fill / Delete Controls` visibility toggle Give/Fill uses** — see
+"Adding items: Give, Give Multiple, and Fill" above for the toggle's full behavior. This is a UI-only gate,
+not a second backend safety check: the routes and their `deleteSafety`/ownership checks below are unchanged
+and unaware the toggle exists. Widened onto bulk delete 2026-08-19, the same day the toggle first shipped,
+correcting a real oversight — the toggle originally gated only the Give/Fill panel, and these two buttons
+continued to render whenever `deleteAllowed` was true regardless of the toggle's own state. The single-item
+delete strip (the per-row trash icon, and the selected-slot detail panel's own Remove/Delete-stack button)
+is **not** gated by this toggle and stays exactly as exposed as it was before the toggle existed.
 
 | Action | Route | Backend function | Confirmation phrase |
 |---|---|---|---|
