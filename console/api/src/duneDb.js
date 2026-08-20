@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { redact } from "./redact.js";
 import { itemImagePath } from "./adminCatalog.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
+import { isFiefClaimPlaceable } from "./blueprintSafety.js";
 import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA, MESSAGE_OF_THE_DAY_PERSONA } from "./systemPersonas.js";
 import {
   craftingRecipeCatalogRows,
@@ -1838,6 +1839,7 @@ export async function addonLeadershipPlayers(db) {
       return {
         actorId,
         controllerId,
+        accountId,
         name: row.character_name || `Player ${actorId}`,
         level: levels.get(controllerId) || levels.get(actorId) || 0,
         faction: factions.get(controllerId) || factions.get(actorId) || "Unassigned",
@@ -3347,16 +3349,31 @@ const DEFAULT_MAX_PERMISSIONS_PER_ACTOR = 32;
 // the owner's open Permissions panel with no relog and no restart. Writing the
 // table directly would land the row and leave the running server unaware of it,
 // which is the silently-reverted behaviour this avoids.
-async function supportsBasePermissionEditing(db) {
+// Shared by bases and vehicles -- both are permission_actor_rank actors and
+// the capability only depends on the shipped schema/procedures, not on which
+// kind of actor is being edited. `knownTables` lets a caller that already
+// probed some of these tables (e.g. listVehicles' requiredTables check) skip
+// re-checking them.
+async function permissionEditingSupported(db, { knownTables } = {}) {
+  const known = knownTables || new Set();
   for (const table of ["permission_actor_rank", "permission_actor", "actors", "player_state", "map_names"]) {
+    if (known.has(table)) continue;
     if (!(await tableExists(db, table))) return false;
   }
   return await functionExists(db, "dune.permission_set_player_rank(bigint,bigint,smallint,text)")
     && await functionExists(db, "dune.permission_remove_player_rank(bigint,bigint)");
 }
 
+async function supportsBasePermissionEditing(db) {
+  return permissionEditingSupported(db);
+}
+
 export async function basePermissionsSupported(db) {
   return supportsBasePermissionEditing(db).catch(() => false);
+}
+
+export async function vehiclePermissionsSupported(db) {
+  return permissionEditingSupported(db).catch(() => false);
 }
 
 // The base id the Bases table shows is min(buildings.id) for the claim, which is
@@ -3421,7 +3438,7 @@ export async function basePermissionActor(db, baseId) {
 // not permission_actor. Joining the table into the shared query would break
 // deletion on a schema that lacks it. Both callers of this helper already gate
 // on supportsBasePermissionEditing, which does probe permission_actor.
-async function basePermissionActorClaimed(db, actorId) {
+async function permissionActorClaimed(db, actorId) {
   const result = await db.query(
     "select exists (select 1 from dune.permission_actor where actor_id = $1::bigint) as claimed",
     [actorId]);
@@ -3471,15 +3488,9 @@ export async function baseIsBackedUp(db, baseId) {
 // operator rather than silently vanishing from the roster: resolving the name
 // through owner_account_id is how listBases does it, and every actors row of an
 // account maps to the same character name.
-export async function listBasePermissions(db, baseId) {
-  await requireCapability(await supportsBasePermissionEditing(db),
-    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
-  const { actorId, map, mapNameId } = await basePermissionActor(db, baseId);
-  // Reading an unclaimed base still succeeds -- the roster is simply empty, and
-  // seeing that is how an operator diagnoses the base in the first place. The
-  // flag rides along so the editor can disable the writes that would fail
-  // instead of offering controls that end in an FK error.
-  const claimed = await basePermissionActorClaimed(db, actorId);
+// Shared by bases and vehicles -- the roster query only depends on the
+// permission actor id, not on what kind of actor it is.
+async function listPermissionRoster(db, actorId) {
   const encryptedPlayerStateColumns = await tableExists(db, "encrypted_player_state")
     ? await columnsFor(db, "encrypted_player_state")
     : new Set();
@@ -3522,6 +3533,29 @@ export async function listBasePermissions(db, baseId) {
     ) fallback on true
     where par.permission_actor_id = $1::bigint
     order by par.rank asc, coalesce(ps.character_name, fallback.character_name, '') asc`, [actorId]);
+  return result.rows.map((row) => ({
+    playerId: String(row.player_id),
+    name: String(row.character_name || ""),
+    rank: Number(row.rank),
+    label: permissionRankLabel(Number(row.rank)),
+    // False means this row names an actor that is not the account's
+    // player_controller_id, so the game ignores it. Surfaced rather than
+    // hidden: it is the one roster state the console can see and the game
+    // client cannot.
+    canonical: row.canonical === true
+  }));
+}
+
+export async function listBasePermissions(db, baseId) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const { actorId, map, mapNameId } = await basePermissionActor(db, baseId);
+  // Reading an unclaimed base still succeeds -- the roster is simply empty, and
+  // seeing that is how an operator diagnoses the base in the first place. The
+  // flag rides along so the editor can disable the writes that would fail
+  // instead of offering controls that end in an FK error.
+  const claimed = await permissionActorClaimed(db, actorId);
+  const entries = await listPermissionRoster(db, actorId);
   const systemCustodian = await basePermissionSystemCustodian(db);
   return {
     baseId: intParam(baseId, "base id", 1),
@@ -3531,17 +3565,7 @@ export async function listBasePermissions(db, baseId) {
     claimed,
     unclaimedReason: claimed ? "" : BASE_UNCLAIMED_MESSAGE,
     systemCustodian,
-    entries: result.rows.map((row) => ({
-      playerId: String(row.player_id),
-      name: String(row.character_name || ""),
-      rank: Number(row.rank),
-      label: permissionRankLabel(Number(row.rank)),
-      // False means this row names an actor that is not the account's
-      // player_controller_id, so the game ignores it. Surfaced rather than
-      // hidden: it is the one roster state the console can see and the game
-      // client cannot.
-      canonical: row.canonical === true
-    }))
+    entries
   };
 }
 
@@ -3629,9 +3653,10 @@ export async function basePermissionSystemCustodian(db) {
 // Candidates for the roster picker. Deliberately keyed on player_controller_id
 // rather than reusing listPlayers' actor_id: listPlayers is row-per-pawn, and
 // handing a pawn id to permission_set_player_rank writes a row the game ignores.
-export async function basePermissionCandidates(db, { q = "", limit = 25 } = {}) {
-  await requireCapability(await supportsBasePermissionEditing(db),
-    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+// Shared by bases and vehicles -- deliberately keyed on player_controller_id
+// rather than reusing listPlayers' actor_id: listPlayers is row-per-pawn, and
+// handing a pawn id to permission_set_player_rank writes a row the game ignores.
+async function permissionCandidatesQuery(db, { q = "", limit = 25 } = {}) {
   const safeLimit = intParam(limit, "limit", 1, 100);
   const playerStateColumns = await columnsFor(db, "player_state");
   const internalGmPawnFilter = playerStateColumns.has("player_pawn_id")
@@ -3662,14 +3687,26 @@ export async function basePermissionCandidates(db, { q = "", limit = 25 } = {}) 
   return result.rows.map((row) => ({ playerId: String(row.player_id), name: String(row.character_name || "") }));
 }
 
-function normalizeDesiredPermissions(entries) {
+export async function basePermissionCandidates(db, opts = {}) {
+  await requireCapability(await supportsBasePermissionEditing(db),
+    "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  return permissionCandidatesQuery(db, opts);
+}
+
+export async function vehiclePermissionCandidates(db, opts = {}) {
+  await requireCapability(await vehiclePermissionsSupported(db),
+    "Vehicle permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  return permissionCandidatesQuery(db, opts);
+}
+
+function normalizeDesiredPermissions(entries, subject = "base") {
   if (!Array.isArray(entries)) throw new Error("Permissions must be a list of players and ranks.");
   const seen = new Set();
   const desired = entries.map((entry) => {
     const playerId = String(intParam(entry?.playerId, "player id", 1));
     const rank = Number(entry?.rank);
     if (!PERMISSION_EDITABLE_RANKS.has(rank)) {
-      throw new Error(`Rank ${entry?.rank} is not a valid base permission rank.`);
+      throw new Error(`Rank ${entry?.rank} is not a valid ${subject} permission rank.`);
     }
     if (seen.has(playerId)) throw new Error("The same player was listed twice.");
     seen.add(playerId);
@@ -3678,8 +3715,8 @@ function normalizeDesiredPermissions(entries) {
   const owners = desired.filter((entry) => entry.rank === PERMISSION_OWNER_RANK);
   if (owners.length !== 1) {
     throw new Error(owners.length === 0
-      ? "A base must have exactly one Owner. Promote a player to Owner before saving."
-      : `A base can only have one Owner; ${owners.length} were selected.`);
+      ? `A ${subject} must have exactly one Owner. Promote a player to Owner before saving.`
+      : `A ${subject} can only have one Owner; ${owners.length} were selected.`);
   }
   return desired;
 }
@@ -3697,7 +3734,22 @@ function normalizeDesiredPermissions(entries) {
 // LIMIT 1, so a moment with two rank-1 rows could stamp the wrong owner onto the
 // base marker. Removals run first, then non-owner ranks, then the Owner last --
 // so at most one rank-1 row exists when the owner write lands.
-async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
+// Applies a whole roster in one transaction, built entirely from the shipped
+// procedures. Shared by bases and vehicles via the resolveActor/subject/
+// idKey/idValue parameterization -- everything below is actor-kind-agnostic.
+// Two invariants the procedures do NOT enforce are enforced here:
+//
+//   - One Owner. permission_set_player_rank is a plain upsert, so setting rank 1
+//     for a second player would simply leave the actor with two owners.
+//   - The cap. The procedure never counts rows; the limit comes from live server
+//     config (see parseEffectivePermissionLimit), not a constant.
+//
+// Write order matters even though NOTIFY is only delivered at commit: the marker
+// refresh inside permission_set_player_rank looks up the rank-1 holder with a
+// LIMIT 1, so a moment with two rank-1 rows could stamp the wrong owner onto the
+// actor's marker. Removals run first, then non-owner ranks, then the Owner last --
+// so at most one rank-1 row exists when the owner write lands.
+async function mutatePermissionRoster(db, { resolveActor, unclaimedMessage, notFoundMessage, subject, idKey, idValue }, safeMax, desiredRoster) {
   return db.transaction(async (tx) => {
     // The shipped procedures reference their tables unqualified and carry no
     // `SET search_path` of their own; they resolve only because the console
@@ -3707,31 +3759,31 @@ async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
     // is ever pointed at a differently-named role.
     await tx.query("set local search_path to dune, public");
 
-    const actor = await basePermissionActor(tx, target);
+    const actor = await resolveActor(tx);
     if (!actor.mapNameId) {
-      throw new Error(`This base's map (${actor.map || "unknown"}) has no dune.map_names entry, so the game cannot be notified of the change.`);
+      throw new Error(`This ${subject}'s map (${actor.map || "unknown"}) has no dune.map_names entry, so the game cannot be notified of the change.`);
     }
-    // Lock the claim actor row, not the rank rows: a base whose roster is being
-    // fully replaced may have no rank rows to lock, and `for update` over zero
-    // rows serializes nothing. The actors row is guaranteed to exist.
+    // Lock the claim actor row, not the rank rows: an actor whose roster is
+    // being fully replaced may have no rank rows to lock, and `for update` over
+    // zero rows serializes nothing. The actors row is guaranteed to exist.
     const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
-    if (!locked.rowCount) throw new Error("That base was not found.");
+    if (!locked.rowCount) throw new Error(notFoundMessage);
 
     // After the lock, not before: this is the last read the transaction can make
     // before it starts calling the procedures. The game's own pickup path does
     // not take this lock, so a pickup landing mid-edit can still slip past and
     // hit the FK -- that race is what the constraint is for. What this removes
-    // is the far more common steady-state case, an unclaimed base sitting in the
-    // panel that every route currently accepts a write for.
-    if (!(await basePermissionActorClaimed(tx, actor.actorId))) throw new Error(BASE_UNCLAIMED_MESSAGE);
+    // is the far more common steady-state case, an unclaimed actor sitting in
+    // the panel that every route currently accepts a write for.
+    if (!(await permissionActorClaimed(tx, actor.actorId))) throw new Error(unclaimedMessage);
 
     const existing = await tx.query(
       "select player_id::text as player_id, rank::int as rank from dune.permission_actor_rank where permission_actor_id = $1::bigint",
       [actor.actorId]);
     const currentByPlayer = new Map(existing.rows.map((row) => [String(row.player_id), Number(row.rank)]));
-    const desired = normalizeDesiredPermissions(await desiredRoster(existing.rows, tx));
+    const desired = normalizeDesiredPermissions(await desiredRoster(existing.rows, tx), subject);
     if (desired.length > safeMax) {
-      throw new Error(`This base would hold ${desired.length} permissions, above the configured maximum of ${safeMax}.`);
+      throw new Error(`This ${subject} would hold ${desired.length} permissions, above the configured maximum of ${safeMax}.`);
     }
 
     // Every target player must be a real permission holder, i.e. an account's
@@ -3777,7 +3829,7 @@ async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
 
     return {
       ok: true,
-      baseId: target,
+      [idKey]: idValue,
       actorId: actor.actorId,
       map: actor.map,
       added: changed.filter((entry) => !currentByPlayer.has(entry.playerId)).length,
@@ -3791,6 +3843,17 @@ async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
   });
 }
 
+async function mutateBasePermissions(db, target, safeMax, desiredRoster) {
+  return mutatePermissionRoster(db, {
+    resolveActor: (tx) => basePermissionActor(tx, target),
+    unclaimedMessage: BASE_UNCLAIMED_MESSAGE,
+    notFoundMessage: "That base was not found.",
+    subject: "base",
+    idKey: "baseId",
+    idValue: target
+  }, safeMax, desiredRoster);
+}
+
 export async function setBasePermissions(db, baseId, entries, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
   await requireCapability(await supportsBasePermissionEditing(db),
     "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
@@ -3799,7 +3862,7 @@ export async function setBasePermissions(db, baseId, entries, maxPermissionsPerA
   // Validate before opening the transaction too, so malformed input fails
   // without taking a claim lock. It is normalized again after the lock because
   // the shared mutation path also accepts a roster built from current state.
-  const desired = normalizeDesiredPermissions(entries);
+  const desired = normalizeDesiredPermissions(entries, "base");
   return mutateBasePermissions(db, target, safeMax, async () => desired);
 }
 
@@ -3828,6 +3891,80 @@ export async function transferBaseToSystemCustodian(db, baseId, maxPermissionsPe
       ? `This base is already owned by the ${custodian.name} system custodian.`
       : `Ownership was transferred to the ${custodian.name} system custodian. The change applies to the running map immediately.`
   };
+}
+
+// Deliberately distinct from BASE_UNCLAIMED_MESSAGE: it names the vehicle
+// situation directly rather than talking about a base-backup/redeploy path
+// that does not apply here.
+const VEHICLE_UNCLAIMED_MESSAGE = "This vehicle is not claimed -- it has no dune.permission_actor row, so the game has nothing to attach permissions to. A player must claim it in-game first.";
+
+// Unlike a base (buildings -> building_instances -> actor_fgl_entities ->
+// actors), a vehicle IS its own permission actor:
+// dune.vehicles.id = dune.actors.id = dune.permission_actor.actor_id. The join
+// through dune.vehicles is still load-bearing even though it adds no
+// indirection -- it is what rejects a non-vehicle actor id (a base's, say)
+// passed to this route, rather than the query silently resolving it via
+// dune.actors alone.
+export async function vehiclePermissionActor(db, vehicleId) {
+  const target = intParam(vehicleId, "vehicle id", 1);
+  const result = await db.query(`
+    select a.id::text as actor_id,
+           coalesce(a.map, '') as map,
+           coalesce(mn.map_name_id, 0)::int as map_name_id,
+           coalesce(a.partition_id, 0)::int as partition_id
+    from dune.vehicles v
+    join dune.actors a on a.id = v.id
+    left join dune.map_names mn on mn.map_name = a.map
+    where v.id = $1`, [target]);
+  const row = result.rows[0];
+  if (!row) throw new Error("That vehicle was not found.");
+  return {
+    vehicleId: target,
+    actorId: String(row.actor_id),
+    map: String(row.map || ""),
+    mapNameId: Number(row.map_name_id || 0),
+    partitionId: Number(row.partition_id || 0)
+  };
+}
+
+export async function listVehiclePermissions(db, vehicleId) {
+  await requireCapability(await vehiclePermissionsSupported(db),
+    "Vehicle permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const { actorId, map, mapNameId } = await vehiclePermissionActor(db, vehicleId);
+  // Reading an unclaimed vehicle still succeeds -- the roster is simply empty,
+  // and seeing that is how an operator diagnoses the vehicle in the first
+  // place. The flag rides along so the editor can disable the writes that
+  // would fail instead of offering controls that end in an FK error.
+  const claimed = await permissionActorClaimed(db, actorId);
+  const entries = await listPermissionRoster(db, actorId);
+  return {
+    vehicleId: intParam(vehicleId, "vehicle id", 1),
+    actorId,
+    map,
+    mapNameId,
+    claimed,
+    unclaimedReason: claimed ? "" : VEHICLE_UNCLAIMED_MESSAGE,
+    entries
+  };
+}
+
+export async function setVehiclePermissions(db, vehicleId, entries, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
+  await requireCapability(await vehiclePermissionsSupported(db),
+    "Vehicle permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const target = intParam(vehicleId, "vehicle id", 1);
+  const safeMax = intParam(maxPermissionsPerActor, "maximum permissions per vehicle", 1, 2147483647);
+  // Validate before opening the transaction too, so malformed input fails
+  // without taking a claim lock. It is normalized again after the lock because
+  // the shared mutation path also accepts a roster built from current state.
+  const desired = normalizeDesiredPermissions(entries, "vehicle");
+  return mutatePermissionRoster(db, {
+    resolveActor: (tx) => vehiclePermissionActor(tx, target),
+    unclaimedMessage: VEHICLE_UNCLAIMED_MESSAGE,
+    notFoundMessage: "That vehicle was not found.",
+    subject: "vehicle",
+    idKey: "vehicleId",
+    idValue: target
+  }, safeMax, async () => desired);
 }
 
 const BASE_SORT_COLUMNS = {
@@ -4328,9 +4465,14 @@ export async function exportBaseAsBlueprint(db, id) {
         join dune.actor_fgl_entities afe on afe.entity_id = p.owner_entity_id
         where afe.actor_id = $1
           and a.transform is not null
+          and lower(coalesce(p.building_type, '')) not in ('totem_small_placeable', 'totem_placeable')
         order by p.id`, [base.actor_id])
     : { rows: [] };
-  const placeables = placeableRows.rows.map((row) => ({
+  // Keep the JS guard as a second boundary in case a future schema/query path
+  // bypasses or changes the SQL predicate. A Solido blueprint must never carry
+  // the live base's claim console: projecting it can create a second malformed
+  // claim inside the destination fief.
+  const placeables = placeableRows.rows.filter((row) => !isFiefClaimPlaceable(row.building_type)).map((row) => ({
     placeable_id: row.placeable_id,
     building_type: row.building_type,
     x: Number(row.x) - anchor.x,
@@ -4879,7 +5021,15 @@ export function adminItemMetadata() {
     for (const item of Array.isArray(items) ? items : []) {
       const id = String(item.id || "").trim();
       if (!id) continue;
-      metadata.set(id, { name: String(item.name || ""), category: String(item.category || ""), source: String(item.source || ""), group: item.group ? String(item.group) : "" });
+      metadata.set(id, {
+        name: String(item.name || ""),
+        category: String(item.category || ""),
+        source: String(item.source || ""),
+        group: item.group ? String(item.group) : "",
+        volume: item.volume !== null && item.volume !== undefined && Number.isFinite(Number(item.volume)) && Number(item.volume) >= 0
+          ? Number(item.volume)
+          : null
+      });
     }
   } catch {
     // Inventory still works without the optional local catalog metadata.
@@ -5362,9 +5512,187 @@ export async function playerJourney(db, id, journeyTagsData = {}) {
   return { capabilities: { journey: true }, player, rows: { story: storyRows, contract: contractRows, codex: codexRows, tutorial } };
 }
 
+function portalMarketEntry(entry, extra = {}) {
+  return {
+    orderId: String(entry?.orderId || ""),
+    templateId: String(entry?.templateId || ""),
+    displayName: String(entry?.displayName || ""),
+    qualityLevel: String(entry?.qualityLevel || ""),
+    itemPrice: String(entry?.itemPrice || ""),
+    stackSize: String(entry?.stackSize || ""),
+    maxUnitPrice: String(entry?.maxUnitPrice || ""),
+    resultCode: Number.isInteger(entry?.resultCode) ? entry.resultCode : -1,
+    resultLabel: String(entry?.resultLabel || "unknown"),
+    detail: String(entry?.detail || ""),
+    ...extra
+  };
+}
+
+function portalMarketForIdentity(identity, market) {
+  if (!market || typeof market !== "object") return null;
+  const ownerIds = new Set([identity.actor_id, identity.controller_id, identity.account_id]
+    .map((value) => String(value || ""))
+    .filter(Boolean));
+  const owns = (entry) => ownerIds.has(String(entry?.sellerActorId || ""));
+  const matchingListings = (Array.isArray(market.listings) ? market.listings : []).filter(owns);
+  const listings = matchingListings.slice(0, 250).map((entry) => portalMarketEntry(entry));
+  const history = [];
+  for (const batch of Array.isArray(market.batches) ? market.batches : []) {
+    for (const entry of Array.isArray(batch?.entries) ? batch.entries : []) {
+      if (!owns(entry)) continue;
+      history.push(portalMarketEntry(entry, {
+        at: String(batch.at || ""),
+        source: String(batch.source || "")
+      }));
+      if (history.length >= 100) break;
+    }
+    if (history.length >= 100) break;
+  }
+  return {
+    available: market.available === true,
+    configured: market.configured === true,
+    enabled: market.enabled === true,
+    exchangeId: String(market.exchangeId || ""),
+    buybackPercent: Number(market.buybackPercent) || 0,
+    buybackPriceBasis: String(market.buybackPriceBasis || ""),
+    maxBuys: Number(market.maxBuys) || 0,
+    evaluatedAt: String(market.evaluatedAt || ""),
+    listings,
+    listingsTruncated: matchingListings.length > listings.length,
+    history
+  };
+}
+
+function portalExchangeOverview(market) {
+  if (!market || typeof market !== "object") return null;
+  if (market.overview && typeof market.overview === "object") {
+    return {
+      available: market.overview.available === true,
+      evaluatedAt: String(market.overview.evaluatedAt || ""),
+      items: (Array.isArray(market.overview.items) ? market.overview.items : []).map((row) => ({
+        templateId: String(row?.templateId || ""),
+        displayName: String(row?.displayName || row?.templateId || "Unknown Item"),
+        qualityLevel: String(row?.qualityLevel || ""),
+        listingCount: Math.max(0, Number(row?.listingCount) || 0),
+        totalUnits: Math.max(0, Number(row?.totalUnits) || 0),
+        lowestPrice: String(row?.lowestPrice || ""),
+        highestPrice: String(row?.highestPrice || ""),
+        maxUnitPrice: String(row?.maxUnitPrice || "")
+      }))
+    };
+  }
+  const groups = new Map();
+  for (const entry of Array.isArray(market.listings) ? market.listings : []) {
+    const templateId = String(entry?.templateId || "");
+    const displayName = String(entry?.displayName || templateId || "Unknown Item");
+    const key = `${templateId}\u0000${String(entry?.qualityLevel || "")}`;
+    const price = Number(entry?.itemPrice);
+    const quantity = Math.max(0, Number(entry?.stackSize) || 0);
+    if (!Number.isFinite(price) || price < 0) continue;
+    const row = groups.get(key) || {
+      templateId,
+      displayName,
+      qualityLevel: String(entry?.qualityLevel || ""),
+      listingCount: 0,
+      totalUnits: 0,
+      lowestPrice: price,
+      highestPrice: price,
+      maxUnitPrice: Number(entry?.maxUnitPrice) || 0
+    };
+    row.listingCount += 1;
+    row.totalUnits += quantity;
+    row.lowestPrice = Math.min(row.lowestPrice, price);
+    row.highestPrice = Math.max(row.highestPrice, price);
+    row.maxUnitPrice = Math.max(row.maxUnitPrice, Number(entry?.maxUnitPrice) || 0);
+    groups.set(key, row);
+  }
+  return {
+    available: market.available === true,
+    evaluatedAt: String(market.evaluatedAt || ""),
+    items: [...groups.values()]
+      .sort((left, right) => right.listingCount - left.listingCount || left.displayName.localeCompare(right.displayName))
+      .slice(0, 100)
+  };
+}
+
+export async function portalStorage(db, playerControllerId) {
+  const result = await db.query(`
+    with owned_containers as (
+      select distinct p.id,
+        coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None' then pa.actor_name end)
+          over (partition by p.id), p.building_type) container_name,
+        coalesce(a.map, '') map
+      from dune.placeables p
+      join dune.actors a on a.id=p.id
+      join dune.actor_fgl_entities afe on afe.entity_id=p.owner_entity_id
+      join dune.permission_actor_rank par on par.permission_actor_id=afe.actor_id
+      left join dune.permission_actor pa on pa.actor_id=par.permission_actor_id
+      where par.player_id=$1 and par.rank=1 and p.is_hologram=false
+        and p.owner_entity_id is not null and p.owner_entity_id<>0
+    ), item_rows as (
+      select oc.id::text container_id,oc.container_name,oc.map,
+        i.template_id,coalesce(i.quality_level,0)::int quality_level,
+        count(*)::int stack_count,coalesce(sum(i.stack_size),0)::bigint::text quantity
+      from owned_containers oc
+      join dune.inventories inv on inv.actor_id=oc.id
+      join dune.items i on i.inventory_id=inv.id
+      group by oc.id,oc.container_name,oc.map,i.template_id,i.quality_level
+    )
+    select * from item_rows
+    order by container_name,template_id,quality_level
+    limit 750`, [playerControllerId]);
+  const containers = new Map();
+  for (const row of result.rows || []) {
+    const id = String(row.container_id || "");
+    const container = containers.get(id) || {
+      id,
+      name: String(row.container_name || "Storage"),
+      map: String(row.map || ""),
+      itemTypes: 0,
+      totalQuantity: 0
+    };
+    container.itemTypes += 1;
+    container.totalQuantity += Number(row.quantity) || 0;
+    containers.set(id, container);
+  }
+  return {
+    truncated: (result.rows || []).length >= 750,
+    containers: [...containers.values()],
+    items: (result.rows || []).map((row) => ({
+      containerId: String(row.container_id || ""),
+      containerName: String(row.container_name || "Storage"),
+      map: String(row.map || ""),
+      templateId: String(row.template_id || ""),
+      qualityLevel: Number(row.quality_level) || 0,
+      stackCount: Number(row.stack_count) || 0,
+      quantity: Number(row.quantity) || 0
+    }))
+  };
+}
+
+export async function portalLandsraad(db, playerControllerId) {
+  const overview = await landsraadOverview(db);
+  if (overview?.capabilities?.landsraad !== true) return null;
+  let contributions = [];
+  if (overview.capabilities.playerContributions) {
+    contributions = (await db.query(`
+      select task_id::text "taskId",coalesce(amount,0)::real amount
+      from dune.landsraad_task_player_contributions
+      where player_id=$1
+      order by task_id`, [playerControllerId])).rows || [];
+  }
+  return {
+    term: overview.term,
+    tasks: overview.tasks,
+    rewards: overview.rewards,
+    contributions: contributions.map((row) => ({ taskId: String(row.taskId || row.task_id || ""), amount: Number(row.amount) || 0 }))
+  };
+}
+
 // Build private, read-only snapshots only for Steam identities requested by the
-// directory. Raw platform IDs never leave the battlegroup.
-export async function playerPortalSnapshots(db, requestedAccountHashes, journeyTagsData = {}, skillModulesData = []) {
+// directory. Raw platform IDs and local Market Bot seller IDs never leave the
+// battlegroup.
+export async function playerPortalSnapshots(db, requestedAccountHashes, journeyTagsData = {}, skillModulesData = [], marketSnapshot = null, portalContext = {}) {
   const requested = new Set((Array.isArray(requestedAccountHashes) ? requestedAccountHashes : [])
     .map((value) => String(value || "").toLowerCase())
     .filter((value) => /^[0-9a-f]{64}$/.test(value))
@@ -5400,7 +5728,7 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
   for (const identity of matched) {
     const actorId = Number(identity.actor_id);
     const controllerId = Number(identity.controller_id);
-    const [currency, factions, specs, crafting, research, journeys, bases, intel, keystones, blueprints, vehicles, guild] = await Promise.all([
+    const [currency, factions, specs, crafting, research, journeys, bases, intel, keystones, blueprints, vehicles, guild, storage, landsraad] = await Promise.all([
       playerCurrency(db, actorId).catch(() => ({ rows: [] })),
       playerFactions(db, actorId).catch(() => ({ rows: [] })),
       playerSpecs(db, actorId).catch(() => ({ rows: [], skillModules: [] })),
@@ -5415,13 +5743,23 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
       db.query(`select keystone_id::text from dune.purchased_specialization_keystones where player_id=$1 order by keystone_id`, [controllerId]).catch(() => ({ rows: [] })),
       db.query(`select id::text,item_id::text,building_blueprint_map from dune.building_blueprints where player_id=$1 order by id`, [controllerId]).catch(() => ({ rows: [] })),
       portalVehicles(db, [actorId, controllerId, Number(identity.account_id)]).catch(() => ({ rows: [] })),
-      portalGuild(db, identity).catch(() => null)
+      portalGuild(db, identity).catch(() => null),
+      portalStorage(db, controllerId).catch(() => ({ containers: [], items: [], truncated: false })),
+      portalLandsraad(db, controllerId).catch(() => null)
     ]);
     const leader = leaders.get(String(actorId)) || {};
     const baseRows = (bases.rows || []).filter((base) =>
       base.owner_name === identity.character_name ||
       (base.shared_with || []).some((entry) => entry.name === identity.character_name));
     const fuelByBase = await portalGeneratorFuel(db, baseRows.map((base) => base.base_id)).catch(() => new Map());
+    const waterByBase = new Map(await Promise.all(baseRows.map(async (base) => {
+      const water = await baseWater(db, base.base_id).catch(() => ({
+        supported: false,
+        reason: "Water storage could not be read from this server.",
+        containers: []
+      }));
+      return [String(base.base_id), water];
+    })));
     const skillModules = (specs.skillModules || []).map((skill) => portalSkillRow(skill, skillModulesData));
     const journeyRows = Object.values(journeys.rows || {}).flat();
     const unlockedCrafting = (crafting.rows || []).filter((row) => row.unlocked);
@@ -5457,12 +5795,14 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
           tracks: (specs.rows || []).map((row) => ({ name: row.track_type, level: Math.floor(Number(row.level) || 0), xp: Number(row.xp_amount) || 0 })),
           purchasedKeystones: keystones.rows.map((row) => row.keystone_id),
           skills: skillModules,
-          unspentPoints: Number(specs.unspentPoints) || 0
+          unspentSkillPoints: Number(specs.unspentPoints) || 0
         },
         unlocks: {
           skills: skillModules,
           research: unlockedResearch.map((row) => ({ id: row.itemKey || "", name: row.displayName || row.itemKey || "Research" })),
           schematics: unlockedCrafting.map((row) => ({ id: row.recipeId || "", name: row.displayName || row.recipeId || "Schematic" })),
+          missingResearch: (research.rows || []).filter((row) => !row.unlocked).map((row) => ({ id: row.itemKey || "", name: row.displayName || row.itemKey || "Research" })).slice(0, 500),
+          missingSchematics: (crafting.rows || []).filter((row) => !row.unlocked).map((row) => ({ id: row.recipeId || "", name: row.displayName || row.recipeId || "Schematic" })).slice(0, 500),
           blueprints: blueprints.rows.map((row) => ({ id: row.id, itemId: row.item_id, map: row.building_blueprint_map || "" }))
         },
         journeys: {
@@ -5486,13 +5826,42 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
           generatorUnstockedCount: fuelByBase.get(String(base.base_id))?.unstockedCount || 0,
           generatorAllUnstocked: fuelByBase.get(String(base.base_id))?.allGeneratorsUnstocked || false,
           generators: fuelByBase.get(String(base.base_id))?.generators || [],
+          waterSupported: waterByBase.get(String(base.base_id))?.supported === true,
+          waterStatus: waterByBase.get(String(base.base_id))?.supported === true
+            ? (waterByBase.get(String(base.base_id))?.containers?.length ? "available" : "empty")
+            : "unsupported",
+          waterReason: String(waterByBase.get(String(base.base_id))?.reason || ""),
+          waterContainers: waterByBase.get(String(base.base_id))?.containers || [],
           map: base.map || "",
           partitionId: Number(base.partition_id) || 0,
           x: Number(base.x) || 0,
           y: Number(base.y) || 0,
           z: Number(base.z) || 0
         })),
-        guild
+        storage,
+        guild,
+        landsraad,
+        serverInfo: portalContext.serverInfo || null,
+        carePackages: {
+          enabled: portalContext.carePackages?.enabled === true,
+          history: (portalContext.carePackages?.history || [])
+            .filter((row) => {
+              const rowAccount = String(row?.account_id || row?.accountId || "");
+              const rowActor = String(row?.actor_id || row?.actorId || "");
+              return (rowAccount && rowAccount === String(identity.account_id || ""))
+                || (rowActor && rowActor === String(identity.actor_id || ""));
+            })
+            .slice(0, 25)
+            .map((row) => ({
+              id: String(row.id || ""),
+              timestamp: String(row.timestamp || ""),
+              status: String(row.status || "unknown"),
+              kitName: String(row.kitName || row.kit_name || row.summary || "Care Package"),
+              summary: String(row.summary || "")
+            }))
+        },
+        exchangeOverview: portalExchangeOverview(marketSnapshot),
+        ...(marketSnapshot ? { marketBot: portalMarketForIdentity(identity, marketSnapshot) } : {})
       }
     });
   }
@@ -5640,7 +6009,8 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
   ];
   for (const table of requiredTables) {
     if (!(await tableExists(db, table))) {
-      return { ...unsupported("vehicles", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalVehicles: 0 };
+      const result = unsupported("vehicles", requiredTables.map((t) => `dune.${t}`));
+      return { ...result, capabilities: { ...result.capabilities, vehiclePermissions: false }, totalCount: 0, totalVehicles: 0 };
     }
   }
 
@@ -5797,14 +6167,22 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
       }));
     await attachVehicleRegions(db, rows);
 
+    // requiredTables above already proved permission_actor_rank/permission_actor/
+    // actors/player_state exist, so this only has to check map_names and the two
+    // shipped procedures -- not re-probe tables already known to be present.
+    const vehiclePermissions = await permissionEditingSupported(db, {
+      knownTables: new Set(["permission_actor_rank", "permission_actor", "actors", "player_state"])
+    }).catch(() => false);
+
     return {
-      capabilities: { vehicles: true },
+      capabilities: { vehicles: true, vehiclePermissions },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalVehicles: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_vehicles) : 0,
       rows
     };
   } catch (error) {
-    return { ...unsupported("vehicles", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalVehicles: 0, reason: `Vehicles query failed: ${error.message}` };
+    const result = unsupported("vehicles", requiredTables.map((t) => `dune.${t}`));
+    return { ...result, capabilities: { ...result.capabilities, vehiclePermissions: false }, totalCount: 0, totalVehicles: 0, reason: `Vehicles query failed: ${error.message}` };
   }
 }
 
@@ -6145,11 +6523,32 @@ async function portalGuild(db, identity) {
   const row = result.rows[0];
   const members = await guildMembers(db, row.guild_id);
   const leadership = await addonLeadershipPlayers(db).catch(() => ({ rows: [] }));
-  const statuses = new Map((leadership.rows || []).map((member) => [member.name, member.status]));
+  const memberDetails = new Map();
+  const memberNames = new Map();
+  for (const member of leadership.rows || []) {
+    for (const id of [member.actorId, member.controllerId, member.accountId].map(String).filter(Boolean)) memberDetails.set(id, member);
+    const nameKey = String(member.name || "").trim().toLocaleLowerCase();
+    if (nameKey && !memberNames.has(nameKey)) memberNames.set(nameKey, member);
+  }
+  const roster = (members.rows || []).map((member) => {
+    const detail = memberDetails.get(String(member.player_id || ""))
+      || memberNames.get(String(member.character_name || "").trim().toLocaleLowerCase())
+      || {};
+    return {
+      name: member.character_name || detail.name || "Unknown Member",
+      role: portalGuildRole(member.role_id),
+      level: Math.min(200, Math.max(0, Number(detail.level) || 0)),
+      status: String(detail.status || "Offline").toLocaleLowerCase() === "online" ? "Online" : "Offline"
+    };
+  }).sort((left, right) => {
+    const roleOrder = { Leader: 0, Officer: 1, Member: 2 };
+    return (roleOrder[left.role] ?? 3) - (roleOrder[right.role] ?? 3) || left.name.localeCompare(right.name);
+  });
   return {
     name: row.guild_name || "Unknown Guild", role: portalGuildRole(row.role_id),
-    membershipCount: (members.rows || []).length,
-    onlineMembers: (members.rows || []).filter((member) => String(statuses.get(member.character_name) || "").toLowerCase() === "online").map((member) => member.character_name)
+    membershipCount: roster.length,
+    members: roster,
+    onlineMembers: roster.filter((member) => member.status === "Online").map((member) => member.name)
   };
 }
 
@@ -6879,19 +7278,144 @@ export async function playerItemAugmentState(db, playerId, itemId, expectedAugme
   };
 }
 
-export async function giveItemToStorage(db, storageId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 0, augments = [], augmentQuality = 1 }) {
-  await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns.");
+// Mitigation for a real, confirmed live collision risk (2026-08-19, see
+// docs/incidents/INC-2026-08-19-GIVE-FILL-POSITION-INDEX-COLLISION.md):
+// the live game engine only reads/claims dune.items rows at server
+// startup, so a console-inserted row and a genuine in-game inventory
+// move/pickup can both target the same position_index in the same
+// container while the map stays running. When that happens, the row that
+// loses the race is never claimed on the next restart -- permanently
+// orphaned, though not deleted or corrupted. In-game additions/moves
+// typically fill a container low-to-high (position_index 0 upward), so a
+// console Give picks the HIGHEST unused slot below max_item_count instead
+// of the lowest, to reduce (not eliminate -- a full or nearly-full
+// container still collides) the chance of landing on a slot the engine is
+// about to claim. Per explicit operator direction: this mitigation
+// applies to Give (a specific quantity is going into a specific new slot,
+// so "furthest from where the engine is filling" is a meaningful,
+// implementable reduction) but NOT to Fill (which is meant to top up a
+// container to its real capacity -- deliberately filling toward the same
+// end the engine does, so there is no meaningful "high end" left once
+// Fill has done its job; Fill's own risk is documented, not mitigated).
+// Falls back to the pre-existing lowest-next-free behavior when
+// max_item_count is 0 (unknown/uncapped on this schema), since there is
+// no known high end to start from in that case.
+async function nextHighPositionIndex(tx, inventoryId, maxItemCount) {
+  if (!maxItemCount || maxItemCount <= 0) {
+    const fallback = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventoryId]);
+    return Number(fallback.rows[0]?.position_index || 0);
+  }
+  const result = await tx.query(`
+    select gs.idx as position_index
+    from generate_series($2::int - 1, 0, -1) as gs(idx)
+    where not exists (
+      select 1 from dune.items i where i.inventory_id = $1 and i.position_index = gs.idx
+    )
+    order by gs.idx desc
+    limit 1`, [inventoryId, maxItemCount]);
+  if (result.rows[0]) return Number(result.rows[0].position_index);
+  // Every slot below max_item_count is already claimed by some
+  // position_index (including possibly out-of-range or duplicate values --
+  // see "position_index is not trustworthy" in the docs) -- fall back to
+  // the lowest-next-free convention rather than inserting with no index at
+  // all. The slot-count check above already rejects a genuinely full
+  // container before this is ever reached in the normal case, so this
+  // branch should be unreachable given that precondition holds -- but it is
+  // not this function's own precondition to enforce, so it does not trust
+  // the caller to have checked it. Found during code review (2026-08-19):
+  // this fallback previously returned max(position_index)+1 unconditionally,
+  // which -- if a caller ever reaches this function with corrupted
+  // position_index data AND a stale/wrong currentCount (the one scenario
+  // that breaks the pigeonhole argument the "unreachable in the normal
+  // case" claim above relies on) -- could silently return an index at or
+  // beyond max_item_count instead of failing loudly, matching this file's
+  // established "throw rather than guess" precedent
+  // (resolveOwnedStorageContainer's own multi-inventory guard).
+  const fallback = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventoryId]);
+  const fallbackIndex = Number(fallback.rows[0]?.position_index || 0);
+  if (fallbackIndex >= maxItemCount) {
+    throw new Error("Could not determine a safe item slot for this container -- its item slot indexes appear inconsistent. Please report this so it can be investigated.");
+  }
+  return fallbackIndex;
+}
+
+// Game-created rows normally leave volume_override NULL, which means "use the
+// template's catalog volume" rather than zero. Capacity checks must therefore
+// resolve each occupied stack instead of summing only explicit overrides.
+function resolvedItemUnitVolume(templateId, volumeOverride) {
+  if (volumeOverride !== null && volumeOverride !== undefined) {
+    const explicit = Number(volumeOverride);
+    if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+  }
+  const catalogValue = adminItemMetadata().get(String(templateId || ""))?.volume;
+  if (catalogValue !== null && catalogValue !== undefined) {
+    const catalog = Number(catalogValue);
+    if (Number.isFinite(catalog) && catalog >= 0) return catalog;
+  }
+  return null;
+}
+
+async function inventoryVolumeState(tx, inventoryId) {
+  const result = await tx.query(
+    "select template_id, stack_size, volume_override from dune.items where inventory_id = $1",
+    [inventoryId]
+  );
+  let currentVolume = 0;
+  const unknownTemplates = new Set();
+  for (const row of result.rows) {
+    const templateId = String(row.template_id || "");
+    const quantity = Math.max(0, Number(row.stack_size) || 0);
+    if (!templateId || quantity === 0) continue;
+    const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override);
+    if (unitVolume === null) unknownTemplates.add(templateId);
+    else currentVolume += unitVolume * quantity;
+  }
+  return { currentVolume, unknownTemplates: [...unknownTemplates] };
+}
+
+function requireCompleteInventoryVolume(state) {
+  if (state.unknownTemplates.length === 0) return;
+  const preview = state.unknownTemplates.slice(0, 3).join(", ");
+  const more = state.unknownTemplates.length > 3 ? ` and ${state.unknownTemplates.length - 3} more` : "";
+  throw new Error(`Storage volume cannot be calculated safely because ${preview}${more} has no known item volume. Remove the unknown item or update the item catalog before adding more.`);
+}
+
+// Volumes originate in PostgreSQL REAL columns, so a mathematically exact
+// final unit can arrive as 0.999999999999 of a unit. Compare fixed micro-units
+// to avoid rejecting that valid last item while still never exceeding capacity.
+function quantityThatFitsByVolume(maxVolume, currentVolume, unitVolume) {
+  const scale = 1_000_000;
+  const max = Math.round(maxVolume * scale);
+  const current = Math.round(currentVolume * scale);
+  const unit = Math.round(unitVolume * scale);
+  if (unit <= 0) return Number.MAX_SAFE_INTEGER;
+  return Math.max(0, Math.floor(Math.max(0, max - current) / unit));
+}
+
+export async function giveItemToStorage(db, storageId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 0, itemVolume = 0, augments = [], augmentQuality = 1 }) {
+  await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns including volume_override.");
   const target = intParam(storageId, "storage id", 1);
   const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
-  const stackSize = intParam(quantity, "quantity", 1, 1000000);
+  const requestedQuantity = intParam(quantity, "quantity", 1, 1000000);
   const qualityLevel = normalizeStandaloneAugmentQuality(resolvedTemplate, intParam(quality, "quality", 0, 1000000));
   const augmentIds = validateAugmentIds(augments);
   const augmentQualityLevel = normalizeAugmentQuality(augmentQuality);
   validateAugmentsForTemplate(resolvedTemplate, augmentIds);
+  // itemVolume mirrors fillItemToStorage's own volume accounting -- both
+  // paths insert into the same dune.items/dune.inventories shape and must
+  // agree on what "full" means. Before this, give-item only checked slot
+  // count and never checked or recorded volume_override at all, so an
+  // operator could give an item whose declared volume exceeded a
+  // container's remaining volume, and every subsequent fill-item volume
+  // check would silently undercount real usage because give-item's rows
+  // never contributed to the sum(volume_override) total in the first
+  // place. Found during the 2026-08-18 raw-resource design review, not a
+  // live incident -- fixed proactively before it could become one.
+  const itemVolumeNum = Number(itemVolume) || 0;
   return db.transaction(async (tx) => {
     const itemColumns = await columnsFor(tx, "items");
     const storage = await tx.query(`
-      select id, actor_id, coalesce(max_item_count, 0)::int as max_item_count, coalesce(max_item_volume, 0)::int as max_item_volume
+      select id, actor_id, coalesce(max_item_count, 0)::int as max_item_count, coalesce(max_item_volume, 0)::real as max_item_volume
       from dune.inventories
       where actor_id = $1
       order by id
@@ -6901,8 +7425,38 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
     const inventory = storage.rows[0];
     const count = await tx.query("select count(*)::int as count from dune.items where inventory_id = $1", [inventory.id]);
     const currentCount = Number(count.rows[0]?.count || 0);
+    // A container's slot count is the one capacity axis a single give
+    // cannot be partially satisfied against -- one give always consumes
+    // exactly one slot regardless of quantity, so "no slots left" really
+    // does mean nothing at all can be given. This stays a hard rejection.
     if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) throw new Error("Storage is full by item slot count");
-    const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
+    // A requested quantity that would exceed the container's remaining
+    // VOLUME is clamped down to whatever actually fits, not rejected
+    // outright -- giving 375 of a requested 500 is a strictly better
+    // outcome than giving 0 of 500 and forcing the operator to guess a
+    // smaller number and retry. Each item has a known per-unit volume, so
+    // the maximum quantity that fits is always computable directly.
+    // Genuinely zero room (not even 1 unit fits) is still a real
+    // rejection -- there is nothing to report as given in that case.
+    let stackSize = requestedQuantity;
+    let clamped = false;
+    if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
+      // volume_override is a PER-UNIT value (see the 2026-08-19 correction
+      // below) -- the running total for the inventory is volume_override *
+      // stack_size, summed across rows, never volume_override alone.
+      const volume = await inventoryVolumeState(tx, inventory.id);
+      requireCompleteInventoryVolume(volume);
+      const currentVolume = volume.currentVolume;
+      const maxFit = quantityThatFitsByVolume(inventory.max_item_volume, currentVolume, itemVolumeNum);
+      if (stackSize > maxFit) {
+        if (maxFit < 1) {
+          throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, no room for even 1 unit of ${resolvedTemplate})`);
+        }
+        stackSize = maxFit;
+        clamped = true;
+      }
+    }
+    const positionIndex = await nextHighPositionIndex(tx, inventory.id, inventory.max_item_count);
     const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
     const rollPayloads = await loadAugmentRollPayloads(
       tx,
@@ -6911,16 +7465,143 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
       { sourceTemplateId: resolvedTemplate }
     );
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
-    const insert = itemInsertShape(
-      ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
-      [inventory.id, resolvedTemplate, stackSize, qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)],
-      itemColumns
-    );
+    const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
+    const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, positionIndex, JSON.stringify(stats)];
+    // CORRECTED 2026-08-19 (real live in-game bug, see
+    // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md):
+    // volume_override must be the item's PER-UNIT volume, not
+    // itemVolumeNum * stackSize. Confirmed directly against the live game
+    // engine's own audit log: every genuinely in-game-created item
+    // (never touched by the console) always has volume_override = NULL,
+    // meaning "use the engine's own per-unit catalog volume" -- when the
+    // engine sees a non-null volume_override, it multiplies that value by
+    // stack_size itself to compute the displayed/effective total. Storing
+    // the pre-multiplied total here (the previous, wrong behavior) made
+    // the engine multiply by stack_size a second time, inflating displayed
+    // volume by a factor of stack_size (e.g. a real 9540-unit Mouse Corpse
+    // stack with volume_override wrongly stored as 47700 [the total]
+    // displayed in-game as 47700 * 9540 ~= 455 million). The console's own
+    // read-side sums (baseInventory, baseContainerListStorage,
+    // baseContainerSlots) multiply volume_override * stack_size to compute
+    // a total, matching this corrected per-unit convention.
+    if (itemColumns.has("volume_override")) {
+      insertColumns.push("volume_override");
+      insertValues.push(itemVolumeNum);
+    }
+    const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
     const inserted = await tx.query(`
       insert into dune.items (${insert.columns.join(", ")})
-      values (${insert.values.map((_, index) => index === 5 ? `$${index + 1}::jsonb` : `$${index + 1}`).join(", ")})
-      returning id, template_id, stack_size, quality_level, position_index, inventory_id`, insert.values);
-    return { ok: true, storage: inventory, inserted: inserted.rows[0], augments: augmentIds.length > 0 ? augmentIds : undefined };
+      values (${insert.values.map((_, index) => {
+        const col = insertColumns[index];
+        if (col === "stats") return `$${index + 1}::jsonb`;
+        if (col === "volume_override") return `$${index + 1}::real`;
+        return `$${index + 1}`;
+      }).join(", ")})
+      returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
+    return {
+      ok: true,
+      storage: inventory,
+      inserted: inserted.rows[0],
+      augments: augmentIds.length > 0 ? augmentIds : undefined,
+      requested: requestedQuantity,
+      given: stackSize,
+      clamped
+    };
+  });
+}
+
+// Base-container variant of giveItemToStorage, used only by the Bases ->
+// Inventory Give action (baseContainerGiveItemRoute). Found during code
+// review (2026-08-19): that route previously verified ownership via a
+// separate, unlocked call to baseContainerSlots() *before* opening this
+// function's own write transaction (baseContainerOwnedStorageId, in
+// server.js), then handed the bare placeableId into giveItemToStorage's
+// own actor_id lookup (`order by id limit 1`, no group filter, no
+// multi-inventory guard). That was a real TOCTOU gap (ownership/group
+// verified in one query, the row resolved and written in a later,
+// completely separate transaction, with nothing preventing the base's
+// ownership or the container's group from changing in between) and a real
+// multi-inventory ambiguity gap (that actor_id lookup silently picks
+// whichever inventory row sorts first if a storage-group placeable is ever
+// found to back more than one qualifying inventory, instead of throwing
+// the way resolveOwnedStorageContainer already does for Delete). This
+// function closes both gaps by resolving ownership, locking the row, and
+// inserting in one atomic transaction via resolveOwnedStorageContainer --
+// exactly like deleteMultipleBaseContainerItems/deleteAllBaseContainerItems
+// already do. The standalone Storage tab's giveItemToStorage above is left
+// unchanged: it operates on an operator-supplied storage id directly, with
+// no base+placeable ownership chain to verify in the first place.
+export async function giveItemToBaseContainer(db, baseId, placeableId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 0, itemVolume = 0, augments = [], augmentQuality = 1 } = {}) {
+  await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns including volume_override.");
+  const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
+  const requestedQuantity = intParam(quantity, "quantity", 1, 1000000);
+  const qualityLevel = normalizeStandaloneAugmentQuality(resolvedTemplate, intParam(quality, "quality", 0, 1000000));
+  const augmentIds = validateAugmentIds(augments);
+  const augmentQualityLevel = normalizeAugmentQuality(augmentQuality);
+  validateAugmentsForTemplate(resolvedTemplate, augmentIds);
+  const itemVolumeNum = Number(itemVolume) || 0;
+  return db.transaction(async (tx) => {
+    const itemColumns = await columnsFor(tx, "items");
+    const resolved = await resolveOwnedStorageContainer(tx, intParam(baseId, "base id", 1), intParam(placeableId, "container id", 1), "given to");
+    const inventory = {
+      id: resolved.inventory_id,
+      max_item_count: Number(resolved.max_item_count) || 0,
+      max_item_volume: Number(resolved.max_item_volume) || 0
+    };
+    const count = await tx.query("select count(*)::int as count from dune.items where inventory_id = $1", [inventory.id]);
+    const currentCount = Number(count.rows[0]?.count || 0);
+    if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) throw new Error("Storage is full by item slot count");
+    let stackSize = requestedQuantity;
+    let clamped = false;
+    if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
+      const volume = await inventoryVolumeState(tx, inventory.id);
+      requireCompleteInventoryVolume(volume);
+      const currentVolume = volume.currentVolume;
+      const maxFit = quantityThatFitsByVolume(inventory.max_item_volume, currentVolume, itemVolumeNum);
+      if (stackSize > maxFit) {
+        if (maxFit < 1) {
+          throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, no room for even 1 unit of ${resolvedTemplate})`);
+        }
+        stackSize = maxFit;
+        clamped = true;
+      }
+    }
+    const positionIndex = await nextHighPositionIndex(tx, inventory.id, inventory.max_item_count);
+    const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
+    const rollPayloads = await loadAugmentRollPayloads(
+      tx,
+      standaloneAugment ? [resolvedTemplate] : augmentIds,
+      standaloneAugment ? qualityLevel : augmentQualityLevel,
+      { sourceTemplateId: resolvedTemplate }
+    );
+    const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
+    const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
+    const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, positionIndex, JSON.stringify(stats)];
+    if (itemColumns.has("volume_override")) {
+      insertColumns.push("volume_override");
+      insertValues.push(itemVolumeNum);
+    }
+    const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
+    const inserted = await tx.query(`
+      insert into dune.items (${insert.columns.join(", ")})
+      values (${insert.values.map((_, index) => {
+        const col = insertColumns[index];
+        if (col === "stats") return `$${index + 1}::jsonb`;
+        if (col === "volume_override") return `$${index + 1}::real`;
+        return `$${index + 1}`;
+      }).join(", ")})
+      returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
+    return {
+      ok: true,
+      storage: inventory,
+      placeableId: resolved.placeable_id,
+      inventoryId: String(inventory.id),
+      inserted: inserted.rows[0],
+      augments: augmentIds.length > 0 ? augmentIds : undefined,
+      requested: requestedQuantity,
+      given: stackSize,
+      clamped
+    };
   });
 }
 
@@ -6928,7 +7609,14 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
   await requireCapability(await supportsStorageFillItem(db), "Storage fill-item requires compatible dune.inventories and dune.items insert columns including volume_override.");
   const target = intParam(storageId, "storage id", 1);
   const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
+  // quantity: 0 is the pre-existing "fill to capacity" sentinel -- an
+  // explicit request with no specific target amount, distinct from a
+  // positive quantity that might need CLAMPING to what fits (handled
+  // below). requestedQuantity stays null in the response for the sentinel
+  // case, since there was never a specific number to compare against.
   let stackSize = intParam(quantity, "quantity", 0, 1000000);
+  const requestedQuantity = stackSize;
+  const toCapacity = stackSize === 0;
   const qualityLevel = normalizeStandaloneAugmentQuality(resolvedTemplate, intParam(quality, "quality", 0, 1000000));
   const augmentIds = validateAugmentIds(augments);
   const augmentQualityLevel = normalizeAugmentQuality(augmentQuality);
@@ -6962,24 +7650,40 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
     // function did) wrongly treated "quantity of items" as "number of
     // slots consumed" and rejected fills that had plenty of real slots
     // free -- found via a live discrepancy where a fill was rejected as
-    // "full by item slot count" at 9/10 real slots used.
+    // "full by item slot count" at 9/10 real slots used. Slot count is
+    // the one capacity axis that genuinely cannot be partially satisfied
+    // (one fill always consumes exactly one slot), so it stays a hard
+    // rejection rather than being clamped.
     if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) throw new Error("Storage is full by item slot count");
-    if (stackSize === 0) {
+    let clamped = false;
+    // volume_override is a PER-UNIT value -- the running total for the
+    // inventory is volume_override * stack_size, summed across rows. See
+    // the correction comment on the insert below for why.
+    if (toCapacity) {
       let volumeRemaining = 1000000;
       if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
-        const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
-        const currentVolume = Number(volume.rows[0]?.total_volume || 0);
-        volumeRemaining = Math.floor((inventory.max_item_volume - currentVolume) / itemVolumeNum);
+        const volume = await inventoryVolumeState(tx, inventory.id);
+        requireCompleteInventoryVolume(volume);
+        volumeRemaining = quantityThatFitsByVolume(inventory.max_item_volume, volume.currentVolume, itemVolumeNum);
       }
       stackSize = Math.min(volumeRemaining, 1000000);
       if (stackSize < 1) throw new Error("Container is full (no volume remaining)");
-    }
-    if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
-      const volume = await tx.query("select coalesce(sum(coalesce(volume_override, 0)), 0)::real as total_volume from dune.items where inventory_id = $1", [inventory.id]);
-      const currentVolume = Number(volume.rows[0]?.total_volume || 0);
-      const neededVolume = itemVolumeNum * stackSize;
-      if (currentVolume + neededVolume > inventory.max_item_volume) {
-        throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, need ${neededVolume.toFixed(1)})`);
+    } else if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
+      // An explicit quantity that would exceed the container's remaining
+      // volume is clamped to whatever actually fits, not rejected outright
+      // -- filling 375 of a requested 500 is strictly better than filling
+      // 0 of 500 and forcing the operator to guess a smaller number and
+      // retry. Genuinely zero room is still a real rejection.
+      const volume = await inventoryVolumeState(tx, inventory.id);
+      requireCompleteInventoryVolume(volume);
+      const currentVolume = volume.currentVolume;
+      const maxFit = quantityThatFitsByVolume(inventory.max_item_volume, currentVolume, itemVolumeNum);
+      if (stackSize > maxFit) {
+        if (maxFit < 1) {
+          throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, no room for even 1 unit of ${resolvedTemplate})`);
+        }
+        stackSize = maxFit;
+        clamped = true;
       }
     }
     const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
@@ -6993,18 +7697,21 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
     const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
     const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
-    // volume_override must reflect the TOTAL volume of the stack being
-    // inserted (itemVolumeNum * stackSize), not the per-unit volume --
-    // otherwise current_volume (summed across dune.items in listStorage
-    // and in the checks above) silently undercounts every stack with
-    // quantity > 1, and the volume cap stops being enforced correctly
-    // on subsequent fills. Found via a real live discrepancy: a
-    // quantity=3 AluminiumBar fill only added 1 to current_volume
-    // instead of 3.
-    const stackVolume = itemVolumeNum * stackSize;
+    // CORRECTED 2026-08-19 (real live in-game bug, see
+    // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md):
+    // volume_override must be the item's PER-UNIT volume, not
+    // itemVolumeNum * stackSize -- see giveItemToStorage's matching
+    // comment for the full explanation of why the previous "store the
+    // total" convention was wrong (it caused the live game engine to
+    // double-multiply by stack_size when displaying volume, e.g. a real
+    // 9540-unit stack showing ~455 million instead of ~47700). The
+    // volume checks above in this function already sum
+    // volume_override * stack_size to get a correct running total, so
+    // storing the per-unit value here keeps every subsequent fill/give
+    // against this container correct too.
     if (itemColumns.has("volume_override")) {
       insertColumns.push("volume_override");
-      insertValues.push(stackVolume);
+      insertValues.push(itemVolumeNum);
     }
     const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
     const inserted = await tx.query(`
@@ -7016,10 +7723,349 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
         return `$${index + 1}`;
       }).join(", ")})
       returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
-    return { ok: true, storage: inventory, inserted: inserted.rows[0], augments: augmentIds.length > 0 ? augmentIds : undefined };
+    return {
+      ok: true,
+      storage: inventory,
+      inserted: inserted.rows[0],
+      augments: augmentIds.length > 0 ? augmentIds : undefined,
+      requested: toCapacity ? null : requestedQuantity,
+      given: stackSize,
+      clamped
+    };
   });
 }
 
+// Base-container variant of fillItemToStorage, used only by the Bases ->
+// Inventory Fill action (baseContainerFillItemRoute). Same rationale as
+// giveItemToBaseContainer above -- resolves ownership, locks the row, and
+// inserts in one atomic transaction via resolveOwnedStorageContainer,
+// closing the same TOCTOU and multi-inventory-ambiguity gap this route
+// previously had via baseContainerOwnedStorageId + fillItemToStorage's own
+// actor_id-only lookup. The standalone Storage tab's fillItemToStorage
+// above is left unchanged.
+export async function fillItemToBaseContainer(db, repoRoot, baseId, placeableId, { itemName = "", itemId = "", templateId = "", quantity = 1, quality = 0, itemVolume = 0, augments = [], augmentQuality = 1 } = {}) {
+  await requireCapability(await supportsStorageFillItem(db), "Storage fill-item requires compatible dune.inventories and dune.items insert columns including volume_override.");
+  const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
+  let stackSize = intParam(quantity, "quantity", 0, 1000000);
+  const requestedQuantity = stackSize;
+  const toCapacity = stackSize === 0;
+  const qualityLevel = normalizeStandaloneAugmentQuality(resolvedTemplate, intParam(quality, "quality", 0, 1000000));
+  const augmentIds = validateAugmentIds(augments);
+  const augmentQualityLevel = normalizeAugmentQuality(augmentQuality);
+  validateAugmentsForTemplate(resolvedTemplate, augmentIds);
+  const itemVolumeNum = Number(itemVolume) || 0;
+  return db.transaction(async (tx) => {
+    const itemColumns = await columnsFor(tx, "items");
+    const resolved = await resolveOwnedStorageContainer(tx, intParam(baseId, "base id", 1), intParam(placeableId, "container id", 1), "filled into");
+    const inventory = {
+      id: resolved.inventory_id,
+      max_item_count: Number(resolved.max_item_count) || 0,
+      max_item_volume: Number(resolved.max_item_volume) || 0
+    };
+    const count = await tx.query("select count(*)::int as count from dune.items where inventory_id = $1", [inventory.id]);
+    const currentCount = Number(count.rows[0]?.count || 0);
+    if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) throw new Error("Storage is full by item slot count");
+    let clamped = false;
+    if (toCapacity) {
+      let volumeRemaining = 1000000;
+      if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
+        const volume = await inventoryVolumeState(tx, inventory.id);
+        requireCompleteInventoryVolume(volume);
+        volumeRemaining = quantityThatFitsByVolume(inventory.max_item_volume, volume.currentVolume, itemVolumeNum);
+      }
+      stackSize = Math.min(volumeRemaining, 1000000);
+      if (stackSize < 1) throw new Error("Container is full (no volume remaining)");
+    } else if (inventory.max_item_volume > 0 && itemVolumeNum > 0) {
+      const volume = await inventoryVolumeState(tx, inventory.id);
+      requireCompleteInventoryVolume(volume);
+      const currentVolume = volume.currentVolume;
+      const maxFit = quantityThatFitsByVolume(inventory.max_item_volume, currentVolume, itemVolumeNum);
+      if (stackSize > maxFit) {
+        if (maxFit < 1) {
+          throw new Error(`Storage is full by volume (${currentVolume.toFixed(1)}/${inventory.max_item_volume.toFixed(1)} used, no room for even 1 unit of ${resolvedTemplate})`);
+        }
+        stackSize = maxFit;
+        clamped = true;
+      }
+    }
+    const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
+    const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
+    const rollPayloads = await loadAugmentRollPayloads(
+      tx,
+      standaloneAugment ? [resolvedTemplate] : augmentIds,
+      standaloneAugment ? qualityLevel : augmentQualityLevel,
+      { sourceTemplateId: resolvedTemplate }
+    );
+    const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
+    const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
+    const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
+    if (itemColumns.has("volume_override")) {
+      insertColumns.push("volume_override");
+      insertValues.push(itemVolumeNum);
+    }
+    const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
+    const inserted = await tx.query(`
+      insert into dune.items (${insert.columns.join(", ")})
+      values (${insert.values.map((_, index) => {
+        const col = insertColumns[index];
+        if (col === "stats") return `$${index + 1}::jsonb`;
+        if (col === "volume_override") return `$${index + 1}::real`;
+        return `$${index + 1}`;
+      }).join(", ")})
+      returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
+    return {
+      ok: true,
+      storage: inventory,
+      placeableId: resolved.placeable_id,
+      inventoryId: String(inventory.id),
+      inserted: inserted.rows[0],
+      augments: augmentIds.length > 0 ? augmentIds : undefined,
+      requested: toCapacity ? null : requestedQuantity,
+      given: stackSize,
+      clamped
+    };
+  });
+}
+
+// Gives one or more distinct item templates to a storage container in a
+// single transaction. Built for the Bases -> Inventory (Storage group only)
+// "Add Item" action, where an operator may want to add several different
+// templates in one confirmation rather than one giveItemToBaseContainer call
+// per item -- N separate transactions would let some items succeed and
+// others fail on the same click, an inconsistent, confusing partial-success
+// state for something the UI presents as one action.
+//
+// Ownership is resolved once, atomically, via resolveOwnedStorageContainer
+// -- the same claim-CTE ownership chain and multi-inventory guard
+// deleteMultipleBaseContainerItems/deleteAllBaseContainerItems already use
+// -- rather than this function's own earlier actor_id-only lookup (`order
+// by id limit 1`, no ownership re-check, no multi-inventory guard), which
+// this function shared with giveItemToStorage/fillItemToStorage's
+// standalone-Storage-tab shape even though this function itself has never
+// had a standalone-tab caller (it exists only for
+// baseContainerGiveItemsRoute). Renamed from giveMultipleItemsToStorage to
+// giveMultipleItemsToBaseContainer accordingly (issue #347 code-review
+// follow-up, 2026-08-19) -- closes the same TOCTOU/multi-inventory-ambiguity
+// gap fixed for Give and Fill above.
+//
+// Round-trip fix, same round: count, volume, and occupied-position-index
+// state are each fetched ONCE up front and then maintained in memory as the
+// batch inserts rows, instead of re-querying the database after every
+// single item (which the previous version deliberately chose, per its own
+// removed comment, at a real cost of ~3-4 sequential round trips per item --
+// roughly 150-300 sequential statements for a 50-item batch, all held under
+// the same inventory row lock for the whole duration, blocking any
+// concurrent give/fill/delete against this same container). Safe because
+// resolveOwnedStorageContainer's `for update of inv` lock (held for this
+// whole transaction) guarantees nothing else can insert/delete rows in this
+// inventory between this initial read and the batch's own inserts -- every
+// other mutation path in this file (give/fill/delete) takes the same lock
+// before touching dune.items, so this is the same guarantee
+// finishDeletingLockedItems's own batch-read-then-mutate shape already
+// relies on for bulk-delete, applied here to bulk-give.
+//
+// Never throws on hitting a capacity limit (matches giveItemToBaseContainer's
+// own "clamp, don't reject" fix): a requested quantity that would exceed
+// remaining volume is clamped to whatever fits and given, exactly like the
+// single-item path. What differs for a BATCH specifically -- a deliberate
+// design choice, not a limitation -- is that once one item in the batch does
+// not fully fit (clamped, or zero room left), the batch stops there rather
+// than continuing to try later items that might individually have had
+// room: predictable, left-to-right "give as much as you can until you hit
+// the wall" semantics are easier for an operator to reason about than a
+// batch that skips around filling whichever later items happen to fit.
+// Every requested item still appears in `results`, including ones never
+// attempted because an earlier item already stopped the batch (`attempted:
+// false`), so the response always accounts for all of them, not just the
+// ones that got a row inserted.
+//
+// items: [{ itemName?, itemId?, templateId?, quantity?, quality?, itemVolume?, augments?, augmentQuality? }]
+export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, { items = [] } = {}) {
+  await requireCapability(await supportsStorageGiveItem(db), "Storage give-item requires compatible dune.inventories and dune.items insert columns including volume_override.");
+  if (!Array.isArray(items) || items.length === 0) throw new Error("At least one item is required");
+  if (items.length > 50) throw new Error("Cannot give more than 50 distinct items in a single batch");
+
+  // Validated up front, outside the transaction, so a bad item anywhere in
+  // the batch fails the whole request before any row is touched -- the same
+  // "all or nothing" guarantee a single giveItemToBaseContainer call already
+  // gives the caller for validation errors (a malformed item id, an invalid
+  // augment) -- capacity limits are a separate, no-longer-rejecting
+  // concern handled inside the transaction below.
+  const prepared = items.map((item) => {
+    const resolvedTemplate = validateTemplateId(item.templateId || item.itemId || item.itemName || "");
+    const requestedQuantity = intParam(item.quantity ?? 1, "quantity", 1, 1000000);
+    const qualityLevel = normalizeStandaloneAugmentQuality(resolvedTemplate, intParam(item.quality ?? 0, "quality", 0, 1000000));
+    const augmentIds = validateAugmentIds(item.augments || []);
+    const augmentQualityLevel = normalizeAugmentQuality(item.augmentQuality ?? 1);
+    validateAugmentsForTemplate(resolvedTemplate, augmentIds);
+    return {
+      resolvedTemplate,
+      requestedQuantity,
+      qualityLevel,
+      augmentIds,
+      augmentQualityLevel,
+      itemVolumeNum: Number(item.itemVolume) || 0
+    };
+  });
+
+  return db.transaction(async (tx) => {
+    const itemColumns = await columnsFor(tx, "items");
+    const resolved = await resolveOwnedStorageContainer(tx, intParam(baseId, "base id", 1), intParam(placeableId, "container id", 1), "given to");
+    const inventory = {
+      id: resolved.inventory_id,
+      max_item_count: Number(resolved.max_item_count) || 0,
+      max_item_volume: Number(resolved.max_item_volume) || 0
+    };
+
+    const countRow = await tx.query("select count(*)::int as count from dune.items where inventory_id = $1", [inventory.id]);
+    let currentCount = Number(countRow.rows[0]?.count || 0);
+
+    let currentVolume = 0;
+    if (inventory.max_item_volume > 0) {
+      const volume = await inventoryVolumeState(tx, inventory.id);
+      requireCompleteInventoryVolume(volume);
+      currentVolume = volume.currentVolume;
+    }
+
+    // Occupied position_index state, mirroring nextHighPositionIndex's own
+    // two branches (see its comment for the collision-mitigation rationale)
+    // so this batch's own claims stay consistent with a single-item Give
+    // without re-running that function's query once per item.
+    const occupied = new Set();
+    let uncappedNextIndex = 0;
+    if (inventory.max_item_count > 0) {
+      const positionsRow = await tx.query("select position_index from dune.items where inventory_id = $1", [inventory.id]);
+      for (const row of positionsRow.rows) {
+        const idx = Number(row.position_index);
+        if (Number.isFinite(idx)) occupied.add(idx);
+      }
+    } else {
+      const maxRow = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
+      uncappedNextIndex = Number(maxRow.rows[0]?.position_index || 0);
+    }
+    function claimPositionIndex() {
+      if (inventory.max_item_count <= 0) {
+        const idx = uncappedNextIndex;
+        uncappedNextIndex += 1;
+        return idx;
+      }
+      for (let idx = inventory.max_item_count - 1; idx >= 0; idx--) {
+        if (!occupied.has(idx)) {
+          occupied.add(idx);
+          return idx;
+        }
+      }
+      // Mirrors nextHighPositionIndex's own "throw rather than guess"
+      // fallback guard (2026-08-19 code-review fix) instead of silently
+      // returning an index at or beyond max_item_count.
+      throw new Error("Could not determine a safe item slot for this container -- its item slot indexes appear inconsistent. Please report this so it can be investigated.");
+    }
+
+    const results = [];
+    let stopped = false;
+    for (const entry of prepared) {
+      if (stopped) {
+        results.push({
+          templateId: entry.resolvedTemplate,
+          requested: entry.requestedQuantity,
+          given: 0,
+          clamped: true,
+          attempted: false,
+          reason: "Batch stopped after an earlier item did not fully fit."
+        });
+        continue;
+      }
+      // Slot count is still a hard stop, same reasoning as the single-item
+      // path: one give always consumes exactly one slot, so "no slots
+      // left" cannot be partially satisfied for THIS item or any later one
+      // in the batch (a later give would need a slot too) -- the whole
+      // batch stops here, not just this item.
+      if (inventory.max_item_count > 0 && currentCount >= inventory.max_item_count) {
+        results.push({
+          templateId: entry.resolvedTemplate,
+          requested: entry.requestedQuantity,
+          given: 0,
+          clamped: true,
+          attempted: true,
+          reason: "Storage is full by item slot count."
+        });
+        stopped = true;
+        continue;
+      }
+      let stackSize = entry.requestedQuantity;
+      let clamped = false;
+      if (inventory.max_item_volume > 0 && entry.itemVolumeNum > 0) {
+        // volume_override is a PER-UNIT value -- see giveItemToBaseContainer's
+        // 2026-08-19 correction comment. Total is volume_override * stack_size.
+        const maxFit = quantityThatFitsByVolume(inventory.max_item_volume, currentVolume, entry.itemVolumeNum);
+        if (stackSize > maxFit) {
+          stackSize = maxFit;
+          clamped = true;
+        }
+      }
+      if (stackSize < 1) {
+        results.push({
+          templateId: entry.resolvedTemplate,
+          requested: entry.requestedQuantity,
+          given: 0,
+          clamped: true,
+          attempted: true,
+          reason: "Storage is full by volume."
+        });
+        stopped = true;
+        continue;
+      }
+      // High-end position mitigation -- see nextHighPositionIndex's own
+      // comment (also used by giveItemToBaseContainer) for why Give, unlike
+      // Fill, picks the highest unused slot instead of the lowest.
+      const positionIndex = claimPositionIndex();
+      const standaloneAugment = isStandaloneAugmentTemplate(entry.resolvedTemplate);
+      const rollPayloads = await loadAugmentRollPayloads(
+        tx,
+        standaloneAugment ? [entry.resolvedTemplate] : entry.augmentIds,
+        standaloneAugment ? entry.qualityLevel : entry.augmentQualityLevel,
+        { sourceTemplateId: entry.resolvedTemplate }
+      );
+      const stats = buildItemStats({ templateId: entry.resolvedTemplate, augments: entry.augmentIds, rollPayloads });
+      const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
+      const insertValues = [inventory.id, entry.resolvedTemplate, stackSize, entry.qualityLevel, positionIndex, JSON.stringify(stats)];
+      // CORRECTED 2026-08-19: volume_override must be the item's PER-UNIT
+      // volume, not entry.itemVolumeNum * stackSize -- see
+      // giveItemToBaseContainer's matching comment for the full explanation.
+      if (itemColumns.has("volume_override")) {
+        insertColumns.push("volume_override");
+        insertValues.push(entry.itemVolumeNum);
+      }
+      const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
+      const inserted = await tx.query(`
+        insert into dune.items (${insert.columns.join(", ")})
+        values (${insert.values.map((_, index) => {
+          const col = insertColumns[index];
+          if (col === "stats") return `$${index + 1}::jsonb`;
+          if (col === "volume_override") return `$${index + 1}::real`;
+          return `$${index + 1}`;
+        }).join(", ")})
+        returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
+      results.push({
+        inserted: inserted.rows[0],
+        augments: entry.augmentIds.length > 0 ? entry.augmentIds : undefined,
+        templateId: entry.resolvedTemplate,
+        requested: entry.requestedQuantity,
+        given: stackSize,
+        clamped,
+        attempted: true
+      });
+      currentCount += 1;
+      currentVolume += entry.itemVolumeNum * stackSize;
+      // A partially-filled item (clamped, even though given > 0) still
+      // stops the batch here -- per design, once one item does not fully
+      // fit, later items are not attempted, rather than skipping ahead to
+      // see if a smaller later item happens to have room.
+      if (clamped) stopped = true;
+    }
+    return { ok: true, storage: inventory, placeableId: resolved.placeable_id, inventoryId: String(inventory.id), results };
+  });
+}
 
 // Every power device at a base, with the inventory its fuel lives in. Claim
 // resolution mirrors portalGeneratorFuel so both agree on which placeables
@@ -7819,6 +8865,14 @@ const WATER_TYPES = {
     buildingTypes: ["windtrap_placeable"],
     capacity: 500
   },
+  largeWindtrap: {
+    name: "Large Windtrap",
+    buildingTypes: ["largewindtrap_placeable"],
+    // Confirmed against the retained production backup: every Large Windtrap
+    // stores its water in the same 500-unit FWaterStorageComponent used by the
+    // regular Windtrap. Its larger output does not increase stored capacity.
+    capacity: 500
+  },
   // Displays in-game as "Blood Purifier" / "Improved Blood Purifier" (see
   // runtime/data/admin-items.json's BloodWaterExtraction[Advanced]_Patent
   // entries) -- building_type keeps the game's own internal name.
@@ -7840,7 +8894,7 @@ const WATER_TYPES = {
 
 const WATER_TYPE_ORDER = [
   "waterCistern", "mediumWaterCistern", "largeWaterCistern",
-  "windtrap", "bloodWaterExtractor", "bloodWaterExtractorAdvanced"
+  "windtrap", "largeWindtrap", "bloodWaterExtractor", "bloodWaterExtractorAdvanced"
 ];
 
 const WATER_BUILDING_TYPE_PAIRS = WATER_TYPE_ORDER.flatMap(
@@ -8268,10 +9322,23 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
       groups: [],
       containers: [],
       items: [],
-      totals: { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0 }
+      totals: { items: 0, distinct: 0, containers: 0, usedSlots: 0, maxSlots: 0, currentVolume: 0, maxVolume: 0, volumeComplete: false }
     };
   }
   const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
+
+  // Column-probed the same way baseContainerSlots already probes
+  // position_index/quality_level/stats (issue #356, found during PR #349's
+  // Layer 3 audit): a schema without max_item_volume/volume_override can
+  // still list slots and quantities, it just cannot report volume. Neither
+  // column is required by anything above -- degrading to 0 here must not
+  // fail the whole tab.
+  const inventoryColumns = await columnsFor(db, "inventories");
+  const itemColumns = await columnsFor(db, "items");
+  const hasMaxItemVolume = inventoryColumns.has("max_item_volume");
+  const hasVolumeOverride = itemColumns.has("volume_override");
+  const maxItemVolumeSelect = hasMaxItemVolume ? "inv.max_item_volume" : "0::real as max_item_volume";
+  const volumeOverrideSelect = hasVolumeOverride ? "i.volume_override" : "0::real as volume_override";
 
   const result = await db.query(`
     with requested_claims as (
@@ -8294,7 +9361,7 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
       -- on all 44 of them in the reference dump. Keeping it would also mean
       -- dividing a slot bar by a negative capacity.
       select p.id as placeable_id, inv.id as inventory_id,
-             it.group_key, it.type_name, inv.max_item_count,
+             it.group_key, it.type_name, inv.max_item_count, ${maxItemVolumeSelect},
              coalesce(max(case when pa.actor_name not like '##%' and pa.actor_name <> 'None'
                           then pa.actor_name end), '') as container_name
       from base_entities be
@@ -8303,12 +9370,12 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
       join dune.inventories inv on inv.actor_id = p.id and inv.max_item_count >= 0
       left join dune.permission_actor pa on pa.actor_id = p.id
       where p.is_hologram = false
-      group by p.id, inv.id, it.group_key, it.type_name, inv.max_item_count
+      group by p.id, inv.id, it.group_key, it.type_name, inv.max_item_count${hasMaxItemVolume ? ", inv.max_item_volume" : ""}
     )
     select c.placeable_id::text as placeable_id,
            c.inventory_id::text as inventory_id,
-           c.group_key, c.type_name, c.container_name, c.max_item_count,
-           i.template_id, i.stack_size
+           c.group_key, c.type_name, c.container_name, c.max_item_count, c.max_item_volume,
+           i.template_id, i.stack_size, ${volumeOverrideSelect}
     from containers c
     left join dune.items i on i.inventory_id = c.inventory_id
     order by c.placeable_id, i.template_id`, [target, groups, buildingTypes, typeNames]);
@@ -8335,6 +9402,9 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
         group: row.group_key,
         usedSlots: 0,
         maxSlots: 0,
+        currentVolume: 0,
+        maxVolume: 0,
+        volumeComplete: hasMaxItemVolume && hasVolumeOverride,
         itemCount: 0,
         items: []
       };
@@ -8346,6 +9416,7 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
     if (!countedInventories.has(inventoryId)) {
       countedInventories.add(inventoryId);
       container.maxSlots += Math.max(0, Number(row.max_item_count) || 0);
+      container.maxVolume += Math.max(0, Number(row.max_item_volume) || 0);
     }
 
     // The left join emits one all-null item for an empty container.
@@ -8354,6 +9425,15 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
     const quantity = Number(row.stack_size) || 0;
     container.usedSlots += 1;
     container.itemCount += quantity;
+    // CORRECTED 2026-08-19: volume_override is the item's PER-UNIT volume
+    // (see giveItemToStorage's correction comment) -- the total for this
+    // row is volume_override * quantity, matching what the live game
+    // engine itself computes for display.
+    if (hasMaxItemVolume && hasVolumeOverride) {
+      const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override);
+      if (unitVolume === null) container.volumeComplete = false;
+      else container.currentVolume += unitVolume * quantity;
+    }
 
     const metadata = itemMetadata.get(templateId);
     const name = metadata?.name || templateId;
@@ -8430,7 +9510,10 @@ export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
       distinct: items.length,
       containers: containers.length,
       usedSlots: containers.reduce((total, container) => total + container.usedSlots, 0),
-      maxSlots: containers.reduce((total, container) => total + container.maxSlots, 0)
+      maxSlots: containers.reduce((total, container) => total + container.maxSlots, 0),
+      currentVolume: containers.reduce((total, container) => total + container.currentVolume, 0),
+      maxVolume: containers.reduce((total, container) => total + container.maxVolume, 0),
+      volumeComplete: containers.every((container) => container.volumeComplete)
     }
   };
 }
@@ -8477,6 +9560,14 @@ export async function baseContainerSlots(db, baseId, placeableId) {
   const itemColumns = await columnsFor(db, "items");
   const hasPositionIndex = itemColumns.has("position_index");
   const hasStats = itemColumns.has("stats");
+  // Same volume probe baseInventory uses (issue #356): a schema without
+  // max_item_volume/volume_override still opens the container, it just
+  // reports 0/0 volume instead of failing the whole slots view.
+  const inventoryColumns = await columnsFor(db, "inventories");
+  const hasMaxItemVolume = inventoryColumns.has("max_item_volume");
+  const hasVolumeOverride = itemColumns.has("volume_override");
+  const maxItemVolumeSelect = hasMaxItemVolume ? "inv.max_item_volume" : "0::real as max_item_volume";
+  const volumeOverrideSelect = hasVolumeOverride ? "i.volume_override" : "0::real as volume_override";
   const slotSelect = [
     hasPositionIndex ? "i.position_index" : "null::bigint as position_index",
     itemColumns.has("quality_level") ? "i.quality_level" : "0::bigint as quality_level",
@@ -8530,7 +9621,7 @@ export async function baseContainerSlots(db, baseId, placeableId) {
       select * from unnest($2::text[], $3::text[], $4::text[]) as t(group_key, building_type, type_name)
     ), containers as (
       select distinct p.id as placeable_id, inv.id as inventory_id,
-             it.group_key, it.type_name, inv.max_item_count
+             it.group_key, it.type_name, inv.max_item_count, ${maxItemVolumeSelect}
       from base_entities be
       join dune.placeables p on p.owner_entity_id = be.owner_entity_id
       join inventory_types it on it.building_type = lower(p.building_type)
@@ -8538,8 +9629,8 @@ export async function baseContainerSlots(db, baseId, placeableId) {
       where p.is_hologram = false and p.id = $5
     )
     select c.inventory_id::text as inventory_id,
-           c.group_key, c.type_name, c.max_item_count,
-           i.id::text as item_id, i.template_id, i.stack_size,
+           c.group_key, c.type_name, c.max_item_count, c.max_item_volume,
+           i.id::text as item_id, i.template_id, i.stack_size, ${volumeOverrideSelect},
            ${slotSelect}
     from containers c
     left join dune.items i on i.inventory_id = c.inventory_id
@@ -8566,6 +9657,9 @@ export async function baseContainerSlots(db, baseId, placeableId) {
         inventoryId,
         maxSlots: Math.max(0, Number(row.max_item_count) || 0),
         usedSlots: 0,
+        maxVolume: Math.max(0, Number(row.max_item_volume) || 0),
+        currentVolume: 0,
+        volumeComplete: hasMaxItemVolume && hasVolumeOverride,
         slots: []
       };
       inventoriesById.set(inventoryId, inventory);
@@ -8593,6 +9687,16 @@ export async function baseContainerSlots(db, baseId, placeableId) {
         };
       })
       .filter((augment) => augment !== null);
+    const slotQuantity = Number(row.stack_size) || 0;
+    // CORRECTED 2026-08-19: volume_override is the item's PER-UNIT volume
+    // (see giveItemToStorage's correction comment), matching baseInventory's
+    // own accumulation -- multiplied by quantity here to get this row's
+    // total contribution.
+    if (hasMaxItemVolume && hasVolumeOverride) {
+      const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override);
+      if (unitVolume === null) inventory.volumeComplete = false;
+      else inventory.currentVolume += unitVolume * slotQuantity;
+    }
     inventory.slots.push({
       itemId: String(row.item_id),
       templateId,
@@ -8600,7 +9704,7 @@ export async function baseContainerSlots(db, baseId, placeableId) {
       positionIndex: row.position_index === null || row.position_index === undefined
         ? null
         : Number(row.position_index),
-      quantity: Number(row.stack_size) || 0,
+      quantity: slotQuantity,
       qualityLevel: Number(row.quality_level) || 0,
       currentDurability: row.current_durability === null || row.current_durability === undefined
         ? null
@@ -8622,6 +9726,9 @@ export async function baseContainerSlots(db, baseId, placeableId) {
     group: result.rows[0].group_key,
     maxSlots: inventories.reduce((total, inventory) => total + inventory.maxSlots, 0),
     usedSlots: inventories.reduce((total, inventory) => total + inventory.usedSlots, 0),
+    maxVolume: inventories.reduce((total, inventory) => total + inventory.maxVolume, 0),
+    currentVolume: inventories.reduce((total, inventory) => total + inventory.currentVolume, 0),
+    volumeComplete: inventories.every((inventory) => inventory.volumeComplete),
     inventories
   };
 }
@@ -8990,6 +10097,308 @@ export async function addBaseContainerItem(db, baseId, placeableId, {
   });
 }
 
+// Resolves and locks the storage-group inventory for one base container,
+// the same claim-CTE ownership chain deleteBaseContainerItem uses, shared by
+// deleteMultipleBaseContainerItems and deleteAllBaseContainerItems so both
+// bulk-delete paths verify ownership identically to the existing single-item
+// path rather than trusting the caller's placeableId directly. Must be
+// called inside the caller's own transaction (tx), not db, so the FOR
+// UPDATE lock and the deletes that follow are atomic with each other.
+// docs/console/base-inventory.md explicitly documents that "a placeable can
+// back more than one surviving inventory" as a general schema fact, not
+// something scoped to Refining/Crafting's known dual-inventory case --
+// baseContainerSlots/baseInventory already handle this for the read path by
+// summing across every qualifying inventory a placeable has. This function
+// intentionally does NOT silently pick one of several qualifying inventories
+// the way an earlier version of this function did (no ORDER BY/LIMIT,
+// `rows[0]` taken unconditionally -- found and fixed during this PR's own
+// Layer 3 audit, both the DBA and QA hats independently caught it): if a
+// storage-group placeable is ever found to back more than one qualifying
+// inventory, this throws rather than guessing, because deleteAllBaseContainerItems
+// silently "succeeding" while leaving real items behind in a second,
+// un-selected inventory is worse than a loud failure an operator can report.
+// No storage-group building type is currently known to carry more than one
+// qualifying inventory (unlike Refining/Crafting's documented
+// inventory_type=12 pair) -- see the resolveOwnedStorageContainer test suite
+// (db.test.js) for the explicit test constructing this exact 2-inventory
+// scenario and asserting it throws rather than picking one. If this is ever
+// found to be a real, legitimate case for some storage building type, this
+// function needs a real design decision (sum across inventories, like the
+// read path does, or require the caller to disambiguate) -- not a silent
+// rows[0] pick.
+//
+// Also returns actor_id/max_item_count/max_item_volume from the locked
+// dune.inventories row (added for issue #347 code-review follow-up), so
+// giveItemToBaseContainer/fillItemToBaseContainer/
+// giveMultipleItemsToBaseContainer can resolve their target inventory
+// through this same atomic, ownership-verified, multi-inventory-guarded
+// path instead of giveItemToStorage/fillItemToStorage's own actor_id-only
+// lookup (`order by id limit 1`, no ownership re-check, no multi-inventory
+// guard) -- giveMultipleItemsToStorage used that same shape until it was
+// renamed to giveMultipleItemsToBaseContainer as part of this same fix.
+// That lookup remains correct and unchanged for the standalone Storage tab
+// (giveItemToStorage/fillItemToStorage), which
+// operates on an operator-supplied storage id directly and has no
+// base+placeable ownership chain to verify in the first place, but it was
+// a real ownership-verified-outside-the-lock (TOCTOU) and
+// silently-picks-a-row (multi-inventory ambiguity) gap when it was reused,
+// via a separate unlocked pre-check, for the Bases-scoped Give/Fill routes.
+// actionLabel customizes the group-mismatch error's verb ("deleted from" /
+// "given to" / "filled into") since this function is now shared by
+// actions with different verbs, not just delete.
+async function resolveOwnedStorageContainer(tx, baseId, placeableId, actionLabel = "deleted from") {
+  const [groups, buildingTypes, typeNames] = baseInventoryTypeParams();
+  // Found during the real-HTTP integration tests added for issue #353: this
+  // query 500'd on every real invocation with "FOR UPDATE is not allowed
+  // with DISTINCT clause" -- Postgres flatly rejects combining SELECT
+  // DISTINCT with FOR UPDATE in the same query, a restriction no mocked
+  // test in this file's own db.test.js suite could ever catch, since the
+  // fake db's query() never actually parses SQL. Every mutation function
+  // that calls resolveOwnedStorageContainer (deleteMultipleBaseContainerItems,
+  // deleteAllBaseContainerItems, and -- through baseContainerOwnedStorageId's
+  // own baseContainerSlots call in server.js -- give/give-multiple/fill as
+  // well, transitively) was broken against a real database from the moment
+  // this function was introduced. Fixed by resolving the DISTINCT candidate
+  // set in a CTE first, then joining back to the real dune.inventories row
+  // to take the lock -- FOR UPDATE only ever applies to that final,
+  // non-DISTINCT join, which Postgres allows.
+  const found = await tx.query(`
+    with requested_claims as (
+      select distinct b.id, afe.actor_id
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      where b.id = $1
+    ), base_entities as (
+      select distinct rc.id, claim_afe.entity_id as owner_entity_id
+      from requested_claims rc
+      join dune.actor_fgl_entities claim_afe on claim_afe.actor_id = rc.actor_id
+    ), inventory_types as (
+      select * from unnest($2::text[], $3::text[], $4::text[]) as t(group_key, building_type, type_name)
+    ), candidates as (
+      select distinct p.id as placeable_id, inv.id as inventory_id,
+             it.group_key, it.type_name
+      from base_entities be
+      join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+      join inventory_types it on it.building_type = lower(p.building_type)
+      join dune.inventories inv on inv.actor_id = p.id and inv.max_item_count >= 0
+      where p.is_hologram = false and p.id = $5
+    )
+    select c.placeable_id::text as placeable_id, c.inventory_id,
+           c.group_key, c.type_name, inv.actor_id,
+           coalesce(inv.max_item_count, 0)::int as max_item_count,
+           coalesce(inv.max_item_volume, 0)::real as max_item_volume
+    from candidates c
+    join dune.inventories inv on inv.id = c.inventory_id
+    order by c.inventory_id
+    for update of inv`, [baseId, groups, buildingTypes, typeNames, placeableId]);
+
+  if (found.rows.length === 0) throw new Error("That container was not found at the selected base.");
+  if (found.rows.length > 1) {
+    throw new Error(`This container backs ${found.rows.length} separate inventories, which this action does not support yet. Please report this so it can be fixed.`);
+  }
+  const container = found.rows[0];
+  if (container.group_key !== "storage") {
+    throw new Error(`Items can only be ${actionLabel} Storage containers. Crafting and Refining contents are read-only to protect active jobs.`);
+  }
+  return container;
+}
+
+// Deletes a specific set of items (whole stacks only -- no partial-stack
+// support here, unlike deleteBaseContainerItem's single-item count option)
+// from one storage container in a single transaction. Built for the Bases
+// -> Inventory "select several items, delete selected" action, so an
+// operator does not have to confirm N separate deletions for N items.
+//
+// Ownership-verified the same way deleteBaseContainerItem is (claim CTE,
+// storage-group-only), NOT the removeItemsFromStorage shape below, which
+// only checks that some inventory exists for an actor and picks one
+// arbitrarily with no group filter -- that shape must never be reused here,
+// since it could otherwise reach a Refining/Crafting inventory this
+// function is specifically scoped to avoid.
+
+// The same column-probed audit-detail SELECT fragment deleteBaseContainerItem
+// builds inline, factored out so deleteMultipleBaseContainerItems and
+// deleteAllBaseContainerItems (issue #350) can select the same
+// position_index/quality_level/durability fields without duplicating the
+// probe logic a third time. A missing column degrades to a null/0 literal
+// rather than failing the query, matching every other column-probed read in
+// this file.
+async function auditDetailSelectFragment(tx) {
+  const itemColumns = await columnsFor(tx, "items");
+  const hasStats = itemColumns.has("stats");
+  return [
+    itemColumns.has("position_index") ? "position_index" : "null::bigint as position_index",
+    itemColumns.has("quality_level") ? "quality_level" : "0::bigint as quality_level",
+    hasStats
+      ? "coalesce((stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null) as current_durability"
+      : "null::text as current_durability",
+    hasStats
+      ? `coalesce(
+             nullif((stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
+             nullif((stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+             null
+           ) as max_durability`
+      : "null::numeric as max_durability"
+  ].join(",\n           ");
+}
+
+// Shared by deleteMultipleBaseContainerItems/deleteAllBaseContainerItems.
+// Found during PR #349's own Layer 3 audit (DBA and Security hats,
+// independently, issue #352): the original version of both functions did a
+// per-item loop of 4 sequential round-trips (select-for-update,
+// dune.delete_item call, an exists check, a conditional fallback delete),
+// worst case ~800 sequential statements for a 200-item batch, all while
+// resolveOwnedStorageContainer's `for update of inv` lock was held for the
+// full duration -- blocking any concurrent give/fill/delete against the
+// SAME container for that whole window, with no overall transaction
+// timeout (ADMIN_DB_STATEMENT_TIMEOUT_MS/ADMIN_DB_QUERY_TIMEOUT_MS bound
+// each individual statement, not the cumulative transaction).
+//
+// dune.delete_item(bigint) is a shipped stored procedure taking exactly one
+// id -- it cannot be batched into a single set-based call, so the N calls
+// to it are irreducible. Everything AROUND those N calls is now set-based
+// instead of per-item: this function takes the rows the CALLER already
+// selected-for-update (deleteMultipleBaseContainerItems selects by id list;
+// deleteAllBaseContainerItems selects the whole inventory) -- it does not
+// re-select or re-lock them itself, and verifies/cleans up every row in one
+// pair of set-based statements after the delete_item loop, not one pair per
+// row. Round-trips drop from ~4N to ~N+2 for a batch of N items.
+async function finishDeletingLockedItems(tx, inventoryId, rows) {
+  if (!rows.length) return [];
+  const ids = rows.map((row) => row.item_id);
+
+  // dune.delete_item is a per-row shipped procedure -- this loop is the one
+  // part of the batch that genuinely cannot be reduced to a single
+  // statement. It performs no other DB round-trip; the "did it actually
+  // delete" verification below is checked once, for every row together.
+  for (const id of ids) {
+    await tx.query("select dune.delete_item($1::bigint)", [id]);
+  }
+
+  // One set-based check replaces N individual exists() calls: which of the
+  // rows dune.delete_item was just asked to remove are still present.
+  const stillPresent = await tx.query(
+    "select id::text as item_id from dune.items where id = any($1::bigint[]) and inventory_id = $2",
+    [ids, inventoryId]
+  );
+  if (stillPresent.rows.length) {
+    // Same raw-delete fallback the single-item delete uses, now applied to
+    // every row the procedure left behind in one statement instead of one
+    // per row.
+    await tx.query(
+      "delete from dune.items where id = any($1::bigint[]) and inventory_id = $2",
+      [stillPresent.rows.map((row) => row.item_id), inventoryId]
+    );
+  }
+
+  // Same audit-detail fields deleteBaseContainerItem's own destroyedState
+  // captures (issue #350, found during PR #349's Layer 3 audit): without
+  // these, a bulk-destroyed pristine legendary logs identically to a
+  // bulk-destroyed broken common of the same template. The caller's own
+  // SELECT is column-probed the same way baseContainerSlots/
+  // deleteBaseContainerItem already are, so a schema missing these columns
+  // degrades to null fields rather than failing the whole batch -- this
+  // function only ever reads whatever fields the caller's row actually
+  // carries, it does not re-query for them.
+  return rows.map((row) => ({
+    itemId: row.item_id,
+    templateId: row.template_id,
+    count: Number(row.stack_size) || 0,
+    positionIndex: row.position_index === null || row.position_index === undefined ? null : Number(row.position_index),
+    qualityLevel: Number(row.quality_level) || 0,
+    currentDurability: row.current_durability === null || row.current_durability === undefined ? null : Number(row.current_durability),
+    maxDurability: row.max_durability === null || row.max_durability === undefined ? null : Number(row.max_durability)
+  }));
+}
+
+export async function deleteMultipleBaseContainerItems(db, baseId, placeableId, itemIds) {
+  await requireCapability(
+    await supportsBaseContainerItemDelete(db),
+    "Container item delete requires dune.buildings, dune.building_instances, dune.actor_fgl_entities, dune.placeables, dune.inventories, dune.items, and dune.delete_item(bigint)."
+  );
+  const target = intParam(baseId, "base id", 1);
+  const container = intParam(placeableId, "container id", 1);
+  const safeIds = [...new Set((Array.isArray(itemIds) ? itemIds : []).map((id) => bigintParam(id, "item id")))];
+  if (!safeIds.length) throw new Error("At least one item ID is required");
+  if (safeIds.length > 200) throw new Error("Cannot delete more than 200 items in a single batch");
+
+  return db.transaction(async (tx) => {
+    await tx.query("set local search_path to dune, public");
+    const resolved = await resolveOwnedStorageContainer(tx, target, container);
+
+    // One set-based select-for-update resolves every id this batch actually
+    // owns, replacing the N individual `select ... for update` calls the
+    // original version made. An id not found here (already gone, or never
+    // belonged to this inventory) is silently excluded -- skipped, not an
+    // error, matching this function's existing skip-on-miss behavior.
+    const auditDetail = await auditDetailSelectFragment(tx);
+    const found = await tx.query(`
+      select id::text as item_id, template_id, stack_size, ${auditDetail}
+      from dune.items
+      where id = any($1::bigint[]) and inventory_id = $2
+      for update`, [safeIds, resolved.inventory_id]);
+
+    const removed = await finishDeletingLockedItems(tx, resolved.inventory_id, found.rows);
+
+    return {
+      ok: true,
+      baseId: target,
+      placeableId: resolved.placeable_id,
+      inventoryId: String(resolved.inventory_id),
+      typeName: resolved.type_name,
+      group: resolved.group_key,
+      removed,
+      message: `${removed.length} of ${safeIds.length} requested item(s) were deleted from the database.`
+    };
+  });
+}
+
+// Deletes every item currently in one storage container. Built for the
+// Bases -> Inventory "Delete All" action. Ownership-verified identically to
+// deleteMultipleBaseContainerItems/deleteBaseContainerItem -- storage-group
+// only, claim-CTE resolved, never the actor_id-only lookup give/fill use.
+//
+// The item list to delete is read fresh inside the same transaction that
+// deletes them (not passed in by the caller), so a "delete all" always
+// means everything actually in the container at the moment of the lock,
+// not a possibly-stale list the UI fetched moments earlier.
+export async function deleteAllBaseContainerItems(db, baseId, placeableId) {
+  await requireCapability(
+    await supportsBaseContainerItemDelete(db),
+    "Container item delete requires dune.buildings, dune.building_instances, dune.actor_fgl_entities, dune.placeables, dune.inventories, dune.items, and dune.delete_item(bigint)."
+  );
+  const target = intParam(baseId, "base id", 1);
+  const container = intParam(placeableId, "container id", 1);
+
+  return db.transaction(async (tx) => {
+    await tx.query("set local search_path to dune, public");
+    const resolved = await resolveOwnedStorageContainer(tx, target, container);
+
+    const auditDetail = await auditDetailSelectFragment(tx);
+    const items = await tx.query(`
+      select id::text as item_id, template_id, stack_size, ${auditDetail}
+      from dune.items
+      where inventory_id = $1
+      for update`, [resolved.inventory_id]);
+
+    const removed = await finishDeletingLockedItems(tx, resolved.inventory_id, items.rows);
+
+    return {
+      ok: true,
+      baseId: target,
+      placeableId: resolved.placeable_id,
+      inventoryId: String(resolved.inventory_id),
+      typeName: resolved.type_name,
+      group: resolved.group_key,
+      removed,
+      message: removed.length > 0
+        ? `${removed.length} item(s) were deleted from the database.`
+        : "Container was already empty."
+    };
+  });
+}
+
 // Pending water-refill queue. Same reasoning and shape as the generator
 // queue above (a live map can overwrite an immediate write, so a refill
 // aimed at one is recorded here and applied once that map is confirmed
@@ -9195,6 +10604,46 @@ export async function repairGear(db, id) {
   });
 }
 
+// Vehicle-module rows in current dedicated-server databases commonly omit
+// MaxDurability altogether. Prefer any authoritative stored maximum for the
+// exact template; otherwise infer a conservative cap only when at least two
+// modules of that template provide a positive current or decayed-cap sample.
+// Both repair queries use this CTE so their eligibility and reported counts
+// cannot disagree.
+const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
+  select vm.template_id,
+         case
+           when (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+             then (durability->>'CurrentDurability')::numeric
+         end as current_durability,
+         case
+           when (durability->>'DecayedMaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+             then (durability->>'DecayedMaxDurability')::numeric
+         end as decayed_max_durability,
+         case
+           when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+             then nullif((durability->>'MaxDurability')::numeric, 0)
+         end as stored_max_durability
+  from dune.vehicle_modules vm
+  cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
+  where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
+    and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
+    and jsonb_typeof(durability) = 'object'
+), template_maxima as (
+  select template_id,
+         coalesce(
+           max(stored_max_durability),
+           case
+             when count(*) filter (
+               where coalesce(greatest(current_durability, decayed_max_durability), 0) > 0
+             ) >= 2
+               then greatest(max(current_durability), max(decayed_max_durability))
+           end
+         ) as max_durability
+  from module_samples
+  group by template_id
+)`;
+
 export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {}) {
   await requireCapability(await supportsRepairVehicleDecay(db), "Repair vehicle decay requires dune.vehicle_modules.stats, dune.vehicle_modules.vehicle_id, and dune.actors.owner_account_id.");
   const threshold = Number(thresholdPercent);
@@ -9215,24 +10664,13 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
     const ownerValues = hasPermissionOwnership ? [player.accountId, player.controllerId] : [player.accountId];
     const thresholdParam = ownerValues.length + 1;
     const scanned = await tx.query(`
-      with template_maxima as (
-        select vm.template_id,
-               max((durability->>'MaxDurability')::numeric) as max_durability
-        from dune.vehicle_modules vm
-        cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
-        where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
-          and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
-          and durability ? 'MaxDurability'
-          and (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-          and (durability->>'MaxDurability')::numeric > 0
-        group by vm.template_id
-      ), owned_modules as (
+      with ${VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE}, owned_modules as (
         select vm.vehicle_id,
                vm.stats->'FVehicleModuleDurabilityStats'->1 as durability,
                coalesce(
                  case
                    when (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                     then (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric
+                     then nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric, 0)
                  end,
                  tm.max_durability
                ) as effective_max
@@ -9262,24 +10700,13 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
              )::int as missing_maximum
       from owned_modules`, ownerValues);
     const repaired = await tx.query(`
-      with template_maxima as (
-        select vm.template_id,
-               max((durability->>'MaxDurability')::numeric) as max_durability
-        from dune.vehicle_modules vm
-        cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
-        where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
-          and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
-          and durability ? 'MaxDurability'
-          and (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-          and (durability->>'MaxDurability')::numeric > 0
-        group by vm.template_id
-      ), eligible as (
+      with ${VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE}, eligible as (
         select vm.id,
                vm.vehicle_id,
                coalesce(
                  case
                    when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                     then (durability->>'MaxDurability')::numeric
+                     then nullif((durability->>'MaxDurability')::numeric, 0)
                  end,
                  tm.max_durability
                ) as max_durability
@@ -9302,14 +10729,14 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
           and coalesce(
                 case
                   when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                    then (durability->>'MaxDurability')::numeric
+                    then nullif((durability->>'MaxDurability')::numeric, 0)
                 end,
                 tm.max_durability
               ) > 0
           and (durability->>'DecayedMaxDurability')::numeric < (coalesce(
                 case
                   when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                    then (durability->>'MaxDurability')::numeric
+                    then nullif((durability->>'MaxDurability')::numeric, 0)
                 end,
                 tm.max_durability
               ) * $${thresholdParam})
@@ -9736,7 +11163,7 @@ async function supportsBaseContainerItemAdd(db) {
     ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"].every((column) => itemColumns.has(column));
 }
 
-async function supportsStorageGiveItem(db) {
+async function supportsStorageItemInsert(db) {
   if (!(await tableExists(db, "items")) || !(await tableExists(db, "inventories"))) return false;
   const inventoryColumns = await columnsFor(db, "inventories");
   const itemColumns = await columnsFor(db, "items");
@@ -9744,11 +11171,16 @@ async function supportsStorageGiveItem(db) {
     ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"].every((column) => itemColumns.has(column));
 }
 
+async function supportsStorageGiveItem(db) {
+  if (!(await supportsStorageItemInsert(db))) return false;
+  return (await columnsFor(db, "items")).has("volume_override");
+}
+
 // Refill writes the same items/inventories shape a storage grant does, plus it
 // has to resolve placeables to classify each device.
 export async function supportsGeneratorRefill(db) {
   if (!(await tableExists(db, "placeables"))) return false;
-  if (!(await supportsStorageGiveItem(db))) return false;
+  if (!(await supportsStorageItemInsert(db))) return false;
   const placeableColumns = await columnsFor(db, "placeables");
   return ["id", "owner_entity_id", "building_type"].every((column) => placeableColumns.has(column));
 }

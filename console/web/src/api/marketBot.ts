@@ -105,6 +105,9 @@ export type MarketRunResult = {
   totalSolari?: string;
   // seed run
   listingCount?: string;
+  // unseed run
+  removedListings?: string;
+  removedItems?: string;
   schedule?: MarketBuybackSchedule | MarketSeedSchedule;
 };
 
@@ -154,5 +157,7 @@ export const marketBotApi = {
   saveBuybackSchedule: (schedule: Partial<MarketBuybackSchedule>) => post<MarketBuybackSchedule>("/api/exchange/market/buyback/schedule", schedule),
   saveSeedSchedule: (schedule: Partial<MarketSeedSchedule>) => post<MarketSeedSchedule>("/api/exchange/market/seed/schedule", schedule),
   runBuyback: () => post<MarketRunResult>("/api/exchange/market/buyback/run", {}),
-  runSeed: () => post<MarketRunResult>("/api/exchange/market/seed/run", {})
+  runSeed: () => post<MarketRunResult>("/api/exchange/market/seed/run", {}),
+  // Remove the bot's NPC listings from one exchange without reseeding.
+  unseed: (payload: { exchangeId?: string } = {}) => post<MarketRunResult>("/api/exchange/market/seed/clear", payload)
 };

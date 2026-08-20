@@ -14,6 +14,7 @@ import {
   appendBuybackLogBatch,
   buildBuybackClassifySql,
   buildBuybackEligibilitySql,
+  buildPlayerPortalExchangeOverviewSql,
   buildBuybackSql,
   buybackLogPath,
   buybackPlanValuesSql,
@@ -24,6 +25,7 @@ import {
   normalizeBuybackLogEntry,
   normalizeBuybackSchedule,
   normalizeExchangeId,
+  playerPortalMarketSnapshot,
   probeBuybackEligibility,
   readBuybackLog,
   readBuybackSchedule,
@@ -259,9 +261,11 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     const classifySql = buildBuybackClassifySql(plan, schedule);
     assert.ok(isReadOnlySql(classifySql), "classify query must be read-only SQL");
     assert.match(classifySql, /AS result_code/);
+    assert.match(classifySql, /o\.owner_id::text AS seller_actor_id/, "portal classification retains the local seller identity");
     assert.match(classifySql, /COALESCE\(o\.item_price, 0\) <= 0/, "NULL asks are invalid, not eligible");
     assert.match(classifySql, /eligible_band AS/, "eligible listings take the cap first");
     assert.match(classifySql, /skip_band AS/, "ineligible listings share one leftover top-N band");
+    assert.match(classifySql, /classified AS/, "the UNION is wrapped before applying typed ordering");
     assert.match(classifySql, /UNION ALL/, "skip reasons fill remaining cap after eligible rows");
     assert.match(classifySql, /LIMIT GREATEST\(0, 1000 -/, "the skip band only fills leftover cap");
     assert.match(classifySql, /IS NOT TRUE/, "NULL asks stay in the skip band (NOT unknown would drop them)");
@@ -270,6 +274,14 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.match(classifySql, /order_id::bigint ASC/, "final order uses numeric ids, not text sort");
     assert.doesNotMatch(classifySql, /above_cap_band/, "skip reasons are not four extra listing scans");
     assert.doesNotMatch(classifySql, /\b(?:BEGIN|COMMIT)\s*;/i);
+
+    const overviewSql = buildPlayerPortalExchangeOverviewSql(schedule);
+    assert.ok(isReadOnlySql(overviewSql), "portal overview must be read-only SQL");
+    assert.match(overviewSql, /COUNT\(\*\)::text AS listing_count/);
+    assert.match(overviewSql, /GROUP BY o\.template_id/);
+    assert.doesNotMatch(overviewSql, /LIMIT 100/, "portal search needs the complete aggregated market overview");
+    assert.doesNotMatch(overviewSql, /o\.owner_id::text/, "anonymous overview must not return seller ids");
+    assert.doesNotMatch(overviewSql, /is_npc_order|class = 'Revy'/, "server overview must include Market Bot and NPC listings");
 
     const sweepSql = buildBuybackSql(plan, schedule);
     assert.ok(!isReadOnlySql(sweepSql), "sweep is a write");
@@ -285,6 +297,7 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.match(sweepSql, /COALESCE\(o\.item_price, 0\)/, "NULL asks cannot abort the NOT NULL log insert");
     assert.match(sweepSql, /COALESCE\(rec\.template_id, ''\)/);
     assert.match(sweepSql, /'order_id', l\.order_id::text/, "BIGINT ids stay decimal strings in JSON");
+    assert.match(sweepSql, /'seller_actor_id', l\.seller_actor_id::text/, "purchased rows retain their seller for private portal filtering");
     assert.match(sweepSql, /result_label, detail\)\s*VALUES \(rec\.order_id/, "purchases are logged in the loop, not by copying the whole exchange first");
     assert.match(sweepSql, /CREATE TEMP TABLE market_buy_claim_snapshot/, "leftovers are limited to pre-claim eligible ids");
     assert.match(sweepSql, /EXISTS \(SELECT 1 FROM market_buy_claim_snapshot/, "post-claim newcomers are not labeled skipped locked");
@@ -299,6 +312,33 @@ test("builds buyback SQL server-side from the bundled seed plan", () => {
     assert.doesNotMatch(sweepSql, /\b(?:BEGIN|COMMIT)\s*;/i, "transaction ownership stays with the database wrapper");
 
     assert.throws(() => buildBuybackSql(plan, { ...schedule, exchangeId: "77; DROP TABLE dune.items" }), /exchangeId is invalid/);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("player portal market overview stays available when Buyback classification fails", async () => {
+  const repoRoot = makeRepoRoot();
+  const config = { repoRoot, mockMode: false };
+  try {
+    saveBuybackSchedule(config, { exchangeId: "77", buybackPercent: 60 });
+    const db = fakeDb({
+      onQuery: async (sql) => {
+        if (/AS listing_count/.test(String(sql))) {
+          return { rows: [{ template_id: "WaterBottle", quality_level: "0", listing_count: "2", total_units: "20", lowest_price: "100", highest_price: "120", max_unit_price: "600" }], fields: [], rowCount: 1, command: "SELECT" };
+        }
+        if (/\bAS result_code\b/.test(String(sql))) throw new Error("classification unavailable");
+        return null;
+      }
+    });
+
+    const snapshot = await playerPortalMarketSnapshot(config, db);
+    assert.equal(snapshot.available, false, "private Buyback evaluation reports its own failure");
+    assert.equal(snapshot.overview.available, true, "anonymous overview remains usable");
+    assert.equal(snapshot.overview.items[0].displayName, "Water Bottle");
+    assert.equal(snapshot.overview.items[0].listingCount, 2);
+    assert.equal(snapshot.overview.items[0].maxUnitPrice, "600", "configured ceilings remain available for the server-wide overview");
+    assert.deepEqual(snapshot.listings, []);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
@@ -1193,6 +1233,17 @@ test("normalizeBuybackLogEntry prefers the seed-plan name for that template grad
   ]);
   assert.equal(normalizeBuybackLogEntry({ order_id: "1", template_id: "Sword", quality_level: "2", result_code: 0 }, names).displayName, "Sword Schematic");
   assert.equal(normalizeBuybackLogEntry({ order_id: "2", template_id: "Sword", quality_level: "0", result_code: 0 }, names).displayName, "Sword");
+});
+
+test("normalizeBuybackLogEntry keeps seller ids as exact decimal strings", () => {
+  const entry = normalizeBuybackLogEntry({
+    order_id: "9223372036854775806",
+    seller_actor_id: "9223372036854775805",
+    template_id: "Sword",
+    result_code: 0
+  });
+  assert.equal(entry.orderId, "9223372036854775806");
+  assert.equal(entry.sellerActorId, "9223372036854775805");
 });
 
 test("idle buyback with unchanged skip buckets skips classify until buckets change", async () => {

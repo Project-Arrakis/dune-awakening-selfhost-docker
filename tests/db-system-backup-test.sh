@@ -204,7 +204,7 @@ if [ -d "$case1_extract/generated/dune-fake-k8s-serviceaccount-director-12345" ]
   echo "FAIL happy-path: ephemeral fake-k8s-serviceaccount dir should be excluded"
   exit 1
 fi
-if ! find "$case1_extract/db" -name 'dune-db-*.backup' | grep -q .; then
+if ! find "$case1_extract/db" -name '*.backup' | grep -q .; then
   echo "FAIL happy-path: no database dump found inside the decrypted archive"
   exit 1
 fi

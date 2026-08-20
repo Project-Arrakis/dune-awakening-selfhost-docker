@@ -36,6 +36,15 @@ reference. Everything else is marked **Current** and is expected to stay accurat
    the security review of the same code path, the API reference section that
    covers its endpoints) directly in the doc body, not just in this index.
 
+## Architecture
+
+A deliberate exception to this file's own "don't add a new top-level
+folder for one document" rule above: a whole-system overview doesn't
+belong to any single existing folder (`console/`, `runtime/`, `addons/`)
+by nature, so it gets its own.
+
+- [architecture/SYSTEM-OVERVIEW.md](architecture/SYSTEM-OVERVIEW.md) — Current. Whole-system engineering architecture reference: component map, the console's API/web/data layers, the `dune` CLI and Compose-project-name resolution, runtime state directories, and the Discord-integration split. Start here for a code-level overview before diving into a single component's docs.
+
 ## Console (`console/api`, `console/web`)
 
 - [API-REFERENCE.md](console/API-REFERENCE.md) — Current. Full HTTP API reference for every console endpoint.
@@ -44,12 +53,13 @@ reference. Everything else is marked **Current** and is expected to stay accurat
 - [generator-fuel-burn-rates.md](console/generator-fuel-burn-rates.md) — Current. Per-generator fuel burn constants and where they live in code.
 - [generator-refill-caps.md](console/generator-refill-caps.md) — Current. Refill-generators endpoint behavior and per-type fuel caps.
 - [base-permissions.md](console/base-permissions.md) — Current. Editing base ownership and sharing: ranks, the config-driven roster cap, and why the change needs no map restart.
-- [base-inventory.md](console/base-inventory.md) — Current. The base Inventory tab: which placeables count as storage, the two inventories every refinery carries, per-slot container contents, and the stopped-map safety boundary for deleting stored items.
+- [vehicle-permissions.md](console/vehicle-permissions.md) — Current. Editing vehicle ownership and sharing: the same roster engine as base permissions, minus the ownership-transfer action.
+- [base-inventory.md](console/base-inventory.md) — Current. The base Inventory tab: which placeables count as storage, the two inventories every refinery carries, per-slot container contents, and the Give/Fill/Delete container actions (none of which require a stopped map).
 - [base-deletion.md](console/base-deletion.md) — Current. Permanently deleting a base: what "the base" means for enumeration, the pending-delete queue for a live map, the mandatory pre-delete safety backup, and why a pending delete freezes every other mutation on that base.
 - [base-backups.md](console/base-backups.md) — Current. What the game's own "pick up base" tool actually does in the database, why the Bases panel excludes a picked-up base, and the Coriolis compatibility patch that preserves saved Deep Desert base actors.
 - [database-backups.md](console/database-backups.md) — Current. Safe database restore behavior when the backup and current deployment use different Battlegroup IDs.
 - [restart-queue.md](console/restart-queue.md) — Current. The Restart Queue toggle: player-aware countdowns with in-game warnings, the two broadcast variants, concurrency rules, crash recovery, the "Restart later" deferred-restart option, and the join-lock limitation.
-- [exchange.md](console/exchange.md) — Current. The read-only Market Board: aggregated-by-item CHOAM exchange listings, seller resolution, how bot listings are identified, and the bot/blacklist filter config.
+- [exchange.md](console/exchange.md) — Current. The read-only Market Board: aggregated-by-item CHOAM exchange listings, seller resolution, how bot listings are identified, the bot/blacklist filter config, the Market Bot seed/buyback engine, and the Bot items tab's per-item catalog overrides.
 
 ## Runtime (`runtime/`)
 
@@ -102,4 +112,5 @@ current doc for anything still accurate today.
 
 ## Other
 
+- [operator-guide.md](operator-guide.md) — Current. End-user/operator guide: Web UI feature tour, bases, backups, updates, community addons (including a stated documentation gap on the addon-install UI flow), the Public Server Directory, Discord integration, and multi-server hosting. Cross-links the feature docs above rather than duplicating them.
 - [screenshots.md](screenshots.md) — Current. Whole-product screenshot gallery, linked from the root [README](../README.md).
