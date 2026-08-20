@@ -370,6 +370,10 @@ FIELD_LABELS = {
     "coriolis_cycle_start_hour": "Cycle Start Hour",
     "coriolis_cycle_start_minute": "Cycle Start Minute",
     "coriolis_cycle_start_seed_index": "Cycle Start Seed Index",
+    "guild_settings_creation_cost": "Guild Creation Cost",
+    "guild_settings_max_guilds_allowed": "Max Guilds Allowed",
+    "guild_settings_max_guild_members_allowed": "Max Guild Members Allowed",
+    "guild_settings_max_pending_invites": "Max Pending Guild Invites",
 }
 
 # Maps a field id to the client-side ini filename it also must be applied to
@@ -1891,11 +1895,23 @@ def metadata() -> int:
         key: spec for key, spec in PARTITION_ENGINE_FIELDS.items()
         if key != "server_login_password"
     }
+    # Keep legacy DuneGameMode guild keys readable and compilable for existing
+    # profiles, but expose only their canonical GuildSettings counterparts in
+    # the structured editor. Showing both gives admins two controls for one
+    # effective setting and makes the legacy value silently win in some cases.
+    public_game_fields = {
+        key: spec for key, spec in MAP_FIELDS.items()
+        if key not in LEGACY_GUILD_FIELD_ALIASES
+    }
+    public_partition_fields = {
+        key: spec for key, spec in PARTITION_FIELDS.items()
+        if key not in LEGACY_GUILD_FIELD_ALIASES
+    }
     payload = {
         "engine": [row("engine", key, spec) for key, spec in public_engine_fields.items()],
         "mapEngine": [row("mapEngine", key, spec) for key, spec in MAP_ENGINE_FIELDS.items()],
-        "game": [row("game", key, spec) for key, spec in MAP_FIELDS.items()],
-        "partition": [row("partition", key, spec) for key, spec in PARTITION_FIELDS.items()],
+        "game": [row("game", key, spec) for key, spec in public_game_fields.items()],
+        "partition": [row("partition", key, spec) for key, spec in public_partition_fields.items()],
         "partitionEngine": [row("partitionEngine", key, spec) for key, spec in public_partition_engine_fields.items()],
     }
     print(json.dumps(payload, indent=2, sort_keys=True))

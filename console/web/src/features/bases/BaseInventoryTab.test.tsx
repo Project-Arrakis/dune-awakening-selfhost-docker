@@ -1883,6 +1883,34 @@ describe("BaseInventoryTab", () => {
     await waitFor(() => expect(screen.getByText(/4,200 x SteelBar was filled/)).toBeTruthy());
   });
 
+  // Issue #430 L2 audit (UI hat H-1): when the per-operation stack-row cap
+  // -- not the container's real capacity -- cut a Fill to Capacity short,
+  // the backend reports clamped with clampReason "stack-rows", and the
+  // message must NOT claim "(as much as fit)": the container still has
+  // room, and the operator's correct next step is running Fill again.
+  it("reports a stack-row-capped Fill to Capacity honestly instead of claiming the container is full", async () => {
+    mockInventory();
+    vi.mocked(basesApi.fillContainerItem).mockResolvedValue({
+      supported: true,
+      result: { ok: true, inserted: { id: "604", templateId: "SteelBar", stackSize: 500 }, requested: null, given: 25000, stacks: 50, clamped: true, clampReason: "stack-rows" }
+    } as never);
+    renderTab();
+    await loaded();
+    await openVaultContents();
+    await showGiveFill();
+    switchToFillMode();
+
+    await pickItem("Item to fill", "SteelBar");
+    fireEvent.click(screen.getByRole("button", { name: "Fill to Capacity" }));
+    await waitFor(() => expect(confirmAction).toHaveBeenCalled());
+    await waitFor(() => expect(basesApi.fillContainerItem).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText(/25,000 x SteelBar was filled/)).toBeTruthy());
+    const notice = screen.getByText(/25,000 x SteelBar was filled/).textContent || "";
+    expect(notice).not.toMatch(/as much as fit/);
+    expect(notice).toMatch(/stack.*(cap|limit)/i);
+    expect(notice).toMatch(/Fill again|repeat/i);
+  });
+
   // FILLABLE_GROUPS filtering (adminCatalog.js) is enforced client-side too:
   // the Fill combobox must never even offer a non-fillable item like a
   // weapon, matching the server's own group check.

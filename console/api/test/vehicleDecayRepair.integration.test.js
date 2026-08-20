@@ -29,7 +29,9 @@ const SCHEMA = `
 `;
 
 function durability(current, decayed, max) {
-  const values = { CurrentDurability: current, DecayedMaxDurability: decayed };
+  const values = {};
+  if (current !== undefined) values.CurrentDurability = current;
+  if (decayed !== undefined) values.DecayedMaxDurability = decayed;
   if (max !== undefined) values.MaxDurability = max;
   return JSON.stringify({ FVehicleModuleDurabilityStats: [[], values] });
 }
@@ -54,7 +56,7 @@ async function withDatabase(t, run) {
   });
 }
 
-test("real PostgreSQL: vehicle red-bar repair infers missing maxima conservatively", async (t) => {
+test("real PostgreSQL: vehicle durability repair uses current durability and infers missing maxima conservatively", async (t) => {
   await withDatabase(t, async (pool) => {
     const rows = [
       [1, 200, "Common", durability(30, 40)],
@@ -65,7 +67,11 @@ test("real PostgreSQL: vehicle red-bar repair infers missing maxima conservative
       [6, 300, "Common", durability(1, 1)],
       [7, 200, "StoredMaximum", durability(50, 50, 200)],
       [8, 200, "ZeroStoredMaximum", durability(10, 20, 0)],
-      [9, 201, "ZeroStoredMaximum", durability(100, 100)]
+      [9, 201, "ZeroStoredMaximum", durability(100, 100)],
+      [10, 200, "CurrentOnly", durability(20)],
+      [11, 201, "CurrentOnly", durability(100)],
+      [12, 200, "MissingCurrent", durability(undefined, 10)],
+      [13, 201, "MissingCurrent", durability(undefined, 100)]
     ];
     for (const row of rows) {
       await pool.query(
@@ -76,11 +82,12 @@ test("real PostgreSQL: vehicle red-bar repair infers missing maxima conservative
 
     const result = await repairVehicleDecay(pgTransactionalDb(pool), 100, { thresholdPercent: 50 });
 
-    assert.equal(result.scanned, 8);
+    assert.equal(result.scanned, 12);
     assert.equal(result.vehicles, 2);
-    assert.equal(result.comparable, 7);
+    assert.equal(result.comparable, 9);
     assert.equal(result.missingMaximum, 1);
-    assert.equal(result.repaired, 3);
+    assert.equal(result.missingCurrent, 2);
+    assert.equal(result.repaired, 4);
     assert.equal(result.repairedVehicles, 1);
 
     const repaired = await pool.query(`
@@ -98,8 +105,13 @@ test("real PostgreSQL: vehicle red-bar repair infers missing maxima conservative
     assert.deepEqual(values.get(1), { current: 100, decayed: 100 });
     assert.deepEqual(values.get(7), { current: 200, decayed: 200 });
     assert.deepEqual(values.get(8), { current: 100, decayed: 100 });
+    assert.deepEqual(values.get(10), { current: 100, decayed: 0 });
     assert.deepEqual(values.get(3), { current: 50, decayed: 50 });
     assert.deepEqual(values.get(5), { current: 5, decayed: 10 });
     assert.deepEqual(values.get(6), { current: 1, decayed: 1 });
+
+    const currentOnly = await pool.query("select stats from dune.vehicle_modules where id in (10, 12) order by id");
+    assert.deepEqual(currentOnly.rows[0].stats.FVehicleModuleDurabilityStats[1], { CurrentDurability: 100 });
+    assert.deepEqual(currentOnly.rows[1].stats.FVehicleModuleDurabilityStats[1], { DecayedMaxDurability: 10 });
   });
 });
