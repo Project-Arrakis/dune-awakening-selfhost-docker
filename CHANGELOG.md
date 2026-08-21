@@ -53,27 +53,58 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   on `dune-prod`)** (issue #453). Root cause: three heal-scan functions in
   `runtime/scripts/autoscaler.sh` — `scan_proactive_hagga_handoffs`,
   `scan_deepdesert_loading_responses`, `scan_named_destination_failures`
-  — were the only heal scans in the file not gated behind the existing
-  `director_heal_due` rate-limiter, so each re-ran `docker logs` plus a
-  fresh `python3` regex parse on every 5-second main-loop tick instead of
-  a sane interval; `scan_named_destination_failures` was the worst
-  offender, re-decoding a 10-minute log window across 3 containers
-  roughly 120x more often than needed. Cost scales with how chatty the
-  watched containers' logs are, which explains the dev/prod split. Fixed
-  by gating all three behind `director_heal_due`, the same pattern every
-  other scan in this file already uses, via three new overridable env
-  vars: `DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS` (default 15s),
-  `DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS` (default 15s),
-  `DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS` (default 60s) — each
-  safely shorter than the log window the function reads, so no detection
-  gap opens. One real behavior change worth calling out explicitly:
-  worst-case remediation latency for a stuck "named destination not
-  found" travel failure goes from ≤5s (previous main-loop cadence) to up
-  to 60s; every other affected scan is unchanged in practice because a
-  separate always-running follower (`follow_director_hagga_handoffs`) or
-  independent refresh gate already handled the real-time path. Operators
-  upgrading need no action — all three new env vars default to safe,
-  lower-CPU values. New test: `tests/autoscaler-heal-scan-rate-limit-test.sh`.
+  — were not gated behind the existing `director_heal_due` rate-limiter,
+  so each re-ran `docker logs` plus a fresh `python3` regex parse on every
+  5-second main-loop tick instead of a sane interval; `scan_named_destination_failures`
+  was the worst offender, re-decoding a 10-minute log window across 3
+  containers roughly 120x more often than needed. Cost scales with how
+  chatty the watched containers' logs are, which explains the dev/prod
+  split. Fixed by gating all three behind `director_heal_due`, the same
+  pattern most other scans in this file already use, via three new
+  overridable env vars: `DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS`
+  (default 15s), `DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS`
+  (default 15s), `DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS`
+  (default 60s) — each safely shorter than the log window the function
+  reads, so no detection gap opens. **Correction (post-review): the
+  original claim that these were "the only heal scans in the file not
+  gated" was wrong** — `scan_travel_demand`, `scan_idle_servers`,
+  `scan_reconnect_demand`, and `scan_live_player_partition_alignment`
+  remain ungated; see the follow-up entry below for why they're left
+  that way deliberately (for now) rather than silently. Two real behavior
+  changes worth calling out explicitly: worst-case remediation latency
+  for a stuck "named destination not found" travel failure goes from
+  ≤5s (previous main-loop cadence) to up to 60s, and DeepDesert loading
+  first-detection latency goes from ≤5s to up to 15s; every other case
+  is unchanged in practice because a separate always-running follower
+  (`follow_director_hagga_handoffs`) or independent refresh gate already
+  handled the real-time path. Operators upgrading need no action — all
+  three new env vars default to safe, lower-CPU values. New test:
+  `tests/autoscaler-heal-scan-rate-limit-test.sh`.
+
+- **Follow-up to the above: fixed a real duplicate-publish bug the initial
+  fix's wider scan interval exposed, and closed three gaps a subsequent
+  review found.** `scan_deepdesert_loading_responses` had no dedup guard
+  before its `publish_rmq_json` call (unlike its sibling scans) and a dead
+  if/else after it (both branches identical) — a re-detected flow within
+  the scan's own 30s log window caused a genuine duplicate travel-response
+  publish to the origin game server. Fixed by adding the same
+  `deepdesert_travel_seen ... && continue` guard its siblings already use,
+  before any side effect. Also: (1) the three new `*_SCAN_SECONDS` env vars
+  now validate numeric input the same way `DUNE_AUTOSCALER_DEMAND_INTERVAL`
+  already does — a malformed override (e.g. a duration string like this
+  file's own `SINCE`/`NAMED_DESTINATION_SINCE` use) previously silently
+  defeated the gate instead of falling back to a safe default; (2) each
+  interval is now clamped below its log window at startup instead of only
+  being asserted safe in prose, so a misconfigured override can't open a
+  permanent detection gap; (3) `tests/autoscaler-heal-scan-rate-limit-test.sh`
+  was never wired into `ci.yml`'s test list, so it never actually ran in
+  CI — fixed, plus a new `tests/autoscaler-scan-gating-inventory-test.sh`
+  that enumerates every `scan_*` function and fails CI if a future one is
+  added without either the gate or a deliberate, documented exception
+  (closing the structural gap that let the original oversight happen
+  three times over). `scan_named_destination_failures` also now calls
+  `docker ps` once per invocation instead of once per source map (3x
+  fewer calls). Operators upgrading need no action.
 
 - **Corrected a systematic wrong `volume` value affecting live container
   capacity math for 70 of the 99 `raw_resource`/`refined_resource`/`component`
