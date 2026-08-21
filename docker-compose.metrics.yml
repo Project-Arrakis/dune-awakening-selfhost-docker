@@ -104,7 +104,15 @@ services:
     networks:
       - dune-net
     ports:
-      - "127.0.0.1:${METRICS_GRAFANA_PORT:-3000}:3000"
+      # METRICS_GRAFANA_BIND_HOST follows the same pattern as
+      # ADMIN_BIND_HOST (docker-compose.web.yml): default stays
+      # 127.0.0.1 so this is a zero-behavior-change default for every
+      # existing operator (Grafana ships with anonymous viewer access
+      # enabled below, so localhost-only is the safe default). Set it
+      # to 0.0.0.0 or a specific host IP only if you intentionally want
+      # Grafana reachable beyond this host (e.g. behind a reverse proxy
+      # or tunnel) and have set a real METRICS_GRAFANA_PASSWORD below.
+      - "${METRICS_GRAFANA_BIND_HOST:-127.0.0.1}:${METRICS_GRAFANA_PORT:-3000}:3000"
     environment:
       GF_SECURITY_ADMIN_USER: ${METRICS_GRAFANA_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${METRICS_GRAFANA_PASSWORD:-admin}

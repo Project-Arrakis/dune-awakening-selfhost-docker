@@ -11,6 +11,16 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- **`METRICS_GRAFANA_BIND_HOST` — configurable Grafana bind for the
+  metrics addon** (#450). Previously hardcoded to `127.0.0.1` in
+  `docker-compose.metrics.yml` with no way to opt into a LAN/reverse-proxy/
+  tunnel-reachable bind via `.env` alone. Follows the exact same pattern
+  already established for the console's own `ADMIN_BIND_HOST`. Default
+  behavior is unchanged for every existing operator — `127.0.0.1` stays
+  the default, since Grafana ships with anonymous viewer access enabled
+  and localhost-only is the safe out-of-the-box posture. Documented in
+  `.env.example` alongside the existing host-port override examples.
+
 - **Four new CI security gates: `govulncheck`, `hadolint`, `osv-scanner`,
   `trivy-image-scan`** (all required by `release-gate`). See
   `docs/security/ci-security-tooling.md` for the full tool inventory and
