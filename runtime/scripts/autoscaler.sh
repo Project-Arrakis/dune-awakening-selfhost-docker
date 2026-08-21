@@ -41,6 +41,9 @@ IGW_SOCKET_HEALTH_SCAN_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_HEALTH_SCAN_SECONDS
 IGW_SOCKET_STALL_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_STALL_SECONDS:-30}"
 IGW_SOCKET_RX_QUEUE_THRESHOLD="${DUNE_AUTOSCALER_IGW_SOCKET_RX_QUEUE_THRESHOLD:-1048576}"
 IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS:-600}"
+PROACTIVE_HAGGA_SCAN_SECONDS="${DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS:-15}"
+DEEPDESERT_LOADING_SCAN_SECONDS="${DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS:-15}"
+NAMED_DESTINATION_SCAN_SECONDS="${DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS:-60}"
 AUTOSCALER_STARTED_AT="$(date +%s)"
 
 mkdir -p "$(dirname "$STATE_FILE")"
@@ -68,6 +71,9 @@ echo "Chat exchange repair scan: ${CHAT_EXCHANGE_REPAIR_SECONDS}s"
 echo "IGWO unavailable heal scan: ${IGWO_UNAVAILABLE_SCAN_SECONDS}s"
 echo "Stale server-state heal scan: ${STALE_SERVER_STATE_SCAN_SECONDS}s"
 echo "IGW socket health scan: ${IGW_SOCKET_HEALTH_SCAN_SECONDS}s"
+echo "Proactive Hagga handoff scan: ${PROACTIVE_HAGGA_SCAN_SECONDS}s"
+echo "Deep Desert loading response scan: ${DEEPDESERT_LOADING_SCAN_SECONDS}s"
+echo "Named destination failure scan: ${NAMED_DESTINATION_SCAN_SECONDS}s"
 echo "State file: ${STATE_FILE}"
 echo
 
@@ -784,6 +790,8 @@ PY
 scan_proactive_hagga_handoffs() {
   local director_log_file proactive_rows target_json
 
+  director_heal_due proactive_hagga "$PROACTIVE_HAGGA_SCAN_SECONDS" || return 0
+
   target_json="$(survival_partition_target_json 2>/dev/null || true)"
   [ -n "$target_json" ] || return 0
 
@@ -970,6 +978,8 @@ PY
 
 scan_deepdesert_loading_responses() {
   local director_log_file pending_rows now
+
+  director_heal_due deepdesert_loading "$DEEPDESERT_LOADING_SCAN_SECONDS" || return 0
 
   director_log_file="$(mktemp)"
   docker logs --since "$SINCE" dune-director > "$director_log_file" 2>&1 || true
@@ -1804,6 +1814,8 @@ ensure_overmap_travel_maps_prewarmed() {
 
 scan_named_destination_failures() {
   local source_map container log_file handoff_rows
+
+  director_heal_due named_destination_failures "$NAMED_DESTINATION_SCAN_SECONDS" || return 0
 
   for source_map in SH_Arrakeen SH_HarkoVillage Story_ProcesVerbal; do
     container="$(hub_container_for_map "$source_map" 2>/dev/null || true)"
