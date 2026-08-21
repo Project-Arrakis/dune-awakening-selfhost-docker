@@ -1,0 +1,24 @@
+ignored:
+  # Pinning exact apt/apk package versions for OS-level utility packages
+  # (curl, jq, git, ca-certificates, ...) is a well-known false economy:
+  # those exact version strings go stale against the Debian/Alpine mirror
+  # within weeks and silently break builds, with no mechanism in this repo
+  # to keep them current (unlike the real, versioned application
+  # dependencies -- npm/go.sum -- which already have exact-version
+  # lockfiles plus Dependabot). Base-image and OS-package freshness for
+  # this repo's Dockerfiles is covered instead by the standing
+  # `trivy image` CI gate (which flags real, exploitable CVEs in whatever
+  # versions actually got installed, not just "not pinned") and periodic
+  # base-image bumps (e.g. node:20-bookworm -> node:24-trixie-slim,
+  # tracked in docs/security/dockerfile-hardening.md).
+  - DL3008 # apt-get install without =<version>
+  - DL3018 # apk add without =<version>
+  # Named, non-numeric container users (e.g. `probe`) are used
+  # deliberately across this repo's Dockerfiles for readability in
+  # `docker exec`/`ps`/logs -- changing to numeric-only UIDs is a
+  # cross-cutting container-identity change with real operator-facing
+  # risk (this repo has dedicated non-root UID/permission-migration test
+  # coverage in tests/container-lifecycle-test.sh specifically because
+  # getting this wrong breaks existing installs), not a hadolint-driven
+  # style fix to make casually.
+  - DL3066 # non-numeric user-id may not be resolvable by host system

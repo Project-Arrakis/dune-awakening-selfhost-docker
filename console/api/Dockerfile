@@ -1,4 +1,4 @@
-FROM node:20-bookworm AS web-build
+FROM node:24-trixie-slim AS web-build
 WORKDIR /app/web
 COPY console/web/package.json ./
 COPY console/web/package-lock.json ./
@@ -7,7 +7,7 @@ COPY runtime/data/augment-compatibility.json /runtime/data/augment-compatibility
 COPY console/web ./
 RUN npm run build
 
-FROM node:20-bookworm
+FROM node:24-trixie-slim
 LABEL io.github.red-blink.dune-selfhost.component="console"
 WORKDIR /app
 ENV NODE_ENV=production
@@ -37,13 +37,13 @@ RUN apt-get update \
         arm64) docker_arch="aarch64"; compose_arch="aarch64" ;; \
         *) echo "Unsupported architecture for Docker CLI: $arch" >&2; exit 1 ;; \
        esac \
-    && curl -fsSL "https://download.docker.com/linux/static/stable/${docker_arch}/docker-27.5.1.tgz" -o /tmp/docker.tgz \
+    && curl -fsSL "https://download.docker.com/linux/static/stable/${docker_arch}/docker-29.7.2.tgz" -o /tmp/docker.tgz \
     && tar -xzf /tmp/docker.tgz -C /tmp \
     && mv /tmp/docker/docker /usr/local/bin/docker \
     && chmod +x /usr/local/bin/docker \
     && rm -rf /tmp/docker /tmp/docker.tgz \
     && mkdir -p /usr/local/lib/docker/cli-plugins \
-    && curl -fsSL "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-${compose_arch}" \
+    && curl -fsSL "https://github.com/docker/compose/releases/download/v5.5.0/docker-compose-linux-${compose_arch}" \
         -o /usr/local/lib/docker/cli-plugins/docker-compose \
     && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
     && docker --version \
