@@ -392,39 +392,48 @@ test("real HTTP: give-items batches several real inserts in one call", async (t)
 // the give-items test above never proves it against a real Postgres
 // instance because both its items fit easily inside CHEST's real
 // max_item_volume (500) with no clamping at all. This test uses three
-// distinct fillable items, each real-catalog volume exactly 1.0/unit
-// (SteelBar, FremenComponent1, T6RefinedResourceA -- chosen to keep the
-// arithmetic exact, avoiding float-precision edge cases a fractional
-// per-unit volume like AzuriteOre's 0.2 could introduce). The seeded 500
-// ScrapMetal and 200 MagnetiteOre are normal game-created rows with NULL
-// overrides, so their catalog volumes now correctly consume 135 of the
-// chest's 500 capacity before this batch starts. The requested quantities
-// below make the final clamp reachable ONLY if both that initial volume and
-// the earlier batch items are genuinely carried forward in memory.
+// distinct fillable items chosen for real-catalog per-unit volumes clean
+// enough to keep the arithmetic exact (SteelBar 0.5, FremenComponent1 0.1,
+// T6RefinedResourceA 1.0 -- externally re-verified 2026-08-20, issue #440;
+// this test originally relied on all three being 1.0/unit, which the #440
+// fix corrected SteelBar and FremenComponent1 away from -- quantities below
+// were recomputed against the real values, not the old placeholder). The
+// seeded 500 ScrapMetal and 200 MagnetiteOre are normal game-created rows
+// with NULL overrides, so their catalog volumes now correctly consume 135
+// of the chest's 500 capacity before this batch starts (500*0.15 +
+// 200*0.3). The requested quantities below make the final clamp reachable
+// ONLY if both that initial volume and the earlier batch items are
+// genuinely carried forward in memory. Every requested quantity stays at or
+// under each item's curated 500 stack size, so no row splits into multiple
+// stacks here -- that behavior has its own dedicated coverage elsewhere.
 test("real HTTP: give-items correctly clamps a later item based on earlier items' real, carried-forward volume consumption", async (t) => {
   await withServer(t, async ({ pool, getOutput }) => {
     const { status, body } = await call("POST", `/api/bases/${BUILDING_ACTOR}/containers/${CHEST}/give-items`, {
       confirmation: "GIVE ITEMS TO STORAGE",
       items: [
         { itemId: "SteelBar", quantity: 100 },
-        { itemId: "FremenComponent1", quantity: 100 },
-        { itemId: "T6RefinedResourceA", quantity: 200 }
+        { itemId: "FremenComponent1", quantity: 300 },
+        { itemId: "T6RefinedResourceA", quantity: 400 }
       ]
     });
     assert.equal(status, 200, `unexpected status ${status}. Server output:\n${getOutput()}`);
     assert.equal(body?.result?.ok, true);
     const results = body.result.results;
+    // 500 remaining after the 135-volume seed; item 1 consumes 100*0.5=50.
     assert.equal(results[0].given, 100, "item 1 fits fully after the seeded stacks' real 135 volume");
     assert.equal(results[0].clamped, false);
-    assert.equal(results[1].given, 100, "item 2 sees item 1's just-inserted 100 volume and still fits fully");
+    // 365-50=315 remaining; item 2 consumes 300*0.1=30, well inside it.
+    assert.equal(results[1].given, 300, "item 2 sees item 1's just-inserted 50 volume and still fits fully");
     assert.equal(results[1].clamped, false);
-    assert.equal(results[2].given, 165, "item 3 sees the seeded 135 plus items 1+2's 200 volume and clamps to the real remaining 165");
+    // 315-30=285 remaining; item 3 (1.0/unit) requests 400, clamps to 285.
+    assert.equal(results[2].given, 285, "item 3 sees the seeded 135 plus items 1+2's 80 volume and clamps to the real remaining 285");
     assert.equal(results[2].clamped, true);
+    assert.equal(results[2].clampReason, "volume");
 
     const rows = await itemsIn(pool, CHEST * 10);
     assert.ok(rows.some((row) => row.template_id === "SteelBar" && Number(row.stack_size) === 100));
-    assert.ok(rows.some((row) => row.template_id === "FremenComponent1" && Number(row.stack_size) === 100));
-    assert.ok(rows.some((row) => row.template_id === "T6RefinedResourceA" && Number(row.stack_size) === 165));
+    assert.ok(rows.some((row) => row.template_id === "FremenComponent1" && Number(row.stack_size) === 300));
+    assert.ok(rows.some((row) => row.template_id === "T6RefinedResourceA" && Number(row.stack_size) === 285));
   });
 });
 

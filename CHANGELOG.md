@@ -11,6 +11,28 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Fixed
 
+- **Corrected a systematic wrong `volume` value affecting live container
+  capacity math for 70 of the 99 `raw_resource`/`refined_resource`/`component`
+  catalog items** (issue #440). Every `refined_resource`/`component` item
+  whose in-repo `volume` was exactly `1.0` was wrong — a placeholder that
+  was apparently never replaced with a real measurement — except one
+  (`T6RefinedResourceA`, genuinely 1.0). `raw_resource` items were
+  unaffected (individually measured from the start; those values matched
+  the same external verification source exactly, which is what made
+  trusting that source for the volume correction, not just the earlier
+  `stackSize` one, reasonable). Real values range from 0.1 (most
+  components — a 10x understatement at the old placeholder) to 5 (large
+  fuel canisters). This directly affects give/fill's live volume-clamp
+  math (`quantityThatFitsByVolume`) — the old placeholder let more into a
+  volume-capped container than the game's real per-unit accounting
+  expects. Operators upgrading need no migration; no schema/env change.
+  See `docs/console/base-inventory.md`'s curation note. Also bulk-curated
+  `stackSize` for all 91 remaining `raw_resource`/`refined_resource`/
+  `component` items using the same source (issue #431) — every item in
+  those three groups now has a curated stack size except two that don't
+  exist in the external source and weren't pursued further (issue #441,
+  closed).
+
 - **Corrected two wrong `stackSize` values shipped in the #430 give/fill
   stack-limit work: `Oil` and `SpicedFuelCell` are 500, not 499** (issue
   #430 follow-up). Both were seeded from `GENERATOR_TYPES`' refill table,
