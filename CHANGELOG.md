@@ -32,6 +32,8 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Fixed
 
+- **`.gitleaks.toml`'s allowlist had zero effect in CI** (issue #458). It used the plural `[[allowlists]]` table at the file's top level, anticipating gitleaks v8.25.0+'s config schema — but every gitleaks invocation in this project is pinned to v8.24.3, whose config parser has no top-level plural `Allowlists` field at all (confirmed directly against that version's source: the field only exists nested under a specific `[[rules]]` entry). Viper silently drops unrecognized top-level keys, so the allowlist was never actually applied — verified directly, even `runtime/scripts/command-auth-token.sh`, the file the allowlist's own description names as the canonical intentional case, was still being flagged whenever gitleaks actually ran (which it hadn't been, until #457's fix). Reverted to the singular `[allowlist]` table, which v8.24.3 does parse and apply. Verified against a real scan: the two docs that previously false-flagged the documented `BUILTIN_COMMAND_AUTH_TOKEN` constant now scan clean, and the repo's own synthetic-secret canary check (guards against the allowlist accidentally disabling default detection rules) still passes.
+
 - **`dune-autoscaler` was burning 80.99% of a core on `dune-dev` (14.81%
   on `dune-prod`)** (issue #453). Root cause: three heal-scan functions in
   `runtime/scripts/autoscaler.sh` — `scan_proactive_hagga_handoffs`,
