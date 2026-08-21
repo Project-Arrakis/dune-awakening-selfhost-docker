@@ -4882,11 +4882,21 @@ export function adminItemMetadata() {
         source: String(item.source || ""),
         volume: item.volume !== null && item.volume !== undefined && Number.isFinite(Number(item.volume)) && Number(item.volume) >= 0
           ? Number(item.volume)
+          : null,
+        // Strict: only a real positive-integer number counts (matches
+        // adminCatalog's isValidStackSize -- keep the two in sync).
+        stackSize: typeof item.stackSize === "number" && Number.isInteger(item.stackSize) && item.stackSize > 0
+          ? item.stackSize
           : null
       });
     }
-  } catch {
-    // Inventory still works without the optional local catalog metadata.
+  } catch (error) {
+    // Inventory display still works without the optional local catalog
+    // metadata -- but since issue #430 this loader also feeds per-item
+    // stack-limit ENFORCEMENT, so a load failure must be loud: it silently
+    // disables every stack limit for the process lifetime otherwise (L2
+    // audit, Cloud Security/Architect hats).
+    console.warn(`admin-items.json could not be loaded -- catalog metadata AND per-item stack limits are disabled for this process: ${error?.message || "unknown error"}`);
   }
   adminItemMetadataCache = metadata;
   return adminItemMetadataCache;
@@ -6977,43 +6987,167 @@ export async function playerItemAugmentState(db, playerId, itemId, expectedAugme
 // Falls back to the pre-existing lowest-next-free behavior when
 // max_item_count is 0 (unknown/uncapped on this schema), since there is
 // no known high end to start from in that case.
-async function nextHighPositionIndex(tx, inventoryId, maxItemCount) {
+
+// Per-item max stack size adherence (issue #430). The game engine enforces a
+// per-item stack limit, but raw give/fill inserts bypass the engine's own
+// stack validation (the RCON grant path's "Verified inventory stack
+// increased"), so these paths must split an oversized quantity across
+// multiple rows themselves. Stack data is curated in admin-items.json's
+// optional stackSize field, exactly like volume; an item with no stackSize
+// keeps the pre-existing single-row behavior. Seed-value provenance (each
+// value needs a stated source -- see docs/console/base-inventory.md's
+// curation note before adding more), externally re-verified 2026-08-20
+// against dune.gaming.tools's item data feed (the maxStackSize field,
+// after an operator challenge to validate against an external source):
+// MelangeSpice 500 (operator-stated from the live game, 2026-08-20,
+// issue #430) and both lubricants 100 confirmed correct. Oil and
+// SpicedFuelCell were initially seeded at 499 from GENERATOR_TYPES'
+// refill block -- WRONG; that refill value is a policy choice (possibly
+// a deliberate margin below the true cap), not the engine's real limit.
+// The true limit for both is 500, matching addonSeedJob.js's pre-existing
+// value (issue #432 tracked this exact contradiction before it was
+// externally resolved). GENERATOR_TYPES' own 499 refill value is left
+// unchanged here -- it is a separate, already-live system; whether it
+// should be raised to 500 is a live-verified change of its own, not a
+// data-correction one.
+// Case-insensitive (L2 audit, Architect hat): the engine/DB treats
+// template ids case-insensitively (refillBaseGenerators matches fuels with
+// lower()), so a case-variant of a catalogued id must hit the same limit
+// rather than silently bypassing it. Lazily derived from adminItemMetadata,
+// so it shares that loader's process-lifetime cache semantics.
+let stackSizeByLowerTemplateId = null;
+function maxStackSizeForTemplate(templateId) {
+  const metadata = adminItemMetadata();
+  const key = String(templateId || "");
+  const direct = metadata.get(key)?.stackSize;
+  if (Number.isInteger(direct) && direct > 0) return direct;
+  if (!stackSizeByLowerTemplateId) {
+    stackSizeByLowerTemplateId = new Map();
+    for (const [id, entry] of metadata) {
+      if (Number.isInteger(entry.stackSize) && entry.stackSize > 0) {
+        stackSizeByLowerTemplateId.set(id.toLowerCase(), entry.stackSize);
+      }
+    }
+  }
+  return stackSizeByLowerTemplateId.get(key.toLowerCase()) || 0;
+}
+
+// Runaway backstop, NOT an operational limit (revised per explicit operator
+// direction, 2026-08-20): a give/fill computes full stacks plus one final
+// remainder stack and completes in ONE action, bounded only by the
+// container's real capacity (slots/volume) -- stopping partway and telling
+// the operator to rerun is bad UX. This backstop exists solely to protect
+// the database from a pathological transaction (e.g. 1,000,000 units of a
+// 1-per-stack item = a million-row insert); realistic operations never
+// reach it (1,000 rows = 500,000 units of a 500-per-stack item).
+const MAX_STACK_ROWS_PER_OPERATION = 1000;
+
+// Splits a total quantity into per-row stack sizes of at most maxStack each,
+// bounded by the container's remaining slots (Infinity when uncapped) and
+// MAX_STACK_ROWS_PER_OPERATION. maxStack <= 0 means "no catalogued stack
+// data": a single row carrying the full quantity, the pre-existing behavior.
+// clamped reports whether the plan's total fell short of the requested one.
+// clampReason distinguishes WHY a plan fell short (L2 audit, Architect/UI
+// hats): "slots" means the container's real remaining slot capacity bound
+// it (final -- retrying cannot help), "stack-rows" means only the
+// per-operation row cap did (the container has room -- repeating the action
+// adds more). Callers fold their own pre-plan volume clamp in as "volume".
+// rowCap exists so the batch path can pass its shared remaining budget.
+function planStackRows(totalQuantity, maxStack, slotsAvailable, rowCap = MAX_STACK_ROWS_PER_OPERATION) {
+  if (!(maxStack > 0)) return { stacks: [totalQuantity], total: totalQuantity, clamped: false, clampReason: null };
+  const slotBudget = Number.isFinite(slotsAvailable) ? Math.max(0, Math.trunc(slotsAvailable)) : Infinity;
+  const rowBudget = Math.min(slotBudget, rowCap);
+  const total = Math.min(totalQuantity, maxStack * rowBudget);
+  const stacks = [];
+  let remaining = total;
+  while (remaining > 0) {
+    const stack = Math.min(maxStack, remaining);
+    stacks.push(stack);
+    remaining -= stack;
+  }
+  const clamped = total < totalQuantity;
+  return { stacks, total, clamped, clampReason: clamped ? (slotBudget < rowCap ? "slots" : "stack-rows") : null };
+}
+
+// L2 audit H-1 fix (DBA hat), generalized: for a slot-capped inventory,
+// every split path claims positions from a ONE-TIME occupied-set read (the
+// same query and pigeonhole guard the batch path's claimPositionIndex uses)
+// -- Give claims the HIGHEST free in-range slots (the 2026-08-19 collision
+// mitigation: the engine claims low slots at restart), Fill and player Give
+// claim the LOWEST -- so no path can ever write a row at or beyond
+// max_item_count (the old Fill/player max(position_index)+1 convention
+// started AT max_item_count after any high-end Give, and a split amplified
+// that to an entire operation's rows landing outside the engine's slot
+// grid). The single read also replaces Give's previous
+// per-row generate_series re-query (2 round trips per stack row under the
+// inventory lock). An uncapped inventory keeps the pre-existing max+1
+// convention for all paths, which cannot go out of range.
+async function createStackPositionClaimer(tx, inventoryId, maxItemCount, direction) {
   if (!maxItemCount || maxItemCount <= 0) {
     const fallback = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventoryId]);
-    return Number(fallback.rows[0]?.position_index || 0);
+    let next = Number(fallback.rows[0]?.position_index || 0);
+    return () => next++;
   }
-  const result = await tx.query(`
-    select gs.idx as position_index
-    from generate_series($2::int - 1, 0, -1) as gs(idx)
-    where not exists (
-      select 1 from dune.items i where i.inventory_id = $1 and i.position_index = gs.idx
-    )
-    order by gs.idx desc
-    limit 1`, [inventoryId, maxItemCount]);
-  if (result.rows[0]) return Number(result.rows[0].position_index);
-  // Every slot below max_item_count is already claimed by some
-  // position_index (including possibly out-of-range or duplicate values --
-  // see "position_index is not trustworthy" in the docs) -- fall back to
-  // the lowest-next-free convention rather than inserting with no index at
-  // all. The slot-count check above already rejects a genuinely full
-  // container before this is ever reached in the normal case, so this
-  // branch should be unreachable given that precondition holds -- but it is
-  // not this function's own precondition to enforce, so it does not trust
-  // the caller to have checked it. Found during code review (2026-08-19):
-  // this fallback previously returned max(position_index)+1 unconditionally,
-  // which -- if a caller ever reaches this function with corrupted
-  // position_index data AND a stale/wrong currentCount (the one scenario
-  // that breaks the pigeonhole argument the "unreachable in the normal
-  // case" claim above relies on) -- could silently return an index at or
-  // beyond max_item_count instead of failing loudly, matching this file's
-  // established "throw rather than guess" precedent
-  // (resolveOwnedStorageContainer's own multi-inventory guard).
-  const fallback = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventoryId]);
-  const fallbackIndex = Number(fallback.rows[0]?.position_index || 0);
-  if (fallbackIndex >= maxItemCount) {
+  const positions = await tx.query("select position_index from dune.items where inventory_id = $1", [inventoryId]);
+  const occupied = new Set();
+  for (const row of positions.rows) {
+    const idx = Number(row.position_index);
+    if (Number.isFinite(idx)) occupied.add(idx);
+  }
+  const step = direction === "high" ? -1 : 1;
+  let cursor = direction === "high" ? maxItemCount - 1 : 0;
+  return () => {
+    while (cursor >= 0 && cursor < maxItemCount) {
+      const idx = cursor;
+      cursor += step;
+      if (!occupied.has(idx)) return idx;
+    }
     throw new Error("Could not determine a safe item slot for this container -- its item slot indexes appear inconsistent. Please report this so it can be investigated.");
+  };
+}
+
+// Operator-facing outcome sentence shared by the four container give/fill
+// paths -- also what the standalone Storage tab renders (it has no
+// clamp-aware UI of its own, unlike the Bases tab).
+function stackOutcomeMessage(verb, templateId, plan, requestedQuantity, clamped, clampReason) {
+  const stackNote = plan.stacks.length > 1 ? ` in ${plan.stacks.length} stacks` : "";
+  if (!clamped) return `${templateId} x${plan.total} was ${verb}${stackNote}.`;
+  if (clampReason === "stack-rows") {
+    const requestedNote = requestedQuantity === null ? "" : ` of the requested ${requestedQuantity}`;
+    return `${templateId} x${plan.total} was ${verb}${stackNote} -- stopped at the ${MAX_STACK_ROWS_PER_OPERATION}-stack per-operation limit${requestedNote}; the container has room, repeat the action to add more.`;
   }
-  return fallbackIndex;
+  const axis = clampReason === "volume" ? "remaining volume" : "remaining item slots";
+  return `Only ${plan.total} of the requested ${requestedQuantity} x ${templateId} fit the container's ${axis} and was ${verb}${stackNote}.`;
+}
+
+// Shared insert loop for the four container give/fill paths: one dune.items
+// row per planned stack, each claiming its own position index via the
+// caller's own convention (createStackPositionClaimer "high" for Give,
+// lowest-next-free for Fill, claimPositionIndex for the batch path). Returns
+// the inserted rows in insertion order.
+async function insertPlannedStackRows(tx, itemColumns, { inventoryId, templateId, qualityLevel, stats, itemVolumeNum, stacks, claimPosition }) {
+  const rows = [];
+  for (const rowStackSize of stacks) {
+    const positionIndex = await claimPosition();
+    const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
+    const insertValues = [inventoryId, templateId, rowStackSize, qualityLevel, positionIndex, JSON.stringify(stats)];
+    if (itemColumns.has("volume_override")) {
+      insertColumns.push("volume_override");
+      insertValues.push(volumeOverrideForInsert(itemVolumeNum));
+    }
+    const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
+    const inserted = await tx.query(`
+      insert into dune.items (${insert.columns.join(", ")})
+      values (${insert.values.map((_, index) => {
+        const col = insertColumns[index];
+        if (col === "stats") return `$${index + 1}::jsonb`;
+        if (col === "volume_override") return `$${index + 1}::real`;
+        return `$${index + 1}`;
+      }).join(", ")})
+      returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
+    rows.push(inserted.rows[0]);
+  }
+  return rows;
 }
 
 // Game-created rows normally leave volume_override NULL, which means "use the
@@ -7150,7 +7284,16 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
         clamped = true;
       }
     }
-    const positionIndex = await nextHighPositionIndex(tx, inventory.id, inventory.max_item_count);
+    // Per-item stack-limit split (issue #430) -- see planStackRows' comment.
+    // Each stack row consumes its own slot, so the plan is bounded by the
+    // container's remaining slot count as well as the per-operation row cap.
+    const slotsAvailable = inventory.max_item_count > 0 ? inventory.max_item_count - currentCount : Infinity;
+    const plan = planStackRows(stackSize, maxStackSizeForTemplate(resolvedTemplate), slotsAvailable);
+    let clampReason = clamped ? "volume" : null;
+    if (plan.clamped) {
+      clamped = true;
+      clampReason = plan.clampReason;
+    }
     const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
     const rollPayloads = await loadAugmentRollPayloads(
       tx,
@@ -7159,8 +7302,6 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
       { sourceTemplateId: resolvedTemplate }
     );
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
-    const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
-    const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, positionIndex, JSON.stringify(stats)];
     // CORRECTED 2026-08-19 (real live in-game bug, see
     // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md):
     // volume_override must be the item's PER-UNIT volume, not
@@ -7178,28 +7319,27 @@ export async function giveItemToStorage(db, storageId, { itemName = "", itemId =
     // read-side sums (baseInventory, baseContainerListStorage,
     // baseContainerSlots) multiply volume_override * stack_size to compute
     // a total, matching this corrected per-unit convention.
-    if (itemColumns.has("volume_override")) {
-      insertColumns.push("volume_override");
-      insertValues.push(volumeOverrideForInsert(itemVolumeNum));
-    }
-    const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
-    const inserted = await tx.query(`
-      insert into dune.items (${insert.columns.join(", ")})
-      values (${insert.values.map((_, index) => {
-        const col = insertColumns[index];
-        if (col === "stats") return `$${index + 1}::jsonb`;
-        if (col === "volume_override") return `$${index + 1}::real`;
-        return `$${index + 1}`;
-      }).join(", ")})
-      returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
+    const insertedRows = await insertPlannedStackRows(tx, itemColumns, {
+      inventoryId: inventory.id,
+      templateId: resolvedTemplate,
+      qualityLevel,
+      stats,
+      itemVolumeNum,
+      stacks: plan.stacks,
+      claimPosition: await createStackPositionClaimer(tx, inventory.id, inventory.max_item_count, "high")
+    });
     return {
       ok: true,
       storage: inventory,
-      inserted: inserted.rows[0],
+      inserted: insertedRows[0],
+      insertedStacks: insertedRows,
+      stacks: insertedRows.length,
       augments: augmentIds.length > 0 ? augmentIds : undefined,
       requested: requestedQuantity,
-      given: stackSize,
-      clamped
+      given: plan.total,
+      clamped,
+      clampReason,
+      message: stackOutcomeMessage("given to the storage container", resolvedTemplate, plan, requestedQuantity, clamped, clampReason)
     };
   });
 }
@@ -7260,7 +7400,14 @@ export async function giveItemToBaseContainer(db, baseId, placeableId, { itemNam
         clamped = true;
       }
     }
-    const positionIndex = await nextHighPositionIndex(tx, inventory.id, inventory.max_item_count);
+    // Per-item stack-limit split (issue #430) -- see planStackRows' comment.
+    const slotsAvailable = inventory.max_item_count > 0 ? inventory.max_item_count - currentCount : Infinity;
+    const plan = planStackRows(stackSize, maxStackSizeForTemplate(resolvedTemplate), slotsAvailable);
+    let clampReason = clamped ? "volume" : null;
+    if (plan.clamped) {
+      clamped = true;
+      clampReason = plan.clampReason;
+    }
     const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
     const rollPayloads = await loadAugmentRollPayloads(
       tx,
@@ -7269,32 +7416,29 @@ export async function giveItemToBaseContainer(db, baseId, placeableId, { itemNam
       { sourceTemplateId: resolvedTemplate }
     );
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
-    const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
-    const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, positionIndex, JSON.stringify(stats)];
-    if (itemColumns.has("volume_override")) {
-      insertColumns.push("volume_override");
-      insertValues.push(volumeOverrideForInsert(itemVolumeNum));
-    }
-    const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
-    const inserted = await tx.query(`
-      insert into dune.items (${insert.columns.join(", ")})
-      values (${insert.values.map((_, index) => {
-        const col = insertColumns[index];
-        if (col === "stats") return `$${index + 1}::jsonb`;
-        if (col === "volume_override") return `$${index + 1}::real`;
-        return `$${index + 1}`;
-      }).join(", ")})
-      returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
+    const insertedRows = await insertPlannedStackRows(tx, itemColumns, {
+      inventoryId: inventory.id,
+      templateId: resolvedTemplate,
+      qualityLevel,
+      stats,
+      itemVolumeNum,
+      stacks: plan.stacks,
+      claimPosition: await createStackPositionClaimer(tx, inventory.id, inventory.max_item_count, "high")
+    });
     return {
       ok: true,
       storage: inventory,
       placeableId: resolved.placeable_id,
       inventoryId: String(inventory.id),
-      inserted: inserted.rows[0],
+      inserted: insertedRows[0],
+      insertedStacks: insertedRows,
+      stacks: insertedRows.length,
       augments: augmentIds.length > 0 ? augmentIds : undefined,
       requested: requestedQuantity,
-      given: stackSize,
-      clamped
+      given: plan.total,
+      clamped,
+      clampReason,
+      message: stackOutcomeMessage("given to the container", resolvedTemplate, plan, requestedQuantity, clamped, clampReason)
     };
   });
 }
@@ -7380,7 +7524,20 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
         clamped = true;
       }
     }
-    const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
+    // Per-item stack-limit split (issue #430) -- see planStackRows' comment.
+    // Clamp semantics for fill-to-capacity (L2 audit, UI hat H-1): a fill
+    // bounded by the container's REAL capacity (volume or slots) genuinely
+    // is "as much as fit" and is not a clamp -- but a fill cut short only by
+    // the per-operation stack-row cap must say so, because the container
+    // still has room and "as much as fit" would be a lie.
+    const slotsAvailable = inventory.max_item_count > 0 ? inventory.max_item_count - currentCount : Infinity;
+    const plan = planStackRows(stackSize, maxStackSizeForTemplate(resolvedTemplate), slotsAvailable);
+    let clampReason = clamped ? "volume" : null;
+    if (plan.clamped && (!toCapacity || plan.clampReason === "stack-rows")) {
+      clamped = true;
+      clampReason = plan.clampReason;
+    }
+    const claimPosition = await createStackPositionClaimer(tx, inventory.id, inventory.max_item_count, "low");
     const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
     const rollPayloads = await loadAugmentRollPayloads(
       tx,
@@ -7389,8 +7546,6 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
       { sourceTemplateId: resolvedTemplate }
     );
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
-    const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
-    const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
     // CORRECTED 2026-08-19 (real live in-game bug, see
     // docs/incidents/INC-2026-08-19-VOLUME-OVERRIDE-DOUBLE-MULTIPLIED.md):
     // volume_override must be the item's PER-UNIT volume, not
@@ -7403,28 +7558,27 @@ export async function fillItemToStorage(db, repoRoot, storageId, { itemName = ""
     // volume_override * stack_size to get a correct running total, so
     // storing the per-unit value here keeps every subsequent fill/give
     // against this container correct too.
-    if (itemColumns.has("volume_override")) {
-      insertColumns.push("volume_override");
-      insertValues.push(volumeOverrideForInsert(itemVolumeNum));
-    }
-    const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
-    const inserted = await tx.query(`
-      insert into dune.items (${insert.columns.join(", ")})
-      values (${insert.values.map((_, index) => {
-        const col = insertColumns[index];
-        if (col === "stats") return `$${index + 1}::jsonb`;
-        if (col === "volume_override") return `$${index + 1}::real`;
-        return `$${index + 1}`;
-      }).join(", ")})
-      returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
+    const insertedRows = await insertPlannedStackRows(tx, itemColumns, {
+      inventoryId: inventory.id,
+      templateId: resolvedTemplate,
+      qualityLevel,
+      stats,
+      itemVolumeNum,
+      stacks: plan.stacks,
+      claimPosition
+    });
     return {
       ok: true,
       storage: inventory,
-      inserted: inserted.rows[0],
+      inserted: insertedRows[0],
+      insertedStacks: insertedRows,
+      stacks: insertedRows.length,
       augments: augmentIds.length > 0 ? augmentIds : undefined,
       requested: toCapacity ? null : requestedQuantity,
-      given: stackSize,
-      clamped
+      given: plan.total,
+      clamped,
+      clampReason,
+      message: stackOutcomeMessage("filled into the storage container", resolvedTemplate, plan, toCapacity ? null : requestedQuantity, clamped, clampReason)
     };
   });
 }
@@ -7482,7 +7636,16 @@ export async function fillItemToBaseContainer(db, repoRoot, baseId, placeableId,
         clamped = true;
       }
     }
-    const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventory.id]);
+    // Per-item stack-limit split (issue #430) -- see planStackRows' comment
+    // and fillItemToStorage's matching clamp/position notes.
+    const slotsAvailable = inventory.max_item_count > 0 ? inventory.max_item_count - currentCount : Infinity;
+    const plan = planStackRows(stackSize, maxStackSizeForTemplate(resolvedTemplate), slotsAvailable);
+    let clampReason = clamped ? "volume" : null;
+    if (plan.clamped && (!toCapacity || plan.clampReason === "stack-rows")) {
+      clamped = true;
+      clampReason = plan.clampReason;
+    }
+    const claimPosition = await createStackPositionClaimer(tx, inventory.id, inventory.max_item_count, "low");
     const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
     const rollPayloads = await loadAugmentRollPayloads(
       tx,
@@ -7491,32 +7654,29 @@ export async function fillItemToBaseContainer(db, repoRoot, baseId, placeableId,
       { sourceTemplateId: resolvedTemplate }
     );
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, rollPayloads });
-    const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
-    const insertValues = [inventory.id, resolvedTemplate, stackSize, qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)];
-    if (itemColumns.has("volume_override")) {
-      insertColumns.push("volume_override");
-      insertValues.push(volumeOverrideForInsert(itemVolumeNum));
-    }
-    const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
-    const inserted = await tx.query(`
-      insert into dune.items (${insert.columns.join(", ")})
-      values (${insert.values.map((_, index) => {
-        const col = insertColumns[index];
-        if (col === "stats") return `$${index + 1}::jsonb`;
-        if (col === "volume_override") return `$${index + 1}::real`;
-        return `$${index + 1}`;
-      }).join(", ")})
-      returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
+    const insertedRows = await insertPlannedStackRows(tx, itemColumns, {
+      inventoryId: inventory.id,
+      templateId: resolvedTemplate,
+      qualityLevel,
+      stats,
+      itemVolumeNum,
+      stacks: plan.stacks,
+      claimPosition
+    });
     return {
       ok: true,
       storage: inventory,
       placeableId: resolved.placeable_id,
       inventoryId: String(inventory.id),
-      inserted: inserted.rows[0],
+      inserted: insertedRows[0],
+      insertedStacks: insertedRows,
+      stacks: insertedRows.length,
       augments: augmentIds.length > 0 ? augmentIds : undefined,
       requested: toCapacity ? null : requestedQuantity,
-      given: stackSize,
-      clamped
+      given: plan.total,
+      clamped,
+      clampReason,
+      message: stackOutcomeMessage("filled into the container", resolvedTemplate, plan, toCapacity ? null : requestedQuantity, clamped, clampReason)
     };
   });
 }
@@ -7621,7 +7781,7 @@ export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, 
       currentVolume = volume.currentVolume;
     }
 
-    // Occupied position_index state, mirroring nextHighPositionIndex's own
+    // Occupied position_index state, mirroring createStackPositionClaimer's own
     // two branches (see its comment for the collision-mitigation rationale)
     // so this batch's own claims stay consistent with a single-item Give
     // without re-running that function's query once per item.
@@ -7649,7 +7809,7 @@ export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, 
           return idx;
         }
       }
-      // Mirrors nextHighPositionIndex's own "throw rather than guess"
+      // Mirrors createStackPositionClaimer's own "throw rather than guess"
       // fallback guard (2026-08-19 code-review fix) instead of silently
       // returning an index at or beyond max_item_count.
       throw new Error("Could not determine a safe item slot for this container -- its item slot indexes appear inconsistent. Please report this so it can be investigated.");
@@ -7657,7 +7817,17 @@ export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, 
 
     const results = [];
     let stopped = false;
+    let stopReason = "Batch stopped after an earlier item did not fully fit.";
+    // The runaway row backstop is shared by the WHOLE batch (L2 audit,
+    // converging Network/DBA/Security finding): giving each entry its own
+    // budget would multiply the maximum transaction size by up to 50. A
+    // batch of 50 unsplit entries still fits comfortably (one row each).
+    let rowBudgetRemaining = MAX_STACK_ROWS_PER_OPERATION;
     for (const entry of prepared) {
+      if (!stopped && rowBudgetRemaining < 1) {
+        stopped = true;
+        stopReason = "Batch stopped at the per-operation stack-row limit -- the container may still have room; repeat the action with the remaining items.";
+      }
       if (stopped) {
         results.push({
           templateId: entry.resolvedTemplate,
@@ -7665,7 +7835,7 @@ export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, 
           given: 0,
           clamped: true,
           attempted: false,
-          reason: "Batch stopped after an earlier item did not fully fit."
+          reason: stopReason
         });
         continue;
       }
@@ -7709,10 +7879,16 @@ export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, 
         stopped = true;
         continue;
       }
-      // High-end position mitigation -- see nextHighPositionIndex's own
-      // comment (also used by giveItemToBaseContainer) for why Give, unlike
-      // Fill, picks the highest unused slot instead of the lowest.
-      const positionIndex = claimPositionIndex();
+      // Per-item stack-limit split (issue #430) -- see planStackRows'
+      // comment. Each stack row consumes a slot from the batch's shared
+      // slot state AND the batch-wide row budget above.
+      const slotsAvailable = inventory.max_item_count > 0 ? inventory.max_item_count - currentCount : Infinity;
+      const plan = planStackRows(stackSize, maxStackSizeForTemplate(entry.resolvedTemplate), slotsAvailable, rowBudgetRemaining);
+      let clampReason = clamped ? "volume" : null;
+      if (plan.clamped) {
+        clamped = true;
+        clampReason = plan.clampReason;
+      }
       const standaloneAugment = isStandaloneAugmentTemplate(entry.resolvedTemplate);
       const rollPayloads = await loadAugmentRollPayloads(
         tx,
@@ -7721,41 +7897,47 @@ export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, 
         { sourceTemplateId: entry.resolvedTemplate }
       );
       const stats = buildItemStats({ templateId: entry.resolvedTemplate, augments: entry.augmentIds, rollPayloads });
-      const insertColumns = ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"];
-      const insertValues = [inventory.id, entry.resolvedTemplate, stackSize, entry.qualityLevel, positionIndex, JSON.stringify(stats)];
       // CORRECTED 2026-08-19: volume_override must be the item's PER-UNIT
       // volume, not entry.itemVolumeNum * stackSize -- see
       // giveItemToBaseContainer's matching comment for the full explanation.
-      if (itemColumns.has("volume_override")) {
-        insertColumns.push("volume_override");
-        insertValues.push(volumeOverrideForInsert(entry.itemVolumeNum));
-      }
-      const insert = itemInsertShape(insertColumns, insertValues, itemColumns);
-      const inserted = await tx.query(`
-        insert into dune.items (${insert.columns.join(", ")})
-        values (${insert.values.map((_, index) => {
-          const col = insertColumns[index];
-          if (col === "stats") return `$${index + 1}::jsonb`;
-          if (col === "volume_override") return `$${index + 1}::real`;
-          return `$${index + 1}`;
-        }).join(", ")})
-        returning id, template_id, stack_size, quality_level, position_index, inventory_id, volume_override`, insert.values);
+      // High-end position mitigation -- see createStackPositionClaimer's own
+      // comment (also used by giveItemToBaseContainer) for why Give, unlike
+      // Fill, picks the highest unused slot instead of the lowest.
+      const insertedRows = await insertPlannedStackRows(tx, itemColumns, {
+        inventoryId: inventory.id,
+        templateId: entry.resolvedTemplate,
+        qualityLevel: entry.qualityLevel,
+        stats,
+        itemVolumeNum: entry.itemVolumeNum,
+        stacks: plan.stacks,
+        claimPosition: () => claimPositionIndex()
+      });
       results.push({
-        inserted: inserted.rows[0],
+        inserted: insertedRows[0],
+        insertedStacks: insertedRows,
+        stacks: insertedRows.length,
         augments: entry.augmentIds.length > 0 ? entry.augmentIds : undefined,
         templateId: entry.resolvedTemplate,
         requested: entry.requestedQuantity,
-        given: stackSize,
+        given: plan.total,
         clamped,
+        clampReason,
         attempted: true
       });
-      currentCount += 1;
-      currentVolume += entry.itemVolumeNum * stackSize;
+      currentCount += insertedRows.length;
+      currentVolume += entry.itemVolumeNum * plan.total;
+      rowBudgetRemaining -= insertedRows.length;
       // A partially-filled item (clamped, even though given > 0) still
       // stops the batch here -- per design, once one item does not fully
       // fit, later items are not attempted, rather than skipping ahead to
-      // see if a smaller later item happens to have room.
-      if (clamped) stopped = true;
+      // see if a smaller later item happens to have room. The recorded
+      // reason distinguishes a real capacity stop from the row-budget cap.
+      if (clamped) {
+        stopped = true;
+        if (clampReason === "stack-rows") {
+          stopReason = "Batch stopped at the per-operation stack-row limit -- the container may still have room; repeat the action with the remaining items.";
+        }
+      }
     }
     return { ok: true, storage: inventory, placeableId: resolved.placeable_id, inventoryId: String(inventory.id), results };
   });
@@ -9584,10 +9766,11 @@ export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, {
 // drift between the copies visible in a diff.
 //
 // The parameter surface is giveItemToStorage's verbatim so resolveCatalogItem's
-// output drops straight in. What it does NOT take is a slot: placement is
-// always max(position_index)+1, and there is no merging into a matching stack,
-// so one add is always exactly one new row in one new slot. Both are contracts
-// the UI states out loud -- see the placement note in the add panel.
+// output drops straight in. What it does NOT take is a slot: placement claims
+// the lowest free in-range slot for a capped inventory (or max+1 when the
+// inventory is genuinely uncapped), and there is no merging into a matching
+// stack, so one add is always exactly one new row in one new slot. Both are
+// contracts the UI states out loud -- see the placement note in the add panel.
 //
 // No `set local search_path` here, unlike its sibling above. That line exists
 // there because the shipped dune.delete_item/dune.delete_inventory_item carry
@@ -9605,7 +9788,15 @@ export async function addBaseContainerItem(db, baseId, placeableId, {
   const target = intParam(baseId, "base id", 1);
   const container = intParam(placeableId, "container id", 1);
   const resolvedTemplate = validateTemplateId(templateId || itemId || itemName);
-  const stackSize = intParam(quantity, "quantity", 1, 1000000);
+  const requestedQuantity = intParam(quantity, "quantity", 1, 1000000);
+  // Per-item stack-limit adherence (issue #430): unlike Give/Fill, this
+  // slot-grid path deliberately places exactly one row in one slot, so an
+  // oversized quantity is CLAMPED to the game's per-item stack limit rather
+  // than split across rows -- see maxStackSizeForTemplate's comment for why
+  // the limit must be enforced at all on raw inserts.
+  const maxStack = maxStackSizeForTemplate(resolvedTemplate);
+  const stackSize = maxStack > 0 ? Math.min(requestedQuantity, maxStack) : requestedQuantity;
+  const stackClamped = stackSize < requestedQuantity;
   // 0-5, not giveItemToStorage's 0-1000000. That range is an outlier -- every
   // other path and the entire UI treat grade as 0-5 -- and widening it here
   // would let the console write a grade the game has no meaning for.
@@ -9690,17 +9881,19 @@ export async function addBaseContainerItem(db, baseId, placeableId, {
     // on (inventory_id, position_index): db.transaction issues a bare `begin`,
     // so this runs at READ COMMITTED, where the FOR UPDATE above makes a second
     // adder block until the first commits and then re-evaluate rather than
-    // abort. These two reads are separate statements taking fresh snapshots, so
-    // the waiter sees the committed insert and computes max+1, not the stale
-    // value. The delete's `for update of i, inv` -- specifically the inv -- is
-    // what serializes a concurrent delete against this; trimming it there would
-    // silently break the guarantee here.
+    // abort. The occupied-slot read follows that lock, so the waiter sees the
+    // committed insert and claims a different free slot. The delete's `for
+    // update of i, inv` -- specifically the inv -- is what serializes a
+    // concurrent delete against this; trimming it there would silently break
+    // the guarantee here.
     //
-    // Worst case if that reasoning ever fails: layoutSlots routes a duplicate
-    // index to the overflow list, which still renders with a working delete.
-    // Degraded display, never a lost or unreachable row.
-    const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventoryId]);
-    const positionIndex = Number(position.rows[0]?.position_index || 0);
+    // This must not use max(position_index)+1 for a capped inventory. Give
+    // deliberately claims the highest free slot as a collision mitigation, so
+    // one prior Give commonly makes max+1 equal max_item_count -- outside the
+    // engine's slot grid. Add is a single-row path rather than a split path,
+    // but it needs the same in-range guarantee as Fill and player Give.
+    const claimPosition = await createStackPositionClaimer(tx, inventoryId, maxItemCount, "low");
+    const positionIndex = claimPosition();
 
     // No explicit durability, deliberately. buildItemStats already gives
     // clothing and weapons a 100/100 fallback, while ore, spice and salvage get
@@ -9749,7 +9942,9 @@ export async function addBaseContainerItem(db, baseId, placeableId, {
         augments: augmentIds.length > 0 ? augmentIds : undefined
       },
       capacity: { usedSlots: currentCount + 1, maxSlots: maxItemCount },
-      message: `${label} x${stackSize} was added to ${containerRow.type_name} in slot #${positionIndex}.`
+      requested: requestedQuantity,
+      clamped: stackClamped,
+      message: `${label} x${stackSize} was added to ${containerRow.type_name} in slot #${positionIndex}.${stackClamped ? ` The requested ${requestedQuantity} exceeded this item's ${maxStack}-per-stack limit, so one full stack was placed.` : ""}`
     };
   });
 }
@@ -10201,7 +10396,16 @@ export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "
     const count = await tx.query("select count(*)::int as count from dune.items where inventory_id = $1", [inv.id]);
     const currentCount = Number(count.rows[0]?.count || 0);
     if (inv.max_item_count > 0 && currentCount >= inv.max_item_count) throw new Error("Player inventory is full by item slot count");
-    const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inv.id]);
+    // Per-item stack-limit split (issue #430) -- see planStackRows' comment.
+    // Player inventories get the same treatment as containers: the game's
+    // per-item stack limit applies to a backpack row the same as a storage
+    // row. This path keeps its own insert shape (no volume_override --
+    // player inventories are not volume-tracked by this function).
+    const slotsAvailable = inv.max_item_count > 0 ? inv.max_item_count - currentCount : Infinity;
+    const plan = planStackRows(stackSize, maxStackSizeForTemplate(resolvedTemplate), slotsAvailable);
+    // In-range position claiming, same H-1 fix as the fill paths -- see
+    // createSequentialPositionClaimer's comment.
+    const claimPosition = await createStackPositionClaimer(tx, inv.id, inv.max_item_count, "low");
     const slotUnlocks = await ensureAugmentSlotKeystones(tx, player, resolvedTemplate, augmentIds);
     const standaloneAugment = isStandaloneAugmentTemplate(resolvedTemplate);
     const rollPayloads = await loadAugmentRollPayloads(
@@ -10211,25 +10415,43 @@ export async function giveItemToPlayer(db, playerId, { itemName = "", itemId = "
       { sourceTemplateId: resolvedTemplate }
     );
     const stats = buildItemStats({ templateId: resolvedTemplate, augments: augmentIds, durability: { current: 100, max: 100 }, rollPayloads });
-    const insert = itemInsertShape(
-      ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
-      [inv.id, resolvedTemplate, stackSize, qualityLevel, Number(position.rows[0]?.position_index || 0), JSON.stringify(stats)],
-      itemColumns
-    );
-    const inserted = await tx.query(`
-      insert into dune.items (${insert.columns.join(", ")})
-      values (${insert.values.map((_, index) => index === 5 ? `$${index + 1}::jsonb` : `$${index + 1}`).join(", ")})
-      returning id, template_id, stack_size, quality_level, position_index, inventory_id`, insert.values);
+    const insertedRows = [];
+    for (const rowStackSize of plan.stacks) {
+      const insert = itemInsertShape(
+        ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
+        [inv.id, resolvedTemplate, rowStackSize, qualityLevel, claimPosition(), JSON.stringify(stats)],
+        itemColumns
+      );
+      const inserted = await tx.query(`
+        insert into dune.items (${insert.columns.join(", ")})
+        values (${insert.values.map((_, index) => index === 5 ? `$${index + 1}::jsonb` : `$${index + 1}`).join(", ")})
+        returning id, template_id, stack_size, quality_level, position_index, inventory_id`, insert.values);
+      insertedRows.push(inserted.rows[0]);
+    }
     const augmentNote = augmentIds.length > 0 ? ` with ${augmentIds.length} augment(s) pre-applied` : "";
+    // The clamp must be loud in the message itself (L2 audit, Architect
+    // H-1): every player-give consumer (care packages, the Players grant
+    // route, Discord) reports success from this result, and pre-#430 the
+    // full quantity always landed -- a silent partial delivery here would
+    // read as a full one everywhere downstream.
+    const clampNote = plan.clamped
+      ? ` Only ${plan.total} of the requested ${stackSize} could be granted (${plan.clampReason === "stack-rows" ? `${MAX_STACK_ROWS_PER_OPERATION}-stack per-operation limit -- repeat the grant to add more` : "the player's inventory ran out of free item slots"}).`
+      : "";
     return {
       ok: true,
       playerId: player.actorId,
-      inserted: inserted.rows[0],
+      inserted: insertedRows[0],
+      insertedStacks: insertedRows,
+      stacks: insertedRows.length,
+      requested: stackSize,
+      given: plan.total,
+      clamped: plan.clamped,
+      clampReason: plan.clampReason,
       augments: augmentIds.length > 0 ? augmentIds : undefined,
       augmentQuality: augmentIds.length > 0 ? augmentQualityLevel : undefined,
       slotUnlocks,
       requiresRelog: playerOnline,
-      message: `${resolvedTemplate} was added at Grade ${qualityLevel}${augmentNote}.${playerOnline ? " Relog required for item or augments to appear correctly." : " The player will see the database edit on next login."}`
+      message: `${resolvedTemplate} x${plan.total} was added at Grade ${qualityLevel}${augmentNote}.${clampNote}${playerOnline ? " Relog required for item or augments to appear correctly." : " The player will see the database edit on next login."}`
     };
   });
 }

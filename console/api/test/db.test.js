@@ -3883,12 +3883,13 @@ test("container item delete degrades to null state fields on a schema without th
 // Container-item add. The inverse of the delete above and, like it, mostly a
 // story about the ownership query -- plus two contracts the UI states out loud
 // and the backend has to actually keep: never merge into an existing stack, and
-// always append to the next free slot.
+// always claim an in-range free slot.
 function fakeContainerAddDb(calls, fixtures = {}) {
   const {
     containerRows = [],
     count = 0,
     maxPositionIndex = -1,
+    occupiedPositions = null,
     augmentRollRows = [],
     insertedRows = null,
     itemColumns = ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level"],
@@ -3917,6 +3918,10 @@ function fakeContainerAddDb(calls, fixtures = {}) {
     }
     if (text.includes("requested_claims")) return { rows: containerRows };
     if (text.includes("count(*)::int as count")) return { rows: [{ count }] };
+    if (text === "select position_index from dune.items where inventory_id = $1") {
+      const positions = occupiedPositions || Array.from({ length: Math.max(0, maxPositionIndex + 1) }, (_, position_index) => position_index);
+      return { rows: positions.map((position_index) => ({ position_index })) };
+    }
     if (text.includes("max(position_index)")) return { rows: [{ position_index: maxPositionIndex + 1 }] };
     if (text.includes("FAugmentItemStats")) return { rows: augmentRollRows };
     if (text.includes("FAugmentedItemStats")) return { rows: [] };
@@ -4017,6 +4022,38 @@ const CONTAINER_ADD_ROW = {
 
 const insertCalls = (calls) => calls.filter((call) => call.text.includes("insert into dune.items"));
 
+// Per-item stack-limit adherence (issue #430) for the slot-grid Add Item
+// path: unlike Give/Fill, this UX deliberately places exactly one row in one
+// slot, so an oversized quantity is CLAMPED to the game's per-item stack
+// limit rather than split across rows -- and reported honestly.
+test("container item add clamps quantity to the item's catalog stack size for its single-slot placement", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, {
+    containerRows: [CONTAINER_ADD_ROW],
+    insertedRows: [{ id: 640, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 0, inventory_id: 7 }]
+  });
+  const result = await addBaseContainerItem(db, 16836, 42, { itemId: "MelangeSpice", quantity: 1200 });
+  assert.equal(result.requested, 1200);
+  assert.equal(result.clamped, true);
+  const insert = insertCalls(calls)[0];
+  assert.equal(insert.values[2], 500, "the single placed stack must not exceed the game's stack limit");
+});
+
+// A synthetic, never-real id -- not a real catalog item like ScrapMetal --
+// because maxStackSizeForTemplate reads the REAL runtime/data/admin-items.json
+// (this test's db fixture is faked, but that lookup isn't), so a real item id
+// here is fragile against future curation (L2 audit QA hat L-7's predicted
+// failure mode: #431's bulk curation broke this exact test when it curated
+// ScrapMetal's stackSize, 2026-08-20).
+test("container item add leaves items without catalog stack data unclamped", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
+  const result = await addBaseContainerItem(db, 16836, 42, { itemId: "TotallyUncataloguedTestItem", quantity: 1200 });
+  assert.equal(result.clamped, false);
+  const insert = insertCalls(calls)[0];
+  assert.equal(insert.values[2], 1200);
+});
+
 test("container item add resolves ownership through the base before inserting", async () => {
   const calls = [];
   const db = fakeContainerAddDb(calls, { containerRows: [CONTAINER_ADD_ROW] });
@@ -4053,7 +4090,7 @@ test("container item add takes the inventory lock before reading capacity and po
   // before the lock would let two adders compute the same next index.
   const lockAt = calls.findIndex((call) => call.text.includes("for update of inv"));
   const countAt = calls.findIndex((call) => call.text.includes("count(*)::int as count"));
-  const positionAt = calls.findIndex((call) => call.text.includes("max(position_index)"));
+  const positionAt = calls.findIndex((call) => call.text === "select position_index from dune.items where inventory_id = $1");
   assert.ok(lockAt >= 0 && countAt > lockAt, "capacity read must follow the lock");
   assert.ok(positionAt > lockAt, "position read must follow the lock");
 });
@@ -4109,6 +4146,20 @@ test("container item add appends to the next free slot", async () => {
   const result = await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 });
   assert.equal(insertCalls(calls)[0].values[4], 8);
   assert.equal(result.added.positionIndex, 8);
+});
+
+test("container item add stays inside the slot grid after Give occupied the highest slot", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, {
+    containerRows: [CONTAINER_ADD_ROW],
+    count: 3,
+    occupiedPositions: [0, 1, 44]
+  });
+  const result = await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 });
+  const insertedPosition = insertCalls(calls)[0].values[4];
+  assert.equal(insertedPosition, 2, "Add must claim the lowest free in-range slot, not max(position_index)+1 = 45");
+  assert.equal(result.added.positionIndex, 2);
+  assert.ok(insertedPosition < 45, "Add must never write at or beyond max_item_count");
 });
 
 test("container item add starts an empty container at slot zero", async () => {
@@ -5028,9 +5079,9 @@ test("storage give-item validates capacity and inserts parameterized item rows",
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
   assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 0, 29]);
-  const positionCall = calls.find((call) => call.text.includes("generate_series"));
-  assert.ok(positionCall, "give-item must use the high-end position query, not the plain lowest-next-free one");
-  assert.deepEqual(positionCall.values, [7, 30]);
+  const positionCall = calls.find((call) => call.text === "select position_index from dune.items where inventory_id = $1");
+  assert.ok(positionCall, "give-item must read the occupied-slot set once and claim the highest free in-range slot from it");
+  assert.deepEqual(positionCall.values, [7]);
 });
 
 // The fallback path: an uncapped/unknown-capacity container (max_item_count
@@ -5049,7 +5100,7 @@ test("storage give-item falls back to lowest-next-free position when max_item_co
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
   assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 0, 2]);
-  assert.ok(!calls.some((call) => call.text.includes("generate_series")), "must not run the high-end query when max_item_count is 0");
+  assert.ok(!calls.some((call) => call.text === "select position_index from dune.items where inventory_id = $1"), "must not read the occupied set when max_item_count is 0 -- the max+1 fallback applies");
 });
 
 // Found during code review (2026-08-19): nextHighPositionIndex's own
@@ -5069,11 +5120,11 @@ test("give-item throws rather than silently exceeding capacity when nextHighPosi
   const db = fakeMutationDb(calls, {
     storageRows: [{ id: 7, actor_id: 222, max_item_count: 2, max_item_volume: 0 }],
     countRows: [{ count: 1 }],
-    // null makes the mock's generate_series branch return no rows, matching
-    // "every slot below max_item_count is already claimed" -- the mock's
-    // own max(position_index) fallback always returns 2, which is >= this
-    // test's max_item_count (2), so the guard must trip.
-    highPositionRowsSequence: [null]
+    // Every slot below max_item_count is already claimed even though the
+    // count looks like there is room (corrupted position data + stale
+    // count -- the one scenario that breaks the pigeonhole argument), so
+    // the claimer must throw rather than exceed the range.
+    existingPositionIndexRows: [0, 1]
   });
   await assert.rejects(
     () => giveItemToBaseContainer(db, 16836, 42, { templateId: "WaterBottle_1", quantity: 1 }),
@@ -5655,6 +5706,356 @@ test("storage fill-item rejects when slot limit would be exceeded", async () => 
   );
 });
 
+// ---- Per-item stack-limit adherence (issue #430) ----
+// The game engine enforces a per-item max stack size (MelangeSpice 500,
+// Oil/SpicedFuelCell 500, lubricants 100 -- externally verified against
+// dune.gaming.tools 2026-08-20; see adminCatalog's resolveItemStackSize
+// comment for the full provenance, including a correction of an initial
+// 499 for Oil/SpicedFuelCell). Raw give/fill inserts bypass the engine's own stack
+// validation (the RCON path's "Verified inventory stack increased"), so
+// these paths must split an oversized quantity across multiple rows using
+// the catalog's stackSize metadata. Items without stackSize data keep the
+// pre-existing single-row behavior, locked by the older tests above.
+
+test("storage give-item splits a quantity above the item's catalog stack size into multiple stacks", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [
+      { id: 601, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 29, inventory_id: 7 },
+      { id: 602, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 28, inventory_id: 7 },
+      { id: 603, template_id: "MelangeSpice", stack_size: 200, quality_level: 0, position_index: 27, inventory_id: 7 }
+    ]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "MelangeSpice", quantity: 1200 });
+  assert.equal(result.given, 1200);
+  assert.equal(result.requested, 1200);
+  assert.equal(result.clamped, false, "splitting alone is not a clamp -- the full requested quantity was given");
+  assert.equal(result.stacks, 3);
+  assert.equal(result.inserted.id, 601, "inserted stays the first row for response-shape compatibility");
+  assert.equal(result.insertedStacks.length, 3);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 3);
+  assert.deepEqual(inserts.map((call) => call.values[2]), [500, 500, 200]);
+  assert.deepEqual(inserts.map((call) => call.values[4]), [29, 28, 27], "each stack claims its own distinct slot");
+});
+
+test("storage give-item clamps a split to the container's remaining slots and reports it honestly", async () => {
+  // 30 slots, 28 used -> only 2 stacks fit; 1200 requested at 500/stack ->
+  // 1000 given across 2 stacks, clamped, instead of one over-limit row.
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 28 }],
+    insertedRowsSequence: [
+      { id: 604, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 29, inventory_id: 7 },
+      { id: 605, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 28, inventory_id: 7 }
+    ]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "MelangeSpice", quantity: 1200 });
+  assert.equal(result.given, 1000);
+  assert.equal(result.clamped, true);
+  assert.equal(result.clampReason, "slots");
+  assert.equal(result.stacks, 2);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 2);
+  assert.deepEqual(inserts.map((call) => call.values[2]), [500, 500]);
+});
+
+test("storage give-item completes a realistic oversized request in one operation, full stacks plus remainder", async () => {
+  // Per explicit operator direction (2026-08-20): a give/fill must compute
+  // the number of full stacks plus one final remainder stack and complete
+  // in ONE action bounded only by the container's real capacity -- never
+  // stop partway at an artificial cap and tell the operator to rerun.
+  // 100,000 at 500/stack = 200 full stacks, well under the 1,000-row
+  // runaway backstop.
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [{ id: 671, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 29, inventory_id: 7 }]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "MelangeSpice", quantity: 100000 });
+  assert.equal(result.given, 100000);
+  assert.equal(result.clamped, false);
+  assert.equal(result.stacks, 200);
+  assert.equal(calls.filter((call) => call.text.includes("insert into dune.items")).length, 200);
+});
+
+test("storage give-item hitting the 1,000-row runaway backstop still reports it honestly", async () => {
+  // Only a pathological request reaches the backstop: 1,000,000 at
+  // 500/stack needs 2,000 rows. The backstop protects the database from a
+  // runaway transaction; the honest stack-rows report is retained for it.
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [{ id: 672, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 29, inventory_id: 7 }]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "MelangeSpice", quantity: 1000000 });
+  assert.equal(result.given, 500000);
+  assert.equal(result.clamped, true);
+  assert.equal(result.clampReason, "stack-rows");
+  assert.match(String(result.message), /1,?000-stack per-operation limit/);
+  assert.match(String(result.message), /repeat/i);
+});
+
+// L2 audit (Architect hat): template lookups must not be case-sensitive --
+// the engine/DB treats template ids case-insensitively (refill matches with
+// lower()), so "melangespice" must hit MelangeSpice's stack limit instead of
+// silently bypassing it.
+test("storage give-item enforces the stack limit for a case-variant of a catalogued template id", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [{ id: 681, template_id: "melangespice", stack_size: 500, quality_level: 0, position_index: 29, inventory_id: 7 }]
+  });
+  const result = await giveItemToStorage(db, 222, { templateId: "melangespice", quantity: 1200 });
+  assert.equal(result.stacks, 3);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.deepEqual(inserts.map((call) => call.values[2]), [500, 500, 200]);
+});
+
+test("storage fill-item to capacity splits into stack-size rows bounded by the runaway backstop", async () => {
+  // Uncapped container with no volume data: fill-to-capacity for a
+  // stack-capped item gives full stacks up to the 1,000-row runaway
+  // backstop instead of the previous single 1,000,000-unit row.
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: Array.from({ length: 1000 }, (_, index) => (
+      { id: 700 + index, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 2 + index, inventory_id: 7 }
+    ))
+  });
+  const result = await fillItemToStorage(db, "/tmp", 222, { templateId: "MelangeSpice", quantity: 0, itemVolume: 0.2 });
+  assert.equal(result.given, 500000);
+  assert.equal(result.requested, null);
+  assert.equal(result.stacks, 1000);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 1000);
+  assert.ok(inserts.every((call) => call.values[2] === 500));
+  assert.equal(inserts[0].values[4], 2, "uncapped fill keeps its max+1 position convention for the first stack");
+  assert.equal(inserts[999].values[4], 1001, "later stacks take consecutive positions after the first");
+});
+
+test("base container fill-item splits an explicit quantity above the stack size without reporting a clamp", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [
+      { id: 611, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 2, inventory_id: 7 },
+      { id: 612, template_id: "MelangeSpice", stack_size: 100, quality_level: 0, position_index: 3, inventory_id: 7 }
+    ]
+  });
+  const result = await fillItemToBaseContainer(db, "/tmp", 16836, 42, { templateId: "MelangeSpice", quantity: 600, itemVolume: 0.2 });
+  assert.equal(result.given, 600);
+  assert.equal(result.requested, 600);
+  assert.equal(result.clamped, false);
+  assert.equal(result.stacks, 2);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.deepEqual(inserts.map((call) => call.values[2]), [500, 100]);
+  // Capped container: fill claims the LOWEST free in-range slots from a
+  // one-time occupied-set read (L2 audit H-1 fix), never max+1 -- which
+  // could escape the slot grid after a high-end Give.
+  assert.deepEqual(inserts.map((call) => call.values[4]), [0, 1]);
+});
+
+// L2 audit H-1 (DBA hat): Give parks rows at the TOP of the slot range
+// (nextHighPositionIndex, the 2026-08-19 collision mitigation), so a fill
+// computing max(position_index)+1 would start AT max_item_count -- out of
+// the engine's slot grid -- and a split amplified that to up to 50
+// out-of-range rows. Fill must claim free in-range slots instead.
+test("fill-item stays inside the slot grid after a high-end give occupied the top slot", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 40, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    existingPositionIndexRows: [39],
+    insertedRowsSequence: [
+      { id: 651, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 0, inventory_id: 7 },
+      { id: 652, template_id: "MelangeSpice", stack_size: 300, quality_level: 0, position_index: 1, inventory_id: 7 }
+    ]
+  });
+  const result = await fillItemToStorage(db, "/tmp", 222, { templateId: "MelangeSpice", quantity: 800, itemVolume: 0.2 });
+  assert.equal(result.given, 800);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.deepEqual(inserts.map((call) => call.values[4]), [0, 1], "slot 39 is occupied by the high-end give; fill must claim in-range free slots, not 40/41");
+  assert.ok(inserts.every((call) => call.values[4] < 40), "no fill row may land at or beyond max_item_count");
+});
+
+test("fill-item to capacity cut by the stack-row cap reports clamped with a stack-rows reason", async () => {
+  // Uncapped container: the 1,000-row runaway backstop (not capacity) stops the fill, so
+  // claiming "as much as fit" would be a lie -- the response must say so.
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [{ id: 660, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 2, inventory_id: 7 }]
+  });
+  const result = await fillItemToStorage(db, "/tmp", 222, { templateId: "MelangeSpice", quantity: 0, itemVolume: 0.2 });
+  assert.equal(result.given, 500000);
+  assert.equal(result.clamped, true, "a row-cap cut is not 'as much as fit' -- it must be reported");
+  assert.equal(result.clampReason, "stack-rows");
+});
+
+test("fill-item to capacity bounded by volume alone is not reported as clamped", async () => {
+  // 160 volume left / 0.2 per unit = 800 fits -> 2 stacks; the container's
+  // real capacity (volume) was the boundary, so this genuinely is "as much
+  // as fit".
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 200 }],
+    countRows: [{ count: 1 }],
+    volumeRows: [{ total_volume: 40 }],
+    insertedRowsSequence: [
+      { id: 661, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 2, inventory_id: 7 },
+      { id: 662, template_id: "MelangeSpice", stack_size: 300, quality_level: 0, position_index: 3, inventory_id: 7 }
+    ]
+  });
+  const result = await fillItemToStorage(db, "/tmp", 222, { templateId: "MelangeSpice", quantity: 0, itemVolume: 0.2 });
+  assert.equal(result.given, 800);
+  assert.equal(result.stacks, 2);
+  assert.equal(result.clamped, false);
+  assert.equal(result.clampReason, null);
+});
+
+test("give-multiple-items splits an oversized entry across stacks and slots before the next entry", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [
+      { id: 621, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 29, inventory_id: 7 },
+      { id: 622, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 28, inventory_id: 7 },
+      { id: 623, template_id: "MelangeSpice", stack_size: 200, quality_level: 0, position_index: 27, inventory_id: 7 },
+      { id: 624, template_id: "AzuriteOre", stack_size: 20, quality_level: 0, position_index: 26, inventory_id: 7 }
+    ]
+  });
+  const result = await giveMultipleItemsToBaseContainer(db, 16836, 42, {
+    items: [
+      { templateId: "MelangeSpice", quantity: 1200 },
+      { templateId: "AzuriteOre", quantity: 20 }
+    ]
+  });
+  assert.equal(result.results.length, 2);
+  assert.equal(result.results[0].given, 1200);
+  assert.equal(result.results[0].clamped, false, "a fully-satisfied split entry must not stop the batch");
+  assert.equal(result.results[0].stacks, 3);
+  assert.equal(result.results[0].inserted.id, 621);
+  assert.equal(result.results[1].attempted, true);
+  assert.equal(result.results[1].given, 20);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 4);
+  assert.deepEqual(inserts.map((call) => call.values[4]), [29, 28, 27, 26], "each stack claims its own slot from the shared high-end pool");
+});
+
+test("player give-item splits a quantity above the item's catalog stack size", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 123, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [
+      { id: 631, template_id: "MelangeSpice", stack_size: 500, quality_level: 1, position_index: 2, inventory_id: 7 },
+      { id: 632, template_id: "MelangeSpice", stack_size: 500, quality_level: 1, position_index: 3, inventory_id: 7 },
+      { id: 633, template_id: "MelangeSpice", stack_size: 200, quality_level: 1, position_index: 4, inventory_id: 7 }
+    ]
+  });
+  const result = await giveItemToPlayer(db, 123, { templateId: "MelangeSpice", quantity: 1200 });
+  assert.equal(result.given, 1200);
+  assert.equal(result.requested, 1200);
+  assert.equal(result.stacks, 3);
+  assert.equal(result.clamped, false);
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 3);
+  assert.deepEqual(inserts.map((call) => call.values[2]), [500, 500, 200]);
+  // Capped player inventory: same in-range lowest-free claiming as fill
+  // (L2 audit H-1 fix), never max+1.
+  assert.deepEqual(inserts.map((call) => call.values[4]), [0, 1, 2]);
+});
+
+// L2 audit (Architect + UI hats): the player path previously delivered the
+// full quantity in one row; a clamp here is NEW behavior and must be loud in
+// the response message, because every player-give consumer (care packages,
+// the Players grant route, Discord) reports success from this result.
+test("player give-item clamped by free slots reports the shortfall in its own message", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 123, max_item_count: 30, max_item_volume: 0 }],
+    countRows: [{ count: 28 }],
+    existingPositionIndexRows: [0, 1],
+    insertedRowsSequence: [
+      { id: 691, template_id: "MelangeSpice", stack_size: 500, quality_level: 1, position_index: 2, inventory_id: 7 },
+      { id: 692, template_id: "MelangeSpice", stack_size: 500, quality_level: 1, position_index: 3, inventory_id: 7 }
+    ]
+  });
+  const result = await giveItemToPlayer(db, 123, { templateId: "MelangeSpice", quantity: 1200 });
+  assert.equal(result.given, 1000);
+  assert.equal(result.requested, 1200);
+  assert.equal(result.clamped, true);
+  assert.match(String(result.message), /1[,]?000 of the requested 1[,]?200/, "the message itself must state the shortfall -- consumers display it verbatim");
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 2);
+});
+
+// L2 audit (Network/DBA/Security hats, converging finding): the 1,000-row runaway backstop
+// must be per OPERATION in the batch path too -- previously it was per
+// entry, letting a 50-entry batch insert up to 2,500 rows in one
+// transaction under the inventory lock.
+test("give-multiple-items completes realistic split entries in one batch and shares the runaway backstop", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [{ id: 701, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 2, inventory_id: 7 }]
+  });
+  // Realistic case first: both split entries and the plain one complete
+  // fully in one batch (40 + 20 + 1 rows, far under the shared backstop).
+  const result = await giveMultipleItemsToBaseContainer(db, 16836, 42, {
+    items: [
+      { templateId: "MelangeSpice", quantity: 20000 },
+      { templateId: "MelangeSpice", quantity: 10000 },
+      { templateId: "AzuriteOre", quantity: 5 }
+    ]
+  });
+  assert.equal(calls.filter((call) => call.text.includes("insert into dune.items")).length, 61);
+  assert.equal(result.results[0].given, 20000);
+  assert.equal(result.results[1].given, 10000);
+  assert.equal(result.results[2].given, 5);
+  assert.ok(result.results.every((entry) => entry.attempted && !entry.clamped));
+});
+
+test("give-multiple-items shares the 1,000-row runaway backstop across the whole batch", async () => {
+  // Pathological batch: entry 1 needs 800 rows, entry 2 needs 400 -- only
+  // 200 remain in the SHARED budget (previously each entry had its own,
+  // allowing up to 50 x 1,000 rows in one transaction); entry 3 is never
+  // attempted, with a reason naming the cap rather than a full container.
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    storageRows: [{ id: 7, actor_id: 222, max_item_count: 0, max_item_volume: 0 }],
+    countRows: [{ count: 1 }],
+    insertedRowsSequence: [{ id: 702, template_id: "MelangeSpice", stack_size: 500, quality_level: 0, position_index: 2, inventory_id: 7 }]
+  });
+  const result = await giveMultipleItemsToBaseContainer(db, 16836, 42, {
+    items: [
+      { templateId: "MelangeSpice", quantity: 400000 },
+      { templateId: "MelangeSpice", quantity: 200000 },
+      { templateId: "AzuriteOre", quantity: 5 }
+    ]
+  });
+  const inserts = calls.filter((call) => call.text.includes("insert into dune.items"));
+  assert.equal(inserts.length, 1000, "800 rows for entry 1 + 200 rows for entry 2 exhausts the shared backstop");
+  assert.equal(result.results[0].given, 400000);
+  assert.equal(result.results[0].clamped, false);
+  assert.equal(result.results[1].given, 100000, "entry 2 gets only the 200 rows left in the budget");
+  assert.equal(result.results[1].clamped, true);
+  assert.equal(result.results[2].attempted, false, "budget exhausted -- the batch stops");
+  assert.match(String(result.results[2].reason), /per-operation stack-row limit|stack-row/i, "the stop reason must name the cap, not claim the container is full");
+});
+
 test("player give-item persists selected item grade", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
@@ -5666,7 +6067,7 @@ test("player give-item persists selected item grade", async () => {
   assert.equal(result.inserted.quality_level, 5);
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
-  assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 5, 2]);
+  assert.deepEqual(insert.values.slice(0, 5), [7, "WaterBottle_1", 3, 5, 0]); // position 0: lowest free in-range slot (L2 audit H-1 fix), no longer max+1
   const stats = JSON.parse(insert.values[5]);
   assert.deepEqual(stats.FCustomizationStats, [[], {}]);
   assert.equal(stats.FItemStackAndDurabilityStats[1].CurrentDurability, 100);
@@ -5683,7 +6084,7 @@ test("player give-item bumps standalone augment grade zero to grade one", async 
   await giveItemToPlayer(db, 123, { templateId: "T6_Augment_Melee4", quantity: 1, quality: 0 });
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
-  assert.deepEqual(insert.values.slice(0, 5), [7, "T6_Augment_Melee4", 1, 1, 2]);
+  assert.deepEqual(insert.values.slice(0, 5), [7, "T6_Augment_Melee4", 1, 1, 0]); // position 0: lowest free in-range slot (L2 audit H-1 fix)
   const stats = JSON.parse(insert.values[5]);
   assert.deepEqual(stats.FAugmentItemStats, [[], { StatRolls: [1, 1], AppliedEffectIndices: [] }]);
 });
@@ -5714,7 +6115,7 @@ test("player give-item keeps normal weapon grade zero", async () => {
   await giveItemToPlayer(db, 123, { templateId: "SMG_Unique_LargeMag_06", quantity: 1, quality: 0 });
   const insert = calls.find((call) => call.text.includes("insert into dune.items"));
   assert.ok(insert);
-  assert.deepEqual(insert.values.slice(0, 5), [7, "SMG_Unique_LargeMag_06", 1, 0, 2]);
+  assert.deepEqual(insert.values.slice(0, 5), [7, "SMG_Unique_LargeMag_06", 1, 0, 0]); // position 0: lowest free in-range slot (L2 audit H-1 fix)
 });
 
 test("player give-item with augments populates FAugmentedItemStats", async () => {

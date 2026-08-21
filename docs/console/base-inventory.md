@@ -114,18 +114,21 @@ The parameter surface is `giveItemToStorage`'s, so a catalog-resolved item drops
 and the whole UI treat grade as 0–5.
 
 **Every add creates a new row. It never tops up a matching stack.** Adding 300 ScrapMetal to a container
-that already holds 500 leaves two rows, not one of 800. Merging would have to pick a stack to grow, and the
-game's own stack limits are not modelled here.
+that already holds 500 leaves two rows, not one of 800. Add deliberately creates one new stack and clamps
+it to the catalogued per-item stack limit instead of choosing an existing row to grow.
 
-**The slot is not chooseable.** The row lands at `max(position_index) + 1` within the resolved inventory —
-0 for an empty container. Clicking an empty grid cell is a shortcut to the form, not a placement target, and
-nothing in the UI may promise a specific slot: the empty cell's accessible name is "Add an item to this
-container", and the confirm dialog's Slot line reads "Next free slot". The response reports where it
-actually landed, which is a statement of fact rather than a promise.
+**The slot is not chooseable.** In a slot-capped inventory the row lands in the lowest free in-range slot;
+an uncapped inventory falls back to `max(position_index) + 1`. Clicking an empty grid cell is a shortcut to
+the form, not a placement target, and nothing in the UI may promise a specific slot: the empty cell's
+accessible name is "Add an item to this container", and the confirm dialog's Slot line reads "Next free
+slot". The response reports where it actually landed, which is a statement of fact rather than a promise.
 
 **Capacity is refused at `count(*) >= max_item_count`.** Rows, not summed stack sizes — correct precisely
 because nothing merges, so one add always consumes exactly one slot. A `max_item_count` of 0 is treated as
-uncapped, matching `giveItemToStorage` and `giveItemToPlayer`; no shipped storage type has one.
+uncapped, matching `giveItemToStorage` and `giveItemToPlayer`; no shipped storage type has one. Because this
+path deliberately places exactly one row in one slot, an item with catalogued stack data (issue yacketrj/dune-awakening-selfhost-docker#430) has an
+oversized quantity **clamped to one full stack** (reported via `requested`/`clamped` and named in the
+response message) rather than split across rows the way Give/Fill splits.
 
 **Durability is left alone.** The insert calls `buildItemStats` without a durability argument, so clothing
 and weapons get the usual 100/100 fallback while ore, spice and salvage get an empty stat block — which is
@@ -138,11 +141,12 @@ inventory answers "not found" here too.
 
 The row lock is `for update of inv`, taken **before** the capacity and next-slot reads. That ordering is the
 whole concurrency argument: `db.transaction` issues a bare `begin`, so this runs at READ COMMITTED, where a
-second adder blocks on the lock and then re-evaluates rather than aborting — its `count(*)` and
-`max(position_index)` are fresh statements that see the first insert. There is no unique constraint on
+second adder blocks on the lock and then re-evaluates rather than aborting — its `count(*)` and occupied-slot
+read are fresh statements that see the first insert. There is no unique constraint on
 `(inventory_id, position_index)`, so this reasoning is the only guard; every console path that inserts into
 `dune.items` takes this same lock first, and the delete's `for update of i, inv` is what serializes a delete
-against an add.
+against an add. Reading the occupied set rather than blindly appending also keeps Add inside the slot grid
+after Give has claimed the highest in-range slot.
 
 Unlike the delete, this path sets **no** `search_path`. That line exists there because the shipped
 `dune.delete_item`/`dune.delete_inventory_item` carry none of their own; the add invokes no procedure at
@@ -439,7 +443,7 @@ operator should be able to check Fill without losing in-progress batch work.
 
 **Below the toggle sits one lightly-bordered mode-hint group and, below that, one bordered warning
 banner** — never more than two notice elements at once, in either mode. The mode-hint group
-(`.bases-inventory-mode-group`) pairs a single muted caption line ("Give inserts a new stack…Fill tops up
+(`.bases-inventory-mode-group`) pairs a single muted caption line ("Give inserts one or more new stacks…Fill tops up
 one item toward capacity…") with the toggle itself, using the neutral `--border` token and the
 `--panel-muted` background rather than the warning's amber `--warning` token, so it reads as low-weight
 context rather than a second alert. The warning banner (`.bases-inventory-restart-warning`) always states
@@ -575,11 +579,75 @@ and retry. Both functions now **clamp the requested quantity down to whatever ac
 that instead — asking for 500 of an item that only has room for 375 gives 375, not 0. The response always
 reports `requested`, `given`, and `clamped` (`clamped: true` whenever `given < requested`), and the UI
 surfaces exactly that outcome (`"Only 375 of the requested 500 x X fit and was given to the container."`)
-rather than silently implying the full request succeeded. **Slot count is the one capacity axis this does
-NOT apply to** — a single give/fill always consumes exactly one slot regardless of quantity, so "no slots
+rather than silently implying the full request succeeded. **Slot count** works differently depending on
+whether the item has catalogued stack data (issue yacketrj/dune-awakening-selfhost-docker#430): for an item with **no** `stackSize` in
+`admin-items.json`, a single give/fill still consumes exactly one slot regardless of quantity, so "no slots
 left" genuinely cannot be partially satisfied and remains a hard rejection (`"Storage is full by item slot
-count"`). Volume itself is still a hard rejection in the one case clamping cannot help: truly zero room
-left, where even 1 unit does not fit.
+count"`). For an item **with** catalogued stack data (e.g. `MelangeSpice` at 500/stack), an oversized
+quantity is **split across multiple rows of at most one full stack each** — the game engine itself enforces
+per-item stack limits (the generator-refill path always respected them; give/fill now does too), so each
+stack row consumes its own slot, and the split completes in **one action** bounded by the container's real
+capacity (remaining slots/volume) — full stacks plus one final remainder stack, per explicit operator
+direction (2026-08-20). A 1,000-row runaway backstop (shared across a whole Give Multiple batch) exists
+solely to stop pathological transactions (e.g. 1,000,000 units of a 1-per-stack item); realistic
+operations never reach it. The response
+carries `stacks` (row count) and `insertedStacks` (all rows) alongside the pre-existing `inserted` (the
+first row), plus `clampReason` distinguishing WHY a shortfall happened — `"volume"` and `"slots"` mean the
+container's real capacity bound it (final), `"stack-rows"` means only the per-operation cap did (the
+container has room; repeating the action adds more) — and a human-readable `message` stating the outcome,
+which the standalone Storage tab renders directly. Fill-to-capacity reports `clamped` **only** for the
+`"stack-rows"` case: a fill bounded by real capacity genuinely is "as much as fit". A genuinely full
+container is still the same hard rejection as before. Volume itself is still a hard rejection in the one
+case clamping cannot help: truly zero room left, where even 1 unit does not fit.
+
+**Slot placement (post-review fix):** Give keeps claiming the highest free in-range slots per row (the
+2026-08-19 collision mitigation). Fill, player Give, and the single-row Add Item action — which previously
+used `max(position_index) + 1` — now claim the **lowest free in-range** slots for a slot-capped inventory
+from a one-time occupied-set read (the same pigeonhole-guarded pattern Give Multiple's
+`claimPositionIndex` uses), because after any high-end Give, `max + 1` starts **at** `max_item_count` and
+would write outside the engine's slot grid. Give also claims from the same one-time occupied-set read now
+(replacing its per-row `generate_series` re-query — one round trip per operation instead of two per stack
+row under the inventory lock). Uncapped inventories keep `max + 1`, which cannot go out of range.
+
+**Curating `stackSize` values:** every value added to `admin-items.json` must have a **stated, verified
+source**, preferably an independent, external reference (see below) rather than another in-repo system's
+own policy value — read the limit from the live game (hover an item's full stack in-game, or observe the
+largest naturally-occurring `stack_size` for that template in a real world database) and record where the
+number came from in the PR/commit that adds it. A wrong value silently mis-splits or over-clamps every
+future grant of that item — this happened for real: `Oil`/`SpicedFuelCell` were initially seeded at 499,
+copied from the generator-refill table (`GENERATOR_TYPES`), and were **wrong**. An operator challenge
+(2026-08-20) to validate against an external source — [dune.gaming.tools](https://dune.gaming.tools)'s own
+item data feed, the `maxStackSize` field, not just its rendered page — found the true limit for both is
+**500**, matching `addonSeedJob.js`'s pre-existing (and, it turns out, correct) value; see issue yacketrj/dune-awakening-selfhost-docker#432, which
+had already flagged this exact contradiction before it was externally resolved. The refill table's 499 is a
+refill *policy* value, not necessarily the engine's real cap, and was left unchanged (changing an
+already-live, already-tested system is its own separately-verified decision, not a data-correction one).
+Current provenance of the five seeded items, all confirmed against dune.gaming.tools's `maxStackSize` field
+as of 2026-08-20: `MelangeSpice` 500, `Oil` 500, `SpicedFuelCell` 500, both lubricants 100.
+
+**Stack size correlates strongly with resource type, not per-item uniqueness** — an operator hypothesis
+tested 2026-08-20 by externally resolving all 96 (of 99) `raw_resource`/`refined_resource`/`component`
+catalog items against the same source. **500 is the default for 82/96 (85%)**, spanning raw ore, refined
+ingots, and components uniformly — no per-category split. The outliers, all semantically coherent: 1 for
+non-stackable corpse/bulky-canister items (`Mouse_Corpse`, `Corpse`, all 3 `FuelCanister` sizes, and
+`T2MuaddibComponent` — "Muad'Dib Corpse", Muad'Dib being Fremen for kangaroo mouse, operator-stated
+2026-08-20 after the item 404'd against the external source), 5 for all 4 `WindTrapFilter` tiers, 100 for
+the two lubricants, and 1000–2500 for bulk sand/residue raw materials (`FlourSand`, `SpiceResidue`,
+`SpiceSand`). Three items (`T4ShieldWallComponent`, `ExperimentalWindTurbineComponent`, and originally
+`T2MuaddibComponent` before the operator statement above) 404 against the external source and were never
+individually verified further (issue yacketrj/dune-awakening-selfhost-docker#441, closed 2026-08-20 per explicit operator direction — not pursued).
+This made bulk curation cheap: all 91 remaining externally-resolved items were curated 2026-08-20 (issue
+yacketrj/dune-awakening-selfhost-docker#431), so **every `raw_resource`/`refined_resource`/`component` item now has a `stackSize` except those two**
+— 97 of 99 items resolved.
+
+**The same external check found `volume`, not just `stackSize`, was systematically wrong for most
+`refined_resource`/`component` items** (issue yacketrj/dune-awakening-selfhost-docker#440, fixed 2026-08-20): every one of 70 items whose in-repo
+`volume` was exactly `1.0` was wrong — a placeholder that was apparently never replaced with a real
+measurement — except `T6RefinedResourceA` (genuinely 1.0). `raw_resource` items were unaffected (0/19
+mismatched; all were individually measured from the start). Corroboration for trusting the external source
+on volume, not just stack size: those 19 raw-resource values, several with non-round fractional volumes
+(0.08, 0.4, …), matched the external source exactly. All 70 were bulk-corrected; real values range from 0.1
+(most components, a 10x understatement at the old 1.0) up to 5 (large fuel canisters).
 
 **Give Multiple's batch-clamping design is deliberately left-to-right, not best-effort.** Once one item in
 the batch does not fully fit (clamped, or reduced all the way to zero), the batch **stops there** —

@@ -15,6 +15,7 @@ vi.mock("../../api/players", () => ({
   playersApi: {
     inventory: vi.fn(),
     specs: vi.fn(),
+    giveItems: vi.fn(),
     setSkillModule: vi.fn(),
     setSkillPoints: vi.fn()
   }
@@ -64,5 +65,36 @@ describe("CharacterAdminUI skill live grants", () => {
     expect(screen.getByText("0 Unsaved Changes")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
     expect(playersApi.setSkillModule).not.toHaveBeenCalled();
+  });
+});
+
+describe("CharacterAdminUI item grant results", () => {
+  it("shows the API partial-delivery message instead of unconditional success", async () => {
+    vi.mocked(adminApi.itemCatalog).mockResolvedValue({
+      rows: [{ id: "T1_Augment_Test", itemId: "T1_Augment_Test", name: "Test Augment", category: "augments", source: "Augments" }]
+    });
+    vi.mocked(playersApi.giveItems).mockResolvedValue({
+      ok: true,
+      results: [],
+      message: "Only 500 of the requested 1,000 could be granted because the player's inventory ran out of free item slots."
+    });
+    const formatMutationResult = vi.fn((result: unknown) => {
+      const record = result && typeof result === "object" ? result as { message?: string } : {};
+      return record.message || "Action completed.";
+    });
+
+    render(<CharacterAdminUI
+      {...baseProps}
+      formatMutationResult={formatMutationResult}
+      detail={{ player: { actual_online_status: "Offline" }, capabilities: {} }}
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Give Items" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Test Augment/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Give Item" }));
+
+    expect(await screen.findByText(/Only 500 of the requested 1,000 could be granted/)).toBeInTheDocument();
+    expect(screen.queryByText("1 item entry was granted to OfflinePlayer.")).not.toBeInTheDocument();
+    expect(formatMutationResult).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("Only 500") }));
   });
 });

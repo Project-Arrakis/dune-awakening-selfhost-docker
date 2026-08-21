@@ -294,6 +294,11 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
         const result = await playersApi.giveItems(grantTargetId, items.map((item) => ({ itemName: item.itemName, itemId: item.itemId, quantity: item.quantity, quality: itemGrade(item), durability: grantItemDurability(), augments: item.augments || [], augmentQuality: item.augments?.length ? playerAdmin_augmentGrade(item.augmentQuality) : undefined })));
         if (!result.ok) throw new Error(playerAdmin_bulkItemFailure(result.results));
         await playerAdmin_loadInventoryRows();
+        // Preserve the route's top-level partial-delivery message. Without
+        // returning the response, playerAdmin_runAction receives undefined
+        // and replaces a real clamp warning with the unconditional success
+        // text below.
+        return result;
       },
       successText,
       { actionType: actionLabel, target: playerName, amount: String(items.length) },

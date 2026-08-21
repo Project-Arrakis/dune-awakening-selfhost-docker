@@ -401,7 +401,16 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
               augmentQuality: payload.augmentQuality,
               allowOnlinePreAugmented: source === "manual"
             });
-        results.push({ ok: true, operation: "dbGiveItemToPlayer", item: payload, result, warning: result?.requiresRelog ? "Relog required before the item appears correctly." : undefined });
+        // A clamped grant (per-item stack limit x free-slot budget, issue
+        // #430) must surface here -- care-package summaries otherwise
+        // report full delivery for a partial one.
+        const clampCause = result?.clampReason === "stack-rows"
+          ? "the per-operation stack safety limit; repeat the grant to add more"
+          : "the player's free inventory slots";
+        const clampWarning = result?.clamped ? `Only ${result.given} of the requested ${item.quantity} could be granted (limited by ${clampCause}).` : "";
+        const relogWarning = result?.requiresRelog ? "Relog required before the item appears correctly." : "";
+        const combinedWarning = [clampWarning, relogWarning].filter(Boolean).join(" ");
+        results.push({ ok: true, operation: "dbGiveItemToPlayer", item: payload, result, warning: combinedWarning || undefined });
       } else {
         const command = buildDuneArgs(operation, payload);
         const result = config.mockMode ? { code: 0, stdout: "mock package item grant\n", stderr: "" } : await runDune(config, command);

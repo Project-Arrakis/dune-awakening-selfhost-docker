@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildingUnlockStatus, isFillableItem, itemImagePath, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "../src/adminCatalog.js";
+import { buildingUnlockStatus, isFillableItem, itemImagePath, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemStackSize, resolveItemVolume } from "../src/adminCatalog.js";
 
 const REAL_REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -16,7 +16,7 @@ function fixtureRepo() {
     { id: "CupOfWater", name: "Cup of Water", category: "consumables", source: "Survival" },
     { id: "ChoamHeavyLasgunSchematic", name: "Arhun K-28 Lasgun", category: "schematics", source: "Schematics" },
     { id: "ArmorPiercingAugment", name: "Armor Piercing Augment", category: "augments", source: "Items" },
-    { id: "SteelBar", name: "Steel Ingot", category: "resources", source: "Resources", group: "refined_resource", volume: 1.0 },
+    { id: "SteelBar", name: "Steel Ingot", category: "resources", source: "Resources", group: "refined_resource", volume: 1.0, stackSize: 500 },
     { id: "T6RefinedResourceA", name: "Plastanium Ingot", category: "resources", source: "Resources", group: "refined_resource", volume: 1.0 },
     { id: "FremenComponent1", name: "EMF Generator", category: "resources", source: "Resources", group: "component", volume: 1.0 },
     { id: "AzuriteOre", name: "Copper Ore", category: "resources", source: "Resources", group: "raw_resource", volume: 0.2 },
@@ -238,4 +238,148 @@ test("resolveItemVolume returns volume for catalogued items", () => {
 test("resolveItemVolume returns 0 for unknown templates", () => {
   const root = fixtureRepo();
   assert.equal(resolveItemVolume(root, "NonExistent"), 0);
+});
+
+test("resolveItemStackSize returns the catalogued per-item max stack size", () => {
+  const root = fixtureRepo();
+  assert.equal(resolveItemStackSize(root, "SteelBar"), 500);
+  assert.equal(resolveItemStackSize(root, "PlantFiber"), 0);
+  assert.equal(resolveItemStackSize(root, "NonExistent"), 0);
+});
+
+// L2 audit (Security hat): only a real positive-integer number counts as
+// curated stack data -- a string "500", a boolean, a float, or a negative
+// value must be rejected outright rather than silently coerced (true would
+// otherwise coerce to a max stack of 1 and shred every give into 1-unit
+// rows).
+test("resolveItemStackSize rejects non-integer-number stackSize values instead of coercing them", () => {
+  const root = mkdtempSync(join(tmpdir(), "web-admin-catalog-strict-"));
+  mkdirSync(join(root, "runtime/data"), { recursive: true });
+  writeFileSync(join(root, "runtime/data/admin-items.json"), JSON.stringify([
+    { id: "StringStack", name: "String Stack", category: "resources", source: "Resources", stackSize: "500" },
+    { id: "BoolStack", name: "Bool Stack", category: "resources", source: "Resources", stackSize: true },
+    { id: "FloatStack", name: "Float Stack", category: "resources", source: "Resources", stackSize: 0.5 },
+    { id: "NegativeStack", name: "Negative Stack", category: "resources", source: "Resources", stackSize: -5 }
+  ]));
+  assert.equal(resolveItemStackSize(root, "StringStack"), 0);
+  assert.equal(resolveItemStackSize(root, "BoolStack"), 0);
+  assert.equal(resolveItemStackSize(root, "FloatStack"), 0);
+  assert.equal(resolveItemStackSize(root, "NegativeStack"), 0);
+  assert.equal(resolveCatalogItem(root, { itemId: "StringStack" }).stackSize, undefined);
+  assert.equal(resolveCatalogItem(root, { itemId: "BoolStack" }).stackSize, undefined);
+});
+
+test("resolveCatalogItem passes stackSize through for catalogued items", () => {
+  const root = fixtureRepo();
+  assert.equal(resolveCatalogItem(root, { itemId: "SteelBar" }).stackSize, 500);
+  assert.equal(resolveCatalogItem(root, { itemId: "PlantFiber" }).stackSize, undefined);
+});
+
+// Seeded-value provenance, externally re-verified 2026-08-20 against
+// dune.gaming.tools's own item data feed (cdn-hosted.gaming.tools/dune/data,
+// the maxStackSize field, not just the rendered page) after an operator
+// challenge: MelangeSpice 500 and both lubricants 100 were already correct.
+// Oil and SpicedFuelCell were WRONG at 499 -- GENERATOR_TYPES' refill
+// "stackSize" is a refill-policy value (possibly a deliberate margin below
+// the true cap), not the engine's real per-item limit; the external source
+// confirms the true limit for both is 500, matching addonSeedJob.js's
+// pre-existing value (see issue #432, which tracked this exact
+// contradiction before it was externally resolved).
+test("real catalog carries the verified stack sizes for the seeded items", () => {
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "MelangeSpice"), 500);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "Oil"), 500);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "SpicedFuelCell"), 500);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "WindTurbineLubricant1"), 100);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "WindTurbineLubricant2"), 100);
+});
+
+// T2MuaddibComponent ("Muad'Dib Corpse" -- Muad'Dib is Fremen for kangaroo
+// mouse) is a corpse-type item and doesn't stack, matching the same pattern
+// as Mouse_Corpse/Corpse (both externally confirmed stackSize 1, see #431's
+// stack-size/resource-type correlation analysis). Operator-stated from the
+// live game (2026-08-20, issue #441) after the item 404'd against the
+// external source used to verify the rest of this catalog.
+test("real catalog carries the verified stack size for T2MuaddibComponent", () => {
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "T2MuaddibComponent"), 1);
+});
+
+// Bulk curation (2026-08-20, issue #431): all 91 remaining externally
+// resolvable raw_resource/refined_resource/component items, seeded from
+// dune.gaming.tools's maxStackSize field the same way the original five
+// were. One spot-check per outlier bucket the correlation analysis found
+// (base-inventory.md's curation note), plus one ordinary 500-default item
+// per group -- not all 91, to keep this test a drift sentinel rather than a
+// second copy of the data file.
+test("bulk-curated catalog carries the verified stack size for a representative item per bucket", () => {
+  // 500 default, one per group
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "AzuriteOre"), 500); // raw_resource
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "SteelBar"), 500); // refined_resource
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "FremenComponent1"), 500); // component
+  // Outliers
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "Mouse_Corpse"), 1);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "Corpse"), 1);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "FuelCanister"), 1);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "WindTrapFilter1"), 5);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "FlourSand"), 1000);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "SpiceResidue"), 1000);
+  assert.equal(resolveItemStackSize(REAL_REPO_ROOT, "SpiceSand"), 2500);
+});
+
+// Coverage sentinel: every raw_resource/refined_resource/component item
+// must now carry a curated stackSize EXCEPT the two still awaiting live-game
+// verification (issue #441). Catches a future catalog edit silently
+// dropping a curated value, or a new item added to these groups without
+// stackSize curation being remembered.
+test("every fillable-group item has a curated stackSize except the two still under verification", () => {
+  const items = JSON.parse(readFileSync(join(REAL_REPO_ROOT, "runtime/data/admin-items.json"), "utf8"));
+  const stillUnverified = new Set(["T4ShieldWallComponent", "ExperimentalWindTurbineComponent"]);
+  const missing = items
+    .filter((item) => ["raw_resource", "refined_resource", "component"].includes(item.group))
+    .filter((item) => !stillUnverified.has(item.id))
+    .filter((item) => !(Number.isInteger(item.stackSize) && item.stackSize > 0))
+    .map((item) => item.id);
+  assert.deepEqual(missing, []);
+});
+
+// Volume placeholder correction (issue #440, 2026-08-20): every
+// refined_resource/component item's `volume` was stuck at exactly 1.0, a
+// value that was never actually measured (raw_resource items, individually
+// measured from the start, all independently agreed with the same external
+// source used here -- 19/19 exact matches including fractional values like
+// 0.08 and 0.4, which is the corroboration that made trusting this source
+// for volume, not just stackSize, reasonable). Spot-check one item per
+// distinct corrected value.
+test("real catalog carries corrected volumes for previously-placeholder refined/component items", () => {
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "SteelBar"), 0.5);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "CopperBar"), 0.25);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "IronBar"), 0.4);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "AluminiumBar"), 0.7);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "DuraluminumRod"), 0.9);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "T6RefinedResourceB"), 0.6);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "FremenComponent1"), 0.1);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "SpicedFuelCell"), 0.2);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "Plastone"), 0.2);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "FuelCanister"), 2);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "FuelCanister_Medium"), 3.3333333);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "FuelCanister_Large"), 5);
+  // T6RefinedResourceA (Plastanium Ingot) is the one item genuinely at 1.0
+  // -- confirmed correct, not a placeholder (see #430's original spot check).
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "T6RefinedResourceA"), 1.0);
+});
+
+// Coverage sentinel: no raw_resource/refined_resource/component item may
+// carry the old 1.0 placeholder except the one confirmed-genuine exception.
+// Catches a future catalog edit reintroducing the never-measured default.
+test("no fillable-group item still carries the 1.0 volume placeholder, except confirmed-genuine or still-unresolved items", () => {
+  const items = JSON.parse(readFileSync(join(REAL_REPO_ROOT, "runtime/data/admin-items.json"), "utf8"));
+  // T6RefinedResourceA is genuinely 1.0 (confirmed, not a placeholder). The
+  // other three never got external volume data at all (404'd -- see #441,
+  // closed without further pursuit) and are correctly untouched.
+  const excluded = new Set(["T6RefinedResourceA", "T2MuaddibComponent", "T4ShieldWallComponent", "ExperimentalWindTurbineComponent"]);
+  const stillPlaceholder = items
+    .filter((item) => ["raw_resource", "refined_resource", "component"].includes(item.group))
+    .filter((item) => !excluded.has(item.id))
+    .filter((item) => Number(item.volume) === 1.0)
+    .map((item) => item.id);
+  assert.deepEqual(stillPlaceholder, []);
 });
