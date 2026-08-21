@@ -9,6 +9,21 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.3.95)
 
+### Fixed
+
+- **`security-checks` CI job was silently skipping its gitleaks and
+  trivy filesystem scans.** `tests/security-pr-checks.sh` fails open
+  when either binary is missing (`command -v gitleaks || SKIP`), and
+  neither ships preinstalled on `ubuntu-latest` — so the job reported
+  `success` on every push/PR to `main` without ever actually running
+  two of its three claimed secret scanners. `.github/workflows/ci.yml`
+  now installs both tools explicitly (checksum-verified, matching the
+  existing `hadolint` job's pattern) before calling the script, and the
+  script itself now exits non-zero if either tool is still missing when
+  `CI=true` (local/pre-commit runs keep the softer skip message, since
+  a contributor's machine not having every scanner installed shouldn't
+  block a local commit).
+
 ### Added
 
 - **Four new CI security gates: `govulncheck`, `hadolint`, `osv-scanner`,

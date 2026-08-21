@@ -124,6 +124,9 @@ if command -v gitleaks >/dev/null 2>&1; then
     printf 'Gitleaks changed-file scan found findings. See %s\n' "$REPORT_DIR/gitleaks-pr-files.json" >&2
     exit 1
   fi
+elif [ "${CI:-}" = "true" ]; then
+  printf 'ERROR: gitleaks is not installed on this CI runner -- the secret scan did not run. Install it in the workflow before calling this script.\n' >&2
+  exit 1
 else
   printf 'SKIP: gitleaks is not installed.\n'
 fi
@@ -139,6 +142,9 @@ if ! find "$PR_FILES_DIR" -type f -print -quit | grep -q .; then
 elif command -v trivy >/dev/null 2>&1; then
   printf 'Running Trivy against: %s\n' "$PR_FILES_DIR"
   trivy fs --scanners secret,misconfig --severity HIGH,CRITICAL "$PR_FILES_DIR"
+elif [ "${CI:-}" = "true" ]; then
+  printf 'ERROR: trivy is not installed on this CI runner -- the filesystem scan did not run. Install it in the workflow before calling this script.\n' >&2
+  exit 1
 else
   printf 'SKIP: trivy is not installed.\n'
 fi
