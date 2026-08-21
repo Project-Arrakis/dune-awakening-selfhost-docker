@@ -11,10 +11,11 @@ console's own theme and components.
 
 See [API-REFERENCE.md](API-REFERENCE.md#market-board) for the endpoint contract.
 
-The panel has two tabs: **Exchange** (the read-only board below) and **Bot
-items** (the Market Bot's editable catalog — see [Bot items](#bot-items-catalog-overrides)).
+The panel has three tabs: **Exchange** (the read-only board below), **Bot
+Items** (the Market Bot's editable catalog — see [Bot items](#bot-items-catalog-overrides)),
+and **Transactions** (completed-order activity recorded from this release forward).
 The filter gear and Market Bot icons are unrelated to the tabs and work the
-same from either one.
+same from every tab.
 
 ## What it shows
 
@@ -85,6 +86,43 @@ validated as numeric owner-id strings, deduped, and length-capped. Saving the co
 is a mutation: it is rate-limited and written to the audit log (only the id counts
 are recorded, no personal data). Blacklisting is a moderation action — it changes
 what the market shows — which is why every change is audited.
+
+## Transaction history
+
+The **Transactions** tab records completed-order activity as it happens and
+shows the newest events in a filterable, paginated table. Summary cards report
+the number of recorded events, units, and per-unit-price × quantity value for
+the selected period. Filters cover item or owner, period, party type, and
+exchange id. PostgreSQL `bigint` ids and amounts stay decimal strings through
+the API and are formatted in the browser without JavaScript number rounding.
+
+Recording is installed automatically when the Console starts. The history
+lives in the Console-owned `console_market_history.transactions` table, outside
+the `dune` schema. A lightweight trigger on
+`dune.dune_exchange_fulfilled_orders` captures both new completion rows and the
+positive delta when Funcom aggregates a later partial sale by increasing an
+existing row's `stack_size`. It snapshots the primary, source, and original
+order references and owners, the raw completion type, item, grade, durability,
+per-unit price, and exchange id. The UI deliberately labels the primary order
+owner as the transaction's **Party** rather than guessing buyer/seller roles:
+the fulfilled-order table does not preserve a buyer id for every completion
+path. Raw references remain available for future verified completion-type
+mapping and market-price recommendations.
+
+Capture is observability only. The trigger catches its own errors and returns
+the game row unchanged, so missing custom objects or future schema drift cannot
+reject an in-game purchase. The Console reconciles the trigger every five
+minutes because a game migration that recreates the fulfilled-orders table
+would remove attached triggers. Existing fulfilled rows are not backfilled:
+they may represent aggregated activity with no trustworthy event time, so
+presenting them as new transactions would be misleading.
+
+History is retained indefinitely by default and is included in normal full
+database backups. Set `ADMIN_MARKET_HISTORY_RETENTION_DAYS` to a value from 7
+through 3650 to remove older history during reconciliation; `0` keeps all
+records. Blacklisted Exchange owner ids are omitted from the Transactions tab,
+and configured bot owner ids are classified as **Market Bot** while native
+`is_npc_order` rows remain a separate **NPC Broker** party type.
 
 ## Market Bot
 

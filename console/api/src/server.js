@@ -51,6 +51,7 @@ import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobSc
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
 import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
+import { ensureExchangeHistory, listExchangeTransactions } from "./services/exchangeHistory.js";
 import { listMarketExchanges, marketBotStatus, saveMarketBuybackSchedule, saveMarketSeedSchedule, decodeSeedPlanCsvUpload, exportMarketSeedPlanCsv, importMarketSeedPlanFromCsv, renameMarketSeedPlan, setActiveMarketSeedPlan } from "./services/exchangeMarket.js";
 import { loadMarketSeedPlan } from "./addonSeedJob.js";
 import { readMarketItemOverrides, saveMarketItemOverrides, readUnsafeTemplateIds, listBotItemCatalogPickerItems, getOverrideRow } from "./services/marketItemOverrides.js";
@@ -190,8 +191,19 @@ createServer(async (req, res) => {
       console.warn(`Discord adapter schema initialization failed: ${redact(error?.message || "Unexpected error.")}`);
     });
   }
+  ensureExchangeHistory(db).catch((error) => {
+    console.warn(`Market transaction recorder initialization failed: ${redact(error?.message || "Unexpected error.")}`);
+  });
   runBackgroundTick("Player playtime tracker", () => duneDb.trackPlayerPlaytime(db));
 });
+
+// Reconcile periodically because a Funcom database migration can recreate the
+// fulfilled-orders table and thereby remove third-party triggers. The service
+// caches successful checks for five minutes, and capture failures themselves
+// are isolated inside PostgreSQL so they can never reject a game transaction.
+setInterval(() => {
+  runBackgroundTick("Market transaction recorder", () => ensureExchangeHistory(db));
+}, 5 * 60_000).unref?.();
 
 setInterval(() => {
   runBackgroundTick("Player ban enforcement", () => playerBanEnforcer.tick());
@@ -868,6 +880,20 @@ async function handleApi(req, res) {
   if (path === "/api/exchange/stats") return dbJson(res, () => {
     const exchangeConfig = readExchangeConfig(config.repoRoot);
     return exchangeStats(db, { botOwnerIds: exchangeConfig.botOwnerIds, blacklist: exchangeConfig.blacklistedOwnerIds, includeNpcBroker: exchangeConfig.includeNpcBroker });
+  });
+  if (path === "/api/exchange/transactions") return dbJson(res, () => {
+    const exchangeConfig = readExchangeConfig(config.repoRoot);
+    return listExchangeTransactions(db, {
+      q: url.searchParams.get("q") || "",
+      page: url.searchParams.get("page") || 0,
+      pageSize: url.searchParams.get("pageSize") || 50,
+      hours: url.searchParams.get("hours") || 168,
+      party: url.searchParams.get("party") || "all",
+      exchangeId: url.searchParams.get("exchangeId") || "",
+      botOwnerIds: exchangeConfig.botOwnerIds,
+      blacklist: exchangeConfig.blacklistedOwnerIds,
+      repoRoot: config.repoRoot
+    });
   });
   if (path === "/api/exchange/config" && req.method === "GET") return json(res, 200, readExchangeConfig(config.repoRoot));
   if (path === "/api/exchange/config" && req.method === "POST") return exchangeConfigSaveRoute(req, res);

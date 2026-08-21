@@ -46,6 +46,49 @@ export type ExchangeConfig = {
   blacklistedOwnerIds: string[];
 };
 
+export type ExchangeTransactionParty = "all" | "player" | "bot" | "npc";
+
+export type ExchangeTransaction = {
+  id: string;
+  capturedAt: string;
+  eventKind: "insert" | "update";
+  orderId: string;
+  sourceOrderId: string | null;
+  originalOrderId: string | null;
+  completionType: number;
+  units: string;
+  cumulativeUnits: string;
+  templateId: string;
+  displayName: string;
+  category: string;
+  icon: string | null;
+  unitPrice: string;
+  qualityLevel: number;
+  durabilityCurrent: number | null;
+  durabilityMaximum: number | null;
+  ownerId: string | null;
+  ownerName: string;
+  partyType: Exclude<ExchangeTransactionParty, "all">;
+  exchangeId: string | null;
+};
+
+export type ExchangeTransactionsResponse = {
+  capabilities: { exchangeHistory?: boolean } & Record<string, unknown>;
+  reason?: string;
+  rows: ExchangeTransaction[];
+  totalCount: number;
+  summary: {
+    events: number;
+    units: string;
+    solari: string;
+    playerEvents?: number;
+    botEvents?: number;
+    npcEvents?: number;
+    firstCapturedAt: string | null;
+  };
+  retentionDays: number;
+};
+
 export const exchangeApi = {
   items: (params: { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc"; owner?: ExchangeOwner; category?: string } = {}) => {
     const search = new URLSearchParams();
@@ -67,6 +110,17 @@ export const exchangeApi = {
     return api<ExchangeListingsResponse>(`/api/exchange/listings?${search.toString()}`);
   },
   stats: () => api<{ totalListings: number; botListings: number; playerListings: number; uniqueItems: number; capabilities: { exchange?: boolean }; reason?: string }>("/api/exchange/stats"),
+  transactions: (params: { q?: string; page?: number; pageSize?: number; hours?: number; party?: ExchangeTransactionParty; exchangeId?: string } = {}) => {
+    const search = new URLSearchParams();
+    if (params.q) search.set("q", params.q);
+    if (params.page) search.set("page", String(params.page));
+    if (params.pageSize) search.set("pageSize", String(params.pageSize));
+    if (params.hours !== undefined) search.set("hours", String(params.hours));
+    if (params.party && params.party !== "all") search.set("party", params.party);
+    if (params.exchangeId) search.set("exchangeId", params.exchangeId);
+    const qs = search.toString();
+    return api<ExchangeTransactionsResponse>(`/api/exchange/transactions${qs ? `?${qs}` : ""}`);
+  },
   getConfig: () => api<ExchangeConfig>("/api/exchange/config"),
   saveConfig: (config: ExchangeConfig) => post<ExchangeConfig>("/api/exchange/config", config)
 };

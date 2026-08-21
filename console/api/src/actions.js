@@ -159,6 +159,7 @@ export const ROUTE_ACTIONS = {
   "GET /api/exchange/items":                   "exchange:read",
   "GET /api/exchange/listings":                "exchange:read",
   "GET /api/exchange/stats":                   "exchange:read",
+  "GET /api/exchange/transactions":            "exchange:read",
   "GET /api/exchange/config":                  "exchange:read",
   "POST /api/exchange/config":                 "exchange:write-config",
 

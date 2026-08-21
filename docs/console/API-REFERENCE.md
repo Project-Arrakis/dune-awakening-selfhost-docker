@@ -425,11 +425,12 @@ read.
 | GET | `/api/exchange/items` | List active CHOAM exchange sell orders aggregated by item + grade (paginated): lowest price, total stock, listing count | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?`, `owner?`, `category?` |
 | GET | `/api/exchange/listings` | List the individual sell orders for one item, each with a resolved seller | `templateId`, `quality?`, `owner?` |
 | GET | `/api/exchange/stats` | Aggregate totals (total, bot, player listings; unique items) | None |
+| GET | `/api/exchange/transactions` | Paginated completed-order activity captured from this Console release forward, plus filtered event/unit/value totals | `q?`, `page?`, `pageSize?`, `hours?` (`0`\|`24`\|`168`\|`720`\|`2160`), `party?` (`all`\|`player`\|`bot`\|`npc`), `exchangeId?` |
 | GET | `/api/exchange/config` | Read the console-local bot/blacklist filter config | None |
 | POST | `/api/exchange/config` | Save the bot/blacklist filter config (audited, rate-limited) | body: `includeNpcBroker`, `botOwnerIds[]`, `blacklistedOwnerIds[]` |
 
-Read-only over the game's own exchange tables (the game writes them; the console
-never mutates them). `GET /api/exchange/items` reports `capabilities.exchange`; it
+The board endpoints are read-only over the game's own exchange rows (the game
+writes them; the console never mutates them). `GET /api/exchange/items` reports `capabilities.exchange`; it
 is false (with a `reason`) when the schema lacks the required tables
 (`dune_exchange_orders`, `dune_exchange_sell_orders`, `items`, `actors`,
 `player_state`).
@@ -457,9 +458,16 @@ optional. Each row carries `owner_type` (`player`|`bot`) and a resolved `owner_n
 actor class; NPC/broker orders show the in-game broker), plus `price`, `stock`, and
 `quality`.
 
-`POST /api/exchange/config` is the **only** write in this feature and persists
-**only** the console-local `runtime/generated/exchange-config.json` (no game-DB
-writes). Ids are validated as numeric owner-id strings, deduped, and length-capped.
+`GET /api/exchange/transactions` reads the Console-owned
+`console_market_history.transactions` table. Its installation trigger snapshots
+new fulfilled rows and positive `stack_size` update deltas without changing the
+game row; ordinary recorder errors are handled inside the trigger. Quantities,
+prices, values, and ids that originate as PostgreSQL `bigint` are returned as
+decimal strings. `capabilities.exchangeHistory` reports schema support.
+
+`POST /api/exchange/config` is the only user-triggered write in the board surface
+and persists **only** the console-local `runtime/generated/exchange-config.json`
+(no game-row writes). Ids are validated as numeric owner-id strings, deduped, and length-capped.
 See [exchange.md](exchange.md) for how bot listings are identified and how the
 blacklist behaves.
 
