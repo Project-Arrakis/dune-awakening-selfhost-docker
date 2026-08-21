@@ -196,6 +196,79 @@ jobs:
         run: npm audit --audit-level=high
         working-directory: console/api
 
+  # Go vulnerability scanning for the only Go component in this repo.
+  # Reachable-call-graph aware (not just "is this version listed"), so it
+  # catches real, exploitable stdlib/dependency CVEs that npm audit and
+  # generic SCA tools cannot see at all for this component. See
+  # docs/security/ci-security-tooling.md for the tool inventory this gate
+  # belongs to and why each tool here exists.
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: runtime/public-probe/go.mod
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+      - name: Run govulncheck against runtime/public-probe
+        run: govulncheck ./...
+        working-directory: runtime/public-probe
+
+  # Dockerfile linting for every Dockerfile in this repo. See
+  # .hadolint.yaml for the two rule classes deliberately ignored
+  # (OS-package version pinning, non-numeric container users) and why.
+  hadolint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install hadolint
+        run: |
+          curl -sL https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64 -o /usr/local/bin/hadolint
+          echo "c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  /usr/local/bin/hadolint" | sha256sum -c -
+          chmod +x /usr/local/bin/hadolint
+      - name: Lint Dockerfiles
+        run: |
+          hadolint --config .hadolint.yaml orchestrator/Dockerfile
+          hadolint --config .hadolint.yaml console/api/Dockerfile
+          hadolint --config .hadolint.yaml runtime/public-probe/Dockerfile
+
+  # Broader multi-ecosystem SCA than `npm audit` alone -- covers the Go
+  # module (runtime/public-probe) and both npm projects (console/api,
+  # console/web) from OSV's cross-ecosystem advisory database, as a
+  # defense-in-depth complement to govulncheck (call-graph-aware but
+  # Go-only) and npm audit (npm-only).
+  osv-scanner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.24"
+      - name: Install osv-scanner
+        run: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.5.1
+      - name: Scan source dependencies
+        run: osv-scanner scan source --recursive .
+
+  # Builds the real console runtime image and scans it with the same
+  # command issue #54 used for its one-off manual finding -- promoted
+  # here to a standing, recurring gate rather than an ad hoc check, per
+  # that issue's own "the gate must remain visible and time-boxed"
+  # intent. Known, currently-unfixable-upstream findings (e.g. a
+  # not-yet-patched Debian package with no available fix) are suppressed
+  # by CVE ID in .trivyignore with a dated justification comment, not by
+  # disabling the gate -- a new, real finding still fails this job.
+  trivy-image-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Build console image
+        run: docker build -f console/api/Dockerfile -t redblink-dune-docker-console:ci .
+      - name: Install trivy
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.73.0
+      - name: Scan console image
+        run: trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignorefile .trivyignore --exit-code 1 redblink-dune-docker-console:ci
+
   release-validation:
     name: Release validation (${{ matrix.os }})
     strategy:
@@ -223,6 +296,10 @@ jobs:
       - container-lifecycle
       - security-checks
       - api-dependency-audit
+      - govulncheck
+      - hadolint
+      - osv-scanner
+      - trivy-image-scan
       - release-validation
     runs-on: ubuntu-latest
     steps:
@@ -235,6 +312,10 @@ jobs:
           CONTAINER_LIFECYCLE: ${{ needs.container-lifecycle.result }}
           SECURITY_CHECKS: ${{ needs.security-checks.result }}
           API_DEPENDENCY_AUDIT: ${{ needs.api-dependency-audit.result }}
+          GOVULNCHECK: ${{ needs.govulncheck.result }}
+          HADOLINT: ${{ needs.hadolint.result }}
+          OSV_SCANNER: ${{ needs.osv-scanner.result }}
+          TRIVY_IMAGE_SCAN: ${{ needs.trivy-image-scan.result }}
           RELEASE_VALIDATION: ${{ needs.release-validation.result }}
         run: |
           set -euo pipefail
@@ -247,6 +328,10 @@ jobs:
             "$CONTAINER_LIFECYCLE" \
             "$SECURITY_CHECKS" \
             "$API_DEPENDENCY_AUDIT" \
+            "$GOVULNCHECK" \
+            "$HADOLINT" \
+            "$OSV_SCANNER" \
+            "$TRIVY_IMAGE_SCAN" \
             "$RELEASE_VALIDATION"
           do
             if [ "$result" != "success" ]; then

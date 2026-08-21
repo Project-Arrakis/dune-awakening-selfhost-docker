@@ -9,6 +9,27 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.3.95)
 
+### Added
+
+- **Four new CI security gates: `govulncheck`, `hadolint`, `osv-scanner`,
+  `trivy-image-scan`** (all required by `release-gate`). See
+  `docs/security/ci-security-tooling.md` for the full tool inventory and
+  what each gate has actually caught. `govulncheck` found and this PR
+  fixes 26 code-reachable Go standard-library CVEs in
+  `runtime/public-probe` (a toolchain-version bump, `go.mod`'s `go`
+  directive and the Dockerfile's `golang:` build-stage tag both bumped
+  to `1.25.13`; one additional unreachable, no-fix-available transitive
+  finding is documented and accepted). `hadolint` found and this PR
+  fixes a missing `--no-install-recommends` on
+  `orchestrator/Dockerfile`; OS-package version-pinning warnings
+  (`DL3008`/`DL3018`) are deliberately ignored project-wide via the new
+  `.hadolint.yaml`, with the reasoning documented there. `trivy-image-scan`
+  promotes issue #54's one-off manual finding to a standing, recurring
+  gate against the real built console image. `osv-scanner` found nothing
+  new on introduction; included as defense-in-depth alongside `npm
+  audit`/`govulncheck`. Operators upgrading need no action -- these are
+  CI-only gates with no runtime behavior change.
+
 ### Fixed
 
 - **Corrected a systematic wrong `volume` value affecting live container

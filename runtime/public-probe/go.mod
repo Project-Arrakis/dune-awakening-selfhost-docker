@@ -1,6 +1,6 @@
 module github.com/Red-Blink/dune-public-probe
 
-go 1.25.0
+go 1.25.13
 
 require github.com/pion/webrtc/v4 v4.2.13
 

@@ -36,7 +36,14 @@ test("public probe does not publish ports and runs with restricted privileges", 
 
 test("public probe image runs as an unprivileged dedicated user", () => {
   const dockerfile = readFileSync(resolve(repoRoot, "runtime/public-probe/Dockerfile"), "utf8");
-  assert.match(dockerfile, /FROM golang:1\.25-alpine AS build/);
+  // Pinned to a specific patched point release, not a floating minor-version
+  // tag (govulncheck finding, 2026-08-20: golang:1.25-alpine resolved to an
+  // unpatched go1.25.0 stdlib carrying 26 code-reachable CVEs at build time;
+  // pinning to a known-patched tag makes the fix reproducible rather than
+  // dependent on whatever the floating tag happens to resolve to on a given
+  // day). Bump this pin (and go.mod's `go` directive alongside it) forward
+  // together whenever govulncheck finds a new reachable stdlib CVE.
+  assert.match(dockerfile, /FROM golang:1\.25\.13-alpine AS build/);
   assert.match(dockerfile, /USER probe/);
   assert.match(dockerfile, /CGO_ENABLED=0/);
   assert.match(dockerfile, /HEALTHCHECK .*kill -0 1/);
