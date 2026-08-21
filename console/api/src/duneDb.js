@@ -7818,11 +7818,10 @@ export async function giveMultipleItemsToBaseContainer(db, baseId, placeableId, 
     const results = [];
     let stopped = false;
     let stopReason = "Batch stopped after an earlier item did not fully fit.";
-    // The 50-row cap is shared by the WHOLE batch (L2 audit, converging
-    // Network/DBA/Security finding): previously each entry got its own
-    // 50-row budget, letting a 50-entry batch insert up to 2,500 rows in
-    // one transaction under the inventory lock. A batch of 50 unsplit
-    // entries still fits exactly (one row each).
+    // The runaway row backstop is shared by the WHOLE batch (L2 audit,
+    // converging Network/DBA/Security finding): giving each entry its own
+    // budget would multiply the maximum transaction size by up to 50. A
+    // batch of 50 unsplit entries still fits comfortably (one row each).
     let rowBudgetRemaining = MAX_STACK_ROWS_PER_OPERATION;
     for (const entry of prepared) {
       if (!stopped && rowBudgetRemaining < 1) {
@@ -9767,10 +9766,11 @@ export async function deleteBaseContainerItem(db, baseId, placeableId, itemId, {
 // drift between the copies visible in a diff.
 //
 // The parameter surface is giveItemToStorage's verbatim so resolveCatalogItem's
-// output drops straight in. What it does NOT take is a slot: placement is
-// always max(position_index)+1, and there is no merging into a matching stack,
-// so one add is always exactly one new row in one new slot. Both are contracts
-// the UI states out loud -- see the placement note in the add panel.
+// output drops straight in. What it does NOT take is a slot: placement claims
+// the lowest free in-range slot for a capped inventory (or max+1 when the
+// inventory is genuinely uncapped), and there is no merging into a matching
+// stack, so one add is always exactly one new row in one new slot. Both are
+// contracts the UI states out loud -- see the placement note in the add panel.
 //
 // No `set local search_path` here, unlike its sibling above. That line exists
 // there because the shipped dune.delete_item/dune.delete_inventory_item carry
@@ -9881,17 +9881,19 @@ export async function addBaseContainerItem(db, baseId, placeableId, {
     // on (inventory_id, position_index): db.transaction issues a bare `begin`,
     // so this runs at READ COMMITTED, where the FOR UPDATE above makes a second
     // adder block until the first commits and then re-evaluate rather than
-    // abort. These two reads are separate statements taking fresh snapshots, so
-    // the waiter sees the committed insert and computes max+1, not the stale
-    // value. The delete's `for update of i, inv` -- specifically the inv -- is
-    // what serializes a concurrent delete against this; trimming it there would
-    // silently break the guarantee here.
+    // abort. The occupied-slot read follows that lock, so the waiter sees the
+    // committed insert and claims a different free slot. The delete's `for
+    // update of i, inv` -- specifically the inv -- is what serializes a
+    // concurrent delete against this; trimming it there would silently break
+    // the guarantee here.
     //
-    // Worst case if that reasoning ever fails: layoutSlots routes a duplicate
-    // index to the overflow list, which still renders with a working delete.
-    // Degraded display, never a lost or unreachable row.
-    const position = await tx.query("select coalesce(max(position_index), -1)::int + 1 as position_index from dune.items where inventory_id = $1", [inventoryId]);
-    const positionIndex = Number(position.rows[0]?.position_index || 0);
+    // This must not use max(position_index)+1 for a capped inventory. Give
+    // deliberately claims the highest free slot as a collision mitigation, so
+    // one prior Give commonly makes max+1 equal max_item_count -- outside the
+    // engine's slot grid. Add is a single-row path rather than a split path,
+    // but it needs the same in-range guarantee as Fill and player Give.
+    const claimPosition = await createStackPositionClaimer(tx, inventoryId, maxItemCount, "low");
+    const positionIndex = claimPosition();
 
     // No explicit durability, deliberately. buildItemStats already gives
     // clothing and weapons a 100/100 fallback, while ore, spice and salvage get

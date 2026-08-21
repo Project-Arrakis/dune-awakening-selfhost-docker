@@ -114,14 +114,14 @@ The parameter surface is `giveItemToStorage`'s, so a catalog-resolved item drops
 and the whole UI treat grade as 0–5.
 
 **Every add creates a new row. It never tops up a matching stack.** Adding 300 ScrapMetal to a container
-that already holds 500 leaves two rows, not one of 800. Merging would have to pick a stack to grow, and the
-game's own stack limits are not modelled here.
+that already holds 500 leaves two rows, not one of 800. Add deliberately creates one new stack and clamps
+it to the catalogued per-item stack limit instead of choosing an existing row to grow.
 
-**The slot is not chooseable.** The row lands at `max(position_index) + 1` within the resolved inventory —
-0 for an empty container. Clicking an empty grid cell is a shortcut to the form, not a placement target, and
-nothing in the UI may promise a specific slot: the empty cell's accessible name is "Add an item to this
-container", and the confirm dialog's Slot line reads "Next free slot". The response reports where it
-actually landed, which is a statement of fact rather than a promise.
+**The slot is not chooseable.** In a slot-capped inventory the row lands in the lowest free in-range slot;
+an uncapped inventory falls back to `max(position_index) + 1`. Clicking an empty grid cell is a shortcut to
+the form, not a placement target, and nothing in the UI may promise a specific slot: the empty cell's
+accessible name is "Add an item to this container", and the confirm dialog's Slot line reads "Next free
+slot". The response reports where it actually landed, which is a statement of fact rather than a promise.
 
 **Capacity is refused at `count(*) >= max_item_count`.** Rows, not summed stack sizes — correct precisely
 because nothing merges, so one add always consumes exactly one slot. A `max_item_count` of 0 is treated as
@@ -141,11 +141,12 @@ inventory answers "not found" here too.
 
 The row lock is `for update of inv`, taken **before** the capacity and next-slot reads. That ordering is the
 whole concurrency argument: `db.transaction` issues a bare `begin`, so this runs at READ COMMITTED, where a
-second adder blocks on the lock and then re-evaluates rather than aborting — its `count(*)` and
-`max(position_index)` are fresh statements that see the first insert. There is no unique constraint on
+second adder blocks on the lock and then re-evaluates rather than aborting — its `count(*)` and occupied-slot
+read are fresh statements that see the first insert. There is no unique constraint on
 `(inventory_id, position_index)`, so this reasoning is the only guard; every console path that inserts into
 `dune.items` takes this same lock first, and the delete's `for update of i, inv` is what serializes a delete
-against an add.
+against an add. Reading the occupied set rather than blindly appending also keeps Add inside the slot grid
+after Give has claimed the highest in-range slot.
 
 Unlike the delete, this path sets **no** `search_path`. That line exists there because the shipped
 `dune.delete_item`/`dune.delete_inventory_item` carry none of their own; the add invokes no procedure at
@@ -599,15 +600,14 @@ which the standalone Storage tab renders directly. Fill-to-capacity reports `cla
 container is still the same hard rejection as before. Volume itself is still a hard rejection in the one
 case clamping cannot help: truly zero room left, where even 1 unit does not fit.
 
-**Split-row slot placement (L2 audit fix):** Give keeps claiming the highest free in-range slots per row
-(`nextHighPositionIndex`, the 2026-08-19 collision mitigation). Fill and player Give — which previously used
-`max(position_index) + 1` — now claim the **lowest free in-range** slots for a slot-capped inventory from a
-one-time occupied-set read (the same pigeonhole-guarded pattern Give Multiple's `claimPositionIndex` uses),
-because after any high-end Give, `max + 1` starts **at** `max_item_count` and a split would have written an
-entire operation's rows outside the engine's slot grid. Give also claims from the same one-time
-occupied-set read now (replacing its per-row `generate_series` re-query — one round trip per operation
-instead of two per stack row under the inventory lock). Uncapped inventories keep `max + 1`, which cannot
-go out of range.
+**Slot placement (post-review fix):** Give keeps claiming the highest free in-range slots per row (the
+2026-08-19 collision mitigation). Fill, player Give, and the single-row Add Item action — which previously
+used `max(position_index) + 1` — now claim the **lowest free in-range** slots for a slot-capped inventory
+from a one-time occupied-set read (the same pigeonhole-guarded pattern Give Multiple's
+`claimPositionIndex` uses), because after any high-end Give, `max + 1` starts **at** `max_item_count` and
+would write outside the engine's slot grid. Give also claims from the same one-time occupied-set read now
+(replacing its per-row `generate_series` re-query — one round trip per operation instead of two per stack
+row under the inventory lock). Uncapped inventories keep `max + 1`, which cannot go out of range.
 
 **Curating `stackSize` values:** every value added to `admin-items.json` must have a **stated, verified
 source**, preferably an independent, external reference (see below) rather than another in-repo system's

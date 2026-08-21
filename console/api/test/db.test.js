@@ -3883,12 +3883,13 @@ test("container item delete degrades to null state fields on a schema without th
 // Container-item add. The inverse of the delete above and, like it, mostly a
 // story about the ownership query -- plus two contracts the UI states out loud
 // and the backend has to actually keep: never merge into an existing stack, and
-// always append to the next free slot.
+// always claim an in-range free slot.
 function fakeContainerAddDb(calls, fixtures = {}) {
   const {
     containerRows = [],
     count = 0,
     maxPositionIndex = -1,
+    occupiedPositions = null,
     augmentRollRows = [],
     insertedRows = null,
     itemColumns = ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level"],
@@ -3917,6 +3918,10 @@ function fakeContainerAddDb(calls, fixtures = {}) {
     }
     if (text.includes("requested_claims")) return { rows: containerRows };
     if (text.includes("count(*)::int as count")) return { rows: [{ count }] };
+    if (text === "select position_index from dune.items where inventory_id = $1") {
+      const positions = occupiedPositions || Array.from({ length: Math.max(0, maxPositionIndex + 1) }, (_, position_index) => position_index);
+      return { rows: positions.map((position_index) => ({ position_index })) };
+    }
     if (text.includes("max(position_index)")) return { rows: [{ position_index: maxPositionIndex + 1 }] };
     if (text.includes("FAugmentItemStats")) return { rows: augmentRollRows };
     if (text.includes("FAugmentedItemStats")) return { rows: [] };
@@ -4085,7 +4090,7 @@ test("container item add takes the inventory lock before reading capacity and po
   // before the lock would let two adders compute the same next index.
   const lockAt = calls.findIndex((call) => call.text.includes("for update of inv"));
   const countAt = calls.findIndex((call) => call.text.includes("count(*)::int as count"));
-  const positionAt = calls.findIndex((call) => call.text.includes("max(position_index)"));
+  const positionAt = calls.findIndex((call) => call.text === "select position_index from dune.items where inventory_id = $1");
   assert.ok(lockAt >= 0 && countAt > lockAt, "capacity read must follow the lock");
   assert.ok(positionAt > lockAt, "position read must follow the lock");
 });
@@ -4141,6 +4146,20 @@ test("container item add appends to the next free slot", async () => {
   const result = await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 });
   assert.equal(insertCalls(calls)[0].values[4], 8);
   assert.equal(result.added.positionIndex, 8);
+});
+
+test("container item add stays inside the slot grid after Give occupied the highest slot", async () => {
+  const calls = [];
+  const db = fakeContainerAddDb(calls, {
+    containerRows: [CONTAINER_ADD_ROW],
+    count: 3,
+    occupiedPositions: [0, 1, 44]
+  });
+  const result = await addBaseContainerItem(db, 16836, 42, { itemId: "ScrapMetal", quantity: 1 });
+  const insertedPosition = insertCalls(calls)[0].values[4];
+  assert.equal(insertedPosition, 2, "Add must claim the lowest free in-range slot, not max(position_index)+1 = 45");
+  assert.equal(result.added.positionIndex, 2);
+  assert.ok(insertedPosition < 45, "Add must never write at or beyond max_item_count");
 });
 
 test("container item add starts an empty container at slot zero", async () => {
@@ -5869,7 +5888,7 @@ test("fill-item stays inside the slot grid after a high-end give occupied the to
 });
 
 test("fill-item to capacity cut by the stack-row cap reports clamped with a stack-rows reason", async () => {
-  // Uncapped container: the 50-row cap (not capacity) stops the fill, so
+  // Uncapped container: the 1,000-row runaway backstop (not capacity) stops the fill, so
   // claiming "as much as fit" would be a lie -- the response must say so.
   const calls = [];
   const db = fakeMutationDb(calls, {
@@ -5982,7 +6001,7 @@ test("player give-item clamped by free slots reports the shortfall in its own me
   assert.equal(inserts.length, 2);
 });
 
-// L2 audit (Network/DBA/Security hats, converging finding): the 50-row cap
+// L2 audit (Network/DBA/Security hats, converging finding): the 1,000-row runaway backstop
 // must be per OPERATION in the batch path too -- previously it was per
 // entry, letting a 50-entry batch insert up to 2,500 rows in one
 // transaction under the inventory lock.
