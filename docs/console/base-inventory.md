@@ -126,7 +126,7 @@ actually landed, which is a statement of fact rather than a promise.
 **Capacity is refused at `count(*) >= max_item_count`.** Rows, not summed stack sizes — correct precisely
 because nothing merges, so one add always consumes exactly one slot. A `max_item_count` of 0 is treated as
 uncapped, matching `giveItemToStorage` and `giveItemToPlayer`; no shipped storage type has one. Because this
-path deliberately places exactly one row in one slot, an item with catalogued stack data (issue #430) has an
+path deliberately places exactly one row in one slot, an item with catalogued stack data (issue yacketrj/dune-awakening-selfhost-docker#430) has an
 oversized quantity **clamped to one full stack** (reported via `requested`/`clamped` and named in the
 response message) rather than split across rows the way Give/Fill splits.
 
@@ -579,7 +579,7 @@ that instead — asking for 500 of an item that only has room for 375 gives 375,
 reports `requested`, `given`, and `clamped` (`clamped: true` whenever `given < requested`), and the UI
 surfaces exactly that outcome (`"Only 375 of the requested 500 x X fit and was given to the container."`)
 rather than silently implying the full request succeeded. **Slot count** works differently depending on
-whether the item has catalogued stack data (issue #430): for an item with **no** `stackSize` in
+whether the item has catalogued stack data (issue yacketrj/dune-awakening-selfhost-docker#430): for an item with **no** `stackSize` in
 `admin-items.json`, a single give/fill still consumes exactly one slot regardless of quantity, so "no slots
 left" genuinely cannot be partially satisfied and remains a hard rejection (`"Storage is full by item slot
 count"`). For an item **with** catalogued stack data (e.g. `MelangeSpice` at 500/stack), an oversized
@@ -618,7 +618,7 @@ future grant of that item — this happened for real: `Oil`/`SpicedFuelCell` wer
 copied from the generator-refill table (`GENERATOR_TYPES`), and were **wrong**. An operator challenge
 (2026-08-20) to validate against an external source — [dune.gaming.tools](https://dune.gaming.tools)'s own
 item data feed, the `maxStackSize` field, not just its rendered page — found the true limit for both is
-**500**, matching `addonSeedJob.js`'s pre-existing (and, it turns out, correct) value; see issue #432, which
+**500**, matching `addonSeedJob.js`'s pre-existing (and, it turns out, correct) value; see issue yacketrj/dune-awakening-selfhost-docker#432, which
 had already flagged this exact contradiction before it was externally resolved. The refill table's 499 is a
 refill *policy* value, not necessarily the engine's real cap, and was left unchanged (changing an
 already-live, already-tested system is its own separately-verified decision, not a data-correction one).
@@ -635,13 +635,13 @@ non-stackable corpse/bulky-canister items (`Mouse_Corpse`, `Corpse`, all 3 `Fuel
 the two lubricants, and 1000–2500 for bulk sand/residue raw materials (`FlourSand`, `SpiceResidue`,
 `SpiceSand`). Three items (`T4ShieldWallComponent`, `ExperimentalWindTurbineComponent`, and originally
 `T2MuaddibComponent` before the operator statement above) 404 against the external source and were never
-individually verified further (issue #441, closed 2026-08-20 per explicit operator direction — not pursued).
+individually verified further (issue yacketrj/dune-awakening-selfhost-docker#441, closed 2026-08-20 per explicit operator direction — not pursued).
 This made bulk curation cheap: all 91 remaining externally-resolved items were curated 2026-08-20 (issue
-#431), so **every `raw_resource`/`refined_resource`/`component` item now has a `stackSize` except those two**
+yacketrj/dune-awakening-selfhost-docker#431), so **every `raw_resource`/`refined_resource`/`component` item now has a `stackSize` except those two**
 — 97 of 99 items resolved.
 
 **The same external check found `volume`, not just `stackSize`, was systematically wrong for most
-`refined_resource`/`component` items** (issue #440, fixed 2026-08-20): every one of 70 items whose in-repo
+`refined_resource`/`component` items** (issue yacketrj/dune-awakening-selfhost-docker#440, fixed 2026-08-20): every one of 70 items whose in-repo
 `volume` was exactly `1.0` was wrong — a placeholder that was apparently never replaced with a real
 measurement — except `T6RefinedResourceA` (genuinely 1.0). `raw_resource` items were unaffected (0/19
 mismatched; all were individually measured from the start). Corroboration for trusting the external source
