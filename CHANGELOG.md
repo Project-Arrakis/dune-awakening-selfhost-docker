@@ -32,6 +32,32 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Fixed
 
+- **`dune-autoscaler` was burning 80.99% of a core on `dune-dev` (14.81%
+  on `dune-prod`)** (issue #453). Root cause: three heal-scan functions in
+  `runtime/scripts/autoscaler.sh` — `scan_proactive_hagga_handoffs`,
+  `scan_deepdesert_loading_responses`, `scan_named_destination_failures`
+  — were the only heal scans in the file not gated behind the existing
+  `director_heal_due` rate-limiter, so each re-ran `docker logs` plus a
+  fresh `python3` regex parse on every 5-second main-loop tick instead of
+  a sane interval; `scan_named_destination_failures` was the worst
+  offender, re-decoding a 10-minute log window across 3 containers
+  roughly 120x more often than needed. Cost scales with how chatty the
+  watched containers' logs are, which explains the dev/prod split. Fixed
+  by gating all three behind `director_heal_due`, the same pattern every
+  other scan in this file already uses, via three new overridable env
+  vars: `DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS` (default 15s),
+  `DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS` (default 15s),
+  `DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS` (default 60s) — each
+  safely shorter than the log window the function reads, so no detection
+  gap opens. One real behavior change worth calling out explicitly:
+  worst-case remediation latency for a stuck "named destination not
+  found" travel failure goes from ≤5s (previous main-loop cadence) to up
+  to 60s; every other affected scan is unchanged in practice because a
+  separate always-running follower (`follow_director_hagga_handoffs`) or
+  independent refresh gate already handled the real-time path. Operators
+  upgrading need no action — all three new env vars default to safe,
+  lower-CPU values. New test: `tests/autoscaler-heal-scan-rate-limit-test.sh`.
+
 - **Corrected a systematic wrong `volume` value affecting live container
   capacity math for 70 of the 99 `raw_resource`/`refined_resource`/`component`
   catalog items** (issue #440). Every `refined_resource`/`component` item
