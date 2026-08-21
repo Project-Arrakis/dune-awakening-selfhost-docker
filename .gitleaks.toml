@@ -8,11 +8,26 @@
 [extend]
   useDefault = true
 
-# [allowlist] (singular) is deprecated as of gitleaks v8.25.0+ and cannot
-# coexist with [[allowlists]] in the same config (confirmed directly:
-# gitleaks refuses to load a config with both, "[allowlist] is deprecated,
-# it cannot be used alongside [[allowlists]]") -- migrated to [[allowlists]].
-[[allowlists]]
+# CORRECTION (2026-08-21, issue #458): the [[allowlists]] (plural)
+# migration below was reverted. It was written anticipating gitleaks
+# v8.25.0+'s newer config schema, but every gitleaks invocation in this
+# project is pinned to v8.24.3 -- and v8.24.3's actual ViperConfig struct
+# (confirmed directly against its source) has no top-level `Allowlists`
+# (plural) field at all; that field only exists nested under a specific
+# [[rules]] entry (i.e. [[rules.allowlists]]), not at the file's top
+# level. Viper silently drops unrecognized top-level TOML keys, so this
+# block had zero effect in every gitleaks run that used it -- verified
+# directly: even runtime/scripts/command-auth-token.sh, the file this
+# allowlist's own description names as the canonical intentional case,
+# was still being flagged. detect.go's actual scan loop only ever
+# consults `Config.Allowlist` (singular) at the top level. Reverted to
+# the singular [allowlist] table below, which v8.24.3 does parse and
+# apply. If this project's pinned gitleaks version is ever upgraded to
+# v8.25.0+, re-verify whether [[allowlists]] (plural) is viable again
+# before switching back -- don't assume the original migration comment
+# was simply wrong forever, it may become correct once the version pin
+# changes.
+[allowlist]
   description = "Verified placeholders / synthetic fixtures (checked 2026-08-06)"
   regexes = [
     "Nu6VmPWUMvdPMeB7qErr",
