@@ -1,1 +1,78 @@
 runtime/rabbitmq-game/certs/
+
+# --- console runtime image (trivy-image-scan CI gate) -----------------------
+# Findings accepted below were re-triaged 2026-08-21 against the CURRENT
+# console/api/Dockerfile (node:24-trixie-slim, Docker CLI 29.7.2, Docker
+# Compose v5.5.0 -- all confirmed the latest available release of each at
+# triage time) after the standing trivy-image-scan gate was added, replacing
+# issue #54's stale June 2026 residual list (whose base image/CLI/Compose
+# versions had never actually been applied to main -- see the commit that
+# added this section for the full story). Per issue #54's own policy: "the
+# gate must remain visible and time-boxed... revisited whenever Debian,
+# Docker CLI, Docker Compose, or the Node base image publish updates." Do
+# NOT silently add to this list -- confirm no newer upstream release
+# resolves a finding first (a real version bump beats a suppression every
+# time), then group new entries under the correct heading below with the
+# same triage-date/re-verify discipline.
+
+# Debian 13.6 (trixie) OS packages -- fix-deferred or not-yet-published by
+# Debian security for this exact package/version at triage time. Re-check
+# on the next `apt-get update` layer rebuild (i.e. every image build, since
+# no explicit apt version pins exist here -- see .hadolint.yaml).
+CVE-2025-69720  # libncursesw6/ncurses-base/libtinfo6
+CVE-2026-12064  # curl/libcurl4t64
+CVE-2026-13221  # perl-base
+CVE-2026-14456  # libssl3t64/openssl
+CVE-2026-24882  # dirmngr
+CVE-2026-41992  # gzip
+CVE-2026-42496  # perl-base
+CVE-2026-42497  # perl-base
+CVE-2026-48962  # perl-base
+CVE-2026-53612  # util-linux family (bsdutils/libblkid1/liblastlog2-2/libmount1/libsmartcols1/libuuid1/login/mount/util-linux)
+CVE-2026-53613  # util-linux family, same packages as above
+CVE-2026-53614  # util-linux family, same packages as above
+CVE-2026-53615  # util-linux family, same packages as above
+CVE-2026-54369  # libacl1
+CVE-2026-57432  # perl-base
+CVE-2026-57433  # perl-base
+CVE-2026-58050  # libssh2-1t64
+CVE-2026-8286   # curl/libcurl4t64
+CVE-2026-8376   # perl-base
+CVE-2026-8458   # curl/libcurl4t64
+CVE-2026-8927   # curl/libcurl4t64
+CVE-2026-9538   # perl-base
+
+# npm CLI's own bundled node_modules -- shipped inside node:24-trixie-slim's
+# npm installation itself, not this project's application dependencies
+# (which are unaffected -- see `npm audit`/osv-scanner, both clean). No
+# lever to patch independently short of a newer Node point release; re-check
+# whenever the node:24-trixie-slim tag updates.
+CVE-2026-12151  # undici
+CVE-2026-13149  # brace-expansion
+CVE-2026-14257  # brace-expansion
+CVE-2026-59873  # tar
+CVE-2026-59874  # tar
+CVE-2026-69152  # brace-expansion
+CVE-2026-69192  # ip-address
+
+# Docker CLI 29.7.2's own embedded Go standard library -- confirmed the
+# latest available release at triage time (curl -sI against
+# download.docker.com). Re-check whenever a newer Docker CLI release ships.
+CVE-2026-33818  # encoding/asn1 (stdlib)
+CVE-2026-39821  # golang.org/x/net/idna (stdlib)
+CVE-2026-46600  # stdlib
+CVE-2026-56853  # net/http (stdlib)
+CVE-2026-56858  # html/template (stdlib)
+CVE-2026-56859  # encoding/xml (stdlib)
+CVE-2026-56860  # net/url (stdlib)
+CVE-2026-56862  # crypto/tls (stdlib)
+
+# Docker Compose v5.5.0's own embedded Go dependencies -- confirmed the
+# latest available release at triage time (git ls-remote against
+# github.com/docker/compose). Re-check whenever a newer Compose release
+# ships.
+CVE-2026-34040  # github.com/docker/docker
+CVE-2026-41567  # github.com/docker/docker
+CVE-2026-42306  # github.com/docker/docker
+CVE-2026-56864  # golang.org/x/mod
+CVE-2026-56865  # golang.org/x/mod
