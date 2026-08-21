@@ -340,3 +340,46 @@ test("every fillable-group item has a curated stackSize except the two still und
     .map((item) => item.id);
   assert.deepEqual(missing, []);
 });
+
+// Volume placeholder correction (issue #440, 2026-08-20): every
+// refined_resource/component item's `volume` was stuck at exactly 1.0, a
+// value that was never actually measured (raw_resource items, individually
+// measured from the start, all independently agreed with the same external
+// source used here -- 19/19 exact matches including fractional values like
+// 0.08 and 0.4, which is the corroboration that made trusting this source
+// for volume, not just stackSize, reasonable). Spot-check one item per
+// distinct corrected value.
+test("real catalog carries corrected volumes for previously-placeholder refined/component items", () => {
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "SteelBar"), 0.5);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "CopperBar"), 0.25);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "IronBar"), 0.4);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "AluminiumBar"), 0.7);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "DuraluminumRod"), 0.9);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "T6RefinedResourceB"), 0.6);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "FremenComponent1"), 0.1);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "SpicedFuelCell"), 0.2);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "Plastone"), 0.2);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "FuelCanister"), 2);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "FuelCanister_Medium"), 3.3333333);
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "FuelCanister_Large"), 5);
+  // T6RefinedResourceA (Plastanium Ingot) is the one item genuinely at 1.0
+  // -- confirmed correct, not a placeholder (see #430's original spot check).
+  assert.equal(resolveItemVolume(REAL_REPO_ROOT, "T6RefinedResourceA"), 1.0);
+});
+
+// Coverage sentinel: no raw_resource/refined_resource/component item may
+// carry the old 1.0 placeholder except the one confirmed-genuine exception.
+// Catches a future catalog edit reintroducing the never-measured default.
+test("no fillable-group item still carries the 1.0 volume placeholder, except confirmed-genuine or still-unresolved items", () => {
+  const items = JSON.parse(readFileSync(join(REAL_REPO_ROOT, "runtime/data/admin-items.json"), "utf8"));
+  // T6RefinedResourceA is genuinely 1.0 (confirmed, not a placeholder). The
+  // other three never got external volume data at all (404'd -- see #441,
+  // closed without further pursuit) and are correctly untouched.
+  const excluded = new Set(["T6RefinedResourceA", "T2MuaddibComponent", "T4ShieldWallComponent", "ExperimentalWindTurbineComponent"]);
+  const stillPlaceholder = items
+    .filter((item) => ["raw_resource", "refined_resource", "component"].includes(item.group))
+    .filter((item) => !excluded.has(item.id))
+    .filter((item) => Number(item.volume) === 1.0)
+    .map((item) => item.id);
+  assert.deepEqual(stillPlaceholder, []);
+});

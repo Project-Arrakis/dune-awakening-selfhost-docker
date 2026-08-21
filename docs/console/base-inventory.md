@@ -634,11 +634,20 @@ non-stackable corpse/bulky-canister items (`Mouse_Corpse`, `Corpse`, all 3 `Fuel
 2026-08-20 after the item 404'd against the external source), 5 for all 4 `WindTrapFilter` tiers, 100 for
 the two lubricants, and 1000–2500 for bulk sand/residue raw materials (`FlourSand`, `SpiceResidue`,
 `SpiceSand`). Three items (`T4ShieldWallComponent`, `ExperimentalWindTurbineComponent`, and originally
-`T2MuaddibComponent` before the operator statement above) 404 against the external source and need direct
-live-game verification — see issue #441. This made bulk curation cheap: all 91 remaining externally-resolved
-items were curated 2026-08-20 (issue #431), so **every `raw_resource`/`refined_resource`/`component` item
-now has a `stackSize` except the two still awaiting live-game verification** (`T4ShieldWallComponent`,
-`ExperimentalWindTurbineComponent`, issue #441) — 97 of 99 items resolved.
+`T2MuaddibComponent` before the operator statement above) 404 against the external source and were never
+individually verified further (issue #441, closed 2026-08-20 per explicit operator direction — not pursued).
+This made bulk curation cheap: all 91 remaining externally-resolved items were curated 2026-08-20 (issue
+#431), so **every `raw_resource`/`refined_resource`/`component` item now has a `stackSize` except those two**
+— 97 of 99 items resolved.
+
+**The same external check found `volume`, not just `stackSize`, was systematically wrong for most
+`refined_resource`/`component` items** (issue #440, fixed 2026-08-20): every one of 70 items whose in-repo
+`volume` was exactly `1.0` was wrong — a placeholder that was apparently never replaced with a real
+measurement — except `T6RefinedResourceA` (genuinely 1.0). `raw_resource` items were unaffected (0/19
+mismatched; all were individually measured from the start). Corroboration for trusting the external source
+on volume, not just stack size: those 19 raw-resource values, several with non-round fractional volumes
+(0.08, 0.4, …), matched the external source exactly. All 70 were bulk-corrected; real values range from 0.1
+(most components, a 10x understatement at the old 1.0) up to 5 (large fuel canisters).
 
 **Give Multiple's batch-clamping design is deliberately left-to-right, not best-effort.** Once one item in
 the batch does not fully fit (clamped, or reduced all the way to zero), the batch **stops there** —
