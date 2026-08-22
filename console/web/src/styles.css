@@ -4375,6 +4375,135 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   padding: clamp(12px, 1.5vw, 18px);
   box-sizing: border-box;
 }
+.land-claim-editor { gap: 16px; }
+.land-claim-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
+}
+.land-claim-summary > div {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .018);
+}
+.land-claim-summary span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.land-claim-summary strong { color: var(--title); font-size: 15px; }
+.land-claim-warning,
+.land-claim-disclaimer,
+.land-claim-backup-note,
+.land-claim-restart-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  line-height: 1.45;
+}
+.land-claim-warning {
+  padding: 11px 13px;
+  border: 1px solid rgba(226, 173, 69, .42);
+  border-radius: 7px;
+  background: rgba(174, 116, 24, .1);
+  color: #e8c77f;
+}
+.land-claim-warning svg,
+.land-claim-disclaimer svg,
+.land-claim-backup-note svg,
+.land-claim-restart-note svg { flex: 0 0 auto; margin-top: 2px; }
+.land-claim-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  gap: 14px;
+  align-items: start;
+}
+.land-claim-grid-card,
+.land-claim-controls {
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, .12);
+}
+.land-claim-grid-card { padding: 14px; }
+.land-claim-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.land-claim-section-heading h3,
+.land-claim-controls h3 { margin: 0 0 4px; color: var(--title); font-size: 14px; }
+.land-claim-section-heading p { margin: 0; color: var(--muted); font-size: 12px; }
+.land-claim-section-heading button { width: auto; flex: 0 0 auto; }
+.land-claim-grid-wrap {
+  min-height: 300px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-radius: 8px;
+  background-color: #171512;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, .025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, .025) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+.land-claim-grid { display: block; width: 100%; height: clamp(300px, 42vw, 500px); }
+.land-claim-cell {
+  vector-effect: non-scaling-stroke;
+  stroke-width: 1.25px;
+  transition: fill .15s ease, stroke .15s ease;
+}
+.land-claim-cell.origin { fill: #e3ad42; stroke: #ffcf66; }
+.land-claim-cell.existing { fill: rgba(88, 116, 132, .72); stroke: #8aa8b8; }
+.land-claim-cell.selected { fill: rgba(204, 151, 46, .76); stroke: #ffd36d; cursor: pointer; }
+.land-claim-cell.available { fill: rgba(255, 255, 255, .018); stroke: rgba(221, 197, 153, .45); stroke-dasharray: 3 3; cursor: pointer; }
+.land-claim-cell.available:hover,
+.land-claim-cell.available:focus { fill: rgba(227, 173, 66, .2); stroke: #e3ad42; outline: none; }
+.land-claim-cell.selected:hover,
+.land-claim-cell.selected:focus { fill: rgba(171, 74, 53, .72); stroke: #ff9178; outline: none; }
+.land-claim-cell-label {
+  fill: #17130c;
+  font-size: .36px;
+  font-weight: 900;
+  text-anchor: middle;
+  pointer-events: none;
+  user-select: none;
+}
+.land-claim-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 11px; color: var(--muted-warm); font-size: 11px; }
+.land-claim-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.land-claim-legend i { width: 11px; height: 11px; border: 1px solid; border-radius: 2px; }
+.land-claim-legend i.origin { background: #e3ad42; border-color: #ffcf66; }
+.land-claim-legend i.existing { background: #587484; border-color: #8aa8b8; }
+.land-claim-legend i.selected { background: #cc972e; border-color: #ffd36d; }
+.land-claim-legend i.available { background: transparent; border-color: rgba(221, 197, 153, .6); border-style: dashed; }
+.land-claim-axis-note { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.land-claim-controls { display: flex; flex-direction: column; gap: 11px; padding: 14px; }
+.land-claim-controls label { display: grid; gap: 6px; color: var(--muted-warm); font-size: 12px; }
+.land-claim-controls select { width: 100%; }
+.land-claim-controls p { margin: 0; font-size: 11px; line-height: 1.45; }
+.land-claim-controls dl { display: grid; grid-template-columns: 1fr auto; gap: 7px 12px; margin: 2px 0; font-size: 12px; }
+.land-claim-controls dt { color: var(--muted); }
+.land-claim-controls dd { margin: 0; color: var(--title); font-weight: 700; }
+.land-claim-controls button { width: 100%; }
+.land-claim-backup-note,
+.land-claim-restart-note { color: var(--muted-warm); }
+.land-claim-disclaimer {
+  padding-top: 2px;
+  color: var(--muted-warm);
+  font-size: 12px;
+}
+@media (max-width: 900px) {
+  .bases-expanded-tablist { overflow-x: auto; }
+  .bases-expanded-tab { flex: 0 0 auto; }
+  .land-claim-summary { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+  .land-claim-workspace { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .land-claim-summary { grid-template-columns: 1fr; }
+  .land-claim-section-heading { align-items: stretch; flex-direction: column; }
+  .land-claim-section-heading button { width: 100%; }
+}
 .bases-card-grid {
   display: grid;
   /* Capped at 280px rather than 1fr: with few groups (a base with one or two

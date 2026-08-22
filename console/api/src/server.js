@@ -663,6 +663,8 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/bases\/[^/]+\/queued-water-refill$/) && req.method === "DELETE") return baseCancelQueuedWaterRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill-water$/) && req.method === "POST") return baseAutoRefillWaterToggleRoute(req, res, path);
   if (path === "/api/bases/permission-candidates") return basePermissionCandidatesRoute(res, url);
+  if (path.match(/^\/api\/bases\/[^/]+\/land-claim$/) && req.method === "GET") return baseLandClaimRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/land-claim$/) && req.method === "PUT") return baseUpdateLandClaimRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "GET") return basePermissionsRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "PUT") return baseSetPermissionsRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/system-custodian$/) && req.method === "POST") return baseSystemCustodianRoute(req, res, path);
@@ -3155,6 +3157,37 @@ async function basePermissionsRoute(res, path) {
     const status = error.unsupported ? 501 : 400;
     return json(res, status, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
+}
+
+async function baseLandClaimRoute(res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(baseId) || baseId < 1 || baseId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid base ID" });
+  }
+  try {
+    return json(res, 200, { supported: true, ...(await duneDb.getBaseLandClaim(db, baseId)) });
+  } catch (error) {
+    const status = error.unsupported ? 501 : 400;
+    return json(res, status, {
+      supported: false,
+      error: redact(error?.message || "Unexpected error."),
+      reason: redact(error?.message || "Unexpected error.")
+    });
+  }
+}
+
+async function baseUpdateLandClaimRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(baseId) || baseId < 1 || baseId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid base ID" });
+  }
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.update-land-claim", "EDIT LAND CLAIM", async (body) => {
+    await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "land-claim-editor" } });
+    const result = await duneDb.updateBaseLandClaim(db, baseId, body);
+    return { ...result, backupCreated: true };
+  }, { baseId });
 }
 
 async function basePermissionCandidatesRoute(res, url) {

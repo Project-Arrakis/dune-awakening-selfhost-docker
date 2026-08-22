@@ -16,6 +16,8 @@ vi.mock("../../api/bases", () => ({
     pendingDeletes: vi.fn(),
     autoRefill: vi.fn(),
     setAutoRefill: vi.fn(),
+    landClaim: vi.fn(),
+    updateLandClaim: vi.fn(),
     permissions: vi.fn(),
     setPermissions: vi.fn(),
     transferToSystemCustodian: vi.fn(),
@@ -942,7 +944,7 @@ describe("BasesPanel permissions editing", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
 
     const tabs = screen.getAllByRole("tab").map((tab) => tab.getAttribute("aria-label") || tab.textContent);
-    expect(tabs).toEqual(["Power", "Water", "Inventory"]);
+    expect(tabs).toEqual(["Power", "Water", "Inventory", "Land Claim Editor"]);
 
     fireEvent.click(screen.getByRole("tab", { name: "Inventory" }));
     // The tab opens on the container cards, not the item rollup.

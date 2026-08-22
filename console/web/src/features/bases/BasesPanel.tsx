@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Boxes, ChevronDown, ChevronUp, Download, Droplet, Fuel, Trash2, Users, X, Zap } from "lucide-react";
+import { Boxes, ChevronDown, ChevronUp, Download, Droplet, Fuel, Grid3X3, Trash2, Users, X, Zap } from "lucide-react";
 import { BaseInventoryTab } from "./BaseInventoryTab";
+import { BaseLandClaimTab } from "./BaseLandClaimTab";
 import { BasePermissionsTab } from "./BasePermissionsTab";
 import { BaseWaterTab } from "./BaseWaterTab";
 import { basesApi, type AutoRefillBase, type AutoRefillWaterBase, type RefillDeviceResult, type RefillWaterDeviceResult } from "../../api/bases";
@@ -375,7 +376,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   const [canQueueDelete, setCanQueueDelete] = useState(false);
   // Which tab the expanded row is showing. Power is the default so expanding a
   // row behaves exactly as it did before this feature existed.
-  const [expandedTab, setExpandedTab] = useState<"power" | "water" | "inventory" | "permissions">("power");
+  const [expandedTab, setExpandedTab] = useState<"power" | "water" | "inventory" | "land-claim" | "permissions">("power");
   const [cancelingId, setCancelingId] = useState("");
   const [cancelingWaterId, setCancelingWaterId] = useState("");
   const [refillingWaterId, setRefillingWaterId] = useState("");
@@ -1575,6 +1576,14 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                   className={`bases-expanded-tab${expandedTab === "inventory" ? " active" : ""}`}
                   onClick={() => setExpandedTab("inventory")}
                 ><Boxes size={15} aria-hidden="true" />Inventory</button>
+                <button
+                  role="tab"
+                  id={`bases-tab-land-claim-${id}`}
+                  aria-selected={expandedTab === "land-claim"}
+                  aria-controls={`bases-panel-land-claim-${id}`}
+                  className={`bases-expanded-tab${expandedTab === "land-claim" ? " active" : ""}`}
+                  onClick={() => setExpandedTab("land-claim")}
+                ><Grid3X3 size={15} aria-hidden="true" />Land Claim Editor</button>
                 {canEditPermissions && <button
                   role="tab"
                   id={`bases-tab-permissions-${id}`}
@@ -1615,6 +1624,15 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                 : expandedTab === "inventory"
                 ? <div role="tabpanel" id={`bases-panel-inventory-${id}`} aria-labelledby={`bases-tab-inventory-${id}`}>
                     <BaseInventoryTab
+                      baseId={id}
+                      baseName={String(base.name || `base ${id}`)}
+                      confirmAction={confirmAction}
+                      onError={onError}
+                    />
+                  </div>
+                : expandedTab === "land-claim"
+                ? <div role="tabpanel" id={`bases-panel-land-claim-${id}`} aria-labelledby={`bases-tab-land-claim-${id}`}>
+                    <BaseLandClaimTab
                       baseId={id}
                       baseName={String(base.name || `base ${id}`)}
                       confirmAction={confirmAction}

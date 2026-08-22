@@ -3990,6 +3990,172 @@ const BASE_NAME_SQL = `case
   else 'Unnamed Base'
 end`;
 
+const LAND_CLAIM_MAX_VERTICAL_LEVEL = 5;
+const LAND_CLAIM_MAX_COORDINATE = 128;
+const LAND_CLAIM_MAX_ADDITIONS = 100;
+
+async function supportsLandClaimEditor(db) {
+  for (const table of ["buildings", "building_instances", "actor_fgl_entities", "actors", "totems", "landclaim_segments"]) {
+    if (!(await tableExists(db, table))) return false;
+  }
+  const [totemColumns, segmentColumns] = await Promise.all([
+    columnsFor(db, "totems"),
+    columnsFor(db, "landclaim_segments")
+  ]);
+  return ["id", "landclaim_vertical_level", "landclaim_original_global_yaw_rotation"].every((column) => totemColumns.has(column))
+    && ["totem_id", "grid_location_x", "grid_location_y"].every((column) => segmentColumns.has(column));
+}
+
+async function resolveBaseTotem(db, baseId, { lock = false } = {}) {
+  const target = intParam(baseId, "base id", 1);
+  const result = await db.query(`
+    select t.id::text as totem_id,
+           coalesce(a.map, '') as map,
+           coalesce(a.partition_id, 0)::int as partition_id,
+           coalesce(t.landclaim_vertical_level, 0)::int as vertical_level,
+           coalesce(t.landclaim_original_global_yaw_rotation, 0)::real as yaw
+    from dune.buildings b
+    join dune.building_instances bi on bi.building_id = b.id
+    join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+    join dune.actors a on a.id = afe.actor_id
+    join dune.totems t on t.id = a.id
+    where b.id = $1
+    order by bi.instance_id
+    limit 1${lock ? "\n    for update of t" : ""}`, [target]);
+  if (!result.rowCount) {
+    const exists = await db.query("select 1 from dune.buildings where id = $1", [target]);
+    if (exists.rowCount) throw new Error(`Base ${target} does not have a resolvable Sub-Fief totem.`);
+    throw new Error(`Base ${target} was not found.`);
+  }
+  return { target, ...result.rows[0] };
+}
+
+async function landClaimState(db, baseId, options = {}) {
+  const totem = await resolveBaseTotem(db, baseId, options);
+  const segmentRows = await db.query(`
+    select grid_location_x::int as x, grid_location_y::int as y, count(*)::int as row_count
+    from dune.landclaim_segments
+    where totem_id = $1::bigint
+    group by grid_location_x, grid_location_y
+    order by grid_location_y, grid_location_x`, [totem.totem_id]);
+  const segments = segmentRows.rows.map((row) => ({
+    x: Number(row.x),
+    y: Number(row.y),
+    rowCount: Number(row.row_count)
+  }));
+  return {
+    baseId: totem.target,
+    totemId: totem.totem_id,
+    map: String(totem.map || ""),
+    partitionId: Number(totem.partition_id || 0),
+    yaw: Number(totem.yaw || 0),
+    verticalLevel: Number(totem.vertical_level || 0),
+    maxVerticalLevel: LAND_CLAIM_MAX_VERTICAL_LEVEL,
+    segments,
+    segmentCount: segments.reduce((total, segment) => total + segment.rowCount, 0),
+    duplicateCoordinates: segments.filter((segment) => segment.rowCount > 1).length
+  };
+}
+
+export async function getBaseLandClaim(db, baseId) {
+  await requireCapability(await supportsLandClaimEditor(db),
+    "Land Claim Editor requires dune.buildings, building_instances, actor_fgl_entities, actors, totems, and landclaim_segments.");
+  return landClaimState(db, baseId);
+}
+
+function normalizeLandClaimAdditions(value) {
+  if (!Array.isArray(value)) throw new Error("Land claim segments must be an array.");
+  if (value.length > LAND_CLAIM_MAX_ADDITIONS) throw new Error(`Add no more than ${LAND_CLAIM_MAX_ADDITIONS} land claim segments at once.`);
+  const unique = new Map();
+  for (const entry of value) {
+    const x = Number(entry?.x);
+    const y = Number(entry?.y);
+    if (!Number.isInteger(x) || !Number.isInteger(y)
+      || Math.abs(x) > LAND_CLAIM_MAX_COORDINATE || Math.abs(y) > LAND_CLAIM_MAX_COORDINATE) {
+      throw new Error(`Land claim coordinates must be whole numbers between -${LAND_CLAIM_MAX_COORDINATE} and ${LAND_CLAIM_MAX_COORDINATE}.`);
+    }
+    if (x === 0 && y === 0) throw new Error("The Sub-Fief already occupies grid coordinate 0, 0.");
+    const key = `${x},${y}`;
+    if (unique.has(key)) throw new Error(`Land claim coordinate ${key} was supplied more than once.`);
+    unique.set(key, { x, y });
+  }
+  return [...unique.values()];
+}
+
+function reachableLandClaimCells(cells) {
+  const reachable = new Set(["0,0"]);
+  const queue = [[0, 0]];
+  while (queue.length) {
+    const [x, y] = queue.shift();
+    for (const [nextX, nextY] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) {
+      const key = `${nextX},${nextY}`;
+      if (cells.has(key) && !reachable.has(key)) {
+        reachable.add(key);
+        queue.push([nextX, nextY]);
+      }
+    }
+  }
+  return reachable;
+}
+
+export async function updateBaseLandClaim(db, baseId, { addSegments = [], verticalLevel } = {}) {
+  await requireCapability(await supportsLandClaimEditor(db),
+    "Land Claim Editor requires dune.buildings, building_instances, actor_fgl_entities, actors, totems, and landclaim_segments.");
+  const target = intParam(baseId, "base id", 1);
+  const additions = normalizeLandClaimAdditions(addSegments);
+  const hasVerticalLevel = verticalLevel !== undefined && verticalLevel !== null;
+  const normalizedVerticalLevel = hasVerticalLevel ? Number(verticalLevel) : null;
+  if (hasVerticalLevel && (!Number.isInteger(normalizedVerticalLevel)
+    || normalizedVerticalLevel < 0 || normalizedVerticalLevel > LAND_CLAIM_MAX_VERTICAL_LEVEL)) {
+    throw new Error(`Vertical land claim level must be between 0 and ${LAND_CLAIM_MAX_VERTICAL_LEVEL}.`);
+  }
+  if (!additions.length && !hasVerticalLevel) throw new Error("No land claim changes were requested.");
+
+  return db.transaction(async (tx) => {
+    const current = await landClaimState(tx, target, { lock: true });
+    if (current.duplicateCoordinates) {
+      throw new Error("This land claim contains duplicate database rows. Repair those duplicates before using the editor.");
+    }
+    if (hasVerticalLevel && normalizedVerticalLevel < current.verticalLevel) {
+      throw new Error("Land Claim Editor is expansion-only and cannot lower the existing vertical level.");
+    }
+    if (!additions.length && (!hasVerticalLevel || normalizedVerticalLevel === current.verticalLevel)) {
+      throw new Error("The requested land claim already matches the database. No changes were made.");
+    }
+    const occupied = new Set(["0,0", ...current.segments.map((segment) => `${segment.x},${segment.y}`)]);
+    for (const segment of additions) {
+      const key = `${segment.x},${segment.y}`;
+      if (occupied.has(key)) throw new Error(`Land claim coordinate ${key} is already occupied.`);
+      occupied.add(key);
+    }
+    const reachable = reachableLandClaimCells(occupied);
+    const disconnected = additions.find((segment) => !reachable.has(`${segment.x},${segment.y}`));
+    if (disconnected) {
+      throw new Error(`Land claim coordinate ${disconnected.x},${disconnected.y} is disconnected. New segments must connect edge-to-edge to the Sub-Fief or its existing claim.`);
+    }
+    if (additions.length) {
+      await tx.query(`
+        insert into dune.landclaim_segments (totem_id, grid_location_x, grid_location_y)
+        select $1::bigint, x, y
+        from unnest($2::bigint[], $3::bigint[]) as requested(x, y)`, [
+        current.totemId,
+        additions.map((segment) => segment.x),
+        additions.map((segment) => segment.y)
+      ]);
+    }
+    if (hasVerticalLevel && normalizedVerticalLevel !== current.verticalLevel) {
+      await tx.query("update dune.totems set landclaim_vertical_level = $2 where id = $1::bigint", [current.totemId, normalizedVerticalLevel]);
+    }
+    const updated = await landClaimState(tx, target);
+    return {
+      ok: true,
+      added: additions.length,
+      verticalChanged: hasVerticalLevel && normalizedVerticalLevel !== current.verticalLevel,
+      ...updated
+    };
+  });
+}
+
 export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true } = {}) {
   const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
   // One round-trip each and none of them depends on another, so probe them

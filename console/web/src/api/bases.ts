@@ -351,6 +351,33 @@ export type SetBasePermissionsResult = {
   message: string;
 };
 
+export type LandClaimSegment = {
+  x: number;
+  y: number;
+  rowCount: number;
+};
+
+export type BaseLandClaim = {
+  supported: boolean;
+  baseId: number;
+  totemId: string;
+  map: string;
+  partitionId: number;
+  yaw: number;
+  verticalLevel: number;
+  maxVerticalLevel: number;
+  segments: LandClaimSegment[];
+  segmentCount: number;
+  duplicateCoordinates: number;
+  reason?: string;
+};
+
+export type UpdateBaseLandClaimResult = BaseLandClaim & {
+  ok: boolean;
+  added: number;
+  verticalChanged: boolean;
+};
+
 export const basesApi = {
   list: (params: { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc" } = {}) => {
     const search = new URLSearchParams();
@@ -415,6 +442,12 @@ export const basesApi = {
       `/api/bases/${encodeURIComponent(baseId)}/auto-refill`, { enabled }),
   permissions: (baseId: string) =>
     api<BasePermissions>(`/api/bases/${encodeURIComponent(baseId)}/permissions`),
+  landClaim: (baseId: string) =>
+    api<BaseLandClaim>(`/api/bases/${encodeURIComponent(baseId)}/land-claim`),
+  updateLandClaim: (baseId: string, addSegments: { x: number; y: number }[], verticalLevel: number) =>
+    api<{ supported: boolean; backupCreated: boolean; result?: UpdateBaseLandClaimResult; reason?: string; error?: string }>(
+      `/api/bases/${encodeURIComponent(baseId)}/land-claim`,
+      { method: "PUT", body: JSON.stringify({ addSegments, verticalLevel, confirmation: "EDIT LAND CLAIM" }) }),
   // A whole roster, not a delta: the server diffs it against current state and
   // applies the difference through the game's own stored procedures in one
   // transaction. Changes reach a running map immediately -- no restart.
