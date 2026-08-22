@@ -74,6 +74,8 @@ export const playersApi = {
   addFactionReputation: (playerId: string, body: { factionId: number; amount: number; confirmation: string }) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/add-faction-reputation`, body),
   repairFactionReputation: (playerId: string, confirmation: string) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/repair-faction-reputation`, { confirmation }),
   repairLandsraadQuests: (playerId: string, confirmation: string) => post<{ supported: boolean; backupCreated?: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/repair-landsraad-quests`, { confirmation }),
+  characterRecovery: (playerId: string) => api<CharacterRecoveryInspection>(`/api/players/${encodeURIComponent(playerId)}/character-recovery`, { cache: "no-store" }),
+  recoverDeletedCharacter: (playerId: string, candidateId: string, confirmation: string) => post<{ supported: boolean; backupCreated?: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/character-recovery`, { candidateId, confirmation }),
   setFaction: (playerId: string, body: { factionId: 1 | 2 | 3; confirmation: string }) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/faction`, body),
   addIntel: (playerId: string, body: { amount: number; confirmation: string }) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/add-intel`, body),
   craftingRecipes: (playerId: string) => api<{ rows: Record<string, unknown>[]; capabilities: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/crafting-recipes`),
@@ -92,4 +94,41 @@ export const playersApi = {
   deleteInventoryItem: (playerId: string, itemId: string, confirmation: string) => api<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/inventory/${encodeURIComponent(itemId)}`, { method: "DELETE", body: JSON.stringify({ confirmation }) }),
   updateInventoryItem: (playerId: string, itemId: string, values: Record<string, unknown>, confirmation: string) => api<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/inventory/${encodeURIComponent(itemId)}`, { method: "PATCH", body: JSON.stringify({ confirmation, values }) }),
   augmentInventoryItem: (playerId: string, itemId: string, augments: string[], augmentQuality: number, confirmation: string) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/augment-item`, { itemId, augments, augmentQuality, confirmation })
+};
+
+export type CharacterRecoveryCandidate = {
+  characterStateId: string;
+  characterName: string;
+  lastAvatarActivity: string | null;
+  lastLoginTime: string | null;
+  deletedAt: string | null;
+  controllerId: string;
+  pawnId: string;
+  playerStateActorId: string;
+  map: string;
+  partitionId: string;
+  sietch: string;
+  inventoryCount: number;
+  itemCount: number;
+  transferCount: number;
+  removalReason: string;
+  removalEventTime: string | null;
+  replacementDetected: boolean;
+  recoverable: boolean;
+};
+
+export type CharacterRecoveryInspection = {
+  ok: boolean;
+  online: boolean;
+  active: {
+    characterStateId: string;
+    characterName: string;
+    pawnId: string;
+    itemCount: number;
+    transferCount: number;
+  };
+  candidates: CharacterRecoveryCandidate[];
+  suggestedCandidateId: string;
+  canRecover: boolean;
+  message: string;
 };
