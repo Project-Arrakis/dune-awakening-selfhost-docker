@@ -130,6 +130,44 @@ test("public modifier reporting ignores retired unsupported modifiers", () => {
   }
 });
 
+test("public modifier reporting converts the augment roll threshold to jackpot chance", () => {
+  const files = fixture();
+  const path = join(files.generatedDir, "gameplay-profile.ini");
+  try {
+    writeFileSync(path, [
+      "[Global:/Script/DuneSandbox.AugmentSettings]",
+      "m_JackpotRollPercentage=0.75",
+      "",
+      "[Partition:Survival_1:1:/Script/DuneSandbox.AugmentSettings]",
+      "m_JackpotRollPercentage=0.50"
+    ].join("\n"));
+    assert.deepEqual(readPublicModifiers(path), {
+      "Augment Jackpot Chance": "Varies: 25%, 50%"
+    });
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("public modifier reporting identifies invalid augment roll thresholds", () => {
+  const files = fixture();
+  const path = join(files.generatedDir, "gameplay-profile.ini");
+  try {
+    writeFileSync(path, [
+      "[Global:/Script/DuneSandbox.AugmentSettings]",
+      "m_JackpotRollPercentage=75",
+      "",
+      "[Partition:Survival_1:1:/Script/DuneSandbox.AugmentSettings]",
+      "m_JackpotRollPercentage=100"
+    ].join("\n"));
+    assert.deepEqual(readPublicModifiers(path), {
+      "Augment Jackpot Chance": "Varies: 75 (invalid; use 0–1), 100 (invalid; use 0–1)"
+    });
+  } finally {
+    files.cleanup();
+  }
+});
+
 test("public modifier reporting includes scoped UserEngine overrides", () => {
   const files = fixture();
   const path = join(files.generatedDir, "gameplay-profile.ini");

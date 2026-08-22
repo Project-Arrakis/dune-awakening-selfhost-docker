@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -152,6 +153,12 @@ CORIOLIS_CYCLE_START_BOUNDS = {
     "coriolis_cycle_start_hour": (0, 23),
     "coriolis_cycle_start_minute": (0, 59),
 }
+
+# The game stores this as a normalized roll threshold, not as a whole-number
+# percentage. Values such as 75 or 100 make the setting nonsensical and used to
+# be accepted by every settings surface because generic numeric fields had no
+# bounds metadata.
+AUGMENT_JACKPOT_ROLL_BOUNDS = (0.0, 1.0)
 
 # UserGame properties that older community catalogues presented as numeric
 # modifiers, but which the current Funcom server build cannot consume in the
@@ -347,6 +354,7 @@ FIELD_DESCRIPTIONS = {
     "double_difficulty_loot_enabled": "Gives double loot when the encounter difficulty is above 0. Field-confirmed with dungeon loot.",
     "regenerate_per_player_loot_enabled": "Whether per-player loot is regenerated each time a player interacts with a loot container. Field-confirmed. Enabling this can make a single container farmable indefinitely.",
     "restart_server_on_coriolis_cycle_end": "Requests that Funcom restart the current map server process when its own Coriolis cycle ends. Docker restarts an exited map container automatically. This does not queue a Console battlegroup restart or send restart warnings.",
+    "augment_jackpot_roll_percentage": "Roll threshold from 0 to 1; lower values increase the jackpot chance. The default 0.95 gives a 5% chance. This can be overridden per map or Sietch, and the public server page shows Varies when those scopes differ.",
     "max_landclaim_segments": "Maximum number of land-claim segments (flags) a player may own.",
     "building_blueprint_max_extensions": "Maximum number of times a blueprinted building can be extended.",
     "base_backup_max_extensions": "Maximum number of times a Base Backup can be extended.",
@@ -374,6 +382,7 @@ FIELD_LABELS = {
     "guild_settings_max_guilds_allowed": "Max Guilds Allowed",
     "guild_settings_max_guild_members_allowed": "Max Guild Members Allowed",
     "guild_settings_max_pending_invites": "Max Pending Guild Invites",
+    "augment_jackpot_roll_percentage": "Augment Jackpot Roll Threshold",
 }
 
 # Maps a field id to the client-side ini filename it also must be applied to
@@ -1076,6 +1085,18 @@ def normalize_coriolis_cycle_start_value(field_id: str, value: str) -> str:
     return str(number)
 
 
+def normalize_augment_jackpot_roll_percentage(value: str) -> str:
+    raw = str(value or "").strip()
+    try:
+        number = float(raw)
+    except ValueError as exc:
+        raise SystemExit("Augment Jackpot Roll Threshold must be a number between 0 and 1.") from exc
+    minimum, maximum = AUGMENT_JACKPOT_ROLL_BOUNDS
+    if not math.isfinite(number) or number < minimum or number > maximum:
+        raise SystemExit("Augment Jackpot Roll Threshold must be between 0 and 1.")
+    return raw
+
+
 def landsraad_data_for_scope(profile: dict, scope: str, map_name: str = "", partition_id: str = "") -> str:
     value = profile_get_key(profile, scope, LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY, map_name, partition_id)
     if not value:
@@ -1620,6 +1641,8 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
 
     if field_id in CORIOLIS_CYCLE_START_BOUNDS:
         value = normalize_coriolis_cycle_start_value(field_id, value)
+    if field_id == "augment_jackpot_roll_percentage":
+        value = normalize_augment_jackpot_roll_percentage(value)
 
     if scope == "global":
         if field_id in GLOBAL_ARRAY_FIELD_IDS:
@@ -1869,6 +1892,8 @@ def metadata() -> int:
     def row(scope: str, field_id: str, spec: tuple[str | None, str | None, str | None]) -> dict:
         section, key, default = spec
         minimum, maximum = CORIOLIS_CYCLE_START_BOUNDS.get(field_id, (None, None))
+        if field_id == "augment_jackpot_roll_percentage":
+            minimum, maximum = AUGMENT_JACKPOT_ROLL_BOUNDS
         return {
             "scope": scope,
             "id": field_id,
