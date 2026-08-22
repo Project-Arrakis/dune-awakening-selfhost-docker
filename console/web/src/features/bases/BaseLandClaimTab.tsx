@@ -63,7 +63,9 @@ export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: P
       setVerticalLevel(result.verticalLevel);
       setSelected(new Set());
     } catch (error) {
-      setClaim(null);
+      // An initial failure has no claim to render, while a failed manual reload
+      // keeps the last good snapshot in place instead of collapsing the entire
+      // editor (and jumping the page/footer) into the error-only state.
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
       setLoading(false);
@@ -99,7 +101,7 @@ export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: P
   }, [plotted]);
 
   function toggleCell(key: string) {
-    if (!claim || saving) return;
+    if (!claim || saving || loading) return;
     setStatus("");
     setSelected((current) => {
       if (!current.has(key)) return new Set([...current, key]);
@@ -112,7 +114,7 @@ export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: P
   }
 
   const dirty = selected.size > 0 || (claim && verticalLevel !== claim.verticalLevel);
-  const canSave = Boolean(claim && !claim.duplicateCoordinates && dirty && !saving);
+  const canSave = Boolean(claim && !claim.duplicateCoordinates && dirty && !saving && !loading);
 
   async function save() {
     if (!claim || !canSave) return;
@@ -149,12 +151,12 @@ export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: P
     }
   }
 
-  if (loading) return <div className="bases-tab-body land-claim-editor"><p className="muted loading-dots">Loading land claim</p></div>;
+  if (loading && !claim) return <div className="bases-tab-body land-claim-editor"><p className="muted loading-dots">Loading land claim</p></div>;
   if (!claim) return <div className="bases-tab-body land-claim-editor"><p role="alert" className="error-text">{status || "Land Claim Editor is unavailable."}</p><button className="secondary-action" onClick={() => void load()}><RefreshCw size={15} />Retry</button></div>;
 
   const maxVertical = Math.max(claim.verticalLevel, claim.maxVerticalLevel);
   return (
-    <div className="bases-tab-body land-claim-editor">
+    <div className="bases-tab-body land-claim-editor" aria-busy={loading}>
       <div className="land-claim-summary">
         <div><span>Totem ID</span><strong>{claim.totemId}</strong></div>
         <div><span>Original Yaw</span><strong>{formatYaw(claim.yaw)}</strong></div>
@@ -166,7 +168,7 @@ export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: P
 
       <div className="land-claim-workspace">
         <section className="land-claim-grid-card" aria-label="Horizontal land claim grid">
-          <div className="land-claim-section-heading"><div><h3>Horizontal Claim</h3><p>Click a dotted cell to add it. New cells must remain connected edge-to-edge.</p></div><button className="secondary-action" onClick={() => void load()} disabled={saving}><RefreshCw size={15} />Reload</button></div>
+          <div className="land-claim-section-heading"><div><h3>Horizontal Claim</h3><p>Click a dotted cell to add it. New cells must remain connected edge-to-edge.</p></div><button className="secondary-action" onClick={() => void load()} disabled={saving || loading} aria-label={loading ? "Reloading land claim" : "Reload"}><RefreshCw size={15} className={loading ? "land-claim-reload-icon" : undefined} />Reload</button></div>
           <div className="land-claim-grid-wrap">
             <svg className="land-claim-grid" viewBox={`${bounds.minX} ${bounds.minY} ${bounds.width} ${bounds.height}`} role="img" aria-label={`Land claim grid with ${claim.segmentCount} existing and ${selected.size} selected segments`}>
               {plotted.map(({ x, y }) => {
@@ -200,13 +202,13 @@ export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: P
 
         <aside className="land-claim-controls">
           <h3>Expansion</h3>
-          <label><span>Vertical Level</span><select value={verticalLevel} disabled={saving} onChange={(event) => setVerticalLevel(Number(event.target.value))}>
+          <label><span>Vertical Level</span><select value={verticalLevel} disabled={saving || loading} onChange={(event) => setVerticalLevel(Number(event.target.value))}>
             {Array.from({ length: maxVertical - claim.verticalLevel + 1 }, (_, index) => claim.verticalLevel + index).map((level) => <option key={level} value={level}>{level}</option>)}
           </select></label>
           <p className="muted">Vertical expansion grows equally upward and downward. The game hard-caps it at level 5.</p>
           <dl><dt>Pending Horizontal</dt><dd>{selected.size}</dd><dt>Pending Vertical</dt><dd>{verticalLevel === claim.verticalLevel ? "No Change" : `${claim.verticalLevel} → ${verticalLevel}`}</dd></dl>
           <button className="primary-action" disabled={!canSave} onClick={() => void save()}>{saving ? "Applying…" : "Apply Changes"}</button>
-          {selected.size > 0 && <button className="secondary-action" disabled={saving} onClick={() => setSelected(new Set())}>Clear Selection</button>}
+          {selected.size > 0 && <button className="secondary-action" disabled={saving || loading} onClick={() => setSelected(new Set())}>Clear Selection</button>}
           <p className="land-claim-backup-note"><DatabaseBackup size={16} />A full database backup is created before every save.</p>
           <p className="land-claim-restart-note"><RefreshCw size={16} />Restart {claim.map || "the affected game server"} after saving to load the changes.</p>
         </aside>
