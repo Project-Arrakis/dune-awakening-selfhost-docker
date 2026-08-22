@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { basesApi, type BaseLandClaim } from "../../api/bases";
 import { BaseLandClaimTab } from "./BaseLandClaimTab";
@@ -47,6 +47,39 @@ describe("BaseLandClaimTab", () => {
     expect(screen.getByText(/Restart HaggaBasin after saving/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Apply Changes" })).toBeDisabled();
     expect(screen.getByLabelText("Sub-Fief origin")).toBeInTheDocument();
+    expect(screen.getByLabelText("Existing segment 1, 0")).toBeInTheDocument();
+  });
+
+  it("keeps the editor mounted while a manual reload is in progress", async () => {
+    let finishReload!: (value: BaseLandClaim) => void;
+    vi.mocked(basesApi.landClaim)
+      .mockResolvedValueOnce(claim)
+      .mockImplementationOnce(() => new Promise((resolve) => { finishReload = resolve; }));
+    renderEditor();
+    expect(await screen.findByText("459")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+
+    expect(screen.getByText("459")).toBeInTheDocument();
+    expect(screen.getByLabelText("Existing segment 1, 0")).toBeInTheDocument();
+    expect(screen.queryByText(/Loading land claim/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reloading land claim" })).toBeDisabled();
+
+    await act(async () => finishReload({ ...claim, segmentCount: 2 }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reload" })).toBeEnabled());
+  });
+
+  it("keeps the last good claim visible when a manual reload fails", async () => {
+    vi.mocked(basesApi.landClaim)
+      .mockResolvedValueOnce(claim)
+      .mockRejectedValueOnce(new Error("Database is restarting."));
+    renderEditor();
+    expect(await screen.findByText("459")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+
+    expect(await screen.findByText("Database is restarting.")).toBeInTheDocument();
+    expect(screen.getByText("459")).toBeInTheDocument();
     expect(screen.getByLabelText("Existing segment 1, 0")).toBeInTheDocument();
   });
 

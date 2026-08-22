@@ -4437,6 +4437,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .land-claim-controls h3 { margin: 0 0 4px; color: var(--title); font-size: 14px; }
 .land-claim-section-heading p { margin: 0; color: var(--muted); font-size: 12px; }
 .land-claim-section-heading button { width: auto; flex: 0 0 auto; }
+.land-claim-reload-icon { animation: spin 1s linear infinite; }
 .land-claim-grid-wrap {
   min-height: 300px;
   overflow: hidden;
