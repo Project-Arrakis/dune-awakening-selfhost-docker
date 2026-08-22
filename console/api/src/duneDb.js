@@ -4864,6 +4864,189 @@ export async function repairFactionReputation(db, id, journeyTagsData = {}) {
   });
 }
 
+// Landsraad contracts are recurring journey trees, so a broad "reset all"
+// repair would be destructive: it could erase healthy progress and each tree
+// has its own initial reveal state. Keep repairs as explicit, evidence-backed
+// recipes. New corruption shapes can be added here only after their healthy
+// starting state has been verified against real game data.
+const LANDSRAAD_QUEST_REPAIR_RECIPES = Object.freeze([
+  Object.freeze({
+    id: "syndicate-assassination-completed-available",
+    name: "Assassination",
+    rootId: "DA_LDR_Syndicate_Assassination_1",
+    nodeIds: Object.freeze([
+      "DA_LDR_Syndicate_Assassination_1",
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_1",
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_2",
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_3",
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_4",
+      "DA_LDR_Syndicate_Assassination_1.TravelTo"
+    ]),
+    initiallyRevealedNodeIds: Object.freeze([
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_1",
+      "DA_LDR_Syndicate_Assassination_1.TravelTo"
+    ])
+  })
+]);
+
+function jsonStateIsTrue(value) {
+  return value === true || value === "true";
+}
+
+function landsraadQuestRepairMatches(rows, recipe) {
+  if (rows.length !== recipe.nodeIds.length) return false;
+  const byId = new Map(rows.map((row) => [String(row.story_node_id || ""), row]));
+  if (recipe.nodeIds.some((nodeId) => !byId.has(nodeId))) return false;
+  const root = byId.get(recipe.rootId);
+  const metadata = root?.metadata_state && typeof root.metadata_state === "object" ? root.metadata_state : {};
+  return jsonStateIsTrue(root?.complete_condition_state)
+    && jsonStateIsTrue(root?.reveal_condition_state)
+    && String(metadata.IsAvailable ?? "") === "1"
+    && recipe.nodeIds.every((nodeId) => jsonStateIsTrue(byId.get(nodeId)?.complete_condition_state));
+}
+
+async function requireLandsraadQuestRepairCapability(db) {
+  const hasJourney = await tableExists(db, "journey_story_node");
+  const hasCooldown = await tableExists(db, "journey_story_node_cooldown");
+  const journeyColumns = hasJourney ? await columnsFor(db, "journey_story_node") : new Set();
+  const cooldownColumns = hasCooldown ? await columnsFor(db, "journey_story_node_cooldown") : new Set();
+  const supported = ["character_id", "story_node_id", "complete_condition_state", "reveal_condition_state", "fail_condition_state", "metadata_state", "has_pending_reward"]
+    .every((column) => journeyColumns.has(column))
+    && ["character_id", "story_node_id", "time_to_expire"].every((column) => cooldownColumns.has(column));
+  await requireCapability(supported,
+    "Landsraad quest repair requires dune.journey_story_node and dune.journey_story_node_cooldown.");
+}
+
+async function landsraadQuestRepairRows(db, characterId, { lock = false } = {}) {
+  const nodeIds = LANDSRAAD_QUEST_REPAIR_RECIPES.flatMap((recipe) => recipe.nodeIds);
+  const result = await db.query(`
+    select story_node_id, complete_condition_state, reveal_condition_state,
+           fail_condition_state, metadata_state, has_pending_reward
+    from dune.journey_story_node
+    where character_id = $1 and story_node_id = any($2::text[])
+    ${lock ? "for update" : ""}`, [characterId, nodeIds]);
+  return result.rows || [];
+}
+
+async function landsraadQuestRepairCooldowns(db, characterId, { lock = false } = {}) {
+  const rootIds = LANDSRAAD_QUEST_REPAIR_RECIPES.map((recipe) => recipe.rootId);
+  const result = await db.query(`
+    select story_node_id, time_to_expire
+    from dune.journey_story_node_cooldown
+    where character_id = $1 and story_node_id = any($2::text[])
+    ${lock ? "for update" : ""}`, [characterId, rootIds]);
+  return result.rows || [];
+}
+
+function cooldownIsActive(value, now = Date.now()) {
+  if (value == null || value === "") return false;
+  const expiresAt = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  // An unreadable cooldown is not proof that it expired. Fail closed instead
+  // of turning a legitimate current cooldown into a repeatable contract.
+  return !Number.isFinite(expiresAt) || expiresAt > now;
+}
+
+function matchingLandsraadQuestRepairs(rows, cooldownRows, now = Date.now()) {
+  const cooldownByRoot = new Map(cooldownRows.map((row) => [String(row.story_node_id || ""), row.time_to_expire]));
+  return LANDSRAAD_QUEST_REPAIR_RECIPES
+    .filter((recipe) => landsraadQuestRepairMatches(
+      rows.filter((row) => recipe.nodeIds.includes(String(row.story_node_id || ""))), recipe)
+      && !cooldownIsActive(cooldownByRoot.get(recipe.rootId), now))
+    .map((recipe) => ({ id: recipe.id, name: recipe.name, rootId: recipe.rootId }));
+}
+
+export async function inspectLandsraadQuestRepairs(db, id) {
+  await requireLandsraadQuestRepairCapability(db);
+  const player = await resolvePlayerMutationTarget(db, id);
+  requireOfflinePlayer(player, "Landsraad quest repair");
+  const [rows, cooldowns] = await Promise.all([
+    landsraadQuestRepairRows(db, player.playerStateId),
+    landsraadQuestRepairCooldowns(db, player.playerStateId)
+  ]);
+  const repairs = matchingLandsraadQuestRepairs(rows, cooldowns);
+  return {
+    ok: true,
+    player,
+    repairs,
+    repairCount: repairs.length,
+    message: repairs.length
+      ? `${repairs.length} known Landsraad quest problem${repairs.length === 1 ? " was" : "s were"} detected.`
+      : "No known Landsraad quest problems were found."
+  };
+}
+
+export async function repairLandsraadQuests(db, id) {
+  await requireLandsraadQuestRepairCapability(db);
+  return db.transaction(async (tx) => {
+    const player = await resolvePlayerMutationTarget(tx, id);
+    // Lock the player's authoritative status row and re-check it inside the
+    // same transaction that changes journey data. This closes the gap between
+    // the route's preflight/backup and the actual write if the player begins
+    // logging in while the backup is running.
+    const status = await tx.query(`
+      select online_status::text as online_status
+      from dune.player_state
+      where id = $1
+      for update`, [player.playerStateId]);
+    if (!status.rowCount) throw playerNotFoundError();
+    requireOfflinePlayer({ ...player, onlineStatus: status.rows[0].online_status }, "Landsraad quest repair");
+
+    const rows = await landsraadQuestRepairRows(tx, player.playerStateId, { lock: true });
+    const cooldowns = await landsraadQuestRepairCooldowns(tx, player.playerStateId, { lock: true });
+    const matches = matchingLandsraadQuestRepairs(rows, cooldowns);
+    if (!matches.length) {
+      return { ok: true, player, repairs: [], repairCount: 0, repairedNodes: 0, removedCooldowns: 0,
+        message: "No known Landsraad quest problems were found." };
+    }
+
+    let repairedNodes = 0;
+    let removedCooldowns = 0;
+    const repairs = [];
+    for (const match of matches) {
+      const recipe = LANDSRAAD_QUEST_REPAIR_RECIPES.find((candidate) => candidate.id === match.id);
+      if (!recipe) continue;
+      const updated = await tx.query(`
+        update dune.journey_story_node
+        set complete_condition_state = '{}'::jsonb,
+            reveal_condition_state = case
+              when story_node_id = any($3::text[]) then 'true'::jsonb
+              else '{}'::jsonb
+            end,
+            has_pending_reward = false,
+            fail_condition_state = '{}'::jsonb,
+            metadata_state = case
+              when story_node_id = $2 then metadata_state - 'House'
+              else metadata_state
+            end
+        where character_id = $1 and story_node_id = any($4::text[])`, [
+        player.playerStateId,
+        recipe.rootId,
+        recipe.initiallyRevealedNodeIds,
+        recipe.nodeIds
+      ]);
+      if (Number(updated.rowCount || 0) !== recipe.nodeIds.length) {
+        throw new Error(`${recipe.name} changed while the repair was running. No Landsraad changes were saved.`);
+      }
+      const cooldown = await tx.query(`
+        delete from dune.journey_story_node_cooldown
+        where character_id = $1 and story_node_id = $2`, [player.playerStateId, recipe.rootId]);
+      repairedNodes += Number(updated.rowCount || 0);
+      removedCooldowns += Number(cooldown.rowCount || 0);
+      repairs.push(match);
+    }
+
+    return {
+      ok: true,
+      player,
+      repairs,
+      repairCount: repairs.length,
+      repairedNodes,
+      removedCooldowns,
+      message: `Repaired ${repairs.map((repair) => repair.name).join(", ")} Landsraad quest state. The player can log in now.`
+    };
+  });
+}
+
 const PLAYER_ASSIGNABLE_FACTIONS = Object.freeze({
   1: "Atreides",
   2: "Harkonnen",

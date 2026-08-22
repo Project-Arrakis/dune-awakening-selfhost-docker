@@ -17,7 +17,7 @@ import {
   queueGeneratorRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
-import { addBaseContainerItem, addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteAllBaseContainerItems, deleteBaseContainerItem, deleteInventoryItem, deleteMultipleBaseContainerItems, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, fillItemToBaseContainer, fillItemToStorage, generatorUptimePolicy, giveItemToBaseContainer, giveItemToPlayer, giveItemToStorage, giveMultipleItemsToBaseContainer, guildMembers, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerServerMemberships, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairVehicleDecay, resetJourneyNode, resetTutorial, resolvePlayerTarget, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addBaseContainerItem, addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteAllBaseContainerItems, deleteBaseContainerItem, deleteInventoryItem, deleteMultipleBaseContainerItems, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, fillItemToBaseContainer, fillItemToStorage, generatorUptimePolicy, giveItemToBaseContainer, giveItemToPlayer, giveItemToStorage, giveMultipleItemsToBaseContainer, guildMembers, inspectLandsraadQuestRepairs, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerServerMemberships, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairLandsraadQuests, repairVehicleDecay, resetJourneyNode, resetTutorial, resolvePlayerTarget, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 import { listStorage, liveMapBases, liveMapStorage, portalStorage, trackPlayerPlaytime } from "../src/duneDb.js";
 
 beforeEach(() => {
@@ -6751,6 +6751,107 @@ test("faction repair refuses neutral players", async () => {
   assert.equal(calls.some((call) => call.text.includes("FactionPlayerComponent,m_FactionDataArray")), false);
 });
 
+function corruptedAssassinationJourneyRows() {
+  const rootId = "DA_LDR_Syndicate_Assassination_1";
+  return [
+    rootId,
+    `${rootId}.DA_LDR_Syndicate_Assassination_1_1`,
+    `${rootId}.DA_LDR_Syndicate_Assassination_1_2`,
+    `${rootId}.DA_LDR_Syndicate_Assassination_1_3`,
+    `${rootId}.DA_LDR_Syndicate_Assassination_1_4`,
+    `${rootId}.TravelTo`
+  ].map((story_node_id) => ({
+    story_node_id,
+    complete_condition_state: true,
+    reveal_condition_state: true,
+    fail_condition_state: {},
+    metadata_state: story_node_id === rootId
+      ? { House: "DA_HouseRichese", RandSeed: 307575399, IsAvailable: 1 }
+      : { RandSeed: 307575399 },
+    has_pending_reward: false
+  }));
+}
+
+test("Landsraad repair inspection detects the verified completed-but-available assassination pattern", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { journeyIdentityColumn: "character_id", journeyStateRows: corruptedAssassinationJourneyRows() });
+  const result = await inspectLandsraadQuestRepairs(db, 123);
+  assert.equal(result.repairCount, 1);
+  assert.deepEqual(result.repairs.map((repair) => repair.name), ["Assassination"]);
+  assert.equal(calls.some((call) => call.text.includes("update dune.journey_story_node")), false);
+});
+
+test("Landsraad repair reconstructs only the known assassination nodes and removes its cooldown", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    journeyIdentityColumn: "character_id",
+    journeyStateRows: corruptedAssassinationJourneyRows(),
+    journeyUpdateRows: 6,
+    cooldownDeleteRows: 1,
+    cooldownRows: [{
+      story_node_id: "DA_LDR_Syndicate_Assassination_1",
+      time_to_expire: new Date(Date.now() - 60_000)
+    }]
+  });
+  const result = await repairLandsraadQuests(db, 123);
+  assert.equal(result.repairCount, 1);
+  assert.equal(result.repairedNodes, 6);
+  assert.equal(result.removedCooldowns, 1);
+  const update = calls.find((call) => call.text.includes("update dune.journey_story_node"));
+  assert.ok(update);
+  assert.equal(update.values[0], 5);
+  assert.equal(update.values[1], "DA_LDR_Syndicate_Assassination_1");
+  assert.deepEqual(update.values[2], [
+    "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_1",
+    "DA_LDR_Syndicate_Assassination_1.TravelTo"
+  ]);
+  assert.equal(update.values[3].length, 6);
+  assert.match(update.text, /metadata_state - 'House'/);
+  const cooldownDelete = calls.find((call) => call.text.includes("delete from dune.journey_story_node_cooldown"));
+  assert.deepEqual(cooldownDelete.values, [5, "DA_LDR_Syndicate_Assassination_1"]);
+});
+
+test("Landsraad repair rechecks the locked player status and refuses a login race", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    journeyIdentityColumn: "character_id",
+    journeyStateRows: corruptedAssassinationJourneyRows(),
+    lockedPlayerStatus: "Online"
+  });
+  await assert.rejects(() => repairLandsraadQuests(db, 123), /require the player to be offline/);
+  assert.equal(calls.some((call) => call.text.includes("update dune.journey_story_node")), false);
+});
+
+test("Landsraad repair leaves healthy quest state unchanged", async () => {
+  const calls = [];
+  const healthyRows = corruptedAssassinationJourneyRows().map((row) => ({
+    ...row,
+    complete_condition_state: {},
+    reveal_condition_state: row.story_node_id.endsWith("_1") || row.story_node_id.endsWith("TravelTo") ? true : {}
+  }));
+  healthyRows[0].metadata_state = { RandSeed: 307575399, IsAvailable: 1 };
+  const db = fakeMutationDb(calls, { journeyIdentityColumn: "character_id", journeyStateRows: healthyRows });
+  const result = await repairLandsraadQuests(db, 123);
+  assert.equal(result.repairCount, 0);
+  assert.equal(calls.some((call) => call.text.includes("update dune.journey_story_node")), false);
+});
+
+test("Landsraad repair does not bypass an active assassination cooldown", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    journeyIdentityColumn: "character_id",
+    journeyStateRows: corruptedAssassinationJourneyRows(),
+    cooldownRows: [{
+      story_node_id: "DA_LDR_Syndicate_Assassination_1",
+      time_to_expire: new Date(Date.now() + 60_000)
+    }]
+  });
+  const result = await repairLandsraadQuests(db, 123);
+  assert.equal(result.repairCount, 0);
+  assert.equal(calls.some((call) => call.text.includes("update dune.journey_story_node")), false);
+  assert.equal(calls.some((call) => call.text.includes("delete from dune.journey_story_node_cooldown")), false);
+});
+
 test("player faction assignment uses the game's faction function with the controller id", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, { playerFactionRows: [] });
@@ -7476,6 +7577,8 @@ function fakeMutationDb(calls, fixtures = {}) {
               ? ["id", "vehicle_id", "template_id", "stats"]
             : table === "journey_story_node"
               ? [fixtures.journeyIdentityColumn || "account_id", "story_node_id", "has_pending_reward", "complete_condition_state", "reveal_condition_state", "fail_condition_state", "metadata_state", "reset_group"]
+              : table === "journey_story_node_cooldown"
+                ? ["character_id", "story_node_id", "time_to_expire"]
               : table === "player_tags"
                 ? [fixtures.journeyIdentityColumn || "account_id", "tag"]
                 : fixtures.itemColumns || ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats", "volume_override"];
@@ -7493,7 +7596,13 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && text.includes("update dune.actors")) return { rows: [{ ok: true }] };
       if (text.includes("story_node_id not like 'DA_Dunipedia_%'")) return { rows: fixtures.discoveredJourneyRows || [] };
       if (text.includes("story_node_id like 'DA_Dunipedia_%'")) return { rows: fixtures.codexRows || [] };
+      if (text.includes("delete from dune.journey_story_node_cooldown")) return { rows: [], rowCount: fixtures.cooldownDeleteRows ?? 0 };
+      if (text.includes("from dune.journey_story_node_cooldown")) return { rows: fixtures.cooldownRows || [] };
       if (text.includes("from dune.journey_story_node") && (text.includes("where account_id = $1") || text.includes('where "account_id" = $1') || text.includes("where character_id = $1") || text.includes('where "character_id" = $1'))) return { rows: fixtures.journeyStateRows || [] };
+      if (text.includes("from dune.player_state") && text.includes("online_status") && text.includes("for update")) {
+        const rows = [{ online_status: fixtures.lockedPlayerStatus || "Offline" }];
+        return { rows, rowCount: rows.length };
+      }
       if (text.includes("select tag from dune.player_tags")) return { rows: fixtures.playerTagRows || [] };
       if (text.includes("update dune.journey_story_node")) return { rows: [], rowCount: fixtures.journeyUpdateRows ?? 0 };
       if (text.includes("insert into dune.journey_story_node")) return { rows: [{ ok: true }], rowCount: 1 };

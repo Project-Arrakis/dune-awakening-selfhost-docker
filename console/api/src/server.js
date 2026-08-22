@@ -754,6 +754,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/add-currency$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-currency", "ADD CURRENCY", (playerId, body) => duneDb.addCurrency(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/add-faction-reputation$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-faction-reputation", "ADD FACTION REPUTATION", (playerId, body) => duneDb.addFactionReputation(db, playerId, body, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/repair-faction-reputation$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-faction-reputation", "REPAIR FACTION REPUTATION", (playerId) => duneDb.repairFactionReputation(db, playerId, journeyTagsData));
+  if (path.match(/^\/api\/players\/[^/]+\/repair-landsraad-quests$/) && req.method === "POST") return playerLandsraadQuestRepairRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/faction$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.assign-faction", "CHANGE PLAYER FACTION", (playerId, body) => duneDb.setPlayerFaction(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/add-intel$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-intel", "ADD INTEL", (playerId, body) => duneDb.addIntel(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/specializations\/add-xp$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.specializations.add-xp", "ADD SPECIALIZATION XP", (playerId, body) => duneDb.addSpecializationXp(db, playerId, body));
@@ -2910,6 +2911,21 @@ function queryParams(url, names) {
 async function playerDbMutation(req, res, path, action, phrase, fn) {
   const playerId = decodeURIComponent(path.split("/")[3]);
   return directDbMutation(req, res, action, phrase, (body) => fn(playerId, body), { playerId });
+}
+
+async function playerLandsraadQuestRepairRoute(req, res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "players.repair-landsraad-quests", "REPAIR LANDSRAAD QUESTS", async () => {
+    // Diagnose first so a healthy player does not create a pointless full
+    // backup. repairLandsraadQuests repeats the diagnosis and offline check
+    // transactionally after the backup, so this preflight is never trusted as
+    // authorization to write stale state.
+    const diagnosis = await duneDb.inspectLandsraadQuestRepairs(db, playerId);
+    if (!diagnosis.repairCount) return diagnosis;
+    await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "restore-safety" } });
+    const result = await duneDb.repairLandsraadQuests(db, playerId);
+    return { ...result, backupCreated: true };
+  }, { playerId });
 }
 
 async function guildPromoteRoute(req, res, path) {
