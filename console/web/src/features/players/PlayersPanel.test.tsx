@@ -1,7 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { playersApi } from "../../api/players";
+import { mapsApi } from "../../api/maps";
+import { invalidateInstanceNames } from "../maps/instanceNames";
 import { PlayersPanel } from "./PlayersPanel";
+
+vi.mock("../../api/maps", () => ({ mapsApi: { sietchDimensions: vi.fn() } }));
 
 vi.mock("../../api/players", () => ({
   playersApi: {
@@ -17,13 +21,17 @@ const bannedPlayer = {
   actual_online_status: "Online",
   online_status: "Banned",
   is_banned: true,
-  map: "Survival_1",
+  map: "HaggaBasin",
+  partition_id: 1,
+  partitionMap: "Survival_1",
   fls_id: "254A06043E9F0B16",
   total_playtime_seconds: 3665
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  invalidateInstanceNames();
+  vi.mocked(mapsApi.sietchDimensions).mockResolvedValue({ stdout: "", exitCode: 1 } as never);
   vi.mocked(playersApi.list).mockResolvedValue({
     rows: [bannedPlayer],
     totalCount: 1,
@@ -38,6 +46,20 @@ afterEach(() => {
 });
 
 describe("PlayersPanel persistent bans", () => {
+  it("shows the configured Sietch name next to the player's game map", async () => {
+    vi.mocked(mapsApi.sietchDimensions).mockImplementation((_map?: string, wantIds?: boolean) => Promise.resolve({
+      stdout: wantIds
+        ? "1\n"
+        : ["DIMENSION  DISPLAY NAME                     PASSWORD", "0          Sietch New                       (unset)"].join("\n"),
+      exitCode: 0
+    }) as never);
+
+    render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
+
+    expect(await screen.findByText("HaggaBasin (Sietch New)")).toBeInTheDocument();
+    expect(vi.mocked(mapsApi.sietchDimensions).mock.calls.map((call) => call[0])).toEqual(["Survival_1", "Survival_1"]);
+  });
+
   it("expands the player list until a player detail is opened", async () => {
     render(<PlayersPanel
       onError={vi.fn()}
@@ -79,7 +101,7 @@ describe("PlayersPanel persistent bans", () => {
     fireEvent.click(screen.getByText("Vixen"));
     await act(async () => { await Promise.resolve(); });
     expect(playersApi.profile).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("open-player-map")).toHaveTextContent("Survival_1");
+    expect(screen.getByTestId("open-player-map")).toHaveTextContent("HaggaBasin");
 
     vi.mocked(playersApi.profile).mockResolvedValue({ player: { ...bannedPlayer, map: "DeepDesert_1" } });
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });

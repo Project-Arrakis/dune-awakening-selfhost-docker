@@ -12,6 +12,7 @@ import { DataTable } from "../../components/common/DataTable";
 import { KeyValueGrid, TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { InlineActionResult } from "../../components/common/InlineActionResult";
 import { adminTaskFailureDetail, friendlyInlineError, titleCaseWords } from "../players/playerAdminUtils";
+import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames";
 import { formatUiSentence, stripAnsi, titleCase } from "../../lib/display";
 import type { CharacterTransferSettings, IncomingCharacterTransferPolicy, MessageOfTheDaySettings, MessageOfTheDayStatus, PlayerAnnouncementSettings } from "../../api/admin";
 
@@ -696,7 +697,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
 
   async function loadMapChatOptions() {
     const result = await liveMapApi.services();
-    const options = buildMapChatOptions(result.rows || []);
+    const options = await buildNamedMapChatOptions(result.rows || []);
     if (!options.length) return;
     setMapChatOptions(options);
     setMapChatTarget((current) => options.some((option) => option.key === current) ? current : options[0].key);
@@ -1024,7 +1025,17 @@ function samePlayerAnnouncements(a: PlayerAnnouncementSettings, b: PlayerAnnounc
     && a.leaveMessage === b.leaveMessage;
 }
 
-function buildMapChatOptions(rows: Record<string, unknown>[]) {
+export async function buildNamedMapChatOptions(rows: Record<string, unknown>[]) {
+  // Only Hagga Basin has Sietches. Other map labels come from their own map
+  // identity/service metadata and must never inherit a "Sietch ..." label.
+  const maps = rows.some((row) => String(row.map || "").trim() === "Survival_1") ? ["Survival_1"] : [];
+  const instanceNames = maps.length
+    ? cachedInstanceNames(maps) || await resolveInstanceNames(maps) || new Map<string, string>()
+    : new Map<string, string>();
+  return buildMapChatOptions(rows, instanceNames);
+}
+
+export function buildMapChatOptions(rows: Record<string, unknown>[], instanceNames = new Map<string, string>()) {
   const candidates = rows.map((row) => {
     const map = String(row.map || "").trim();
     if (!map) return null;
@@ -1034,10 +1045,10 @@ function buildMapChatOptions(rows: Record<string, unknown>[]) {
     const players = Number(row.connected_players || 0);
     const chatRegion = chatRegionForMap(map);
     const status = ready ? "Ready" : alive ? "Warming" : "Offline";
-    const destinationName = mapChatDestinationName(row, map);
+    const destinationName = mapChatDestinationName(row, map, instanceNames);
     return {
       key: `${chatRegion}|${dimension}`,
-      label: `${destinationName} (${status}, ${players} online)`,
+      label: `${destinationName} (${status}, ${players} Online)`,
       chatRegion,
       dimension,
       status,
@@ -1059,13 +1070,19 @@ function buildMapChatOptions(rows: Record<string, unknown>[]) {
 
 function defaultMapChatOptions(): MapChatOption[] {
   return [
-    { key: "HaggaBasin|0", label: "Survival Sietch (Default, 0 online)", chatRegion: "HaggaBasin", dimension: 0, status: "Default", players: 0 },
-    { key: "Overland|0", label: "Overland (Default, 0 online)", chatRegion: "Overland", dimension: 0, status: "Default", players: 0 },
-    { key: "DeepDesert|0", label: "Deep Desert (Default, 0 online)", chatRegion: "DeepDesert", dimension: 0, status: "Default", players: 0 }
+    { key: "HaggaBasin|0", label: "Survival Sietch (Default, 0 Online)", chatRegion: "HaggaBasin", dimension: 0, status: "Default", players: 0 },
+    { key: "Overland|0", label: "Overland (Default, 0 Online)", chatRegion: "Overland", dimension: 0, status: "Default", players: 0 },
+    { key: "DeepDesert|0", label: "Deep Desert (Default, 0 Online)", chatRegion: "DeepDesert", dimension: 0, status: "Default", players: 0 }
   ];
 }
 
-function mapChatDestinationName(row: Record<string, unknown>, map: string) {
+function mapChatDestinationName(row: Record<string, unknown>, map: string, instanceNames: Map<string, string>) {
+  if (map === "Survival_1") {
+    const partitionId = String(row.partition_id || "").trim();
+    const instanceName = partitionId ? instanceNames.get(`${map}:${partitionId}`) : "";
+    if (instanceName) return instanceName;
+  }
+  if (map === "Overmap") return "Overland";
   const name = String(row.name || "").trim();
   return name || friendlyMapChatName(map);
 }

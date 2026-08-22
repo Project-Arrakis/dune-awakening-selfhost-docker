@@ -1642,6 +1642,65 @@ test("players query uses parameterized search input", async () => {
   assert.equal(result.rows[0].action_player_id, "RedBlink#75570");
 });
 
+test("players query resolves the game map partition used by configured Sietch names", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.actors", "dune.player_state", "dune.world_partition"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "online_status" }] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 1 }] };
+      return { rows: [{
+        actor_id: 82,
+        map: "HaggaBasin",
+        partition_id: "1",
+        partition_map: "Survival_1",
+        dimension_index: "0",
+        total_count: 1
+      }] };
+    }
+  };
+
+  const result = await listPlayers(db);
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+
+  assert.match(playerQuery.text, /left join dune\.world_partition wp on wp\.partition_id = a\.partition_id/);
+  assert.deepEqual(result.rows[0], {
+    actor_id: 82,
+    map: "HaggaBasin",
+    partition_id: 1,
+    partitionMap: "Survival_1",
+    dimensionIndex: 0
+  });
+});
+
+test("players query keeps its map fallback when world_partition is unavailable", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.actors", "dune.player_state"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) return { rows: [] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 1 }] };
+      return { rows: [{ actor_id: 82, map: "HaggaBasin", partition_id: "1", total_count: 1 }] };
+    }
+  };
+
+  const result = await listPlayers(db);
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+
+  assert.doesNotMatch(playerQuery.text, /join dune\.world_partition/);
+  assert.match(playerQuery.text, /'' as partition_map/);
+  assert.equal(result.rows[0].map, "HaggaBasin");
+  assert.equal(result.rows[0].partitionMap, "");
+});
+
 test("playtime tracker persists active sessions and closes players no longer online", async () => {
   const calls = [];
   const run = async (text, values = []) => {

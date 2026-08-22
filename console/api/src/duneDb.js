@@ -1545,6 +1545,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const pagedOrder = [...sortOrder, ...(sortOrder.includes("actor_id") ? [] : ["actor_id"])]
     .map((column) => `${column} ${safeSortDirection}`).join(", ");
   const playerStateColumns = await columnsFor(db, "player_state");
+  const hasWorldPartition = await tableExists(db, "world_partition");
   const encryptedAccountColumns = await tableExists(db, "encrypted_accounts")
     ? await columnsFor(db, "encrypted_accounts")
     : new Set();
@@ -1581,6 +1582,12 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const playerPlaytimeJoin = hasPlayerPlaytime
     ? "left join dune.console_player_playtime player_playtime on player_playtime.account_id = a.owner_account_id"
     : "";
+  const worldPartitionJoin = hasWorldPartition
+    ? "left join dune.world_partition wp on wp.partition_id = a.partition_id"
+    : "";
+  const worldPartitionSelect = hasWorldPartition
+    ? "coalesce(wp.map, '') as partition_map, coalesce(wp.dimension_index, 0) as dimension_index,"
+    : "'' as partition_map, 0 as dimension_index,";
   const totalPlaytimeSelect = hasPlayerPlaytime
     ? `greatest(0, coalesce(player_playtime.total_seconds, 0) +
          case when player_playtime.session_started_at is not null
@@ -1659,6 +1666,8 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              end as action_player_id,
              a.class,
              coalesce(a.map, '') as map,
+             coalesce(a.partition_id, 0) as partition_id,
+             ${worldPartitionSelect}
              ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"} as actual_online_status,
              case when ${bannedExpression} then 'Banned'
                   else ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"}
@@ -1679,6 +1688,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
       left join dune.accounts ac on ac.id = a.owner_account_id
       ${playerPlaytimeJoin}
       ${encryptedAccountsJoin}
+      ${worldPartitionJoin}
       where ${where}
     ),
     deduped_players as (
@@ -1693,6 +1703,9 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              action_player_id,
              class,
              map,
+             partition_id,
+             partition_map,
+             dimension_index,
              actual_online_status,
              online_status,
              is_banned,
@@ -1734,7 +1747,12 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     totalPlayers: totalsResult ? (totalsResult.rows[0] ? Number(totalsResult.rows[0].total_players) : 0) : undefined,
     rows: result.rows
       .filter((row) => row.actor_id !== null && row.actor_id !== undefined)
-      .map(({ total_count, ...row }) => row)
+      .map(({ total_count, partition_map, dimension_index, ...row }) => ({
+        ...row,
+        partition_id: Number(row.partition_id || 0),
+        partitionMap: String(partition_map || ""),
+        dimensionIndex: Number(dimension_index || 0)
+      }))
   };
 }
 
