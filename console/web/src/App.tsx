@@ -35,7 +35,53 @@ import {
 import { parseUpdateTask, stackVersionButtonLabel, stackVersionButtonTitle } from "./features/updates/updateUtils";
 import { formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "./lib/display";
 
-type Tab = "Home" | "Server Control" | "Services" | "Players" | "Guilds" | "Bases" | "Vehicles" | "Exchange" | "Landsraad" | "Admin Tools" | "Live Map" | "Maps" | "Care Package" | "Addons" | "Database" | "Storage" | "Backups" | "Logs" | "Updates" | "Settings";
+// The array is the source of truth (not just a type-level union) so restoring
+// a persisted tab (see loadPersistedTab below) can validate against the real,
+// current list at runtime instead of a hand-duplicated copy that could drift.
+export const ALL_TABS = ["Home", "Server Control", "Services", "Players", "Guilds", "Bases", "Vehicles", "Exchange", "Landsraad", "Admin Tools", "Live Map", "Maps", "Care Package", "Addons", "Database", "Storage", "Backups", "Logs", "Updates", "Settings"] as const;
+type Tab = typeof ALL_TABS[number];
+const ACTIVE_TAB_STORAGE_KEY = "dune-console:active-tab";
+
+// Persisted in sessionStorage, not localStorage: it should survive the
+// automatic reload LazyTabBoundary triggers after a stale chunk load (so the
+// user lands back on the tab they were opening, not Home), but should not
+// stick around and surprise someone who opens the console again days later
+// in a fresh tab.
+function isTab(value: string): value is Tab {
+  return (ALL_TABS as readonly string[]).includes(value);
+}
+
+export function loadPersistedTab(): Tab {
+  if (typeof window === "undefined") return "Home";
+  try {
+    const raw = window.sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY) || "";
+    return isTab(raw) ? raw : "Home";
+  } catch {
+    return "Home";
+  }
+}
+
+export function persistActiveTab(tab: Tab) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tab);
+  } catch {
+    // The tab still switches in-memory if sessionStorage is unavailable.
+  }
+}
+
+// Persist before scheduling the render. LazyTabBoundary reloads from
+// componentDidCatch, which runs before passive effects, so writing from a
+// useEffect would still lose the destination tab during the exact recovery
+// path this state exists to support.
+export function useActiveTab() {
+  const [tab, setTabState] = useState<Tab>(() => loadPersistedTab());
+  const setTab = useCallback((nextTab: Tab) => {
+    persistActiveTab(nextTab);
+    setTabState(nextTab);
+  }, []);
+  return [tab, setTab] as const;
+}
 type SetupState = { files: Record<string, boolean>; config: Record<string, unknown> };
 type PublicDirectoryStatus = {
   mode?: string;
@@ -309,7 +355,7 @@ function AppFooter() {
 export function App() {
   const [auth, setAuth] = useState(false);
   const [password, setPassword] = useState("");
-  const [tab, setTab] = useState<Tab>("Home");
+  const [tab, setTab] = useActiveTab();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
   const [selectedPinnedAddonId, setSelectedPinnedAddonId] = useState("");
