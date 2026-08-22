@@ -182,8 +182,9 @@ function friendlyBackupType(name, line) {
   // the substring-based classifiers below.
   if (/market[-_ ]?bot/i.test(name) || /market[-_ ]?bot/i.test(line)) return "Market Bot Backup";
   if (/auto|scheduled/i.test(name) || /auto|scheduled/i.test(line)) return "Automatic Backup";
-  if (/restore[-_ ]?safety/i.test(name) || /restore[-_ ]?safety/i.test(line)) return "Restore Safety Backup";
+  if (/restore[-_ ]?safety|land[-_ ]?claim[-_ ]?editor/i.test(name) || /restore[-_ ]?safety|land[-_ ]?claim[-_ ]?editor/i.test(line)) return "Restore Safety Backup";
   if (/pre[-_ ]?update/i.test(name) || /pre[-_ ]?update/i.test(line)) return "Pre-update Backup";
+  if (/destructive[-_ ]?sql|sql[-_ ]?safety|base[-_ ]?delete|admin[-_ ]?tools|addon-/i.test(name) || /destructive[-_ ]?sql|sql[-_ ]?safety|base[-_ ]?delete|admin[-_ ]?tools|addon-/i.test(line)) return "SQL Safety Backup";
   if (/import/i.test(name) || /import/i.test(line)) return "Imported Backup";
   if (/\.(backup|dump|sql)$/i.test(name)) return "Manual Backup";
   return "Unknown";
