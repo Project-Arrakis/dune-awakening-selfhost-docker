@@ -109,7 +109,9 @@ describe("BaseLandClaimTab", () => {
       expect.objectContaining({ title: "Edit Land Claim" })
     ));
     await waitFor(() => expect(basesApi.updateLandClaim).toHaveBeenCalledWith("31573", [{ x: 2, y: 0 }], 5));
-    expect(await screen.findByText(/A safety backup was created/)).toBeInTheDocument();
+    const result = await screen.findByText(/A safety backup was created/);
+    const banner = result.closest(".inline-task-result");
+    expect(banner).toHaveClass("result-ok");
   });
 
   it("removing a selected bridge also removes selected cells that depend on it", async () => {

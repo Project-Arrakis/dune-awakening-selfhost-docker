@@ -4383,6 +4383,14 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   box-sizing: border-box;
 }
 .land-claim-editor { gap: 16px; }
+.land-claim-editor > .inline-task-result {
+  align-self: stretch;
+  flex: 0 0 auto;
+  width: auto;
+  max-width: none;
+  margin: 0;
+  box-sizing: border-box;
+}
 .land-claim-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(120px, 1fr));
