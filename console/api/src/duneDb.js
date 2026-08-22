@@ -5425,6 +5425,42 @@ function portalHomeSietch(identity) {
   return { name, partitionId, dimensionIndex };
 }
 
+// Answer directory membership probes without returning character names, actor
+// ids, or any other player data. Steam ids are hashed locally and only hashes
+// explicitly requested by the authenticated directory are compared.
+export async function playerServerMemberships(db, requestedAccountHashes) {
+  const requested = new Set((Array.isArray(requestedAccountHashes) ? requestedAccountHashes : [])
+    .map((value) => String(value || "").toLowerCase())
+    .filter((value) => /^[0-9a-f]{64}$/.test(value))
+    .slice(0, 250));
+  if (!requested.size) return [];
+
+  const identities = await db.query(`
+    select distinct ac.platform_id,
+           ps.player_controller_id::text as player_controller_id,
+           ps.player_pawn_id::text as player_pawn_id
+    from dune.accounts ac
+    join dune.player_state ps on ps.account_id=ac.id
+    join dune.actors pawn on pawn.id=ps.player_pawn_id
+    where lower(coalesce(ac.platform_name,''))='steam'
+      and ac.platform_id ~ '^[0-9]{17}$'`);
+  const levels = await leadershipLevels(db).catch(() => new Map());
+  const found = new Map();
+  for (const row of identities.rows || []) {
+    const accountHash = createHash("sha256").update(String(row.platform_id)).digest("hex");
+    if (!requested.has(accountHash)) continue;
+    const level = Math.min(200, Math.max(0, Number(
+      levels.get(String(row.player_controller_id))
+      || levels.get(String(row.player_pawn_id))
+      || 0
+    ) || 0));
+    found.set(accountHash, Math.max(found.get(accountHash) || 0, level));
+  }
+  return [...requested].map((accountHash) => found.has(accountHash)
+    ? { accountHash, found: true, level: found.get(accountHash) }
+    : { accountHash, found: false, level: null });
+}
+
 // Build private, read-only snapshots only for Steam identities requested by the
 // directory. Raw platform IDs and local Market Bot seller IDs never leave the
 // battlegroup.

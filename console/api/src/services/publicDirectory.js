@@ -235,6 +235,7 @@ export function createPublicDirectoryReporter(config, options = {}) {
   const getBattlegroupRunning = options.getBattlegroupRunning || isBattlegroupRunning;
   const reconcileProbe = options.reconcileProbe || ((probe) => reconcilePublicProbe(config.repoRoot, probe));
   const collectPlayerPortalSnapshots = options.collectPlayerPortalSnapshots || duneDb.playerPortalSnapshots;
+  const collectPlayerServerMemberships = options.collectPlayerServerMemberships || duneDb.playerServerMemberships;
   const collectPlayerPortalMarketSnapshot = options.collectPlayerPortalMarketSnapshot
     || ((database) => playerPortalMarketSnapshot(config, database));
   const buildPlayerPortalContext = options.collectPlayerPortalContext
@@ -278,6 +279,8 @@ export function createPublicDirectoryReporter(config, options = {}) {
   let state = readStatus(statusPath);
   let lastPlayerPortalUploadAt = 0;
   let lastPlayerPortalRequestSignature = "";
+  let lastMembershipUploadAt = 0;
+  let lastMembershipRequestSignature = "";
 
   function start() {
     if (stopped || timer) return;
@@ -425,6 +428,39 @@ export function createPublicDirectoryReporter(config, options = {}) {
         }
       } else {
         lastPlayerPortalRequestSignature = "";
+      }
+      if (Array.isArray(playerPortalStatus?.requestedMembershipHashes)) {
+        const requestedMemberships = playerPortalStatus.requestedMembershipHashes
+          .map((value) => String(value || "").toLowerCase())
+          .filter((value) => /^[0-9a-f]{64}$/.test(value))
+          .slice(0, 250)
+          .sort();
+        const membershipSignature = requestedMemberships.join(",");
+        if (requestedMemberships.length && (
+          membershipSignature !== lastMembershipRequestSignature
+          || now() - lastMembershipUploadAt >= 60_000
+        )) {
+          try {
+            const memberships = await collectPlayerServerMemberships(getDb(), requestedMemberships);
+            await requestJson(fetchImpl, `${claimBaseUrl}/${encodeURIComponent(identity.serverId)}/player-membership/snapshot`, {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${identity.secret}`,
+                "content-type": "application/json"
+              },
+              body: JSON.stringify({
+                observedAt: new Date(now()).toISOString(),
+                memberships
+              })
+            });
+            lastMembershipUploadAt = now();
+            lastMembershipRequestSignature = membershipSignature;
+          } catch {
+            // Membership discovery is optional and must not interrupt the public heartbeat.
+          }
+        }
+      } else {
+        lastMembershipRequestSignature = "";
       }
       const heartbeatSeconds = clampInteger(
         receipt.nextHeartbeatSeconds,
