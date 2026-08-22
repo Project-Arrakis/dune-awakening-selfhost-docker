@@ -2785,9 +2785,10 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    pulls it over the strip's bottom border so the tab and the content below it
    read as one continuous surface. */
 /* Bases opts out of the shared .table-wrap height cap so the table grows with
-   its rows and the page scrolls instead of a container inside it. An expanded
-   row's panel is tall enough that the 620px cap left it fighting for room in a
-   nested scrollport. Row count stays bounded by the page-size control. */
+   its rows and the page scrolls instead of a container inside it. The expanded
+   details render after the table, keeping the sticky table header bounded to
+   actual base rows instead of carrying it through a tall editor panel. Row
+   count stays bounded by the page-size control. */
 /* Two-class selector deliberately: a later grouped rule re-declares
    `overflow: auto` on .table-wrap at equal specificity, so a single-class
    override here would lose on source order. */
@@ -2806,6 +2807,9 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bases-table-wrap .bases-table tbody > tr:last-child > td { border-bottom: 0; }
 .bases-table-wrap .bases-table tbody > tr:last-child > td:first-child { border-bottom-left-radius: 7px; }
 .bases-table-wrap .bases-table tbody > tr:last-child > td:last-child { border-bottom-right-radius: 7px; }
+.table-wrap.bases-table-wrap.has-expanded-row-after-table { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.bases-table-wrap.has-expanded-row-after-table .bases-table tbody > tr:last-child > td:first-child { border-bottom-left-radius: 0; }
+.bases-table-wrap.has-expanded-row-after-table .bases-table tbody > tr:last-child > td:last-child { border-bottom-right-radius: 0; }
 
 /* Below this width the twelve columns have nowhere to go. The table has no
    intrinsic minimum, so instead of overflowing it crushes -- cells collapse to
@@ -2819,13 +2823,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 @media (max-width: 1100px) {
   .table-wrap.bases-table-wrap { overflow: auto; }
   .bases-table { min-width: 860px; }
-  /* The expanded panel is a cell of that 860px table, so without this it
-     inherits the width and pushes its own controls off-screen -- the rank
-     dropdown, remove button and player picker all end up past the right edge.
-     Sticky-left pins the panel to the visible edge while the columns scroll
-     underneath, and the width cap keeps its controls inside the scrollport. */
-  .bases-table td.expanded-row-cell { position: sticky; left: 0; }
-  .bases-table td.expanded-row-cell > * { max-width: calc(100vw - 76px); }
+  .bases-table-wrap + .expanded-row-outside > .expanded-row-cell > * { max-width: calc(100vw - 76px); }
 }
 /* The shared `th` rule is already position:sticky, but an overflow:auto ancestor
    confines a sticky element to that ancestor's scrollport -- so with the height
@@ -4351,6 +4349,15 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   vertical-align: middle;
 }
 .bases-table td.expanded-row-cell {
+  text-align: left;
+}
+.bases-table-wrap + .expanded-row-outside {
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: #101316;
+}
+.bases-table-wrap + .expanded-row-outside > .expanded-row-cell {
   text-align: left;
 }
 /* A plain full-width column, not a grid: the auto-refill row and the reserve

@@ -1028,8 +1028,8 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     }
   }
 
-  // Move focus into a row that has just opened. The expanded panel renders below
-  // the row, so without this the focus stays on the chevron and the content can
+  // Move focus into a base's details after it has opened. Without this the focus
+  // stays on the chevron and the content can
   // open below the fold. Keyed on the base id alone: switching tabs already
   // focuses the tab that was clicked, and re-focusing on every tab change would
   // fight the user.
@@ -1061,7 +1061,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     //
     // Optional call: jsdom does not implement scrollIntoView, and scrolling is a
     // nicety -- the focus move is the part that matters.
-    const panel = document.querySelector<HTMLElement>(".bases-table tbody tr.expanded-row");
+    const panel = document.querySelector<HTMLElement>(".bases-expanded-tabs");
     (panel ?? tab)?.scrollIntoView?.({ block: "nearest" });
   }, [expandedBaseId]);
 
@@ -1447,6 +1447,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         rowKey={(row) => String(row.base_id)}
         onRowClick={(row) => toggleExpanded(String(row.base_id))}
         isRowExpanded={(row) => expandedBaseId === String(row.base_id)}
+        expandedRowPlacement="after-table"
         renderExpandedRow={(row) => {
           const base = row as BaseRow;
           const id = String(base.base_id);
