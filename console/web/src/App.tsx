@@ -34,6 +34,7 @@ import {
 } from "./features/server/ServerPanels";
 import { parseUpdateTask, stackVersionButtonLabel, stackVersionButtonTitle } from "./features/updates/updateUtils";
 import { formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "./lib/display";
+import { useStaleBuildWatcher } from "./lib/staleBuildWatcher";
 
 // The array is the source of truth (not just a type-level union) so restoring
 // a persisted tab (see loadPersistedTab below) can validate against the real,
@@ -393,6 +394,12 @@ export function App() {
   useEffect(() => {
     preloadPlayerAdminIconRailAssets();
   }, []);
+
+  // /api/auth/state exposes the public build version without requiring a
+  // session. Keep watching through the logged-out state too: a Console
+  // rebuild clears the in-memory session, and disabling the watcher at that
+  // moment would let the old bundle survive through the next login.
+  useStaleBuildWatcher();
 
   useEffect(() => {
     const handleSessionExpired = () => {
