@@ -746,7 +746,50 @@ test("reporter uploads only player portal identities requested by the claimed li
   }
 });
 
-test("reporter answers lightweight player membership probes without enabling the Player Portal", async () => {
+test("reporter never reads or uploads character membership when the Player Portal is disabled", async () => {
+  const files = fixture();
+  const requests = [];
+  const requestedHash = "b".repeat(64);
+  try {
+    const reporter = createPublicDirectoryReporter({
+      repoRoot: files.repoRoot,
+      generatedDir: files.generatedDir,
+      secretsDir: files.secretsDir
+    }, {
+      db: fakeDb(),
+      getBattlegroupRunning: () => true,
+      baseUrl: "https://directory.test/api/v1/servers",
+      collectPlayerServerMemberships: async () => {
+        assert.fail("a disabled Player Portal must prevent the local character lookup");
+      },
+      collectPlayerPortalSnapshots: async () => {
+        assert.fail("membership discovery must not build a full Player Portal snapshot");
+      },
+      fetchImpl: async (url, options) => {
+        requests.push({ url, options });
+        if (url.endsWith("/heartbeat")) return response({ ok: true, nextHeartbeatSeconds: 60, listingClaimed: true });
+        if (url.endsWith("/claim-status")) return response({
+          ok: true,
+          claimed: true,
+          playerPortalEnabled: false,
+          requestedAccountHashes: [],
+          requestedMembershipHashes: [requestedHash]
+        });
+        return response({ ok: true, stored: 1 });
+      },
+      setTimeoutFn: () => ({ unref() {} }),
+      now: () => Date.parse("2026-08-22T12:00:00Z")
+    });
+
+    await reporter.tick();
+    const upload = requests.find((request) => request.url.endsWith("/player-membership/snapshot"));
+    assert.equal(upload,undefined);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("reporter answers lightweight player membership probes when the Player Portal is enabled", async () => {
   const files = fixture();
   const requests = [];
   const requestedHash = "b".repeat(64);
@@ -760,23 +803,21 @@ test("reporter answers lightweight player membership probes without enabling the
       getBattlegroupRunning: () => true,
       baseUrl: "https://directory.test/api/v1/servers",
       collectPlayerServerMemberships: async (_db, hashes) => {
-        assert.deepEqual(hashes, [requestedHash]);
-        return [{ accountHash: requestedHash, found: true, level: 87 }];
+        assert.deepEqual(hashes,[requestedHash]);
+        return [{ accountHash: requestedHash,found: true,level: 87 }];
       },
-      collectPlayerPortalSnapshots: async () => {
-        assert.fail("membership discovery must not build a full Player Portal snapshot");
-      },
-      fetchImpl: async (url, options) => {
-        requests.push({ url, options });
-        if (url.endsWith("/heartbeat")) return response({ ok: true, nextHeartbeatSeconds: 60, listingClaimed: false });
+      collectPlayerPortalSnapshots: async () => [],
+      fetchImpl: async (url,options) => {
+        requests.push({ url,options });
+        if (url.endsWith("/heartbeat")) return response({ ok: true,nextHeartbeatSeconds: 60,listingClaimed: true });
         if (url.endsWith("/claim-status")) return response({
           ok: true,
-          claimed: false,
-          playerPortalEnabled: false,
+          claimed: true,
+          playerPortalEnabled: true,
           requestedAccountHashes: [],
           requestedMembershipHashes: [requestedHash]
         });
-        return response({ ok: true, stored: 1 });
+        return response({ ok: true,stored: 1 });
       },
       setTimeoutFn: () => ({ unref() {} }),
       now: () => Date.parse("2026-08-22T12:00:00Z")
