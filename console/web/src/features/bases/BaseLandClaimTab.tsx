@@ -53,10 +53,12 @@ export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: P
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
+  const [statusKind, setStatusKind] = useState<"" | "ok" | "fail">("");
 
   const load = useCallback(async () => {
     setLoading(true);
     setStatus("");
+    setStatusKind("");
     try {
       const result = await basesApi.landClaim(baseId);
       setClaim(result);
@@ -67,12 +69,24 @@ export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: P
       // keeps the last good snapshot in place instead of collapsing the entire
       // editor (and jumping the page/footer) into the error-only state.
       setStatus(error instanceof Error ? error.message : String(error));
+      setStatusKind("fail");
     } finally {
       setLoading(false);
     }
   }, [baseId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (!status || statusKind !== "ok") return undefined;
+    // Match the shared result-ok animation. Removing the state after the fade
+    // also releases the banner's layout space if animation events are skipped.
+    const retire = window.setTimeout(() => {
+      setStatus("");
+      setStatusKind("");
+    }, 10_400);
+    return () => window.clearTimeout(retire);
+  }, [status, statusKind]);
 
   const existing = useMemo(() => new Set([
     "0,0",
@@ -103,6 +117,7 @@ export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: P
   function toggleCell(key: string) {
     if (!claim || saving || loading) return;
     setStatus("");
+    setStatusKind("");
     setSelected((current) => {
       if (!current.has(key)) return new Set([...current, key]);
       const remaining = new Set(current);
@@ -135,6 +150,7 @@ export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: P
     if (!confirmed) return;
     setSaving(true);
     setStatus("");
+    setStatusKind("");
     try {
       const response = await basesApi.updateLandClaim(baseId, additions, verticalLevel);
       if (!response.result) throw new Error(response.reason || response.error || "The land claim update did not return a result.");
@@ -142,9 +158,11 @@ export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: P
       setVerticalLevel(response.result.verticalLevel);
       setSelected(new Set());
       setStatus(`Saved. Added ${response.result.added} horizontal segment${response.result.added === 1 ? "" : "s"}${response.result.verticalChanged ? ` and set vertical expansion to ${response.result.verticalLevel}` : ""}. A safety backup was created. Restart ${response.result.map || "the affected game server"} to load the changes.`);
+      setStatusKind("ok");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(message);
+      setStatusKind("fail");
       onError(message);
     } finally {
       setSaving(false);
@@ -215,7 +233,15 @@ export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: P
       </div>
 
       <p className="land-claim-disclaimer" role="note"><AlertTriangle size={16} />This advanced editor bypasses normal in-game staking validation. Claiming a protected area does not guarantee that the game will permit building there, particularly around enemy camps and other restricted locations.</p>
-      {status && <p className="inline-task-result" role="status"><strong>{status}</strong></p>}
+      {status && <p
+        className={`inline-task-result${statusKind ? ` result-${statusKind}` : ""}`}
+        role={statusKind === "fail" ? "alert" : "status"}
+        onAnimationEnd={() => {
+          if (statusKind !== "ok") return;
+          setStatus("");
+          setStatusKind("");
+        }}
+      ><strong>{status}</strong></p>}
     </div>
   );
 }
