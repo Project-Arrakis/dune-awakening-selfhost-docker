@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Brain, Building2, Car, ChevronDown, ChevronUp, Hammer, Map as MapIcon, Microscope, ScrollText, ShieldCheck, Star, UserRound } from "lucide-react";
 import { adminApi } from "../../api/admin";
-import { playersApi } from "../../api/players";
+import { playersApi, type CharacterRecoveryInspection } from "../../api/players";
 import type { Task } from "../../api/setup";
 import { compareTableValues, DataTable, useResizableColumns, useSortableRows, useSortState } from "../../components/common/DataTable";
 import { InfoTooltip } from "../../components/common/DisplayPrimitives";
@@ -127,6 +127,10 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const [playerAdmin_vehicleTemplate, playerAdmin_setVehicleTemplate] = useState("");
   const [playerAdmin_vehicleCatalog, playerAdmin_setVehicleCatalog] = useState<Record<string, string[]>>({});
   const [playerAdmin_vehicleDecayThreshold, playerAdmin_setVehicleDecayThreshold] = useState("50");
+  const [playerAdmin_characterRecovery, playerAdmin_setCharacterRecovery] = useState<CharacterRecoveryInspection | null>(null);
+  const [playerAdmin_characterRecoveryLoading, playerAdmin_setCharacterRecoveryLoading] = useState(false);
+  const [playerAdmin_characterRecoveryError, playerAdmin_setCharacterRecoveryError] = useState("");
+  const [playerAdmin_recoveryCandidateId, playerAdmin_setRecoveryCandidateId] = useState("");
   const playerAdmin_resultTimer = useRef<number | null>(null);
   const playerAdmin_skillBaselineRequest = useRef(0);
   useEffect(() => {
@@ -236,6 +240,48 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       await playerAdmin_loadJourneyRows();
       return { message: String(response.result?.message || "No known Landsraad quest problems were found.") };
     }, "No known Landsraad quest problems were found.", { actionType: "Repair Landsraad Quests", target: playerName, amount: "Known Problems" });
+  }
+  async function playerAdmin_loadCharacterRecovery() {
+    if (!dbPlayerId) return;
+    playerAdmin_setCharacterRecoveryLoading(true);
+    playerAdmin_setCharacterRecoveryError("");
+    try {
+      const recovery = await playersApi.characterRecovery(dbPlayerId);
+      playerAdmin_setCharacterRecovery(recovery);
+      playerAdmin_setRecoveryCandidateId((current) => recovery.candidates.some((candidate) => candidate.characterStateId === current)
+        ? current
+        : recovery.suggestedCandidateId);
+    } catch (error) {
+      playerAdmin_setCharacterRecovery(null);
+      playerAdmin_setCharacterRecoveryError(friendlyInlineError(error) || "Character recovery status could not be loaded.");
+    } finally {
+      playerAdmin_setCharacterRecoveryLoading(false);
+    }
+  }
+  async function playerAdmin_recoverDeletedCharacter() {
+    const candidate = playerAdmin_characterRecovery?.candidates.find((row) => row.characterStateId === playerAdmin_recoveryCandidateId);
+    if (!candidate) return;
+    const currentName = playerAdmin_characterRecovery?.active.characterName || playerName;
+    if (!(await confirmAction(
+      `Recover ${candidate.characterName}'s saved character data for ${currentName}? The player must remain offline. A Restore Safety Backup is created, the current character is kept as deleted for rollback, and ${candidate.sietch || "the affected Sietch"} is restarted. The current Funcom character name remains ${currentName}. After recovery, if the game shows a deleted-character or character-creation warning, cancel it and do not proceed.`,
+      {
+        title: "Recover Deleted Character",
+        confirmLabel: "Recover Character",
+        danger: true,
+        details: [
+          { label: "Current Character", value: currentName },
+          { label: "Recover From", value: candidate.characterName, tone: "accent" },
+          { label: "Detected Event", value: candidate.removalReason || "Unknown" },
+          { label: "Items Retained", value: String(candidate.itemCount), tone: "success" },
+          { label: "Sietch", value: candidate.sietch || `Partition ${candidate.partitionId}` }
+        ]
+      }
+    ))) return;
+    await playerAdmin_runAction("recoverDeletedCharacter", `Recovering ${candidate.characterName}'s saved character data`, async () => {
+      const response = await playersApi.recoverDeletedCharacter(dbPlayerId, candidate.characterStateId, "RECOVER DELETED CHARACTER");
+      onRefresh();
+      return { message: String(response.result?.message || `${candidate.characterName}'s saved character data was recovered.`) };
+    }, `${candidate.characterName}'s saved character data was recovered.`, { actionType: "Recover Deleted Character", target: currentName, amount: `${candidate.itemCount} Items` });
   }
   function playerAdmin_chooseItem(item: CatalogItem | null) {
     playerAdmin_setSelectedItem(item);
@@ -696,6 +742,9 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   useEffect(() => {
     if (playerAdmin_activeTab === "Admin" && !Object.keys(playerAdmin_vehicleCatalog).length) void playerAdmin_loadVehicles();
   }, [playerAdmin_activeTab, Object.keys(playerAdmin_vehicleCatalog).length]);
+  useEffect(() => {
+    if (playerAdmin_activeTab === "Admin") void playerAdmin_loadCharacterRecovery();
+  }, [playerAdmin_activeTab, dbPlayerId]);
   useEffect(() => {
     playerAdmin_setSkillBaseline({});
     playerAdmin_setSkillChanges({});
@@ -1218,7 +1267,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       {playerAdmin_activeTab === "Journey" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Journey Browser</h4><div className="playerAdmin_boxHeaderLine playerAdmin_filterHeaderLine"><p>Journey changes require the player to be fully offline and take effect on the next login. Reset keeps rewards already granted and cannot recreate a consumed Contract item.</p><div className="playerAdmin_filterToolsRow"><input className="playerAdmin_filterTextInput" value={playerAdmin_journeyFilter} onChange={(event) => playerAdmin_setJourneyFilter(event.target.value)} placeholder="Filter by name, ID, status, or dependency" aria-label="Filter Journey Browser" />{playerAdmin_journeyFilter && <button type="button" onClick={() => playerAdmin_setJourneyFilter("")}>Clear</button>}<span className="playerAdmin_note">{playerAdmin_journeyFilterTerms.length ? `${playerAdmin_filteredJourneyEntryCount} of ${playerAdmin_journeyEntryCount}` : playerAdmin_journeyEntryCount} Journey Entr{(playerAdmin_journeyFilterTerms.length ? playerAdmin_filteredJourneyEntryCount : playerAdmin_journeyEntryCount) === 1 ? "y" : "ies"} Detected</span></div></div>{playerAdmin_journeyError && <p className="playerAdmin_note danger">{playerAdmin_journeyError}</p>}{playerAdmin_toggleBox("journey_story", `Story (${playerAdmin_filteredJourneyRows.story.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.story.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.story, playerAdmin_journeyFilterTerms.length ? "No story entries match this filter." : "No story entries were found.", playerAdmin_journeySortStory, playerAdmin_journeyResizeStory))}{playerAdmin_toggleBox("journey_contract", `Contracts (${playerAdmin_filteredJourneyRows.contract.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.contract.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.contract, playerAdmin_journeyFilterTerms.length ? "No contract entries match this filter." : "No contract entries were found.", playerAdmin_journeySortContract, playerAdmin_journeyResizeContract))}{playerAdmin_toggleBox("journey_codex", `Codex (${playerAdmin_filteredJourneyRows.codex.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.codex.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.codex, playerAdmin_journeyFilterTerms.length ? "No codex entries match this filter." : "No codex entries were found.", playerAdmin_journeySortCodex, playerAdmin_journeyResizeCodex))}{playerAdmin_toggleBox("journey_tutorial", `Tutorial (${playerAdmin_filteredJourneyRows.tutorial.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.tutorial.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.tutorial, playerAdmin_journeyFilterTerms.length ? "No tutorial entries match this filter." : "No tutorial entries were found.", playerAdmin_journeySortTutorial, playerAdmin_journeyResizeTutorial))}</section></div>}
       {playerAdmin_activeTab === "Blueprints" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Blueprints</h4><BlueprintsPanel dbPlayerId={dbPlayerId} playerName={playerName} onError={onError} confirmAction={confirmAction} /></section></div>}
       {playerAdmin_activeTab === "Vehicles" && <PlayerVehiclesTab playerId={dbPlayerId} playerName={playerName} />}
-      {playerAdmin_activeTab === "Admin" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Player Admin Actions</h4><p>Use this area for player maintenance and high-impact admin actions. Some actions require the player to be online, while database repairs require the player to be offline.</p><PlayerFactionAssignment playerId={dbPlayerId} playerName={playerName} currentFaction={String(playerAdmin_profile.faction || "Neutral")} guild={playerAdmin_profile.guild} supported={playerAdmin_capabilities.assignFaction === true} confirmAction={confirmAction} onRefresh={() => { onRefresh(); playerAdmin_setSummaryRefreshKey((current) => current + 1); }} onActionLog={(actionType, target, amount, notes) => playerAdmin_addLog(actionType, target, amount, notes)} /><div className="playerAdmin_section playerAdmin_repairSection"><h5>Repair</h5><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Faction</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Restores earned story progression and synchronizes reputation. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_repairFactionReputation()}>Repair Faction</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairFactionReputation" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Landsraad Quests</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Repairs recognized stuck Landsraad quest states. A safety backup is created when needed."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_repairLandsraadQuests()}>Repair Quests</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairLandsraadQuests" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Gear</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Equipped and carried gear durability. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
+      {playerAdmin_activeTab === "Admin" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Player Admin Actions</h4><p>Use this area for player maintenance and high-impact admin actions. Some actions require the player to be online, while database repairs require the player to be offline.</p><PlayerFactionAssignment playerId={dbPlayerId} playerName={playerName} currentFaction={String(playerAdmin_profile.faction || "Neutral")} guild={playerAdmin_profile.guild} supported={playerAdmin_capabilities.assignFaction === true} confirmAction={confirmAction} onRefresh={() => { onRefresh(); playerAdmin_setSummaryRefreshKey((current) => current + 1); }} onActionLog={(actionType, target, amount, notes) => playerAdmin_addLog(actionType, target, amount, notes)} /><div className="playerAdmin_section playerAdmin_repairSection"><h5>Repair</h5><div className="playerAdmin_repairRow playerAdmin_characterRecoveryRow"><span className="playerAdmin_repairLabel"><span>Recover Deleted Character</span><em>{playerAdmin_isOnline ? "The player must be offline." : playerAdmin_characterRecoveryLoading ? "Checking deleted character history..." : playerAdmin_characterRecoveryError || (playerAdmin_characterRecovery?.candidates.some((candidate) => candidate.recoverable) ? "Restores the selected character's saved data while preserving the current Funcom identity. A safety backup and Sietch restart are included." : "No recoverable deleted character was detected.")}</em></span><span className="playerAdmin_characterRecoveryControls">{playerAdmin_characterRecovery?.candidates.some((candidate) => candidate.recoverable) && <select aria-label="Deleted character to recover" value={playerAdmin_recoveryCandidateId} onChange={(event) => playerAdmin_setRecoveryCandidateId(event.target.value)}>{playerAdmin_characterRecovery.candidates.filter((candidate) => candidate.recoverable).map((candidate) => <option key={candidate.characterStateId} value={candidate.characterStateId}>{candidate.characterName} · {candidate.itemCount} Items · {candidate.deletedAt ? new Date(candidate.deletedAt).toLocaleString() : "Unknown Date"}</option>)}</select>}<button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_characterRecoveryLoading || !playerAdmin_recoveryCandidateId || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_recoverDeletedCharacter()}>Recover Character</button></span><InlineActionResult result={playerAdmin_actionResult} resultKey="recoverDeletedCharacter" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Faction</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Restores earned story progression and synchronizes reputation. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_repairFactionReputation()}>Repair Faction</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairFactionReputation" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Landsraad Quests</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Repairs recognized stuck Landsraad quest states. A safety backup is created when needed."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_repairLandsraadQuests()}>Repair Quests</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairLandsraadQuests" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Gear</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Equipped and carried gear durability. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Repair gear for ${playerName}? The player must be offline and should relog after this.`))) return;
         void playerAdmin_runAction("repairGear", `Repairing ${playerName}'s gear`, async () => {
           const response = await playersApi.repairGear(dbPlayerId, "REPAIR GEAR");

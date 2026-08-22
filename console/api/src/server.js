@@ -755,6 +755,8 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/add-faction-reputation$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-faction-reputation", "ADD FACTION REPUTATION", (playerId, body) => duneDb.addFactionReputation(db, playerId, body, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/repair-faction-reputation$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-faction-reputation", "REPAIR FACTION REPUTATION", (playerId) => duneDb.repairFactionReputation(db, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/repair-landsraad-quests$/) && req.method === "POST") return playerLandsraadQuestRepairRoute(req, res, path);
+  if (path.match(/^\/api\/players\/[^/]+\/character-recovery$/) && req.method === "POST") return playerCharacterRecoveryRoute(req, res, path);
+  if (path.match(/^\/api\/players\/[^/]+\/character-recovery$/) && req.method === "GET") return dbPlayerRoute(res, path, duneDb.inspectDeletedCharacterRecovery);
   if (path.match(/^\/api\/players\/[^/]+\/faction$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.assign-faction", "CHANGE PLAYER FACTION", (playerId, body) => duneDb.setPlayerFaction(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/add-intel$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-intel", "ADD INTEL", (playerId, body) => duneDb.addIntel(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/specializations\/add-xp$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.specializations.add-xp", "ADD SPECIALIZATION XP", (playerId, body) => duneDb.addSpecializationXp(db, playerId, body));
@@ -2925,6 +2927,47 @@ async function playerLandsraadQuestRepairRoute(req, res, path) {
     await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "restore-safety" } });
     const result = await duneDb.repairLandsraadQuests(db, playerId);
     return { ...result, backupCreated: true };
+  }, { playerId });
+}
+
+async function playerCharacterRecoveryRoute(req, res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "players.recover-deleted-character", "RECOVER DELETED CHARACTER", async (body) => {
+    const diagnosis = await duneDb.inspectDeletedCharacterRecovery(db, playerId);
+    const candidate = diagnosis.candidates.find((row) => row.characterStateId === String(body.candidateId || ""));
+    if (!candidate) throw new Error("The selected deleted character state was not found. Reload Player Admin and try again.");
+    if (!candidate.recoverable) throw new Error("The selected character cannot be recovered because its replacement event, original actors, or Survival partition could not be verified.");
+    if (diagnosis.online) throw new Error("Deleted-character recovery requires the player to be offline.");
+
+    await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "restore-safety" } });
+    const partitionPayload = { partitionId: candidate.partitionId };
+    await runDune(config, buildDuneArgs("sietchesRestartStop", partitionPayload), { timeoutMs: 30 * 60 * 1000 });
+
+    let result;
+    let recoveryError;
+    try {
+      result = await duneDb.recoverDeletedCharacter(db, playerId, candidate.characterStateId);
+    } catch (error) {
+      recoveryError = error;
+    }
+
+    let restartError;
+    try {
+      await runDune(config, buildDuneArgs("sietchesRestartStart", partitionPayload), { timeoutMs: 30 * 60 * 1000 });
+    } catch (error) {
+      restartError = error;
+    }
+    if (recoveryError) throw recoveryError;
+    if (restartError) {
+      return {
+        ...result,
+        backupCreated: true,
+        mapRestarted: false,
+        restartError: redact(restartError?.message || "The Survival partition did not restart."),
+        message: `${result.message} Recovery was saved, but the Survival partition did not restart; start it before the player reconnects.`
+      };
+    }
+    return { ...result, backupCreated: true, mapRestarted: true };
   }, { playerId });
 }
 

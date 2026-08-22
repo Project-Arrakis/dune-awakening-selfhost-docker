@@ -1495,6 +1495,10 @@ body.debug .technical-details { display: block; }
 .playerAdmin_repairLabel > span:first-child { white-space: nowrap; }
 .playerAdmin_repairLabel em { color: #cbbd9f; font-size: 12px; font-style: italic; font-weight: 500; line-height: 1.25; }
 .playerAdmin_repairRow .inline-action-result-wrap { align-self: center; min-width: 0; }
+.playerAdmin_characterRecoveryRow { grid-template-columns: minmax(280px, 400px) minmax(330px, 1fr) minmax(0, 1fr); }
+.playerAdmin_characterRecoveryControls { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.playerAdmin_characterRecoveryControls select { flex: 1 1 auto; width: 100%; min-width: 0; color: #f1e4cf; }
+.playerAdmin_characterRecoveryControls button { flex: 0 0 auto; white-space: nowrap; }
 .playerAdmin_actionLabel em { color: #cbbd9f; font-size: 12px; font-style: italic; font-weight: 500; line-height: 1.25; }
 .playerAdmin_actionRow input, .playerAdmin_actionRow select, .playerAdmin_filterRow input, .playerAdmin_filterRow select { max-width: 220px; }
 .playerAdmin_actionRow .playerAdmin_fieldSlot { min-height: 1px; }
@@ -5407,6 +5411,8 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
   .landsraad-persistent-actions button { width: 100%; }
   .playerAdmin_actionNote { padding-left: 0; }
   .playerAdmin_repairRow { grid-template-columns: 1fr; align-items: start; }
+  .playerAdmin_characterRecoveryRow { grid-template-columns: 1fr; }
+  .playerAdmin_characterRecoveryControls { width: 100%; }
   .playerAdmin_repairRow button { justify-self: start; }
   .playerAdmin_repairRow .inline-action-result-wrap { width: 100%; min-height: 24px; }
   .playerAdmin_factionControls { flex-wrap: wrap; }

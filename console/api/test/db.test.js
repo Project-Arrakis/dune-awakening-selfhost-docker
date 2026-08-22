@@ -17,7 +17,7 @@ import {
   queueGeneratorRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
-import { addBaseContainerItem, addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteAllBaseContainerItems, deleteBaseContainerItem, deleteInventoryItem, deleteMultipleBaseContainerItems, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, fillItemToBaseContainer, fillItemToStorage, generatorUptimePolicy, giveItemToBaseContainer, giveItemToPlayer, giveItemToStorage, giveMultipleItemsToBaseContainer, guildMembers, inspectLandsraadQuestRepairs, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerServerMemberships, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairLandsraadQuests, repairVehicleDecay, resetJourneyNode, resetTutorial, resolvePlayerTarget, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addBaseContainerItem, addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteAllBaseContainerItems, deleteBaseContainerItem, deleteInventoryItem, deleteMultipleBaseContainerItems, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, fillItemToBaseContainer, fillItemToStorage, generatorUptimePolicy, giveItemToBaseContainer, giveItemToPlayer, giveItemToStorage, giveMultipleItemsToBaseContainer, guildMembers, inspectDeletedCharacterRecovery, inspectLandsraadQuestRepairs, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerServerMemberships, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, recoverDeletedCharacter, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairLandsraadQuests, repairVehicleDecay, resetJourneyNode, resetTutorial, resolvePlayerTarget, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 import { listStorage, liveMapBases, liveMapStorage, portalStorage, trackPlayerPlaytime } from "../src/duneDb.js";
 
 beforeEach(() => {
@@ -6850,6 +6850,137 @@ test("Landsraad repair does not bypass an active assassination cooldown", async 
   assert.equal(result.repairCount, 0);
   assert.equal(calls.some((call) => call.text.includes("update dune.journey_story_node")), false);
   assert.equal(calls.some((call) => call.text.includes("delete from dune.journey_story_node_cooldown")), false);
+});
+
+function fakeCharacterRecoveryDb({ onlineStatus = "Offline" } = {}) {
+  const calls = [];
+  const state = {
+    active: {
+      id: "60", account_id: "1470", encrypted_character_name: "TempDrew", character_name: "TempDrew",
+      online_status: onlineStatus, character_state: "Active", player_controller_id: "4830",
+      player_pawn_id: "4832", player_state_id: "4831", transfer_count: 0,
+      is_coriolis_processed: true, last_login_time: "2026-08-22T22:06:07Z"
+    },
+    deleted: {
+      id: "57", account_id: "1470", character_name: "Drew", character_state: "Deleted",
+      online_status: "Offline", player_controller_id: "3764", player_pawn_id: "3818",
+      player_state_id: "3789", transfer_count: 5
+    }
+  };
+  const candidateRow = () => ({
+    character_state_id: state.deleted.id,
+    character_name: state.deleted.character_name,
+    last_avatar_activity: "2026-08-17T17:45:22Z",
+    last_login_time: "2026-08-22T22:06:06Z",
+    deleted_at: "2026-08-22T22:06:07Z",
+    player_controller_id: state.deleted.player_controller_id,
+    player_pawn_id: state.deleted.player_pawn_id,
+    player_state_actor_id: state.deleted.player_state_id,
+    transfer_count: state.deleted.transfer_count,
+    map: "HaggaBasin",
+    partition_id: "1",
+    sietch: "Abbir",
+    inventory_count: 14,
+    item_count: 50,
+    removal_reason: "new char in fls",
+    removal_event_time: "2026-08-22T22:06:07Z",
+    replacement_detected: true,
+    recoverable: true
+  });
+  const query = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes("to_regclass")) return { rows: [{ exists: true }], rowCount: 1 };
+    if (text.includes("to_regprocedure")) return { rows: [{ exists: true }], rowCount: 1 };
+    if (text.includes("from dune.actors a") && text.includes("left join dune.player_state ps")) {
+      return { rows: [{ actor_id: 4832, account_id: 1470, controller_id: 4830, player_state_id: Number(state.active.id), online_status: state.active.online_status }], rowCount: 1 };
+    }
+    if (text.includes("select eps.*") && text.includes("for update")) {
+      return { rows: [{ ...state.active }], rowCount: 1 };
+    }
+    if (text.includes("left join dune.actors controller") && text.includes("character_state::text = 'Deleted'")) {
+      return { rows: [candidateRow()], rowCount: 1 };
+    }
+    if (text.includes("where eps.id = $1::bigint") && text.includes("character_state::text = 'Active'")) {
+      return { rows: [{ character_state_id: state.active.id, character_name: state.active.character_name, pawn_id: state.active.player_pawn_id, transfer_count: state.active.transfer_count, item_count: 26 }], rowCount: 1 };
+    }
+    if (text.includes("update dune.encrypted_player_state") && text.includes("character_state = 'Deleted'") && !text.includes("update dune.encrypted_player_state target")) {
+      if (state.active.online_status === "Online") return { rows: [], rowCount: 0 };
+      state.active.character_state = "Deleted";
+      return { rows: [], rowCount: 1 };
+    }
+    if (text.includes("update dune.encrypted_player_state target")) {
+      state.deleted.character_state = "Active";
+      state.deleted.character_name = state.active.character_name;
+      state.deleted.transfer_count = state.active.transfer_count;
+      return { rows: [{
+        character_state_id: state.deleted.id,
+        character_name: state.deleted.character_name,
+        player_controller_id: state.deleted.player_controller_id,
+        player_pawn_id: state.deleted.player_pawn_id,
+        player_state_actor_id: state.deleted.player_state_id
+      }], rowCount: 1 };
+    }
+    if (text.includes("min(id)::text as active_id")) {
+      const active = [state.active, state.deleted].filter((row) => row.character_state === "Active");
+      return { rows: [{ active_count: active.length, active_id: active[0]?.id || null }], rowCount: 1 };
+    }
+    throw new Error(`Unexpected character recovery query: ${text}`);
+  };
+  const db = {
+    query,
+    transaction: async (fn) => fn({ query })
+  };
+  return { db, calls, state };
+}
+
+test("deleted-character recovery inspection shows retained data and the safest candidate", async () => {
+  const { db } = fakeCharacterRecoveryDb();
+  const result = await inspectDeletedCharacterRecovery(db, 4832);
+  assert.equal(result.active.characterName, "TempDrew");
+  assert.equal(result.active.itemCount, 26);
+  assert.equal(result.suggestedCandidateId, "57");
+  assert.equal(result.canRecover, true);
+  assert.deepEqual(result.candidates[0], {
+    characterStateId: "57",
+    characterName: "Drew",
+    lastAvatarActivity: "2026-08-17T17:45:22Z",
+    lastLoginTime: "2026-08-22T22:06:06Z",
+    deletedAt: "2026-08-22T22:06:07Z",
+    controllerId: "3764",
+    pawnId: "3818",
+    playerStateActorId: "3789",
+    map: "HaggaBasin",
+    partitionId: "1",
+    sietch: "Abbir",
+    inventoryCount: 14,
+    itemCount: 50,
+    transferCount: 5,
+    removalReason: "new char in fls",
+    removalEventTime: "2026-08-22T22:06:07Z",
+    replacementDetected: true,
+    recoverable: true
+  });
+});
+
+test("deleted-character recovery preserves the current Funcom identity and reactivates the original data", async () => {
+  const { db, state } = fakeCharacterRecoveryDb();
+  const result = await recoverDeletedCharacter(db, 4832, "57");
+  assert.equal(state.active.character_state, "Deleted");
+  assert.equal(state.deleted.character_state, "Active");
+  assert.equal(state.deleted.character_name, "TempDrew");
+  assert.equal(state.deleted.transfer_count, 0);
+  assert.equal(result.pawnId, "3818");
+  assert.equal(result.itemCount, 50);
+  assert.match(result.message, /Drew's saved character data was recovered with 50 items/);
+  assert.match(result.message, /current Funcom character name remains TempDrew/);
+});
+
+test("deleted-character recovery refuses an online login race before changing either state", async () => {
+  const { db, state, calls } = fakeCharacterRecoveryDb({ onlineStatus: "Online" });
+  await assert.rejects(() => recoverDeletedCharacter(db, 4832, "57"), /require the player to be offline/);
+  assert.equal(state.active.character_state, "Active");
+  assert.equal(state.deleted.character_state, "Deleted");
+  assert.equal(calls.some((call) => call.text.includes("update dune.encrypted_player_state")), false);
 });
 
 test("player faction assignment uses the game's faction function with the controller id", async () => {

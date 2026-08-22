@@ -5047,6 +5047,211 @@ export async function repairLandsraadQuests(db, id) {
   });
 }
 
+async function requireCharacterRecoveryCapability(db) {
+  for (const table of ["encrypted_player_state", "actors", "inventories", "items", "world_partition", "account_removal_log"]) {
+    await requireCapability(await tableExists(db, table), `Deleted-character recovery requires dune.${table}.`);
+  }
+  await requireCapability(
+    await functionExists(db, "dune.decrypt_user_data(bytea)"),
+    "Deleted-character recovery requires dune.decrypt_user_data(bytea)."
+  );
+}
+
+function shapeCharacterRecoveryCandidate(row) {
+  return {
+    characterStateId: String(row.character_state_id),
+    characterName: String(row.character_name || "Unknown Character"),
+    lastAvatarActivity: row.last_avatar_activity || null,
+    lastLoginTime: row.last_login_time || null,
+    deletedAt: row.deleted_at || null,
+    controllerId: String(row.player_controller_id),
+    pawnId: String(row.player_pawn_id),
+    playerStateActorId: String(row.player_state_actor_id),
+    map: String(row.map || ""),
+    partitionId: String(row.partition_id || ""),
+    sietch: String(row.sietch || ""),
+    inventoryCount: Number(row.inventory_count || 0),
+    itemCount: Number(row.item_count || 0),
+    transferCount: Number(row.transfer_count || 0),
+    removalReason: String(row.removal_reason || ""),
+    removalEventTime: row.removal_event_time || null,
+    replacementDetected: row.replacement_detected === true,
+    recoverable: row.recoverable === true
+  };
+}
+
+async function characterRecoveryCandidates(db, accountId, { lock = false } = {}) {
+  const result = await db.query(`
+    select eps.id::text as character_state_id,
+           coalesce(dune.decrypt_user_data(eps.encrypted_character_name), '') as character_name,
+           eps.last_avatar_activity,
+           eps.last_login_time,
+           eps.last_character_state_change as deleted_at,
+           eps.player_controller_id::text,
+           eps.player_pawn_id::text,
+           eps.player_state_id::text as player_state_actor_id,
+           eps.transfer_count,
+           coalesce(pawn.map, '') as map,
+           coalesce(pawn.partition_id, 0)::text as partition_id,
+           coalesce(wp.label, '') as sietch,
+           coalesce(removal.reason, '') as removal_reason,
+           removal.event_time as removal_event_time,
+           (lower(coalesce(removal.reason, '')) = 'new char in fls') as replacement_detected,
+           (select count(*)::int from dune.inventories inv where inv.actor_id = eps.player_pawn_id) as inventory_count,
+           (select count(*)::int
+              from dune.inventories inv
+              join dune.items item on item.inventory_id = inv.id
+             where inv.actor_id = eps.player_pawn_id) as item_count,
+           (controller.id is not null
+             and pawn.id is not null
+             and state_actor.id is not null
+             and wp.partition_id is not null
+             and wp.map = 'Survival_1'
+             and lower(coalesce(removal.reason, '')) = 'new char in fls') as recoverable
+    from dune.encrypted_player_state eps
+    left join dune.actors controller on controller.id = eps.player_controller_id
+    left join dune.actors pawn on pawn.id = eps.player_pawn_id
+    left join dune.actors state_actor on state_actor.id = eps.player_state_id
+    left join dune.world_partition wp on wp.partition_id = pawn.partition_id
+    left join lateral (
+      select log.reason, log.event_time
+      from dune.account_removal_log log
+      where log.account_id = eps.account_id
+        and log.event_time between eps.last_character_state_change - interval '5 seconds'
+                               and eps.last_character_state_change + interval '5 seconds'
+      order by abs(extract(epoch from (log.event_time - eps.last_character_state_change))), log.event_time desc
+      limit 1
+    ) removal on true
+    where eps.account_id = $1::bigint
+      and eps.character_state::text = 'Deleted'
+    order by (lower(coalesce(removal.reason, '')) = 'new char in fls') desc,
+             eps.last_character_state_change desc nulls last, eps.id desc
+    ${lock ? "for update of eps" : ""}`, [accountId]);
+  return result.rows.map(shapeCharacterRecoveryCandidate);
+}
+
+export async function inspectDeletedCharacterRecovery(db, id) {
+  await requireCharacterRecoveryCapability(db);
+  const player = await resolvePlayerMutationTarget(db, id);
+  const activeResult = await db.query(`
+    select eps.id::text as character_state_id,
+           coalesce(dune.decrypt_user_data(eps.encrypted_character_name), '') as character_name,
+           eps.player_pawn_id::text as pawn_id,
+           eps.transfer_count,
+           (select count(*)::int
+              from dune.inventories inv
+              join dune.items item on item.inventory_id = inv.id
+             where inv.actor_id = eps.player_pawn_id) as item_count
+    from dune.encrypted_player_state eps
+    where eps.id = $1::bigint and eps.account_id = $2::bigint
+      and eps.character_state::text = 'Active'`, [player.playerStateId, player.accountId]);
+  if (!activeResult.rowCount) throw playerNotFoundError();
+  const active = activeResult.rows[0];
+  const candidates = await characterRecoveryCandidates(db, player.accountId);
+  const recoverableCandidates = candidates.filter((candidate) => candidate.recoverable);
+  return {
+    ok: true,
+    player,
+    online: playerOnline(player),
+    active: {
+      characterStateId: String(active.character_state_id),
+      characterName: String(active.character_name || "Unknown Character"),
+      pawnId: String(active.pawn_id),
+      itemCount: Number(active.item_count || 0),
+      transferCount: Number(active.transfer_count || 0)
+    },
+    candidates,
+    suggestedCandidateId: recoverableCandidates[0]?.characterStateId || "",
+    canRecover: !playerOnline(player) && recoverableCandidates.length > 0,
+    message: recoverableCandidates.length
+      ? `${recoverableCandidates.length} recoverable deleted character state${recoverableCandidates.length === 1 ? " was" : "s were"} found.`
+      : "No recoverable deleted character states were found."
+  };
+}
+
+export async function recoverDeletedCharacter(db, id, candidateId) {
+  await requireCharacterRecoveryCapability(db);
+  const requestedCandidateId = bigintParam(candidateId, "deleted character state id");
+  return db.transaction(async (tx) => {
+    const player = await resolvePlayerMutationTarget(tx, id);
+    const lockedActive = await tx.query(`
+      select eps.*,
+             dune.decrypt_user_data(eps.encrypted_character_name) as character_name
+      from dune.encrypted_player_state eps
+      where eps.id = $1::bigint and eps.account_id = $2::bigint
+        and eps.character_state::text = 'Active'
+      for update`, [player.playerStateId, player.accountId]);
+    if (!lockedActive.rowCount) throw new Error("The active character changed before recovery began. Reload Player Admin and try again.");
+    const active = lockedActive.rows[0];
+    requireOfflinePlayer({ ...player, onlineStatus: active.online_status }, "Deleted-character recovery");
+
+    const candidates = await characterRecoveryCandidates(tx, player.accountId, { lock: true });
+    const candidate = candidates.find((row) => row.characterStateId === requestedCandidateId);
+    if (!candidate) throw new Error("The selected deleted character state no longer exists. Reload Player Admin and try again.");
+    if (!candidate.recoverable) throw new Error("The selected character cannot be recovered because its replacement event, original actors, or Survival partition could not be verified.");
+
+    const deactivated = await tx.query(`
+      update dune.encrypted_player_state
+         set character_state = 'Deleted',
+             online_status = 'Offline',
+             reconnect_grace_period_end = null,
+             last_character_state_change = now()
+       where id = $1::bigint and account_id = $2::bigint
+         and character_state::text = 'Active' and online_status::text = 'Offline'`, [active.id, player.accountId]);
+    if (deactivated.rowCount !== 1) throw new Error("The player started logging in while recovery was running. No character changes were saved.");
+
+    const restored = await tx.query(`
+      update dune.encrypted_player_state target
+         set encrypted_character_name = current_state.encrypted_character_name,
+             character_state = 'Active',
+             online_status = 'Offline',
+             reconnect_grace_period_end = null,
+             is_coriolis_processed = current_state.is_coriolis_processed,
+             last_login_time = current_state.last_login_time,
+             last_character_state_change = now(),
+             transfer_count = current_state.transfer_count
+        from dune.encrypted_player_state current_state
+       where target.id = $1::bigint and target.account_id = $2::bigint
+         and target.character_state::text = 'Deleted'
+         and current_state.id = $3::bigint and current_state.account_id = target.account_id
+         and current_state.character_state::text = 'Deleted'
+      returning target.id::text as character_state_id,
+                dune.decrypt_user_data(target.encrypted_character_name) as character_name,
+                target.player_controller_id::text,
+                target.player_pawn_id::text,
+                target.player_state_id::text as player_state_actor_id`, [requestedCandidateId, player.accountId, active.id]);
+    if (restored.rowCount !== 1) throw new Error("The selected character changed while recovery was running. No character changes were saved.");
+
+    const verification = await tx.query(`
+      select count(*)::int as active_count,
+             min(id)::text as active_id
+      from dune.encrypted_player_state
+      where account_id = $1::bigint and character_state::text = 'Active'`, [player.accountId]);
+    if (Number(verification.rows[0]?.active_count || 0) !== 1 || String(verification.rows[0]?.active_id || "") !== requestedCandidateId) {
+      throw new Error("Recovery did not produce exactly one active character. No character changes were saved.");
+    }
+
+    const row = restored.rows[0];
+    return {
+      ok: true,
+      accountId: String(player.accountId),
+      activeCharacterStateId: String(row.character_state_id),
+      currentCharacterName: String(row.character_name || active.character_name || "Unknown Character"),
+      recoveredFromName: candidate.characterName,
+      replacedCharacterStateId: String(active.id),
+      controllerId: String(row.player_controller_id),
+      pawnId: String(row.player_pawn_id),
+      playerStateActorId: String(row.player_state_actor_id),
+      itemCount: candidate.itemCount,
+      inventoryCount: candidate.inventoryCount,
+      map: candidate.map,
+      partitionId: candidate.partitionId,
+      sietch: candidate.sietch,
+      message: `${candidate.characterName}'s saved character data was recovered with ${candidate.itemCount} item${candidate.itemCount === 1 ? "" : "s"}. The current Funcom character name remains ${String(row.character_name || active.character_name || "unchanged")}.`
+    };
+  });
+}
+
 const PLAYER_ASSIGNABLE_FACTIONS = Object.freeze({
   1: "Atreides",
   2: "Harkonnen",
