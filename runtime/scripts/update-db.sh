@@ -90,7 +90,7 @@ audit_db_orphans() {
   if [ "$ORPHAN_BACKUP_ON_DETECT" = "1" ]; then
     echo "Orphaned player/account rows were detected before the DB updater."
     echo "Creating a safety backup before running updater cleanup."
-    bash runtime/scripts/db.sh backup runtime/backups/db >/dev/null
+    DB_BACKUP_ORIGIN=pre-update bash runtime/scripts/db.sh backup runtime/backups/db >/dev/null
   fi
 }
 

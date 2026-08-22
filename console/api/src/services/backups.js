@@ -11,9 +11,9 @@ export function enrichBackupRows(config, rows) {
     const enriched = { ...row, battlegroupId: battlegroupId || "Unknown", sizeBytes, size: formatBackupSize(sizeBytes) };
     if (/^market[-_ ]?bot/.test(origin)) return { ...enriched, type: "Market Bot Backup" };
     if (/^(automatic|scheduled)$/.test(origin)) return { ...enriched, type: "Automatic Backup" };
-    if (/^(restore-safety|restore_safety|restore safety)$/.test(origin)) return { ...enriched, type: "Restore Safety Backup" };
+    if (/^(restore-safety|restore_safety|restore safety|land-claim-editor|land_claim_editor)$/.test(origin)) return { ...enriched, type: "Restore Safety Backup" };
     if (/^(pre-update|pre_update|preupdate)$/.test(origin)) return { ...enriched, type: "Pre-update Backup" };
-    if (/^(destructive-sql|destructive_sql|destructive sql|sql-safety|sql_safety|base-delete|base_delete)$/.test(origin)) return { ...enriched, type: "SQL Safety Backup" };
+    if (/^(destructive-sql|destructive_sql|destructive sql|sql-safety|sql_safety|base-delete|base_delete|admin-tools|admin_tools)$/.test(origin) || /^addon-/.test(origin)) return { ...enriched, type: "SQL Safety Backup" };
     if (/^(external|imported)$/.test(origin)) return { ...enriched, type: "Imported Backup", source: "External" };
     return enriched;
   });
