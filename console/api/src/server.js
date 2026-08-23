@@ -66,6 +66,7 @@ import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPl
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
 import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
+import { createScheduledMapMessageScheduler } from "./services/scheduledMapMessages.js";
 
 const config = loadConfig();
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
@@ -150,6 +151,16 @@ const playerBanEnforcer = createPlayerBanEnforcer({
   duneDb,
   failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
 });
+const scheduledMapMessages = createScheduledMapMessageScheduler(config, {
+  deliver: (schedule) => deliverScheduledMapMessage(schedule),
+  onResult: ({ schedule, manual, ok, skipped, error, result }) => {
+    const target = `${schedule.mapName}.${schedule.dimension}`;
+    const command = manual ? "scheduled-map-chat-now" : "scheduled-map-chat";
+    const outcome = ok ? "published" : skipped ? "skipped" : "failed";
+    audit(config, null, "admin.map-chat-schedule-delivery", { id: schedule.id, target, manual, ok, skipped: Boolean(skipped), recipients: result?.recipients || 0, error: error ? redact(String(error?.message || "Unexpected error.")) : "" });
+    recordAdminHistory(config, { command, target, friendly: schedule.name || "Scheduled Map Message", path: "rmq:chat.map", result: outcome, message: schedule.message });
+  }
+});
 
 process.on("unhandledRejection", (error) => {
   console.error(`Unhandled background rejection: ${redact(error?.message || "Unexpected error.")}`);
@@ -212,6 +223,7 @@ setInterval(() => {
   runBackgroundTick("Message of the Day", messageOfTheDayAutoTick);
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
   runBackgroundTick("Addon scheduled jobs", () => addonJobScheduler.tick());
+  runBackgroundTick("Scheduled map messages", () => scheduledMapMessages.tick());
   runBackgroundTick("Landsraad milestone preset", () => landsraadMilestoneReconciler.tick());
   // Daily, but gated inside the tick like every other long-period job here.
   // Costs one small file read when no base is enrolled, and no database query.
@@ -691,6 +703,7 @@ async function handleApi(req, res) {
   if (path === "/api/admin/character-transfer-settings") return characterTransferSettingsRoute(req, res);
   if (path === "/api/admin/message-of-the-day") return messageOfTheDayRoute(req, res);
   if (path === "/api/admin/player-announcements") return playerAnnouncementsRoute(req, res);
+  if (path === "/api/admin/map-chat-schedules") return scheduledMapMessagesRoute(req, res);
   if (path === "/api/admin/landsraad") return landsraadRoute(req, res, "overview");
   if (path === "/api/admin/landsraad/task-goal") return landsraadRoute(req, res, "task-goal");
   if (path === "/api/admin/landsraad/term-task-goals") return landsraadRoute(req, res, "term-task-goals");
@@ -1259,7 +1272,7 @@ function isAdminToolsHistoryLine(line) {
   const parts = String(line || "").split("\t");
   const command = String(parts[1] || "").trim();
   const target = String(parts[2] || "").trim();
-  if (/^web-(broadcast|shutdown-broadcast)$/i.test(command)) return true;
+  if (/^(?:web-(?:broadcast|shutdown-broadcast|map-chat)|scheduled-map-chat(?:-now)?)$/i.test(command)) return true;
   if (/^web-hydrate-all$/i.test(command)) return true;
   if (/^KickPlayer$/i.test(command) && /^(all|\*)$/i.test(target)) return true;
   return false;
@@ -4291,27 +4304,94 @@ async function mapChatRoute(req, res) {
   const mapName = body.mapName || body.region || "HaggaBasin";
   const dimension = body.dimension ?? 0;
   try {
-    const recipients = config.mockMode ? [{ queue: "mock-player_queue" }] : await mapChatRecipients(mapName, dimension);
-    if (!recipients.length) throw new Error("No online players are currently subscribed to that map.");
-    const sender = config.mockMode ? { funcomId: "Server#4242", hexFlsId: "5E121CE000000001" } : await ensureCarePackageServerPersona(db);
-    const result = config.mockMode
-      ? { code: 0, stdout: "mock map chat\n", stderr: "", args: [] }
-      : await publishMapChat(config, {
-          mapName,
-          dimension,
-          message,
-          senderFuncomId: sender.funcomId,
-          senderHexFlsId: sender.hexFlsId
-        });
+    const result = await deliverMapChatMessage(mapName, dimension, message);
     const target = `${mapName}.${dimension}`;
-    audit(config, req, "admin.map-chat", { supported: true, target, recipients: recipients.length });
+    audit(config, req, "admin.map-chat", { supported: true, target, recipients: result.recipients });
     recordAdminHistory(config, { command: "web-map-chat", target, friendly: "Map Chat", path: "rmq:chat.map", result: "published", message });
-    return json(res, 200, { supported: true, ok: true, stdout: result.stdout, stderr: result.stderr || "", note: `Map chat message was sent to ${recipients.length} online player${recipients.length === 1 ? "" : "s"}.`, recipients: recipients.length });
+    return json(res, 200, { supported: true, ok: true, stdout: result.stdout, stderr: result.stderr || "", note: `Map chat message was sent to ${result.recipients} online player${result.recipients === 1 ? "" : "s"}.`, recipients: result.recipients });
   } catch (error) {
     const reason = redact(String(error?.message || "Unexpected error.").replaceAll("Care Package message whisper", "Map chat"));
     audit(config, req, "admin.map-chat", { supported: false, error: reason });
     recordAdminHistory(config, { command: "web-map-chat", target: `${mapName}.${dimension}`, friendly: "Map Chat", path: "rmq:chat.map", result: "blocked", message });
     return json(res, 400, { supported: false, error: reason, reason });
+  }
+}
+
+async function deliverMapChatMessage(mapName, dimension, message) {
+  const recipients = config.mockMode ? [{ queue: "mock-player_queue" }] : await mapChatRecipients(mapName, dimension);
+  if (!recipients.length) throw new Error("No online players are currently subscribed to that map.");
+  const sender = config.mockMode ? { funcomId: "Server#4242", hexFlsId: "5E121CE000000001" } : await ensureCarePackageServerPersona(db);
+  const result = config.mockMode
+    ? { code: 0, stdout: "mock map chat\n", stderr: "", args: [] }
+    : await publishMapChat(config, {
+        mapName,
+        dimension,
+        message,
+        senderFuncomId: sender.funcomId,
+        senderHexFlsId: sender.hexFlsId
+      });
+  return { ...result, recipients: recipients.length };
+}
+
+async function deliverScheduledMapMessage(schedule) {
+  if (schedule.mapName !== "AllMaps") return deliverMapChatMessage(schedule.mapName, schedule.dimension, schedule.message);
+  const services = await duneDb.liveMapServices(db);
+  const targets = [];
+  const seen = new Set();
+  for (const row of services.rows || []) {
+    if (!Boolean(row.alive || row.ready) || Number(row.connected_players || 0) < 1) continue;
+    const mapName = mapChatRegionForServerMap(row.map);
+    const dimension = Number(row.dimension_index || 0);
+    const key = `${mapName}|${dimension}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push({ mapName, dimension });
+  }
+  if (!targets.length) throw new Error("No online players are currently subscribed to any map.");
+  let recipients = 0;
+  const output = [];
+  for (const target of targets) {
+    try {
+      const result = await deliverMapChatMessage(target.mapName, target.dimension, schedule.message);
+      recipients += result.recipients;
+      if (result.stdout) output.push(result.stdout);
+    } catch (error) {
+      if (!/No online players/i.test(String(error?.message || ""))) throw error;
+    }
+  }
+  if (!recipients) throw new Error("No online players are currently subscribed to any map.");
+  return { code: 0, stdout: output.join("\n"), stderr: "", recipients };
+}
+
+function mapChatRegionForServerMap(map) {
+  const value = String(map || "").trim();
+  const aliases = { Survival_1: "HaggaBasin", Overmap: "Overland", DeepDesert_1: "DeepDesert", SH_Arrakeen: "Arrakeen", SH_HarkoVillage: "HarkoVillage" };
+  return aliases[value] || value.replace(/^SH_/, "").replace(/^CB_Story_/, "").replace(/^CB_Dungeon_/, "").replace(/^DLC_Story_/, "");
+}
+
+async function scheduledMapMessagesRoute(req, res) {
+  if (req.method === "GET") return json(res, 200, scheduledMapMessages.list());
+  const body = await readJson(req);
+  const action = String(body.action || "save").trim().toLowerCase();
+  try {
+    if (action === "save") {
+      const schedule = scheduledMapMessages.save(body.schedule || body);
+      audit(config, req, "admin.map-chat-schedule-save", { id: schedule.id, enabled: schedule.enabled, mapName: schedule.mapName, dimension: schedule.dimension, frequency: schedule.frequency, time: schedule.time, timezone: schedule.timezone });
+      return json(res, 200, { ok: true, schedule, ...scheduledMapMessages.list() });
+    }
+    if (action === "delete") {
+      const result = scheduledMapMessages.remove(body.id);
+      audit(config, req, "admin.map-chat-schedule-delete", result);
+      return json(res, 200, { ok: true, ...result, ...scheduledMapMessages.list() });
+    }
+    if (action === "run") {
+      const result = await scheduledMapMessages.runNow(body.id);
+      return json(res, 200, { ok: true, result, ...scheduledMapMessages.list() });
+    }
+    throw new Error("Scheduled message action must be save, delete, or run.");
+  } catch (error) {
+    const reason = redact(String(error?.message || "Unexpected error."));
+    return json(res, 400, { error: reason, reason });
   }
 }
 

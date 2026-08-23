@@ -57,6 +57,29 @@ export type PlayerAnnouncementSettings = {
   leaveMessage: string;
 };
 
+export type ScheduledMapMessage = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  mapName: string;
+  dimension: number;
+  message: string;
+  frequency: "daily" | "weekly";
+  daysOfWeek: number[];
+  time: string;
+  timezone: string;
+  nextRunAt: string;
+  createdAt: string;
+  updatedAt: string;
+  lastAttemptAt: string;
+  lastDeliveredAt: string;
+  lastStatus: "never" | "running" | "sent" | "skipped" | "failed" | "missed";
+  lastError: string;
+  lastRecipients: number;
+};
+
+export type ScheduledMapMessageDraft = Pick<ScheduledMapMessage, "name" | "enabled" | "mapName" | "dimension" | "message" | "frequency" | "daysOfWeek" | "time" | "timezone"> & { id?: string };
+
 export type LandsraadTerm = {
   term_id: number | string;
   start_time?: string;
@@ -132,5 +155,9 @@ export const adminApi = {
   setLandsraadPlayerContribution: (body: { playerId: string | number; taskId: string | number; amount: number }) => post<{ ok: boolean; message?: string }>("/api/admin/landsraad/player-contribution", body),
   kickAllOnline: (confirmation: string) => post<{ task: Task }>("/api/players/kick-all-online", { confirmation }),
   broadcast: (title: string, body: string, durationSec: number) => post<{ supported: boolean; reason?: string; ok?: boolean; stdout?: string; stderr?: string; note?: string }>("/api/admin/broadcast", { title, body, durationSec }),
-  mapChat: (mapName: string, dimension: number, body: string) => post<{ supported: boolean; reason?: string; ok?: boolean; stdout?: string; stderr?: string; note?: string }>("/api/admin/map-chat", { mapName, dimension, body })
+  mapChat: (mapName: string, dimension: number, body: string) => post<{ supported: boolean; reason?: string; ok?: boolean; stdout?: string; stderr?: string; note?: string }>("/api/admin/map-chat", { mapName, dimension, body }),
+  mapChatSchedules: () => api<{ version: number; schedules: ScheduledMapMessage[] }>("/api/admin/map-chat-schedules"),
+  saveMapChatSchedule: (schedule: ScheduledMapMessageDraft) => post<{ ok: boolean; schedule: ScheduledMapMessage; schedules: ScheduledMapMessage[] }>("/api/admin/map-chat-schedules", { action: "save", schedule }),
+  deleteMapChatSchedule: (id: string) => post<{ ok: boolean; removed: string; schedules: ScheduledMapMessage[] }>("/api/admin/map-chat-schedules", { action: "delete", id }),
+  runMapChatSchedule: (id: string) => post<{ ok: boolean; schedules: ScheduledMapMessage[]; result: { recipients?: number } }>("/api/admin/map-chat-schedules", { action: "run", id })
 };

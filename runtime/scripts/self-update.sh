@@ -644,6 +644,7 @@ backup_local_state() {
     runtime/generated/message-of-the-day-state.json \
     runtime/generated/player-announcements.json \
     runtime/generated/player-announcements-state.json \
+    runtime/generated/scheduled-map-messages.json \
     runtime/generated/public-directory-status.json \
     runtime/generated/public-probe.env \
     runtime/generated/restart-schedule.env \
@@ -783,6 +784,7 @@ restore_local_state_after_install() {
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/message-of-the-day-state.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/player-announcements.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/player-announcements-state.json
+  restore_local_state_file_if_needed "$backup_dir" runtime/generated/scheduled-map-messages.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/public-directory-status.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/public-probe.env
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/restart-schedule.env
@@ -933,6 +935,7 @@ restore_local_state_ownership() {
     runtime/generated/message-of-the-day-state.json \
     runtime/generated/player-announcements.json \
     runtime/generated/player-announcements-state.json \
+    runtime/generated/scheduled-map-messages.json \
     runtime/generated/public-directory-status.json \
     runtime/generated/public-probe.env \
     runtime/generated/restart-schedule.env \

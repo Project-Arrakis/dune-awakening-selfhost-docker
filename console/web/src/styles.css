@@ -5143,7 +5143,50 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .admin-tools-panel .broadcast-line { display: grid; grid-template-columns: minmax(260px, 560px); align-items: end; }
 .live-tool-section-title { margin: 0 0 2px; color: #ffd08a; font-size: 1rem; font-weight: 700; }
 .admin-tools-panel .motd-line { grid-template-columns: minmax(0, 1fr); }
-.admin-tools-panel .map-chat-line { margin-top: 0; }
+.admin-tools-panel .map-chat-line { width: 100%; margin-top: 0; grid-template-columns: minmax(0, 1fr); }
+.map-chat-line > * { min-width: 0; }
+.map-message-tabs { width: min(360px, 100%); margin: 2px 0 4px; }
+.map-message-send-now { display: grid; gap: 12px; }
+.map-message-schedules { display: grid; gap: 12px; width: 100%; max-width: none; }
+.map-message-schedule-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 10px; border-bottom: 1px solid rgba(214, 185, 140, .12); }
+.map-message-schedule-heading > div, .map-message-schedule-editor-title { display: grid; gap: 3px; }
+.map-message-schedule-heading strong, .map-message-schedule-editor-title strong { color: var(--title); }
+.map-message-schedule-heading span, .map-message-schedule-editor-title span { color: var(--muted-warm); font-size: 13px; }
+.map-message-schedule-heading button { width: auto; flex: 0 0 auto; }
+.map-message-schedule-editor { display: grid; gap: 14px; padding: 14px; border: 1px solid rgba(214, 185, 140, .28); border-radius: 8px; background: rgba(0, 0, 0, .16); }
+.map-message-schedule-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: end; }
+.map-message-schedule-fields label { min-width: 0; }
+.map-message-schedule-fields input, .map-message-schedule-fields select { width: 100%; min-width: 0; max-width: 100%; }
+.map-message-schedule-body { width: 100%; }
+.map-message-schedule-body textarea { min-height: 104px; }
+.map-message-schedule-body > .muted { justify-self: end; font-size: 12px; }
+.map-message-weekdays { min-width: 0; margin: 0; padding: 10px 12px 12px; border: 1px solid rgba(214, 185, 140, .16); border-radius: 7px; }
+.map-message-weekdays legend { padding: 0 5px; color: var(--muted-warm); font-size: 13px; }
+.map-message-weekdays > div { display: grid; grid-template-columns: repeat(7, minmax(52px, 1fr)); gap: 7px; }
+.map-message-weekdays button { min-width: 0; padding: 8px 7px; }
+.map-message-schedule-editor-actions, .map-message-schedule-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.map-message-schedule-editor-actions .switch-checkbox { margin-right: auto; }
+.map-message-schedule-empty { display: grid; place-items: center; gap: 4px; min-height: 112px; padding: 18px; border: 1px dashed rgba(214, 185, 140, .22); border-radius: 8px; color: var(--muted-warm); text-align: center; }
+.map-message-schedule-empty strong { color: #e9dcc8; }
+.map-message-schedule-list { display: grid; gap: 10px; }
+.map-message-schedule-card { display: grid; gap: 10px; padding: 13px 14px; border: 1px solid #302b25; border-left: 3px solid #62513d; border-radius: 8px; background: #121518; }
+.map-message-schedule-card.enabled { border-left-color: var(--success); }
+.map-message-schedule-card > p { margin: 0; color: #e4d7c0; line-height: 1.45; overflow-wrap: anywhere; }
+.map-message-schedule-summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.map-message-schedule-summary > div { display: grid; gap: 3px; min-width: 0; }
+.map-message-schedule-summary strong { color: var(--title); overflow-wrap: anywhere; }
+.map-message-schedule-summary span:not(.badge) { color: var(--muted-warm); font-size: 12px; }
+.map-message-schedule-summary .badge { flex: 0 0 auto; }
+.map-message-schedule-summary .badge.success { color: var(--success-text); border-color: var(--success); }
+.map-message-schedule-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.map-message-schedule-meta > span { display: grid; gap: 3px; padding: 8px 10px; border: 1px solid rgba(214, 185, 140, .1); border-radius: 6px; background: rgba(255, 255, 255, .025); }
+.map-message-schedule-meta small { color: var(--muted-warm); }
+.map-message-schedule-meta strong { color: #eee0c7; font-size: 13px; overflow-wrap: anywhere; }
+.map-message-schedule-meta .schedule-status-sent { color: var(--success-text); }
+.map-message-schedule-meta .schedule-status-failed, .map-message-schedule-meta .schedule-status-missed { color: var(--danger-text); }
+.map-message-schedule-error { color: var(--danger-text); font-size: 12px; overflow-wrap: anywhere; }
+.map-message-schedule-actions { padding-top: 2px; }
+.map-message-schedule-actions button { width: auto; }
 .admin-tools-panel .motd-line .muted { margin: 0; }
 .admin-tools-panel .player-announcements-line .panel-title { margin: 0 0 2px; }
 .admin-tools-panel .broadcast-title { width: min(360px, 100%); min-width: 0; flex: 0 1 360px; }
@@ -5631,6 +5674,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .sidebar-addon-children button { min-height: 40px; }
   .live-map-layout { grid-template-columns: 1fr; }
   .live-map-frame { height: clamp(420px, 62dvh, 700px); min-height: 0; }
+  .map-message-schedule-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .deep-desert-dual-section { width: 100%; }
 }
 
@@ -5789,6 +5833,16 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .memory-swap-metrics { display: grid; grid-template-columns: 1fr; }
   .live-map-map-buttons { grid-template-columns: 1fr; }
   .live-map-frame { height: max(320px, 52dvh); }
+  .map-message-schedule-heading { align-items: stretch; flex-direction: column; }
+  .map-message-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .map-message-schedule-heading button { width: 100%; }
+  .map-message-schedule-fields { grid-template-columns: minmax(0, 1fr); }
+  .map-message-weekdays > div { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .map-message-schedule-editor-actions { align-items: stretch; flex-direction: column; }
+  .map-message-schedule-editor-actions .switch-checkbox, .map-message-schedule-editor-actions button { width: 100%; }
+  .map-message-schedule-meta { grid-template-columns: minmax(0, 1fr); }
+  .map-message-schedule-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .map-message-schedule-actions button { width: 100%; }
   .settings-category summary { align-items: flex-start; gap: 8px; }
   .settings-list-table { min-width: 640px; }
 }

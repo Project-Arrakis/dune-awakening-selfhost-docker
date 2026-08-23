@@ -215,12 +215,14 @@ export const ROUTE_ACTIONS = {
   "GET /api/admin/character-transfer-settings": "admin:transfer-settings:read",
   "GET /api/admin/message-of-the-day":         "admin:motd:read",
   "GET /api/admin/player-announcements":       "admin:announcements:read",
+  "GET /api/admin/map-chat-schedules":         "admin:map-chat",
   "POST /api/admin/history/clear":             "admin:history:clear",
   "POST /api/admin/character-transfer-settings":"admin:transfer-settings:write",
   "POST /api/admin/message-of-the-day":        "admin:motd:write",
   "POST /api/admin/player-announcements":      "admin:announcements:write",
   "POST /api/admin/broadcast":                 "admin:broadcast",
   "POST /api/admin/map-chat":                  "admin:map-chat",
+  "POST /api/admin/map-chat-schedules":        "admin:map-chat",
   "POST /api/admin/broadcast-shutdown":        "admin:broadcast-shutdown",
 
   // --- Landsraad ---
