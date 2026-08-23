@@ -2554,8 +2554,25 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-layer { justify-content: flex-start; width: 100%; min-height: 34px; color: #d9c8aa; }
 .live-map-layer input { width: auto; margin: 0; accent-color: #c68b4a; }
 .live-map-layer .muted { margin-left: auto; }
+<<<<<<< HEAD
 .live-map-legend-dot { width: 12px; height: 12px; border: 2px solid #090b0d; border-radius: 999px; box-shadow: 0 0 4px rgba(0, 0, 0, .35); flex: 0 0 auto; display: flex; align-items: center; justify-content: center; color: #94a3b8; background: #94a3b8; }
 .live-map-legend-icon { color: #0b0d10; }
+=======
+.live-map-legend-dot {
+  display: inline-block;
+  width: 12px;
+  min-width: 12px;
+  max-width: 12px;
+  height: 12px;
+  min-height: 12px;
+  max-height: 12px;
+  aspect-ratio: 1;
+  border: 2px solid #090b0d;
+  border-radius: 999px;
+  box-shadow: 0 0 4px rgba(0, 0, 0, .35);
+  flex: 0 0 12px;
+}
+>>>>>>> 69f49ab1 (fix(live-map): preserve marker shapes on mobile Safari)
 .live-map-frame {
   position: relative;
   width: 100%;
@@ -2578,7 +2595,10 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-marker {
   position: absolute;
   width: 12px;
+  min-width: 12px;
   height: 12px;
+  min-height: 12px;
+  aspect-ratio: 1;
   transform: translate(-50%, -50%);
   border: 2px solid #090b0d;
   border-radius: 999px;
@@ -2592,6 +2612,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   justify-content: center;
   color: #94a3b8;
   background: #94a3b8;
+  appearance: none;
+  -webkit-appearance: none;
 }
 .live-map-marker:hover { width: 16px; height: 16px; z-index: 4; }
 .live-map-marker-icon { color: #0b0d10; pointer-events: none; }
