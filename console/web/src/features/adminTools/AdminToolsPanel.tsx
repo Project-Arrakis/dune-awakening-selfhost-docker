@@ -7,6 +7,7 @@ import { playersApi } from "../../api/players";
 import { serverApi } from "../../api/server";
 import type { RestartMessages, RestartQueueResponse } from "../../api/server";
 import { RestartMessagesModal } from "./RestartMessagesModal";
+import { ScheduledMapMessages } from "./ScheduledMapMessages";
 import { setupApi, type Task } from "../../api/setup";
 import { DataTable } from "../../components/common/DataTable";
 import { KeyValueGrid, TechnicalDetails } from "../../components/common/DisplayPrimitives";
@@ -79,6 +80,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
   const [mapChatOptions, setMapChatOptions] = useState<MapChatOption[]>(defaultMapChatOptions());
   const [mapChatTarget, setMapChatTarget] = useState(defaultMapChatOptions()[0]?.key || "HaggaBasin|0");
   const [mapChatBody, setMapChatBody] = useState("");
+  const [mapChatMode, setMapChatMode] = useState<"send" | "schedules">("send");
   const [history, setHistory] = useState("");
   const [actionResult, setActionResult] = useState<InlineResult | null>(null);
   const resultTimer = useRef<number | null>(null);
@@ -754,14 +756,17 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
         <div className="section-divider" />
         <div className="action-line broadcast-line map-chat-line">
           <h4 className="live-tool-section-title">Send Map Message</h4>
-          <label className="broadcast-title">Choose Map<select value={mapChatTarget} onChange={(event) => setMapChatTarget(event.target.value)}>
-            {mapChatOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
-          </select></label>
-          <label className="broadcast-message">Message<textarea rows={3} value={mapChatBody} onChange={(event) => setMapChatBody(event.target.value)} placeholder="Message shown in this map chat" /></label>
-          <div className="broadcast-controls-row">
-            <button onClick={() => run(sendMapChat)}>Send Message</button>
-            <InlineActionResult result={actionResult} resultKey="map-chat" />
-          </div>
+          <div className="settings-tabs map-message-tabs"><button className={mapChatMode === "send" ? "active" : ""} onClick={() => setMapChatMode("send")}>Send Now</button><button className={mapChatMode === "schedules" ? "active" : ""} onClick={() => setMapChatMode("schedules")}>Schedules</button></div>
+          {mapChatMode === "send" ? <div className="map-message-send-now">
+            <label className="broadcast-title">Choose Map<select value={mapChatTarget} onChange={(event) => setMapChatTarget(event.target.value)}>
+              {mapChatOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+            </select></label>
+            <label className="broadcast-message">Message<textarea rows={3} value={mapChatBody} onChange={(event) => setMapChatBody(event.target.value)} placeholder="Message shown in this map chat" /></label>
+            <div className="broadcast-controls-row">
+              <button onClick={() => run(sendMapChat)}>Send Message</button>
+              <InlineActionResult result={actionResult} resultKey="map-chat" />
+            </div>
+          </div> : <ScheduledMapMessages mapOptions={mapChatOptions} confirmAction={confirmAction} onDelivery={() => loadHistory(true)} />}
         </div>
         <div className="section-divider" />
         <div className="action-line broadcast-line player-announcements-line">
@@ -1121,7 +1126,7 @@ function adminHistoryLineMatchesScope(command: string, target: string, scope: "a
   if (scope === "all") return true;
   const rawCommand = String(command || "").trim();
   const rawTarget = String(target || "").trim();
-  if (/^web-(broadcast|shutdown-broadcast|map-chat|hydrate-all)$/i.test(rawCommand)) return true;
+  if (/^(?:web-(?:broadcast|shutdown-broadcast|map-chat|hydrate-all)|scheduled-map-chat(?:-now)?)$/i.test(rawCommand)) return true;
   if (/^KickPlayer$/i.test(rawCommand) && /^(all|\*)$/i.test(rawTarget)) return true;
   return false;
 }
@@ -1142,6 +1147,8 @@ function friendlyAdminHistoryAction(value: string) {
   const raw = String(value || "").trim();
   const labels: Record<string, string> = { "web-hydrate-all": "Hydrate All", AddItemToInventory: "Grant Item", AwardXP: "Award XP", UpdateAllWaterFillables: "Refill Container", KickPlayer: "Kick Player", GrantTemplate: "Grant Template", SkillsSetUnspentSkillPoints: "Set Skill Points", SkillsSetModuleLevel: "Set Skill Module", CleanPlayerInventory: "Clean Inventory", ResetProgression: "Reset Progression", TeleportTo: "Teleport Player", SpawnVehicleAt: "Spawn Vehicle", SpecializationXP: "Specialization XP" };
   labels["web-map-chat"] = "Map Chat";
+  labels["scheduled-map-chat"] = "Scheduled Map Message";
+  labels["scheduled-map-chat-now"] = "Scheduled Map Message (Send Now)";
   if (labels[raw]) return labels[raw];
   const cleaned = raw.replace(/^web[-_]/i, "").replace(/[-_]+/g, " ").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/\bXP\b/i, "XP").replace(/\s+/g, " ").trim();
   return cleaned ? titleCaseWords(cleaned).replace(/\bXp\b/g, "XP") : "-";
@@ -1173,7 +1180,7 @@ function friendlyAdminHistorySummary(friendly: string, path: string, payload: st
   const parsed = parseJsonMaybe(payload) as { messagePreview?: unknown } | null;
   const message = parsed?.messagePreview;
   const messageText = typeof message === "string" && message.trim() ? `: "${message.trim().slice(0, 80)}${message.trim().length > 80 ? "..." : ""}"` : "";
-  if (/^web-map-chat$/i.test(String(command || ""))) return `Map chat${messageText}`;
+  if (/^(?:web-map-chat|scheduled-map-chat(?:-now)?)$/i.test(String(command || ""))) return `Map chat${messageText}`;
   if (/broadcast/i.test(label) || /^web-(broadcast|shutdown-broadcast)$/i.test(String(command || ""))) return `Broadcast${messageText}`;
   if (/hydrate/i.test(label) || /^web-hydrate-all$/i.test(String(command || ""))) return "Hydrated online players";
   if (/kick/i.test(label)) return "Kick command";
