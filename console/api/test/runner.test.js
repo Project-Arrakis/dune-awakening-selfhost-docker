@@ -63,6 +63,7 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("storageCleanupBuildCache"), ["storage", "cleanup", "--build-cache"]);
   assert.deepEqual(buildDuneArgs("restartService", { service: "director" }), ["restart", "director"]);
   assert.deepEqual(buildDuneArgs("restartServiceStop", { service: "survival" }), ["stop-service", "survival"]);
+  assert.deepEqual(buildDuneArgs("restartServiceStop", { service: "overmap" }), ["stop-service", "overmap"]);
   assert.deepEqual(buildDuneArgs("restartServiceStart", { service: "survival" }), ["restart", "survival"]);
   assert.deepEqual(buildDuneArgs("logs", { service: "gateway" }), ["logs", "gateway"]);
   assert.deepEqual(buildDuneArgs("backupRestore", { backup: "dune-db-test.backup" }), ["db", "restore", "dune-db-test.backup", "--no-safety-backup"]);
