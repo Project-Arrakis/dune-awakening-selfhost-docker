@@ -3221,9 +3221,11 @@ export async function liveMapBases(db, map = "") {
   const partitionWhere = validActorPartitionClause(hasWorldPartition, "a");
   try {
     const result = await db.query(`
-      select b.id,
+      select min(b.id) as id,
              'base' as type,
-             coalesce(pa.actor_name, 'Base ' || b.id::text) as name,
+             ${BASE_NAME_SQL} as name,
+             ${BASE_TYPE_SQL} as base_type,
+             coalesce(owner.character_name, '') as owner_name,
              coalesce(a.map, '') as map,
              coalesce(a.partition_id, 0) as partition_id,
              coalesce(a.class, '') as class,
@@ -3235,9 +3237,18 @@ export async function liveMapBases(db, map = "") {
       join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
       join dune.actors a on a.id = afe.actor_id
       left join dune.permission_actor pa on pa.actor_id = a.id
+      left join lateral (
+        select ps.character_name
+        from dune.permission_actor_rank par
+        join dune.actors player_a on player_a.id = par.player_id
+        join dune.player_state ps on ps.account_id = player_a.owner_account_id
+        where par.permission_actor_id = a.id
+        order by par.rank asc, ps.character_name asc
+        limit 1
+      ) owner on true
       where a.transform is not null ${partitionWhere} ${where} ${storedBaseExclusion}
-      group by b.id, pa.actor_name, a.id, a.map, a.partition_id, a.class, a.transform
-      order by a.map, a.partition_id, b.id`, values);
+      group by pa.actor_name, owner.character_name, a.id, a.map, a.partition_id, a.class, a.transform
+      order by a.map, a.partition_id, min(b.id)`, values);
     return { capabilities: { bases: true }, rows: result.rows.map(normalizeMarker) };
   } catch (error) {
     return { capabilities: { bases: false }, rows: [], reason: `Base marker transform query is unsupported by this schema: ${error.message}` };
@@ -4066,8 +4077,16 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const values = [];
   let having = "";
   if (searching) {
-    values.push(`%${q}%`);
-    having = `having (${BASE_NAME_SQL}) ilike $${values.length} or (${BASE_TYPE_SQL}) ilike $${values.length} or coalesce(owner.character_name, '') ilike $${values.length}`;
+    const query = String(q).trim();
+    values.push(`%${query}%`);
+    const fuzzySearchParameter = values.length;
+    const exactBaseId = /^\d+$/.test(query) ? Number(query) : null;
+    let exactIdCondition = "";
+    if (Number.isSafeInteger(exactBaseId) && exactBaseId > 0) {
+      values.push(exactBaseId);
+      exactIdCondition = ` or min(b.id) = $${values.length}`;
+    }
+    having = `having (${BASE_NAME_SQL}) ilike $${fuzzySearchParameter} or (${BASE_TYPE_SQL}) ilike $${fuzzySearchParameter} or coalesce(owner.character_name, '') ilike $${fuzzySearchParameter}${exactIdCondition}`;
   }
   values.push(safePageSize, offset);
   const limitParamIndex = values.length - 1;

@@ -91,6 +91,31 @@ beforeEach(() => {
   invalidateInstanceNames();
 });
 
+describe("BasesPanel focused navigation", () => {
+  it("finds, expands, and focuses a base opened from another panel", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true },
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 4,
+      rows: [{
+        ...commonRow,
+        base_id: "31573",
+        name: "Desert Home",
+        generatorDataAvailable: false,
+        generatorCount: 0
+      }]
+    });
+
+    renderPanel({ focusRequest: { baseId: "31573", nonce: 1 } });
+
+    await waitFor(() => expect(basesApi.list).toHaveBeenCalledWith(expect.objectContaining({ q: "31573", page: 0 })));
+    expect(await screen.findByDisplayValue("31573")).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Power" })).toHaveAttribute("aria-selected", "true");
+  });
+});
+
 describe("BasesPanel generator details", () => {
   it("keeps fuel and spice generators separate and distinguishes unavailable data", async () => {
     vi.mocked(basesApi.list).mockResolvedValue({

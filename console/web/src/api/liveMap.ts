@@ -8,6 +8,8 @@ export type LiveMapMarker = {
   // introduced later (see issue #462) type-checks without a further change here.
   type: string;
   name?: string;
+  owner_name?: string;
+  base_type?: string;
   map?: string;
   partition_id?: number;
   x?: number;
