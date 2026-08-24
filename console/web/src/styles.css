@@ -1373,6 +1373,10 @@ body.debug .technical-details { display: block; }
 .advanced-debug { opacity: .85; }
 .log-box.large { min-height: 480px; }
 .logs-action-row { width: 100%; }
+.logs-timezone-toggle { min-height: 40px; padding-block: 5px; }
+.logs-timezone-toggle .switch-label { display: grid; gap: 1px; line-height: 1.1; }
+.logs-timezone-toggle .switch-label small { max-width: 180px; overflow: hidden; color: #a9977d; font-size: .69rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.logs-timezone-toggle.enabled .switch-label small { color: #9fc9ad; }
 .logs-clear-button { margin-left: auto; }
 .command-preview { color: #ffd08a; }
 .empty { color: #d9c8aa; }
