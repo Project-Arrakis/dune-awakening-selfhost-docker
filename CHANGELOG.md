@@ -11,6 +11,27 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Fixed
 
+- **`Release gate` was red on every PR, including `main`'s own last push** (issues
+  #465, #466). Two independent causes, both found while unrelated PR #463/#464
+  CI runs inherited the same failure:
+  - `tests/security-pr-checks.sh`'s changed-file scan diffed against
+    `upstream/main` using `git diff "$BASE_REF"...HEAD`. `git merge-base --all
+    upstream/main HEAD` now returns 3 valid, ~2-month-stale candidate merge
+    bases, so the automatic three-dot resolution picked one ambiguously,
+    exploding the "changed files" scope from a PR's real diff to ~630 files
+    (nearly the whole repo) and sweeping in an unrelated, already-known finding.
+    `.github/workflows/ci.yml`'s routine `security-checks` run now passes
+    `BASE_REF=origin/main` explicitly (this fork's own base branch has a
+    single, unambiguous, recent merge base with any normal feature branch);
+    the script's own default stays `upstream/main` for a contributor manually
+    re-running it ahead of an upstream PR to Red-Blink (Requirement 19).
+  - `trivy-image-scan` found `CVE-2026-73566` (node-tar DoS) in npm CLI's own
+    bundled `tar` (`7.5.16`, fixed in `7.5.21`) inside `node:24-trixie-slim` —
+    not this project's dependency tree (`npm audit`/`osv-scanner` both clean).
+    Confirmed no published npm release bundles the fix yet (latest, `12.0.2`,
+    still ships `tar@7.5.19`). Accepted in `.trivyignore` alongside the two
+    other already-accepted `tar` CVEs there under the identical justification.
+
 - **`security-checks` CI job was silently skipping its gitleaks and
   trivy filesystem scans.** `tests/security-pr-checks.sh` fails open
   when either binary is missing (`command -v gitleaks || SKIP`), and
