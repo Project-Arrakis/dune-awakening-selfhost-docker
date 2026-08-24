@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, statSync, chownSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
 
 export const APP_NAME = "Dune Docker Console";
@@ -353,6 +353,19 @@ function readConsoleVersion(repoRoot) {
   }
 }
 
+export function readConsoleBuildId(staticDir, fallback = "dev") {
+  try {
+    // Vite's index references every entry asset by its content-hashed
+    // filename, so its digest changes whenever the browser-facing build
+    // changes. Reading it live also detects an in-place rebuild without
+    // requiring VERSION to be bumped or the API process to restart.
+    const index = readFileSync(resolve(staticDir, "index.html"));
+    return createHash("sha256").update(index).digest("hex").slice(0, 16);
+  } catch {
+    return fallback;
+  }
+}
+
 function resolveAdminBindHost(value) {
   const raw = String(value || "0.0.0.0").trim();
   if (raw && raw !== "auto") return raw;
@@ -404,6 +417,7 @@ export function publicConfig(config) {
   return {
     appName: config.appName,
     version: config.version,
+    buildId: readConsoleBuildId(config.staticDir, config.version),
     repoRoot: config.repoRoot,
     host: config.host,
     port: config.port,

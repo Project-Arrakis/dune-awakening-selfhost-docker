@@ -52,10 +52,10 @@ describe("useStaleBuildWatcher", () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
-  it("reloads automatically the first time the polled version changes", async () => {
+  it("reloads automatically when the frontend build changes within the same release version", async () => {
     const reload = vi.fn();
     const storage = memoryStorage();
-    const { fetchVersion, advance } = versionSource("v1.0.0", "v1.0.1");
+    const { fetchVersion, advance } = versionSource("v1.0.0:build-a", "v1.0.0:build-b");
     renderHook(() => useStaleBuildWatcher({ fetchVersion, reload, storage, now: () => 100_000, intervalMs: 1000 }));
     await vi.runOnlyPendingTimersAsync();
     advance();

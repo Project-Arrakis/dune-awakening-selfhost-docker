@@ -20,8 +20,13 @@ export type StaleBuildWatcherOptions = {
 
 async function defaultFetchVersion(): Promise<string | null> {
   const state = await fetchConsoleAuthState();
-  const version = state?.config?.version;
-  return typeof version === "string" && version.trim() ? version.trim() : null;
+  const version = typeof state?.config?.version === "string" ? state.config.version.trim() : "";
+  const buildId = typeof state?.config?.buildId === "string" ? state.config.buildId.trim() : "";
+  if (!version && !buildId) return null;
+  // Keep the release version in the identity so official upgrades still
+  // trigger a reload even when they contain no frontend changes. The build
+  // ID additionally catches rebuilt frontend assets within the same version.
+  return `${version || "dev"}:${buildId || version}`;
 }
 
 function browserStorage(): StaleBuildStorage | null {
@@ -38,13 +43,13 @@ function browserReload() {
 
 // Once loaded, a browser tab has no way to know the server's files changed
 // underneath it -- there is no push, and nothing else in this app watches
-// for a version change on an already-open, idle tab (LazyTabBoundary only
+// for a build change on an already-open, idle tab (LazyTabBoundary only
 // reacts when a lazy chunk it tries to load is already gone, and the
 // Updates panel's own reload flow only runs in the tab that triggered the
 // update). This closes that gap: poll the running console version and
 // reload automatically the first time it changes, so a tab left open
-// during someone else's console update recovers on its own instead of
-// running stale code indefinitely.
+// during someone else's console update or a same-version rebuild recovers
+// on its own instead of running stale code indefinitely.
 export function useStaleBuildWatcher(options: StaleBuildWatcherOptions = {}) {
   const {
     enabled = true,
