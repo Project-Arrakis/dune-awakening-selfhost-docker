@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Car, Gem, Home, Landmark, MapPin, Package, Users, Wrench, type LucideIcon } from "lucide-react";
 import { liveMapApi, type LiveMapConfig, type LiveMapMarker, type LiveMapPartition } from "../../api/liveMap";
 import type { Task } from "../../api/setup";
 import { DataTable } from "../../components/common/DataTable";
@@ -373,7 +374,10 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
         </section>
         <section className="action-section">
           <h4>Layers</h4>
-          <div className="live-map-layer-list">{Object.keys(filters).map((key) => <label key={key} className="checkbox-row live-map-layer"><input type="checkbox" checked={filters[key]} onChange={() => setFilters({ ...filters, [key]: !filters[key] })} /><span>{friendlyMarkerType(key)}</span><span className="muted">{markerCounts[key] || 0}</span><span className={`live-map-legend-dot marker-${key}`} /></label>)}</div>
+          <div className="live-map-layer-list">{Object.keys(filters).map((key) => {
+            const Icon = liveMapMarkerIcon(key);
+            return <label key={key} className="checkbox-row live-map-layer"><input type="checkbox" checked={filters[key]} onChange={() => setFilters({ ...filters, [key]: !filters[key] })} /><span>{friendlyMarkerType(key)}</span><span className="muted">{markerCounts[key] || 0}</span><span className={`live-map-legend-dot marker-${key}`}><Icon className="live-map-legend-icon" size={9} strokeWidth={2.5} /></span></label>;
+          })}</div>
         </section>
         <section className="action-section">
           <h4>Coordinates</h4>
@@ -406,6 +410,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                 const isDraggingThisPlayer = Boolean(playerDrag && String(playerDrag.marker.id) === String(marker.id) && String(playerDrag.marker.type) === String(marker.type));
                 const isPreviewingThisPlayer = Boolean(playerTeleportPreview && String(playerTeleportPreview.marker.id) === String(marker.id) && String(playerTeleportPreview.marker.type) === String(marker.type));
                 const renderPoint = isDraggingThisPlayer ? playerDrag!.point : isPreviewingThisPlayer ? playerTeleportPreview!.point : point;
+                const MarkerIcon = liveMapMarkerIcon(String(marker.type));
                 return <button key={`${marker.type}-${marker.id}-${index}`} className={`live-map-marker marker-${marker.type} ${playerStatus} ${isDraggingThisPlayer ? "dragging" : ""} ${isPreviewingThisPlayer ? "teleport-preview" : ""}`} title={`${friendlyMarkerType(String(marker.type))}: ${friendlyMarkerName(marker)}`} onMouseDown={(event) => {
                   if (!isPlayer) return;
                   event.stopPropagation();
@@ -413,6 +418,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                   liveMapDraggingPlayerRef.current = true;
                   setPlayerDrag({ marker, point, startX: event.clientX, startY: event.clientY });
                 }} onClick={(event) => { event.stopPropagation(); setSelected(marker); }} style={{ left: `${renderPoint.px * zoom}px`, top: `${renderPoint.py * zoom}px` }}>
+                  <MarkerIcon className="live-map-marker-icon" size={8} strokeWidth={3} />
                   {markerSelected && String(marker.type).toLowerCase() === "player" && <span className={`live-map-player-status ${playerStatus}`}>{playerStatus === "online" ? "Online" : "Offline"}</span>}
                 </button>;
               })}
@@ -503,6 +509,23 @@ function friendlyMarkerType(type: string) {
     storage: "Storage",
     service: "Service"
   }[type.toLowerCase()] || titleCase(type.replaceAll("_", " "));
+}
+
+// Known categories today; "poi" and "resource" are here ahead of any backend
+// data (see issue #462) so a marker type introduced later renders with a
+// sensible icon immediately instead of silently falling back to a bare pin.
+const LIVE_MAP_MARKER_ICONS: Record<string, LucideIcon> = {
+  player: Users,
+  vehicle: Car,
+  base: Home,
+  storage: Package,
+  service: Wrench,
+  poi: Landmark,
+  resource: Gem
+};
+
+export function liveMapMarkerIcon(type: string): LucideIcon {
+  return LIVE_MAP_MARKER_ICONS[type.toLowerCase()] || MapPin;
 }
 
 function liveMapPlayerStatus(marker: LiveMapMarker) {
