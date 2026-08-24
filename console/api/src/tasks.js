@@ -279,7 +279,7 @@ export function buildSelfUpdateHelperDockerArgs({
 }
 
 function isSelfUpdateApplyOperation(operation) {
-  return operation === "selfUpdateApply";
+  return operation === "selfUpdateApply" || operation === "selfUpdateQaApply";
 }
 
 export function detectDockerSocketGid() {

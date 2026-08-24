@@ -67,6 +67,7 @@ import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLi
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
 import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
 import { createScheduledMapMessageScheduler } from "./services/scheduledMapMessages.js";
+import { createQaUpdates } from "./services/qaUpdates.js";
 
 const config = loadConfig();
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
@@ -85,6 +86,7 @@ try {
 }
 loadPolicies(config.repoRoot);
 const auth = createAuth(config);
+const qaUpdates = createQaUpdates(config);
 const loginRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
@@ -550,6 +552,42 @@ async function handleApi(req, res) {
   if (path === "/api/updates/fix-steamcmd" && req.method === "POST") return task(req, res, "updates", "updateFixSteamcmd", {});
   if (path === "/api/updates/check-stack" && req.method === "POST") return task(req, res, "updates", "selfUpdateCheck", {});
   if (path === "/api/updates/apply-stack" && req.method === "POST") return task(req, res, "updates", "selfUpdateApply", {});
+  if (path === "/api/updates/qa/status") {
+    try { return json(res, 200, await qaUpdates.status(req.authSession.id, { refresh: url.searchParams.get("refresh") === "1" })); }
+    catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "QA authorization could not be checked.") }); }
+  }
+  if (path === "/api/updates/qa/login" && req.method === "POST") {
+    try {
+      const result = await qaUpdates.start(req.authSession.id);
+      audit(config, req, "updates.qa-login-started", { requestId: result.requestId });
+      return json(res, 200, result);
+    } catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "QA authorization could not be started.") }); }
+  }
+  if (path === "/api/updates/qa/logout" && req.method === "POST") {
+    await qaUpdates.logout(req.authSession.id);
+    audit(config, req, "updates.qa-logout");
+    return json(res, 200, { ok: true });
+  }
+  if (path === "/api/updates/qa/build") {
+    try { return json(res, 200, await qaUpdates.build(req.authSession.id)); }
+    catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "The latest QA build could not be checked.") }); }
+  }
+  if (path === "/api/updates/qa/apply" && req.method === "POST") {
+    try {
+      const build = await qaUpdates.build(req.authSession.id);
+      if (!build.ready) return json(res, 409, { error: build.reason || "The latest QA build has not passed all checks." });
+      if (!build.updateAvailable) return json(res, 409, { error: "This Console already has the latest QA build." });
+      audit(config, req, "updates.qa-apply", { commitSha: build.sha });
+      return task(req, res, "updates", "selfUpdateQaApply", { sha: build.sha });
+    } catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "The QA build could not be applied.") }); }
+  }
+  if (path === "/api/updates/qa/reinstall-release" && req.method === "POST") {
+    try {
+      await qaUpdates.requireAuthorized(req.authSession.id);
+      audit(config, req, "updates.qa-reinstall-release");
+      return task(req, res, "updates", "selfUpdateApply", {});
+    } catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "The public release could not be reinstalled.") }); }
+  }
   if (path === "/api/updates/stack-progress") {
     try {
       return json(res, 200, readSelfUpdateStatus(config.repoRoot, url.searchParams.get("runId")));

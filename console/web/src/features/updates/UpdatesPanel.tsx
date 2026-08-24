@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { BookOpen, ChevronDown, ChevronUp } from "lucide-react";
+import { BookOpen, ChevronDown, ChevronUp, LogIn, LogOut, RotateCcw, ShieldCheck } from "lucide-react";
 import { fetchConsoleAuthState } from "../../api/client";
 import { setupApi, type Task } from "../../api/setup";
-import { updatesApi, type StackUpdateProgress as StackUpdateRunProgress } from "../../api/updates";
+import { updatesApi, type QaBuild, type QaStatus, type StackUpdateProgress as StackUpdateRunProgress } from "../../api/updates";
 import { KeyValueGrid, StatusPill } from "../../components/common/DisplayPrimitives";
 import { formatUiSentence, stripAnsi } from "../../lib/display";
 import { conciseTaskError } from "../../lib/taskDisplay";
@@ -66,6 +66,10 @@ export function UpdatesPanel({
   const [stackUpdateExpectedVersion, setStackUpdateExpectedVersion] = useState(() => loadStackUpdateExpectedVersion());
   const [stackUpdateReadyAt, setStackUpdateReadyAt] = useState<number | null>(null);
   const [stackHelperProgress, setStackHelperProgress] = useState<StackUpdateRunProgress | null>(null);
+  const [qaStatus, setQaStatus] = useState<QaStatus | null>(null);
+  const [qaBuild, setQaBuild] = useState<QaBuild | null>(null);
+  const [qaBusy, setQaBusy] = useState(false);
+  const [qaError, setQaError] = useState("");
   const autoGameValues = parseKeyValueText(autoGame?.stdout || "");
   const autoGameTimerValue = autoGameValues.systemd_timer || "";
   const autoGameTimerLabel = autoGameTimerValue ? formatTimerStatus(autoGameTimerValue) : "Not Installed";
@@ -130,6 +134,75 @@ export function UpdatesPanel({
     setStackUpdateTask(response.task);
     persistUpdateTask(STACK_UPDATE_TASK_KEY, response.task);
     setStackStatus((current) => ({ ...current, status: "Updating", reason: "Console update is running." }));
+  }
+
+  async function loadQaStatus(refresh = false) {
+    const next = await updatesApi.qaStatus(refresh);
+    setQaStatus(next);
+    if (next.authenticated) setQaBuild(await updatesApi.qaBuild());
+    else setQaBuild(null);
+    return next;
+  }
+
+  async function loginQa() {
+    const popup = window.open("about:blank", "dune-qa-login", "popup,width=620,height=760");
+    setQaBusy(true);
+    setQaError("");
+    try {
+      const started = await updatesApi.qaLogin();
+      if (popup) popup.location.replace(started.authorizeUrl);
+      else throw new Error("Your browser blocked the Discord login window. Allow popups and try again.");
+      setQaStatus((current) => ({ ...(current || { authenticated: false, channel: { channel: "release", label: "Public Release", commitSha: "", shortSha: "" } }), authenticated: false, status: "pending", requestId: started.requestId }));
+      for (let attempt = 0; attempt < 150; attempt += 1) {
+        await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 2000));
+        const next = await loadQaStatus(true);
+        if (next.authenticated) { popup?.close(); setQaError(""); return; }
+        if (next.status === "denied" || next.status === "signed_out") throw new Error(next.reason || "QA authorization was not approved.");
+        if (popup?.closed) {
+          await updatesApi.qaLogout();
+          await loadQaStatus();
+          setQaError("");
+          return;
+        }
+      }
+      throw new Error("QA authorization expired. Try logging in again.");
+    } catch (error) {
+      popup?.close();
+      setQaError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setQaBusy(false);
+    }
+  }
+
+  async function logoutQa() {
+    setQaBusy(true);
+    try { await updatesApi.qaLogout(); await loadQaStatus(); }
+    finally { setQaBusy(false); }
+  }
+
+  async function applyQaUpdate() {
+    if (!(await confirmAction(`Apply QA pre-release ${qaBuild?.shortSha || "build"} and rebuild the Console?`))) return;
+    saveStackUpdateExpectedVersion(String(stackStatus.current || ""));
+    setStackUpdateExpectedVersion(String(stackStatus.current || ""));
+    setStackUpdateReadyAt(null);
+    setStackHelperProgress(null);
+    const response = await updatesApi.applyQa();
+    setStackUpdateTask(response.task);
+    persistUpdateTask(STACK_UPDATE_TASK_KEY, response.task);
+    setStackStatus((current) => ({ ...current, status: "Updating", reason: "QA pre-release is being installed." }));
+  }
+
+  async function reinstallPublicRelease() {
+    if (!(await confirmAction("Replace the QA pre-release with the latest published Console release? Your server configuration and data will be preserved."))) return;
+    const expectedVersion = String(stackStatus.latest || "").trim();
+    saveStackUpdateExpectedVersion(expectedVersion);
+    setStackUpdateExpectedVersion(expectedVersion);
+    setStackUpdateReadyAt(null);
+    setStackHelperProgress(null);
+    const response = await updatesApi.reinstallRelease();
+    setStackUpdateTask(response.task);
+    persistUpdateTask(STACK_UPDATE_TASK_KEY, response.task);
+    setStackStatus((current) => ({ ...current, status: "Updating", reason: "The latest public release is being reinstalled." }));
   }
 
   async function loadAutoGame() {
@@ -197,6 +270,7 @@ export function UpdatesPanel({
     if (!gameUpdateTask || isTerminalTask(gameUpdateTask.status)) refreshGameStatus();
     if (!stackUpdateTask || isTerminalTask(stackUpdateTask.status)) refreshStackStatus();
     loadAutoGame().catch((error) => setAutoGame({ stdout: "", stderr: error instanceof Error ? error.message : String(error), exitCode: 1 }));
+    loadQaStatus().catch((error) => setQaError(error instanceof Error ? error.message : String(error)));
   }, []);
 
   useEffect(() => {
@@ -367,8 +441,15 @@ export function UpdatesPanel({
   const stackCanApply = canApplyUpdateStatus(stackStatus) && !stackUpdateRunning;
   const stackReleaseNotes = stackReleaseNotesUrl(stackStatus);
 
-  return <section className="panel">
-    <h2>Updates</h2>
+  const qaAuthenticated = qaStatus?.authenticated === true;
+  const qaApplyReason = !qaBuild ? "Checking the latest QA build." : !qaBuild.ready ? qaBuild.reason || "The latest main build has not passed all checks." : !qaBuild.updateAvailable ? "This Console already has the latest QA build." : "";
+  const latestConsoleValue = qaAuthenticated
+    ? <span className="qa-version-value"><span>{updateDisplayValue(stackStatus, "latest", formatStackVersionLabel)}</span><button type="button" className="icon-button qa-release-reinstall" aria-label="Reinstall latest public release" title="Reinstall latest public release" disabled={stackUpdateRunning} onClick={() => void reinstallPublicRelease()}><RotateCcw size={16} aria-hidden="true" /></button></span>
+    : updateDisplayValue(stackStatus, "latest", formatStackVersionLabel);
+
+  return <section className="panel updates-panel">
+    <div className="panel-title updates-page-title"><h2>Updates</h2><div className="qa-login-actions">{qaAuthenticated ? <><span className="qa-authenticated"><ShieldCheck size={17} aria-hidden="true" /><span>{qaStatus.user?.username || "Discord User"}</span><span className="qa-auth-role">{qaStatus.user?.role || "QA Tester"}</span></span><button disabled={qaBusy || stackUpdateRunning} onClick={() => void logoutQa()}><LogOut size={16} aria-hidden="true" />Logout</button></> : <button className="qa-login-button" disabled={qaBusy} onClick={() => void loginQa()}><LogIn size={14} aria-hidden="true" />{qaBusy || qaStatus?.status === "pending" ? "Waiting for Discord..." : "QA Tester Login"}</button>}</div></div>
+    {qaError && <div className="qa-login-feedback"><p className="danger-note qa-login-error">{qaError}</p></div>}
     <div className="action-sections">
       <section className="action-section">
         <div className="panel-title"><h4>Game Update</h4><StatusPill value={gameStatus.status} /></div>
@@ -383,15 +464,17 @@ export function UpdatesPanel({
       </section>
       <section className="action-section">
         <div className="panel-title"><h4>Console Update</h4><StatusPill value={stackStatus.status} /></div>
-        <KeyValueGrid items={[["Current Console Version", updateDisplayValue(stackStatus, "current", formatStackVersionLabel)], ["Latest Console Version", updateDisplayValue(stackStatus, "latest", formatStackVersionLabel)], ["Status", stackStatus.status]]} />
+        <KeyValueGrid items={[["Current Console Version", updateDisplayValue(stackStatus, "current", formatStackVersionLabel)], ["Latest Console Version", latestConsoleValue], ["Update Channel", qaStatus?.channel.label || "Public Release"], ["Status", stackStatus.status]]} />
+        {qaAuthenticated && <div className="qa-build-row"><div><strong>Latest GitHub Pre-Release</strong><span>{qaBuild ? `${qaBuild.shortSha} · ${qaBuild.status}` : "Checking..."}</span>{qaBuild?.reason && !qaBuild.ready && <small>{qaBuild.reason}</small>}</div>{qaBuild?.commitUrl && <a href={qaBuild.commitUrl} target="_blank" rel="noreferrer">View Commit</a>}</div>}
         {stackStatus.status === "Check Failed" && stackStatus.reason && <p className="danger-note">{stackStatus.reason}</p>}
         {stackStatus.status === "Version details unavailable" && <p className="muted">{stackStatus.reason}</p>}
         <div className="action-line">
           <button disabled={stackUpdateRunning} onClick={checkStack}>Refresh Console Check</button>
           {stackReleaseNotes && <a className="button-link" href={stackReleaseNotes} target="_blank" rel="noreferrer"><BookOpen size={16} aria-hidden="true" />View Patch Notes</a>}
           {stackCanApply && <button className="update-action" onClick={applyStackUpdate}>Apply Console Update</button>}
+          {qaAuthenticated && <button className="update-action qa-apply-button" disabled={stackUpdateRunning || !qaBuild?.ready || !qaBuild.updateAvailable} title={qaApplyReason} onClick={() => void applyQaUpdate()}>Apply Pre-Release</button>}
         </div>
-        {stackUpdateTask && <StackUpdateProgress task={stackUpdateTask} helperProgress={stackHelperProgress} refreshCountdown={stackUpdateRefreshCountdown} onRetry={applyStackUpdate} formatResultTitle={formatResultTitle} formatResultMessage={formatResultMessage} />}
+        {stackUpdateTask && <StackUpdateProgress task={stackUpdateTask} helperProgress={stackHelperProgress} refreshCountdown={stackUpdateRefreshCountdown} onRetry={stackUpdateTask.operation === "selfUpdateQaApply" ? applyQaUpdate : applyStackUpdate} formatResultTitle={formatResultTitle} formatResultMessage={formatResultMessage} />}
       </section>
       <div className={`playerAdmin_toggle auto-game-toggle ${autoGameOpen ? "open" : ""}`}>
           <button className="playerAdmin_toggleHeader" aria-label={autoGameOpen ? "Collapse Automatic Game Updates" : "Expand Automatic Game Updates"} onClick={() => setAutoGameOpen(!autoGameOpen)}>{autoGameOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Automatic Game Updates</span></button>
@@ -684,7 +767,7 @@ export function summarizeStackUpdateProgress(task: Task, helperProgress: StackUp
 }
 
 export function isDetachedStackUpdateTask(task: Task) {
-  return task.operation === "selfUpdateApply" && /Update helper started/i.test(task.logLines.map((line) => line.line).join("\n"));
+  return ["selfUpdateApply", "selfUpdateQaApply"].includes(task.operation) && /Update helper started/i.test(task.logLines.map((line) => line.line).join("\n"));
 }
 
 function stackUpdateStageTitle(stage?: string) {

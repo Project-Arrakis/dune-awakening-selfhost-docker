@@ -98,6 +98,7 @@ detect_github_fetch_remote() {
 GITHUB_REPO="$(detect_github_repo)"
 GITHUB_FETCH_REMOTE="$(detect_github_fetch_remote "$GITHUB_REPO")"
 GITHUB_API_BASE="${DUNE_SELF_UPDATE_API_BASE:-https://api.github.com}"
+GITHUB_WEB_BASE="${DUNE_SELF_UPDATE_WEB_BASE:-https://github.com}"
 GITHUB_TOKEN="${DUNE_SELF_UPDATE_TOKEN:-}"
 LATEST_TAG_CACHE_FILE="runtime/generated/self-update-latest-tag.txt"
 API_LAST_STATUS=""
@@ -328,6 +329,24 @@ for release in data:
 raise SystemExit(1)'
 }
 
+latest_release_tag_from_web_redirect() {
+  local effective_url prefix tag
+
+  effective_url="$(
+    curl -fsSL \
+      --connect-timeout 10 \
+      --max-time 20 \
+      -o /dev/null \
+      -w '%{url_effective}' \
+      "${GITHUB_WEB_BASE}/${GITHUB_REPO}/releases/latest"
+  )" || return 1
+  prefix="${GITHUB_WEB_BASE}/${GITHUB_REPO}/releases/tag/"
+  [[ "$effective_url" == "$prefix"* ]] || return 1
+  tag="${effective_url#"$prefix"}"
+  [[ "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || return 1
+  printf '%s' "$tag"
+}
+
 cache_latest_release_tag() {
   local tag="$1"
   (
@@ -353,7 +372,13 @@ latest_release_tag() {
     fi
   fi
 
-  latest_release_tag_from_releases_list
+  tag="$(latest_release_tag_from_releases_list 2>/dev/null || true)"
+  if [ -n "$tag" ]; then
+    printf '%s' "$tag"
+    return 0
+  fi
+
+  latest_release_tag_from_web_redirect
 }
 
 list_release_rows() {
@@ -839,10 +864,80 @@ verify_installed_version() {
 
   echo
   echo "Installed stack version: $new_version"
+  rm -f runtime/generated/qa-update-channel.env
   echo "Previous stack files backup:"
   echo "  $backup_dir/project-files.tgz"
   echo
   echo "Dune Docker Console files were updated."
+}
+
+validate_commit_sha() {
+  [[ "$1" =~ ^[0-9a-fA-F]{40}$ ]]
+}
+
+download_commit_archive() {
+  local sha="$1"
+  local out="$2"
+  local -a curl_args
+
+  self_update_running downloading 20 "Downloading QA build ${sha:0:8}."
+  mapfile -t curl_args < <(api_curl_common_args)
+  curl -fsSL "${curl_args[@]}" -L \
+    "${GITHUB_API_BASE}/repos/${GITHUB_REPO}/tarball/${sha}" -o "$out"
+}
+
+install_qa_commit() {
+  local sha="$1"
+  local tmpdir archive src backup_dir
+
+  validate_commit_sha "$sha" || {
+    echo "Invalid QA build identifier."
+    exit 2
+  }
+  sha="${sha,,}"
+  check_dirty_git_tree
+
+  tmpdir="$(mktemp -d)"
+  archive="$tmpdir/qa.tar.gz"
+  download_commit_archive "$sha" "$archive"
+  tar -xzf "$archive" -C "$tmpdir"
+  src="$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+  if [ -z "$src" ] || [ ! -d "$src" ] || [ ! -f "$src/runtime/scripts/self-update.sh" ] || [ ! -f "$src/docker-compose.web.yml" ]; then
+    echo "The downloaded QA build is incomplete."
+    rm -rf "$tmpdir"
+    exit 2
+  fi
+
+  backup_dir="runtime/backups/self-update/$(date +%Y%m%d-%H%M%S)-qa-${sha:0:12}"
+  echo "Backing up current stack files to:"
+  echo "  $backup_dir"
+  backup_current_stack "$backup_dir"
+
+  echo "Installing QA build into:"
+  echo "  $ROOT_DIR"
+  self_update_running installing 62 "Installing QA build ${sha:0:8}."
+  remove_backed_up_project_files "$backup_dir"
+  (
+    cd "$src"
+    tar --exclude='.git' -cf - .
+  ) | (
+    cd "$ROOT_DIR"
+    tar -xf -
+  )
+  restore_local_state_after_install "$backup_dir"
+  mkdir -p runtime/generated
+  {
+    echo "channel=qa"
+    echo "commit_sha=$sha"
+    echo "installed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > runtime/generated/qa-update-channel.env
+  rm -rf "$tmpdir"
+
+  echo
+  echo "Installed QA build: ${sha:0:8}"
+  echo "Previous stack files backup:"
+  echo "  $backup_dir/project-files.tgz"
+  self_update_running installed 75 "QA build files were installed and verified."
 }
 
 web_console_service_name() {
@@ -1280,11 +1375,26 @@ case "$cmd" in
     self_update_finish_success
     ;;
 
+  install-qa)
+    acquire_self_update_lock
+    dune_persist_compose_project_name "$ROOT_DIR" "$DUNE_COMPOSE_PROJECT_NAME"
+    validate_commit_sha "$tag" || {
+      echo "A full 40-character QA commit SHA is required."
+      exit 2
+    }
+    ensure_self_update_preflight
+    install_qa_commit "$tag"
+    install_cli_command_after_update
+    rebuild_web_console_after_update
+    self_update_finish_success
+    ;;
+
   *)
     echo "Usage:"
     echo "  runtime/scripts/self-update.sh check"
     echo "  runtime/scripts/self-update.sh list"
     echo "  runtime/scripts/self-update.sh install [latest|<tag>]"
+    echo "  runtime/scripts/self-update.sh install-qa <commit-sha>"
     exit 2
     ;;
 esac
