@@ -987,6 +987,7 @@ main { padding: 22px; min-width: 0; }
 .maps-result-slot .home-task-result { margin-top: 0; }
 .home-task-result.result-ok, .home-task-result.result-fail { animation: homeResultFadeOut .4s ease 10s forwards; }
 .game-update-progress, .stack-update-progress { margin-top: 12px; display: grid; gap: 10px; }
+.stack-update-refresh-line { align-items: center; }
 .game-update-progress.result-ok, .game-update-progress.result-fail, .stack-update-progress.result-ok, .stack-update-progress.result-fail { animation: homeResultFadeOut .4s ease 10s forwards; }
 .progress-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; }
 .progress-track { height: 10px; overflow: hidden; border-radius: 999px; background: #0c0e10; border: 1px solid #302b25; }
