@@ -86,4 +86,3 @@ export function JsonValueEditor({ column, value, onApply, onClose }: JsonValueEd
     </section>
   </div>;
 }
-
