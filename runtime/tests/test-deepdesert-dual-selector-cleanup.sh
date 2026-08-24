@@ -37,7 +37,7 @@ if grep -Fq 'map-set Global global_pve_enabled_partition_add' "$SCRIPT"; then
 fi
 grep -Fq "set label = 'ManagedDeepDesert_' || partition_id::text" "$SCRIPT" \
   || fail "partition role reversal can hit the unique label constraint without temporary labels"
-enable_apply_count="$(awk '/^enable_layout\(\)/,/^enable_dual\(\)/' "$SCRIPT" | grep -c '^  apply_usergame "\$count"$')"
+enable_apply_count="$(awk '/^enable_layout\(\)/,/^enable_dual\(\)/' "$SCRIPT" | grep -c '^  apply_usergame "\$count" "\$third_role"$')"
 [ "$enable_apply_count" = "1" ] \
   || fail "Deep Desert layout enable must materialize UserGame settings exactly once"
 
