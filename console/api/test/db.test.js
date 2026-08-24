@@ -124,6 +124,7 @@ import {
   playerCheaterTracking,
   playerCraftingRecipes,
   playerCurrency,
+  playerCustomizationGrantState,
   playerFactions,
   playerIntel,
   playerInventory,
@@ -7649,6 +7650,18 @@ test("building unlock state reads owned progression and pending patent tokens wi
   assert.equal(result.capabilities.buildingUnlockOwnership, true);
   assert.deepEqual(result.owned, ["BasicLighting", "MTX_Neut_StrategyTable_Patent", "ChoamShelterSet"]);
   assert.deepEqual(result.pending, ["Windtrap_Patent"]);
+  assert.equal(calls.some((call) => /^\s*(update|insert|delete)\b/i.test(call.text)), false);
+});
+
+test("customization grant state reports pending tokens without pretending consumed ownership is available", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    pendingBuildingUnlockRows: [{ template_id: "B1C3_Atre_Maula_Pistol" }]
+  });
+  const result = await playerCustomizationGrantState(db, 123);
+  assert.equal(result.capabilities.customizationOwnership, false);
+  assert.equal(result.capabilities.customizationPending, true);
+  assert.deepEqual(result.pending, ["B1C3_Atre_Maula_Pistol"]);
   assert.equal(calls.some((call) => /^\s*(update|insert|delete)\b/i.test(call.text)), false);
 });
 
