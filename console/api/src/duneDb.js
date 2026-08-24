@@ -4499,8 +4499,9 @@ export async function updateBaseLandClaim(db, baseId, { addSegments = [], vertic
   });
 }
 
-export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true } = {}) {
-  const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
+export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true, playerId = "" } = {}) {
+  const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors",
+    ...(playerId ? ["permission_actor", "permission_actor_rank", "player_state"] : [])];
   // One round-trip each and none of them depends on another, so probe them
   // together rather than five times in series before any real work starts.
   const [required, hasWorldPartition, hasBaseBackups] = await Promise.all([
@@ -4509,8 +4510,9 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     tableExists(db, "base_backup_linked_actors")
   ]);
   if (required.some((exists) => !exists)) {
-    return { ...unsupported("bases", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0 };
+    return { ...unsupported("bases", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalBases: 0, totalOwned: 0, totalShared: 0, totalPieces: 0, totalPlaceables: 0 };
   }
+  const player = playerId ? await resolvePlayerMutationTarget(db, playerId) : null;
   // The base-backup tool ("pick up base") does not move or delete any of a
   // base's rows -- it only deletes permission_actor/permission_actor_rank
   // (unclaiming it) and registers its actor ids in base_backup_linked_actors
@@ -4524,6 +4526,13 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   // (unconfirmed either way). A base satisfying both is unambiguous.
   const backupExclusion = hasBaseBackups
     ? "and not (pa.actor_id is null and exists (select 1 from dune.base_backup_linked_actors bbla where bbla.actor_id = a.id))"
+    : "";
+  // Player -> Bases uses the permission actor as its source of truth. Rank 1
+  // is ownership; every other assigned rank is shared access. Filtering here
+  // keeps the paged rows and aggregate totals on exactly the same scope and
+  // avoids trusting a character name, which is neither stable nor unique.
+  const playerScope = player
+    ? "and exists (select 1 from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = a.id and viewer_par.player_id = $1)"
     : "";
   // What counts as a base, defined once. The paged query (`matched`) and the
   // totals query (`valid_claims`) run in separate round trips but must agree
@@ -4542,6 +4551,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
         left join dune.permission_actor pa on pa.actor_id = a.id
         ${extraJoin}
         where a.transform is not null
+        ${playerScope}
         ${backupExclusion}`;
   // A base's own a.map is the game's map name ("HaggaBasin"), which cannot tell
   // two instances of it apart. world_partition resolves the partition to the
@@ -4554,7 +4564,11 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const partitionJoin = hasWorldPartition
     ? "left join dune.world_partition wp on wp.partition_id = p.partition_id"
     : "";
-  const safePageSize = intParam(pageSize, "pageSize", 1, 200);
+  // The Player -> Bases tab is intentionally unpaginated: one player's
+  // permission roster is small and splitting it into 50-row pages adds more UI
+  // than value. Keep the normal admin list capped at 200, while allowing the
+  // player-scoped endpoint to fetch its complete practical set in one request.
+  const safePageSize = intParam(pageSize, "pageSize", 1, player ? 5000 : 200);
   const safePage = intParam(page, "page", 0);
   const offset = safePage * safePageSize;
   const safeSortColumn = Object.hasOwn(BASE_SORT_COLUMNS, sortColumn) ? sortColumn : "name";
@@ -4567,7 +4581,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   // searching, defer it to the final SELECT so it only runs for the page being displayed.
   const searching = Boolean(q);
   const resolveOwnerBeforePaging = searching || sortSpec.owner;
-  const values = [];
+  const values = player ? [player.controllerId] : [];
   let having = "";
   if (searching) {
     const query = String(q).trim();
@@ -4599,6 +4613,9 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const matchedGroupByOwner = resolveOwnerBeforePaging ? "owner.character_name, " : "";
 
   const finalOwnerSelect = resolveOwnerBeforePaging ? "p.owner_name," : "coalesce(owner.character_name, '') as owner_name,";
+  const viewerRankSelect = player
+    ? `(select min(viewer_par.rank)::int from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = p.actor_id and viewer_par.player_id = $1) as viewer_rank,`
+    : "null::int as viewer_rank,";
   const finalOwnerJoin = resolveOwnerBeforePaging ? "" : `
       left join lateral (
         select ps.character_name
@@ -4652,6 +4669,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
              p.name,
              p.base_type,
              ${finalOwnerSelect}
+             ${viewerRankSelect}
              p.map,
              p.partition_id,
              ${partitionSelect}
@@ -4678,12 +4696,15 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
 
     const totalsResult = await db.query(`
       with valid_claims as (
-        select distinct a.id as actor_id
+        select distinct a.id as actor_id,
+               ${player ? `(select min(viewer_par.rank)::int from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = a.id and viewer_par.player_id = $1) as viewer_rank` : "null::int as viewer_rank"}
         ${baseCandidateSource()}
       )
       select (select count(*) from valid_claims)::int as total_bases,
+             (select count(*) from valid_claims where viewer_rank = 1)::int as total_owned,
+             (select count(*) from valid_claims where viewer_rank is not null and viewer_rank <> 1)::int as total_shared,
              (select count(*) from dune.building_instances bi join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_pieces,
-             (select count(distinct pl.id) from dune.placeables pl join dune.actor_fgl_entities afe on afe.entity_id = pl.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_placeables`);
+             (select count(distinct pl.id) from dune.placeables pl join dune.actor_fgl_entities afe on afe.entity_id = pl.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_placeables`, player ? [player.controllerId] : []);
 
     // Callers that already resolve generator fuel themselves (the Discord
     // player portal) opt out so the CTE does not run twice per request.
@@ -4734,10 +4755,13 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions, waterRefill, waterRefillQueue, baseDelete, baseDeleteQueue },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalBases: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_bases) : 0,
+      totalOwned: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_owned || 0) : 0,
+      totalShared: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_shared || 0) : 0,
       totalPieces: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_pieces) : 0,
       totalPlaceables: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_placeables) : 0,
-      rows: result.rows.map(({ total_count, sort_position, ...row }) => ({
+      rows: result.rows.map(({ total_count, sort_position, viewer_rank, ...row }) => ({
         ...row,
+        ...(player ? { relationship: permissionRankLabel(Number(viewer_rank)) } : {}),
         partition_id: Number(row.partition_id || 0),
         partitionMap: String(row.partition_map || ""),
         dimensionIndex: Number(row.dimension_index || 0),
@@ -4764,7 +4788,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       }))
     };
   } catch (error) {
-    return { capabilities: { bases: false, generatorRefill: false }, rows: [], totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0, reason: `Base list query is unsupported by this schema: ${error.message}` };
+    return { capabilities: { bases: false, generatorRefill: false }, rows: [], totalCount: 0, totalBases: 0, totalOwned: 0, totalShared: 0, totalPieces: 0, totalPlaceables: 0, reason: `Base list query is unsupported by this schema: ${error.message}` };
   }
 }
 

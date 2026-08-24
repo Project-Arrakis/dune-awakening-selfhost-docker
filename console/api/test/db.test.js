@@ -2775,6 +2775,49 @@ test("list bases returns rows with piece and placeable counts and a total count"
   ]);
 });
 
+test("list bases scopes player results to owned and shared permission actors", async () => {
+  const calls = [];
+  const scopedTables = new Set([
+    ...BASE_REQUIRED_TABLES,
+    "dune.permission_actor",
+    "dune.permission_actor_rank",
+    "dune.player_state"
+  ]);
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: scopedTables.has(String(values[0] || "")) }] };
+      if (text.includes("ps.player_controller_id") && text.includes("a.class ilike '%PlayerCharacter%'")) {
+        return { rows: [{ actor_id: 42, account_id: 600, controller_id: 777, player_state_id: 800, online_status: "Offline" }] };
+      }
+      if (text.includes("total_bases")) {
+        return { rows: [{ total_bases: "2", total_owned: "1", total_shared: "1", total_pieces: "20", total_placeables: "8" }] };
+      }
+      if (text.includes("from paged p")) {
+        return { rows: [{
+          base_id: "4102", name: "Shared Workshop", base_type: "Sub-Fief", owner_name: "Stilgar",
+          viewer_rank: 3, map: "HaggaBasin", partition_id: "1", x: "10", y: "20", z: "30",
+          total_count: "2", piece_count: "10", placeable_count: "4", shared_with: [{ name: "Chani", rank: 3 }]
+        }] };
+      }
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: false }] };
+      return { rows: [] };
+    }
+  };
+
+  const result = await listBases(db, { playerId: "42", pageSize: 5000, includeGenerators: false });
+
+  assert.equal(result.totalBases, 2);
+  assert.equal(result.totalOwned, 1);
+  assert.equal(result.totalShared, 1);
+  assert.equal(result.rows[0].relationship, "Associate");
+  const paged = calls.find((call) => call.text.includes("from paged p"));
+  const totals = calls.find((call) => call.text.includes("total_bases"));
+  assert.match(paged.text, /viewer_par\.permission_actor_id = a\.id and viewer_par\.player_id = \$1/);
+  assert.deepEqual(paged.values.slice(0, 1), [777]);
+  assert.deepEqual(totals.values, [777]);
+});
+
 test("list bases resolves each base's partition to its map instance", async () => {
   // Two bases on one game map but different partitions -- the case a.map alone
   // cannot distinguish, and the reason partitionMap/dimensionIndex exist.

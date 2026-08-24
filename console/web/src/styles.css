@@ -1441,10 +1441,17 @@ body.debug .technical-details { display: block; }
 .playerAdmin_summaryActions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-top: 1px solid rgba(214, 185, 140, .14); padding-top: 12px; }
 .playerAdmin_summaryActions button { width: auto; }
 .playerAdmin_summaryActions .playerAdmin_actionNote { flex: 1 0 100%; padding-left: 0; }
-.playerAdmin_tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 8px; width: 100%; }
+.playerAdmin_tabs { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; width: 100%; }
 .playerAdmin_tabs button { width: 100%; min-width: 0; min-height: 54px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 6px; border-color: #3b3329; background: #171a1d; color: #e9dcc8; font-size: 14px; font-weight: 700; white-space: nowrap; padding: 8px 10px; }
 .playerAdmin_tabs button svg { flex: 0 0 auto; }
 .playerAdmin_tabs button.active { border-color: #c68b4a; background: rgba(198, 139, 74, .16); color: #ffd08a; }
+@media (max-width: 900px) {
+  .playerAdmin_tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .playerAdmin_tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .playerAdmin_tabs button { white-space: normal; }
+}
 .playerAdmin_content { display: grid; gap: 12px; }
 .playerAdmin_box, .playerAdmin_toggle { border: 1px solid #302b25; background: #14171a; border-radius: 8px; padding: 14px; display: grid; gap: 12px; }
 .playerAdmin_box h4, .playerAdmin_section h5 { margin: 0; color: #ffd08a; font-size: 16px; line-height: 1.25; }
@@ -2162,9 +2169,13 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .vehicles-pagination-footer { margin-top: 12px; }
 .player-vehicles-panel .panel-title > div { display: grid; gap: 4px; }
 .player-vehicles-panel .panel-title p { margin: 0; }
+.player-bases-panel { min-width: 0; }
+.player-bases-panel .panel-title > div { display: grid; gap: 4px; min-width: 0; }
+.player-bases-panel .panel-title p { margin: 0; }
 .player-vehicles-summary { display: flex; flex-wrap: wrap; gap: 8px; }
 .player-vehicles-summary span { min-width: 92px; padding: 8px 11px; border: 1px solid #302b25; border-radius: 6px; background: #171a1d; color: #ad9f89; }
 .player-vehicles-summary strong { margin-right: 4px; color: #fff1d4; font-variant-numeric: tabular-nums; }
+.player-bases-summary span:nth-last-child(-n + 2) { min-width: 148px; }
 .vehicles-access { display: inline-flex; align-items: center; min-height: 24px; padding: 3px 8px; border: 1px solid #4d4031; border-radius: 999px; background: rgba(198, 139, 74, .12); color: #e9dcc8; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .vehicles-access.owner { border-color: rgba(155, 230, 189, .35); background: rgba(76, 175, 124, .12); color: #9be6bd; }
 .vehicles-access.co-owner { border-color: rgba(255, 208, 138, .42); color: #ffd08a; }
