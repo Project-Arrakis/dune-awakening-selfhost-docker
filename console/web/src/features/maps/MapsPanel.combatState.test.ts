@@ -120,6 +120,14 @@ describe("deepDesertPartitionName", () => {
     expect(name).toBe("My Arrakis");
   });
 
+  it("reconciles a stale managed display role with the canonical combat badge state", () => {
+    const name = deepDesertPartitionName(
+      { label: "", dimension: 2 },
+      combatRow({ dimensionIndex: 2, partitionId: "42", configuredState: "PVP", serverDisplayName: "Deep Desert PvE 2" })
+    );
+    expect(name).toBe("Deep Desert PvP 2");
+  });
+
   it("falls back to the synthesized name when no display name is configured", () => {
     const name = deepDesertPartitionName(
       { label: "", dimension: 0 },

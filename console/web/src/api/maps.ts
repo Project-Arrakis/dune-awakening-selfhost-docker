@@ -188,6 +188,6 @@ export const mapsApi = {
   updateSietches: (body: Record<string, unknown>) => post<{ task: Task }>("/api/sietches/update", body),
   restartSietch: (partitionId: string, opts?: { immediate?: boolean; label?: string }) => post<RestartDispatchResponse>(`/api/sietches/update${opts?.immediate ? "?restartQueue=immediate" : ""}`, { action: "restart", partitionId, confirmation: "RESTART SIETCH", restartLabel: opts?.label }),
   deepdesert: () => api<{ stdout: string }>("/api/deepdesert"),
-  updateDeepdesert: (body: { action: string; confirmation: string }) => post<{ task: Task }>("/api/deepdesert/update", body),
+  updateDeepdesert: (body: { instances: 1 | 2 | 3; thirdRole: "pve" | "pvp"; confirmation: string }) => post<{ task: Task }>("/api/deepdesert/update", body),
   combatState: (map: string) => api<MapCombatStateResult>(`/api/maps/combat-state?map=${encodeURIComponent(map)}`)
 };

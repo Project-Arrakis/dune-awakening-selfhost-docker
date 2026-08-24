@@ -985,10 +985,9 @@ main { padding: 22px; min-width: 0; }
   to { opacity: 0; transform: translateY(-4px); }
 }
 @keyframes loadingDots {
-  0% { content: ""; }
-  25% { content: "."; }
-  50% { content: ".."; }
-  75%, 100% { content: "..."; }
+  0%, 32% { content: "."; }
+  33%, 65% { content: ".."; }
+  66%, 100% { content: "..."; }
 }
 @keyframes sandField {
   from { transform: translate3d(0, 0, 0); opacity: .95; }
@@ -5448,13 +5447,22 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .advanced-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; }
 .raw-editor-card { border: 1px solid rgba(214, 185, 140, .16); background: rgba(0,0,0,.14); border-radius: 8px; padding: 12px; display: grid; gap: 10px; }
 .raw-editor-card textarea { min-height: 260px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: .86rem; }
-.deep-desert-dual-section { width: 50%; min-width: min(100%, 520px); box-sizing: border-box; }
-.deep-desert-dual-line { align-items: center; gap: 5px; width: 100%; }
-.deep-desert-dual-label { min-height: 38px; display: inline-flex; align-items: center; color: #ffd08a; font-weight: 800; }
-.deep-desert-dual-line .deep-desert-dual-toggle { flex: 0 0 auto; min-width: 0; min-height: 0; justify-content: center; border-color: transparent; background: transparent; padding: 0; color: inherit; }
-.deep-desert-dual-toggle.enabled, .deep-desert-dual-toggle.disabled, .deep-desert-dual-toggle:hover { border-color: transparent; background: transparent; box-shadow: none; }
-.deep-desert-dual-toggle .switch-state { min-width: 58px; padding: 9px 13px; font-size: 13px; font-weight: 900; }
-.deep-desert-dual-line .inline-task-result { margin-left: 0; flex: 0 1 auto; min-width: 0; max-width: 320px; }
+.deep-desert-layout-section { width: 100%; box-sizing: border-box; display: grid; gap: 14px; padding: 16px; border: 1px solid rgba(214, 185, 140, .2); border-radius: 10px; background: rgba(0, 0, 0, .13); }
+.deep-desert-layout-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.deep-desert-layout-heading strong { color: #ffd08a; font-size: 1rem; }
+.deep-desert-layout-heading p, .deep-desert-layout-note { margin: 4px 0 0; color: #b9a98f; font-size: .87rem; line-height: 1.45; }
+.deep-desert-layout-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.deep-desert-layout-options { display: inline-grid; grid-template-columns: repeat(3, minmax(92px, 1fr)); gap: 4px; padding: 4px; border: 1px solid rgba(214, 185, 140, .2); border-radius: 9px; background: rgba(0, 0, 0, .2); }
+.deep-desert-layout-options button { min-height: 48px; display: grid; grid-template-columns: auto 1fr; align-items: center; justify-content: center; gap: 7px; padding: 7px 12px; border-color: transparent; background: transparent; box-shadow: none; color: #b9a98f; }
+.deep-desert-layout-options button strong { color: #ead8b8; font-size: 1rem; }
+.deep-desert-layout-options button.active { border-color: rgba(230, 177, 83, .62); background: linear-gradient(180deg, rgba(230, 177, 83, .2), rgba(120, 76, 21, .16)); color: #ffe1a6; box-shadow: inset 0 0 0 1px rgba(255, 216, 139, .08); }
+.deep-desert-layout-options button.active strong { color: #ffd77f; }
+.deep-desert-third-role { min-height: 48px; display: flex; align-items: center; gap: 9px; padding: 4px 4px 4px 12px; border: 1px solid rgba(214, 185, 140, .2); border-radius: 9px; background: rgba(0, 0, 0, .2); }
+.deep-desert-third-role > span { color: #cbbb9f; font-size: .84rem; font-weight: 800; white-space: nowrap; }
+.deep-desert-third-role > div { display: grid; grid-template-columns: repeat(2, minmax(58px, 1fr)); gap: 4px; }
+.deep-desert-third-role button { min-height: 38px; padding: 7px 12px; border-color: transparent; background: transparent; box-shadow: none; color: #b9a98f; }
+.deep-desert-third-role button.active { border-color: rgba(230, 177, 83, .62); background: linear-gradient(180deg, rgba(230, 177, 83, .2), rgba(120, 76, 21, .16)); color: #ffd77f; }
+.deep-desert-layout-controls .inline-task-result { align-self: center; flex: 1 1 280px; min-width: 0; max-width: 520px; }
 .hidden-file-input { display: none; }
 @media (max-width: 1320px) {
   .landsraad-persistent-heading, .landsraad-persistent-actions { align-items: flex-start; flex-direction: column; }
@@ -5678,10 +5686,17 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .live-map-layout { grid-template-columns: 1fr; }
   .live-map-frame { height: clamp(420px, 62dvh, 700px); min-height: 0; }
   .map-message-schedule-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .deep-desert-dual-section { width: 100%; }
+  .deep-desert-layout-section { width: 100%; }
 }
 
 @media (max-width: 760px) {
+  .deep-desert-layout-heading { align-items: flex-start; }
+  .deep-desert-layout-controls { align-items: stretch; }
+  .deep-desert-layout-options { width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .deep-desert-layout-options button { min-width: 0; grid-template-columns: 1fr; gap: 1px; padding-inline: 6px; }
+  .deep-desert-third-role { width: 100%; box-sizing: border-box; justify-content: space-between; }
+  .deep-desert-layout-controls .inline-task-result { align-self: stretch; }
+  .deep-desert-layout-controls > button:not(.deep-desert-layout-options button) { width: 100%; }
   .app-shell > main { padding: clamp(10px, 3vw, 18px); }
   .sidebar-nav.mobile-open { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .topbar { gap: 12px; margin-bottom: 14px; padding-bottom: 12px; }

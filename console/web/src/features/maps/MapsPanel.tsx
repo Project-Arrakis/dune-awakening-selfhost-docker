@@ -117,9 +117,9 @@ function inlineTaskResultClass(result: HomeTaskResult) {
   return result.status === "succeeded" || result.status === "stopped" ? "ok" : result.status === "failed" ? "fail" : "running";
 }
 
-function isDeepDesertDualResult(result: HomeTaskResult | null) {
+function isDeepDesertLayoutResult(result: HomeTaskResult | null) {
   if (!result) return false;
-  return /dual deep desert|extra deep desert/i.test(`${result.title || ""}\n${result.message || ""}`);
+  return /deep desert (?:layout|instance)|dual deep desert|extra deep desert/i.test(`${result.title || ""}\n${result.message || ""}`);
 }
 
 function isForceDespawnResult(result: HomeTaskResult | null) {
@@ -352,6 +352,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [sietchDimensionsText, setSietchDimensionsText] = useState("");
   const [sietchDimensionIdsText, setSietchDimensionIdsText] = useState("");
   const [activeSietches, setActiveSietches] = useState("1");
+  const [deepDesertLayoutDraft, setDeepDesertLayoutDraft] = useState("1");
+  const [deepDesertThirdRoleDraft, setDeepDesertThirdRoleDraft] = useState<"pve" | "pvp">("pve");
   const [sietchDrafts, setSietchDrafts] = useState<Record<string, { displayName: string; password: string }>>({});
   const [sietchPasswordTouched, setSietchPasswordTouched] = useState<Record<string, boolean>>({});
   const [selectedMapName, setSelectedMapName] = useState("");
@@ -441,7 +443,20 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   async function runTaskAndRefreshNow(action: () => Promise<{ task?: Task; queued?: boolean }>, runningTitle: string, successTitle: string, options: MapsTaskOptions) {
     const resultScope = options.resultScope || "maps";
     const resultTarget = options.resultTarget || "";
-    const response = await action();
+    const started: HomeTaskResult = { status: "running", title: runningTitle };
+    setMapsResultScope(resultScope);
+    setMapsResultTarget(resultTarget);
+    setMapsResult(started);
+    persistMapsTask({ result: started, runningTitle, successTitle, resultScope });
+    let response: { task?: Task; queued?: boolean };
+    try {
+      response = await action();
+    } catch (error) {
+      const failed: HomeTaskResult = { status: "failed", title: "Map Change Failed", details: error instanceof Error ? error.message : String(error) };
+      setMapsResult(failed);
+      persistMapsTask(null);
+      throw error;
+    }
     if (!response.task) {
       // Gated by the restart queue: this save-and-restart was captured into a
       // countdown, so the change applies when it fires. Manage it under
@@ -453,10 +468,6 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       await loadMaps();
       return;
     }
-    const started: HomeTaskResult = { status: "running", title: runningTitle };
-    setMapsResultScope(resultScope);
-    setMapsResultTarget(resultTarget);
-    setMapsResult(started);
     persistMapsTask({ taskId: response.task.id, result: started, runningTitle, successTitle, resultScope });
     let restartAcceptedShown = false;
     const final = await waitForTaskWithUpdates(response.task, (task) => {
@@ -1188,8 +1199,21 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const deepDesertPartitionRows = serverPartitionRows.filter((row) => String(row.map || "") === "DeepDesert_1").sort((a, b) => Number(a.dimension ?? 0) - Number(b.dimension ?? 0));
   const userGameDeepDesertPartitionOptions = isUserGameDeepDesert ? deepDesertPartitionRows.filter((row) => row.partitionId) : [];
   const dynamicDeepDesertRows = deepDesertPartitionRows.filter((row) => !isPrimaryDeepDesertPartition(row));
-  const deepDesertDualEnabled = dynamicDeepDesertRows.length > 0;
-  const deepDesertDualConfiguring = mapsResultScope === "maps" && mapsResult?.status === "running" && isDeepDesertDualResult(mapsResult);
+  const deepDesertInstanceCount = Math.max(1, Math.min(3, deepDesertPartitionRows.length || 1));
+  const thirdDeepDesertRow = deepDesertPartitionRows.find((row) => Number(row.dimension ?? -1) === 2) || null;
+  const thirdDeepDesertCombat = thirdDeepDesertRow
+    ? combatStateByMap["DeepDesert_1"]?.partitions.find((partition) => partition.partitionId === String(thirdDeepDesertRow.partitionId || "")) || null
+    : null;
+  const deepDesertThirdRoleKnown = deepDesertInstanceCount !== 3 || thirdDeepDesertCombat?.configuredState === "PVP" || thirdDeepDesertCombat?.configuredState === "PVE";
+  const deepDesertThirdRole: "pve" | "pvp" = thirdDeepDesertCombat?.configuredState === "PVP" ? "pvp" : "pve";
+  const deepDesertMultiEnabled = deepDesertInstanceCount > 1;
+  const deepDesertLayoutConfiguring = mapsResultScope === "maps" && mapsResult?.status === "running" && isDeepDesertLayoutResult(mapsResult);
+  useEffect(() => {
+    if (!deepDesertLayoutConfiguring) {
+      setDeepDesertLayoutDraft(String(deepDesertInstanceCount));
+      setDeepDesertThirdRoleDraft(deepDesertThirdRole);
+    }
+  }, [deepDesertInstanceCount, deepDesertLayoutConfiguring, deepDesertThirdRole]);
   const partitionOptions = isSurvival ? survivalSietchRows : [];
   const userGamePartitionOptions = isUserGameSurvival ? sietchRows.filter((row) => row.partitionId) : [];
   const userGameTargets = buildUserGameTargets(mapRows, serverPartitionRows, survivalSietchRows, deepDesertPartitionRows);
@@ -1579,29 +1603,33 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       { resultTarget }
     );
   }
-  async function enableDualDeepDesert() {
-    if (!(await confirmAction("Enable dual Deep Desert setup?"))) return;
-    await runTaskAndRefresh(
-      () => mapsApi.updateDeepdesert({ action: "enable", confirmation: "UPDATE DEEP DESERT" }),
-      "Enabling Dual Deep Desert",
-      "Dual Deep Desert Enabled"
-    );
-  }
-  async function disableDualDeepDesert(row?: Record<string, unknown>) {
-    const label = row ? deepDesertPartitionName(row) : "Dual Deep Desert";
-    if (!(await confirmAction(`Disable ${label}?`, {
-      title: "Dual Deep Desert",
-      confirmLabel: "Disable",
-      danger: true,
+  async function applyDeepDesertLayout() {
+    const instances = Number(deepDesertLayoutDraft) as 1 | 2 | 3;
+    if (deepDesertInstanceCount === 3 && !deepDesertThirdRoleKnown) return;
+    const thirdRoleChanged = instances === 3 && deepDesertInstanceCount === 3 && deepDesertThirdRoleDraft !== deepDesertThirdRole;
+    if (![1, 2, 3].includes(instances) || (instances === deepDesertInstanceCount && !thirdRoleChanged)) return;
+    const reducing = instances < deepDesertInstanceCount;
+    const layoutName = instances === 1 ? "Single" : instances === 2 ? "Dual" : "Triple";
+    if (!(await confirmAction(`Apply the ${layoutName} Deep Desert layout?`, {
+      title: "Deep Desert Layout",
+      confirmLabel: "Apply Layout",
+      danger: reducing,
       details: [
-        { label: "Impact", value: "The extra Deep Desert instance will be despawned.", tone: "danger" }
+        { label: "Instances", value: `${deepDesertInstanceCount} → ${instances}` },
+        ...(instances === 3 ? [{ label: "Third Instance", value: deepDesertThirdRoleDraft === "pvp" ? "PvP" : "PvE" }] : []),
+        ...(reducing ? [{ label: "Safety", value: "A database safety backup will be created first." }] : []),
+        ...(reducing ? [{ label: "Impact", value: "Removed instances must be empty and will be stopped before removal.", tone: "danger" as const }] : [])
       ]
     }))) return;
     await runTaskAndRefresh(
-      () => mapsApi.updateDeepdesert({ action: "disable", confirmation: "UPDATE DEEP DESERT" }),
-      "Despawning Extra Deep Desert",
-      "Dual Deep Desert Disabled"
+      () => mapsApi.updateDeepdesert({ instances, thirdRole: deepDesertThirdRoleDraft, confirmation: "UPDATE DEEP DESERT" }),
+      `Applying ${layoutName} Deep Desert Layout`,
+      `${layoutName} Deep Desert Layout Applied`
     );
+    await Promise.all([
+      loadCombatState("DeepDesert_1"),
+      loadSietches({ preserveDrafts: true })
+    ]);
   }
   async function saveDeepDesertPartitionSettings(row: Record<string, unknown>) {
     const parent = mapRows.find((item) => String(item.map || "") === "DeepDesert_1") || {};
@@ -1629,7 +1657,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   async function forceDespawnMap(row: Record<string, unknown>) {
     const rowName = String(row.map || "");
     if (!rowName || rowName === "Survival_1" || rowName === "Overmap") return;
-    if (rowName === "DeepDesert_1" && deepDesertDualEnabled) {
+    if (rowName === "DeepDesert_1" && deepDesertMultiEnabled) {
       const targets = [String(row.partitionId || row.partition || "").trim(), ...dynamicDeepDesertRows.map((deepRow) => String(deepRow.partitionId || "").trim())].filter(Boolean);
       const uniqueTargets = Array.from(new Set(targets));
       if (!uniqueTargets.length) return;
@@ -1890,7 +1918,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       </div>
     </div> : null}
     {memorySwapResult ? <div className="maps-result-slot"><HomeTaskResultCard result={memorySwapResult} /></div> : null}
-    {mapsResult && mapsResultScope === "maps" && !isDeepDesertDualResult(mapsResult) && !isForceDespawnResult(mapsResult) && !isForceSpawnResult(mapsResult) && !isMapSettingsResult(mapsResult) && !isSietchRestartResult(mapsResult) ? <div className="maps-result-slot"><HomeTaskResultCard result={mapsResult} /></div> : null}
+    {mapsResult && mapsResultScope === "maps" && !isDeepDesertLayoutResult(mapsResult) && !isForceDespawnResult(mapsResult) && !isForceSpawnResult(mapsResult) && !isMapSettingsResult(mapsResult) && !isSietchRestartResult(mapsResult) ? <div className="maps-result-slot"><HomeTaskResultCard result={mapsResult} /></div> : null}
     <section className="action-section">
       <h4>Maps Overview</h4>
       <MapModeGuide />
@@ -1948,22 +1976,22 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         const primarySietchCombatRow = isSurvivalRow && primarySurvivalSietch
           ? combatStateByMap["Survival_1"]?.partitions.find((partition) => partition.partitionId === primarySurvivalSietch.partitionId) || null
           : null;
-        const baseStatus = isDeepDesertRow && deepDesertDualConfiguring
+        const baseStatus = isDeepDesertRow && deepDesertLayoutConfiguring
           ? "Configuring"
           : isDeepDesertRow && primaryDeepDesertPartition ? partitionStatusById.get(String(primaryDeepDesertPartition.partitionId || "")) || String(primaryDeepDesertPartition.status || row.status || "Not Available")
           : isSurvivalRow && primarySurvivalSietch ? readinessStatusByPartitionId.get(primarySurvivalSietch.partitionId) || partitionStatusById.get(primarySurvivalSietch.partitionId) || String(row.status || "Not Available") : String(row.status || "Not Available");
         const displayStatus = isSurvivalRow && /^Ready$/i.test(baseStatus) ? "Ready" : statusWithLiveMemory(baseStatus, memoryRow, row.mode);
-        const canForceDespawn = isDeepDesertRow && deepDesertDualEnabled
+        const canForceDespawn = isDeepDesertRow && deepDesertMultiEnabled
           ? [displayStatus, ...dynamicDeepDesertRows.map((deepRow) => partitionStatusById.get(String(deepRow.partitionId || "")) || String(deepRow.status || ""))].some((status) => mapCanForceDespawn({ status }))
           : mapCanForceDespawn({ ...row, status: displayStatus });
         const canForceSpawn = !canForceDespawn && mapCanForceSpawn({ ...row, status: displayStatus });
-        const dualDeepDesertResultActive = Boolean(mapsResult && mapsResultScope === "maps" && isDeepDesertDualResult(mapsResult));
+        const deepDesertLayoutResultActive = Boolean(mapsResult && mapsResultScope === "maps" && isDeepDesertLayoutResult(mapsResult));
         const rowTarget = mapResultTarget(rowName);
         const rowTaskQueueState = mapsTaskQueueStates[rowTarget];
         const rowResultActive = mapsResultTarget === rowTarget;
         const rowMapSettingsResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isMapSettingsResult(mapsResult));
         const rowSietchRestartResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isSietchRestartResult(mapsResult));
-        const rowForceDespawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertDualResult(mapsResult));
+        const rowForceDespawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertLayoutResult(mapsResult));
         const rowForceSpawnResultActive = Boolean(rowResultActive && mapsResult && mapsResultScope === "maps" && isForceSpawnResult(mapsResult));
         return <Fragment key={rowName}><tr><td><MapDisplayName mapId={rowName} instanceName={isDeepDesertRow ? primaryDeepDesertName : undefined} sietch={isSurvivalRow ? primarySurvivalSietch : null} draft={isSurvivalRow ? primaryDraft : undefined} combatState={isDeepDesertRow ? primaryDeepDesertCombatRow?.configuredState || "UNKNOWN" : isSurvivalRow ? primarySietchCombatRow?.configuredState || "UNKNOWN" : undefined} combatRestartRequired={Boolean(isDeepDesertRow ? primaryDeepDesertCombatRow?.configurationDrift : primarySietchCombatRow?.configurationDrift)} /></td><td><MapRuntimeStatus value={displayStatus} detail={row.statusDetail} /></td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} configuredLimit={row.memory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
           {isSelected && <tr className="inline-edit-row" key={`${rowName}-edit`}><td colSpan={5}>
@@ -2011,16 +2039,24 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
                   {mapsResult.message && <span className="inline-task-message">{formatResultMessage(mapsResult.message)}</span>}
                 </span> : null}
               </div>
-              {isDeepDesert && <section className="action-section nested-action deep-desert-dual-section">
-                <div className="action-line deep-desert-dual-line">
-                  <span className="deep-desert-dual-label">Dual Deep Desert:</span>
-                  <label className={`switch-checkbox deep-desert-dual-toggle ${deepDesertDualEnabled ? "enabled" : "disabled"}`}><input aria-label="Dual Deep Desert" type="checkbox" checked={deepDesertDualEnabled} onChange={(event) => run(() => event.target.checked ? enableDualDeepDesert() : disableDualDeepDesert())} /><strong className="switch-state">{deepDesertDualEnabled ? "ON" : "OFF"}</strong></label>
-                  {dualDeepDesertResultActive && mapsResult ? <span className={`inline-task-result result-${inlineTaskResultClass(mapsResult)}`}>
+              {isDeepDesert && <section className="action-section nested-action deep-desert-layout-section">
+                <div className="deep-desert-layout-heading">
+                  <div><strong>Deep Desert Layout</strong><p>Choose how many independent Deep Desert instances this battlegroup provides.</p></div>
+                  <span className="badge badge-info">{deepDesertInstanceCount} Active</span>
+                </div>
+                <div className="deep-desert-layout-controls">
+                  <div className="deep-desert-layout-options" role="radiogroup" aria-label="Deep Desert instances">
+                    {([1, 2, 3] as const).map((count) => <button type="button" role="radio" aria-checked={deepDesertLayoutDraft === String(count)} className={deepDesertLayoutDraft === String(count) ? "active" : ""} key={count} disabled={deepDesertLayoutConfiguring} onClick={() => setDeepDesertLayoutDraft(String(count))}><strong>{count}</strong><span>{count === 1 ? "Single" : count === 2 ? "Dual" : "Triple"}</span></button>)}
+                  </div>
+                  {deepDesertLayoutDraft === "3" ? <div className="deep-desert-third-role"><span>{deepDesertInstanceCount === 3 && !deepDesertThirdRoleKnown ? "Detecting Third Role..." : "Third Instance"}</span><div role="radiogroup" aria-label="Third Deep Desert role"><button type="button" role="radio" aria-checked={deepDesertThirdRoleDraft === "pve"} className={deepDesertThirdRoleDraft === "pve" ? "active" : ""} disabled={deepDesertLayoutConfiguring || (deepDesertInstanceCount === 3 && !deepDesertThirdRoleKnown)} onClick={() => setDeepDesertThirdRoleDraft("pve")}>PvE</button><button type="button" role="radio" aria-checked={deepDesertThirdRoleDraft === "pvp"} className={deepDesertThirdRoleDraft === "pvp" ? "active" : ""} disabled={deepDesertLayoutConfiguring || (deepDesertInstanceCount === 3 && !deepDesertThirdRoleKnown)} onClick={() => setDeepDesertThirdRoleDraft("pvp")}>PvP</button></div></div> : null}
+                  <button disabled={(deepDesertLayoutDraft === String(deepDesertInstanceCount) && !(deepDesertLayoutDraft === "3" && deepDesertThirdRoleDraft !== deepDesertThirdRole)) || deepDesertLayoutConfiguring || (deepDesertInstanceCount === 3 && !deepDesertThirdRoleKnown)} onClick={() => run(applyDeepDesertLayout)}>{deepDesertLayoutConfiguring ? "Applying..." : "Apply Layout"}</button>
+                  {deepDesertLayoutResultActive && mapsResult ? <span className={`inline-task-result result-${inlineTaskResultClass(mapsResult)}`}>
                     <strong className={mapsResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(mapsResult.title, mapsResult.status === "running")}</strong>
                     {mapsResult.message && <span className="inline-task-message">{formatResultMessage(mapsResult.message)}</span>}
                   </span> : null}
                 </div>
-                {deepText && !dualDeepDesertResultActive && <MapCommandSummary text={deepText} />}
+                <p className="deep-desert-layout-note">The first two instances keep the standard PvE/PvP pair. Triple layouts let you choose the third instance role. A safety backup is created before removing instances.</p>
+                {deepText && !deepDesertLayoutResultActive && <MapCommandSummary text={deepText} />}
               </section>}
             </section>
           </td></tr>}
@@ -2028,7 +2064,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             const childSelected = selectedMapName === "DeepDesert_1" && selectedPartitionId === String(deepRow.partitionId || "");
             const deepMemory = partitionMemoryValue(memoryText, String(deepRow.partitionId || ""), String(row.memory || ""), "DeepDesert_1");
             const childMemoryRow = memoryForMap(liveMemory, "DeepDesert_1", { partitionId: deepRow.partitionId });
-            const childStatus = deepDesertDualConfiguring ? "Configuring" : statusWithLiveMemory(partitionStatusById.get(String(deepRow.partitionId || "")) || String(deepRow.status || "Not Available"), childMemoryRow, row.mode);
+            const childStatus = deepDesertLayoutConfiguring ? "Configuring" : statusWithLiveMemory(partitionStatusById.get(String(deepRow.partitionId || "")) || String(deepRow.status || "Not Available"), childMemoryRow, row.mode);
             const childMemoryDirty = childSelected && memory !== memoryInputValue(deepMemory);
             const childCanForceDespawn = mapCanForceDespawn({ ...deepRow, status: childStatus });
             const childCanForceSpawn = !childCanForceDespawn && mapCanForceSpawn({ ...deepRow, status: childStatus });
@@ -2036,14 +2072,14 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             const childTaskQueueState = mapsTaskQueueStates[childTarget];
             const childResultActive = mapsResultTarget === childTarget;
             const childMapSettingsResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isMapSettingsResult(mapsResult));
-            const childForceDespawnResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertDualResult(mapsResult));
+            const childForceDespawnResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertLayoutResult(mapsResult));
             const childForceSpawnResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isForceSpawnResult(mapsResult));
             const childCombatRow = combatStateByMap["DeepDesert_1"]?.partitions.find((p) => p.partitionId === String(deepRow.partitionId || "")) || null;
             const childName = deepDesertPartitionName(deepRow, childCombatRow);
-            return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="DeepDesert_1" instanceName={childName} combatState={childCombatRow?.configuredState || "UNKNOWN"} combatRestartRequired={Boolean(childCombatRow?.configurationDrift)} /><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Dual</td><td><MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
+            return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="DeepDesert_1" instanceName={childName} combatState={childCombatRow?.configuredState || "UNKNOWN"} combatRestartRequired={Boolean(childCombatRow?.configurationDrift)} /><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>{String(row.mode || "Dynamic")}</td><td><MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {childName}</h4></div>
-                <KeyValueGrid items={[["Partition", deepRow.partitionId], ["Dimension", deepRow.dimension], ["Status", childStatus], ["Memory", deepMemory]]} />
+                <KeyValueGrid items={[["Name", childName], ["Role", childCombatRow?.configuredState === "PVP" ? "PvP" : childCombatRow?.configuredState === "PVE" ? "PvE" : "Not Available"], ["Partition", deepRow.partitionId], ["Dimension", deepRow.dimension], ["Status", childStatus], ["Memory", deepMemory]]} />
                 <div className="action-line">
                   <label className="memory-number-field">Memory<input type="number" min="0.01" step="0.01" inputMode="decimal" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
                   <span className="unit-label">GB</span>
@@ -2686,7 +2722,16 @@ function partitionMemoryValue(memoryText: string, partitionId: string, fallback:
 // synthesized "Deep Desert N (PvP/PvE)" text below.
 export function deepDesertPartitionName(row: Record<string, unknown>, combatRow?: PartitionCombatStateRow | null) {
   const configuredName = String(combatRow?.serverDisplayName || "").trim();
-  if (configuredName) return configuredName;
+  if (configuredName) {
+    // Managed default names contain a role for readability. Always reconcile
+    // that word with the same canonical combat state used by the adjacent
+    // badge so a stale name cache can never display PvE beside a PvP badge.
+    if (/^Deep Desert Pv[EP](?: \d+)?$/i.test(configuredName) && (combatRow?.configuredState === "PVP" || combatRow?.configuredState === "PVE")) {
+      const role = combatRow.configuredState === "PVP" ? "PvP" : "PvE";
+      return configuredName.replace(/Pv[EP]/i, role);
+    }
+    return configuredName;
+  }
   const dimension = Number(row.dimension);
   const suffix = Number.isFinite(dimension) ? ` ${dimension + 1}` : "";
   if (combatRow) {

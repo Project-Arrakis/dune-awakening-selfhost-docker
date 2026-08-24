@@ -135,6 +135,10 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.throws(() => buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Duke's Sietch" }), /not supported/);
   assert.throws(() => buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Alpha|Beta" }), /not supported/);
   assert.deepEqual(buildDuneArgs("deepdesertAction", { action: "disable" }), ["deepdesert", "dual", "disable", "--yes", "--force"]);
+  assert.deepEqual(buildDuneArgs("deepdesertAction", { instances: 3, thirdRole: "pvp" }), ["deepdesert", "layout", "set", "3", "--third-role", "pvp", "--yes", "--force"]);
+  assert.deepEqual(buildDuneArgs("deepdesertAction", { instances: 2 }), ["deepdesert", "layout", "set", "2", "--third-role", "pve", "--yes", "--force"]);
+  assert.throws(() => buildDuneArgs("deepdesertAction", { instances: 3, thirdRole: "open" }), /must be pve or pvp/);
+  assert.throws(() => buildDuneArgs("deepdesertAction", { instances: 4 }), /Expected integer 1-3/);
   assert.deepEqual(buildDuneArgs("userSettingsEngineValues"), ["usersettings", "engine-values"]);
   assert.deepEqual(buildDuneArgs("userSettingsMapEngineValues", { map: "Survival_1" }), ["usersettings", "map-engine-values", "Survival_1"]);
   assert.deepEqual(buildDuneArgs("userSettingsPartitionEngineValues", { map: "Survival_1", partitionId: 3 }), ["usersettings", "partition-engine-values", "Survival_1", "3"]);

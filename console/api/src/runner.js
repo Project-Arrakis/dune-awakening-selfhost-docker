@@ -58,7 +58,7 @@ const simpleOperations = {
   servers: ["servers"],
   mapsList: ["maps", "list"],
   sietchesList: ["sietches", "list"],
-  deepdesertStatus: ["deepdesert", "dual", "status"],
+  deepdesertStatus: ["deepdesert", "layout", "status"],
   players: ["admin", "players", "--show-full-ids"],
   adminHistory: ["admin", "history"],
   adminItemList: ["admin", "item-list"],
@@ -267,6 +267,12 @@ export function buildDuneArgs(operation, payload = {}) {
     case "sietchesReconcile":
       return ["sietches", "reconcile", validateMapName(payload.map)];
     case "deepdesertAction":
+      if (payload.instances !== undefined) {
+        const instances = validateInteger(payload.instances, 1, 3);
+        const thirdRole = String(payload.thirdRole || "pve").toLowerCase();
+        if (!["pve", "pvp"].includes(thirdRole)) throw new Error("Third Deep Desert role must be pve or pvp");
+        return ["deepdesert", "layout", "set", String(instances), "--third-role", thirdRole, "--yes", "--force"];
+      }
       return ["deepdesert", "dual", validateDeepDesertAction(payload.action), "--yes", ...(payload.action === "disable" ? ["--force"] : [])];
     case "userSettingsEngineValues":
       return ["usersettings", "engine-values"];
