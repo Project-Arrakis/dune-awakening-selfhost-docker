@@ -10,6 +10,9 @@ export type StackUpdateProgress = {
   startedAt?: string | null;
   updatedAt?: string | null;
   finishedAt?: string | null;
+  recovered?: boolean;
+  consoleStartedAt?: string | null;
+  consoleReplaced?: boolean;
 };
 
 export type QaChannel = { channel: "qa" | "release"; label: string; commitSha: string; shortSha: string; installedAt?: string | null };
@@ -48,7 +51,11 @@ export const updatesApi = {
   qaBuild: () => api<QaBuild>("/api/updates/qa/build", { cache: "no-store" }),
   applyQa: () => post<{ task: Task }>("/api/updates/qa/apply"),
   reinstallRelease: () => post<{ task: Task }>("/api/updates/qa/reinstall-release"),
-  stackProgress: (runId: string) => api<StackUpdateProgress>(`/api/updates/stack-progress?runId=${encodeURIComponent(runId)}`, { cache: "no-store" }),
+  stackProgress: (runId: string, startedAt?: string | null) => {
+    const query = new URLSearchParams({ runId });
+    if (startedAt) query.set("startedAt", startedAt);
+    return api<StackUpdateProgress>(`/api/updates/stack-progress?${query.toString()}`, { cache: "no-store" });
+  },
   autoGameStatus: () => api<{ stdout: string; stderr?: string; exitCode?: number }>("/api/updates/auto-game"),
   saveAutoGame: (body: {
     enabled: boolean;
