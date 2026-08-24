@@ -39,7 +39,7 @@ export type MessageOfTheDaySettings = {
   enabled: boolean;
   title: string;
   message: string;
-  deliveryMode: "login" | "daily";
+  deliveryMode: "login" | "daily" | "map";
 };
 
 export type MessageOfTheDayStatus = {

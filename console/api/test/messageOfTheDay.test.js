@@ -47,6 +47,7 @@ test("message of the day defaults are disabled with an empty draft", () => {
 test("message of the day validates booleans and message text", () => {
   assert.deepEqual(normalizeSettings({ enabled: true, title: "Daily", message: "Hello" }), { enabled: true, title: "", message: "Hello", deliveryMode: "login" });
   assert.equal(normalizeSettings({ enabled: true, message: "Hello", deliveryMode: "daily" }).deliveryMode, "daily");
+  assert.equal(normalizeSettings({ enabled: true, message: "Hello", deliveryMode: "map" }).deliveryMode, "map");
   assert.equal(normalizeSettings({ enabled: true, message: "First\n\nSecond" }).message, "First Second");
   assert.throws(() => normalizeSettings({ enabled: "true", title: "Daily", message: "Hello" }), /enabled must be true or false/);
   assert.throws(() => normalizeSettings({ enabled: true, message: "Hello", deliveryMode: "hourly" }), /deliveryMode/);
@@ -275,6 +276,35 @@ test("message of the day does not resend on map or actor changes within the same
 
   const mapTravel = await runMessageOfTheDayScan(cfg, [onlinePlayer({ action_player_id: "NEW-ACTION-ID", actor_id: 99, map: "Overmap", login_session: "2026-06-28 10:00:00+00" })], { mockMode: true, persona: { funcomId: "Server#0001", hexFlsId: "A5C0DE5E12A00001" } });
   assert.equal(mapTravel.sent, 0);
+});
+
+test("map delivery sends on login and once for each map or partition transfer", async () => {
+  const cfg = config();
+  saveMessageOfTheDay(cfg, { enabled: true, message: "Welcome back", deliveryMode: "map" });
+  const scan = (player, now) => runMessageOfTheDayScan(cfg, [player], { mockMode: true, now: new Date(now) });
+
+  const hagga = onlinePlayer({ map: "Survival_1", partition_id: 1, login_session: "2026-06-28T10:00:00.000Z" });
+  assert.equal((await scan(hagga, "2026-06-28T10:01:00.000Z")).sent, 1);
+  assert.equal((await scan(hagga, "2026-06-28T10:02:00.000Z")).sent, 0);
+
+  const overland = onlinePlayer({ actor_id: 99, map: "Overmap", partition_id: 2, login_session: "2026-06-28T10:03:00.000Z" });
+  assert.equal((await scan(overland, "2026-06-28T10:03:29.999Z")).sent, 0);
+  assert.equal((await scan(overland, "2026-06-28T10:03:30.000Z")).sent, 1);
+  assert.equal((await scan(overland, "2026-06-28T10:04:00.000Z")).sent, 0);
+
+  const anotherSietch = onlinePlayer({ actor_id: 101, map: "Survival_1", partition_id: 3, login_session: "2026-06-28T10:05:00.000Z" });
+  assert.equal((await scan(anotherSietch, "2026-06-28T10:05:30.000Z")).sent, 1);
+});
+
+test("map delivery still sends after a confirmed relog to the same map", async () => {
+  const cfg = config();
+  saveMessageOfTheDay(cfg, { enabled: true, message: "Welcome back", deliveryMode: "map" });
+  const first = onlinePlayer({ map: "Survival_1", partition_id: 1, login_session: "2026-06-28T10:00:00.000Z" });
+  const second = onlinePlayer({ map: "Survival_1", partition_id: 1, login_session: "2026-06-28T11:00:00.000Z" });
+
+  assert.equal((await runMessageOfTheDayScan(cfg, [first], { mockMode: true, now: new Date("2026-06-28T10:01:00.000Z") })).sent, 1);
+  await runMessageOfTheDayScan(cfg, [], { mockMode: true, now: new Date("2026-06-28T10:02:00.000Z") });
+  assert.equal((await runMessageOfTheDayScan(cfg, [second], { mockMode: true, now: new Date("2026-06-28T11:01:00.000Z") })).sent, 1);
 });
 
 test("message of the day survives transient offline scans during map travel", async () => {

@@ -54,6 +54,7 @@ export function primeMessageOfTheDayOnlineState(config, players, now = new Date(
       deliveredAt: now.toISOString(),
       characterName: player.characterName,
       sessionKey: player.sessionKey,
+      locationKey: player.locationKey,
       lastSeenOnlineAt: now.toISOString(),
       offlineSince: "",
       primed: true
@@ -126,6 +127,7 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
         deliveredAt: now.toISOString(),
         characterName: player.characterName,
         sessionKey: player.sessionKey,
+        locationKey: player.locationKey,
         lastSeenOnlineAt: now.toISOString(),
         offlineSince: ""
       };
@@ -246,6 +248,9 @@ function normalizePlayer(player = {}) {
   const characterName = String(player.character_name || player.characterName || player.recipientCharacterName || "").trim();
   const key = String(flsId || funcomId || player.action_player_id || player.actor_id || player.player_pawn_id || "").trim();
   const sessionKey = String(player.login_session || player.loginSession || player.last_login_time || player.lastLoginTime || "").trim();
+  const map = String(player.partition_map || player.partitionMap || player.map || "").trim();
+  const partitionId = String(player.partition_id ?? player.partitionId ?? "").trim();
+  const locationKey = map || partitionId ? `${map}:${partitionId}` : "";
   const onlineStatus = String(player.online_status || player.onlineStatus || "").trim().toLowerCase();
   return {
     key,
@@ -254,6 +259,7 @@ function normalizePlayer(player = {}) {
     characterName,
     online: onlineStatus === "online",
     sessionKey,
+    locationKey,
     queue: flsId ? `${flsId}_queue` : ""
   };
 }
@@ -275,6 +281,7 @@ function sameSession(entry = {}, player = {}) {
 
 function deliveryStillApplies(settings, entry, player, now) {
   if (settings.deliveryMode === "daily") return deliveredWithinDay(entry, now);
+  if (settings.deliveryMode === "map" && changedLocation(entry, player)) return false;
   const offlineSince = parseSessionTime(entry.offlineSince);
   if (offlineSince) return now.getTime() - offlineSince.getTime() < MOTD_SESSION_CONTINUATION_GRACE_MS;
   if (sameSession(entry, player)) return true;
@@ -290,6 +297,7 @@ function onlineDeliveryEntry(entry, player, now) {
     ...entry,
     characterName: player.characterName,
     sessionKey: player.sessionKey,
+    locationKey: player.locationKey,
     lastSeenOnlineAt: now.toISOString(),
     offlineSince: ""
   };
@@ -305,6 +313,14 @@ function offlineDeliveryEntry(entry, now) {
 function deliveredWithinDay(entry, now) {
   const deliveredAt = parseSessionTime(entry.deliveredAt);
   return Boolean(deliveredAt && now.getTime() - deliveredAt.getTime() < DELIVERED_SESSION_RETENTION_MS);
+}
+
+function changedLocation(entry = {}, player = {}) {
+  const previous = String(entry.locationKey || "").trim();
+  const current = String(player.locationKey || "").trim();
+  // Adopt location information into legacy state without sending an
+  // unexpected duplicate immediately after upgrading.
+  return Boolean(previous && current && previous !== current);
 }
 
 function shouldRetainDeliveredSession(entry = {}, now = new Date()) {
@@ -343,7 +359,7 @@ function normalizeBoolean(value, field) {
 
 function normalizeDeliveryMode(value) {
   const mode = String(value || "login").trim().toLowerCase();
-  if (mode !== "login" && mode !== "daily") throw new Error("deliveryMode must be login or daily");
+  if (mode !== "login" && mode !== "daily" && mode !== "map") throw new Error("deliveryMode must be login, daily, or map");
   return mode;
 }
 
