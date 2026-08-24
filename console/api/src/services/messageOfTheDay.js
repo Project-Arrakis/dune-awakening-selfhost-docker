@@ -7,7 +7,8 @@ import { redact } from "../redact.js";
 const DEFAULT_MESSAGE_OF_THE_DAY = {
   enabled: false,
   title: "",
-  message: ""
+  message: "",
+  deliveryMode: "login"
 };
 
 const EMPTY_STATUS = { lastAttemptAt: "", lastSent: 0, lastFailed: 0, lastError: "", lastScanAt: "", lastScanError: "" };
@@ -17,6 +18,10 @@ const EMPTY_STATE = { delivered: {}, status: EMPTY_STATUS };
 // whisper during that gap even though the client never renders it, so leave a bounded
 // post-login grace period before recording the session as delivered.
 const MIN_MOTD_SESSION_AGE_MS = 30_000;
+// Map travel briefly removes a player from the online roster and may also
+// replace last_login_time. Treat that as one continuous login unless the
+// player remained absent long enough to be a genuine logout.
+const MOTD_SESSION_CONTINUATION_GRACE_MS = 5 * 60 * 1000;
 const DELIVERED_SESSION_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 export function readMessageOfTheDay(config) {
@@ -41,14 +46,16 @@ export function restoreMessageOfTheDay(config) {
   return { settings, defaults: { ...DEFAULT_MESSAGE_OF_THE_DAY } };
 }
 
-export function primeMessageOfTheDayOnlineState(config, players) {
+export function primeMessageOfTheDayOnlineState(config, players, now = new Date()) {
   const current = readState(config);
   const delivered = {};
   for (const player of (players || []).map(normalizePlayer).filter((entry) => entry.key && entry.characterName)) {
     delivered[player.key] = {
-      deliveredAt: new Date().toISOString(),
+      deliveredAt: now.toISOString(),
       characterName: player.characterName,
       sessionKey: player.sessionKey,
+      lastSeenOnlineAt: now.toISOString(),
+      offlineSince: "",
       primed: true
     };
   }
@@ -68,9 +75,9 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
   for (const [key, entry] of Object.entries(state.delivered || {})) {
     const player = onlinePlayers.find((player) => player.key === key);
     if (player) {
-      if (sameSession(entry, player)) delivered[key] = entry;
+      if (deliveryStillApplies(settings, entry, player, now)) delivered[key] = onlineDeliveryEntry(entry, player, now);
     } else if (shouldRetainDeliveredSession(entry, now)) {
-      delivered[key] = entry;
+      delivered[key] = offlineDeliveryEntry(entry, now);
     }
   }
 
@@ -116,9 +123,11 @@ export async function runMessageOfTheDayScan(config, players, context = {}) {
       }
       sent += 1;
       delivered[player.key] = {
-        deliveredAt: new Date().toISOString(),
+        deliveredAt: now.toISOString(),
         characterName: player.characterName,
-        sessionKey: player.sessionKey
+        sessionKey: player.sessionKey,
+        lastSeenOnlineAt: now.toISOString(),
+        offlineSince: ""
       };
     } catch (error) {
       failed += 1;
@@ -154,7 +163,8 @@ export function normalizeSettings(input = {}) {
   return {
     enabled: normalizeBoolean(input.enabled, "enabled"),
     title: "",
-    message: normalizeMessage(input.message ?? input.body ?? "")
+    message: normalizeMessage(input.message ?? input.body ?? ""),
+    deliveryMode: normalizeDeliveryMode(input.deliveryMode)
   };
 }
 
@@ -168,7 +178,7 @@ export function messageOfTheDayDeliveryPlan(settings, players, state = EMPTY_STA
   const delivered = {};
   for (const [key, entry] of Object.entries(state.delivered || {})) {
     const player = onlinePlayers.find((player) => player.key === key);
-    if (player && sameSession(entry, player)) delivered[key] = entry;
+    if (player && deliveryStillApplies(normalizedSettings, entry, player, new Date())) delivered[key] = entry;
   }
   const pending = normalizedSettings.enabled && normalizedSettings.message
     ? onlinePlayers.filter((player) => !delivered[player.key])
@@ -263,11 +273,44 @@ function sameSession(entry = {}, player = {}) {
   return String(entry.sessionKey || "").trim() === current;
 }
 
-function shouldRetainDeliveredSession(entry = {}, now = new Date()) {
-  if (!String(entry.sessionKey || "").trim()) return false;
+function deliveryStillApplies(settings, entry, player, now) {
+  if (settings.deliveryMode === "daily") return deliveredWithinDay(entry, now);
+  const offlineSince = parseSessionTime(entry.offlineSince);
+  if (offlineSince) return now.getTime() - offlineSince.getTime() < MOTD_SESSION_CONTINUATION_GRACE_MS;
+  if (sameSession(entry, player)) return true;
+  const lastSeenOnlineAt = parseSessionTime(entry.lastSeenOnlineAt);
+  if (lastSeenOnlineAt) return now.getTime() - lastSeenOnlineAt.getTime() < MOTD_SESSION_CONTINUATION_GRACE_MS;
+  // Legacy state has no presence timestamps. Preserve its delivery once and
+  // adopt the current session instead of spamming during an upgrade/map load.
+  return true;
+}
+
+function onlineDeliveryEntry(entry, player, now) {
+  return {
+    ...entry,
+    characterName: player.characterName,
+    sessionKey: player.sessionKey,
+    lastSeenOnlineAt: now.toISOString(),
+    offlineSince: ""
+  };
+}
+
+function offlineDeliveryEntry(entry, now) {
+  return {
+    ...entry,
+    offlineSince: String(entry.offlineSince || now.toISOString())
+  };
+}
+
+function deliveredWithinDay(entry, now) {
   const deliveredAt = parseSessionTime(entry.deliveredAt);
-  if (!deliveredAt) return true;
-  return now.getTime() - deliveredAt.getTime() < DELIVERED_SESSION_RETENTION_MS;
+  return Boolean(deliveredAt && now.getTime() - deliveredAt.getTime() < DELIVERED_SESSION_RETENTION_MS);
+}
+
+function shouldRetainDeliveredSession(entry = {}, now = new Date()) {
+  const lastObservedAt = parseSessionTime(entry.lastSeenOnlineAt) || parseSessionTime(entry.deliveredAt);
+  if (!lastObservedAt) return true;
+  return now.getTime() - lastObservedAt.getTime() < DELIVERED_SESSION_RETENTION_MS;
 }
 
 function isSessionMature(player = {}, now = new Date()) {
@@ -296,6 +339,12 @@ function sessionTime(value) {
 function normalizeBoolean(value, field) {
   if (value === true || value === false) return value;
   throw new Error(`${field} must be true or false`);
+}
+
+function normalizeDeliveryMode(value) {
+  const mode = String(value || "login").trim().toLowerCase();
+  if (mode !== "login" && mode !== "daily") throw new Error("deliveryMode must be login or daily");
+  return mode;
 }
 
 function normalizeMessage(value) {
