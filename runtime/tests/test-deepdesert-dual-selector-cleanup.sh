@@ -35,11 +35,11 @@ grep -Fq 'map-set Global global_pvp_enabled_partition_add "$pvp"' "$SCRIPT" \
 if grep -Fq 'map-set Global global_pve_enabled_partition_add' "$SCRIPT"; then
   fail "Dual Deep Desert must not write an explicit PvE selector"
 fi
-grep -Fq "set label = 'DualDeepDesert_' || partition_id::text" "$SCRIPT" \
+grep -Fq "set label = 'ManagedDeepDesert_' || partition_id::text" "$SCRIPT" \
   || fail "partition role reversal can hit the unique label constraint without temporary labels"
-enable_apply_count="$(awk '/^enable_dual\(\)/,/^disable_dual\(\)/' "$SCRIPT" | grep -c '^  apply_usergame$')"
+enable_apply_count="$(awk '/^enable_layout\(\)/,/^enable_dual\(\)/' "$SCRIPT" | grep -c '^  apply_usergame "\$count"$')"
 [ "$enable_apply_count" = "1" ] \
-  || fail "Dual Deep Desert enable must materialize UserGame settings exactly once"
+  || fail "Deep Desert layout enable must materialize UserGame settings exactly once"
 
 early_cleanup_line="$(grep -n 'remove_dual_usergame_selectors "$pvp" "$pve"' "$SCRIPT" | head -n1 | cut -d: -f1)"
 early_remove_line="$(grep -n 'rm -f "$OVERRIDE_FILE"' "$SCRIPT" | head -n1 | cut -d: -f1)"

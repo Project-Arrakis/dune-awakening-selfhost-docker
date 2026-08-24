@@ -8,6 +8,10 @@ OVERRIDE_FILE="${DUNE_DEEPDESERT_OVERRIDE_FILE:-runtime/generated/director-deepd
 usage() {
   cat <<'EOF'
 Usage:
+  dune deepdesert layout status
+  dune deepdesert layout configured
+  dune deepdesert layout set <1|2|3> [--third-role <pve|pvp>] [--yes] [--force]
+  dune deepdesert layout repair
   dune deepdesert dual status
   dune deepdesert dual configured
   dune deepdesert dual enable [--yes]
@@ -17,10 +21,26 @@ Usage:
 EOF
 }
 
+configured_instance_count() {
+  local extras
+  if [ -s "$OVERRIDE_FILE" ]; then
+    extras="$(sed -n 's/^NumExtraServers=\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$OVERRIDE_FILE" | tail -n1)"
+    if [[ "${extras:-}" =~ ^[0-9]+$ ]]; then
+      printf '%s\n' "$((extras + 1))"
+      return 0
+    fi
+  fi
+  echo 1
+}
+
+layout_configured() {
+  local count
+  count="$(configured_instance_count)"
+  [ "$count" -ge 1 ] && [ "$count" -le 3 ]
+}
+
 dual_configured() {
-  [ -s "$OVERRIDE_FILE" ] || return 1
-  grep -Eq '^\[DeepDesert_1\][[:space:]]*$' "$OVERRIDE_FILE" \
-    && grep -Eq '^NumExtraServers=[1-9][0-9]*[[:space:]]*$' "$OVERRIDE_FILE"
+  [ "$(configured_instance_count)" -ge 2 ]
 }
 
 require_postgres() {
@@ -130,8 +150,9 @@ restart_director_if_running() {
 }
 
 status_dual() {
-  local pvp pve primary state_json single_state override_state max_dimensions active_dimensions
+  local pvp pve primary state_json single_state override_state max_dimensions active_dimensions configured_count
   require_postgres
+  configured_count="$(configured_instance_count)"
   pvp="$(pvp_partition_id)"
   pve="$(pve_partition_id)"
   max_dimensions="$(python3 - <<'PY'
@@ -178,26 +199,26 @@ PY
   if [ -n "$pvp" ]; then
     if [ -s "$OVERRIDE_FILE" ]; then
       override_state="present"
-    elif [ -f runtime/director/config/director_config.ini ] && grep -q '^\[DeepDesert_1\]$' runtime/director/config/director_config.ini && grep -q '^NumExtraServers=1$' runtime/director/config/director_config.ini; then
+    elif [ -f runtime/director/config/director_config.ini ] && grep -q '^\[DeepDesert_1\]$' runtime/director/config/director_config.ini && grep -q "^NumExtraServers=$((configured_count - 1))$" runtime/director/config/director_config.ini; then
       override_state="loaded into current director config"
     else
       override_state="missing"
     fi
     echo "Director override: $override_state"
-    echo "Expected override: NumExtraServers=1 and MinServers=0 for DeepDesert_1"
+    echo "Expected override: NumExtraServers=$((configured_count - 1)) and MinServers=0 for DeepDesert_1"
   elif dual_configured; then
     echo "Director override: present"
-    echo "Dual Deep Desert status: repair required (dimension 1 is missing)"
+    echo "Deep Desert layout status: repair required (one or more managed dimensions are missing)"
     echo "The next battlegroup start will restore the missing dimension automatically."
   else
     echo "Director override: not configured yet"
-    echo "Dual Deep Desert status: disabled"
+    echo "Deep Desert layout: Single"
   fi
   echo
   echo "Configured dimensions: max=${max_dimensions:-unset} active=${active_dimensions:-unset}"
   if [ -z "$pvp" ] || [ -z "$pve" ]; then
     if dual_configured; then
-      echo "Selector configuration: unavailable until the missing Dual Deep Desert partition is repaired."
+      echo "Selector configuration: unavailable until the missing Deep Desert partition is repaired."
     else
       primary="$(primary_partition_id)"
       state_json="$(python3 runtime/scripts/usersettings.py partition-combat-states DeepDesert_1 "$primary" 2>/dev/null || true)"
@@ -221,16 +242,50 @@ PY
   fi
 }
 
-ensure_dual_sietch_dimensions() {
-  runtime/scripts/sietches.sh set-max DeepDesert_1 2 >/dev/null
-  runtime/scripts/sietches.sh set-active DeepDesert_1 2 >/dev/null
-  echo "DeepDesert_1 active/max dimensions set to 2."
+ensure_sietch_dimensions() {
+  local count="$1"
+  runtime/scripts/sietches.sh set-max DeepDesert_1 "$count" >/dev/null
+  runtime/scripts/sietches.sh set-active DeepDesert_1 "$count" >/dev/null
+  echo "DeepDesert_1 active/max dimensions set to $count."
 }
 
 reset_single_sietch_dimension() {
   runtime/scripts/sietches.sh set-active DeepDesert_1 1 >/dev/null 2>&1 || true
   runtime/scripts/sietches.sh set-max DeepDesert_1 1 >/dev/null 2>&1 || true
   echo "DeepDesert_1 active/max dimensions reset to 1."
+}
+
+prune_sietch_dimension_config() {
+  local count="$1"
+  shift || true
+  python3 - runtime/generated/sietch-config.json "$count" "$@" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+count = int(sys.argv[2])
+removed_partition_ids = set(sys.argv[3:])
+if not path.exists():
+    raise SystemExit(0)
+data = json.loads(path.read_text(encoding="utf-8"))
+map_config = data.get("maps", {}).get("DeepDesert_1", {})
+dimensions = map_config.get("dimensions")
+if isinstance(dimensions, dict):
+    map_config["dimensions"] = {
+        key: value for key, value in dimensions.items()
+        if key.isdigit() and int(key) < count
+    }
+partitions = data.get("partitions")
+if isinstance(partitions, dict):
+    for partition_id in removed_partition_ids:
+        partitions.pop(partition_id, None)
+tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+tmp.replace(path)
+PY
+  chmod 600 runtime/generated/sietch-config.json 2>/dev/null || true
 }
 
 primary_partition_id() {
@@ -251,6 +306,52 @@ secondary_partition_id() {
     order by partition_id
     limit 1;
   " | tr -d '[:space:]'
+}
+
+partition_id_for_dimension() {
+  local dimension="$1"
+  psql_value "
+    select partition_id
+    from dune.world_partition
+    where map = 'DeepDesert_1' and dimension_index = $dimension
+    order by partition_id
+    limit 1;
+  " | tr -d '[:space:]'
+}
+
+deepdesert_partition_ids() {
+  psql_value "
+    select partition_id
+    from dune.world_partition
+    where map = 'DeepDesert_1'
+    order by dimension_index, partition_id;
+  "
+}
+
+primary_display_name() {
+  local primary values
+  primary="$(primary_partition_id)"
+  [ -n "$primary" ] || return 0
+  values="$(python3 runtime/scripts/usersettings.py partition-engine-values DeepDesert_1 "$primary" 2>/dev/null || true)"
+  printf '%s' "$values" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("server_display_name", ""))' 2>/dev/null || true
+}
+
+managed_primary_display_name() {
+  local encoded
+  [ -f "$OVERRIDE_FILE" ] || return 0
+  encoded="$(sed -n 's/^; ManagedPrimaryDisplayNameBase64=//p' "$OVERRIDE_FILE" | tail -n1)"
+  [ -n "$encoded" ] || return 0
+  printf '%s' "$encoded" | base64 -d 2>/dev/null || true
+}
+
+managed_third_role() {
+  local role
+  [ -f "$OVERRIDE_FILE" ] || { echo pve; return 0; }
+  role="$(sed -n 's/^; ManagedThirdRole=//p' "$OVERRIDE_FILE" | tail -n1 | tr '[:upper:]' '[:lower:]')"
+  case "$role" in
+    pvp) echo pvp ;;
+    *) echo pve ;;
+  esac
 }
 
 pve_partition_id() {
@@ -296,87 +397,92 @@ pvp_partition_id() {
 
 extra_deepdesert_partition_rows() {
   psql_value "
-    select partition_id || '|' || dimension_index || '|' || coalesce(server_id, '')
-    from dune.world_partition
-    where map = 'DeepDesert_1'
-      and dimension_index > 0
-    order by dimension_index, partition_id;
+    select wp.partition_id || '|' || wp.dimension_index || '|' || coalesce(wp.server_id, '') || '|' || coalesce(fs.connected_players, 0)
+    from dune.world_partition wp
+    left join dune.farm_state fs on fs.server_id = wp.server_id
+    where wp.map = 'DeepDesert_1'
+      and wp.dimension_index > 0
+    order by wp.dimension_index, wp.partition_id;
   "
 }
 
 apply_partition_labels() {
-  local pvp pve
+  local count="$1" third_role="${2:-pve}" pvp pve third pvp_label pve_label third_label
   pvp="$(pvp_partition_id)"
   pve="$(pve_partition_id)"
   [ -n "$pvp" ] && [ -n "$pve" ] || { echo "Could not resolve Deep Desert PvP/PvE roles."; exit 1; }
+  third="$(partition_id_for_dimension 2)"
+  pvp_label="PvP"
+  pve_label="PvE"
+  third_label="PvE 2"
+  if [ "$count" -ge 3 ]; then
+    if [ "$third_role" = "pvp" ]; then
+      pvp_label="PvP 1"
+      third_label="PvP 2"
+    else
+      pve_label="PvE 1"
+    fi
+  fi
   psql -v ON_ERROR_STOP=1 -c "
--- Labels are globally unique. Move both rows through partition-specific temporary labels so
+-- Labels are globally unique. Move every managed row through a partition-specific temporary label so
 -- reversing an existing PvP/PvE pair cannot hit a transient duplicate-key violation.
 update dune.world_partition
-set label = 'DualDeepDesert_' || partition_id::text
+set label = 'ManagedDeepDesert_' || partition_id::text
 where map = 'DeepDesert_1'
-  and dimension_index in (0, 1);
+  and dimension_index < $count;
 
 update dune.world_partition
 set label = case
-  when partition_id = $pve then 'PvE'
-  when partition_id = $pvp then 'PvP'
+  when partition_id = $pve then '$pve_label'
+  when partition_id = $pvp then '$pvp_label'
+  when partition_id = ${third:-0} then '$third_label'
   else label
 end
 where map = 'DeepDesert_1'
-  and dimension_index in (0, 1);
+  and dimension_index < $count;
 " >/dev/null
 }
 
-ensure_partition() {
-  local existing primary
+ensure_partitions() {
+  local count="$1" primary
   primary="$(primary_partition_id)"
   if [ -z "$primary" ]; then
     echo "Could not find existing DeepDesert_1 dimension 0 partition."
     exit 1
   fi
-  existing="$(secondary_partition_id)"
-  if [ -n "$existing" ]; then
-    echo "DeepDesert_1 dimension 1 already exists: partition $existing"
-    return 0
-  fi
 
-  echo "Creating DeepDesert_1 dimension 1 by copying detected dimension 0 partition $primary."
+  echo "Ensuring DeepDesert_1 has $count managed dimension(s), using partition $primary as the template."
   psql -v ON_ERROR_STOP=1 -c "
 do \$\$
 declare
   next_id bigint;
+  target_dimension integer;
 begin
   perform set_config('search_path', 'dune,public', true);
-  select nextval('dune.world_partition_partition_id_seq') into next_id;
-
-  insert into dune.world_partition (
-    partition_id,
-    server_id,
-    map,
-    partition_definition,
-    dimension_index,
-    blocked,
-    label
-  )
-  select
-    next_id,
-    null,
-    map,
-    partition_definition,
-    1,
-    false,
-    'DualDeepDesert_' || next_id::text
-  from dune.world_partition
-  where map = 'DeepDesert_1' and dimension_index = 0
-  order by partition_id
-  limit 1;
+  for target_dimension in 1..$((count - 1)) loop
+    if not exists (
+      select 1 from dune.world_partition
+      where map = 'DeepDesert_1' and dimension_index = target_dimension
+    ) then
+      select nextval('dune.world_partition_partition_id_seq') into next_id;
+      insert into dune.world_partition (
+        partition_id, server_id, map, partition_definition, dimension_index, blocked, label
+      )
+      select
+        next_id, null, map, partition_definition, target_dimension, false,
+        'ManagedDeepDesert_' || next_id::text
+      from dune.world_partition
+      where map = 'DeepDesert_1' and dimension_index = 0
+      order by partition_id
+      limit 1;
+    end if;
+  end loop;
 
   perform dune.update_partition_labels(true);
   update dune.world_partition
-  set label = 'DualDeepDesert_' || partition_id::text
+  set label = 'ManagedDeepDesert_' || partition_id::text
   where map = 'DeepDesert_1'
-    and dimension_index in (0, 1);
+    and dimension_index < $count;
 end
 \$\$;
 "
@@ -384,18 +490,24 @@ end
 }
 
 write_director_override() {
-  local pvp pve
+  local count="$1" original_display_name="$2" third_role="${3:-pve}" pvp pve ids encoded_display_name
   pvp="$(pvp_partition_id)"
   pve="$(pve_partition_id)"
+  ids="$(deepdesert_partition_ids | paste -sd, -)"
+  encoded_display_name="$(printf '%s' "$original_display_name" | base64 | tr -d '\r\n')"
   [ -n "$pvp" ] || { echo "Missing DeepDesert_1 PvP partition."; exit 1; }
   [ -n "$pve" ] || { echo "Missing DeepDesert_1 PvE partition."; exit 1; }
   mkdir -p "$(dirname "$OVERRIDE_FILE")"
   cat > "$OVERRIDE_FILE" <<EOF
 ; ManagedPvpPartition=$pvp
 ; ManagedPvePartition=$pve
+; ManagedPartitionIds=$ids
+; ManagedInstanceCount=$count
+; ManagedThirdRole=$third_role
+; ManagedPrimaryDisplayNameBase64=$encoded_display_name
 
 [DeepDesert_1]
-NumExtraServers=1
+NumExtraServers=$((count - 1))
 MinServers=0
 EOF
   echo "Director DeepDesert_1 override written: $OVERRIDE_FILE"
@@ -407,16 +519,21 @@ managed_selector_from_override() {
   sed -n "s/^; ${key}=\([0-9][0-9]*\)$/\1/p" "$OVERRIDE_FILE" | head -n1
 }
 
+managed_partition_ids_from_override() {
+  [ -f "$OVERRIDE_FILE" ] || return 0
+  sed -n 's/^; ManagedPartitionIds=//p' "$OVERRIDE_FILE" | tail -n1 | tr ',' '\n' | grep -E '^[0-9]+$' || true
+}
+
 remove_dual_usergame_selectors() {
   local pvp="$1" pve="$2"
   # Remove only the exact values recorded by this toggle. The managed override retains
   # those IDs even if a partial/manual cleanup removed the dimension-1 database row first.
-  for partition_id in "$pvp" "$pve"; do
+  while IFS= read -r partition_id; do
     [ -n "$partition_id" ] || continue
     python3 runtime/scripts/usersettings.py map-set Global global_pvp_enabled_partition_remove "$partition_id" >/dev/null 2>&1 || true
     # Remove legacy explicit-PvE selectors written by older Dual Deep Desert releases.
     python3 runtime/scripts/usersettings.py map-set Global global_pve_enabled_partition_remove "$partition_id" >/dev/null 2>&1 || true
-  done
+  done < <(printf '%s\n' "$pvp" "$pve"; managed_partition_ids_from_override; deepdesert_partition_ids | sort -u)
   python3 runtime/scripts/usersettings.py map-unset DeepDesert_1 force_pvp_all_partitions >/dev/null 2>&1 || true
   python3 runtime/scripts/usersettings.py map-unset Global force_pvp_all_partitions >/dev/null 2>&1 || true
   python3 runtime/scripts/usersettings.py dual-deepdesert-matchmaker disable >/dev/null 2>&1 || true
@@ -424,38 +541,61 @@ remove_dual_usergame_selectors() {
 }
 
 apply_usergame() {
-  local pvp pve
+  local count="$1" third_role="${2:-pve}" pvp pve third partition_id pvp_name pve_name third_name
   pvp="$(pvp_partition_id)"
   pve="$(pve_partition_id)"
+  third="$(partition_id_for_dimension 2)"
   [ -n "$pvp" ] || { echo "Missing DeepDesert_1 PvP partition."; exit 1; }
   [ -n "$pve" ] || { echo "Missing DeepDesert_1 PvE partition."; exit 1; }
-  runtime/scripts/sietches.sh set-display "$pvp" "Deep Desert PvP" >/dev/null
-  runtime/scripts/sietches.sh set-display "$pve" "Deep Desert PvE" >/dev/null
+  pvp_name="Deep Desert PvP"
+  pve_name="Deep Desert PvE"
+  third_name="Deep Desert PvE 2"
+  if [ "$count" -ge 3 ]; then
+    if [ "$third_role" = "pvp" ]; then
+      pvp_name="Deep Desert PvP 1"
+      third_name="Deep Desert PvP 2"
+    else
+      pve_name="Deep Desert PvE 1"
+    fi
+  fi
+  runtime/scripts/sietches.sh set-display "$pvp" "$pvp_name" >/dev/null
+  runtime/scripts/sietches.sh set-display "$pve" "$pve_name" >/dev/null
+  [ "$count" -ge 3 ] && [ -n "$third" ] && runtime/scripts/sietches.sh set-display "$third" "$third_name" >/dev/null
   # Match the configuration verified against Funcom's Kanly selector: both the defensive
   # force-all flag and the one explicit PvP partition selector must be Global. The partition
   # omitted from that selector is PvE. Roles are persisted in the managed override so repairs
   # remain stable and first-time enablement can preserve dimension 0's pre-existing role.
   python3 runtime/scripts/usersettings.py map-unset DeepDesert_1 force_pvp_all_partitions
-  for partition_id in "$pvp" "$pve"; do
+  while IFS= read -r partition_id; do
+    [ -n "$partition_id" ] || continue
     python3 runtime/scripts/usersettings.py map-set Global global_pvp_enabled_partition_remove "$partition_id"
     python3 runtime/scripts/usersettings.py map-set Global global_pve_enabled_partition_remove "$partition_id"
-  done
+  done < <(deepdesert_partition_ids)
   python3 runtime/scripts/usersettings.py map-set Global force_pvp_all_partitions False
   python3 runtime/scripts/usersettings.py map-set Global global_pvp_enabled_partition_add "$pvp"
+  if [ "$count" -ge 3 ] && [ "$third_role" = "pvp" ] && [ -n "$third" ]; then
+    python3 runtime/scripts/usersettings.py map-set Global global_pvp_enabled_partition_add "$third"
+  fi
   python3 runtime/scripts/usersettings.py dual-deepdesert-matchmaker enable
   python3 runtime/scripts/usersettings.py materialize-current >/dev/null || true
-  echo "UserGame PvP/PvE settings applied. PvE partition: $pve. PvP partition: $pvp."
+  echo "UserGame PvP/PvE settings applied. Primary PvE partition: $pve. PvP partition: $pvp."
   echo "Global UserGame now uses m_bShouldForceEnablePvpOnAllPartitions=False and +m_PvpEnabledPartitions=$pvp; no explicit PvE selector is required."
   echo "Deep Desert matchmaking now uses SelectionRule=HomeDimension so the selected PvP/PvE instance reaches the matching partition."
 }
 
-enable_dual() {
+enable_layout() {
+  local count="$1" third_role="${2:-pve}" original_display_name
   require_postgres
-  ensure_partition
-  ensure_dual_sietch_dimensions
-  apply_partition_labels
-  write_director_override
-  apply_usergame
+  if [ -s "$OVERRIDE_FILE" ]; then
+    original_display_name="$(managed_primary_display_name)"
+  else
+    original_display_name="$(primary_display_name)"
+  fi
+  ensure_partitions "$count"
+  ensure_sietch_dimensions "$count"
+  apply_partition_labels "$count" "$third_role"
+  write_director_override "$count" "$original_display_name" "$third_role"
+  apply_usergame "$count" "$third_role"
   recycle_idle_deepdesert_servers
   if [ "${RECYCLED_DEEPDESERT_SERVERS:-0}" = "1" ]; then
     echo "Refreshing dune-director after DeepDesert_1 recycle so the current instances re-register cleanly..."
@@ -465,15 +605,110 @@ enable_dual() {
   fi
   despawn_idle_dynamic_deepdesert_servers
   echo
-  echo "Dual Deep Desert PvP/PvE is enabled."
-  echo "Gameplay routing now matches the verified flow: only partition $(pvp_partition_id) is listed in the Global m_PvpEnabledPartitions array; partition $(pve_partition_id) remains PvE."
-  echo "Players should see two Deep Desert instances when the client enters the SELECT INSTANCE flow."
+  echo "Deep Desert layout now has $count managed instances."
+  echo "The third instance is configured as ${third_role^^}."
+  echo "Players should see $count Deep Desert instances when the client enters the SELECT INSTANCE flow."
   echo "Run bootstrap once if players are still routed back to only dimension 0."
+}
+
+enable_dual() {
+  local count third_role
+  count="$(configured_instance_count)"
+  third_role="$(managed_third_role)"
+  [ "$count" -ge 2 ] || count=2
+  enable_layout "$count" "$third_role"
+}
+
+create_layout_safety_backup() {
+  echo "Creating a safety backup before changing the Deep Desert layout..."
+  DB_BACKUP_ORIGIN=restore-safety runtime/scripts/db.sh backup >/dev/null
+  echo "Safety backup created."
+}
+
+remove_layout_dimensions() {
+  local target="$1" force="${2:-0}" rows partition_id dimension_index server_id connected_players assigned mode
+  local removed_ids=()
+  rows="$(psql_value "
+    select wp.partition_id || '|' || wp.dimension_index || '|' || coalesce(wp.server_id, '') || '|' || coalesce(fs.connected_players, 0)
+    from dune.world_partition wp
+    left join dune.farm_state fs on fs.server_id = wp.server_id
+    where wp.map = 'DeepDesert_1' and wp.dimension_index >= $target
+    order by wp.dimension_index desc, wp.partition_id;
+  ")"
+  [ -n "$rows" ] || return 0
+
+  while IFS='|' read -r partition_id dimension_index server_id connected_players; do
+    [ -n "${partition_id:-}" ] || continue
+    if [ "${connected_players:-0}" != "0" ]; then
+      echo "Cannot remove Deep Desert instance $((dimension_index + 1)): $connected_players player(s) are connected."
+      exit 1
+    fi
+    assigned="$(printf '%s' "${server_id:-}" | tr -d '[:space:]')"
+    if [ -n "$assigned" ]; then
+      if [ "$force" != "1" ]; then
+        echo "Deep Desert partition $partition_id must be stopped before it can be removed."
+        exit 1
+      fi
+      if [ -x runtime/scripts/map-modes.sh ]; then
+        mode="$(runtime/scripts/map-modes.sh mode DeepDesert_1 2>/dev/null | awk '{print $2}' || true)"
+        if [ "$mode" = "always-on" ]; then
+          echo "DeepDesert_1 is Always On; switching it to Dynamic before reducing the layout."
+          runtime/scripts/map-modes.sh set DeepDesert_1 dynamic >/dev/null 2>&1 || true
+        fi
+      fi
+      runtime/scripts/despawn-server.sh "$partition_id" --force
+    fi
+    removed_ids+=("$partition_id")
+  done <<< "$rows"
+
+  for partition_id in "${removed_ids[@]}"; do
+    python3 runtime/scripts/usersettings.py map-set Global global_pvp_enabled_partition_remove "$partition_id" >/dev/null 2>&1 || true
+    python3 runtime/scripts/usersettings.py map-set Global global_pve_enabled_partition_remove "$partition_id" >/dev/null 2>&1 || true
+    psql -v ON_ERROR_STOP=1 -c "delete from dune.world_partition where partition_id = $partition_id and map = 'DeepDesert_1'; drop table if exists dune.event_log_p${partition_id};" >/dev/null
+  done
+  prune_sietch_dimension_config "$target" "${removed_ids[@]}"
+}
+
+set_layout() {
+  local target="$1" force="${2:-0}" third_role="${3:-pve}" current current_third_role
+  [[ "$target" =~ ^[123]$ ]] || { echo "Deep Desert instance count must be 1, 2, or 3."; exit 2; }
+  [[ "$third_role" =~ ^(pve|pvp)$ ]] || { echo "Third Deep Desert role must be pve or pvp."; exit 2; }
+  require_postgres
+  current="$(psql_value "select greatest(1, count(*)) from dune.world_partition where map = 'DeepDesert_1';" | tr -d '[:space:]')"
+  current_third_role="$(managed_third_role)"
+  if [ "$target" = "$current" ] && { [ "$target" = "1" ] || { [ "$(configured_instance_count)" = "$target" ] && { [ "$target" != "3" ] || [ "$third_role" = "$current_third_role" ]; }; }; }; then
+    echo "Deep Desert layout already has $target instance(s)."
+    return 0
+  fi
+  if ! confirm "Change the Deep Desert layout from $current to $target instance(s)?"; then
+    echo "Cancelled."
+    return 0
+  fi
+  if [ "$target" -lt "$current" ]; then
+    create_layout_safety_backup
+    remove_layout_dimensions "$target" "$force"
+  fi
+  if [ "$target" = "1" ]; then
+    local pvp pve primary original_display_name
+    pvp="$(managed_selector_from_override ManagedPvpPartition)"
+    pve="$(managed_selector_from_override ManagedPvePartition)"
+    primary="$(primary_partition_id)"
+    original_display_name="$(managed_primary_display_name)"
+    remove_dual_usergame_selectors "$pvp" "$pve"
+    [ -n "$primary" ] && runtime/scripts/sietches.sh set-display "$primary" "$original_display_name" >/dev/null
+    rm -f "$OVERRIDE_FILE"
+    reset_single_sietch_dimension
+    restart_director_if_running
+    despawn_idle_dynamic_deepdesert_servers
+    echo "Deep Desert layout restored to a single instance."
+    return 0
+  fi
+  enable_layout "$target" "$third_role"
 }
 
 disable_dual() {
   local force="${1:-0}" no_despawn="${2:-0}" pvp pve assigned mode
-  local rows row partition_id dimension_index server_id
+  local rows row partition_id dimension_index server_id connected_players
 
   require_postgres
 
@@ -498,8 +733,12 @@ disable_dual() {
     return 0
   }
 
-  while IFS='|' read -r partition_id dimension_index server_id; do
+  while IFS='|' read -r partition_id dimension_index server_id connected_players; do
     [ -n "${partition_id:-}" ] || continue
+    if [ "${connected_players:-0}" != "0" ]; then
+      echo "Disable is blocked because Deep Desert partition $partition_id has $connected_players connected player(s)."
+      exit 1
+    fi
     assigned="$(printf '%s' "${server_id:-}" | tr -d '[:space:]')"
     if [ -z "$assigned" ]; then
       continue
@@ -560,7 +799,10 @@ disable_dual() {
   fi
 
   echo "Removing DeepDesert_1 extra dimensions/config..."
-  psql -v ON_ERROR_STOP=1 -c "delete from dune.world_partition where map = 'DeepDesert_1' and dimension_index > 0;"
+  while IFS='|' read -r partition_id dimension_index server_id connected_players; do
+    [ -n "${partition_id:-}" ] || continue
+    psql -v ON_ERROR_STOP=1 -c "delete from dune.world_partition where partition_id = $partition_id and map = 'DeepDesert_1'; drop table if exists dune.event_log_p${partition_id};" >/dev/null
+  done <<< "$rows"
   remove_dual_usergame_selectors "$pvp" "$pve"
   rm -f "$OVERRIDE_FILE"
   reset_single_sietch_dimension
@@ -590,6 +832,52 @@ bootstrap_dual() {
 
 cmd="${1:-help}"
 case "$cmd" in
+  layout)
+    sub="${2:-status}"
+    shift 2 || true
+    ASSUME_YES=0
+    FORCE=0
+    THIRD_ROLE="pve"
+    target=""
+    if [ "$sub" = "set" ]; then
+      target="${1:-}"
+      [ -n "$target" ] && shift || true
+    fi
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --yes|-y) ASSUME_YES=1; shift ;;
+        --force) FORCE=1; shift ;;
+        --third-role)
+          [ "$#" -ge 2 ] || { echo "--third-role requires pve or pvp."; exit 2; }
+          THIRD_ROLE="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+          shift 2
+          ;;
+        *) echo "Unknown option: $1"; exit 2 ;;
+      esac
+    done
+    case "$sub" in
+      status) status_dual ;;
+      configured)
+        if layout_configured; then
+          echo "Deep Desert layout is configured for $(configured_instance_count) instance(s)."
+        else
+          echo "Deep Desert layout configuration is invalid."
+          exit 1
+        fi
+        ;;
+      set) set_layout "$target" "$FORCE" "$THIRD_ROLE" ;;
+      repair)
+        target="$(configured_instance_count)"
+        if [ "$target" -le 1 ]; then
+          prune_sietch_dimension_config 1
+          echo "Single Deep Desert layout does not require repair."
+        else
+          enable_layout "$target" "$(managed_third_role)"
+        fi
+        ;;
+      *) usage; exit 2 ;;
+    esac
+    ;;
   dual)
     sub="${2:-status}"
     shift 2 || true
