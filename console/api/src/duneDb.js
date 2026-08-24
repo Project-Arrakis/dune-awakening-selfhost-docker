@@ -5695,6 +5695,29 @@ export async function playerBuildingUnlockState(db, id) {
   };
 }
 
+export async function playerCustomizationGrantState(db, id) {
+  const player = await resolvePlayerMutationTarget(db, id);
+  const inventoryColumns = await tableExists(db, "inventories") ? await columnsFor(db, "inventories") : new Set();
+  const itemColumns = await tableExists(db, "items") ? await columnsFor(db, "items") : new Set();
+  const pendingSupported = ["id", "actor_id"].every((column) => inventoryColumns.has(column)) &&
+    ["inventory_id", "template_id"].every((column) => itemColumns.has(column));
+  let pending = [];
+  if (pendingSupported) {
+    const result = await db.query(`
+      select distinct i.template_id
+      from dune.inventories inv
+      join dune.items i on i.inventory_id = inv.id
+      where inv.actor_id = $1
+        and i.template_id is not null`, [player.actorId]);
+    pending = result.rows.map((item) => String(item.template_id || "")).filter(Boolean);
+  }
+  return {
+    capabilities: { customizationOwnership: false, customizationPending: pendingSupported },
+    player,
+    pending
+  };
+}
+
 export async function unlockResearchItem(db, id, { itemKey }) {
   await requireCapability(await supportsResearchItems(db), "Research unlocks require dune.actors.properties with TechKnowledgePlayerComponent.");
   const safeItemKey = validateResearchKey(itemKey);

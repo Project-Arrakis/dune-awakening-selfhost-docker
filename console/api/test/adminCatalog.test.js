@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildingUnlockStatus, isFillableItem, itemImagePath, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemStackSize, resolveItemVolume } from "../src/adminCatalog.js";
+import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isFillableItem, itemImagePath, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemStackSize, resolveItemVolume } from "../src/adminCatalog.js";
 
 const REAL_REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -21,7 +21,12 @@ function fixtureRepo() {
     { id: "FremenComponent1", name: "EMF Generator", category: "resources", source: "Resources", group: "component", volume: 1.0 },
     { id: "AzuriteOre", name: "Copper Ore", category: "resources", source: "Resources", group: "raw_resource", volume: 0.2 },
     { id: "BasicLighting_Patent", name: "Basic Lighting", category: "buildings", source: "BuildingSets" },
-    { id: "Developer_Storage_Container_Patent", name: "Developer Storage Container", category: "buildings", source: "BuildingSets" }
+    { id: "Developer_Storage_Container_Patent", name: "Developer Storage Container", category: "buildings", source: "BuildingSets" },
+    { id: "B1C3_Atre_Maula_Pistol", name: "Atreides Pistol", category: "customizations", source: "Customizations" },
+    { id: "B1C3_Hark_Maula_Pistol", name: "Harkonnen Pistol", category: "customizations", source: "Customizations" },
+    { id: "MTX_B1C3_Smuggler_Kindjal_Variant", name: "Smuggler Kindjal", category: "customizations", source: "Customizations" },
+    { id: "MTX_B1C2_DuneManCoverallsSetVariant_Top", name: "Dune Man Jacket", category: "customizations", source: "Customizations" },
+    { id: "Unrelated_Swatch", name: "Unrelated Swatch", category: "customizations", source: "Customizations" }
   ]));
   return root;
 }
@@ -34,6 +39,26 @@ test("catalog item list returns real item rows only", () => {
   assert.equal(rows[0].category, "materials");
   assert.notEqual(rows[0].name, "category");
   assert.notEqual(rows[0].name, "source");
+});
+
+test("customization grants use the four curated sets and report pending tokens", () => {
+  const root = fixtureRepo();
+  const items = listCustomizationGrantItems(root);
+  assert.equal(items.length, 4);
+  assert.deepEqual(customizationGrantGroups(root), [
+    { id: "atreides", name: "Atreides", count: 1 },
+    { id: "harkonnen", name: "Harkonnen", count: 1 },
+    { id: "smuggler", name: "Smuggler", count: 1 },
+    { id: "dune-man", name: "Dune Man", count: 1 }
+  ]);
+  assert.equal(customizationGrantStatus("B1C3_Atre_Maula_Pistol", { pending: ["B1C3_Atre_Maula_Pistol"] }), "Pending");
+  assert.equal(customizationGrantStatus("B1C3_Atre_Maula_Pistol", { pending: [] }), "Available");
+});
+
+test("real catalog uses the corrected Dune Man Set 2 patent ID", () => {
+  const unlocks = listBuildingUnlockItems(REAL_REPO_ROOT);
+  assert.ok(unlocks.some((item) => item.itemId === "MTX_Neut_DesertMechanicSet02_Patent"));
+  assert.equal(unlocks.some((item) => item.itemId === "MTX_Neut_DesertMechanicSet_02_Patent"), false);
 });
 
 test("building patent tokens are isolated while Developer Storage remains available to shared item selectors", () => {

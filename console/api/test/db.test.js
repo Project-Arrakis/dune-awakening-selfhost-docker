@@ -17,7 +17,7 @@ import {
   queueGeneratorRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
-import { addBaseContainerItem, addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteAllBaseContainerItems, deleteBaseContainerItem, deleteInventoryItem, deleteMultipleBaseContainerItems, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, fillItemToBaseContainer, fillItemToStorage, generatorUptimePolicy, giveItemToBaseContainer, giveItemToPlayer, giveItemToStorage, giveMultipleItemsToBaseContainer, guildMembers, inspectDeletedCharacterRecovery, inspectLandsraadQuestRepairs, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerServerMemberships, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, recoverDeletedCharacter, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairLandsraadQuests, repairVehicleDecay, resetJourneyNode, resetTutorial, resolvePlayerTarget, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { addBaseContainerItem, addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteAllBaseContainerItems, deleteBaseContainerItem, deleteInventoryItem, deleteMultipleBaseContainerItems, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, fillItemToBaseContainer, fillItemToStorage, generatorUptimePolicy, giveItemToBaseContainer, giveItemToPlayer, giveItemToStorage, giveMultipleItemsToBaseContainer, guildMembers, inspectDeletedCharacterRecovery, inspectLandsraadQuestRepairs, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerCustomizationGrantState, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerServerMemberships, playerSolarisCoinTotal, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, recoverDeletedCharacter, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairLandsraadQuests, repairVehicleDecay, resetJourneyNode, resetTutorial, resolvePlayerTarget, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 import { listStorage, liveMapBases, liveMapStorage, portalStorage, trackPlayerPlaytime } from "../src/duneDb.js";
 
 beforeEach(() => {
@@ -7239,6 +7239,18 @@ test("building unlock state reads owned progression and pending patent tokens wi
   assert.equal(result.capabilities.buildingUnlockOwnership, true);
   assert.deepEqual(result.owned, ["BasicLighting", "MTX_Neut_StrategyTable_Patent", "ChoamShelterSet"]);
   assert.deepEqual(result.pending, ["Windtrap_Patent"]);
+  assert.equal(calls.some((call) => /^\s*(update|insert|delete)\b/i.test(call.text)), false);
+});
+
+test("customization grant state reports pending tokens without pretending consumed ownership is available", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    pendingBuildingUnlockRows: [{ template_id: "B1C3_Atre_Maula_Pistol" }]
+  });
+  const result = await playerCustomizationGrantState(db, 123);
+  assert.equal(result.capabilities.customizationOwnership, false);
+  assert.equal(result.capabilities.customizationPending, true);
+  assert.deepEqual(result.pending, ["B1C3_Atre_Maula_Pistol"]);
   assert.equal(calls.some((call) => /^\s*(update|insert|delete)\b/i.test(call.text)), false);
 });
 

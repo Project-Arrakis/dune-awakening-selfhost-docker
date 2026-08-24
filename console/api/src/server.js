@@ -15,7 +15,7 @@ import { createDb, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
-import { buildingUnlockStatus, isBuildingUnlockItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
+import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
@@ -752,6 +752,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/give-items$/) && req.method === "POST") return giveItemsRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/give-item-id$/) && req.method === "POST") return giveSingleItemRoute(req, res, path, "adminGiveItemId");
   if (path.match(/^\/api\/players\/[^/]+\/building-unlocks\/grant$/) && req.method === "POST") return buildingUnlockGrantRoute(req, res, path);
+  if (path.match(/^\/api\/players\/[^/]+\/customizations\/grant$/) && req.method === "POST") return customizationGrantRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/add-xp$/) && req.method === "POST") return playerTask(req, res, path, "adminAddXp");
   if (path.match(/^\/api\/players\/[^/]+\/set-skill-points$/) && req.method === "POST") return playerTask(req, res, path, "adminSetSkillPoints");
   if (path.match(/^\/api\/players\/[^/]+\/set-skill-module$/) && req.method === "POST") return playerTask(req, res, path, "adminSetSkillModule");
@@ -792,6 +793,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/crafting-recipes$/)) return dbPlayerRoute(res, path, duneDb.playerCraftingRecipes);
   if (path.match(/^\/api\/players\/[^/]+\/research-items$/)) return dbPlayerRoute(res, path, duneDb.playerResearchItems);
   if (path.match(/^\/api\/players\/[^/]+\/building-unlocks$/) && req.method === "GET") return buildingUnlocksRoute(res, path);
+  if (path.match(/^\/api\/players\/[^/]+\/customizations$/) && req.method === "GET") return customizationGrantsRoute(res, path);
   if (path.match(/^\/api\/players\/[^/]+\/journey$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerJourney(database, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/inventory$/)) return dbPlayerRoute(res, path, duneDb.playerInventoryAll);
   if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listVehicles(database, { playerId, pageSize: 200 }));
@@ -4272,6 +4274,77 @@ async function buildingUnlockGrantRoute(req, res, path) {
     return json(res, result.ok ? 200 : 207, { ok: result.ok, status, item: resolved, result });
   } catch (error) {
     audit(config, req, "players.building-unlocks.grant", { playerId, itemId: body.itemId, ok: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+async function customizationGrantsRoute(res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  try {
+    const state = await duneDb.playerCustomizationGrantState(db, playerId);
+    return json(res, 200, {
+      capabilities: state.capabilities,
+      groups: customizationGrantGroups(config.repoRoot),
+      rows: listCustomizationGrantItems(config.repoRoot).map((item) => ({
+        ...item,
+        status: customizationGrantStatus(item.itemId, state)
+      }))
+    });
+  } catch (error) {
+    return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+async function customizationGrantRoute(req, res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  const body = await readJson(req);
+  if (body.confirmation !== "GRANT CUSTOMIZATIONS") return json(res, 400, { error: "Confirmation phrase mismatch" });
+  if (!applyMutationRateLimit(req, res, "players.customizations.grant")) return;
+
+  try {
+    const catalog = listCustomizationGrantItems(config.repoRoot);
+    const groups = new Set(customizationGrantGroups(config.repoRoot).map((group) => group.id));
+    let selected;
+    if (body.itemId) {
+      const resolved = resolveCatalogItem(config.repoRoot, { itemId: body.itemId });
+      if (!isCustomizationGrantItem(resolved) || !catalog.some((item) => item.itemId === resolved.itemId)) {
+        throw new Error("Select a verified entry from the Customizations catalog.");
+      }
+      selected = catalog.filter((item) => item.itemId === resolved.itemId);
+    } else if (body.groupId === "all") {
+      selected = catalog;
+    } else if (groups.has(String(body.groupId || ""))) {
+      selected = catalog.filter((item) => item.groupId === body.groupId);
+    } else {
+      throw new Error("Select a verified customization group.");
+    }
+    if (selected.length === 0) throw new Error("The selected customization group is empty.");
+
+    const target = await resolvePlayerGrantTarget(playerId);
+    const state = target.actorId
+      ? await duneDb.playerCustomizationGrantState(db, target.actorId)
+      : { capabilities: { customizationPending: false }, pending: [] };
+    const results = [];
+    for (const item of selected) {
+      if (customizationGrantStatus(item.itemId, state) === "Pending") {
+        results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: true, status: "Pending", skipped: true });
+        continue;
+      }
+      try {
+        const result = await grantPlayerItem(playerId, { itemId: item.itemId, quantity: 1 }, target);
+        results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: result.ok, status: result.ok ? (target.online ? "Processing" : "Pending") : "Available", result });
+      } catch (error) {
+        results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: false, status: "Available", error: redact(error?.message || "Unexpected error.") });
+      }
+    }
+    const ok = results.every((result) => result.ok);
+    const granted = results.filter((result) => result.ok && !result.skipped).length;
+    const skipped = results.filter((result) => result.skipped).length;
+    const failed = results.filter((result) => !result.ok).length;
+    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, granted, skipped, failed, ok, results });
+    return json(res, ok ? 200 : 207, { ok, granted, skipped, failed, results });
+  } catch (error) {
+    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, ok: false, error: redact(error?.message || "Unexpected error.") });
     return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
   }
 }
