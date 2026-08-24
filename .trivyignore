@@ -54,6 +54,7 @@ CVE-2026-59873  # tar
 CVE-2026-59874  # tar
 CVE-2026-69152  # brace-expansion
 CVE-2026-69192  # ip-address
+CVE-2026-73566  # tar (issue #466; latest published npm, 12.0.2, still bundles 7.5.19)
 
 # Docker CLI 29.7.2's own embedded Go standard library -- confirmed the
 # latest available release at triage time (curl -sI against
