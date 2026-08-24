@@ -4051,6 +4051,40 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bases-permissions-actions > .muted:empty { display: none; }
 .bases-permissions-actions button { width: auto; }
 
+.bases-child-access-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+.bases-child-access-head > div:first-child { display: grid; gap: 3px; min-width: 0; }
+.bases-child-access-head p { margin: 0; font-size: 12px; }
+.bases-child-access-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.bases-child-access-actions button { width: auto; white-space: nowrap; }
+.bases-child-access-list { display: grid; gap: 6px; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; }
+.bases-child-access-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  background: rgba(169, 121, 50, .07);
+  cursor: pointer;
+}
+.bases-child-access-row input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent-strong); }
+.bases-child-access-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bases-child-access-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-strong); font-size: 13px; }
+.bases-child-access-name em { flex: 0 0 auto; padding: 2px 6px; border: 1px solid var(--border-strong); border-radius: 999px; color: var(--muted); font-size: 10px; font-style: normal; font-weight: 700; text-transform: uppercase; }
+.bases-child-access-level { color: var(--warning); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.bases-child-access-level span { padding: 0 4px; color: var(--muted); }
+.bases-child-access-clean { margin: 0; color: var(--success-text); font-size: 12px; }
+
 /* Below this the row's three columns cannot hold a name, three segments and a
    trash button side by side -- inside the expanded cell the available width is
    calc(100vw - 76px), which is ~300px on a phone. Stack the control under the
@@ -4078,6 +4112,10 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
     gap: 12px;
   }
   .bases-permissions-intro > .action-help-note { max-width: none; }
+  .bases-child-access-head { align-items: stretch; flex-direction: column; }
+  .bases-child-access-actions { justify-content: flex-end; }
+  .bases-child-access-row { grid-template-columns: 20px minmax(0, 1fr); }
+  .bases-child-access-level { grid-column: 2; white-space: normal; }
 }
 @media (max-width: 900px) {
   .bases-permissions-toolbar {

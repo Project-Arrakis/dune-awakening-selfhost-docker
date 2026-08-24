@@ -314,6 +314,24 @@ export type BasePermissionEntry = {
   canonical: boolean;
 };
 
+export type BaseChildAccessAnomaly = {
+  actorId: string;
+  name: string;
+  kind: "Door" | "Device";
+  currentAccess: number;
+  expectedAccess: number;
+  basis: string;
+  unusual: true;
+};
+
+export type BaseChildAccessAudit = {
+  supported: boolean;
+  inspected: number;
+  baselined: number;
+  anomalies: BaseChildAccessAnomaly[];
+  reason?: string;
+};
+
 export type BasePermissions = {
   supported: boolean;
   baseId: number;
@@ -334,6 +352,7 @@ export type BasePermissions = {
     reason?: string;
   };
   entries: BasePermissionEntry[];
+  childAccess?: BaseChildAccessAudit;
   reason?: string;
 };
 
@@ -455,6 +474,9 @@ export const basesApi = {
     api<{ supported: boolean; result?: SetBasePermissionsResult; reason?: string }>(
       `/api/bases/${encodeURIComponent(baseId)}/permissions`,
       { method: "PUT", body: JSON.stringify({ entries }) }),
+  resetChildAccess: (baseId: string, actorIds: string[]) =>
+    post<{ supported: boolean; result?: { ok: boolean; baseId: number; reset: number; message: string }; reason?: string }>(
+      `/api/bases/${encodeURIComponent(baseId)}/child-access/reset`, { actorIds, confirmation: "RESET CHILD ACCESS" }),
   transferToSystemCustodian: (baseId: string) =>
     post<{ supported: boolean; result?: SetBasePermissionsResult; reason?: string }>(
       `/api/bases/${encodeURIComponent(baseId)}/system-custodian`, {}),
