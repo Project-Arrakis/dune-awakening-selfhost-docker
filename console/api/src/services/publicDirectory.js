@@ -836,7 +836,7 @@ export function buildHeartbeatPayload(identity, snapshot) {
 }
 
 export async function collectPublicMetadata(repoRoot, db) {
-  const modifiers = readPublicModifiers(resolve(repoRoot, "runtime/generated/gameplay-profile.ini"));
+  const modifierMetadata = readPublicModifierMetadata(resolve(repoRoot, "runtime/generated/gameplay-profile.ini"), { repoRoot });
   let progression = { characters: 0, averageLevel: 0, highestLevel: 0 };
   if (db) {
     try {
@@ -853,24 +853,29 @@ export async function collectPublicMetadata(repoRoot, db) {
       // Public directory reporting must remain healthy if progression is unavailable.
     }
   }
-  return { modifiers, progression };
+  return { ...modifierMetadata, progression };
 }
 
 export function readPublicModifiers(path) {
-  if (!existsSync(path)) return {};
+  return readPublicModifierMetadata(path).modifiers;
+}
+
+export function readPublicModifierMetadata(path, { repoRoot = "" } = {}) {
+  if (!existsSync(path)) return { modifiers: {}, modifierGroups: [] };
   const collected = new Map();
-  let section = "";
+  const grouped = new Map();
+  let scope = publicModifierScope("");
   for (const rawLine of readFileSync(path, "utf8").split(/\r?\n/)) {
     const line = rawLine.trim();
     if (line.startsWith("[") && line.endsWith("]")) {
-      section = publicModifierSection(line.slice(1, -1));
+      scope = publicModifierScope(line.slice(1, -1));
       continue;
     }
     if (!line || line.startsWith(";") || line.startsWith("#")) continue;
     const equals = line.indexOf("=");
     if (equals < 1) continue;
     const key = line.slice(0, equals).trim();
-    const setting = PUBLIC_MODIFIER_SETTINGS.get(publicModifierKey(section, key));
+    const setting = PUBLIC_MODIFIER_SETTINGS.get(publicModifierKey(scope.section, key));
     if (!setting) continue;
     const value = line.slice(equals + 1).trim().replace(/^"|"$/g, "");
     if (!value || publicModifierValuesEqual(value, setting.defaultValue, setting.format)) continue;
@@ -878,13 +883,25 @@ export function readPublicModifiers(path) {
     if (!formatted) continue;
     if (!collected.has(setting.label)) collected.set(setting.label, new Set());
     collected.get(setting.label).add(formatted);
+    const groupKey = `${scope.scope}\0${scope.map}\0${scope.partitionId ?? ""}`;
+    if (!grouped.has(groupKey)) grouped.set(groupKey, { ...scope, readings: new Map() });
+    const readings = grouped.get(groupKey).readings;
+    if (!readings.has(setting.label)) readings.set(setting.label, new Set());
+    readings.get(setting.label).add(formatted);
   }
-  return Object.fromEntries([...collected].map(([label, readings]) => {
-    const values = [...readings];
-    if (values.length === 1) return [label, values[0]];
-    const visible = values.slice(0, 3).join(", ");
-    return [label, `Varies: ${visible}${values.length > 3 ? ` +${values.length - 3}` : ""}`];
-  }));
+  const instanceNames = repoRoot ? readPublicInstanceNames(repoRoot) : { byPartition: new Map(), byDimension: new Map() };
+  const modifiers = formatCollectedModifiers(collected);
+  const modifierGroups = limitPublicModifierGroups([...grouped.values()]
+    .map((group) => ({
+      scope: group.scope,
+      map: group.map,
+      partitionId: group.partitionId,
+      dimension: publicModifierGroupDimension(group, instanceNames),
+      label: publicModifierGroupLabel(group, instanceNames),
+      modifiers: formatCollectedModifiers(group.readings)
+    }))
+    .sort(comparePublicModifierGroups));
+  return { modifiers, modifierGroups };
 }
 
 function publicModifier(section, key, label, defaultValue, format) {
@@ -896,11 +913,109 @@ function publicModifierKey(section, key) {
 }
 
 function publicModifierSection(header) {
+  return publicModifierScope(header).section;
+}
+
+function publicModifierScope(header) {
   const parts = header.split(":");
-  if (parts[0] === "Engine" || parts[0] === "Global") return parts.slice(1).join(":");
-  if (parts[0] === "Map" || parts[0] === "MapEngine") return parts.slice(2).join(":");
-  if (parts[0] === "Partition" || parts[0] === "PartitionEngine") return parts.slice(3).join(":");
-  return "";
+  if (parts[0] === "Engine" || parts[0] === "Global") return { scope: "global", map: "", partitionId: null, section: parts.slice(1).join(":") };
+  if (parts[0] === "Map" || parts[0] === "MapEngine") return { scope: "map", map: safePublicScopeText(parts[1], 80), partitionId: null, section: parts.slice(2).join(":") };
+  if (parts[0] === "Partition" || parts[0] === "PartitionEngine") {
+    const partitionId = Number(parts[2]);
+    return { scope: "partition", map: safePublicScopeText(parts[1], 80), partitionId: Number.isInteger(partitionId) && partitionId >= 0 && partitionId <= 100000 ? partitionId : null, section: parts.slice(3).join(":") };
+  }
+  return { scope: "global", map: "", partitionId: null, section: "" };
+}
+
+function formatCollectedModifiers(collected) {
+  return Object.fromEntries([...collected].map(([label, readings]) => {
+    const values = [...readings];
+    if (values.length === 1) return [label, values[0]];
+    const visible = values.slice(0, 3).join(", ");
+    return [label, `Varies: ${visible}${values.length > 3 ? ` +${values.length - 3}` : ""}`];
+  }));
+}
+
+function limitPublicModifierGroups(groups, maxGroups = 48, maxModifiers = 240) {
+  const limited = [];
+  let remaining = maxModifiers;
+  for (const group of groups.slice(0, maxGroups)) {
+    const entries = Object.entries(group.modifiers).slice(0, remaining);
+    if (!entries.length) continue;
+    limited.push({ ...group, modifiers: Object.fromEntries(entries) });
+    remaining -= entries.length;
+    if (remaining <= 0) break;
+  }
+  return limited;
+}
+
+function readPublicInstanceNames(repoRoot) {
+  const config = readJsonFile(resolve(repoRoot, "runtime/generated/sietch-config.json"), {});
+  const byPartition = new Map();
+  const byDimension = new Map();
+  for (const [partitionIdValue, partition] of Object.entries(config?.partitions || {})) {
+    const map = safePublicScopeText(partition?.map, 80);
+    const partitionId = Number(partitionIdValue);
+    const dimension = Number(partition?.dimension);
+    const name = safePublicScopeText(partition?.display_name || partition?.label, 80);
+    if (map && Number.isInteger(partitionId) && partitionId >= 0) byPartition.set(`${map}\0${partitionId}`, { name, dimension: Number.isInteger(dimension) && dimension >= 0 ? dimension : null });
+  }
+  for (const [mapValue, mapConfig] of Object.entries(config?.maps || {})) {
+    const map = safePublicScopeText(mapValue, 80);
+    for (const [dimensionValue, dimensionConfig] of Object.entries(mapConfig?.dimensions || {})) {
+      const dimension = Number(dimensionValue);
+      const name = safePublicScopeText(dimensionConfig?.display_name, 80);
+      if (map && Number.isInteger(dimension) && dimension >= 0 && name) byDimension.set(`${map}\0${dimension}`, name);
+    }
+  }
+  return { byPartition, byDimension };
+}
+
+function publicModifierGroupInstance(group, instanceNames) {
+  return instanceNames.byPartition.get(`${group.map}\0${group.partitionId}`) || null;
+}
+
+function publicModifierGroupDimension(group, instanceNames) {
+  return publicModifierGroupInstance(group, instanceNames)?.dimension ?? null;
+}
+
+function publicModifierGroupLabel(group, instanceNames) {
+  if (group.scope === "global") return "Global";
+  if (group.scope === "map") {
+    if (group.map === "Survival_1") return "Hagga Basin — All Sietches";
+    if (group.map === "DeepDesert_1") return "Deep Desert — All Partitions";
+    return `${friendlyPublicMapName(group.map)} — All Partitions`;
+  }
+  const instance = publicModifierGroupInstance(group, instanceNames);
+  const configured = instance?.name || (instance && instance.dimension !== null ? instanceNames.byDimension.get(`${group.map}\0${instance.dimension}`) : "");
+  if (configured) return configured;
+  if (group.map === "Survival_1") return `Sietch Partition ${group.partitionId}`;
+  if (group.map === "DeepDesert_1") return `Deep Desert Partition ${group.partitionId}`;
+  return `${friendlyPublicMapName(group.map)} Partition ${group.partitionId}`;
+}
+
+function comparePublicModifierGroups(left, right) {
+  return publicModifierGroupOrder(left) - publicModifierGroupOrder(right)
+    || String(left.map).localeCompare(String(right.map))
+    || (Number(left.partitionId ?? -1) - Number(right.partitionId ?? -1))
+    || left.label.localeCompare(right.label);
+}
+
+function publicModifierGroupOrder(group) {
+  if (group.scope === "global") return 0;
+  if (group.map === "Survival_1") return group.scope === "map" ? 10 : 11;
+  if (group.map === "DeepDesert_1") return group.scope === "map" ? 20 : 21;
+  return group.scope === "map" ? 30 : 31;
+}
+
+function friendlyPublicMapName(value) {
+  const map = safePublicScopeText(value, 80);
+  const aliases = { Overmap: "Overland", SH_Arrakeen: "Arrakeen", SH_HarkoVillage: "Harko Village" };
+  return aliases[map] || map.replace(/^SH_/, "").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Map";
+}
+
+function safePublicScopeText(value, limit) {
+  return String(value || "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, limit);
 }
 
 function publicModifierValuesEqual(value, defaultValue, format) {
