@@ -80,6 +80,8 @@ export function buildDuneArgs(operation, payload = {}) {
   if (simpleOperations[operation]) return simpleOperations[operation];
 
   switch (operation) {
+    case "selfUpdateQaApply":
+      return ["self-update", "install-qa", validateCommitSha(payload.sha)];
     case "restartService":
       return ["restart", validateServiceName(payload.service)];
     case "restartServiceStop":
@@ -345,6 +347,12 @@ export function buildDuneArgs(operation, payload = {}) {
     default:
       throw new Error(`Unsupported operation: ${operation}`);
   }
+}
+
+function validateCommitSha(value) {
+  const sha = String(value || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("Invalid QA build identifier.");
+  return sha;
 }
 
 function encodeJsonArg(value) {

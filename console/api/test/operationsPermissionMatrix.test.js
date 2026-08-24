@@ -70,6 +70,7 @@ function waitForTask(manager, id) {
 // Critical operations (1-10)
 test("01 Critical: self-update preserves host identity and Docker access", () => {
   assert.deepEqual(buildDuneArgs("selfUpdateApply"), ["self-update", "install", "latest"]);
+  assert.deepEqual(buildDuneArgs("selfUpdateQaApply", { sha: "b".repeat(40) }), ["self-update", "install-qa", "b".repeat(40)]);
   const script = source("runtime/scripts/self-update.sh");
   assert.match(script, /--user "\$\{DUNE_HOST_UID:-0\}:\$\{DUNE_HOST_GID:-0\}"/);
   assert.match(script, /--group-add "\$\{DOCKER_SOCKET_GID:-0\}"/);
