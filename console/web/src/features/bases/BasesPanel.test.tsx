@@ -8,6 +8,7 @@ import { invalidateInstanceNames } from "../maps/instanceNames";
 vi.mock("../../api/bases", () => ({
   basesApi: {
     list: vi.fn(),
+    forPlayer: vi.fn(),
     refillGenerators: vi.fn(),
     cancelQueuedRefill: vi.fn(),
     pendingRefills: vi.fn(),
@@ -91,6 +92,42 @@ beforeEach(() => {
   // respawn the CLI. That cache outlives a single test, so a case asserting a
   // cold lookup would otherwise read the previous case's resolved names.
   invalidateInstanceNames();
+});
+
+describe("BasesPanel player scope", () => {
+  it("loads only the selected player's owned and shared bases", async () => {
+    vi.mocked(basesApi.forPlayer).mockResolvedValue({
+      capabilities: { bases: true },
+      totalCount: 2,
+      totalBases: 2,
+      totalOwned: 1,
+      totalShared: 1,
+      totalPieces: 20,
+      totalPlaceables: 8,
+      rows: [
+        { ...commonRow, base_id: "4101", name: "Owned Home", relationship: "Owner", generatorDataAvailable: false, generatorCount: 0 },
+        { ...commonRow, base_id: "4102", name: "Shared Workshop", owner_name: "Stilgar", relationship: "Associate", generatorDataAvailable: false, generatorCount: 0 }
+      ]
+    });
+
+    renderPanel({ playerId: "42", playerName: "Chani", embedded: true });
+
+    await waitFor(() => expect(basesApi.forPlayer).toHaveBeenCalledWith("42", expect.objectContaining({ page: 0, pageSize: 5000 })));
+    expect(basesApi.list).not.toHaveBeenCalled();
+    expect(await screen.findByText("Owned Home")).toBeInTheDocument();
+    expect(screen.getByText("Shared Workshop")).toBeInTheDocument();
+    const summary = screen.getByLabelText("Player base totals");
+    expect(summary).toHaveTextContent("2 Total");
+    expect(summary).toHaveTextContent("1 Owned");
+    expect(summary).toHaveTextContent("1 Shared");
+    expect(summary).toHaveTextContent("20 Building Pieces");
+    expect(summary).toHaveTextContent("8 Placeables");
+    expect(screen.getByText(/Bases owned by or shared with Chani/)).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Rows" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "First" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Page 1 of/)).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Search ID, name, type, or owner")).not.toBeInTheDocument();
+  });
 });
 
 describe("BasesPanel focused navigation", () => {

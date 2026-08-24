@@ -22,6 +22,9 @@ type BasesPanelProps = {
   restartGate: RestartGate;
   formatMutationResult: (result: unknown) => string;
   focusRequest?: { baseId: string; nonce: number };
+  playerId?: string;
+  playerName?: string;
+  embedded?: boolean;
 };
 
 type SharedWithEntry = { name: string; rank: number; label: string };
@@ -111,6 +114,7 @@ const BASES_PAGE_SIZES = [25, 50, 100, 200] as const;
 const BASES_DEFAULT_PAGE_SIZE = 50;
 
 type BasesCache = {
+  scope: string;
   q: string;
   page: number;
   pageSize: number;
@@ -119,6 +123,8 @@ type BasesCache = {
   rows: BaseRow[];
   totalCount: number;
   totalBases: number;
+  totalOwned: number;
+  totalShared: number;
   totalPieces: number;
   totalPlaceables: number;
   lastFetchedAt: number;
@@ -166,8 +172,8 @@ function readCachedRefillStatus() {
   return refillStatusCache;
 }
 
-function sameView(cache: BasesCache | null, q: string, page: number, pageSize: number, sortColumn: string, sortDirection: SortDirection) {
-  return !!cache && cache.q === q && cache.page === page && cache.pageSize === pageSize && cache.sortColumn === sortColumn && cache.sortDirection === sortDirection;
+function sameView(cache: BasesCache | null, scope: string, q: string, page: number, pageSize: number, sortColumn: string, sortDirection: SortDirection) {
+  return !!cache && cache.scope === scope && cache.q === q && cache.page === page && cache.pageSize === pageSize && cache.sortColumn === sortColumn && cache.sortDirection === sortDirection;
 }
 
 function errorText(error: unknown) {
@@ -341,14 +347,16 @@ function renderBaseCell(row: Record<string, unknown>, column: string, instanceNa
   );
 }
 
-export function BasesPanel({ onError, confirmAction, restartGate, formatMutationResult, focusRequest }: BasesPanelProps) {
-  const [q, setQ] = useState(() => basesCache?.q ?? "");
-  const [submittedQ, setSubmittedQ] = useState(() => basesCache?.q ?? "");
-  const [page, setPage] = useState(() => basesCache?.page ?? 0);
-  const [pageSize, setPageSize] = useState<number>(() => basesCache?.pageSize ?? BASES_DEFAULT_PAGE_SIZE);
-  const [sortColumn, setSortColumn] = useState(() => basesCache?.sortColumn ?? "name");
-  const [sortDirection, setSortDirection] = useState<SortDirection>(() => basesCache?.sortDirection ?? "asc");
-  const [rows, setRows] = useState<BaseRow[]>(() => basesCache?.rows ?? []);
+export function BasesPanel({ onError, confirmAction, restartGate, formatMutationResult, focusRequest, playerId = "", playerName = "", embedded = false }: BasesPanelProps) {
+  const scope = playerId ? `player:${playerId}` : "all";
+  const initialCache = basesCache?.scope === scope ? basesCache : null;
+  const [q, setQ] = useState(() => initialCache?.q ?? "");
+  const [submittedQ, setSubmittedQ] = useState(() => initialCache?.q ?? "");
+  const [page, setPage] = useState(() => initialCache?.page ?? 0);
+  const [pageSize, setPageSize] = useState<number>(() => initialCache?.pageSize ?? (playerId ? 5000 : BASES_DEFAULT_PAGE_SIZE));
+  const [sortColumn, setSortColumn] = useState(() => initialCache?.sortColumn ?? "name");
+  const [sortDirection, setSortDirection] = useState<SortDirection>(() => initialCache?.sortDirection ?? "asc");
+  const [rows, setRows] = useState<BaseRow[]>(() => initialCache?.rows ?? []);
   // partition id -> operator-chosen instance name ("Deep Desert PvE", "Sietch
   // Abbir"). Loaded after the table renders, never blocking it: the names come
   // from a CLI-backed endpoint, and the partition number alone already
@@ -357,11 +365,13 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   // Bumped by the same refresh cycle that reloads the rows, so a stale TTL is
   // re-checked on the panel's own schedule rather than only on remount.
   const [instanceNamesTick, setInstanceNamesTick] = useState(0);
-  const [totalCount, setTotalCount] = useState(() => basesCache?.totalCount ?? 0);
-  const [totalBases, setTotalBases] = useState(() => basesCache?.totalBases ?? 0);
-  const [totalPieces, setTotalPieces] = useState(() => basesCache?.totalPieces ?? 0);
-  const [totalPlaceables, setTotalPlaceables] = useState(() => basesCache?.totalPlaceables ?? 0);
-  const [loading, setLoading] = useState(() => basesCache === null);
+  const [totalCount, setTotalCount] = useState(() => initialCache?.totalCount ?? 0);
+  const [totalBases, setTotalBases] = useState(() => initialCache?.totalBases ?? 0);
+  const [totalOwned, setTotalOwned] = useState(() => initialCache?.totalOwned ?? 0);
+  const [totalShared, setTotalShared] = useState(() => initialCache?.totalShared ?? 0);
+  const [totalPieces, setTotalPieces] = useState(() => initialCache?.totalPieces ?? 0);
+  const [totalPlaceables, setTotalPlaceables] = useState(() => initialCache?.totalPlaceables ?? 0);
+  const [loading, setLoading] = useState(() => initialCache === null);
   const [downloadingId, setDownloadingId] = useState("");
   const [refillingId, setRefillingId] = useState("");
   const [refillResult, setRefillResult] = useState(() => readCachedRefillStatus().text);
@@ -447,7 +457,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     const requestId = ++requestIdRef.current;
     if (!options.silent) onError("");
     try {
-      const result = await basesApi.list(params);
+      const result = playerId ? await basesApi.forPlayer(playerId, params) : await basesApi.list(params);
       if (requestIdRef.current !== requestId) return;
       const nextRows = (result.rows || []).map(withCoordinates);
       setRows(nextRows);
@@ -460,9 +470,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       setCanQueueDelete(Boolean(result.capabilities?.baseDeleteQueue));
       setTotalCount(result.totalCount || 0);
       setTotalBases(result.totalBases || 0);
+      setTotalOwned(result.totalOwned || 0);
+      setTotalShared(result.totalShared || 0);
       setTotalPieces(result.totalPieces || 0);
       setTotalPlaceables(result.totalPlaceables || 0);
       basesCache = {
+        scope,
         q: params.q,
         page: params.page,
         pageSize: params.pageSize,
@@ -471,6 +484,8 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         rows: nextRows,
         totalCount: result.totalCount || 0,
         totalBases: result.totalBases || 0,
+        totalOwned: result.totalOwned || 0,
+        totalShared: result.totalShared || 0,
         totalPieces: result.totalPieces || 0,
         totalPlaceables: result.totalPlaceables || 0,
         lastFetchedAt: Date.now()
@@ -485,18 +500,20 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     } finally {
       if (requestIdRef.current === requestId) setLoading(false);
     }
-  }, [onError]);
+  }, [onError, playerId, scope]);
 
   useEffect(() => {
     let cancelled = false;
     let timeoutId: number | undefined;
     const params = { q: submittedQ, page, pageSize, sortColumn, sortDirection };
-    const cacheHit = sameView(basesCache, submittedQ, page, pageSize, sortColumn, sortDirection) ? basesCache : null;
+    const cacheHit = sameView(basesCache, scope, submittedQ, page, pageSize, sortColumn, sortDirection) ? basesCache : null;
 
     if (cacheHit) {
       setRows(cacheHit.rows);
       setTotalCount(cacheHit.totalCount);
       setTotalBases(cacheHit.totalBases);
+      setTotalOwned(cacheHit.totalOwned);
+      setTotalShared(cacheHit.totalShared);
       setTotalPieces(cacheHit.totalPieces);
       setTotalPlaceables(cacheHit.totalPlaceables);
       setLoading(false);
@@ -517,7 +534,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     void load(params, { silent: Boolean(cacheHit) }).then(scheduleNext);
 
     const onVisibilityChange = () => {
-      const currentCache = sameView(basesCache, submittedQ, page, pageSize, sortColumn, sortDirection) ? basesCache : null;
+      const currentCache = sameView(basesCache, scope, submittedQ, page, pageSize, sortColumn, sortDirection) ? basesCache : null;
       if (document.visibilityState === "visible" && (!currentCache || Date.now() - currentCache.lastFetchedAt >= BASES_AUTO_REFRESH_MS)) {
         void load(params, { silent: true }).then(scheduleNext);
       }
@@ -529,7 +546,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       window.clearTimeout(timeoutId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [submittedQ, page, pageSize, sortColumn, sortDirection, load]);
+  }, [submittedQ, page, pageSize, sortColumn, sortDirection, load, scope]);
 
   // Upgrade "Partition 59" to "Deep Desert PvE" once the names arrive. One
   // request pair per distinct partition map on the page (the dimension table
@@ -1076,9 +1093,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     target.scrollIntoView?.({ block: "nearest" });
   }, [expandedBaseId, rows]);
 
+  const panelClassName = embedded ? "playerAdmin_box player-bases-panel" : "panel";
+  const PanelHeading = embedded ? "h4" : "h2";
+
   if (loading) {
-    return <section className="panel">
-      <div className="panel-title"><h2>Bases</h2></div>
+    return <section className={panelClassName}>
+      <div className="panel-title"><PanelHeading>Bases</PanelHeading></div>
       <div className="loading-panel">
         <span className="spinner" aria-hidden="true" />
         <strong className="loading-dots">Loading Bases</strong>
@@ -1211,17 +1231,26 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   }
 
   return (
-    <section className="panel">
+    <section className={panelClassName}>
       <div className="panel-title">
-        <h2>Bases</h2>
+        <div>
+          <PanelHeading>Bases</PanelHeading>
+          {playerId && <p className="playerAdmin_note">Bases owned by or shared with {playerName}. Expand a row to use the same tools available on the main Bases page.</p>}
+        </div>
         <div className="action-row">
           <button onClick={() => void load({ q: submittedQ, page, pageSize, sortColumn, sortDirection })}>Refresh</button>
         </div>
       </div>
-      <p className="action-help-note">
-        Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}
-      </p>
-      {stalledCombinedCount > 0 && <div className="bases-stalled-banner" role="alert">
+      {playerId
+        ? <div className="player-vehicles-summary player-bases-summary" aria-label="Player base totals">
+            <span><strong>{totalBases.toLocaleString()}</strong> Total</span>
+            <span><strong>{totalOwned.toLocaleString()}</strong> Owned</span>
+            <span><strong>{totalShared.toLocaleString()}</strong> Shared</span>
+            <span><strong>{totalPieces.toLocaleString()}</strong> Building Pieces</span>
+            <span><strong>{totalPlaceables.toLocaleString()}</strong> Placeables</span>
+          </div>
+        : <p className="action-help-note">Total Bases: {totalBases.toLocaleString()} · Total Building Pieces: {totalPieces.toLocaleString()} · Total Placeables: {totalPlaceables.toLocaleString()}</p>}
+      {!playerId && stalledCombinedCount > 0 && <div className="bases-stalled-banner" role="alert">
         <p className="bases-stalled-banner-title">
           {stalledCombinedCount.toLocaleString()} base{stalledCombinedCount === 1 ? " has" : "s have"} stalled auto-refill
           {stalledFuelCount > 0 && <span className="bases-queue-badge bases-queue-badge-fuel">
@@ -1235,7 +1264,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           Auto-refill queued 3 refills without raising the {stalledFuelCount > 0 && stalledWaterCount > 0 ? "fuel or water" : stalledFuelCount > 0 ? "fuel" : "water"} on {stalledCombinedCount === 1 ? "this base" : "these bases"}. Refill manually to find out why, or turn auto-refill off and back on to resume trying.
         </p>
       </div>}
-      {combinedQueueTotal > 0 && <div className="bases-pending-refills">
+      {!playerId && combinedQueueTotal > 0 && <div className="bases-pending-refills">
         {/* Per-resource counts rather than two bare icons over a combined
             total: "2 refills queued" beside a fuel and a water icon does not
             say which is which, and the split is what decides whether you go
@@ -1304,7 +1333,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         {refillStatus === "running" && <span className="spinner" aria-hidden="true" />}
         <strong className={refillStatus === "running" ? "loading-dots" : ""}>{refillResult}</strong>
       </p>}
-      <div className="action-row bases-search-row">
+      {!playerId && <div className="action-row bases-search-row">
         <input
           value={q}
           onChange={(event) => setQ(event.target.value)}
@@ -1313,7 +1342,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         />
         <button onClick={submitSearch}>Search</button>
         <button onClick={handleClearSearch} disabled={!q && !submittedQ}>Clear</button>
-      </div>
+      </div>}
       <DataTable
         rows={rows}
         columns={["base_id", "name", "base_type", "owner_name", "shared_with", "map", "generators", "piece_count", "placeable_count", "coordinates"]}
@@ -1670,7 +1699,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         }}
         emptyMessage="No bases have been found yet."
       />
-      <div className="panel-title bases-pagination-footer">
+      {!playerId && <div className="panel-title bases-pagination-footer">
         <p className="action-help-note">
           Showing {rangeStart}-{rangeEnd} of {totalCount} rows.
         </p>
@@ -1687,7 +1716,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           <button disabled={!hasNextPage} onClick={() => setPage(page + 1)}>Next</button>
           <button disabled={!hasNextPage} onClick={() => setPage(totalPages - 1)}>Last</button>
         </div>
-      </div>
+      </div>}
     </section>
   );
 }
