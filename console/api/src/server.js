@@ -2294,7 +2294,7 @@ async function messageOfTheDayRoute(req, res) {
       const players = await duneDb.listAllPlayers(db, { status: "online" }).catch(() => ({ rows: [] }));
       primedOnlinePlayers = primeMessageOfTheDayOnlineState(config, players.rows || []).delivered;
     }
-    audit(config, req, "admin.message-of-the-day.save", { restoreDefaults: Boolean(body.restoreDefaults), enabled: result.settings.enabled });
+    audit(config, req, "admin.message-of-the-day.save", { restoreDefaults: Boolean(body.restoreDefaults), enabled: result.settings.enabled, deliveryMode: result.settings.deliveryMode });
     recordAdminHistory(config, {
       command: "web-message-of-the-day",
       target: "login",
@@ -2310,7 +2310,9 @@ async function messageOfTheDayRoute(req, res) {
       delivery: {
         primedOnlinePlayers,
         note: result.settings.enabled
-          ? "Players who are online while this is saved will receive the message after their next login."
+          ? result.settings.deliveryMode === "daily"
+            ? "Players who are online while this is saved will become eligible again after 24 hours."
+            : "Players who are online while this is saved will receive the message after their next login."
           : "Message of the Day delivery is disabled."
       }
     });

@@ -5188,6 +5188,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .map-message-schedule-actions { padding-top: 2px; }
 .map-message-schedule-actions button { width: auto; }
 .admin-tools-panel .motd-line .muted { margin: 0; }
+.motd-delivery-field { width: min(260px, 100%); }
 .admin-tools-panel .player-announcements-line .panel-title { margin: 0 0 2px; }
 .admin-tools-panel .broadcast-title { width: min(360px, 100%); min-width: 0; flex: 0 1 360px; }
 .admin-tools-panel .broadcast-message { width: min(560px, 100%); min-width: 0; flex: 0 1 560px; }

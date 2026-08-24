@@ -72,8 +72,8 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
   const [broadcastTitle, setBroadcastTitle] = useState("");
   const [broadcastBody, setBroadcastBody] = useState("");
   const [broadcastDuration, setBroadcastDuration] = useState("30");
-  const [messageOfTheDay, setMessageOfTheDay] = useState<MessageOfTheDaySettings>({ enabled: false, title: "", message: "" });
-  const [messageOfTheDayOriginal, setMessageOfTheDayOriginal] = useState<MessageOfTheDaySettings>({ enabled: false, title: "", message: "" });
+  const [messageOfTheDay, setMessageOfTheDay] = useState<MessageOfTheDaySettings>({ enabled: false, title: "", message: "", deliveryMode: "login" });
+  const [messageOfTheDayOriginal, setMessageOfTheDayOriginal] = useState<MessageOfTheDaySettings>({ enabled: false, title: "", message: "", deliveryMode: "login" });
   const [messageOfTheDayStatus, setMessageOfTheDayStatus] = useState<MessageOfTheDayStatus>({ lastAttemptAt: "", lastSent: 0, lastFailed: 0, lastError: "", lastScanAt: "", lastScanError: "" });
   const [playerAnnouncements, setPlayerAnnouncements] = useState<PlayerAnnouncementSettings>({ joinEnabled: false, joinMessage: DEFAULT_PLAYER_JOIN_MESSAGE, leaveEnabled: false, leaveMessage: DEFAULT_PLAYER_LEAVE_MESSAGE });
   const [playerAnnouncementsOriginal, setPlayerAnnouncementsOriginal] = useState<PlayerAnnouncementSettings>({ joinEnabled: false, joinMessage: DEFAULT_PLAYER_JOIN_MESSAGE, leaveEnabled: false, leaveMessage: DEFAULT_PLAYER_LEAVE_MESSAGE });
@@ -640,7 +640,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
       setMessageOfTheDayOriginal(result.settings);
       setMessageOfTheDayStatus(result.status);
       await loadHistory(true);
-    }, messageOfTheDay.enabled ? "Message of the Day saved. Players already online will receive it after their next login." : "Message of the Day was saved successfully.");
+    }, messageOfTheDay.enabled ? messageOfTheDaySaveConfirmation(messageOfTheDay.deliveryMode) : "Message of the Day was saved successfully.");
   }
 
   async function toggleMessageOfTheDay(nextEnabled: boolean) {
@@ -653,7 +653,7 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
       setMessageOfTheDayOriginal(result.settings);
       setMessageOfTheDayStatus(result.status);
       await loadHistory(true);
-    }, nextEnabled ? "Message of the Day enabled. Players already online will receive it after their next login." : "Message of the Day disabled.", "success", (error) => {
+    }, nextEnabled ? messageOfTheDaySaveConfirmation(next.deliveryMode) : "Message of the Day disabled.", "success", (error) => {
       setMessageOfTheDay(previous);
       return friendlyInlineError(error);
     });
@@ -732,10 +732,11 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
             <label className={`switch-checkbox ${messageOfTheDay.enabled ? "enabled" : "disabled"}`}><input type="checkbox" checked={messageOfTheDay.enabled} onChange={(event) => run(() => toggleMessageOfTheDay(event.target.checked))} /><span className="switch-label">Login Message</span><strong className="switch-state">{messageOfTheDay.enabled ? "ON" : "OFF"}</strong></label>
           </div>
           {messageOfTheDayDirty && <p className="dirty-note">Unsaved changes: Message of the Day</p>}
-          <p className="muted">Shown as a private in-game message once per player login session. Use <code>{"{playerName}"}</code> to include the recipient's character name. Funcom chat does not support manual line breaks, so messages are saved and sent as a single line. Saving does not send it immediately to players who are already online.</p>
+          <p className="muted">Shown as a private in-game message {messageOfTheDay.deliveryMode === "daily" ? "at most once per player every 24 hours" : "once per player login; map transitions remain part of the same session"}. Use <code>{"{playerName}"}</code> to include the recipient's character name. Funcom chat does not support manual line breaks, so messages are saved and sent as a single line. Saving does not send it immediately to players who are already online.</p>
           {messageOfTheDayStatus.lastScanError && <p className="danger-note">Last MOTD scan was interrupted: {messageOfTheDayStatus.lastScanAt ? new Date(messageOfTheDayStatus.lastScanAt).toLocaleString() : "time unavailable"} ({messageOfTheDayStatus.lastScanError}). It will retry automatically.</p>}
           {messageOfTheDayStatus.lastAttemptAt && <p className={messageOfTheDayStatus.lastFailed > 0 ? "danger-note" : "muted"}>Last delivery attempt: {new Date(messageOfTheDayStatus.lastAttemptAt).toLocaleString()} — sent {messageOfTheDayStatus.lastSent}, failed {messageOfTheDayStatus.lastFailed}{messageOfTheDayStatus.lastError ? ` (${messageOfTheDayStatus.lastError})` : ""}.</p>}
-          <label className="broadcast-message">Message<textarea rows={3} value={messageOfTheDay.message} onChange={(event) => setMessageOfTheDay((current) => ({ ...current, message: event.target.value }))} placeholder="Message shown when a player logs in" /></label>
+          <label className="compact-select motd-delivery-field">Delivery<select value={messageOfTheDay.deliveryMode} onChange={(event) => setMessageOfTheDay((current) => ({ ...current, deliveryMode: event.target.value as MessageOfTheDaySettings["deliveryMode"] }))}><option value="login">Once Per Login</option><option value="daily">Once Per Day</option></select></label>
+          <label className="broadcast-message">Message<textarea rows={3} value={messageOfTheDay.message} onChange={(event) => setMessageOfTheDay((current) => ({ ...current, message: event.target.value }))} placeholder="Message shown to players" /></label>
           <div className="broadcast-controls-row">
             <button disabled={!messageOfTheDayDirty} onClick={() => run(saveMessageOfTheDay)}>Save MOTD</button>
             <button onClick={() => run(restoreMessageOfTheDay)}>Restore Defaults</button>
@@ -1020,7 +1021,13 @@ function sameTransferSettings(a: CharacterTransferSettings, b: CharacterTransfer
 }
 
 function sameMessageOfTheDay(a: MessageOfTheDaySettings, b: MessageOfTheDaySettings) {
-  return a.enabled === b.enabled && a.message === b.message;
+  return a.enabled === b.enabled && a.message === b.message && a.deliveryMode === b.deliveryMode;
+}
+
+function messageOfTheDaySaveConfirmation(deliveryMode: MessageOfTheDaySettings["deliveryMode"]) {
+  return deliveryMode === "daily"
+    ? "Message of the Day saved. Players already online will become eligible again after 24 hours."
+    : "Message of the Day saved. Players already online will receive it after their next login.";
 }
 
 function samePlayerAnnouncements(a: PlayerAnnouncementSettings, b: PlayerAnnouncementSettings) {
