@@ -204,7 +204,21 @@ jobs:
           tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
           sudo install -m 0755 /tmp/trivy /usr/local/bin/trivy
           trivy --version
+      # BASE_REF is origin/main (this fork's own base branch), not the
+      # script's own upstream/main default -- see issue #465. This fork's
+      # main and Red-Blink's upstream/main now have multiple valid merge
+      # bases (confirmed via `git merge-base --all upstream/main HEAD`),
+      # so upstream/main's automatic merge-base resolution is ambiguous and
+      # was picking a ~2-month-stale common ancestor, exploding the
+      # "changed files" scope from this PR's real diff to ~630 files (most
+      # of the repo). origin/main has a single, unambiguous, recent merge
+      # base with any normal feature branch. A contributor preparing an
+      # upstream PR to Red-Blink (Requirement 19) should still re-run this
+      # script manually with BASE_REF=upstream/main (the script's own
+      # default) to see the diff upstream will actually see.
       - name: Run security PR checks
+        env:
+          BASE_REF: origin/main
         run: bash tests/security-pr-checks.sh
 
   api-dependency-audit:
