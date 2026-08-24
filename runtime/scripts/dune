@@ -357,8 +357,11 @@ EOF
       survival|survival-1)
         runtime/scripts/stop-server-survival-1.sh
         ;;
+      overmap)
+        runtime/scripts/stop-server-overmap.sh
+        ;;
       "")
-        echo "Usage: runtime/scripts/dune stop-service <survival>"
+        echo "Usage: runtime/scripts/dune stop-service <survival|overmap>"
         exit 1
         ;;
       *)

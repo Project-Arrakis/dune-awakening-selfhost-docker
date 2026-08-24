@@ -784,7 +784,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/tutorials\/complete$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.tutorials.complete", "COMPLETE TUTORIAL", (playerId, body) => duneDb.completeTutorial(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/tutorials\/reset$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.tutorials.reset", "RESET TUTORIAL", (playerId, body) => duneDb.resetTutorial(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/repair-gear$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-gear", "REPAIR GEAR", (playerId) => duneDb.repairGear(db, playerId));
-  if (path.match(/^\/api\/players\/[^/]+\/repair-vehicle-decay$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-vehicle-decay", "REPAIR VEHICLE DECAY", (playerId, body) => duneDb.repairVehicleDecay(db, playerId, body));
+  if (path.match(/^\/api\/players\/[^/]+\/repair-vehicle-decay$/) && req.method === "POST") return playerVehicleDecayRepairRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/refuel-vehicle$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.refuel-vehicle", "REFUEL VEHICLE", (playerId, body) => duneDb.refuelVehicle(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/augment-item$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.augment-item", "APPLY AUGMENTS", (playerId, body) => duneDb.augmentInventoryItem(db, playerId, body.itemId, { augments: body.augments, augmentQuality: body.augmentQuality }));
   if (path.match(/^\/api\/players\/[^/]+\/inventory\/[^/]+$/) && req.method === "DELETE") return inventoryDeleteRoute(req, res, path);
@@ -2944,6 +2944,92 @@ async function playerLandsraadQuestRepairRoute(req, res, path) {
     await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "restore-safety" } });
     const result = await duneDb.repairLandsraadQuests(db, playerId);
     return { ...result, backupCreated: true };
+  }, { playerId });
+}
+
+function vehicleRepairRestartCommands(target) {
+  if (target.partitionMap === "Survival_1") {
+    const payload = { partitionId: target.partitionId };
+    return { stop: ["sietchesRestartStop", payload], start: ["sietchesRestartStart", payload] };
+  }
+  if (target.partitionMap === "Overmap") {
+    const payload = { service: "overmap" };
+    return { stop: ["restartServiceStop", payload], start: ["restartServiceStart", payload] };
+  }
+  const payload = { target: String(target.partitionId) };
+  return { stop: ["mapsDespawn", payload], start: ["mapsSpawn", payload] };
+}
+
+function vehicleRepairTargetLabel(target) {
+  return target.partitionMap || target.actorMap || `Partition ${target.partitionId}`;
+}
+
+async function runVehicleRepairRestartCommand(command) {
+  const [operation, payload] = command;
+  return runDune(config, buildDuneArgs(operation, payload), { timeoutMs: 30 * 60 * 1000 });
+}
+
+async function restartVehicleRepairTargets(targets) {
+  const failures = [];
+  for (const target of [...targets].reverse()) {
+    try {
+      await runVehicleRepairRestartCommand(vehicleRepairRestartCommands(target).start);
+    } catch (error) {
+      failures.push(`${vehicleRepairTargetLabel(target)}: ${redact(error?.message || "restart failed")}`);
+    }
+  }
+  return failures;
+}
+
+async function playerVehicleDecayRepairRoute(req, res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "players.repair-vehicle-decay", "REPAIR VEHICLE DECAY", async (body) => {
+    const inspection = await duneDb.inspectVehicleDecayRepair(db, playerId, body);
+    if (!inspection.eligible) return duneDb.repairVehicleDecay(db, playerId, body);
+    if (!inspection.restartSupported) {
+      throw new Error("Vehicle repair cannot safely verify the affected map servers on this database version.");
+    }
+    const unresolved = inspection.targets.filter((target) => target.partitionId > 0 && !target.partitionMap);
+    if (unresolved.length) {
+      throw new Error(`Vehicle repair cannot safely resolve ${unresolved.map(vehicleRepairTargetLabel).join(", ")} to a managed map server.`);
+    }
+
+    // Vehicles with no partition are stored/unloaded and safe to update. A
+    // connected partition is stopped first so its in-memory vehicle state can
+    // no longer overwrite PostgreSQL; only partitions stopped here are started
+    // again, preserving maps that were already intentionally down.
+    const runningTargets = inspection.targets.filter((target) => target.partitionId > 0 && target.connected);
+    const stoppedTargets = [];
+    let operationError = null;
+    let result = null;
+    try {
+      for (const target of runningTargets) {
+        await runVehicleRepairRestartCommand(vehicleRepairRestartCommands(target).stop);
+        stoppedTargets.push(target);
+      }
+      result = await duneDb.repairVehicleDecay(db, playerId, body);
+    } catch (error) {
+      operationError = error;
+    }
+
+    const restartFailures = await restartVehicleRepairTargets(stoppedTargets);
+    if (operationError) {
+      if (restartFailures.length) {
+        throw new Error(`${operationError.message} Affected map restart also failed: ${restartFailures.join("; ")}`);
+      }
+      throw operationError;
+    }
+    return {
+      ...result,
+      mapServersRestarted: stoppedTargets.length,
+      restartedMaps: stoppedTargets.map(vehicleRepairTargetLabel),
+      restartFailures,
+      message: restartFailures.length
+        ? `Vehicle durability was repaired, but some affected maps did not restart: ${restartFailures.join("; ")}`
+        : stoppedTargets.length
+          ? `Vehicle durability was repaired and ${stoppedTargets.length} affected map server${stoppedTargets.length === 1 ? " was" : "s were"} restarted.`
+          : "Vehicle durability was repaired. All affected maps were already stopped."
+    };
   }, { playerId });
 }
 

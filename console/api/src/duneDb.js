@@ -11150,11 +11150,106 @@ const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
   group by template_id
 )`;
 
+function vehicleRepairThreshold(value) {
+  const threshold = Number(value);
+  if (!Number.isFinite(threshold) || threshold < 1 || threshold > 100) throw new Error("Vehicle repair threshold must be between 1 and 100 percent");
+  return { threshold, thresholdRatio: threshold / 100 };
+}
+
+// A vehicle remains live in its map server even after its owner logs out. The
+// game keeps that module state in memory and can overwrite a direct database
+// repair later, so the API must know exactly which running partitions to stop
+// before repairVehicleDecay writes. This preflight deliberately uses the same
+// maxima and eligibility rules as the write query below.
+export async function inspectVehicleDecayRepair(db, id, { thresholdPercent = 50 } = {}) {
+  await requireCapability(await supportsRepairVehicleDecay(db), "Repair vehicle decay requires dune.vehicle_modules.stats, dune.vehicle_modules.vehicle_id, and dune.actors.owner_account_id.");
+  const { threshold, thresholdRatio } = vehicleRepairThreshold(thresholdPercent);
+  const player = await resolvePlayerMutationTarget(db, id);
+  if (String(player.onlineStatus).toLowerCase() === "online") throw new Error("Repair vehicle decay requires the player to be offline so live state cannot overwrite the DB change");
+  const hasPermissionOwnership = await tableExists(db, "permission_actor_rank");
+  const hasWorldPartitions = await tableExists(db, "world_partition");
+  const permissionOwnershipClause = hasPermissionOwnership
+    ? `or exists (
+            select 1 from dune.permission_actor_rank par
+            where par.permission_actor_id = vm.vehicle_id
+              and par.player_id = $2
+              and par.rank = 1
+          )`
+    : "";
+  const ownerValues = hasPermissionOwnership ? [player.accountId, player.controllerId] : [player.accountId];
+  const thresholdParam = ownerValues.length + 1;
+  const result = await db.query(`
+    with ${VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE}, eligible as (
+      select vm.id,
+             vm.vehicle_id,
+             coalesce(a.map, '') as actor_map,
+             coalesce(a.partition_id, 0)::int as partition_id
+      from dune.vehicle_modules vm
+      join dune.actors a on a.id = vm.vehicle_id
+      left join template_maxima tm on tm.template_id = vm.template_id
+      cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
+      where (
+          a.owner_account_id = $1
+          ${permissionOwnershipClause}
+        )
+        and vm.stats is not null
+        and jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
+        and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
+        and jsonb_typeof(durability) = 'object'
+        and durability ? 'CurrentDurability'
+        and (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+        and coalesce(
+              case
+                when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                  then nullif((durability->>'MaxDurability')::numeric, 0)
+              end,
+              tm.max_durability
+            ) > 0
+        and (durability->>'CurrentDurability')::numeric < (coalesce(
+              case
+                when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                  then nullif((durability->>'MaxDurability')::numeric, 0)
+              end,
+              tm.max_durability
+            ) * $${thresholdParam})
+    )
+    select e.partition_id,
+           min(e.actor_map) as actor_map,
+           ${hasWorldPartitions ? "coalesce(wp.map, '')" : "''::text"} as partition_map,
+           ${hasWorldPartitions ? "coalesce(wp.dimension_index, 0)::int" : "0::int"} as dimension_index,
+           ${hasWorldPartitions ? `exists (
+             select 1 from pg_stat_activity sa
+             where sa.application_name = 'DuneSandbox - ' || nullif(wp.server_id, '')
+           )` : "false"} as connected,
+           count(*)::int as modules,
+           count(distinct e.vehicle_id)::int as vehicles
+    from eligible e
+    ${hasWorldPartitions ? "left join dune.world_partition wp on wp.partition_id = e.partition_id" : ""}
+    group by e.partition_id${hasWorldPartitions ? ", wp.map, wp.dimension_index, wp.server_id" : ""}
+    order by e.partition_id`, [...ownerValues, thresholdRatio]);
+  const targets = result.rows.map((row) => ({
+    partitionId: Number(row.partition_id || 0),
+    actorMap: String(row.actor_map || ""),
+    partitionMap: String(row.partition_map || ""),
+    dimensionIndex: Number(row.dimension_index || 0),
+    connected: row.connected === true || row.connected === "t",
+    modules: Number(row.modules || 0),
+    vehicles: Number(row.vehicles || 0)
+  }));
+  return {
+    ok: true,
+    player,
+    thresholdPercent: threshold,
+    eligible: targets.reduce((sum, row) => sum + row.modules, 0),
+    eligibleVehicles: targets.reduce((sum, row) => sum + row.vehicles, 0),
+    targets,
+    restartSupported: hasWorldPartitions
+  };
+}
+
 export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {}) {
   await requireCapability(await supportsRepairVehicleDecay(db), "Repair vehicle decay requires dune.vehicle_modules.stats, dune.vehicle_modules.vehicle_id, and dune.actors.owner_account_id.");
-  const threshold = Number(thresholdPercent);
-  if (!Number.isFinite(threshold) || threshold < 1 || threshold > 100) throw new Error("Vehicle repair threshold must be between 1 and 100 percent");
-  const thresholdRatio = threshold / 100;
+  const { threshold, thresholdRatio } = vehicleRepairThreshold(thresholdPercent);
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
     if (String(player.onlineStatus).toLowerCase() === "online") throw new Error("Repair vehicle decay requires the player to be offline so live state cannot overwrite the DB change");
