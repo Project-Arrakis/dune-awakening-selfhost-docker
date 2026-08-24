@@ -729,13 +729,13 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
         <div className="action-line broadcast-line motd-line">
           <div className="panel-title schedule-panel-title motd-panel-title">
             <h4>Message of the Day</h4>
-            <label className={`switch-checkbox ${messageOfTheDay.enabled ? "enabled" : "disabled"}`}><input type="checkbox" checked={messageOfTheDay.enabled} onChange={(event) => run(() => toggleMessageOfTheDay(event.target.checked))} /><span className="switch-label">Login Message</span><strong className="switch-state">{messageOfTheDay.enabled ? "ON" : "OFF"}</strong></label>
+            <label className={`switch-checkbox ${messageOfTheDay.enabled ? "enabled" : "disabled"}`}><input type="checkbox" checked={messageOfTheDay.enabled} onChange={(event) => run(() => toggleMessageOfTheDay(event.target.checked))} /><span className="switch-label">MOTD</span><strong className="switch-state">{messageOfTheDay.enabled ? "ON" : "OFF"}</strong></label>
           </div>
           {messageOfTheDayDirty && <p className="dirty-note">Unsaved changes: Message of the Day</p>}
-          <p className="muted">Shown as a private in-game message {messageOfTheDay.deliveryMode === "daily" ? "at most once per player every 24 hours" : "once per player login; map transitions remain part of the same session"}. Use <code>{"{playerName}"}</code> to include the recipient's character name. Funcom chat does not support manual line breaks, so messages are saved and sent as a single line. Saving does not send it immediately to players who are already online.</p>
+          <p className="muted">Shown as a private in-game message {messageOfTheDayDeliveryDescription(messageOfTheDay.deliveryMode)}. Use <code>{"{playerName}"}</code> to include the recipient's character name. Funcom chat does not support manual line breaks, so messages are saved and sent as a single line. Saving does not send it immediately to players who are already online.</p>
           {messageOfTheDayStatus.lastScanError && <p className="danger-note">Last MOTD scan was interrupted: {messageOfTheDayStatus.lastScanAt ? new Date(messageOfTheDayStatus.lastScanAt).toLocaleString() : "time unavailable"} ({messageOfTheDayStatus.lastScanError}). It will retry automatically.</p>}
           {messageOfTheDayStatus.lastAttemptAt && <p className={messageOfTheDayStatus.lastFailed > 0 ? "danger-note" : "muted"}>Last delivery attempt: {new Date(messageOfTheDayStatus.lastAttemptAt).toLocaleString()} — sent {messageOfTheDayStatus.lastSent}, failed {messageOfTheDayStatus.lastFailed}{messageOfTheDayStatus.lastError ? ` (${messageOfTheDayStatus.lastError})` : ""}.</p>}
-          <label className="compact-select motd-delivery-field">Delivery<select value={messageOfTheDay.deliveryMode} onChange={(event) => setMessageOfTheDay((current) => ({ ...current, deliveryMode: event.target.value as MessageOfTheDaySettings["deliveryMode"] }))}><option value="login">Once Per Login</option><option value="daily">Once Per Day</option></select></label>
+          <label className="compact-select motd-delivery-field">Delivery<select value={messageOfTheDay.deliveryMode} onChange={(event) => setMessageOfTheDay((current) => ({ ...current, deliveryMode: event.target.value as MessageOfTheDaySettings["deliveryMode"] }))}><option value="login">Once Per Login</option><option value="daily">Once Per Day</option><option value="map">Every Map Transfer</option></select></label>
           <label className="broadcast-message">Message<textarea rows={3} value={messageOfTheDay.message} onChange={(event) => setMessageOfTheDay((current) => ({ ...current, message: event.target.value }))} placeholder="Message shown to players" /></label>
           <div className="broadcast-controls-row">
             <button disabled={!messageOfTheDayDirty} onClick={() => run(saveMessageOfTheDay)}>Save MOTD</button>
@@ -1025,9 +1025,15 @@ function sameMessageOfTheDay(a: MessageOfTheDaySettings, b: MessageOfTheDaySetti
 }
 
 function messageOfTheDaySaveConfirmation(deliveryMode: MessageOfTheDaySettings["deliveryMode"]) {
-  return deliveryMode === "daily"
-    ? "Message of the Day saved. Players already online will become eligible again after 24 hours."
-    : "Message of the Day saved. Players already online will receive it after their next login.";
+  if (deliveryMode === "daily") return "Message of the Day saved. Players already online will become eligible again after 24 hours.";
+  if (deliveryMode === "map") return "Message of the Day saved. Players already online will receive it after their next map transfer or login.";
+  return "Message of the Day saved. Players already online will receive it after their next login.";
+}
+
+function messageOfTheDayDeliveryDescription(deliveryMode: MessageOfTheDaySettings["deliveryMode"]) {
+  if (deliveryMode === "daily") return "at most once per player every 24 hours";
+  if (deliveryMode === "map") return "when a player logs in and whenever they transfer to another map";
+  return "once per player login; map transitions remain part of the same session";
 }
 
 function samePlayerAnnouncements(a: PlayerAnnouncementSettings, b: PlayerAnnouncementSettings) {

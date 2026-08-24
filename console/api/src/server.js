@@ -2297,7 +2297,7 @@ async function messageOfTheDayRoute(req, res) {
     audit(config, req, "admin.message-of-the-day.save", { restoreDefaults: Boolean(body.restoreDefaults), enabled: result.settings.enabled, deliveryMode: result.settings.deliveryMode });
     recordAdminHistory(config, {
       command: "web-message-of-the-day",
-      target: "login",
+      target: result.settings.deliveryMode,
       friendly: "Message of the Day",
       path: "runtime/generated/message-of-the-day.json",
       result: "saved",
@@ -2312,6 +2312,8 @@ async function messageOfTheDayRoute(req, res) {
         note: result.settings.enabled
           ? result.settings.deliveryMode === "daily"
             ? "Players who are online while this is saved will become eligible again after 24 hours."
+            : result.settings.deliveryMode === "map"
+              ? "Players who are online while this is saved will receive the message after their next map transfer or login."
             : "Players who are online while this is saved will receive the message after their next login."
           : "Message of the Day delivery is disabled."
       }
