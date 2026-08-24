@@ -13,6 +13,7 @@ type LiveMapPanelProps = {
   confirmAction: ConfirmAction;
   waitForTask: (task: Task) => Promise<Task>;
   taskTechnicalDetails: (task: Task) => string;
+  onOpenBase: (baseId: string) => void;
 };
 
 function formatResultTitle(value: unknown, pending = false) {
@@ -32,7 +33,7 @@ function HomeTaskResultCard({ result }: { result: HomeTaskResult }) {
   </div>;
 }
 
-export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnicalDetails }: LiveMapPanelProps) {
+export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnicalDetails, onOpenBase }: LiveMapPanelProps) {
   const [mapKey, setMapKey] = useState("HaggaBasin");
   const [mapConfig, setMapConfig] = useState<LiveMapConfig | null>(null);
   const [maps, setMaps] = useState<Record<string, LiveMapConfig>>({});
@@ -422,16 +423,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
       </div>
     </div>
     {Object.entries(overlays).filter(([, reason]) => reason).map(([key, reason]) => <p className="danger-note" key={key}>{key}: {reason}</p>)}
-    {selected && <section className="drawer"><div className="panel-title"><h3>{friendlyMarkerName(selected)}</h3><button onClick={() => setSelected(null)}>Close</button></div><KeyValueGrid items={[
-      ["Type", selected.type],
-      ["Name", friendlyMarkerName(selected)],
-      ["ID", selected.id],
-      ["Map", selected.map],
-      ["Partition", selected.partition_id],
-      ["X", selected.x],
-      ["Y", selected.y],
-      ["Z", selected.z]
-    ]} /><TechnicalDetails title="Marker technical details" text={JSON.stringify(selected, null, 2)} /></section>}
+    {selected && <section className="drawer"><div className="panel-title live-map-marker-drawer-title"><h3>{friendlyMarkerName(selected)}</h3><div className="action-row live-map-marker-header-actions">{String(selected.type).toLowerCase() === "base" && <button onClick={() => onOpenBase(String(selected.id))}>Open in Bases</button>}<button onClick={() => setSelected(null)}>Close</button></div></div><KeyValueGrid items={liveMapMarkerDetails(selected)} /><TechnicalDetails title="Marker technical details" text={JSON.stringify(selected, null, 2)} /></section>}
     {displayRows.length > 0 && <DataTable rows={displayRows.map((row) => ({ ...row, type: friendlyMarkerType(String(row.type)) })) as Record<string, unknown>[]} columns={["type", "display_name", "map", "partition_id", "x", "y", "z"]} />}
   </section>;
 }
@@ -493,6 +485,26 @@ function friendlyMarkerName(marker: LiveMapMarker) {
   if (/sandcrawler/.test(normalized)) return "Sandcrawler";
   if (/treadwheel/.test(normalized)) return "Treadwheel";
   return raw.replace(/^\/Game\/.*\//, "").replace(/^BP_/, "").replace(/_C$/, "").replaceAll("_", " ");
+}
+
+function liveMapMarkerDetails(marker: LiveMapMarker): [string, unknown][] {
+  const items: [string, unknown][] = [
+    ["Type", marker.type],
+    ["Name", friendlyMarkerName(marker)]
+  ];
+  if (String(marker.type).toLowerCase() === "base") {
+    items.push(["Base Type", marker.base_type || "Unknown"]);
+    items.push(["Owner", marker.owner_name || "No Owner"]);
+  }
+  items.push(
+    ["ID", marker.id],
+    ["Map", marker.map],
+    ["Partition", marker.partition_id],
+    ["X", marker.x],
+    ["Y", marker.y],
+    ["Z", marker.z]
+  );
+  return items;
 }
 
 function friendlyMarkerType(type: string) {

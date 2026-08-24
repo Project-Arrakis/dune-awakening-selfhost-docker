@@ -5,6 +5,8 @@ export type LiveMapMarker = {
   id: number | string;
   type: "player" | "vehicle" | "base" | "storage";
   name?: string;
+  owner_name?: string;
+  base_type?: string;
   map?: string;
   partition_id?: number;
   x?: number;

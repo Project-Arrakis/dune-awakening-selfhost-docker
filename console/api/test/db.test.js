@@ -3103,6 +3103,25 @@ test("list bases filters by name, type, or owner via a having clause and paginat
   assert.ok(baseQuery.text.includes("order by lower(coalesce(name, '')) asc, id asc"), "paged CTE must sort the resolved base name before pagination");
 });
 
+test("list bases can find an exact base id for cross-panel navigation", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: BASE_REQUIRED_TABLES.includes(name) }] };
+      }
+      return { rows: [] };
+    }
+  };
+  await listBases(db, { q: "31573", pageSize: 50 });
+  const baseQuery = calls.find((call) => call.text.includes("from dune.buildings b"));
+  assert.match(baseQuery.text, /or min\(b\.id\) = \$2/);
+  assert.match(baseQuery.text, /limit \$3 offset \$4/);
+  assert.deepEqual(baseQuery.values, ["%31573%", 31573, 50, 0]);
+});
+
 test("list bases applies requested sorting before pagination", async () => {
   const calls = [];
   const db = {
@@ -3636,6 +3655,12 @@ test("live map hides stored base and storage markers while preserving redeployed
     /not \(pa\.actor_id is null and exists \(select 1 from dune\.base_backup_linked_actors backup_link where backup_link\.actor_id = a\.id\)\)/,
     "a base marker must be hidden only while it is both unclaimed and backup-linked"
   );
+  assert.match(bases.text, /select min\(b\.id\) as id/);
+  assert.match(bases.text, /where par\.permission_actor_id = a\.id/);
+  assert.match(bases.text, /then 'Totem_Small_Patent'/);
+  assert.match(bases.text, /then 'Sub-Fief'/);
+  assert.match(bases.text, /coalesce\(owner\.character_name, ''\) as owner_name/);
+  assert.doesNotMatch(bases.text, /group by b\.id/);
 
   const storage = calls.find((call) => call.text.includes("from dune.placeables p"));
   assert.ok(storage);
