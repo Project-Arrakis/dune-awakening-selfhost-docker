@@ -2554,7 +2554,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-layer { justify-content: flex-start; width: 100%; min-height: 34px; color: #d9c8aa; }
 .live-map-layer input { width: auto; margin: 0; accent-color: #c68b4a; }
 .live-map-layer .muted { margin-left: auto; }
-.live-map-legend-dot { width: 12px; height: 12px; border: 2px solid #090b0d; border-radius: 999px; box-shadow: 0 0 4px rgba(0, 0, 0, .35); flex: 0 0 auto; }
+.live-map-legend-dot { width: 12px; height: 12px; border: 2px solid #090b0d; border-radius: 999px; box-shadow: 0 0 4px rgba(0, 0, 0, .35); flex: 0 0 auto; display: flex; align-items: center; justify-content: center; color: #94a3b8; background: #94a3b8; }
+.live-map-legend-icon { color: #0b0d10; }
 .live-map-frame {
   position: relative;
   width: 100%;
@@ -2586,12 +2587,19 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   box-shadow: 0 0 5px rgba(0, 0, 0, .45);
   cursor: pointer;
   overflow: visible;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  background: #94a3b8;
 }
 .live-map-marker:hover { width: 16px; height: 16px; z-index: 4; }
+.live-map-marker-icon { color: #0b0d10; pointer-events: none; }
 .live-map-marker.marker-player { color: #ef4444; background: #ef4444; border-radius: 3px; }
 .live-map-marker.marker-player { cursor: grab; }
 .live-map-marker.marker-player.dragging { cursor: grabbing; z-index: 6; width: 18px; height: 18px; }
 .live-map-marker.marker-player.offline { color: #ef4444; background: #101316; border-color: #ef4444; box-shadow: 0 0 0 2px rgba(239, 68, 68, .2), 0 0 5px rgba(0, 0, 0, .45); }
+.live-map-marker.marker-player.offline .live-map-marker-icon { color: #ef4444; }
 .live-map-marker.marker-player.online { color: #ef4444; background: #ef4444; border-color: #090b0d; }
 .live-map-marker.marker-player.teleport-preview { z-index: 5; width: 18px; height: 18px; box-shadow: 0 0 0 3px rgba(255, 208, 138, .28), 0 0 18px rgba(255, 208, 138, .42); }
 .live-map-marker.marker-vehicle { color: #7bd56f; background: #7bd56f; }

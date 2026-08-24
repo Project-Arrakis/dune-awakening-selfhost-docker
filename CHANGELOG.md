@@ -45,6 +45,17 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   audit`/`govulncheck`. Operators upgrading need no action -- these are
   CI-only gates with no runtime behavior change.
 
+- **Live Map markers and legend entries now render a distinct icon per
+  type** (players, vehicles, bases, storage), instead of only a colored
+  dot -- issue #462. Icons come from `lucide-react` (already a
+  dependency), not any third-party map's artwork, sidestepping the
+  licensing/provenance question raised while scoping #462. Also wires
+  up `poi` and `resource` icon slots and a neutral fallback badge for
+  any marker type not yet mapped, so the backend work #462 still needs
+  (surfacing POIs and resource fields on the map) renders with a
+  reasonable default the moment it ships, with no frontend follow-up
+  required.
+
 ### Fixed
 
 - **`.gitleaks.toml`'s allowlist had zero effect in CI** (issue #458). It used the plural `[[allowlists]]` table at the file's top level, anticipating gitleaks v8.25.0+'s config schema — but every gitleaks invocation in this project is pinned to v8.24.3, whose config parser has no top-level plural `Allowlists` field at all (confirmed directly against that version's source: the field only exists nested under a specific `[[rules]]` entry). Viper silently drops unrecognized top-level keys, so the allowlist was never actually applied — verified directly, even `runtime/scripts/command-auth-token.sh`, the file the allowlist's own description names as the canonical intentional case, was still being flagged whenever gitleaks actually ran (which it hadn't been, until #457's fix). Reverted to the singular `[allowlist]` table, which v8.24.3 does parse and apply. Verified against a real scan: the two docs that previously false-flagged the documented `BUILTIN_COMMAND_AUTH_TOKEN` constant now scan clean, and the repo's own synthetic-secret canary check (guards against the allowlist accidentally disabling default detection rules) still passes.
