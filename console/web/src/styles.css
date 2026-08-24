@@ -1500,7 +1500,7 @@ body.debug .technical-details { display: block; }
 .playerAdmin_repairLabel > span:first-child { white-space: nowrap; }
 .playerAdmin_repairLabel em { color: #cbbd9f; font-size: 12px; font-style: italic; font-weight: 500; line-height: 1.25; }
 .playerAdmin_repairRow .inline-action-result-wrap { align-self: center; min-width: 0; }
-.playerAdmin_characterRecoveryRow { grid-template-columns: minmax(280px, 400px) minmax(330px, 1fr) minmax(0, 1fr); }
+.playerAdmin_characterRecoveryRow { grid-template-columns: minmax(190px, 220px) minmax(500px, 1fr) minmax(0, 1fr); }
 .playerAdmin_characterRecoveryControls { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .playerAdmin_characterRecoveryControls select { flex: 1 1 auto; width: 100%; min-width: 0; color: #f1e4cf; }
 .playerAdmin_characterRecoveryControls button { flex: 0 0 auto; white-space: nowrap; }
@@ -1590,6 +1590,16 @@ body.debug .technical-details { display: block; }
 .playerAdmin_resultCell .inline-action-result { line-height: 1.35; }
 .playerAdmin_logSection { display: grid; gap: 10px; }
 .playerAdmin_coordinatesRow input { width: 118px; max-width: 118px; }
+.playerAdmin_teleportPanel { display: grid; gap: 8px; margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid rgba(214, 185, 140, .14); }
+.playerAdmin_teleportModeRow { align-items: center; flex-wrap: nowrap; }
+.playerAdmin_teleportModeRow > span { min-width: 88px; color: #e9dcc8; font-weight: 700; }
+.playerAdmin_teleportModeRow > select { width: min(460px, 100%); max-width: 460px; }
+.playerAdmin_teleportModeRow > select:first-of-type { width: 230px; max-width: 230px; flex: 0 0 230px; }
+.playerAdmin_teleportModeRow > .playerAdmin_destinationBaseSelect { width: min(620px, 100%); max-width: 620px; }
+.playerAdmin_coordinateInputs { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.playerAdmin_coordinateInputs input { width: 112px; max-width: 112px; }
+.playerAdmin_teleportPanel .action-help-note { margin: 0; }
+.playerAdmin_teleportPanel .action-help-note.warning { color: #ffc77c; }
 .playerAdmin_itemNumberField { display: grid; gap: 5px; width: auto; min-width: 0; color: #ceb894; font-size: 15px; line-height: 1.35; }
 .playerAdmin_itemNumberField input { width: 100%; }
 .playerAdmin_itemNumberField .augment-dropdown { width: min(360px, 72vw); }
@@ -5508,6 +5518,9 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
   .playerAdmin_repairRow button { justify-self: start; }
   .playerAdmin_repairRow .inline-action-result-wrap { width: 100%; min-height: 24px; }
   .playerAdmin_factionControls { flex-wrap: wrap; }
+  .playerAdmin_teleportModeRow, .playerAdmin_coordinateInputs { width: 100%; align-items: stretch; flex-wrap: wrap; }
+  .playerAdmin_teleportModeRow > span, .playerAdmin_teleportModeRow > select, .playerAdmin_teleportModeRow > select:first-of-type { width: 100%; max-width: none; flex: 1 1 100%; }
+  .playerAdmin_coordinateInputs input { flex: 1 1 92px; width: auto; max-width: none; }
 }
 
 /* Responsive application foundations ------------------------------------- */

@@ -761,7 +761,8 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/ban$/)) return playerBanRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/repair-login-queue$/) && req.method === "POST") return playerTask(req, res, path, "adminRepairLoginQueue", "REPAIR LOGIN QUEUE");
   if (path === "/api/players/kick-all-online" && req.method === "POST") return confirmedTask(req, res, "admin", "adminKickAllOnline", {}, "KICK ALL ONLINE PLAYERS");
-  if (path.match(/^\/api\/players\/[^/]+\/teleport$/) && req.method === "POST") return playerTask(req, res, path, "adminTeleport");
+  if (path.match(/^\/api\/players\/[^/]+\/teleport-destinations$/) && req.method === "GET") return dbPlayerRoute(res, path, duneDb.playerTeleportDestinations);
+  if (path.match(/^\/api\/players\/[^/]+\/teleport$/) && req.method === "POST") return playerTeleportRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/spawn-vehicle$/) && req.method === "POST") return playerTask(req, res, path, "adminSpawnVehicle");
   if (path.match(/^\/api\/players\/[^/]+\/clean-inventory$/) && req.method === "POST") return playerTask(req, res, path, "adminCleanInventory", "CLEAN INVENTORY");
   if (path.match(/^\/api\/players\/[^/]+\/reset-progression$/) && req.method === "POST") return playerTask(req, res, path, "adminResetProgression", "RESET PROGRESSION");
@@ -2717,6 +2718,21 @@ async function playerTask(req, res, path, operation, phrase = "") {
     }
   }
   return task(req, res, "admin", operation, { ...body, playerId });
+}
+
+async function playerTeleportRoute(req, res, path) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "players.adminTeleport")) return;
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  try {
+    const payload = await duneDb.teleportPlayer(db, playerId, body);
+    buildDuneArgs("adminTeleport", payload);
+    audit(config, req, "task.adminTeleport", { ...payload, playerId: redact(payload.playerId) });
+    return json(res, 202, { task: tasks.create("admin", "adminTeleport", payload), message: payload.message });
+  } catch (error) {
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
 }
 
 async function playerIdentityForBan(playerId) {

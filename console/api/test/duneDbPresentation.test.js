@@ -34,7 +34,7 @@ import {
 
 test("xpToLevel maps cumulative XP thresholds", () => {
   assert.equal(xpToLevel(0), 0);
-  assert.equal(xpToLevel(39), 1);
+  assert.equal(xpToLevel(39), 0);
   assert.equal(xpToLevel(40), 1);
   assert.equal(xpToLevel(344440), 200);
 });

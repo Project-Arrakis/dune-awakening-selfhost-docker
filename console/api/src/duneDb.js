@@ -3135,6 +3135,180 @@ export async function teleportOfflinePlayerToCoords(db, playerId, { x, y, z, par
   };
 }
 
+function finiteTeleportCoordinate(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < -100000000 || number > 100000000) {
+    throw new Error(`${label} must be a finite coordinate between -100000000 and 100000000.`);
+  }
+  return number;
+}
+
+function teleportQuaternionYawDegrees(row) {
+  const x = Number(row.rotation_x || 0);
+  const y = Number(row.rotation_y || 0);
+  const z = Number(row.rotation_z || 0);
+  const w = Number(row.rotation_w || 1);
+  return Math.atan2(2 * ((w * z) + (x * y)), 1 - (2 * ((y * y) + (z * z)))) * (180 / Math.PI);
+}
+
+function safeDestinationFromTransform(row, forwardOffset, heightOffset) {
+  const storedYaw = row.yaw === null || row.yaw === undefined || row.yaw === "" ? Number.NaN : Number(row.yaw);
+  const yaw = Number.isFinite(storedYaw) ? storedYaw : teleportQuaternionYawDegrees(row);
+  const radians = yaw * (Math.PI / 180);
+  return {
+    x: Number(row.x) + (Math.cos(radians) * forwardOffset),
+    y: Number(row.y) + (Math.sin(radians) * forwardOffset),
+    z: Number(row.z) + heightOffset,
+    yaw,
+    map: String(row.map || ""),
+    partitionId: Number(row.partition_id || 0)
+  };
+}
+
+async function playerTeleportIdentity(db, actorId) {
+  const player = await resolvePlayerMutationTarget(db, actorId);
+  const result = await db.query(`
+    select coalesce(ac."user", '') as fls_id,
+           coalesce(ps.character_name, '') as character_name,
+           coalesce(a.map, '') as map,
+           coalesce(a.partition_id, 0)::int as partition_id
+    from dune.accounts ac
+    join dune.player_state ps on ps.account_id = ac.id
+    join dune.actors a on a.id = ps.player_pawn_id
+    where ac.id = $1
+    limit 1`, [player.accountId]);
+  const identity = result.rows[0];
+  if (!identity?.fls_id) throw new Error("This player has no stable FLS account ID and cannot be teleported safely.");
+  return { ...player, flsId: String(identity.fls_id), characterName: String(identity.character_name || "Player"), map: String(identity.map || ""), partitionId: Number(identity.partition_id || 0) };
+}
+
+async function teleportPlayerDestination(db, actorId) {
+  const safeActorId = intParam(actorId, "destination player id", 1);
+  const result = await db.query(`
+    select a.id, coalesce(ps.character_name, 'Unknown') as name,
+           coalesce(a.map, '') as map, coalesce(a.partition_id, 0) as partition_id,
+           ((a.transform).location).x as x, ((a.transform).location).y as y,
+           ((a.transform).location).z as z, ((a.transform).rotation).x as rotation_x,
+           ((a.transform).rotation).y as rotation_y, ((a.transform).rotation).z as rotation_z,
+           ((a.transform).rotation).w as rotation_w
+    from dune.actors a
+    join dune.player_state ps on ps.player_pawn_id = a.id
+    where a.id = $1 and a.transform is not null
+    limit 1`, [safeActorId]);
+  if (!result.rows[0]) throw new Error("The destination player no longer has a saved world position.");
+  return { ...safeDestinationFromTransform(result.rows[0], 250, 100), label: String(result.rows[0].name || "Player") };
+}
+
+async function teleportBaseDestination(db, totemId) {
+  const safeTotemId = intParam(totemId, "destination base id", 1);
+  const result = await db.query(`
+    select t.id, ${BASE_NAME_SQL} as name,
+           coalesce(owner.character_name, '') as owner_name,
+           coalesce(a.map, '') as map, coalesce(a.partition_id, 0) as partition_id,
+           ((a.transform).location).x as x, ((a.transform).location).y as y,
+           ((a.transform).location).z as z, ((a.transform).rotation).x as rotation_x,
+           ((a.transform).rotation).y as rotation_y, ((a.transform).rotation).z as rotation_z,
+           ((a.transform).rotation).w as rotation_w,
+           t.landclaim_original_global_yaw_rotation as yaw
+    from dune.totems t
+    join dune.actors a on a.id = t.id
+    left join dune.permission_actor pa on pa.actor_id = a.id
+    left join lateral (
+      select ps.character_name
+      from dune.permission_actor_rank par
+      join dune.actors player_a on player_a.id = par.player_id
+      join dune.player_state ps on ps.account_id = player_a.owner_account_id
+      where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
+      order by ps.character_name
+      limit 1
+    ) owner on true
+    where t.id = $1 and a.transform is not null
+    limit 1`, [safeTotemId]);
+  if (!result.rows[0]) throw new Error("The selected base console no longer has a saved world position.");
+  const row = result.rows[0];
+  return { ...safeDestinationFromTransform(row, 350, 150), label: String(row.name || "Base"), ownerName: String(row.owner_name || "") };
+}
+
+export async function playerTeleportDestinations(db, id) {
+  const source = await playerTeleportIdentity(db, id);
+  const [players, bases] = await Promise.all([
+    db.query(`
+      select a.id::text as id, coalesce(ps.character_name, 'Unknown') as name,
+             coalesce(ps.online_status::text, 'Offline') as online_status,
+             coalesce(a.map, '') as map, coalesce(a.partition_id, 0)::int as partition_id
+      from dune.actors a
+      join dune.player_state ps on ps.player_pawn_id = a.id
+      where a.id <> $1
+        and a.partition_id = $2
+        and a.id not in (${SYSTEM_PERSONA_PAWN_IDS.map((value) => `${value}::bigint`).join(", ")})
+        and nullif(btrim(coalesce(ps.character_name, '')), '') is not null
+        and a.transform is not null and a.class ilike '%PlayerCharacter%'
+      order by lower(coalesce(ps.character_name, '')), a.id`, [source.actorId, source.partitionId]),
+    db.query(`
+      select t.id::text as id, ${BASE_NAME_SQL} as name,
+             coalesce(owner.character_name, '') as owner_name,
+             coalesce(a.map, '') as map, coalesce(a.partition_id, 0)::int as partition_id,
+             exists (
+               select 1
+               from dune.permission_actor_rank own_rank
+               join dune.actors own_player on own_player.id = own_rank.player_id
+               where own_rank.permission_actor_id = a.id
+                 and own_rank.rank = ${PERMISSION_OWNER_RANK}
+                 and own_player.owner_account_id = $1
+             ) as is_own
+      from dune.totems t
+      join dune.actors a on a.id = t.id
+      left join dune.permission_actor pa on pa.actor_id = a.id
+      left join lateral (
+        select ps.character_name
+        from dune.permission_actor_rank par
+        join dune.actors player_a on player_a.id = par.player_id
+        join dune.player_state ps on ps.account_id = player_a.owner_account_id
+        where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
+        order by ps.character_name
+        limit 1
+      ) owner on true
+      where a.transform is not null and a.partition_id = $2
+      order by is_own desc, lower(coalesce(owner.character_name, '')), lower(${BASE_NAME_SQL}), t.id`, [source.accountId, source.partitionId])
+  ]);
+  return { players: players.rows, bases: bases.rows };
+}
+
+export async function teleportPlayer(db, id, body = {}) {
+  const source = await playerTeleportIdentity(db, id);
+  if (!playerOnline(source)) throw new Error("The player must be online to use live teleport.");
+    const mode = String(body.mode || "coordinates");
+    let destination;
+    if (mode === "player") {
+      destination = await teleportPlayerDestination(db, body.destinationId);
+      if (Number(body.destinationId) === source.actorId) throw new Error("Choose a different destination player.");
+    } else if (mode === "base") {
+      destination = await teleportBaseDestination(db, body.destinationId);
+    } else if (mode === "coordinates") {
+      destination = {
+        x: finiteTeleportCoordinate(body.x, "X"),
+        y: finiteTeleportCoordinate(body.y, "Y"),
+        z: finiteTeleportCoordinate(body.z, "Z"),
+        partitionId: source.partitionId,
+        map: source.map,
+        label: "the selected coordinates"
+      };
+    } else {
+      throw new Error("Unsupported teleport destination type.");
+    }
+    if (mode !== "coordinates" && destination.partitionId !== source.partitionId) {
+      throw new Error("Live teleport can only move a player within their current Sietch or map. Choose a destination on the same map.");
+    }
+    return {
+      playerId: source.flsId,
+      x: destination.x,
+      y: destination.y,
+      z: destination.z,
+      yaw: Number.isFinite(destination.yaw) ? destination.yaw : 0,
+      message: `${source.characterName} will be teleported near ${destination.label}.`
+    };
+}
+
 export async function liveMapVehicles(db, map = "") {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "vehicles"))) return unsupportedMap("vehicles", ["dune.actors", "dune.vehicles"]);
   const hasWorldPartition = await tableExists(db, "world_partition");
