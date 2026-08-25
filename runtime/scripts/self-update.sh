@@ -1110,6 +1110,12 @@ rebuild_web_console_now() {
   self_update_running restarting 94 "Restarting the updated web console."
   docker rm -f "$service" >/dev/null 2>&1 || true
   COMPOSE_PROJECT_NAME="$web_compose_project" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d --force-recreate "$service"
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-director \
+    && [ -x runtime/scripts/start-coriolis-coordinator.sh ]; then
+    runtime/scripts/start-coriolis-coordinator.sh || {
+      echo "Warning: the Coriolis coordinator could not be started after the Console update." >&2
+    }
+  fi
 }
 
 rebuild_web_console_with_helper() {

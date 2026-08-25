@@ -303,6 +303,17 @@ EOF
     runtime/scripts/logs.sh "$@"
     ;;
 
+  coriolis)
+    case "$target" in
+      status|"") runtime/scripts/coriolis-coordinator.sh status ;;
+      scan-once) runtime/scripts/coriolis-coordinator.sh scan-once ;;
+      *)
+        echo "Usage: runtime/scripts/dune coriolis [status|scan-once]" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+
   restart)
     case "$target" in
       survival|survival-1)
@@ -532,6 +543,7 @@ Usage:
   dune maps set <map> <dynamic|always-on|overmap-active|disabled>
   dune maps reconcile
   dune deepdesert dual [status|enable|disable|bootstrap|repair]
+  dune coriolis [status|scan-once]
   dune admin login-queues [--all]
   dune admin repair-login-queue <player-fls-id|queue-name> [--yes] [--force]
   dune config title ["New Server Name"]

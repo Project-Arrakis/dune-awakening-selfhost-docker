@@ -169,8 +169,9 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
             self.assertEqual(usersettings.metadata(), 0)
         payload = json.loads(output.getvalue())
         field = next(row for row in payload["game"] if row["id"] == "restart_server_on_coriolis_cycle_end")
-        self.assertEqual(field["label"], "Restart Map Process At Coriolis Cycle End")
-        self.assertIn("does not queue a Console battlegroup restart", field["description"])
+        self.assertEqual(field["label"], "Restart Game Farm At Coriolis Cycle End")
+        self.assertIn("all processes load the same new cycle seed", field["description"])
+        self.assertIn("PostgreSQL", field["description"])
 
     def test_coriolis_cycle_start_fields_are_exposed_with_bounds_and_context(self):
         output = io.StringIO()

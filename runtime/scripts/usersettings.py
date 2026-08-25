@@ -353,7 +353,7 @@ FIELD_DESCRIPTIONS = {
     "deathstill_conversion_time_override": "Overrides how long it takes to process a body in a Deathstill. Value is the length of the cycle in seconds.",
     "double_difficulty_loot_enabled": "Gives double loot when the encounter difficulty is above 0. Field-confirmed with dungeon loot.",
     "regenerate_per_player_loot_enabled": "Whether per-player loot is regenerated each time a player interacts with a loot container. Field-confirmed. Enabling this can make a single container farmable indefinitely.",
-    "restart_server_on_coriolis_cycle_end": "Requests that Funcom restart the current map server process when its own Coriolis cycle ends. Docker restarts an exited map container automatically. This does not queue a Console battlegroup restart or send restart warnings.",
+    "restart_server_on_coriolis_cycle_end": "Requests Funcom's farm-level restart when the Coriolis cycle ends. Dune Docker coordinates one clean restart of Director, Gateway, and every world map so all processes load the same new cycle seed, while PostgreSQL, RabbitMQ, TextRouter, the Console, and orchestration remain online.",
     "augment_jackpot_roll_percentage": "Roll threshold from 0 to 1; lower values increase the jackpot chance. The default 0.95 gives a 5% chance. This can be overridden per map or Sietch, and the public server page shows Varies when those scopes differ.",
     "max_landclaim_segments": "Maximum number of land-claim segments (flags) a player may own.",
     "building_blueprint_max_extensions": "Maximum number of times a blueprinted building can be extended.",
@@ -371,7 +371,7 @@ FIELD_DESCRIPTIONS = {
 }
 
 FIELD_LABELS = {
-    "restart_server_on_coriolis_cycle_end": "Restart Map Process At Coriolis Cycle End",
+    "restart_server_on_coriolis_cycle_end": "Restart Game Farm At Coriolis Cycle End",
     "coriolis_cycle_start_year": "Cycle Start Year",
     "coriolis_cycle_start_month": "Cycle Start Month",
     "coriolis_cycle_start_day": "Cycle Start Day",
