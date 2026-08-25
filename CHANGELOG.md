@@ -287,8 +287,29 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   set, invalidating all remaining old codes (§2.3). Recovery codes are
   single-use; a wrong password never consumes one. New audit events
   `auth.recovery-code-consumed` and `settings.totp-regenerated`. Inert while the
-  flag is off (default). Credential rotation with scoped session invalidation is
-  a later phase.
+  flag is off (default). Credential rotation with scoped session invalidation
+  is covered by the entry below.
+
+- **Tier 3 credential rotation now revokes other password/TOTP sessions and
+  requires fresh proof-of-possession (BETA, behind `CONSOLE_TOTP_ENABLED`)**
+  (RFC `docs/rfc-console-auth.md` §2.3/§5, issue #407 phase 6).
+  `POST /api/settings/admin-password` now requires a fresh TOTP code (in
+  addition to the current password) before rotating the password whenever a
+  second factor is enrolled -- the existing session cookie is no longer
+  sufficient proof on its own. On success, every other password/TOTP-
+  authenticated session is revoked (scoped invalidation: Discord- and future
+  passkey-authenticated sessions are untouched); the acting session survives.
+  Rejected attempts (wrong password, missing/wrong TOTP code) revoke nothing.
+  This endpoint is now rate-limited the same way the login route already is
+  (8 attempts/key, 32 global, 15-minute block), closing a gap where a stolen
+  session cookie could otherwise be used to brute-force the TOTP factor with
+  no throttling. New audit event `auth.password-changed.sessions-revoked`.
+  Inert while `CONSOLE_TOTP_ENABLED` is off (default) or no second factor is
+  configured. The settings-panel UI does not yet send a TOTP code with this
+  request -- rotating the password via the UI while TOTP is enrolled will
+  correctly fail with `totpRequired` until the frontend (phase 7) ships; the
+  route itself already accepts a `totpCode` field. Frontend wiring and the
+  documented rotation runbook (RFC §2.3) are later phases.
 
 - **Tier 3 console auth (BETA, behind `CONSOLE_TOTP_ENABLED`, default OFF):
   password + mandatory TOTP with authenticator enrollment** (RFC
