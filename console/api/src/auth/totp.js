@@ -4,11 +4,13 @@
 // ±1-step verification window, 160-bit server-generated secret.
 //
 // Pure module: secret generation, base32 (RFC 4648) for the provisioning URI,
-// RFC 4226 HOTP, RFC 6238 TOTP, and a windowed constant-time verify. No I/O, no
-// persistence (later phase), no clock of its own — the caller passes the time so
-// tests are deterministic and the module never reads a wall clock implicitly.
+// RFC 4226 HOTP, RFC 6238 TOTP, a windowed constant-time verify, and local QR
+// rendering of the provisioning URI. No network I/O, no persistence (later
+// phase), no clock of its own — the caller passes the time so tests are
+// deterministic and the module never reads a wall clock implicitly.
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import QRCode from "qrcode";
 
 export const TOTP_ALGORITHM = "SHA1"; // interoperable default; authenticator apps assume it
 export const TOTP_DIGITS = 6;
@@ -183,4 +185,13 @@ export function provisioningUri({
     period: String(period),
   });
   return `otpauth://totp/${label}?${params.toString()}`;
+}
+
+// Render an otpauth:// URI as a QR code the setup screen can show inline (an
+// <img src="data:..."> needs no client-side QR library). `qrcode` performs
+// pure local image encoding -- no network access -- consistent with this
+// module's zero-egress requirement (RFC §3.2).
+export async function provisioningQrDataUri(otpauthUri) {
+  if (!otpauthUri) throw new Error("provisioningQrDataUri requires an otpauthUri");
+  return QRCode.toDataURL(otpauthUri, { errorCorrectionLevel: "M" });
 }
