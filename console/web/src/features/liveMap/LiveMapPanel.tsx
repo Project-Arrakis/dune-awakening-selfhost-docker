@@ -1326,23 +1326,6 @@ function friendlyMarkerType(type: string) {
   }[type.toLowerCase()] || titleCase(type.replaceAll("_", " "));
 }
 
-// Known categories today; "poi" and "resource" are here ahead of any backend
-// data (see issue #462) so a marker type introduced later renders with a
-// sensible icon immediately instead of silently falling back to a bare pin.
-const LIVE_MAP_MARKER_ICONS: Record<string, LucideIcon> = {
-  player: Users,
-  vehicle: Car,
-  base: Home,
-  storage: Package,
-  service: Wrench,
-  poi: Landmark,
-  resource: Gem
-};
-
-export function liveMapMarkerIcon(type: string): LucideIcon {
-  return LIVE_MAP_MARKER_ICONS[type.toLowerCase()] || MapPin;
-}
-
 function liveMapPlayerStatus(marker: LiveMapMarker) {
   if (String(marker.type || "").toLowerCase() !== "player") return String(marker.online_status || "").toLowerCase();
   return String(marker.online_status || "").toLowerCase() === "online" ? "online" : "offline";
