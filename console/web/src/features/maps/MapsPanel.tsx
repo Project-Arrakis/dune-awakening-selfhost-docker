@@ -1620,7 +1620,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       details: [
         { label: "Instances", value: `${deepDesertInstanceCount} → ${instances}` },
         ...(instances === 3 ? [{ label: "Third Instance", value: deepDesertThirdRoleDraft === "pvp" ? "PvP" : "PvE" }] : []),
-        { label: "Impact", value: "Running Deep Desert instances will restart. Hagga Basin and other maps stay online." },
+        { label: "Impact", value: "Overland will restart to load the updated Kanly layout. Only newly added, removed, or role-changed Deep Desert instances will be affected; unchanged instances stay online." },
         ...(reducing ? [{ label: "Safety", value: "A database safety backup will be created first." }] : []),
         ...(reducing ? [{ label: "Impact", value: "Removed instances must be empty and will be stopped before removal.", tone: "danger" as const }] : [])
       ]
@@ -1983,9 +1983,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         const primarySietchCombatRow = isSurvivalRow && primarySurvivalSietch
           ? combatStateByMap["Survival_1"]?.partitions.find((partition) => partition.partitionId === primarySurvivalSietch.partitionId) || null
           : null;
-        const baseStatus = isDeepDesertRow && deepDesertLayoutConfiguring
-          ? "Configuring"
-          : isDeepDesertRow && primaryDeepDesertPartition ? partitionStatusById.get(String(primaryDeepDesertPartition.partitionId || "")) || String(primaryDeepDesertPartition.status || row.status || "Not Available")
+        const baseStatus = isDeepDesertRow && primaryDeepDesertPartition ? partitionStatusById.get(String(primaryDeepDesertPartition.partitionId || "")) || String(primaryDeepDesertPartition.status || row.status || "Not Available")
           : isSurvivalRow && primarySurvivalSietch ? readinessStatusByPartitionId.get(primarySurvivalSietch.partitionId) || partitionStatusById.get(primarySurvivalSietch.partitionId) || String(row.status || "Not Available") : String(row.status || "Not Available");
         const displayStatus = isSurvivalRow && /^Ready$/i.test(baseStatus) ? "Ready" : statusWithLiveMemory(baseStatus, memoryRow, row.mode);
         const canForceDespawn = isDeepDesertRow && deepDesertMultiEnabled
@@ -2071,7 +2069,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             const childSelected = selectedMapName === "DeepDesert_1" && selectedPartitionId === String(deepRow.partitionId || "");
             const deepMemory = partitionMemoryValue(memoryText, String(deepRow.partitionId || ""), String(row.memory || ""), "DeepDesert_1");
             const childMemoryRow = memoryForMap(liveMemory, "DeepDesert_1", { partitionId: deepRow.partitionId });
-            const childStatus = deepDesertLayoutConfiguring ? "Configuring" : statusWithLiveMemory(partitionStatusById.get(String(deepRow.partitionId || "")) || String(deepRow.status || "Not Available"), childMemoryRow, row.mode);
+            const childStatus = statusWithLiveMemory(partitionStatusById.get(String(deepRow.partitionId || "")) || String(deepRow.status || "Not Available"), childMemoryRow, row.mode);
             const childMemoryDirty = childSelected && memory !== memoryInputValue(deepMemory);
             const childCanForceDespawn = mapCanForceDespawn({ ...deepRow, status: childStatus });
             const childCanForceSpawn = !childCanForceDespawn && mapCanForceSpawn({ ...deepRow, status: childStatus });

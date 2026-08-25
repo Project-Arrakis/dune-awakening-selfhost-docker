@@ -375,7 +375,7 @@ Usage:
   dune sietches show <map-name>
   dune sietches dimensions <map-name> [--active-only] [--numbered|--labels|--ids|--partition-at=N]
   dune sietches set-max <map-name> <count>
-  dune sietches set-active <map-name> <count>
+  dune sietches set-active <map-name> <count> [--defer-start]
   dune sietches set-display <partition-id> <display-name>
   dune sietches set-password <partition-id> [password]
   dune sietches set-settings <partition-id> <display-name> <password>
@@ -2146,17 +2146,25 @@ case "$cmd" in
     echo "Max dimensions for $2 set to $count."
     ;;
   set-active)
-    [ "$#" -eq 3 ] || { usage; exit 2; }
+    [ "$#" -eq 3 ] || { [ "$#" -eq 4 ] && [ "$4" = "--defer-start" ]; } || { usage; exit 2; }
     count="$(sanitize_positive_integer_arg "$3")"
     validate_positive_integer "$count" || { echo "Active dimensions must be a positive integer."; exit 1; }
     set_map_value "$2" active_dimensions "$count"
     if docker_postgres_running; then
-      reconcile_map_dimensions "$2"
+      if [ "${4:-}" = "--defer-start" ]; then
+        ensure_map_partitions "$2" "$count"
+      else
+        reconcile_map_dimensions "$2"
+      fi
       set_map_value "$2" active_dimensions "$count"
     else
       echo "dune-postgres is not running; saved active dimensions and will apply them on next start/reconcile."
     fi
-    echo "Active dimensions for $2 set to $count."
+    if [ "${4:-}" = "--defer-start" ]; then
+      echo "Active dimensions for $2 set to $count; server startup deferred."
+    else
+      echo "Active dimensions for $2 set to $count."
+    fi
     ;;
   set-display)
     [ "$#" -ge 3 ] || { usage; exit 2; }

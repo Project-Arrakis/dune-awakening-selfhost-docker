@@ -174,7 +174,7 @@ run_timed_step "Stopping Legacy Network Server-State Rewriter" bash -c '
 runtime/scripts/publish-network-server-state-overrides.sh stop || true
 '
 
-if [ -f runtime/generated/director-deepdesert-dual.ini ]; then
+if grep -Eq '^; ManagedInstanceCount=[23]$' runtime/generated/director-deepdesert-dual.ini 2>/dev/null; then
   echo
   echo "=== Dual Deep Desert Override Present ==="
   echo "Deep Desert dual-mode config detected. Its persisted PvP/PvE partition roles will be reconciled through the global gameplay profile."
@@ -200,7 +200,7 @@ runtime/scripts/publish-deepdesert-overrides.sh once || {
 }
 '
 
-if [ -f runtime/generated/director-deepdesert-dual.ini ]; then
+if grep -Eq '^; ManagedInstanceCount=[23]$' runtime/generated/director-deepdesert-dual.ini 2>/dev/null; then
   echo
   echo "=== Dual Deep Desert Note ==="
   echo "Deep Desert dual-mode gameplay config is active. The global gameplay profile assigns the persisted partition roles."

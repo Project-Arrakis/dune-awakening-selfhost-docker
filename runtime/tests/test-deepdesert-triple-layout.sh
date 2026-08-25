@@ -63,9 +63,10 @@ ordered = [
     'configure_sietch_dimensions "$count"',
     'apply_partition_labels "$count" "$third_role"',
     'write_director_override "$count" "$original_display_name" "$third_role"',
-    'apply_usergame "$count" "$third_role"',
+    'apply_usergame "$count" "$third_role" "$previous_partition_ids" "$previous_count" "$previous_third_role"',
     'restart_director_if_running',
     'activate_sietch_dimensions "$count"',
+    'prime_changed_dynamic_deepdesert_roles "$count" "$third_role" "$previous_partition_ids" "$previous_count" "$previous_third_role"',
 ]
 positions = [body.index(token) for token in ordered]
 if positions != sorted(positions):

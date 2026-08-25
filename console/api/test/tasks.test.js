@@ -103,6 +103,7 @@ test("long-running server tasks get an extended timeout", () => {
   assert.equal(taskTimeoutMs(config, "storageCleanupImages"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "storageCleanupBuildCache"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "sietchesSetActive"), 30 * 60 * 1000);
+  assert.equal(taskTimeoutMs(config, "deepdesertAction"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "sietchesRestart"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "sietchesReconcile"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "restartServiceStop"), 30 * 60 * 1000);

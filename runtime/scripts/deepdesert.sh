@@ -73,68 +73,43 @@ deepdesert_mode() {
   fi
 }
 
-recycle_idle_deepdesert_servers() {
-  local existing_partition_ids="${1:-}" rows partition_id server_id connected_players mode
-  [ -n "$existing_partition_ids" ] || return 0
-  mode="$(deepdesert_mode)"
-  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
-    select
-      wp.partition_id,
-      coalesce(wp.server_id, ''),
-      coalesce(fs.connected_players, 0)
+clear_stale_deepdesert_assignments() {
+  local rows partition_id server_id container
+  rows="$(psql_value "
+    select wp.partition_id || '|' || coalesce(wp.server_id, '')
     from dune.world_partition wp
-    left join dune.farm_state fs on fs.server_id = wp.server_id
     where wp.map = 'DeepDesert_1'
       and coalesce(wp.server_id, '') <> ''
     order by wp.dimension_index, wp.partition_id;
-  " 2>/dev/null || true)"
-
+  ")"
   [ -n "$rows" ] || return 0
 
-  while IFS='|' read -r partition_id server_id connected_players; do
-    [ -n "${partition_id:-}" ] || continue
-    grep -Fxq "$partition_id" <<< "$existing_partition_ids" || continue
-    if [ "${connected_players:-0}" != "0" ]; then
-      echo "Skipping DeepDesert_1 partition $partition_id recycle because connected_players=$connected_players."
+  while IFS='|' read -r partition_id server_id; do
+    [ -n "${partition_id:-}" ] && [ -n "${server_id:-}" ] || continue
+    container="dune-server-deepdesert-1-$partition_id"
+    # A live process owns its assignment and must remain untouched. Remove an
+    # exited container through the normal lifecycle path; if Docker no longer
+    # has the container at all, clear only the orphaned database assignment.
+    if docker ps --format '{{.Names}}' | grep -qx "$container"; then
       continue
-    fi
-    if [ "$mode" = "dynamic" ]; then
-      echo "Despawning idle dynamic DeepDesert_1 partition $partition_id so it remains offline until player demand."
+    elif docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
       runtime/scripts/despawn-server.sh "$partition_id" --force >/dev/null
-      continue
+    else
+      echo "Clearing stale Deep Desert assignment for dormant partition $partition_id."
+      psql -v ON_ERROR_STOP=1 -c "
+begin;
+update dune.world_partition
+set server_id = null
+where partition_id = $partition_id
+  and server_id = '$server_id';
+delete from dune.farm_state fs
+where fs.server_id = '$server_id'
+  and not exists (
+    select 1 from dune.world_partition wp where wp.server_id = fs.server_id
+  );
+commit;
+" >/dev/null
     fi
-    echo "Recycling idle DeepDesert_1 partition $partition_id so it republishes fresh state..."
-    runtime/scripts/despawn-server.sh "$partition_id" --force >/dev/null
-    runtime/scripts/spawn-server.sh "$partition_id" >/dev/null
-  done <<< "$rows"
-}
-
-despawn_idle_dynamic_deepdesert_servers() {
-  local mode rows partition_id server_id connected_players
-  mode="$(deepdesert_mode)"
-  [ "$mode" = "dynamic" ] || return 0
-  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
-    select
-      wp.partition_id,
-      coalesce(wp.server_id, ''),
-      coalesce(fs.connected_players, 0)
-    from dune.world_partition wp
-    left join dune.farm_state fs on fs.server_id = wp.server_id
-    where wp.map = 'DeepDesert_1'
-      and coalesce(wp.server_id, '') <> ''
-    order by wp.dimension_index, wp.partition_id;
-  " 2>/dev/null || true)"
-  [ -n "$rows" ] || return 0
-
-  while IFS='|' read -r partition_id server_id connected_players; do
-    [ -n "${partition_id:-}" ] || continue
-    [ -n "$(printf '%s' "${server_id:-}" | tr -d '[:space:]')" ] || continue
-    if [ "${connected_players:-0}" != "0" ]; then
-      echo "Skipping DeepDesert_1 partition $partition_id cleanup because connected_players=$connected_players."
-      continue
-    fi
-    echo "Despawning idle dynamic DeepDesert_1 partition $partition_id after dual-mode change."
-    runtime/scripts/despawn-server.sh "$partition_id" --force >/dev/null
   done <<< "$rows"
 }
 
@@ -149,6 +124,16 @@ restart_director_if_running() {
     echo "dune-director restarted."
   else
     echo "dune-director is not running. The new DeepDesert_1 config will apply on next start."
+  fi
+}
+
+restart_overmap_if_running() {
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-server-overmap; then
+    echo "Restarting Overland so Kanly loads the updated Deep Desert PvP/PvE layout..."
+    runtime/scripts/start-server-overmap.sh >/dev/null
+    echo "Overland restarted. Hagga Basin was not restarted."
+  else
+    echo "Overland is not running. The updated Kanly layout will apply on its next start."
   fi
 }
 
@@ -214,7 +199,11 @@ PY
     echo "Deep Desert layout status: repair required (one or more managed dimensions are missing)"
     echo "The next battlegroup start will restore the missing dimension automatically."
   else
-    echo "Director override: not configured yet"
+    if [ -s "$OVERRIDE_FILE" ]; then
+      echo "Director override: present (Single Dynamic)"
+    else
+      echo "Director override: not configured yet"
+    fi
     echo "Deep Desert layout: Single"
   fi
   echo
@@ -253,18 +242,116 @@ configure_sietch_dimensions() {
 
 activate_sietch_dimensions() {
   local count="$1"
-  runtime/scripts/sietches.sh set-active DeepDesert_1 "$count" >/dev/null
+  if [ "$(deepdesert_mode)" = "dynamic" ]; then
+    runtime/scripts/sietches.sh set-active DeepDesert_1 "$count" --defer-start >/dev/null
+  else
+    runtime/scripts/sietches.sh set-active DeepDesert_1 "$count" >/dev/null
+  fi
   echo "DeepDesert_1 active/max dimensions set to $count."
 }
 
-running_deepdesert_partition_ids() {
-  psql_value "
-    select partition_id
-    from dune.world_partition
-    where map = 'DeepDesert_1'
-      and coalesce(server_id, '') <> ''
-    order by dimension_index, partition_id;
-  "
+wait_for_deepdesert_partition_ready() {
+  local partition_id="$1" timeout_seconds="${DUNE_DEEPDESERT_ROLE_PRIME_TIMEOUT_SECONDS:-600}"
+  local deadline row ready alive
+  case "$timeout_seconds" in ''|*[!0-9]*) timeout_seconds=600 ;; esac
+  deadline=$(( $(date +%s) + timeout_seconds ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    row="$(psql_value "
+      select coalesce(fs.ready, false) || '|' || coalesce(fs.alive, false)
+      from dune.world_partition wp
+      left join dune.farm_state fs on fs.server_id = wp.server_id
+      where wp.partition_id = $partition_id and wp.map = 'DeepDesert_1'
+      limit 1;
+    " | tr -d '[:space:]')"
+    IFS='|' read -r ready alive <<< "$row"
+    if [ "$ready" = "true" -o "$ready" = "t" ]; then
+      return 0
+    fi
+    if [ "$alive" != "true" -a "$alive" != "t" ] && ! docker ps --format '{{.Names}}' | grep -qx "dune-server-deepdesert-1-$partition_id"; then
+      return 1
+    fi
+    sleep 5
+  done
+  return 1
+}
+
+partition_id_was_managed() {
+  local partition_id="$1" managed_ids="${2:-}"
+  grep -Fxq "$partition_id" <<< "$managed_ids"
+}
+
+prime_changed_dynamic_deepdesert_roles() {
+  local count="$1" third_role="${2:-pve}" previous_ids="${3:-}" previous_count="${4:-1}" previous_third_role="${5:-pve}"
+  local third partition_id container started_here=0 role_changed=0 is_new=0
+  local -a changed_partition_ids=()
+  [ "$(deepdesert_mode)" = "dynamic" ] || return 0
+  third="$(partition_id_for_dimension 2)"
+
+  # Existing partitions whose role did not change are deliberately excluded.
+  # A layout expansion must initialize only the newly-added partition; a role
+  # edit may recycle only that edited partition.
+  mapfile -t changed_partition_ids < <(
+    while IFS= read -r partition_id; do
+      [ -n "$partition_id" ] || continue
+      partition_id_was_managed "$partition_id" "$previous_ids" || printf '%s\n' "$partition_id"
+    done < <(deepdesert_partition_ids)
+    if [ "$count" -ge 3 ] && partition_id_was_managed "$third" "$previous_ids" && [ "$previous_third_role" != "$third_role" ]; then
+      printf '%s\n' "$third"
+    fi
+  )
+
+  for partition_id in "${changed_partition_ids[@]}"; do
+    [ -n "$partition_id" ] || continue
+    is_new=0
+    partition_id_was_managed "$partition_id" "$previous_ids" || is_new=1
+    role_changed=0
+    if [ "$partition_id" = "$third" ] && [ "$previous_count" -ge 3 ] && [ "$previous_third_role" != "$third_role" ]; then
+      role_changed=1
+    fi
+    if [ "$is_new" != "1" ] && [ "$role_changed" != "1" ]; then
+      continue
+    fi
+    # A stopped partition changing back to PvE will load the new role on its
+    # next demand start and does not need to be started merely for this edit.
+    if [ "$role_changed" = "1" ] && [ "$third_role" = "pve" ] \
+      && ! docker ps --format '{{.Names}}' | grep -qx "dune-server-deepdesert-1-$partition_id"; then
+      continue
+    fi
+
+    container="dune-server-deepdesert-1-$partition_id"
+    started_here=0
+    if docker ps --format '{{.Names}}' | grep -qx "$container"; then
+      if [ "$role_changed" = "1" ]; then
+        echo "Restarting changed Deep Desert partition $partition_id so its new role takes effect..."
+        runtime/scripts/despawn-server.sh "$partition_id" --force >/dev/null
+        runtime/scripts/spawn-server.sh "$partition_id" >/dev/null
+        started_here=1
+      elif [ "$is_new" = "1" ]; then
+        # set-active may have already launched the newly-added dynamic
+        # partition. It still belongs to this operation and must return to
+        # standby after publishing its initial role.
+        started_here=1
+      fi
+    else
+      echo "Initializing new Deep Desert partition $partition_id for Kanly..."
+      runtime/scripts/spawn-server.sh "$partition_id" >/dev/null
+      started_here=1
+    fi
+    if ! wait_for_deepdesert_partition_ready "$partition_id"; then
+      [ "$started_here" = "1" ] && runtime/scripts/despawn-server.sh "$partition_id" --force >/dev/null 2>&1 || true
+      echo "Deep Desert partition $partition_id did not become ready in time to publish its Kanly role." >&2
+      return 1
+    fi
+    if runtime/scripts/publish-deepdesert-state.sh once >/dev/null 2>&1; then
+      echo "Deep Desert partition $partition_id published its Kanly role."
+    else
+      # The ready game server has already sent its native server-state event.
+      # The explicit snapshot is only an acceleration path and can briefly be
+      # unavailable while Director's temporary RabbitMQ credentials rotate.
+      echo "Deep Desert partition $partition_id is ready; its optional Kanly snapshot will be refreshed automatically."
+    fi
+    [ "$started_here" = "1" ] && runtime/scripts/despawn-server.sh "$partition_id" --force >/dev/null
+  done
 }
 
 require_empty_deepdesert() {
@@ -284,7 +371,11 @@ require_empty_deepdesert() {
 }
 
 reset_single_sietch_dimension() {
-  runtime/scripts/sietches.sh set-active DeepDesert_1 1 >/dev/null 2>&1 || true
+  if [ "$(deepdesert_mode)" = "dynamic" ]; then
+    runtime/scripts/sietches.sh set-active DeepDesert_1 1 --defer-start >/dev/null 2>&1 || true
+  else
+    runtime/scripts/sietches.sh set-active DeepDesert_1 1 >/dev/null 2>&1 || true
+  fi
   runtime/scripts/sietches.sh set-max DeepDesert_1 1 >/dev/null 2>&1 || true
   echo "DeepDesert_1 active/max dimensions reset to 1."
 }
@@ -441,22 +532,13 @@ extra_deepdesert_partition_rows() {
 }
 
 apply_partition_labels() {
-  local count="$1" third_role="${2:-pve}" pvp pve third pvp_label pve_label third_label
+  local count="$1" third_role="${2:-pve}" pvp pve third third_label
   pvp="$(pvp_partition_id)"
   pve="$(pve_partition_id)"
   [ -n "$pvp" ] && [ -n "$pve" ] || { echo "Could not resolve Deep Desert PvP/PvE roles."; exit 1; }
   third="$(partition_id_for_dimension 2)"
-  pvp_label="PvP"
-  pve_label="PvE"
   third_label="PvE 2"
-  if [ "$count" -ge 3 ]; then
-    if [ "$third_role" = "pvp" ]; then
-      pvp_label="PvP 1"
-      third_label="PvP 2"
-    else
-      pve_label="PvE 1"
-    fi
-  fi
+  [ "$third_role" = "pvp" ] && third_label="PvP 2"
   psql -v ON_ERROR_STOP=1 -c "
 -- Labels are globally unique. Move every managed row through a partition-specific temporary label so
 -- reversing an existing PvP/PvE pair cannot hit a transient duplicate-key violation.
@@ -467,8 +549,8 @@ where map = 'DeepDesert_1'
 
 update dune.world_partition
 set label = case
-  when partition_id = $pve then '$pve_label'
-  when partition_id = $pvp then '$pvp_label'
+  when partition_id = $pve then 'PvE'
+  when partition_id = $pvp then 'PvP'
   when partition_id = ${third:-0} then '$third_label'
   else label
 end
@@ -511,12 +593,6 @@ begin
       limit 1;
     end if;
   end loop;
-
-  perform dune.update_partition_labels(true);
-  update dune.world_partition
-  set label = 'ManagedDeepDesert_' || partition_id::text
-  where map = 'DeepDesert_1'
-    and dimension_index < $count;
 end
 \$\$;
 "
@@ -548,6 +624,26 @@ EOF
   echo "Director DeepDesert_1 override written: $OVERRIDE_FILE"
 }
 
+write_single_director_override() {
+  local primary="$1" original_display_name="${2:-}" original_global_server_pve="${3:-True}" encoded_display_name
+  [ -n "$primary" ] || { echo "Missing DeepDesert_1 primary partition."; exit 1; }
+  [ "$original_global_server_pve" = "False" ] || original_global_server_pve="True"
+  encoded_display_name="$(printf '%s' "$original_display_name" | base64 | tr -d '\r\n')"
+  mkdir -p "$(dirname "$OVERRIDE_FILE")"
+  cat > "$OVERRIDE_FILE" <<EOF
+; ManagedPartitionIds=$primary
+; ManagedInstanceCount=1
+; ManagedThirdRole=pve
+; ManagedPrimaryDisplayNameBase64=$encoded_display_name
+; ManagedOriginalGlobalServerPVE=$original_global_server_pve
+
+[DeepDesert_1]
+NumExtraServers=0
+MinServers=0
+EOF
+  echo "Director DeepDesert_1 single-layout override written: $OVERRIDE_FILE"
+}
+
 managed_selector_from_override() {
   local key="$1"
   [ -f "$OVERRIDE_FILE" ] || return 0
@@ -566,7 +662,7 @@ managed_original_global_server_pve() {
 
 current_global_server_pve() {
   python3 runtime/scripts/usersettings.py global-values 2>/dev/null \
-    | awk -F '\t' '$1 == "server_pve" { print $2; exit }'
+    | awk -F '\t' '$1 == "server_pve" { value = $2 } END { if (value != "") print value }'
 }
 
 restore_original_global_server_pve() {
@@ -593,7 +689,8 @@ remove_dual_usergame_selectors() {
 }
 
 apply_usergame() {
-  local count="$1" third_role="${2:-pve}" pvp pve third partition_id partition_role pvp_name pve_name third_name
+  local count="$1" third_role="${2:-pve}" previous_ids="${3:-}" previous_count="${4:-1}" previous_third_role="${5:-pve}"
+  local pvp pve third partition_id partition_role pvp_name pve_name third_name partition_changed
   pvp="$(pvp_partition_id)"
   pve="$(pve_partition_id)"
   third="$(partition_id_for_dimension 2)"
@@ -602,14 +699,7 @@ apply_usergame() {
   pvp_name="Deep Desert PvP"
   pve_name="Deep Desert PvE"
   third_name="Deep Desert PvE 2"
-  if [ "$count" -ge 3 ]; then
-    if [ "$third_role" = "pvp" ]; then
-      pvp_name="Deep Desert PvP 1"
-      third_name="Deep Desert PvP 2"
-    else
-      pve_name="Deep Desert PvE 1"
-    fi
-  fi
+  [ "$third_role" = "pvp" ] && third_name="Deep Desert PvP 2"
   runtime/scripts/sietches.sh set-display "$pvp" "$pvp_name" >/dev/null
   runtime/scripts/sietches.sh set-display "$pve" "$pve_name" >/dev/null
   [ "$count" -ge 3 ] && [ -n "$third" ] && runtime/scripts/sietches.sh set-display "$third" "$third_name" >/dev/null
@@ -626,12 +716,20 @@ apply_usergame() {
     if [ "$partition_id" = "$pvp" ] || { [ "$count" -ge 3 ] && [ "$third_role" = "pvp" ] && [ "$partition_id" = "$third" ]; }; then
       partition_role="pvp"
     fi
+    partition_changed=0
+    if ! partition_id_was_managed "$partition_id" "$previous_ids"; then
+      partition_changed=1
+    elif [ "$partition_id" = "$third" ] && [ "$previous_count" -ge 3 ] && [ "$previous_third_role" != "$third_role" ]; then
+      partition_changed=1
+    fi
     # The selector arrays control routing, while these partition-scoped values
     # control the role advertised by each game server in SELECT INSTANCE. Keep
     # both representations synchronized; otherwise newly-created partitions
     # inherit the template's PvE badge even though matchmaking routes them as
     # PvP.
-    if [ "$partition_role" = "pvp" ]; then
+    if [ "$partition_changed" != "1" ]; then
+      continue
+    elif [ "$partition_role" = "pvp" ]; then
       python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$partition_id" partition_pvp_enabled True
       python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$partition_id" partition_pve_enabled False
       python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$partition_id" legacy_pvp_enabled True
@@ -662,10 +760,13 @@ apply_usergame() {
 }
 
 enable_layout() {
-  local count="$1" third_role="${2:-pve}" original_display_name original_global_server_pve existing_partition_ids
+  local count="$1" third_role="${2:-pve}" original_display_name original_global_server_pve="" previous_partition_ids previous_count previous_third_role
   require_postgres
   require_empty_deepdesert
-  existing_partition_ids="$(running_deepdesert_partition_ids)"
+  previous_count="$(configured_instance_count)"
+  previous_third_role="$(managed_third_role)"
+  previous_partition_ids="$(managed_partition_ids_from_override)"
+  [ -n "$previous_partition_ids" ] || previous_partition_ids="$(deepdesert_partition_ids)"
   if [ -s "$OVERRIDE_FILE" ]; then
     original_display_name="$(managed_primary_display_name)"
     original_global_server_pve="$(managed_original_global_server_pve)"
@@ -683,18 +784,19 @@ enable_layout() {
   configure_sietch_dimensions "$count"
   apply_partition_labels "$count" "$third_role"
   write_director_override "$count" "$original_display_name" "$third_role" "$original_global_server_pve"
-  apply_usergame "$count" "$third_role"
+  apply_usergame "$count" "$third_role" "$previous_partition_ids" "$previous_count" "$previous_third_role"
+  clear_stale_deepdesert_assignments
   restart_director_if_running
+  restart_overmap_if_running
   # The synthetic single-instance warm-up state cannot encode different
   # per-partition Kanly roles. Managed multi-instance layouts always use the
   # game servers' native advertisements instead.
   runtime/scripts/publish-deepdesert-overrides.sh stop >/dev/null 2>&1 || true
   activate_sietch_dimensions "$count"
-  recycle_idle_deepdesert_servers "$existing_partition_ids"
-  despawn_idle_dynamic_deepdesert_servers
+  prime_changed_dynamic_deepdesert_roles "$count" "$third_role" "$previous_partition_ids" "$previous_count" "$previous_third_role"
   echo
   echo "Deep Desert layout now has $count managed instances."
-  echo "The third instance is configured as ${third_role^^}."
+  [ "$count" -ge 3 ] && echo "The third instance is configured as ${third_role^^}."
   echo "Players should see $count Deep Desert instances when the client enters the SELECT INSTANCE flow."
   echo "Run bootstrap once if players are still routed back to only dimension 0."
 }
@@ -781,18 +883,24 @@ set_layout() {
     remove_layout_dimensions "$target" "$force"
   fi
   if [ "$target" = "1" ]; then
-    local pvp pve primary original_display_name
+    local pvp pve primary original_display_name original_global_server_pve
     pvp="$(managed_selector_from_override ManagedPvpPartition)"
     pve="$(managed_selector_from_override ManagedPvePartition)"
     primary="$(primary_partition_id)"
     original_display_name="$(managed_primary_display_name)"
+    [ -n "$original_display_name" ] || original_display_name="$(primary_display_name)"
+    original_global_server_pve="$(managed_original_global_server_pve)"
+    if [ "$original_global_server_pve" != "True" ] && [ "$original_global_server_pve" != "False" ]; then
+      original_global_server_pve="$(current_global_server_pve)"
+    fi
     remove_dual_usergame_selectors "$pvp" "$pve"
     restore_original_global_server_pve
     [ -n "$primary" ] && runtime/scripts/sietches.sh set-display "$primary" "$original_display_name" >/dev/null
-    rm -f "$OVERRIDE_FILE"
+    write_single_director_override "$primary" "$original_display_name" "$original_global_server_pve"
     reset_single_sietch_dimension
+    clear_stale_deepdesert_assignments
     restart_director_if_running
-    despawn_idle_dynamic_deepdesert_servers
+    restart_overmap_if_running
     echo "Deep Desert layout restored to a single instance."
     return 0
   fi
@@ -802,6 +910,7 @@ set_layout() {
 disable_dual() {
   local force="${1:-0}" no_despawn="${2:-0}" pvp pve assigned mode
   local rows row partition_id dimension_index server_id connected_players
+  local primary original_display_name original_global_server_pve
 
   require_postgres
 
@@ -818,12 +927,21 @@ disable_dual() {
   rows="$(extra_deepdesert_partition_rows)"
   [ -n "$rows" ] || {
     echo "No extra DeepDesert_1 dimensions are present."
+    primary="$(primary_partition_id)"
+    original_display_name="$(managed_primary_display_name)"
+    [ -n "$original_display_name" ] || original_display_name="$(primary_display_name)"
+    original_global_server_pve="$(managed_original_global_server_pve)"
+    if [ "$original_global_server_pve" != "True" ] && [ "$original_global_server_pve" != "False" ]; then
+      original_global_server_pve="$(current_global_server_pve)"
+    fi
     remove_dual_usergame_selectors "$pvp" "$pve"
     restore_original_global_server_pve
-    rm -f "$OVERRIDE_FILE"
+    [ -n "$primary" ] && runtime/scripts/sietches.sh set-display "$primary" "$original_display_name" >/dev/null
+    write_single_director_override "$primary" "$original_display_name" "$original_global_server_pve"
     reset_single_sietch_dimension
+    clear_stale_deepdesert_assignments
     restart_director_if_running
-    despawn_idle_dynamic_deepdesert_servers
+    restart_overmap_if_running
     return 0
   }
 
@@ -897,12 +1015,21 @@ disable_dual() {
     [ -n "${partition_id:-}" ] || continue
     psql -v ON_ERROR_STOP=1 -c "delete from dune.world_partition where partition_id = $partition_id and map = 'DeepDesert_1'; drop table if exists dune.event_log_p${partition_id};" >/dev/null
   done <<< "$rows"
+  primary="$(primary_partition_id)"
+  original_display_name="$(managed_primary_display_name)"
+  [ -n "$original_display_name" ] || original_display_name="$(primary_display_name)"
+  original_global_server_pve="$(managed_original_global_server_pve)"
+  if [ "$original_global_server_pve" != "True" ] && [ "$original_global_server_pve" != "False" ]; then
+    original_global_server_pve="$(current_global_server_pve)"
+  fi
   remove_dual_usergame_selectors "$pvp" "$pve"
   restore_original_global_server_pve
-  rm -f "$OVERRIDE_FILE"
+  [ -n "$primary" ] && runtime/scripts/sietches.sh set-display "$primary" "$original_display_name" >/dev/null
+  write_single_director_override "$primary" "$original_display_name" "$original_global_server_pve"
   reset_single_sietch_dimension
+  clear_stale_deepdesert_assignments
   restart_director_if_running
-  despawn_idle_dynamic_deepdesert_servers
+  restart_overmap_if_running
   echo "Dual Deep Desert PvP/PvE disabled."
   if [ -n "$pvp" ] || [ -n "$pve" ]; then
     echo "This removed the managed Global PvP/PvE settings for partitions ${pvp:-<unknown>} and ${pve:-<unknown>} -- matching manual Advanced Editor entries may have been affected by this toggle."
@@ -964,8 +1091,19 @@ case "$cmd" in
       repair)
         target="$(configured_instance_count)"
         if [ "$target" -le 1 ]; then
+          primary="$(primary_partition_id)"
+          original_display_name="$(managed_primary_display_name)"
+          [ -n "$original_display_name" ] || original_display_name="$(primary_display_name)"
+          original_global_server_pve="$(managed_original_global_server_pve)"
+          if [ "$original_global_server_pve" != "True" ] && [ "$original_global_server_pve" != "False" ]; then
+            original_global_server_pve="$(current_global_server_pve)"
+          fi
+          write_single_director_override "$primary" "$original_display_name" "$original_global_server_pve"
           prune_sietch_dimension_config 1
-          echo "Single Deep Desert layout does not require repair."
+          clear_stale_deepdesert_assignments
+          restart_director_if_running
+          restart_overmap_if_running
+          echo "Single Deep Desert layout repaired without starting its dormant partition."
         else
           enable_layout "$target" "$(managed_third_role)"
         fi
