@@ -71,6 +71,23 @@ export function createAuth(config) {
     return sessions.delete(id);
   }
 
+  // Invalidate every OTHER password/TOTP-authenticated session (RFC §2.3/§5:
+  // credential rotation clears sessions of the rotated credential type only).
+  // Discord- (and future passkey-) authenticated sessions always carry a
+  // non-empty userId and are left untouched; this fork has not yet adopted
+  // upstream's explicit `local-owner` principal for the password/TOTP tier
+  // (deferred, meta issue #357), so an empty userId is what currently marks
+  // this credential type. Returns the number of sessions invalidated.
+  function invalidatePasswordSessions(exceptId) {
+    let count = 0;
+    for (const [id, session] of sessions) {
+      if (id === exceptId || session.userId) continue;
+      sessions.delete(id);
+      count++;
+    }
+    return count;
+  }
+
   function passwordMatches(value) {
     const left = Buffer.from(String(value || ""));
     const right = Buffer.from(config.adminPassword);
@@ -93,7 +110,7 @@ export function createAuth(config) {
     return session;
   }
 
-  return { makeSession, readSession, passwordMatches, requireAuth, invalidateSession };
+  return { makeSession, readSession, passwordMatches, requireAuth, invalidateSession, invalidatePasswordSessions };
 }
 
 export function setSessionCookie(res, session, config = {}, { maxAgeSeconds = 43200 } = {}) {

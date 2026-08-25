@@ -9,6 +9,31 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.3.95)
 
+### Added
+
+- **Real in-place upgrade coverage for the Tier 3 TOTP second factor**
+  (issue #487, RFC `docs/rfc-console-auth.md` §4/§6). Every existing Tier 3
+  test booted the console against a *fresh* state directory, which only ever
+  exercised the fresh-install path — so the operator-visible behavior change
+  that Strict Requirement 0 actually cares about (what happens to someone
+  already running this console when they enable the flag) was never tested.
+  New `console/api/test/upgradePath.integration.test.js` carries the same
+  state directory across a real stop/restart and asserts the upgrade event
+  end to end: a pre-upgrade single-factor session does not survive the
+  restart, the first post-upgrade password login yields an enrollment-only
+  session (and nothing else in the console is reachable from it), enrollment
+  issues exactly 10 recovery codes once, and the password alone is rejected
+  afterwards. Also closes three RFC §6 upgrade-path gaps that had no
+  coverage anywhere: the enrollment session's 10-minute cap, rollback
+  (turning the flag back off restores single-factor login and preserves the
+  enrolled state byte-for-byte), and an abandoned enrollment regenerating its
+  secret so a stale authenticator entry cannot silently linger.
+- **`docs/console/two-factor-recovery.md`** — the operator-facing recovery
+  and lockout runbook that RFC §3.4's procedures previously lacked. Covers
+  recovery-code login, regenerating a lost code sheet, the total-loss host
+  reset (verified against this repo's real service name and `dune console`
+  commands, not written from the RFC's prose), and how to tell from the audit
+  log whether an enrollment you did not perform has happened on your install.
 ### Fixed
 
 - **Console Home/status panel was dead on any image rebuilt from this fork's
@@ -28,8 +53,44 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   or in CI, and the break stayed invisible for five days because it only
   surfaces once the image is rebuilt.
 
-
 ### Changed
+
+- **Tier 3 web console login now drives TOTP enrollment, recovery, and the
+  authenticator step end-to-end (BETA, behind `CONSOLE_TOTP_ENABLED`)** (RFC
+  `docs/rfc-console-auth.md` §4/§6, issue #407 phase 7). The login form now
+  branches on the login route's own response: a `totpRequired` reply shows an
+  authenticator-code field (with a "Lost access to your authenticator?"
+  toggle to a recovery-code field when the server allows it); an
+  `enrollmentRequired`/`resetupRequired` reply shows a new setup screen with
+  a QR code (rendered server-side via the new `qrcode` dependency, entirely
+  local -- no network egress), a manual-entry fallback secret, a code-confirm
+  step, and a one-time recovery-code display gated by an explicit "I have
+  saved these codes" acknowledgment before continuing. After 3 consecutive
+  failed confirm attempts the error message names device clock skew as the
+  likely cause (RFC §2.3); the setup screen also has a "Back to sign in"
+  escape hatch at every point before confirmation succeeds. Fixed a real,
+  pre-existing bug found while building this: the shared API client treated
+  *any* 401 response as a stale session, so a wrong password (and, before
+  this diff, any Tier 3 401 status) showed a generic "session expired"
+  message instead of the real error -- the client now only treats a 401/403
+  as session-expiry when the message actually says so. `/api/auth/2fa/setup`
+  gained one new response field (`qrCodeDataUri`), additive and
+  backward-compatible. Settings-panel wiring (sending `totpCode` on password
+  rotation, #407 phase 6) and the operator rotation runbook remain separate,
+  already-tracked work.
+- **`.env.example`'s `CONSOLE_TOTP_ENABLED` block now states the upgrade
+  consequence up front** (issue #487). It previously read as an ordinary
+  opt-in beta toggle, with no indication that setting it to `1` on an install
+  you already use redirects your very next login into a mandatory enrollment,
+  shows the 10 recovery codes exactly once, and has no login-surface recovery
+  if both factors are lost. That omission is how the flag came to be enabled
+  unattended on a live install, locking its operator out of a working
+  console. Now warns explicitly, points at the recovery runbook above, and
+  notes that rolling the flag back off is safe and non-destructive.
+- **`docs/security/console-rbac-implementation-and-testing.md` §10** no longer
+  lists non-Discord break-glass/TOTP as an open design question — it shipped
+  as Tier 3 (#407). Marked resolved with pointers to the RFC sections, the
+  default-on gate (#424), the recovery runbook, and the upgrade test.
 
 - **Synced upstream's Live Map marker overlay redesign onto this fork**
   (PR #480). Upstream (`Red-Blink/dune-awakening-selfhost-docker`) spent
@@ -307,8 +368,29 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   set, invalidating all remaining old codes (§2.3). Recovery codes are
   single-use; a wrong password never consumes one. New audit events
   `auth.recovery-code-consumed` and `settings.totp-regenerated`. Inert while the
-  flag is off (default). Credential rotation with scoped session invalidation is
-  a later phase.
+  flag is off (default). Credential rotation with scoped session invalidation
+  is covered by the entry below.
+
+- **Tier 3 credential rotation now revokes other password/TOTP sessions and
+  requires fresh proof-of-possession (BETA, behind `CONSOLE_TOTP_ENABLED`)**
+  (RFC `docs/rfc-console-auth.md` §2.3/§5, issue #407 phase 6).
+  `POST /api/settings/admin-password` now requires a fresh TOTP code (in
+  addition to the current password) before rotating the password whenever a
+  second factor is enrolled -- the existing session cookie is no longer
+  sufficient proof on its own. On success, every other password/TOTP-
+  authenticated session is revoked (scoped invalidation: Discord- and future
+  passkey-authenticated sessions are untouched); the acting session survives.
+  Rejected attempts (wrong password, missing/wrong TOTP code) revoke nothing.
+  This endpoint is now rate-limited the same way the login route already is
+  (8 attempts/key, 32 global, 15-minute block), closing a gap where a stolen
+  session cookie could otherwise be used to brute-force the TOTP factor with
+  no throttling. New audit event `auth.password-changed.sessions-revoked`.
+  Inert while `CONSOLE_TOTP_ENABLED` is off (default) or no second factor is
+  configured. The settings-panel UI does not yet send a TOTP code with this
+  request -- rotating the password via the UI while TOTP is enrolled will
+  correctly fail with `totpRequired` until the frontend (phase 7) ships; the
+  route itself already accepts a `totpCode` field. Frontend wiring and the
+  documented rotation runbook (RFC §2.3) are later phases.
 
 - **Tier 3 console auth (BETA, behind `CONSOLE_TOTP_ENABLED`, default OFF):
   password + mandatory TOTP with authenticator enrollment** (RFC

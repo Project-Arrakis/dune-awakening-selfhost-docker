@@ -24,7 +24,7 @@ import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityA
 import { hardwareStatusSnapshot, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { createSecondFactorStore } from "./auth/secondFactorStore.js";
-import { generateTotpSecret, provisioningUri, verifyTotpMatch } from "./auth/totp.js";
+import { generateTotpSecret, provisioningUri, provisioningQrDataUri, verifyTotpMatch } from "./auth/totp.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
 import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
 import { createMemoryBalancer } from "./services/memoryBalancer.js";
@@ -669,8 +669,9 @@ async function handleApi(req, res) {
     const { secretBytes, base32 } = generateTotpSecret();
     session.pendingTotpSecret = secretBytes; // held server-side on the in-memory session only
     const otpauthUri = provisioningUri({ secretBase32: base32, accountName: "console-admin", issuer: config.totpIssuer });
+    const qrCodeDataUri = await provisioningQrDataUri(otpauthUri);
     audit(config, sanitizedUrl(req, "/api/auth/2fa/setup"), "auth.2fa.setup", { ok: true });
-    return json(res, 200, { secret: base32, otpauthUri });
+    return json(res, 200, { secret: base32, otpauthUri, qrCodeDataUri });
   }
   if (path === "/api/auth/2fa/confirm" && req.method === "POST") {
     const session = requireEnrollmentSession(req, res);
@@ -2123,7 +2124,45 @@ async function adminPasswordRoute(req, res) {
   const body = await readJson(req);
   if (config.authDisabled) return json(res, 400, { error: "Login password changes are unavailable while admin authentication is disabled." });
   if (config.adminPasswordEnvManaged) return json(res, 400, { error: "The login password is managed by ADMIN_PASSWORD. Update the environment value instead." });
-  if (!auth.passwordMatches(body.currentPassword)) return json(res, 400, { error: "Current password is incorrect." });
+  // This route re-proves the same Tier 3 credential the login route guards --
+  // an attacker holding a stolen session cookie but not the password/TOTP
+  // secret must face the same throttle as a fresh login attempt (L2 audit,
+  // Security/Network finding on #407 phase 6), not an unlimited local check.
+  const rateKey = loginRateLimitKey(req);
+  const rate = loginRateLimiter.check(rateKey);
+  if (!rate.allowed) {
+    return json(res, 429, { error: "Too many attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
+  }
+  if (!auth.passwordMatches(body.currentPassword)) {
+    loginRateLimiter.recordFailure(rateKey);
+    return json(res, 400, { error: "Current password is incorrect." });
+  }
+  // RFC §2.3/§5 (#407 phase 6): rotation requires fresh proof of the CURRENT
+  // Tier 3 credential from the acting session, not just the existing cookie --
+  // once TOTP is enrolled, the current password alone is no longer enough.
+  if (config.consoleTotpEnabled) {
+    let configured;
+    try {
+      configured = await secondFactor.isConfigured();
+    } catch (err) {
+      loginRateLimiter.recordFailure(rateKey);
+      audit(config, req, "settings.change-admin-password", { ok: false, reason: err?.name === "SecondFactorVersionError" ? "second_factor_version" : "second_factor_unavailable" });
+      return json(res, 503, { error: "Two-factor state on this console is unreadable, so the password cannot be changed right now. See the sign-in page's error for recovery guidance." });
+    }
+    if (configured) {
+      const totpCode = String(body.totpCode || "").trim();
+      if (!totpCode) {
+        loginRateLimiter.recordFailure(rateKey);
+        return json(res, 400, { totpRequired: true, error: "Enter your current authenticator code to change the password." });
+      }
+      const verify = await secondFactor.verifyTotpToken(totpCode, nowSeconds());
+      if (!verify.ok) {
+        loginRateLimiter.recordFailure(rateKey);
+        return json(res, 400, { totpRequired: true, error: "That authenticator code was not accepted. Check your device's clock and enter the current code." });
+      }
+    }
+  }
+  loginRateLimiter.recordSuccess(rateKey);
   const password = validateAdminPassword(body.newPassword);
   writeFileSync(config.adminPasswordFile, `${password}\n`, { mode: 0o600 });
   try {
@@ -2133,7 +2172,12 @@ async function adminPasswordRoute(req, res) {
   }
   config.adminPassword = password;
   audit(config, req, "settings.change-admin-password", { password: "<redacted>" });
-  return json(res, 200, { ok: true });
+  // Scoped invalidation (RFC §2.3/§5): every OTHER password/TOTP-authenticated
+  // session is revoked; the acting session (already fresh-proven above) and
+  // any Discord/passkey session are untouched.
+  const sessionsRevoked = auth.invalidatePasswordSessions(req.authSession?.id);
+  audit(config, req, "auth.password-changed.sessions-revoked", { count: sessionsRevoked });
+  return json(res, 200, { ok: true, sessionsRevoked });
 }
 
 async function webPortRoute(req, res) {

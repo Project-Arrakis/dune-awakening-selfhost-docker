@@ -86,7 +86,10 @@ the implementation and testing contract for the Core-side work (Phases 2-4).
   explicit fallback when Discord has not been configured or is unavailable**
   (§3.4).
 - Non-Discord bootstrap/recovery beyond the admin password (break-glass code,
-  TOTP, etc.) remains an open design item (§10).
+  TOTP, etc.) was an open design item (§10) at the time this document was
+  written; it is now specified in `docs/rfc-console-auth.md` §2.3 as Tier 3
+  (password + mandatory TOTP + recovery codes) and is in active phased
+  implementation under issue #407 — see §10 item 3 below.
 
 ### 3.2 Home guild link & initial role setup
 
@@ -407,7 +410,22 @@ returns the tiered identity; plus a 403 for a non-home-guild member and a
 2. Player login: do players get console accounts (read-only tabs) at all,
    or is the player tier bot-side only for v1? (Player tier exists in the
    shared registry either way.)
-3. Non-Discord bootstrap beyond admin password (break-glass code / TOTP).
+3. **RESOLVED (2026-08-25):** non-Discord bootstrap beyond admin password
+   (break-glass code / TOTP) — specified as Tier 3 in
+   `docs/rfc-console-auth.md` §2.3 (merged upstream via Red-Blink#170,
+   revised per #398/#400) and implemented under issue #407. Tier 1
+   (Discord OAuth deny-on-empty) shipped via #402; Tier 3's recovery-code
+   module, TOTP module, second-factor store, enrollment flow,
+   recovery-code login, session-invalidation-on-rotation, and the web
+   console frontend shipped via #408/#411/#415/#422/#426/#482/#484.
+   Flag-gated behind `CONSOLE_TOTP_ENABLED`, **default off** — see gate
+   issue #424 for the prerequisites before default-on. Operator-facing
+   recovery and lockout procedures (including the §3.4 total-loss host
+   reset) are in `docs/console/two-factor-recovery.md`; in-place upgrade
+   behavior is covered by
+   `console/api/test/upgradePath.integration.test.js` (issue #487).
+   Remaining before default-on: the real-client-IP rate key (#406) and
+   release notes.
 4. Persisted vs in-memory sessions if multi-user scale emerges.
 5. Handoff secret distribution: shared secret vs. per-install key
    exchange (issue #135 shaping conversation) — consent deferred to

@@ -100,9 +100,10 @@ test("full enrollment: password login -> enroll -> TOTP login, with replay rejec
     // 3. Setup: get the TOTP secret.
     const setup = await api(port, "/api/auth/2fa/setup", { cookie: enrollCookie, csrf: enrollCsrf });
     assert.equal(setup.status, 200);
-    const { secret, otpauthUri } = await setup.json();
+    const { secret, otpauthUri, qrCodeDataUri } = await setup.json();
     assert.match(secret, /^[A-Z2-7]+$/);
     assert.match(otpauthUri, /^otpauth:\/\/totp\//);
+    assert.match(qrCodeDataUri, /^data:image\/png;base64,/, "setup returns a renderable QR code for the setup screen");
 
     // 3b. A wrong code is rejected on confirm.
     const bad = await api(port, "/api/auth/2fa/confirm", { cookie: enrollCookie, csrf: enrollCsrf, body: { code: "000000" } });
