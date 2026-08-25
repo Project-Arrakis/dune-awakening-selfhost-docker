@@ -15,9 +15,9 @@ describe("sidebar navigation indicators", () => {
 
   it("shows the Addons icon only when an update is available", () => {
     const { rerender } = render(<SidebarNavIndicators item="Addons" onlinePlayerCount={0} addonUpdatesAvailable />);
-    expect(screen.getByLabelText("Addon update available")).toBeInTheDocument();
+    expect(screen.getByLabelText("Addon Update Available")).toBeInTheDocument();
 
     rerender(<SidebarNavIndicators item="Addons" onlinePlayerCount={0} addonUpdatesAvailable={false} />);
-    expect(screen.queryByLabelText("Addon update available")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Addon Update Available")).not.toBeInTheDocument();
   });
 });

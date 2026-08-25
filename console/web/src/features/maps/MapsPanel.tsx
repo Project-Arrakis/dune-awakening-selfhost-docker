@@ -2824,7 +2824,7 @@ function buildUserGameTargets(
 function liveMemoryFallback(row: Record<string, unknown>) {
   const configured = String(row.memory || "").trim();
   if (configured && !/^Not Available$/i.test(configured) && liveMemoryIsReadyMode(row.mode)) return configured;
-  if (liveMemoryIsPendingStatus(row.status)) return "Waiting for sample";
+  if (liveMemoryIsPendingStatus(row.status)) return "Waiting for Sample";
   return "Unallocated";
 }
 

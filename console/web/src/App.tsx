@@ -1,5 +1,5 @@
 import { Fragment, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Archive, Bug, Building2, Car, CircleArrowUp, CircleHelp, Database, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
+import { Archive, Bug, Building2, Car, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, post, setCsrfToken } from "./api/client";
 import { setServerPorts, setAdminPort, type ServerPorts } from "./api/serverPorts";
 import { serverApi, type RestartQueueTarget } from "./api/server";
@@ -304,6 +304,7 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode }[] }
 
 const COMMUNITY_CONTRIBUTORS_URL = "https://github.com/Red-Blink/dune-awakening-selfhost-docker/graphs/contributors";
 const DUNE_DOCKER_WEBSITE_URL = "https://dunedocker.app/";
+const DUNE_DOCKER_DOCS_URL = "https://docs.dunedocker.app/";
 
 function publicServerListingUrl(serverId: string) {
   return `${DUNE_DOCKER_WEBSITE_URL}server.html?id=${encodeURIComponent(serverId)}`;
@@ -318,7 +319,7 @@ export function SidebarNavIndicators({ item, onlinePlayerCount, addonUpdatesAvai
     return <span className="sidebar-nav-indicators"><span className="sidebar-nav-count sidebar-nav-count-online" title={label} aria-label={label}>{visibleOnlinePlayerCount}</span></span>;
   }
   if (item === "Addons" && addonUpdatesAvailable) {
-    return <span className="sidebar-nav-indicators"><span className="sidebar-nav-update-icon" title="Addon update available" aria-label="Addon update available"><CircleArrowUp size={14} aria-hidden="true" /></span></span>;
+    return <span className="sidebar-nav-indicators"><span className="sidebar-nav-update-icon" title="Addon Update Available" aria-label="Addon Update Available"><Download size={14} strokeWidth={2.4} aria-hidden="true" /></span></span>;
   }
   return null;
 }
@@ -345,10 +346,11 @@ function AppFooter() {
           <a href={COMMUNITY_CONTRIBUTORS_URL} target="_blank" rel="noreferrer">Community Contributors</a>
         </span>
       </div>
-      <a className="app-footer-directory" href={DUNE_DOCKER_WEBSITE_URL} target="_blank" rel="noreferrer">
-        <span>DuneDocker.app · Public Server Directory</span>
-        <ExternalLink size={14} aria-hidden="true" />
-      </a>
+      <div className="app-footer-directory">
+        <a href={DUNE_DOCKER_DOCS_URL} target="_blank" rel="noreferrer">Documentation</a>
+        <span aria-hidden="true">·</span>
+        <a href={DUNE_DOCKER_WEBSITE_URL} target="_blank" rel="noreferrer">Public Server Directory</a>
+      </div>
     </footer>
   );
 }

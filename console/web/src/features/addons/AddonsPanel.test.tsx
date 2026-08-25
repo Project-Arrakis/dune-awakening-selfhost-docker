@@ -124,8 +124,27 @@ describe("AddonsPanel updates", () => {
     expect(screen.queryByRole("button", { name: "Update" })).not.toBeInTheDocument();
   });
 
+  it("does not display addons flagged as removed", async () => {
+    const removedAddon = { ...catalogAddon, lifecycle: "removed" as const };
+    vi.mocked(addonsApi.community).mockResolvedValue({ schemaVersion: 1, sourceUrl: "https://example.test/index.json", updatedAt: "", addons: [removedAddon] });
+    vi.mocked(addonsApi.installed).mockResolvedValue({ addons: [] });
+    render(<AddonsPanel
+      pinnedAddons={[]}
+      setPinnedAddons={vi.fn()}
+      selectedAddonId=""
+      clearSelectedAddon={vi.fn()}
+      setAddonUpdateAvailable={vi.fn()}
+      confirmAction={vi.fn().mockResolvedValue(true)}
+    />);
+
+    await waitFor(() => expect(addonsApi.community).toHaveBeenCalledOnce());
+    expect(screen.queryByText(removedAddon.name)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Removed:/)).not.toBeInTheDocument();
+  });
+
   it("reports whether any installed addon has a catalog update", () => {
     expect(hasAddonUpdates([catalogAddon], [installedAddon])).toBe(true);
+    expect(hasAddonUpdates([{ ...catalogAddon, lifecycle: "removed" }], [installedAddon])).toBe(false);
     expect(hasAddonUpdates([catalogAddon], [{ ...installedAddon, version: catalogAddon.version }])).toBe(false);
     expect(hasAddonUpdates([catalogAddon], [])).toBe(false);
   });

@@ -419,13 +419,13 @@ function PerformanceCards({ performance, error }: { performance: PerformanceSnap
       label: "Memory",
       value: performance?.memory.percent == null ? "Unknown" : `${performance.memory.percent.toFixed(1)}%`,
       percent: performance?.memory.percent ?? 0,
-      detail: performance ? `${formatBytes(performance.memory.usedBytes)} / ${formatBytes(performance.memory.totalBytes)}` : "Waiting for sample"
+      detail: performance ? `${formatBytes(performance.memory.usedBytes)} / ${formatBytes(performance.memory.totalBytes)}` : "Waiting for Sample"
     },
     {
       label: "Disk",
       value: performance?.disk.percent == null ? "Unknown" : `${performance.disk.percent.toFixed(1)}%`,
       percent: performance?.disk.percent ?? 0,
-      detail: performance ? `${formatBytes(performance.disk.usedBytes)} / ${formatBytes(performance.disk.totalBytes)}` : "Waiting for sample"
+      detail: performance ? `${formatBytes(performance.disk.usedBytes)} / ${formatBytes(performance.disk.totalBytes)}` : "Waiting for Sample"
     },
     {
       label: "Uptime",
