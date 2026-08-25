@@ -2280,8 +2280,17 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
         if field_id in STAKING_EXTENSION_FIELDS:
             continue
         value = values.get(field_id, default)
-        # Same rule as UserEngine: defaults are left out so the game uses its own.
-        if not field_value_is_default(field_id, str(value), default):
+        # Same rule as UserEngine: defaults are normally left out so the game uses
+        # its own. Mixed PvP/PvE layouts are the exception: once partition selector
+        # arrays are present, False is an active instruction rather than an omitted
+        # default. Emit it explicitly into every partition's materialized INI so
+        # Overmap/Kanly and the game servers advertise the same mixed-mode state.
+        selector_mode_requires_explicit_force_flag = (
+            field_id == "force_pvp_all_partitions"
+            and target_partition
+            and profile_partition_selector_mode_active(profile, target_map, target_partition)
+        )
+        if selector_mode_requires_explicit_force_flag or not field_value_is_default(field_id, str(value), default):
             section_lines.setdefault(section, []).append(f"{key}={value}")
         if section == "/Script/DuneSandbox.PvpPveSettings" and key == "m_bShouldForceEnablePvpOnAllPartitions" and target_partition:
             if truthy(values.get("partition_pvp_enabled", "False")):
@@ -3000,6 +3009,8 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Partition PvP array line was not compiled.")
     if "+m_PvpEnabledPartitions=7" not in compiled_game or "+m_PveEnabledPartitions=9" not in compiled_game:
         raise SystemExit("Global-scoped Advanced editor PvP/PvE array lines were not compiled.")
+    if "m_bShouldForceEnablePvpOnAllPartitions=False" not in compiled_game:
+        raise SystemExit("Partition selector mode did not materialize its explicit force-PvP-all=False guard.")
     if compiled_game.count("+m_PvpEnabledPartitions=3") != 1:
         raise SystemExit("Global and partition-toggle PvP array lines for the same value were not deduplicated.")
     if "[/Script/DuneSandbox.GuildSettings]" not in compiled_game or "m_MaxGuildMembersAllowed=5" not in compiled_game:
