@@ -73,6 +73,11 @@ services:
       DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "${DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP:-0}"
       DISCORD_HOME_GUILD_ID: "${DISCORD_HOME_GUILD_ID:-}"
       DISCORD_OAUTH_OWNER_ALLOWLIST: "${DISCORD_OAUTH_OWNER_ALLOWLIST:-}"
+      # Tier 3 (RFC docs/rfc-console-auth.md §2.3/§4, #407): never wired
+      # through here despite six merged implementation phases, so it was
+      # unreachable in any real docker-compose deployment regardless of
+      # .env -- found while testing #482/#484 end to end on dune-dev.
+      CONSOLE_TOTP_ENABLED: "${CONSOLE_TOTP_ENABLED:-0}"
       ATRIUM_ALLOWED_USER_ID: "${ATRIUM_ALLOWED_USER_ID:-}"
       ATRIUM_ALLOWED_DISCORD_USER_ID: "${ATRIUM_ALLOWED_DISCORD_USER_ID:-}"
       DUNE_BOT_API_TOKEN_FILE: "${DUNE_BOT_API_TOKEN_FILE:-}"
