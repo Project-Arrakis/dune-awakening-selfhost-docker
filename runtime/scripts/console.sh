@@ -111,6 +111,11 @@ restart_console() {
   echo "Replacing Dune Docker Console container..."
   docker rm -f "$WEB_SERVICE" >/dev/null 2>&1 || true
   COMPOSE_PROJECT_NAME="$PROJECT_NAME" DUNE_COMPOSE_PROJECT_NAME="$MAIN_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT" docker compose -f "$WEB_COMPOSE" up -d "$WEB_SERVICE"
+  if [ -x runtime/scripts/start-coriolis-coordinator.sh ]; then
+    runtime/scripts/start-coriolis-coordinator.sh --if-stack-running || {
+      echo "Warning: the Coriolis Coordinator could not be started after the Console deployment." >&2
+    }
+  fi
   current_image_id="$(docker image inspect --format '{{.Id}}' redblink-dune-docker-console:dev 2>/dev/null || true)"
   if [ -n "$previous_image_id" ] && [ "$previous_image_id" != "$current_image_id" ]; then
     docker image rm "$previous_image_id" >/dev/null 2>&1 || true

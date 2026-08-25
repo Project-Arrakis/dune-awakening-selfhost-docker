@@ -3,6 +3,17 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+START_MODE="${1:-}"
+if [ -n "$START_MODE" ] && [ "$START_MODE" != "--if-stack-running" ]; then
+  echo "Usage: $0 [--if-stack-running]" >&2
+  exit 2
+fi
+if [ "$START_MODE" = "--if-stack-running" ] && ! docker ps --format '{{.Names}}' 2>/dev/null \
+  | grep -Eq '^(dune-orchestrator|dune-autoscaler|dune-director|dune-server-gateway|dune-server-survival-1|dune-server-overmap)$'; then
+  echo "Coriolis Coordinator startup skipped because the Battlegroup is stopped."
+  exit 0
+fi
+
 if [ "${DUNE_RUNTIME_PERMISSIONS_REPAIRED:-0}" != "1" ]; then
   runtime/scripts/repair-host-runtime-permissions.sh
   export DUNE_RUNTIME_PERMISSIONS_REPAIRED=1
@@ -24,7 +35,7 @@ HOST_REPO_ROOT="$(host_path "$PWD")"
 
 if [ "${DUNE_CORIOLIS_COORDINATOR_ENABLED:-1}" = "0" ]; then
   docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-  echo "Coriolis coordinator is disabled."
+  echo "Coriolis Coordinator is disabled."
   exit 0
 fi
 if [ "$HOST_UID" = "0" ] && [ "$REPO_UID" != "0" ]; then HOST_UID="$REPO_UID"; fi
@@ -35,7 +46,7 @@ fi
 
 mkdir -p runtime/generated runtime/logs
 if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
-  echo "Coriolis coordinator already running: $CONTAINER_NAME"
+  echo "Coriolis Coordinator already running: $CONTAINER_NAME"
   exit 0
 fi
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
@@ -66,4 +77,14 @@ docker run -d \
   "$IMAGE" \
   runtime/scripts/coriolis-coordinator.sh monitor >/dev/null
 
-echo "Coriolis coordinator started: $CONTAINER_NAME"
+# `docker run -d` only confirms that Docker created the container. Catch an
+# immediate runtime failure here so deployments and updates do not report a
+# successful coordinator start while the Console shows it as failed.
+sleep 1
+if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+  echo "Coriolis Coordinator exited during startup." >&2
+  docker logs --tail 40 "$CONTAINER_NAME" >&2 2>/dev/null || true
+  exit 1
+fi
+
+echo "Coriolis Coordinator started: $CONTAINER_NAME"
