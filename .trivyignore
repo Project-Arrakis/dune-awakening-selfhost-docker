@@ -42,6 +42,33 @@ CVE-2026-8458   # curl/libcurl4t64
 CVE-2026-8927   # curl/libcurl4t64
 CVE-2026-9538   # perl-base
 
+# Debian 13.6 (trixie) python3.13, added 2026-08-25 alongside issue #489's fix
+# (console/api/Dockerfile now installs python3 explicitly -- see that file's
+# comment for why the console cannot function without it). Per this file's own
+# policy, a version bump was checked for FIRST and does not exist: trivy reports
+# `Status: affected, Installed Version: 3.13.5-2+deb13u4, Fixed Version: (none)`
+# -- Debian security has published no fixed package for any of the three.
+#
+# Alternatives were measured, not assumed, before accepting these (trivy
+# --severity CRITICAL,HIGH, raw counts before this ignorefile is applied):
+#   node:24-trixie-slim              78MB   no python3     4 CRIT / 19 HIGH
+#   node:24-trixie-slim + python3    89MB   python 3.13.5  4 CRIT / 32 HIGH  <- chosen
+#   node:24-trixie (non-slim)       419MB   python 3.13.5 57 CRIT / 349 HIGH
+#   node:24-bookworm (rollback)     390MB   python 3.11.2 33 CRIT / 376 HIGH
+# Both python3-bearing base images are dramatically worse on the exact metric
+# issue #54 exists to control; the slim base plus one explicit package is the
+# cheapest way to have an interpreter at all (+11MB, +13 HIGH, +0 CRITICAL).
+#
+# Exposure is nil in this image specifically: all three CVEs are in stdlib
+# modules that nothing here imports -- `grep -lE "import (tarfile|html|xml)"
+# runtime/scripts/*.py` returns nothing. The console's Python reads one local
+# JSON file (runtime/generated/usersettings.json) written by this same repo.
+# Re-check whenever Debian publishes a fixed python3.13, and drop these
+# entirely if issue #492 removes the python3 dependency.
+CVE-2026-11940  # libpython3.13-minimal/libpython3.13-stdlib/python3.13/python3.13-minimal -- tarfile extraction filter bypass; tarfile is never imported here
+CVE-2026-15308  # same python3.13 package set -- html.parser CPU DoS; html is never imported here
+CVE-2026-7210   # same python3.13 package set -- expat/XML DoS; no XML parsing here
+
 # npm CLI's own bundled node_modules -- shipped inside node:24-trixie-slim's
 # npm installation itself, not this project's application dependencies
 # (which are unaffected -- see `npm audit`/osv-scanner, both clean). No

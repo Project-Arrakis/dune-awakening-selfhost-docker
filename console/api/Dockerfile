@@ -20,6 +20,21 @@ ENV NODE_ENV=production
 # Web Console rather than a host shell -- confirmed this was NOT already
 # present in this image, which would make that command fail here even
 # though it worked on a real host with gnupg installed via install.sh.
+# python3 must be installed EXPLICITLY, not inherited. It used to arrive for
+# free: the previous base was node:20-bookworm, whose full Debian image ships
+# python3-minimal. Commit c248780e (2026-08-20, issue #54's Trivy-driven base
+# bump) swapped that for node:24-trixie-slim, which does not -- silently
+# removing an interpreter this image genuinely needs, with no build-time or CI
+# failure to show for it (issue #489).
+#
+# It is needed because the console does NOT shell out to the host: runner.js
+# spawns `dune` locally (plain spawn, cwd=/repo), so runtime-env.sh's python3
+# calls and runner.js's own `usersettings` python3 spawn all execute in THIS
+# image. Without it `dune status` exits 127 with empty stdout and the Home
+# panel shows only "Server status is unavailable".
+#
+# Everything under runtime/scripts/*.py is pure stdlib, so the bare interpreter
+# is enough -- no python3-yaml, no pip packages.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         iproute2 \
@@ -30,6 +45,7 @@ RUN apt-get update \
         procps \
         netcat-openbsd \
         gnupg \
+        python3 \
     && rm -rf /var/lib/apt/lists/* \
     && arch="$(dpkg --print-architecture)" \
     && case "$arch" in \

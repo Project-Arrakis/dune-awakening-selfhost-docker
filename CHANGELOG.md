@@ -34,6 +34,24 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   reset (verified against this repo's real service name and `dune console`
   commands, not written from the RFC's prose), and how to tell from the audit
   log whether an enrollment you did not perform has happened on your install.
+### Fixed
+
+- **Console Home/status panel was dead on any image rebuilt from this fork's
+  `main`** (issue #489). Commit `c248780e` (2026-08-20) bumped the console base
+  image from `node:20-bookworm` to `node:24-trixie-slim` for Trivy CVE
+  remediation (#54). The full bookworm image ships `python3-minimal`; the slim
+  variant does not, and `console/api/Dockerfile` had never installed python3
+  explicitly because it was always inherited. That matters because the console
+  does not shell out to the host — `runner.js` spawns `dune` with a plain local
+  spawn (`cwd=/repo`), so `runtime-env.sh`'s python3 calls run inside the
+  console container. The result was `dune status` exiting 127 with empty
+  stdout, surfacing to operators as only "Server status is unavailable.
+  Refresh again or check Services and Logs if it persists." python3 is now
+  installed explicitly, with a regression test asserting it stays that way.
+  Scope: this fork's `main` only — `c248780e` was never taken upstream, so
+  operators on upstream releases were unaffected. Nothing failed at build time
+  or in CI, and the break stayed invisible for five days because it only
+  surfaces once the image is rebuilt.
 
 ### Changed
 
