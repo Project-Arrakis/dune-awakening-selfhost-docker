@@ -19,7 +19,8 @@ export const serviceAliases = new Map([
   ["survival-1", "survival-1"],
   ["overmap", "overmap"],
   ["orchestrator", "orchestrator"],
-  ["autoscaler", "autoscaler"]
+  ["autoscaler", "autoscaler"],
+  ["coriolis", "coriolis"]
 ]);
 
 const simpleOperations = {
@@ -515,7 +516,8 @@ export function dockerContainerForLogService(service) {
     ["survival-1", "dune-server-survival-1"],
     ["overmap", "dune-server-overmap"],
     ["orchestrator", "dune-orchestrator"],
-    ["autoscaler", "dune-autoscaler"]
+    ["autoscaler", "dune-autoscaler"],
+    ["coriolis", "dune-coriolis-coordinator"]
   ]);
   if (containers.has(normalized)) return containers.get(normalized);
   if (/^dune-server-[a-z0-9-]+$/i.test(normalized)) return normalized;

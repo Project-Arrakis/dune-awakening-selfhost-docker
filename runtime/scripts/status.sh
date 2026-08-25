@@ -361,6 +361,7 @@ for c in \
   dune-server-gateway \
   dune-server-survival-1 \
   dune-server-overmap \
+  dune-coriolis-coordinator \
   dune-orchestrator
 do
   container_rows="${container_rows}$(printf "%-26s %s" "$c" "$(container_status "$c")")"$'\n'

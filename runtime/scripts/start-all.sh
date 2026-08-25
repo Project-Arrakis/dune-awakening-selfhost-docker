@@ -3,6 +3,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+LIFECYCLE_LOCK_FILE="${DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE:-runtime/generated/battlegroup-lifecycle.lock}"
+if [ "${DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD:-0}" != "1" ]; then
+  mkdir -p "$(dirname "$LIFECYCLE_LOCK_FILE")"
+  if flock -n -E 75 -o "$LIFECYCLE_LOCK_FILE" env DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD=1 "$0" "$@"; then
+    exit 0
+  else
+    rc=$?
+    [ "$rc" -ne 75 ] || echo "Another battlegroup lifecycle operation is already running." >&2
+    exit "$rc"
+  fi
+fi
+
 runtime/scripts/repair-host-runtime-permissions.sh
 export DUNE_RUNTIME_PERMISSIONS_REPAIRED=1
 
@@ -54,7 +66,17 @@ if [ -f "$MANUAL_STOP_FILE" ] && [ "${DUNE_IGNORE_MANUAL_STOP:-0}" != "1" ]; the
   fi
 fi
 
-if [ "${DUNE_START_SKIP_POSTGRES_START:-0}" = "1" ] \
+if [ "${DUNE_START_KEEP_INFRA:-0}" = "1" ]; then
+  echo
+  echo "=== Retaining Stateful Infrastructure ==="
+  for required_container in dune-postgres dune-rmq-admin dune-rmq-game dune-text-router; do
+    if ! docker inspect -f '{{.State.Running}}' "$required_container" 2>/dev/null | grep -qx true; then
+      echo "Cannot retain infrastructure: $required_container is not running." >&2
+      exit 1
+    fi
+  done
+  echo "PostgreSQL, RabbitMQ, and TextRouter remain online during the game-farm restart."
+elif [ "${DUNE_START_SKIP_POSTGRES_START:-0}" = "1" ] \
   && docker inspect -f '{{.State.Running}}' dune-postgres 2>/dev/null | grep -qx true; then
   echo
   echo "=== Starting Postgres ==="
@@ -63,10 +85,14 @@ else
   run_timed_step "Starting Postgres" runtime/scripts/start-postgres.sh
 fi
 
-if [ "${DUNE_START_SKIP_DB_UPDATE:-0}" = "1" ]; then
+if [ "${DUNE_START_KEEP_INFRA:-0}" = "1" ] || [ "${DUNE_START_SKIP_DB_UPDATE:-0}" = "1" ]; then
   echo
   echo "=== Ensuring Database Is Up To Date ==="
-  echo "Database update already completed during fresh install bootstrap; skipping duplicate migration pass."
+  if [ "${DUNE_START_KEEP_INFRA:-0}" = "1" ]; then
+    echo "Database remains online and unchanged during the game-farm restart."
+  else
+    echo "Database update already completed during fresh install bootstrap; skipping duplicate migration pass."
+  fi
 else
   run_timed_step "Ensuring Database Is Up To Date" runtime/scripts/update-db.sh
 fi
@@ -96,9 +122,13 @@ run_timed_step "Recycling Stale World Servers" runtime/scripts/recycle-world-gam
 
 run_timed_step "Clearing Non-Core World Servers" runtime/scripts/recycle-world-game-servers.sh stop-noncore
 
-run_timed_step "Starting RabbitMQ" runtime/scripts/start-rabbitmq.sh
-
-run_timed_step "Starting TextRouter" runtime/scripts/start-text-router.sh
+if [ "${DUNE_START_KEEP_INFRA:-0}" = "1" ]; then
+  echo
+  echo "=== Keeping RabbitMQ And TextRouter Online ==="
+else
+  run_timed_step "Starting RabbitMQ" runtime/scripts/start-rabbitmq.sh
+  run_timed_step "Starting TextRouter" runtime/scripts/start-text-router.sh
+fi
 
 run_timed_step "Starting Director" runtime/scripts/start-director.sh
 
@@ -180,6 +210,12 @@ run_timed_step "Starting Autoscaler" bash -c '
 runtime/scripts/start-autoscaler.sh || {
   echo "Autoscaler did not start. Dynamic maps will not spawn automatically."
   echo "Check with: dune autoscaler status"
+}
+'
+
+run_timed_step "Starting Coriolis Coordinator" bash -c '
+runtime/scripts/start-coriolis-coordinator.sh || {
+  echo "Coriolis coordinator did not start. Funcom farm-restart requests will not be handled automatically."
 }
 '
 
