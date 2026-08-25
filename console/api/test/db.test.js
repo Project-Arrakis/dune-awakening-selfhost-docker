@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertIdentifier, bigintParam, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
+import { assertIdentifier, bigintParam, createReadOnlyMapPool, discoverDbConfig, discoverReadOnlyMapDbConfig, isReadOnlySql, quoteQualified, redactDbError, rowsResult } from "../src/db.js";
 import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 import {
   UnsupportedCapabilityError,
@@ -228,6 +228,62 @@ test("discoverDbConfig()'s postgres port precedence matches resolvePorts() exact
   assert.equal(discoverDbConfig(conflicting).port, 16432, "POSTGRES_PORT must win, matching resolvePorts()'s precedence exactly");
   assert.equal(discoverDbConfig({ DUNE_DB_PORT: "17432", PGPORT: "18432" }).port, 17432, "DUNE_DB_PORT must win over PGPORT when POSTGRES_PORT is unset");
   assert.equal(discoverDbConfig({ PGPORT: "18432" }).port, 18432, "PGPORT must be used when neither POSTGRES_PORT nor DUNE_DB_PORT is set");
+});
+
+// #468: the read-only map pool must never fall back to the admin
+// credentials -- it's either genuinely configured, or absent, so callers
+// can degrade via unsupportedMap() instead of silently running under
+// full admin privilege.
+test("discoverReadOnlyMapDbConfig returns null when the credential isn't provisioned", () => {
+  const emptyRepoRoot = mkdtempSync(join(tmpdir(), "dune-map-db-config-"));
+  assert.equal(discoverReadOnlyMapDbConfig({}, emptyRepoRoot), null);
+  rmSync(emptyRepoRoot, { recursive: true, force: true });
+});
+
+test("discoverReadOnlyMapDbConfig reads the password from runtime/secrets/, matching this repo's established secret-file convention", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-map-db-config-"));
+  const secretsDir = join(repoRoot, "runtime/secrets");
+  mkdirSync(secretsDir, { recursive: true });
+  writeFileSync(join(secretsDir, "map-readonly-db-password.txt"), "s3cret\n");
+  const config = discoverReadOnlyMapDbConfig({}, repoRoot);
+  assert.equal(config.password, "s3cret");
+  assert.equal(config.user, "dune_map_readonly");
+  assert.equal(config.source, "map read-only role");
+  rmSync(repoRoot, { recursive: true, force: true });
+});
+
+test("discoverReadOnlyMapDbConfig prefers an inline env var over the secret file", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-map-db-config-"));
+  const secretsDir = join(repoRoot, "runtime/secrets");
+  mkdirSync(secretsDir, { recursive: true });
+  writeFileSync(join(secretsDir, "map-readonly-db-password.txt"), "file-value\n");
+  const config = discoverReadOnlyMapDbConfig({ DUNE_MAP_DB_PASSWORD: "inline-value", DUNE_MAP_DB_USER: "custom_role" }, repoRoot);
+  assert.equal(config.password, "inline-value");
+  assert.equal(config.user, "custom_role");
+  rmSync(repoRoot, { recursive: true, force: true });
+});
+
+test("createReadOnlyMapPool returns null, creating no connection pool at all, when unprovisioned", () => {
+  const emptyRepoRoot = mkdtempSync(join(tmpdir(), "dune-map-db-config-"));
+  assert.equal(createReadOnlyMapPool({ repoRoot: emptyRepoRoot }), null);
+  rmSync(emptyRepoRoot, { recursive: true, force: true });
+});
+
+test("createReadOnlyMapPool's query() refuses a non-read-only statement before ever reaching the network", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-map-db-config-"));
+  const secretsDir = join(repoRoot, "runtime/secrets");
+  mkdirSync(secretsDir, { recursive: true });
+  writeFileSync(join(secretsDir, "map-readonly-db-password.txt"), "s3cret\n");
+  const pool = createReadOnlyMapPool({ repoRoot });
+  try {
+    await assert.rejects(
+      () => pool.query("DELETE FROM dune.markers"),
+      /Refusing to run a non-read-only query/
+    );
+  } finally {
+    await pool.close();
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 });
 
 test("database status exposes SSH tunneling only for a loopback database endpoint", async () => {

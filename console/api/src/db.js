@@ -1,6 +1,7 @@
+import { resolve } from "node:path";
 import pg from "pg";
 import { redact } from "./redact.js";
-import { resolvePorts } from "./config.js";
+import { readInlineOrFile, resolvePorts } from "./config.js";
 
 const { Pool } = pg;
 
@@ -78,6 +79,67 @@ export function createDb(config) {
     config: publicDbConfig(dbConfig),
     query,
     transaction,
+    close: () => pool.end()
+  };
+}
+
+// A genuinely separate, more-restricted credential for the Live Map's
+// POI/resource-field marker sources (see dune-awakening-selfhost-docker#468).
+// Deliberately NOT derived from discoverDbConfig()/the admin pool's
+// credentials -- returns null when unconfigured so callers degrade via the
+// existing unsupportedMap() pattern (see duneDb.js) rather than ever
+// falling back to the full-privilege admin connection, which would make
+// the read-only design decision decorative. Provisioning this role (a
+// one-time CREATE ROLE ... GRANT SELECT ON dune.markers,
+// dune.resourcefield_state) is a real, documented operator/DBA step --
+// not something this app can bootstrap itself.
+export function discoverReadOnlyMapDbConfig(env = process.env, repoRoot = process.cwd()) {
+  const secretsDir = resolve(repoRoot, "runtime/secrets");
+  const password = readInlineOrFile(env.DUNE_MAP_DB_PASSWORD, resolve(secretsDir, "map-readonly-db-password.txt"));
+  if (!password) return null;
+  return {
+    host: env.DUNE_DB_HOST || env.PGHOST || "127.0.0.1",
+    port: resolvePorts(env, repoRoot).postgres,
+    database: env.DUNE_DB_NAME || env.PGDATABASE || "dune",
+    user: env.DUNE_MAP_DB_USER || "dune_map_readonly",
+    password,
+    source: "map read-only role"
+  };
+}
+
+export function createReadOnlyMapPool(config) {
+  const mapConfig = discoverReadOnlyMapDbConfig(process.env, config?.repoRoot);
+  if (!mapConfig) return null;
+
+  const pool = new Pool({
+    ...mapConfig,
+    max: Number(process.env.MAP_DB_POOL_SIZE || 2),
+    connectionTimeoutMillis: Number(process.env.MAP_DB_CONNECT_TIMEOUT_MS || 3000),
+    idleTimeoutMillis: Number(process.env.MAP_DB_IDLE_TIMEOUT_MS || 10000),
+    query_timeout: Number(process.env.MAP_DB_QUERY_TIMEOUT_MS || 15000),
+    statement_timeout: Number(process.env.MAP_DB_STATEMENT_TIMEOUT_MS || 15000)
+  });
+  pool.on("error", (error) => {
+    console.warn(`Map read-only database connection interrupted: ${redactDbError(error)}`);
+  });
+
+  async function query(text, values = []) {
+    // Defense in depth on top of the role's own DB-level read-only grant --
+    // this pool must never execute a write, even one reachable only by a
+    // future call site copy-pasted from an admin-pool query.
+    if (!isReadOnlySql(text)) {
+      throw new Error("Refusing to run a non-read-only query against the map read-only pool.");
+    }
+    try {
+      return await pool.query(text, values);
+    } catch (error) {
+      throw new Error(redactDbError(error));
+    }
+  }
+
+  return {
+    config: publicDbConfig(mapConfig),
+    query,
     close: () => pool.end()
   };
 }

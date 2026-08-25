@@ -1,6 +1,7 @@
 import { assertIdentifier, bigintParam, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
 import { getBridgeRequestSummary } from "./audit.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
+import { decodeFieldId } from "./services/resourceFieldId.js";
 import { resolvePorts } from "./config.js";
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -3294,12 +3295,157 @@ export async function mapCombatPartitionRows(db, map) {
   return { capabilities: { combatState: true, farmState: hasFarm }, rows: result.rows };
 }
 
-export async function liveMapMarkers(db, map = "") {
-  const [players, vehicles, bases, storage] = await Promise.all([
+// --- Live Map: POI / resource-field sources (dune-awakening-selfhost-docker#462) ---
+//
+// Both query through the separate, more-restricted read-only pool (see
+// db.js's createReadOnlyMapPool / issue #468), never the admin pool `db`
+// every other liveMap* function uses in this file. If that pool hasn't
+// been provisioned (mapPool is null), both degrade via the same
+// capability-detection pattern every sibling source already uses -- this
+// is what makes the feature safe to ship into an existing operator's
+// deployment on update (see #475): absent the one-time role-provisioning
+// step, these two sources are silently, harmlessly absent, nothing else
+// changes.
+//
+// Both also report `count`/`lastPolledAt` on every successful poll,
+// including a genuinely empty one, so the frontend can distinguish
+// "healthy, zero results right now" (e.g. immediately after a Coriolis
+// storm) from "broken" -- see #470.
+//
+// NOTE ON VERIFICATION: the queries below are grounded in real, verified
+// SQL from Project-Arrakis/dune-resource-scanner (the markers query matches
+// that repo's pre-storm-scan.sh exactly; the field_id decode is its
+// independently-verified CONTINUATION.md section 2 algorithm, see
+// services/resourceFieldId.js). Both run correctly against a real,
+// isolated PostgreSQL instance with a schema transcribed from the columns
+// these sources actually reference (test/liveMapResourceSources.integration.test.js
+// -- including the composite dune.markers.marker column, the
+// dimension_index-to-partition_id join, a 2,000-row burst matching the
+// observed discovery-event size, and the schema-drift detection path).
+// What that test schema CANNOT verify (no access to a real, live game
+// database from this environment): the exact column set assumed here
+// matches a real production dune.markers/dune.resourcefield_state/
+// dune.world_partition on an actual deployment. Confirm against a real
+// dev deployment before this is production-verified, not just
+// schema-shape-verified.
+
+function liveMapSourceUnsupported(feature, requiredTables) {
+  return {
+    capabilities: { [feature]: false },
+    rows: [],
+    reason: `Unsupported by detected schema. Missing required table(s): ${requiredTables.join(", ")}`,
+    count: 0,
+    lastPolledAt: null
+  };
+}
+
+// field_kind_id: 0 = Flour Sand, 1 = Spice (dune-resource-scanner CONTINUATION.md, confirmed live).
+const RESOURCE_FIELD_KIND_NAMES = { 0: "Flour Sand", 1: "Spice" };
+
+export async function liveMapPois(mapPool, map = "") {
+  if (!mapPool) return liveMapSourceUnsupported("pois", ["dune.markers (map read-only role not provisioned)"]);
+  if (!(await tableExists(mapPool, "markers")) || !(await tableExists(mapPool, "map_names"))) {
+    return liveMapSourceUnsupported("pois", ["dune.markers", "dune.map_names"]);
+  }
+  const expectedColumns = await columnsFor(mapPool, "markers");
+  for (const column of ["long_range", "area_id", "map_name_id", "marker"]) {
+    if (!expectedColumns.has(column)) {
+      console.warn(`Live Map POI source: dune.markers is missing expected column "${column}" -- schema drift since this was last verified. Refusing to guess; POIs will report unsupported until this is investigated.`);
+      return liveMapSourceUnsupported("pois", [`dune.markers.${column}`]);
+    }
+  }
+  try {
+    const values = [];
+    const mapWhere = map ? (values.push(map), `and n.map_name = $${values.length}`) : "";
+    const result = await mapPool.query(`
+      select (m.marker).marker_type as marker_type,
+             (m.marker).x as x,
+             (m.marker).y as y,
+             (m.marker).z as z,
+             m.area_id,
+             n.map_name as map
+      from dune.markers m
+      join dune.map_names n on n.map_name_id = m.map_name_id
+      where m.long_range = true ${mapWhere}`, values);
+    const rows = result.rows.map((row) => ({
+      // POIs have no dune.markers.id column confirmed to exist; synthesized
+      // instead from fields the pre-storm-scan.sh query confirms are real.
+      // Stable across polls -- dune-resource-scanner confirms POI positions
+      // are static per map.
+      id: `poi:${row.marker_type}:${row.area_id}:${row.x}:${row.y}`,
+      type: "poi",
+      name: row.marker_type,
+      map: row.map,
+      // Global to the map, not scoped to a partition/instance -- a Cave at
+      // fixed coordinates exists identically in every instance. partition_id
+      // 0 is this codebase's existing "no real partition" sentinel
+      // (liveMapPartitions' own coalesce(partition_id, 0) > 0 pattern);
+      // LiveMapPanel.tsx's partition filter treats it as always-visible.
+      partition_id: 0,
+      x: Number(row.x),
+      y: Number(row.y),
+      z: Number(row.z)
+    }));
+    return { capabilities: { pois: true }, rows, count: rows.length, lastPolledAt: new Date().toISOString() };
+  } catch (error) {
+    return { capabilities: { pois: false }, rows: [], reason: `POI marker query is unsupported by this schema: ${error.message}`, count: 0, lastPolledAt: null };
+  }
+}
+
+export async function liveMapResourceFields(mapPool, map = "") {
+  if (!mapPool) return liveMapSourceUnsupported("resourceFields", ["dune.resourcefield_state (map read-only role not provisioned)"]);
+  if (!(await tableExists(mapPool, "resourcefield_state"))) {
+    return liveMapSourceUnsupported("resourceFields", ["dune.resourcefield_state"]);
+  }
+  const expectedColumns = await columnsFor(mapPool, "resourcefield_state");
+  for (const column of ["field_id", "map", "dimension_index", "field_kind_id"]) {
+    if (!expectedColumns.has(column)) {
+      console.warn(`Live Map resource-field source: dune.resourcefield_state is missing expected column "${column}" -- schema drift since this was last verified. Refusing to guess; resource fields will report unsupported until this is investigated.`);
+      return liveMapSourceUnsupported("resourceFields", [`dune.resourcefield_state.${column}`]);
+    }
+  }
+  const hasWorldPartition = await tableExists(mapPool, "world_partition");
+  try {
+    const values = [];
+    const mapWhere = map ? (values.push(map), `and r.map = $${values.length}`) : "";
+    const result = await mapPool.query(`
+      select r.field_id::text as field_id,
+             r.map,
+             r.dimension_index,
+             r.field_kind_id
+             ${hasWorldPartition ? ", wp.partition_id" : ""}
+      from dune.resourcefield_state r
+      ${hasWorldPartition ? "left join dune.world_partition wp on wp.map = r.map and wp.dimension_index = r.dimension_index" : ""}
+      where r.field_kind_id in (0, 1) ${mapWhere}`, values);
+    const rows = [];
+    for (const row of result.rows) {
+      const position = decodeFieldId(row.field_id);
+      if (!position) continue; // negative/non-numeric field_id -- skip rather than plot a garbage point
+      rows.push({
+        id: `resource:${row.field_id}`,
+        type: "resource",
+        name: RESOURCE_FIELD_KIND_NAMES[Number(row.field_kind_id)] || "Resource Field",
+        map: row.map,
+        partition_id: Number(row.partition_id || 0),
+        x: position.x,
+        y: position.y,
+        z: position.z
+      });
+    }
+    return { capabilities: { resourceFields: true }, rows, count: rows.length, lastPolledAt: new Date().toISOString() };
+  } catch (error) {
+    return { capabilities: { resourceFields: false }, rows: [], reason: `Resource-field query is unsupported by this schema: ${error.message}`, count: 0, lastPolledAt: null };
+  }
+}
+
+export async function liveMapMarkers(db, map = "", mapPool = null) {
+  const [players, vehicles, bases, storage, pois, resourceFields] = await Promise.all([
     liveMapPlayers(db, map),
     liveMapVehicles(db, map),
     liveMapBases(db, map),
-    liveMapStorage(db, map)
+    liveMapStorage(db, map),
+    liveMapPois(mapPool, map),
+    liveMapResourceFields(mapPool, map)
   ]);
   return {
     capabilities: await liveMapCapabilities(db),
@@ -3307,13 +3453,23 @@ export async function liveMapMarkers(db, map = "") {
       players: players.reason || "",
       vehicles: vehicles.reason || "",
       bases: bases.reason || "",
-      storage: storage.reason || ""
+      storage: storage.reason || "",
+      pois: pois.reason || "",
+      resourceFields: resourceFields.reason || ""
+    },
+    // Per-source freshness/count so the frontend can render "0 known, updated
+    // Ns ago" as healthy rather than indistinguishable from an error -- see #470.
+    sourceStatus: {
+      pois: { count: pois.count, lastPolledAt: pois.lastPolledAt },
+      resourceFields: { count: resourceFields.count, lastPolledAt: resourceFields.lastPolledAt }
     },
     rows: [
       ...(players.rows || []),
       ...(vehicles.rows || []),
       ...(bases.rows || []),
-      ...(storage.rows || [])
+      ...(storage.rows || []),
+      ...(pois.rows || []),
+      ...(resourceFields.rows || [])
     ]
   };
 }

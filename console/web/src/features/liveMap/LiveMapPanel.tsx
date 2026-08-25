@@ -41,6 +41,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   const [partitionId, setPartitionId] = useState("");
   const [markers, setMarkers] = useState<LiveMapMarker[]>([]);
   const [overlays, setOverlays] = useState<Record<string, string>>({});
+  const [sourceStatus, setSourceStatus] = useState<Record<string, { count: number; lastPolledAt: string | null }>>({});
   const [selected, setSelected] = useState<LiveMapMarker | null>(null);
   const [filters, setFilters] = useState<Record<string, boolean>>({ player: true, vehicle: true, base: true, storage: true });
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -66,6 +67,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
       setMarkers(rows);
       setFilters((current) => mergeMarkerTypeFilters(current, rows));
       setOverlays(result.overlays || {});
+      setSourceStatus(result.sourceStatus || {});
       setMapConfig(result.map || null);
       setMaps(result.maps || {});
       setPartitions(result.partitions || []);
@@ -134,7 +136,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   const partitionOptions = partitions.filter((row) => row.map === (activeMap?.actorMap || activeMap?.key));
   const visible = markers
     .filter((marker) => filters[String(marker.type)] !== false)
-    .filter((marker) => !partitionId || String(marker.partition_id || "") === partitionId);
+    .filter((marker) => isMarkerVisibleForPartition(marker, partitionId));
   const plotted = visible.filter((marker) => Number.isFinite(Number(marker.x)) && Number.isFinite(Number(marker.y)));
   const displayRows = visible.map((marker) => ({ ...marker, display_name: friendlyMarkerName(marker), raw_name: marker.name || marker.id }));
   const markerCounts = countMarkers(visible);
@@ -430,6 +432,11 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
       </div>
     </div>
     {Object.entries(overlays).filter(([, reason]) => reason).map(([key, reason]) => <p className="danger-note" key={key}>{key}: {reason}</p>)}
+    {Object.entries(sourceStatus).filter(([key]) => !overlays[key]).map(([key, status]) => {
+      const seconds = liveMapSecondsSince(status.lastPolledAt);
+      if (seconds === null) return null;
+      return <p className="muted live-map-source-status" key={key}>{friendlyMarkerType(key === "pois" ? "poi" : "resource")}: {status.count} known (updated {seconds}s ago)</p>;
+    })}
     {selected && <section className="drawer"><div className="panel-title"><h3>{friendlyMarkerName(selected)}</h3><button onClick={() => setSelected(null)}>Close</button></div><KeyValueGrid items={[
       ["Type", selected.type],
       ["Name", friendlyMarkerName(selected)],
@@ -492,6 +499,26 @@ export function mergeMarkerTypeFilters(current: Record<string, boolean>, markers
   const next = { ...current };
   for (const type of missing) next[type] = true;
   return next;
+}
+
+// partition_id 0 (this app's existing "no real partition" sentinel, see
+// liveMapPartitions' own coalesce(partition_id, 0) > 0 pattern) means the
+// marker is global to the map, not scoped to any one instance -- a POI like
+// a fixed Cave exists identically in every partition, so it must stay
+// visible no matter which specific partition is selected, not just hidden
+// until "All Partitions" is chosen.
+export function isMarkerVisibleForPartition(marker: Pick<LiveMapMarker, "partition_id">, partitionId: string) {
+  return !partitionId || !marker.partition_id || String(marker.partition_id) === partitionId;
+}
+
+// Distinguishes "healthy, genuinely found nothing right now" (e.g.
+// immediately after a Coriolis storm regenerates the map -- see #462/#470)
+// from "broken" -- overlays already covers the broken case via `reason`.
+export function liveMapSecondsSince(iso: string | null | undefined) {
+  if (!iso) return null;
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return null;
+  return Math.max(0, Math.round((Date.now() - then) / 1000));
 }
 
 function countMarkers(markers: LiveMapMarker[]) {

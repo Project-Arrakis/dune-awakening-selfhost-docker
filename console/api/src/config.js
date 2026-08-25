@@ -412,7 +412,7 @@ function isPrivateIpv4(value) {
   return false;
 }
 
-function readInlineOrFile(inline, file) {
+export function readInlineOrFile(inline, file) {
   if (inline) return String(inline).trim();
   try {
     return readFileSync(file, "utf8").trim();

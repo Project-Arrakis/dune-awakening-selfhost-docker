@@ -9,6 +9,43 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.3.95)
 
+### Added
+
+- **Live Map POI and resource-field layers** (issue #462, Layer 2 of its own
+  Layer 1 Eight-Hat design audit -- see issues #468-476 for the individual
+  design decisions this implements). Points of interest (Caves, Ecolabs,
+  Shipwrecks, TaxiServices) and resource fields (Spice, Flour Sand) now
+  render on the Live Map, sourced directly from `dune.markers`/
+  `dune.resourcefield_state` via a new, deliberately separate, read-only-only
+  database role -- **opt-in, one-time manual setup required**, see
+  `docs/console/live-map-resource-role.md`. Skipping that setup is safe:
+  every other console feature, including the rest of the Live Map, is
+  completely unaffected, and an operator updating from an earlier version
+  needs to do nothing unless they want these two layers.
+  - Spice/Flour Sand positions decode `resourcefield_state.field_id`'s
+    packed coordinates using an algorithm independently verified by
+    `Project-Arrakis/dune-resource-scanner` against a live deployment (see
+    `console/api/src/services/resourceFieldId.js`); positions in the outer
+    ~13% of a map's extent are a known, documented, unresolved limit of the
+    encoding itself (see that file's header comment), not a bug.
+  - The new database credential is never a fallback for the admin
+    connection -- if it isn't provisioned, these two layers are silently,
+    harmlessly absent (the same capability-detection pattern every other
+    Live Map layer already uses), never a crash or a degraded-privilege
+    admin-pool fallback.
+  - Live Map's marker legend now reports a live count and "updated Ns ago"
+    for these two sources, distinguishing "healthy, found nothing right
+    now" (e.g. immediately after a Coriolis storm regenerates the map --
+    this feature's original motivating scenario) from an actual error.
+  - Verified with 6 real PostgreSQL integration tests (isolated schema,
+    not mocked) covering: the composite `dune.markers.marker` column, the
+    `dimension_index`-to-`partition_id` join, a genuinely empty result
+    reporting healthy, a 2,000-row burst matching the real observed
+    discovery-event size, and schema-drift detection -- plus unit tests for
+    the `field_id` decode including its documented boundary case. See
+    `console/api/test/liveMapResourceSources.integration.test.js` and
+    `console/api/test/resourceFieldId.test.js`.
+
 ### Fixed
 
 - **Live Map's marker-type legend/filter list was hardcoded to 4 types** (issue

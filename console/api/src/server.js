@@ -11,7 +11,7 @@ import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
 import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, TaskManager, publicTask } from "./tasks.js";
 import { preflight } from "./preflight.js";
 import { buildDuneArgs, isDynamicServerService, isReadOnlySql, parseVehicleList, runDockerLogs, runDune, validateServiceName } from "./runner.js";
-import { createDb, quoteIdentifier } from "./db.js";
+import { createDb, createReadOnlyMapPool, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
@@ -153,6 +153,13 @@ const tasks = new TaskManager(config, {
   })
 });
 let db = createDb(config);
+// Live Map POI/resource-field sources' separate, more-restricted pool (see
+// db.js's createReadOnlyMapPool / issue #468). null when the one-time
+// operator role-provisioning step hasn't been done yet -- every caller
+// already handles that via the existing capability-detection pattern (see
+// duneDb.js's liveMapPois/liveMapResourceFields), so nothing else here
+// needs to branch on whether this is configured.
+const liveMapReadOnlyPool = createReadOnlyMapPool(config);
 const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db });
 let carePackageAutoRunning = false;
 let carePackageAutoLastRun = 0;
@@ -1551,7 +1558,7 @@ async function liveMapMarkersRoute(res, url) {
   return dbJson(res, async () => {
     const configPayload = duneDb.liveMapConfigPayload(url.searchParams.get("map") || "");
     const [markers, partitions] = await Promise.all([
-      duneDb.liveMapMarkers(db, configPayload.map.actorMap || configPayload.map.key),
+      duneDb.liveMapMarkers(db, configPayload.map.actorMap || configPayload.map.key, liveMapReadOnlyPool),
       duneDb.liveMapPartitions(db).catch(() => ({ rows: [] }))
     ]);
     return {
