@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deepDesertPartitionName, isPrimaryDeepDesertPartition } from "./MapsPanel";
+import { deepDesertLayoutCombatRow, deepDesertPartitionName, isPrimaryDeepDesertPartition } from "./MapsPanel";
 import type { PartitionCombatStateRow } from "../../api/maps";
 
 // Regression coverage for the fix to deepDesertPartitionName: it must
@@ -142,5 +142,17 @@ describe("deepDesertPartitionName", () => {
       combatRow({ configuredState: "PVP", serverDisplayName: "   " })
     );
     expect(name).toBe("Deep Desert 1 (PvP)");
+  });
+});
+
+describe("deepDesertLayoutCombatRow", () => {
+  it("keeps the selected triple-layout roles stable while configuration is running", () => {
+    expect(deepDesertLayoutCombatRow({ dimension: 0 }, combatRow({ configuredState: "PVE" }), true, "pvp")?.configuredState).toBe("PVE");
+    expect(deepDesertLayoutCombatRow({ dimension: 1 }, combatRow({ configuredState: "PVE" }), true, "pvp")?.configuredState).toBe("PVP");
+    expect(deepDesertLayoutCombatRow({ dimension: 2 }, combatRow({ configuredState: "PVE" }), true, "pvp")?.configuredState).toBe("PVP");
+  });
+
+  it("returns to the server-resolved role after configuration finishes", () => {
+    expect(deepDesertLayoutCombatRow({ dimension: 2 }, combatRow({ configuredState: "PVE" }), false, "pvp")?.configuredState).toBe("PVE");
   });
 });

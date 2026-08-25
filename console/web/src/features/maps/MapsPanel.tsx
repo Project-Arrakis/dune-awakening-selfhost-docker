@@ -1968,8 +1968,11 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         const primaryDraft = primarySurvivalSietch ? sietchDrafts[primarySurvivalSietch.partitionId] || { displayName: primarySurvivalSietch.displayName, password: primarySurvivalSietch.password } : undefined;
         const primaryDeepDesertPartition = isDeepDesertRow ? deepDesertPartitionRows.find(isPrimaryDeepDesertPartition) || deepDesertPartitionRows[0] : undefined;
         const memoryRow = memoryForDisplayedMap(liveMemory, rowName, row, primaryDeepDesertPartition);
-        const primaryDeepDesertCombatRow = isDeepDesertRow && primaryDeepDesertPartition
+        const resolvedPrimaryDeepDesertCombatRow = isDeepDesertRow && primaryDeepDesertPartition
           ? combatStateByMap["DeepDesert_1"]?.partitions.find((p) => p.partitionId === String(primaryDeepDesertPartition.partitionId || "")) || null
+          : null;
+        const primaryDeepDesertCombatRow = isDeepDesertRow && primaryDeepDesertPartition
+          ? deepDesertLayoutCombatRow(primaryDeepDesertPartition, resolvedPrimaryDeepDesertCombatRow, deepDesertLayoutConfiguring, deepDesertThirdRoleDraft)
           : null;
         const primaryDeepDesertName = isDeepDesertRow && primaryDeepDesertPartition
           ? deepDesertPartitionName(primaryDeepDesertPartition, primaryDeepDesertCombatRow)
@@ -2075,7 +2078,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             const childMapSettingsResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isMapSettingsResult(mapsResult));
             const childForceDespawnResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isForceDespawnResult(mapsResult) && !isDeepDesertLayoutResult(mapsResult));
             const childForceSpawnResultActive = Boolean(childResultActive && mapsResult && mapsResultScope === "maps" && isForceSpawnResult(mapsResult));
-            const childCombatRow = combatStateByMap["DeepDesert_1"]?.partitions.find((p) => p.partitionId === String(deepRow.partitionId || "")) || null;
+            const resolvedChildCombatRow = combatStateByMap["DeepDesert_1"]?.partitions.find((p) => p.partitionId === String(deepRow.partitionId || "")) || null;
+            const childCombatRow = deepDesertLayoutCombatRow(deepRow, resolvedChildCombatRow, deepDesertLayoutConfiguring, deepDesertThirdRoleDraft);
             const childName = deepDesertPartitionName(deepRow, childCombatRow);
             return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="DeepDesert_1" instanceName={childName} combatState={childCombatRow?.configuredState || "UNKNOWN"} combatRestartRequired={Boolean(childCombatRow?.configurationDrift)} /><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>{String(row.mode || "Dynamic")}</td><td><MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
@@ -2721,7 +2725,32 @@ function partitionMemoryValue(memoryText: string, partitionId: string, fallback:
 // Bgd.ServerDisplayName (partition -> map -> global UserEngine.ini) — the
 // name a player actually sees in-game. It takes precedence over the
 // synthesized "Deep Desert N (PvP/PvE)" text below.
-export function deepDesertPartitionName(row: Record<string, unknown>, combatRow?: PartitionCombatStateRow | null) {
+type DeepDesertCombatDisplayRow = Partial<PartitionCombatStateRow> & Pick<PartitionCombatStateRow, "configuredState">;
+
+// A layout change creates partition rows before every downstream combat-state
+// read has caught up. During that short window, show the roles the operator
+// selected instead of flashing each new row's template/default PvE badge and
+// changing it later. Once the task finishes, the server-resolved state becomes
+// authoritative again.
+export function deepDesertLayoutCombatRow(
+  row: Record<string, unknown>,
+  resolved: PartitionCombatStateRow | null,
+  configuring: boolean,
+  thirdRole: "pve" | "pvp"
+): DeepDesertCombatDisplayRow | null {
+  if (!configuring) return resolved;
+  const dimension = Number(row.dimension ?? row.dimensionIndex);
+  const configuredState = dimension === 0
+    ? "PVE"
+    : dimension === 1
+      ? "PVP"
+      : dimension === 2
+        ? (thirdRole === "pvp" ? "PVP" : "PVE")
+        : "UNKNOWN";
+  return { ...resolved, configuredState, configurationDrift: false, restartRequired: false };
+}
+
+export function deepDesertPartitionName(row: Record<string, unknown>, combatRow?: DeepDesertCombatDisplayRow | null) {
   const configuredName = String(combatRow?.serverDisplayName || "").trim();
   if (configuredName) {
     // Managed default names contain a role for readability. Always reconcile

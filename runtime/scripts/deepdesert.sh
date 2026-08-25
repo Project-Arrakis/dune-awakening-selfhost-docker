@@ -524,7 +524,7 @@ end
 }
 
 write_director_override() {
-  local count="$1" original_display_name="$2" third_role="${3:-pve}" pvp pve ids encoded_display_name
+  local count="$1" original_display_name="$2" third_role="${3:-pve}" original_global_server_pve="${4:-True}" pvp pve ids encoded_display_name
   pvp="$(pvp_partition_id)"
   pve="$(pve_partition_id)"
   ids="$(deepdesert_partition_ids | paste -sd, -)"
@@ -539,6 +539,7 @@ write_director_override() {
 ; ManagedInstanceCount=$count
 ; ManagedThirdRole=$third_role
 ; ManagedPrimaryDisplayNameBase64=$encoded_display_name
+; ManagedOriginalGlobalServerPVE=$original_global_server_pve
 
 [DeepDesert_1]
 NumExtraServers=$((count - 1))
@@ -558,6 +559,23 @@ managed_partition_ids_from_override() {
   sed -n 's/^; ManagedPartitionIds=//p' "$OVERRIDE_FILE" | tail -n1 | tr ',' '\n' | grep -E '^[0-9]+$' || true
 }
 
+managed_original_global_server_pve() {
+  [ -f "$OVERRIDE_FILE" ] || return 0
+  sed -n 's/^; ManagedOriginalGlobalServerPVE=\(True\|False\)$/\1/p' "$OVERRIDE_FILE" | tail -n1
+}
+
+current_global_server_pve() {
+  python3 runtime/scripts/usersettings.py global-values 2>/dev/null \
+    | awk -F '\t' '$1 == "server_pve" { print $2; exit }'
+}
+
+restore_original_global_server_pve() {
+  local original
+  original="$(managed_original_global_server_pve)"
+  [ "$original" = "True" ] || [ "$original" = "False" ] || return 0
+  python3 runtime/scripts/usersettings.py map-set Global server_pve "$original"
+}
+
 remove_dual_usergame_selectors() {
   local pvp="$1" pve="$2"
   # Remove only the exact values recorded by this toggle. The managed override retains
@@ -575,7 +593,7 @@ remove_dual_usergame_selectors() {
 }
 
 apply_usergame() {
-  local count="$1" third_role="${2:-pve}" pvp pve third partition_id pvp_name pve_name third_name
+  local count="$1" third_role="${2:-pve}" pvp pve third partition_id partition_role pvp_name pve_name third_name
   pvp="$(pvp_partition_id)"
   pve="$(pve_partition_id)"
   third="$(partition_id_for_dimension 2)"
@@ -604,7 +622,33 @@ apply_usergame() {
     [ -n "$partition_id" ] || continue
     python3 runtime/scripts/usersettings.py map-set Global global_pvp_enabled_partition_remove "$partition_id"
     python3 runtime/scripts/usersettings.py map-set Global global_pve_enabled_partition_remove "$partition_id"
+    partition_role="pve"
+    if [ "$partition_id" = "$pvp" ] || { [ "$count" -ge 3 ] && [ "$third_role" = "pvp" ] && [ "$partition_id" = "$third" ]; }; then
+      partition_role="pvp"
+    fi
+    # The selector arrays control routing, while these partition-scoped values
+    # control the role advertised by each game server in SELECT INSTANCE. Keep
+    # both representations synchronized; otherwise newly-created partitions
+    # inherit the template's PvE badge even though matchmaking routes them as
+    # PvP.
+    if [ "$partition_role" = "pvp" ]; then
+      python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$partition_id" partition_pvp_enabled True
+      python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$partition_id" partition_pve_enabled False
+      python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$partition_id" legacy_pvp_enabled True
+      python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$partition_id" server_pve False
+    else
+      python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$partition_id" partition_pvp_enabled False
+      python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$partition_id" partition_pve_enabled True
+      python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$partition_id" legacy_pvp_enabled False
+      python3 runtime/scripts/usersettings.py partition-set DeepDesert_1 "$partition_id" server_pve True
+    fi
   done < <(deepdesert_partition_ids)
+  # Funcom's Kanly selector ignores m_PvpEnabledPartitions while the
+  # battlegroup is globally locked to PvE. Mixed Deep Desert layouts must put
+  # the battlegroup in mixed-mode compatibility and then assign every Deep
+  # Desert partition explicitly above. Partitions not in the PvP selector
+  # remain PvE, matching the working Funcom/Kovalt configuration.
+  python3 runtime/scripts/usersettings.py map-set Global server_pve False
   python3 runtime/scripts/usersettings.py map-set Global force_pvp_all_partitions False
   python3 runtime/scripts/usersettings.py map-set Global global_pvp_enabled_partition_add "$pvp"
   if [ "$count" -ge 3 ] && [ "$third_role" = "pvp" ] && [ -n "$third" ]; then
@@ -618,24 +662,33 @@ apply_usergame() {
 }
 
 enable_layout() {
-  local count="$1" third_role="${2:-pve}" original_display_name existing_partition_ids
+  local count="$1" third_role="${2:-pve}" original_display_name original_global_server_pve existing_partition_ids
   require_postgres
   require_empty_deepdesert
   existing_partition_ids="$(running_deepdesert_partition_ids)"
   if [ -s "$OVERRIDE_FILE" ]; then
     original_display_name="$(managed_primary_display_name)"
+    original_global_server_pve="$(managed_original_global_server_pve)"
   else
     original_display_name="$(primary_display_name)"
   fi
+  if [ "$original_global_server_pve" != "True" ] && [ "$original_global_server_pve" != "False" ]; then
+    original_global_server_pve="$(current_global_server_pve)"
+  fi
+  [ "$original_global_server_pve" = "False" ] || original_global_server_pve="True"
   ensure_partitions "$count"
   # Persist every label, role, and Director setting before a newly-added
   # dimension is allowed to spawn. Previously set-active ran first, allowing
   # the third process to boot with the template's stale PvE/default settings.
   configure_sietch_dimensions "$count"
   apply_partition_labels "$count" "$third_role"
-  write_director_override "$count" "$original_display_name" "$third_role"
+  write_director_override "$count" "$original_display_name" "$third_role" "$original_global_server_pve"
   apply_usergame "$count" "$third_role"
   restart_director_if_running
+  # The synthetic single-instance warm-up state cannot encode different
+  # per-partition Kanly roles. Managed multi-instance layouts always use the
+  # game servers' native advertisements instead.
+  runtime/scripts/publish-deepdesert-overrides.sh stop >/dev/null 2>&1 || true
   activate_sietch_dimensions "$count"
   recycle_idle_deepdesert_servers "$existing_partition_ids"
   despawn_idle_dynamic_deepdesert_servers
@@ -734,6 +787,7 @@ set_layout() {
     primary="$(primary_partition_id)"
     original_display_name="$(managed_primary_display_name)"
     remove_dual_usergame_selectors "$pvp" "$pve"
+    restore_original_global_server_pve
     [ -n "$primary" ] && runtime/scripts/sietches.sh set-display "$primary" "$original_display_name" >/dev/null
     rm -f "$OVERRIDE_FILE"
     reset_single_sietch_dimension
@@ -765,6 +819,7 @@ disable_dual() {
   [ -n "$rows" ] || {
     echo "No extra DeepDesert_1 dimensions are present."
     remove_dual_usergame_selectors "$pvp" "$pve"
+    restore_original_global_server_pve
     rm -f "$OVERRIDE_FILE"
     reset_single_sietch_dimension
     restart_director_if_running
@@ -843,6 +898,7 @@ disable_dual() {
     psql -v ON_ERROR_STOP=1 -c "delete from dune.world_partition where partition_id = $partition_id and map = 'DeepDesert_1'; drop table if exists dune.event_log_p${partition_id};" >/dev/null
   done <<< "$rows"
   remove_dual_usergame_selectors "$pvp" "$pve"
+  restore_original_global_server_pve
   rm -f "$OVERRIDE_FILE"
   reset_single_sietch_dimension
   restart_director_if_running

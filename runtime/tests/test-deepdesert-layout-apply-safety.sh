@@ -20,12 +20,12 @@ sql="${*: -1}"
 case "$sql" in
   *"sum(coalesce(fs.connected_players"*) printf '%s\n' "${MOCK_CONNECTED_PLAYERS:-0}" ;;
   *"greatest(1, count(*))"*) printf '%s\n' 2 ;;
+  *"select partition_id"*"where map = 'DeepDesert_1'"*"order by dimension_index, partition_id"*) printf '%s\n' 8 33 69 ;;
   *"dimension_index = 0"*) printf '%s\n' 8 ;;
   *"dimension_index = 1"*) printf '%s\n' 33 ;;
   *"dimension_index = 2"*) printf '%s\n' 69 ;;
   *"coalesce(wp.server_id, '') <> ''"*"select partition_id"*) printf '%s\n' 8 33 ;;
   *"coalesce(wp.server_id, '') <> ''"*) printf '%s\n' '8|server-8|0' '33|server-33|0' ;;
-  *"select partition_id"*"where map = 'DeepDesert_1'"*) printf '%s\n' 8 33 69 ;;
   *) : ;;
 esac
 MOCK
@@ -100,6 +100,27 @@ if [ -z "$profile_line" ] || [ -z "$director_line" ] || [ -z "$activate_line" ] 
   cat "$calls" >&2
   exit 1
 fi
+for expected in \
+  'usersettings.py partition-set DeepDesert_1 8 partition_pvp_enabled True' \
+  'usersettings.py partition-set DeepDesert_1 8 partition_pve_enabled False' \
+  'usersettings.py partition-set DeepDesert_1 8 legacy_pvp_enabled True' \
+  'usersettings.py partition-set DeepDesert_1 8 server_pve False' \
+  'usersettings.py partition-set DeepDesert_1 33 partition_pvp_enabled False' \
+  'usersettings.py partition-set DeepDesert_1 33 partition_pve_enabled True' \
+  'usersettings.py partition-set DeepDesert_1 33 legacy_pvp_enabled False' \
+  'usersettings.py partition-set DeepDesert_1 33 server_pve True' \
+  'usersettings.py partition-set DeepDesert_1 69 partition_pvp_enabled True' \
+  'usersettings.py partition-set DeepDesert_1 69 partition_pve_enabled False' \
+  'usersettings.py partition-set DeepDesert_1 69 legacy_pvp_enabled True' \
+  'usersettings.py partition-set DeepDesert_1 69 server_pve False' \
+  'usersettings.py map-set Global server_pve False'
+do
+  if ! grep -Fxq "$expected" "$calls"; then
+    echo "FAIL: missing per-partition role setting: $expected" >&2
+    cat "$calls" >&2
+    exit 1
+  fi
+done
 
 : > "$calls"
 if (
