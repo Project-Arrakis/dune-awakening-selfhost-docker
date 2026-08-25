@@ -93,8 +93,9 @@ Developers can start with the [Official Addon Template](https://github.com/Red-B
 ## Help and Documentation
 
 - [Official Website](https://dunedocker.app/) — Project information, installation guidance, FAQ, and server directory
+- [Official Documentation](https://docs.dunedocker.app/) — Guides, feature documentation, technical references, and API documentation
 - [Discord Community](https://discord.gg/duneawakeningdocker) — Support, updates, addons, and community discussion
-- [Documentation](docs/README.md) — Technical and feature documentation
+- [Repository Documentation](docs/README.md) — Technical notes and references maintained alongside the source code
 - [Support the Project](https://ko-fi.com/redblink) — Help support development, testing, and infrastructure
 
 ## Contributing
