@@ -3,7 +3,10 @@ import type { Task } from "./setup";
 
 export type LiveMapMarker = {
   id: number | string;
-  type: "player" | "vehicle" | "base" | "storage";
+  // Every call site already treats this as an arbitrary string (String(marker.type))
+  // rather than exhaustively matching the union below -- widened so a marker type
+  // introduced later (see issue #462) type-checks without a further change here.
+  type: string;
   name?: string;
   map?: string;
   partition_id?: number;

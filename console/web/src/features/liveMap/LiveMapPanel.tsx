@@ -62,7 +62,9 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
     setLoading(true);
     try {
       const result = await liveMapApi.markers(mapKey);
-      setMarkers(applyPendingPlayerTeleports(result.rows || []));
+      const rows = applyPendingPlayerTeleports(result.rows || []);
+      setMarkers(rows);
+      setFilters((current) => mergeMarkerTypeFilters(current, rows));
       setOverlays(result.overlays || {});
       setMapConfig(result.map || null);
       setMaps(result.maps || {});
@@ -477,6 +479,19 @@ function liveMapMinimumZoom(config: LiveMapConfig | null | undefined, frame: HTM
 function clampLiveMapZoom(value: number, minimum = 0.16) {
   if (!Number.isFinite(value)) return minimum;
   return Math.max(minimum, Math.min(1, value));
+}
+
+// A marker type this app doesn't already know about (a POI/resource source
+// added later, see issue #462) must still get a legend entry and toggle —
+// filters was previously a fixed 4-key object, so any type outside that set
+// rendered pins with no way to see or hide them (issue #469). New types
+// default to visible; an operator's existing toggle choices are preserved.
+export function mergeMarkerTypeFilters(current: Record<string, boolean>, markers: LiveMapMarker[]) {
+  const missing = [...new Set(markers.map((marker) => String(marker.type)))].filter((type) => !(type in current));
+  if (!missing.length) return current;
+  const next = { ...current };
+  for (const type of missing) next[type] = true;
+  return next;
 }
 
 function countMarkers(markers: LiveMapMarker[]) {

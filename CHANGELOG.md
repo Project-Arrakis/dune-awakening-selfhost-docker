@@ -11,6 +11,22 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Fixed
 
+- **Live Map's marker-type legend/filter list was hardcoded to 4 types** (issue
+  #469, a HIGH finding from #462's Layer 1 Eight-Hat audit). `filters` state
+  only ever had `player`/`vehicle`/`base`/`storage` keys, and the sidebar
+  legend/checkbox list is rendered from `Object.keys(filters)` -- a marker
+  type outside that set (e.g. the `poi`/`resource` types #462 proposes)
+  would still render as a pin on the canvas (unmapped types default to
+  visible), but with no legend entry, no live count, and no way to toggle
+  it, making the feature invisible in its own primary UI. `filters` now
+  merges in any newly-seen marker type on every poll, defaulted to visible,
+  without disturbing an operator's existing toggle choices (new
+  `mergeMarkerTypeFilters` helper, `LiveMapPanel.markerFilters.test.ts`).
+  `LiveMapMarker.type` (`api/liveMap.ts`) is widened from a fixed 4-value
+  union to `string` to match how every call site already treated it
+  (`String(marker.type)`, never an exhaustive match) -- no behavior change,
+  just makes the type honest.
+
 - **`Release gate` was red on every PR, including `main`'s own last push** (issues
   #465, #466). Two independent causes, both found while unrelated PR #463/#464
   CI runs inherited the same failure:
