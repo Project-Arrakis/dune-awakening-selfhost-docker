@@ -31,7 +31,11 @@ grep -Fq 'DB_BACKUP_ORIGIN=restore-safety runtime/scripts/db.sh backup' runtime/
 grep -Fq 'drop table if exists dune.event_log_p${partition_id}' runtime/scripts/deepdesert.sh
 grep -Fq 'ManagedPrimaryDisplayNameBase64' runtime/scripts/deepdesert.sh
 grep -Fq 'ManagedThirdRole=$third_role' runtime/scripts/deepdesert.sh
+grep -Fq 'ManagedOriginalGlobalServerPVE=$original_global_server_pve' runtime/scripts/deepdesert.sh
 grep -Fq 'global_pvp_enabled_partition_add "$third"' runtime/scripts/deepdesert.sh
+grep -Fq 'map-set Global server_pve False' runtime/scripts/deepdesert.sh
+grep -Fq 'restore_original_global_server_pve' runtime/scripts/deepdesert.sh
+grep -Fq 'publish-deepdesert-overrides.sh stop' runtime/scripts/deepdesert.sh
 grep -Fq 'require_empty_deepdesert' runtime/scripts/deepdesert.sh
 grep -Fq 'runtime/scripts/start-director.sh' runtime/scripts/deepdesert.sh
 if grep -Eq '^[[:space:]]*runtime/scripts/restart-director\.sh' runtime/scripts/deepdesert.sh; then
