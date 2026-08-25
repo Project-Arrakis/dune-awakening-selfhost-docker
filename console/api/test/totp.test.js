@@ -14,6 +14,7 @@ import {
   verifyTotp,
   verifyTotpMatch,
   provisioningUri,
+  provisioningQrDataUri,
 } from "../src/auth/totp.js";
 
 // RFC 6238 Appendix B reference secret (ASCII "12345678901234567890", 20 bytes).
@@ -225,4 +226,24 @@ test("provisioningUri requires secret, account, and issuer", () => {
   assert.throws(() => provisioningUri({ accountName: "a", issuer: "b" }), /requires/);
   assert.throws(() => provisioningUri({ secretBase32: "X", issuer: "b" }), /requires/);
   assert.throws(() => provisioningUri({ secretBase32: "X", accountName: "a" }), /requires/);
+});
+
+test("provisioningQrDataUri renders the otpauth URI as a local PNG data URI", async () => {
+  const secretBase32 = base32Encode(Buffer.alloc(TOTP_SECRET_BYTES, 0x41));
+  const uri = provisioningUri({ secretBase32, accountName: "console-admin", issuer: "Dune Docker Console" });
+  const dataUri = await provisioningQrDataUri(uri);
+  assert.match(dataUri, /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/);
+});
+
+test("provisioningQrDataUri never performs network access (zero-egress)", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = () => { throw new Error("network access attempted"); };
+  try {
+    const secretBase32 = base32Encode(Buffer.alloc(TOTP_SECRET_BYTES, 0x42));
+    const uri = provisioningUri({ secretBase32, accountName: "console-admin", issuer: "Dune Docker Console" });
+    const dataUri = await provisioningQrDataUri(uri);
+    assert.match(dataUri, /^data:image\/png;base64,/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

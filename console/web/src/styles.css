@@ -552,6 +552,13 @@ main { padding: 22px; min-width: 0; }
 .login-password-toggle { background: none; border: none; color: #817763; cursor: pointer; font-size: .78rem; padding: 4px; justify-self: center; }
 .login-password-toggle:hover { color: #c6a56e; }
 .login-password-fields { display: grid; gap: 10px; margin-top: 8px; }
+.totp-setup-qr { width: 200px; height: 200px; justify-self: center; border-radius: 6px; background: #fff; padding: 8px; }
+.totp-setup-secret-label { margin: 0; font-size: .78rem; color: #817763; }
+.totp-setup-secret { justify-self: center; padding: 6px 10px; border-radius: 4px; background: rgba(0, 0, 0, .35); font-size: .95rem; letter-spacing: .06em; word-break: break-all; }
+.totp-recovery-codes-panel { width: min(480px, calc(100vw - 32px)); }
+.totp-recovery-codes-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.totp-recovery-codes-list code { display: block; padding: 6px 8px; border-radius: 4px; background: rgba(0, 0, 0, .35); font-size: .85rem; }
+.totp-ack-checkbox { display: flex; align-items: center; gap: 8px; justify-content: center; font-size: .85rem; margin-top: 4px; }
 .session-user-badge { display: inline-flex; align-items: center; gap: 8px; margin-right: 10px; padding: 4px 10px; border: 1px solid #3a352c; border-radius: 999px; background: #14171a; font-size: 12px; }
 .session-user-name { color: #d9cdbb; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-user-tier { text-transform: capitalize; font-weight: 600; }

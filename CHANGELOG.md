@@ -11,6 +11,30 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Changed
 
+- **Tier 3 web console login now drives TOTP enrollment, recovery, and the
+  authenticator step end-to-end (BETA, behind `CONSOLE_TOTP_ENABLED`)** (RFC
+  `docs/rfc-console-auth.md` §4/§6, issue #407 phase 7). The login form now
+  branches on the login route's own response: a `totpRequired` reply shows an
+  authenticator-code field (with a "Lost access to your authenticator?"
+  toggle to a recovery-code field when the server allows it); an
+  `enrollmentRequired`/`resetupRequired` reply shows a new setup screen with
+  a QR code (rendered server-side via the new `qrcode` dependency, entirely
+  local -- no network egress), a manual-entry fallback secret, a code-confirm
+  step, and a one-time recovery-code display gated by an explicit "I have
+  saved these codes" acknowledgment before continuing. After 3 consecutive
+  failed confirm attempts the error message names device clock skew as the
+  likely cause (RFC §2.3); the setup screen also has a "Back to sign in"
+  escape hatch at every point before confirmation succeeds. Fixed a real,
+  pre-existing bug found while building this: the shared API client treated
+  *any* 401 response as a stale session, so a wrong password (and, before
+  this diff, any Tier 3 401 status) showed a generic "session expired"
+  message instead of the real error -- the client now only treats a 401/403
+  as session-expiry when the message actually says so. `/api/auth/2fa/setup`
+  gained one new response field (`qrCodeDataUri`), additive and
+  backward-compatible. Settings-panel wiring (sending `totpCode` on password
+  rotation, #407 phase 6) and the operator rotation runbook remain separate,
+  already-tracked work.
+
 - **Synced upstream's Live Map marker overlay redesign onto this fork**
   (PR #480). Upstream (`Red-Blink/dune-awakening-selfhost-docker`) spent
   several weeks building a substantially more complete Live Map than
