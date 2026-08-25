@@ -189,7 +189,7 @@ export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, cl
     return () => window.removeEventListener("message", onMessage);
   }, [openAddon]);
 
-  const rows: AddonTableRow[] = addons.map((addon) => {
+  const rows: AddonTableRow[] = addons.filter((addon) => addon.lifecycle !== "removed").map((addon) => {
     const installedAddon = installedById.get(addon.id);
     return { ...addon, status: installedAddon ? installedAddon.status || "Installed" : "Available", installedOnly: false };
   });
@@ -210,7 +210,8 @@ export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, cl
       provenance: addon.provenance || {},
       status: addon.status || "Installed",
       installedOnly: true
-    })));
+    }))
+    .filter((addon) => addon.lifecycle !== "removed"));
   const lifecycleSummary = addonLifecycleSummary(rows);
 
   if (selectedAddonId) {
