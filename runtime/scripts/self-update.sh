@@ -1107,10 +1107,13 @@ rebuild_web_console_now() {
     fi
     return "$build_rc"
   fi
+  # Reconcile supporting services before publishing the replacement Console.
+  # Otherwise the new UI can become reachable first, capture a transient
+  # Missing/Failed snapshot, and retain it until the next manual refresh.
+  reconcile_coriolis_coordinator_after_deploy
   self_update_running restarting 94 "Restarting the updated web console."
   docker rm -f "$service" >/dev/null 2>&1 || true
   COMPOSE_PROJECT_NAME="$web_compose_project" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d --force-recreate "$service"
-  reconcile_coriolis_coordinator_after_deploy
 }
 
 reconcile_coriolis_coordinator_after_deploy() {
