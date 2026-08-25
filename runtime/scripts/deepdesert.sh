@@ -74,8 +74,8 @@ deepdesert_mode() {
 }
 
 recycle_idle_deepdesert_servers() {
-  local rows partition_id server_id connected_players mode
-  RECYCLED_DEEPDESERT_SERVERS=0
+  local existing_partition_ids="${1:-}" rows partition_id server_id connected_players mode
+  [ -n "$existing_partition_ids" ] || return 0
   mode="$(deepdesert_mode)"
   rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
     select
@@ -93,6 +93,7 @@ recycle_idle_deepdesert_servers() {
 
   while IFS='|' read -r partition_id server_id connected_players; do
     [ -n "${partition_id:-}" ] || continue
+    grep -Fxq "$partition_id" <<< "$existing_partition_ids" || continue
     if [ "${connected_players:-0}" != "0" ]; then
       echo "Skipping DeepDesert_1 partition $partition_id recycle because connected_players=$connected_players."
       continue
@@ -100,13 +101,11 @@ recycle_idle_deepdesert_servers() {
     if [ "$mode" = "dynamic" ]; then
       echo "Despawning idle dynamic DeepDesert_1 partition $partition_id so it remains offline until player demand."
       runtime/scripts/despawn-server.sh "$partition_id" --force >/dev/null
-      RECYCLED_DEEPDESERT_SERVERS=1
       continue
     fi
     echo "Recycling idle DeepDesert_1 partition $partition_id so it republishes fresh state..."
     runtime/scripts/despawn-server.sh "$partition_id" --force >/dev/null
     runtime/scripts/spawn-server.sh "$partition_id" >/dev/null
-    RECYCLED_DEEPDESERT_SERVERS=1
   done <<< "$rows"
 }
 
@@ -141,8 +140,12 @@ despawn_idle_dynamic_deepdesert_servers() {
 
 restart_director_if_running() {
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-director; then
-    echo "Restarting dune-director so DeepDesert_1 config changes take effect..."
-    runtime/scripts/restart-director.sh >/dev/null
+    echo "Reloading dune-director so DeepDesert_1 config changes take effect..."
+    # Deep Desert instances are recycled below and therefore register with the
+    # replacement Director themselves. Do not use restart-director.sh here: its
+    # general recovery path also restarts Survival_1, which would disconnect
+    # every Hagga Basin player for a Deep Desert-only configuration change.
+    runtime/scripts/start-director.sh >/dev/null
     echo "dune-director restarted."
   else
     echo "dune-director is not running. The new DeepDesert_1 config will apply on next start."
@@ -242,11 +245,42 @@ PY
   fi
 }
 
-ensure_sietch_dimensions() {
+configure_sietch_dimensions() {
   local count="$1"
   runtime/scripts/sietches.sh set-max DeepDesert_1 "$count" >/dev/null
+  echo "DeepDesert_1 maximum dimensions set to $count."
+}
+
+activate_sietch_dimensions() {
+  local count="$1"
   runtime/scripts/sietches.sh set-active DeepDesert_1 "$count" >/dev/null
   echo "DeepDesert_1 active/max dimensions set to $count."
+}
+
+running_deepdesert_partition_ids() {
+  psql_value "
+    select partition_id
+    from dune.world_partition
+    where map = 'DeepDesert_1'
+      and coalesce(server_id, '') <> ''
+    order by dimension_index, partition_id;
+  "
+}
+
+require_empty_deepdesert() {
+  local connected
+  connected="$(psql_value "
+    select coalesce(sum(coalesce(fs.connected_players, 0)), 0)
+    from dune.world_partition wp
+    left join dune.farm_state fs on fs.server_id = wp.server_id
+    where wp.map = 'DeepDesert_1';
+  " | tr -d '[:space:]')"
+  connected="${connected:-0}"
+  if [ "$connected" != "0" ]; then
+    echo "Cannot change the Deep Desert layout while $connected player(s) are connected to Deep Desert instances." >&2
+    echo "Hagga Basin does not need to restart. Wait for the Deep Desert instances to become empty and try again." >&2
+    exit 1
+  fi
 }
 
 reset_single_sietch_dimension() {
@@ -584,25 +618,26 @@ apply_usergame() {
 }
 
 enable_layout() {
-  local count="$1" third_role="${2:-pve}" original_display_name
+  local count="$1" third_role="${2:-pve}" original_display_name existing_partition_ids
   require_postgres
+  require_empty_deepdesert
+  existing_partition_ids="$(running_deepdesert_partition_ids)"
   if [ -s "$OVERRIDE_FILE" ]; then
     original_display_name="$(managed_primary_display_name)"
   else
     original_display_name="$(primary_display_name)"
   fi
   ensure_partitions "$count"
-  ensure_sietch_dimensions "$count"
+  # Persist every label, role, and Director setting before a newly-added
+  # dimension is allowed to spawn. Previously set-active ran first, allowing
+  # the third process to boot with the template's stale PvE/default settings.
+  configure_sietch_dimensions "$count"
   apply_partition_labels "$count" "$third_role"
   write_director_override "$count" "$original_display_name" "$third_role"
   apply_usergame "$count" "$third_role"
-  recycle_idle_deepdesert_servers
-  if [ "${RECYCLED_DEEPDESERT_SERVERS:-0}" = "1" ]; then
-    echo "Refreshing dune-director after DeepDesert_1 recycle so the current instances re-register cleanly..."
-    restart_director_if_running
-  else
-    restart_director_if_running
-  fi
+  restart_director_if_running
+  activate_sietch_dimensions "$count"
+  recycle_idle_deepdesert_servers "$existing_partition_ids"
   despawn_idle_dynamic_deepdesert_servers
   echo
   echo "Deep Desert layout now has $count managed instances."
@@ -684,6 +719,10 @@ set_layout() {
     echo "Cancelled."
     return 0
   fi
+  # Validate before backups, partition deletion, or any other mutation. A
+  # layout change needs fresh Deep Desert processes, but must never disconnect
+  # players or involve Hagga Basin to achieve that.
+  require_empty_deepdesert
   if [ "$target" -lt "$current" ]; then
     create_layout_safety_backup
     remove_layout_dimensions "$target" "$force"
