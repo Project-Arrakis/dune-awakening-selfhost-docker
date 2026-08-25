@@ -1,7 +1,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import pg from "pg";
 import { liveMapPois, liveMapResourceFields } from "../src/duneDb.js";
-import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
+import { pgConnectionConfig, pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
+
+const { Pool } = pg;
+
+// Exactly the grants docs/console/live-map-resource-role.md documents as the
+// one-time provisioning step -- run for real here so this test regresses if
+// that SQL is ever incomplete again. The bug this test exists to catch:
+// every other test in this file queries through pgTransactionalDb(pool),
+// the full-privilege test-admin connection -- which never hits a permission
+// boundary at all, so it could not have caught (and did not catch) that the
+// originally-shipped provisioning SQL was missing GRANT USAGE ON SCHEMA and
+// two of the four tables these functions actually need, both confirmed only
+// by running against a real, genuinely-restricted role on dune-dev.
+async function withRestrictedMapPool(pool, database, run) {
+  const roleName = `test_map_readonly_${Math.random().toString(36).slice(2, 10)}`;
+  const password = "test-password";
+  await pool.query(`create role "${roleName}" login password '${password}'`);
+  await pool.query(`grant usage on schema dune to "${roleName}"`);
+  await pool.query(`grant select on dune.markers, dune.resourcefield_state, dune.map_names, dune.world_partition to "${roleName}"`);
+  const restrictedPool = new Pool({ ...pgConnectionConfig(database), user: roleName, password, max: 2 });
+  try {
+    await run(pgTransactionalDb(restrictedPool));
+  } finally {
+    await restrictedPool.end().catch(() => {});
+    await pool.query(`drop role if exists "${roleName}"`).catch(() => {});
+  }
+}
 
 // Matches services/resourceFieldId.js's verified decode exactly (inverse of
 // it), so seeded field_id values round-trip through the real decode this
@@ -105,9 +132,13 @@ test("real PostgreSQL: liveMapPois degrades to unsupported, not a crash, when th
   assert.equal(result.rows.length, 0);
 });
 
-test("real PostgreSQL: liveMapResourceFields decodes field_id via the real, verified packing and resolves partition_id via dimension_index", async (t) => {
+test("real PostgreSQL: liveMapResourceFields decodes field_id via the real, verified packing and resolves partition_id via dimension_index, translating the display map name to the service name world_partition actually uses", async (t) => {
   await withDatabase(t, async (mapPool, pool) => {
-    await pool.query(`insert into dune.world_partition (partition_id, map, dimension_index) values (8, 'DeepDesert', 2), (11, 'DeepDesert', 5)`);
+    // world_partition uses the SERVICE name ("DeepDesert_1"); resourcefield_state
+    // uses the DISPLAY name ("DeepDesert") -- confirmed live against dune-dev.
+    // Using the display name for both here (as an earlier version of this test
+    // did) would have masked the exact join bug found on that live deployment.
+    await pool.query(`insert into dune.world_partition (partition_id, map, dimension_index) values (8, 'DeepDesert_1', 2), (11, 'DeepDesert_1', 5)`);
     // The real, documented example from dune-resource-scanner's
     // findings/2026-08-24-field-id-21bit/README.md: both DD Large-spice rows
     // decode to (-812800, -1016000, -4144).
@@ -138,7 +169,7 @@ test("real PostgreSQL: liveMapResourceFields decodes field_id via the real, veri
 
 test("real PostgreSQL: liveMapResourceFields handles a real burst without error (matching the observed ~2,000-row discovery event)", async (t) => {
   await withDatabase(t, async (mapPool, pool) => {
-    await pool.query(`insert into dune.world_partition (partition_id, map, dimension_index) values (8, 'DeepDesert', 2)`);
+    await pool.query(`insert into dune.world_partition (partition_id, map, dimension_index) values (8, 'DeepDesert_1', 2)`);
     const values = [];
     const params = [];
     for (let i = 0; i < 2000; i++) {
@@ -171,5 +202,25 @@ test("real PostgreSQL: liveMapPois warns and reports unsupported, rather than gu
     const result = await liveMapPois(mapPool, "DeepDesert");
     assert.equal(result.capabilities.pois, false);
     assert.match(result.reason, /long_range/);
+  });
+});
+
+test("real PostgreSQL: both sources work end-to-end through a role granted EXACTLY what docs/console/live-map-resource-role.md documents, no more", async (t) => {
+  await withDatabase(t, async (_adminMapPool, pool, database) => {
+    await pool.query(`insert into dune.map_names (map_name_id, map_name) values (7, 'DeepDesert')`);
+    await pool.query(`insert into dune.markers (map_name_id, area_id, long_range, marker) values (7, 12, true, row('Cave', 1, 2, 3)::dune.marker_data)`);
+    await pool.query(`insert into dune.world_partition (partition_id, map, dimension_index) values (8, 'DeepDesert_1', 2)`);
+    await pool.query(`insert into dune.resourcefield_state (field_id, map, dimension_index, field_kind_id) values ($1, 'DeepDesert', 2, 1)`, [encodeFieldId(10, 20, 30).toString()]);
+
+    await withRestrictedMapPool(pool, database, async (restrictedPool) => {
+      const pois = await liveMapPois(restrictedPool, "DeepDesert");
+      assert.equal(pois.capabilities.pois, true, `POIs must work through the exact documented grant set, got: ${pois.reason}`);
+      assert.equal(pois.count, 1);
+
+      const resources = await liveMapResourceFields(restrictedPool, "DeepDesert");
+      assert.equal(resources.capabilities.resourceFields, true, `Resource fields must work through the exact documented grant set, got: ${resources.reason}`);
+      assert.equal(resources.count, 1);
+      assert.equal(resources.rows[0].partition_id, 8);
+    });
   });
 });

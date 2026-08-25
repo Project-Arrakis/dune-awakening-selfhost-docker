@@ -3405,6 +3405,31 @@ export async function liveMapResourceFields(mapPool, map = "") {
     }
   }
   const hasWorldPartition = await tableExists(mapPool, "world_partition");
+  // dune.resourcefield_state.map holds the game's DISPLAY map name
+  // ("DeepDesert"); dune.world_partition.map holds the server-instance/
+  // service name ("DeepDesert_1") -- confirmed live against dune-dev: every
+  // world_partition row shares dimension_index=0 regardless of instance,
+  // differentiated by (map, partition_id), not by dimension_index alone, so
+  // joining on the raw display name silently matched nothing and every
+  // resource field fell back to partition_id 0. SPICE_MAP_PARTITION_ALIAS is
+  // this codebase's own existing fix for the identical display-vs-service
+  // name split (see resolveMapCombatState's use of it) -- reused here as a
+  // SQL CASE so this stays the single source of truth for the mapping.
+  const worldPartitionMapExpr = `case r.map ${Object.entries(SPICE_MAP_PARTITION_ALIAS).map(([display, service]) => `when '${display}' then '${service}'`).join(" ")} else r.map end`;
+  // Even with the name fixed, this join is a KNOWN PARTIAL match, confirmed
+  // live against dune-dev's real DeepDesert data: resourcefield_state rows
+  // carry dimension_index 0 AND 1 for the same map, but every real
+  // world_partition row on this single-instance deployment has
+  // dimension_index 0 -- so roughly half of real resource fields (the
+  // dimension_index=1 rows) never match and fall back to partition_id 0,
+  // this app's "no real partition" sentinel, meaning they render regardless
+  // of which specific partition is selected rather than being scoped to
+  // one. That's the safe direction to fail in (a field stays visible rather
+  // than silently disappearing), but what dimension_index actually
+  // distinguishes here (a second real instance not yet observed on this
+  // dev deployment? something unrelated to partitioning entirely?) is
+  // genuinely unresolved -- do not extend this alias/join logic further
+  // without new evidence from a multi-instance deployment.
   try {
     const values = [];
     const mapWhere = map ? (values.push(map), `and r.map = $${values.length}`) : "";
@@ -3415,7 +3440,7 @@ export async function liveMapResourceFields(mapPool, map = "") {
              r.field_kind_id
              ${hasWorldPartition ? ", wp.partition_id" : ""}
       from dune.resourcefield_state r
-      ${hasWorldPartition ? "left join dune.world_partition wp on wp.map = r.map and wp.dimension_index = r.dimension_index" : ""}
+      ${hasWorldPartition ? `left join dune.world_partition wp on wp.map = ${worldPartitionMapExpr} and wp.dimension_index = r.dimension_index` : ""}
       where r.field_kind_id in (0, 1) ${mapWhere}`, values);
     const rows = [];
     for (const row of result.rows) {

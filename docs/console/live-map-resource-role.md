@@ -1,6 +1,6 @@
 # Live Map: enabling the POI and resource-field layers
 
-**Status:** Current, pending live-deployment confirmation | **Last Updated:** August 2026
+**Status:** Current, verified live against a real deployment | **Last Updated:** August 2026
 
 The Live Map's POI and resource-field marker layers (points of interest like
 Caves and Ecolabs, plus spice/flour-sand fields) are **opt-in** and require a
@@ -28,8 +28,19 @@ other one-time database administration on this deployment):
 
 ```sql
 CREATE ROLE dune_map_readonly LOGIN PASSWORD '<choose-a-strong-password>';
-GRANT SELECT ON dune.markers, dune.resourcefield_state TO dune_map_readonly;
+GRANT USAGE ON SCHEMA dune TO dune_map_readonly;
+GRANT SELECT ON dune.markers, dune.resourcefield_state, dune.map_names, dune.world_partition TO dune_map_readonly;
 ```
+
+`GRANT USAGE ON SCHEMA dune` is required — PostgreSQL refuses even a plain
+existence check against a schema-qualified table without it, not just
+writes. `dune.map_names` and `dune.world_partition` are needed too: POIs are
+resolved by joining `dune.markers` to `dune.map_names`, and resource fields
+resolve their partition by joining `dune.resourcefield_state` to
+`dune.world_partition` — both real reads this role needs, confirmed by
+actually running this against a live deployment (an earlier draft of this
+doc listed only the two primary tables and failed with "permission denied"
+on both counts until corrected here).
 
 Then store the password where the console expects it, matching this repo's
 existing `runtime/secrets/` convention:
@@ -62,3 +73,24 @@ and restart the console.
 If you're updating an existing deployment, this feature is entirely additive
 and safe to skip. Nothing changes for your current setup until you
 deliberately run the one-time step above.
+
+## Known limitation: resource-field partition scoping
+
+Resource fields (Spice/Flour Sand) are matched to a specific server
+partition/instance via a join that, on a real deployment, only resolves for
+some rows — confirmed live against `dune-dev`, roughly half of DeepDesert's
+resource fields matched a real partition and half fell back to this app's
+"no real partition" sentinel (meaning they display regardless of which
+partition is selected, rather than being scoped to one). This fails in the
+safe direction — a field stays visible rather than disappearing — but the
+underlying cause (what distinguishes the unmatched rows) is not yet
+understood; see the comment above `liveMapResourceFields` in `duneDb.js` for
+the technical detail. POIs are unaffected — they're deliberately global to
+the map by design, not by fallback.
+
+## Verified against
+
+Live-tested against a real deployment (`dune-dev`, 2026-08-24): role
+provisioning, the corrected grants above, and both marker sources returning
+real data — 662 POIs and 22 resource fields on Hagga Basin, 34 POIs and 118
+resource fields on Deep Desert, alongside real online players.
