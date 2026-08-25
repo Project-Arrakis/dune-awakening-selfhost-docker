@@ -86,6 +86,7 @@ assert "runtime/scripts/start-coriolis-coordinator.sh" in start
 assert "dune-coriolis-coordinator" in stop
 assert "start-coriolis-coordinator.sh" in self_update
 assert "reconcile_coriolis_coordinator_after_deploy" in self_update
+assert "reconcile_coriolis_coordinator_after_deploy\n  self_update_running restarting 94" in self_update
 assert "--if-stack-running" in self_update
 assert "dune-orchestrator|dune-autoscaler|dune-director" in (root / "runtime/scripts/start-coriolis-coordinator.sh").read_text()
 assert "start-coriolis-coordinator.sh" in (root / "runtime/scripts/console.sh").read_text()
