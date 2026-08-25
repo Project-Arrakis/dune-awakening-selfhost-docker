@@ -3707,6 +3707,31 @@ test("live map player markers validate map filter and use parameterized transfor
   await assert.rejects(() => liveMapPlayers(db, "bad;map"), /Invalid map name/);
 });
 
+test("live map vehicle markers resolve owner_name the same way base markers do, including unclaimed vehicles", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      return {
+        rows: [
+          { id: 20, type: "vehicle", name: "BP_Sandbike_CHOAM_C", map: "Survival_1", partition_id: 1, class: "BP_Sandbike_CHOAM_C", owner_name: "Chani", x: "1", y: "2", z: "3" },
+          { id: 21, type: "vehicle", name: "BP_Buggy_C", map: "Survival_1", partition_id: 1, class: "BP_Buggy_C", owner_name: "", x: "4", y: "5", z: "6" }
+        ]
+      };
+    }
+  };
+  const result = await liveMapVehicles(db, "Survival_1");
+  assert.equal(result.rows[0].owner_name, "Chani");
+  assert.equal(result.rows[1].owner_name, "", "an unclaimed vehicle has no permission_actor_rank row, so owner_name stays empty");
+
+  const markerQuery = calls.find((call) => call.text.includes("from dune.vehicles v"));
+  assert.ok(markerQuery);
+  assert.match(markerQuery.text, /left join lateral/);
+  assert.match(markerQuery.text, /where par\.permission_actor_id = a\.id and par\.rank = 1/);
+  assert.match(markerQuery.text, /coalesce\(owner\.character_name, ''\) as owner_name/);
+});
+
 test("live map hides stored base and storage markers while preserving redeployed bases", async () => {
   const calls = [];
   const db = {
