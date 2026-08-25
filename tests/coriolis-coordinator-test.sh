@@ -90,6 +90,8 @@ assert "reconcile_coriolis_coordinator_after_deploy\n  self_update_running resta
 assert "--if-stack-running" in self_update
 assert "dune-orchestrator|dune-autoscaler|dune-director" in (root / "runtime/scripts/start-coriolis-coordinator.sh").read_text()
 assert "start-coriolis-coordinator.sh" in (root / "runtime/scripts/console.sh").read_text()
+entrypoint = (root / "console/api/entrypoint.sh").read_text()
+assert "start-coriolis-coordinator.sh --if-stack-running" in entrypoint
 assert '"dune-coriolis-coordinator": "Coriolis Coordinator"' in (root / "console/web/src/components/ReadinessTimeline.tsx").read_text()
 assert "docker rm -f dune-postgres" not in restart
 assert "docker rm -f dune-rmq" not in restart
