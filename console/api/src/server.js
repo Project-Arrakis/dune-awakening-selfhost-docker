@@ -24,7 +24,7 @@ import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityA
 import { hardwareStatusSnapshot, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { createSecondFactorStore } from "./auth/secondFactorStore.js";
-import { generateTotpSecret, provisioningUri, verifyTotpMatch } from "./auth/totp.js";
+import { generateTotpSecret, provisioningUri, provisioningQrDataUri, verifyTotpMatch } from "./auth/totp.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
 import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
 import { createMemoryBalancer } from "./services/memoryBalancer.js";
@@ -669,8 +669,9 @@ async function handleApi(req, res) {
     const { secretBytes, base32 } = generateTotpSecret();
     session.pendingTotpSecret = secretBytes; // held server-side on the in-memory session only
     const otpauthUri = provisioningUri({ secretBase32: base32, accountName: "console-admin", issuer: config.totpIssuer });
+    const qrCodeDataUri = await provisioningQrDataUri(otpauthUri);
     audit(config, sanitizedUrl(req, "/api/auth/2fa/setup"), "auth.2fa.setup", { ok: true });
-    return json(res, 200, { secret: base32, otpauthUri });
+    return json(res, 200, { secret: base32, otpauthUri, qrCodeDataUri });
   }
   if (path === "/api/auth/2fa/confirm" && req.method === "POST") {
     const session = requireEnrollmentSession(req, res);
