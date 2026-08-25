@@ -3037,21 +3037,52 @@ export function liveMapConfigPayload(selected = "") {
   };
 }
 
+// Driven by world_partition, not actors -- a freshly spun-up partition
+// (e.g. a second Hagga Basin instance nobody has spawned into yet) is a
+// real, selectable partition the instant it's registered, even with zero
+// actors placed in it. The old actors-inner-join version only ever
+// listed a partition once something existed inside it, so a brand-new
+// instance was invisible in the Partition dropdown (confirmed live: a
+// second Hagga Basin partition with 0 actors never appeared at all).
 export async function liveMapPartitions(db) {
-  if (!(await tableExists(db, "actors"))) return { rows: [] };
-  const hasWorldPartition = await tableExists(db, "world_partition");
+  if (!(await tableExists(db, "world_partition"))) {
+    if (!(await tableExists(db, "actors"))) return { rows: [] };
+    const result = await db.query(`
+      select coalesce(a.map, '') as map,
+             coalesce(a.partition_id, 0) as partition_id,
+             'Partition ' || coalesce(a.partition_id, 0)::text as name,
+             count(*)::int as marker_count
+      from dune.actors a
+      where a.transform is not null and coalesce(a.partition_id, 0) > 0
+      group by a.map, a.partition_id
+      order by map, partition_id`);
+    return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0) })) };
+  }
+  const hasActors = await tableExists(db, "actors");
   const result = await db.query(`
-    select coalesce(a.map, '') as map,
-           coalesce(a.partition_id, 0) as partition_id,
-           ${hasWorldPartition ? "coalesce(nullif(wp.label, ''), nullif(wp.map, ''), 'Partition ' || coalesce(a.partition_id, 0)::text)" : "'Partition ' || coalesce(a.partition_id, 0)::text"} as name,
-           count(*)::int as marker_count
-    from dune.actors a
-    ${hasWorldPartition ? "join dune.world_partition wp on wp.partition_id = a.partition_id" : ""}
-    where a.transform is not null
-      and coalesce(a.partition_id, 0) > 0
-      ${hasWorldPartition ? "and nullif(wp.server_id, '') is not null" : ""}
-    group by a.map, a.partition_id${hasWorldPartition ? ", wp.label, wp.map" : ""}
-    order by map, partition_id`);
+    select
+      -- wp.map is the internal instance name ("DeepDesert_1"/"Survival_1"),
+      -- but the frontend's Partition dropdown filters by the friendly game
+      -- map name actors report (see RESOURCE_FIELD_PARTITION_JOIN above for
+      -- the same translation in the other direction) -- without this, a
+      -- partition sourced from world_partition would never match either
+      -- map tab.
+      coalesce(case lower(wp.map) when 'deepdesert_1' then 'DeepDesert' when 'survival_1' then 'HaggaBasin' else wp.map end, '') as map,
+      wp.partition_id,
+      coalesce(nullif(wp.label, ''), nullif(wp.map, ''), 'Partition ' || wp.partition_id::text) as name,
+      ${hasActors ? "count(a.id) filter (where a.transform is not null)::int" : "0"} as marker_count
+    from dune.world_partition wp
+    ${hasActors ? "left join dune.actors a on a.partition_id = wp.partition_id" : ""}
+    -- Confirmed live: dungeon/ecolab/overmap sub-instances (CB_Dungeon_*,
+    -- CB_Ecolab_*, CB_Overland_*, Overmap, ...) carry a real, non-null
+    -- server_id too -- they are genuinely running server processes, just
+    -- not ones the Live Map exposes a tab for. nullif(server_id, '') alone
+    -- does not exclude them; only the two instance names the map-name
+    -- translation above actually understands are real Live Map partitions.
+    where wp.partition_id > 0 and nullif(wp.server_id, '') is not null
+      and lower(wp.map) in ('deepdesert_1', 'survival_1')
+    group by wp.partition_id, wp.map, wp.label
+    order by map, wp.partition_id`);
   return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0) })) };
 }
 
@@ -3122,6 +3153,209 @@ export async function teleportOfflinePlayerToCoords(db, playerId, { x, y, z, par
   };
 }
 
+function finiteTeleportCoordinate(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < -100000000 || number > 100000000) {
+    throw new Error(`${label} must be a finite coordinate between -100000000 and 100000000.`);
+  }
+  return number;
+}
+
+function teleportQuaternionYawDegrees(row) {
+  const x = Number(row.rotation_x || 0);
+  const y = Number(row.rotation_y || 0);
+  const z = Number(row.rotation_z || 0);
+  const w = Number(row.rotation_w || 1);
+  return Math.atan2(2 * ((w * z) + (x * y)), 1 - (2 * ((y * y) + (z * z)))) * (180 / Math.PI);
+}
+
+function safeDestinationFromTransform(row, forwardOffset, heightOffset) {
+  const storedYaw = row.yaw === null || row.yaw === undefined || row.yaw === "" ? Number.NaN : Number(row.yaw);
+  const yaw = Number.isFinite(storedYaw) ? storedYaw : teleportQuaternionYawDegrees(row);
+  const radians = yaw * (Math.PI / 180);
+  return {
+    x: Number(row.x) + (Math.cos(radians) * forwardOffset),
+    y: Number(row.y) + (Math.sin(radians) * forwardOffset),
+    z: Number(row.z) + heightOffset,
+    yaw,
+    map: String(row.map || ""),
+    partitionId: Number(row.partition_id || 0)
+  };
+}
+
+async function playerTeleportIdentity(db, actorId) {
+  const player = await resolvePlayerMutationTarget(db, actorId);
+  const result = await db.query(`
+    select coalesce(ac."user", '') as fls_id,
+           coalesce(ps.character_name, '') as character_name,
+           coalesce(a.map, '') as map,
+           coalesce(a.partition_id, 0)::int as partition_id
+    from dune.accounts ac
+    join dune.player_state ps on ps.account_id = ac.id
+    join dune.actors a on a.id = ps.player_pawn_id
+    where ac.id = $1
+    limit 1`, [player.accountId]);
+  const identity = result.rows[0];
+  if (!identity?.fls_id) throw new Error("This player has no stable FLS account ID and cannot be teleported safely.");
+  return { ...player, flsId: String(identity.fls_id), characterName: String(identity.character_name || "Player"), map: String(identity.map || ""), partitionId: Number(identity.partition_id || 0) };
+}
+
+async function teleportPlayerDestination(db, actorId) {
+  const safeActorId = intParam(actorId, "destination player id", 1);
+  const result = await db.query(`
+    select a.id, coalesce(ps.character_name, 'Unknown') as name,
+           coalesce(a.map, '') as map, coalesce(a.partition_id, 0) as partition_id,
+           ((a.transform).location).x as x, ((a.transform).location).y as y,
+           ((a.transform).location).z as z, ((a.transform).rotation).x as rotation_x,
+           ((a.transform).rotation).y as rotation_y, ((a.transform).rotation).z as rotation_z,
+           ((a.transform).rotation).w as rotation_w
+    from dune.actors a
+    join dune.player_state ps on ps.player_pawn_id = a.id
+    where a.id = $1 and a.transform is not null
+    limit 1`, [safeActorId]);
+  if (!result.rows[0]) throw new Error("The destination player no longer has a saved world position.");
+  return { ...safeDestinationFromTransform(result.rows[0], 250, 100), label: String(result.rows[0].name || "Player") };
+}
+
+async function teleportBaseDestination(db, totemId) {
+  const safeTotemId = intParam(totemId, "destination base id", 1);
+  const result = await db.query(`
+    select t.id, ${BASE_NAME_SQL} as name,
+           coalesce(owner.character_name, '') as owner_name,
+           coalesce(a.map, '') as map, coalesce(a.partition_id, 0) as partition_id,
+           ((a.transform).location).x as x, ((a.transform).location).y as y,
+           ((a.transform).location).z as z, ((a.transform).rotation).x as rotation_x,
+           ((a.transform).rotation).y as rotation_y, ((a.transform).rotation).z as rotation_z,
+           ((a.transform).rotation).w as rotation_w,
+           t.landclaim_original_global_yaw_rotation as yaw
+    from dune.totems t
+    join dune.actors a on a.id = t.id
+    left join dune.permission_actor pa on pa.actor_id = a.id
+    left join lateral (
+      select ps.character_name
+      from dune.permission_actor_rank par
+      join dune.actors player_a on player_a.id = par.player_id
+      join dune.player_state ps on ps.account_id = player_a.owner_account_id
+      where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
+      order by ps.character_name
+      limit 1
+    ) owner on true
+    where t.id = $1 and a.transform is not null
+    limit 1`, [safeTotemId]);
+  if (!result.rows[0]) throw new Error("The selected base console no longer has a saved world position.");
+  const row = result.rows[0];
+  return { ...safeDestinationFromTransform(row, 350, 150), label: String(row.name || "Base"), ownerName: String(row.owner_name || "") };
+}
+
+export async function playerTeleportDestinations(db, id) {
+  const source = await playerTeleportIdentity(db, id);
+  const [players, bases] = await Promise.all([
+    db.query(`
+      select a.id::text as id, coalesce(ps.character_name, 'Unknown') as name,
+             coalesce(ps.online_status::text, 'Offline') as online_status,
+             coalesce(a.map, '') as map, coalesce(a.partition_id, 0)::int as partition_id
+      from dune.actors a
+      join dune.player_state ps on ps.player_pawn_id = a.id
+      where a.id <> $1
+        and a.partition_id = $2
+        and a.id not in (${SYSTEM_PERSONA_PAWN_IDS.map((value) => `${value}::bigint`).join(", ")})
+        and nullif(btrim(coalesce(ps.character_name, '')), '') is not null
+        and a.transform is not null and a.class ilike '%PlayerCharacter%'
+      order by lower(coalesce(ps.character_name, '')), a.id`, [source.actorId, source.partitionId]),
+    db.query(`
+      select t.id::text as id, ${BASE_NAME_SQL} as name,
+             coalesce(owner.character_name, '') as owner_name,
+             coalesce(a.map, '') as map, coalesce(a.partition_id, 0)::int as partition_id,
+             exists (
+               select 1
+               from dune.permission_actor_rank own_rank
+               join dune.actors own_player on own_player.id = own_rank.player_id
+               where own_rank.permission_actor_id = a.id
+                 and own_rank.rank = ${PERMISSION_OWNER_RANK}
+                 and own_player.owner_account_id = $1
+             ) as is_own
+      from dune.totems t
+      join dune.actors a on a.id = t.id
+      left join dune.permission_actor pa on pa.actor_id = a.id
+      left join lateral (
+        select ps.character_name
+        from dune.permission_actor_rank par
+        join dune.actors player_a on player_a.id = par.player_id
+        join dune.player_state ps on ps.account_id = player_a.owner_account_id
+        where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
+        order by ps.character_name
+        limit 1
+      ) owner on true
+      where a.transform is not null and a.partition_id = $2
+      order by is_own desc, lower(coalesce(owner.character_name, '')), lower(${BASE_NAME_SQL}), t.id`, [source.accountId, source.partitionId])
+  ]);
+  return { players: players.rows, bases: bases.rows };
+}
+
+export async function teleportPlayer(db, id, body = {}) {
+  const source = await playerTeleportIdentity(db, id);
+  if (!playerOnline(source)) throw new Error("The player must be online to use live teleport.");
+    const mode = String(body.mode || "coordinates");
+    let destination;
+    if (mode === "player") {
+      destination = await teleportPlayerDestination(db, body.destinationId);
+      if (Number(body.destinationId) === source.actorId) throw new Error("Choose a different destination player.");
+    } else if (mode === "base") {
+      destination = await teleportBaseDestination(db, body.destinationId);
+    } else if (mode === "coordinates") {
+      destination = {
+        x: finiteTeleportCoordinate(body.x, "X"),
+        y: finiteTeleportCoordinate(body.y, "Y"),
+        z: finiteTeleportCoordinate(body.z, "Z"),
+        partitionId: source.partitionId,
+        map: source.map,
+        label: "the selected coordinates"
+      };
+    } else {
+      throw new Error("Unsupported teleport destination type.");
+    }
+    if (mode !== "coordinates" && destination.partitionId !== source.partitionId) {
+      throw new Error("Live teleport can only move a player within their current Sietch or map. Choose a destination on the same map.");
+    }
+    return {
+      playerId: source.flsId,
+      x: destination.x,
+      y: destination.y,
+      z: destination.z,
+      yaw: Number.isFinite(destination.yaw) ? destination.yaw : 0,
+      message: `${source.characterName} will be teleported near ${destination.label}.`
+    };
+}
+
+// dune.actors.class is a raw Unreal blueprint path (e.g.
+// "/Game/.../BP_Sandbike_CHOAM.BP_Sandbike_CHOAM_C"), not a clean type
+// name -- same detection LiveMapPanel.tsx's friendlyMarkerName() already
+// does client-side for the marker's display title, reused here so the
+// Layers legend can expand "Vehicle" into real per-type sub-filters the
+// same way Ores & Metals/Scrap & Wrecks already do. Order matters: the
+// Assault check must run before the generic Ornithopter one so it isn't
+// swallowed by it.
+const VEHICLE_CLASS_SUBTYPE_PATTERNS = [
+  [/sandbike/i, "Sandbike"],
+  [/buggy/i, "Buggy"],
+  [/sandcrawler/i, "SandCrawler"],
+  [/treadwheel/i, "TreadWheel"],
+  [/container/i, "ContainerVehicle"],
+  [/tank/i, "Tank"],
+  [/assault.*ornithopter|ornithopter.*assault/i, "AssaultOrnithopter"],
+  [/light.*ornithopter|ornithopter.*light/i, "LightOrnithopter"],
+  [/medium.*ornithopter|ornithopter.*medium/i, "MediumOrnithopter"],
+  [/transport.*ornithopter|ornithopter.*transport/i, "TransportOrnithopter"],
+  [/ornithopter/i, "Ornithopter"]
+];
+export function vehicleSubtypeFromClass(rawClass) {
+  const cls = String(rawClass || "");
+  for (const [pattern, subtype] of VEHICLE_CLASS_SUBTYPE_PATTERNS) {
+    if (pattern.test(cls)) return subtype;
+  }
+  return "Other";
+}
+
 export async function liveMapVehicles(db, map = "") {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "vehicles"))) return unsupportedMap("vehicles", ["dune.actors", "dune.vehicles"]);
   const hasWorldPartition = await tableExists(db, "world_partition");
@@ -3136,14 +3370,29 @@ export async function liveMapVehicles(db, map = "") {
              coalesce(a.map, '') as map,
              coalesce(a.partition_id, 0) as partition_id,
              coalesce(a.class, '') as class,
+             coalesce(owner.character_name, '') as owner_name,
              ((a.transform).location).x as x,
              ((a.transform).location).y as y,
              ((a.transform).location).z as z
       from dune.vehicles v
       join dune.actors a on a.id = v.id
+      -- A vehicle IS its own permission actor (see vehiclePermissionActor's
+      -- comment above) -- no dune.permission_actor join needed, just rank 1
+      -- off dune.permission_actor_rank directly. An unclaimed vehicle has no
+      -- such row at all, so this stays a left join and owner_name coalesces
+      -- to empty, same as a base with no owner.
+      left join lateral (
+        select ps.character_name
+        from dune.permission_actor_rank par
+        join dune.actors player_a on player_a.id = par.player_id
+        join dune.player_state ps on ps.account_id = player_a.owner_account_id
+        where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
+        order by ps.character_name
+        limit 1
+      ) owner on true
       where a.transform is not null ${partitionWhere} ${where}
       order by a.map, a.partition_id, a.id`, values);
-    return { capabilities: { vehicles: true }, rows: result.rows.map(normalizeMarker) };
+    return { capabilities: { vehicles: true }, rows: result.rows.map((row) => ({ ...normalizeMarker(row), subtype: vehicleSubtypeFromClass(row.class) })) };
   } catch (error) {
     return { capabilities: { vehicles: false }, rows: [], reason: `Vehicle marker transform query is unsupported by this schema: ${error.message}` };
   }
@@ -3221,9 +3470,11 @@ export async function liveMapBases(db, map = "") {
   const partitionWhere = validActorPartitionClause(hasWorldPartition, "a");
   try {
     const result = await db.query(`
-      select b.id,
+      select min(b.id) as id,
              'base' as type,
-             coalesce(pa.actor_name, 'Base ' || b.id::text) as name,
+             ${BASE_NAME_SQL} as name,
+             ${BASE_TYPE_SQL} as base_type,
+             coalesce(owner.character_name, '') as owner_name,
              coalesce(a.map, '') as map,
              coalesce(a.partition_id, 0) as partition_id,
              coalesce(a.class, '') as class,
@@ -3235,9 +3486,18 @@ export async function liveMapBases(db, map = "") {
       join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
       join dune.actors a on a.id = afe.actor_id
       left join dune.permission_actor pa on pa.actor_id = a.id
+      left join lateral (
+        select ps.character_name
+        from dune.permission_actor_rank par
+        join dune.actors player_a on player_a.id = par.player_id
+        join dune.player_state ps on ps.account_id = player_a.owner_account_id
+        where par.permission_actor_id = a.id
+        order by par.rank asc, ps.character_name asc
+        limit 1
+      ) owner on true
       where a.transform is not null ${partitionWhere} ${where} ${storedBaseExclusion}
-      group by b.id, pa.actor_name, a.id, a.map, a.partition_id, a.class, a.transform
-      order by a.map, a.partition_id, b.id`, values);
+      group by pa.actor_name, owner.character_name, a.id, a.map, a.partition_id, a.class, a.transform
+      order by a.map, a.partition_id, min(b.id)`, values);
     return { capabilities: { bases: true }, rows: result.rows.map(normalizeMarker) };
   } catch (error) {
     return { capabilities: { bases: false }, rows: [], reason: `Base marker transform query is unsupported by this schema: ${error.message}` };
@@ -3292,6 +3552,146 @@ export async function mapCombatPartitionRows(db, map) {
     where 1=1 ${where}
     order by wp.dimension_index, wp.partition_id`, values);
   return { capabilities: { combatState: true, farmState: hasFarm }, rows: result.rows };
+}
+
+// dune.resourcefield_state.map ("DeepDesert"/"HaggaBasin") and
+// dune.world_partition.map ("DeepDesert_1"/"Survival_1") are different
+// namespaces -- same mismatch documented at partitionRestartTargets below --
+// so the join has to translate the friendly map name into world_partition's
+// internal instance-name convention rather than comparing them directly.
+const RESOURCE_FIELD_PARTITION_JOIN = `
+    left join dune.world_partition wp
+      on lower(wp.map) = case lower(rfs.map)
+           when 'deepdesert' then 'deepdesert_1'
+           when 'haggabasin' then 'survival_1'
+           else lower(rfs.map)
+         end
+      and wp.dimension_index = rfs.dimension_index`;
+
+// Currently-active spice fields of any size for the live map's "Active
+// Spice Blows" layer. field_kind_id=1 is spice; value_remaining tiers are
+// 5,000/150,000/2,500,000 for Small/Medium/Large -- `size` is computed by
+// threshold (not exact match), so a field mid-harvest still classifies as
+// its spawned tier until it drops below that tier's own floor (a known,
+// accepted imprecision, same class of edge case the original Large-only
+// threshold already had). Left join, not inner, since a dimension can
+// still lack a world_partition row (confirmed live) -- partition_id stays
+// null rather than a sentinel in that case.
+export async function liveMapSpiceFieldRows(db, map = "") {
+  if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
+    return unsupportedMap("spiceActive", ["dune.resourcefield_state", "dune.world_partition"]);
+  }
+  const values = [];
+  const where = mapFilterClause(map, values, "rfs");
+  const result = await db.query(`
+    select rfs.field_id::text as field_id,
+           rfs.map,
+           wp.partition_id,
+           rfs.value_remaining,
+           case
+             when rfs.value_remaining > 150000 then 'Large'
+             when rfs.value_remaining > 5000 then 'Medium'
+             else 'Small'
+           end as size
+    from dune.resourcefield_state rfs
+    ${RESOURCE_FIELD_PARTITION_JOIN}
+    where rfs.field_kind_id = 1 ${where}
+    order by rfs.field_id`, values);
+  return {
+    capabilities: { spiceActive: true },
+    rows: result.rows.map((row) => ({ ...row, partition_id: row.partition_id == null ? null : Number(row.partition_id), value_remaining: Number(row.value_remaining) }))
+  };
+}
+
+// Currently-active flour sand fields (field_kind_id=0) -- a single fixed
+// tier (60,000), not size-classed like spice, so no value threshold needed.
+export async function liveMapFlourSandFieldRows(db, map = "") {
+  if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
+    return unsupportedMap("flourSand", ["dune.resourcefield_state", "dune.world_partition"]);
+  }
+  const values = [];
+  const where = mapFilterClause(map, values, "rfs");
+  const result = await db.query(`
+    select rfs.field_id::text as field_id,
+           rfs.map,
+           wp.partition_id,
+           rfs.value_remaining
+    from dune.resourcefield_state rfs
+    ${RESOURCE_FIELD_PARTITION_JOIN}
+    where rfs.field_kind_id = 0 ${where}
+    order by rfs.field_id`, values);
+  return {
+    capabilities: { flourSand: true },
+    rows: result.rows.map((row) => ({ ...row, partition_id: row.partition_id == null ? null : Number(row.partition_id), value_remaining: Number(row.value_remaining) }))
+  };
+}
+
+// dune.markers is the static-POI atlas (23,413+ entries on a full server --
+// caves, ore veins, scrap wrecks, vendors, hazards, etc). `marker` is a
+// composite type with real named fields (marker_type, x, y, z, payload_type)
+// -- confirmed live, no need for the text-parsing SPLIT_PART approach some
+// third-party docs use. One generic, parameterized query serves every
+// category: add a pattern-table entry for a new category and it works with
+// no new SQL.
+// Suffix-only (no leading %) -- a substring match on "%ore%" was sweeping in
+// HarkoRecustomization (an unrelated NPC/customization POI, confirmed live)
+// because "HarkoRecustomization" contains "kore" -> "ore". All real resource
+// marker_types follow a strict {Material}{Ore|Pickup|Rock} suffix, so
+// matching the suffix instead both fixes that false positive and is what
+// the live map's Ore/Pickup sub-grouping keys off of.
+const POI_CATEGORY_PATTERNS = {
+  ore: ["%Ore", "%Pickup", "%Rock"],
+  scrap: ["%scrap%", "%fuelcell%"],
+  flora: ["%bush%", "%primrose%", "%saguaro%"],
+  hazard: ["%hazard%"],
+  // Split out of "poi" into its own category -- confirmed live these are
+  // the only 3 marker_types that ever matched the old %camp%/%outpost%
+  // patterns, so pulling them out doesn't leave any other POI uncovered.
+  enemy: ["EnemyCamp", "EnemyLaborOutpost", "EnemyOutpost"],
+  // Same split, for the same reason: Fortress/House Representative/Trainer
+  // used to live inside "poi" as sub-grouped subtypes -- promoted to their
+  // own top-level categories so each gets its own legend row/checkbox
+  // instead of only being reachable by first expanding POI's.
+  fortress: ["%fortress%"],
+  house_representative: ["%houserepresentative%"],
+  trainer: ["%trainer%"],
+  poi: [
+    "%cave%", "%ecolab%", "%sietch%",
+    "%dojo%", "%vendor%", "%choam%", "%bank%", "%tradingpost%",
+    "%taxi%", "%imperialconsulate%", "%shipwreck%"
+  ]
+};
+
+export async function liveMapPoiMarkers(db, map, category) {
+  const patterns = POI_CATEGORY_PATTERNS[category];
+  if (!patterns) throw new Error(`Unknown POI category: ${category}`);
+  if (!(await tableExists(db, "markers")) || !(await tableExists(db, "map_names"))) {
+    return unsupportedMap(category, ["dune.markers", "dune.map_names"]);
+  }
+  const values = [patterns];
+  let where = "";
+  if (map) {
+    const safe = validateMapName(map);
+    if (safe) {
+      values.push(safe);
+      where = ` and mn.map_name = $${values.length}`;
+    }
+  }
+  const result = await db.query(`
+    select m.marker_hash_id::text as id,
+           (m.marker).marker_type as marker_type,
+           (m.marker).x as x,
+           (m.marker).y as y,
+           (m.marker).z as z,
+           coalesce(mn.map_name, '') as map
+    from dune.markers m
+    join dune.map_names mn on mn.map_name_id = m.map_name_id
+    where (m.marker).marker_type ilike any($1) and (m.marker).marker_type not ilike 'NoIcon' ${where}
+    order by m.marker_hash_id`, values);
+  return {
+    capabilities: { [category]: true },
+    rows: result.rows.map((row) => ({ ...row, x: Number(row.x), y: Number(row.y), z: Number(row.z) }))
+  };
 }
 
 export async function liveMapMarkers(db, map = "") {
@@ -4066,8 +4466,16 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const values = [];
   let having = "";
   if (searching) {
-    values.push(`%${q}%`);
-    having = `having (${BASE_NAME_SQL}) ilike $${values.length} or (${BASE_TYPE_SQL}) ilike $${values.length} or coalesce(owner.character_name, '') ilike $${values.length}`;
+    const query = String(q).trim();
+    values.push(`%${query}%`);
+    const fuzzySearchParameter = values.length;
+    const exactBaseId = /^\d+$/.test(query) ? Number(query) : null;
+    let exactIdCondition = "";
+    if (Number.isSafeInteger(exactBaseId) && exactBaseId > 0) {
+      values.push(exactBaseId);
+      exactIdCondition = ` or min(b.id) = $${values.length}`;
+    }
+    having = `having (${BASE_NAME_SQL}) ilike $${fuzzySearchParameter} or (${BASE_TYPE_SQL}) ilike $${fuzzySearchParameter} or coalesce(owner.character_name, '') ilike $${fuzzySearchParameter}${exactIdCondition}`;
   }
   values.push(safePageSize, offset);
   const limitParamIndex = values.length - 1;

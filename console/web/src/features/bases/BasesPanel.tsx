@@ -20,6 +20,7 @@ type BasesPanelProps = {
   confirmAction: (message: string, options?: { title?: string; confirmLabel?: string; warning?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
   restartGate: RestartGate;
   formatMutationResult: (result: unknown) => string;
+  focusRequest?: { baseId: string; nonce: number };
 };
 
 type SharedWithEntry = { name: string; rank: number; label: string };
@@ -339,7 +340,7 @@ function renderBaseCell(row: Record<string, unknown>, column: string, instanceNa
   );
 }
 
-export function BasesPanel({ onError, confirmAction, restartGate, formatMutationResult }: BasesPanelProps) {
+export function BasesPanel({ onError, confirmAction, restartGate, formatMutationResult, focusRequest }: BasesPanelProps) {
   const [q, setQ] = useState(() => basesCache?.q ?? "");
   const [submittedQ, setSubmittedQ] = useState(() => basesCache?.q ?? "");
   const [page, setPage] = useState(() => basesCache?.page ?? 0);
@@ -420,6 +421,17 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     }
     setPage(0);
   }, [submittedQ]);
+
+  useEffect(() => {
+    const id = String(focusRequest?.baseId || "").trim();
+    if (!id || !/^\d+$/.test(id)) return;
+    basesCache = null;
+    setQ(id);
+    setSubmittedQ(id);
+    setPage(0);
+    setExpandedTab("power");
+    setExpandedBaseId(id);
+  }, [focusRequest?.nonce]);
 
   function submitSearch() {
     setSubmittedQ(q);
@@ -1036,11 +1048,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   // Must stay above the `loading` early return -- a hook after it changes the
   // hook count between renders.
   useEffect(() => {
-    if (!expandedBaseId || lastExpandedRef.current === expandedBaseId) {
-      lastExpandedRef.current = expandedBaseId;
-      return;
-    }
-    lastExpandedRef.current = expandedBaseId;
+    if (!expandedBaseId || lastExpandedRef.current === expandedBaseId) return;
     // Synchronous, not deferred to a frame: the expanded row is committed by the
     // time this effect runs, and a requestAnimationFrame callback never fires
     // while the tab is backgrounded -- which would silently drop the focus move.
@@ -1060,9 +1068,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     //
     // Optional call: jsdom does not implement scrollIntoView, and scrolling is a
     // nicety -- the focus move is the part that matters.
-    const panel = document.querySelector<HTMLElement>(".bases-table tbody tr.expanded-row");
-    (panel ?? tab)?.scrollIntoView?.({ block: "nearest" });
-  }, [expandedBaseId]);
+    const panel = document.querySelector<HTMLElement>(".bases-expanded-tabs");
+    const target = panel ?? tab;
+    if (!target) return;
+    lastExpandedRef.current = expandedBaseId;
+    target.scrollIntoView?.({ block: "nearest" });
+  }, [expandedBaseId, rows]);
 
   if (loading) {
     return <section className="panel">
@@ -1297,7 +1308,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           value={q}
           onChange={(event) => setQ(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") submitSearch(); }}
-          placeholder="Search name, type, or owner"
+          placeholder="Search ID, name, type, or owner"
         />
         <button onClick={submitSearch}>Search</button>
         <button onClick={handleClearSearch} disabled={!q && !submittedQ}>Clear</button>
