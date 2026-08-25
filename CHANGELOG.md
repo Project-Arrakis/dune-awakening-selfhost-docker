@@ -9,6 +9,51 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.3.95)
 
+### Changed
+
+- **Synced upstream's Live Map marker overlay redesign onto this fork**
+  (PR #480). Upstream (`Red-Blink/dune-awakening-selfhost-docker`) spent
+  several weeks building a substantially more complete Live Map than
+  this fork's own in-progress Layer 2 work under #462 (draft PR #478,
+  closed unmerged -- see below): real in-game-style marker art (~70 new
+  `.webp`/`.png` assets replacing both upstream's placeholders and this
+  fork's own #463 `lucide-react`/game-icons.net icons), spice-field size
+  tiers (`SPICE_TIER_TYPES`), per-subtype layer filtering
+  (`subtypeFilters`, `EXPANDABLE_KEYS`), Coriolis storm seed tracking
+  (`coriolisSeed.js`), and a much richer marker overlay (hover/pin
+  facts+actions, keyboard-accessible, teleport picker, "Open in
+  Bases"/"Open in Vehicles"). Cherry-picked (not merged) the 3 upstream
+  commits that are genuinely live-map-scoped -- `e108abaa` (mobile
+  Safari marker-shape fix), `7edf6044` (base markers link to base
+  details), `2227acc2` (the marker redesign itself, upstream #193) --
+  rather than a full `upstream/main` merge, after a first full-merge
+  attempt was aborted for silently deleting three of this fork's own
+  addon-integration functions (`addonOpsContainerHealth`,
+  `addonOpsPostgresHealth`, `addonOpsRabbitmqHealth`, used by
+  `dune-ops-observability-addon`) unrelated to live-map entirely.
+  `LiveMapMarker.type` (`api/liveMap.ts`) goes from the plain `string`
+  #469's fix widened it to back to a real discriminated union (now
+  covering every marker/subtype category upstream's redesign
+  introduces) -- every call site already treated it as one of a known
+  set, so this is a correctness tightening, not a behavior change.
+  **Operators upgrading need no action**: no schema migration, no new
+  env var, no changed default -- this only changes the Live Map
+  feature's own rendering/query surface.
+
+- **Closed PR #478 (this fork's own #462 Layer 2 draft) unmerged, in
+  favor of #480.** Its query logic and packed-`field_id` decode
+  (`resourceFieldId.js`) are fully duplicated by what #480 brought in
+  from upstream (`spiceFieldDecode.js` -- both independently arrived at
+  the identical 21-bit two's-complement coordinate-packing scheme). The
+  one piece of #478 *not* duplicated -- an isolated, read-only-only
+  Postgres role/connection pool for the map-polling read path
+  (`createReadOnlyMapPool()`), vs. upstream's `liveMapPoi`/`liveMapSpice`
+  reading through the same shared admin pool as every write-capable
+  route -- is tracked as its own scoped follow-up in issue #481 rather
+  than resurrected against #480's different implementation underneath
+  it. `feat/462-live-resource-map` (the closed PR's branch) is
+  intentionally not deleted, so #481 can recover that diff.
+
 ### Fixed
 
 - **Live Map's marker-type legend/filter list was hardcoded to 4 types** (issue
@@ -92,6 +137,14 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   (surfacing POIs and resource fields on the map) renders with a
   reasonable default the moment it ships, with no frontend follow-up
   required.
+  **Superseded (2026-08-25, #480):** upstream shipped its own, far more
+  complete Live Map marker redesign (real in-game-style `.webp`/`.png`
+  art per marker/subtype, cherry-picked into this fork rather than
+  rebuilt independently -- see the "Synced upstream's Live Map..." entry
+  below). The `lucide-react`-based icon mapping this entry describes
+  (`LIVE_MAP_MARKER_ICONS`/`liveMapMarkerIcon()`) no longer exists in
+  `LiveMapPanel.tsx` as of #480 -- left here as accurate history of what
+  #463 shipped at the time, not as a description of current behavior.
 
 ### Fixed
 
