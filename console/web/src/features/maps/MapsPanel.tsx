@@ -1617,6 +1617,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       details: [
         { label: "Instances", value: `${deepDesertInstanceCount} → ${instances}` },
         ...(instances === 3 ? [{ label: "Third Instance", value: deepDesertThirdRoleDraft === "pvp" ? "PvP" : "PvE" }] : []),
+        { label: "Impact", value: "Running Deep Desert instances will restart. Hagga Basin and other maps stay online." },
         ...(reducing ? [{ label: "Safety", value: "A database safety backup will be created first." }] : []),
         ...(reducing ? [{ label: "Impact", value: "Removed instances must be empty and will be stopped before removal.", tone: "danger" as const }] : [])
       ]

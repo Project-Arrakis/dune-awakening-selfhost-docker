@@ -32,6 +32,41 @@ grep -Fq 'drop table if exists dune.event_log_p${partition_id}' runtime/scripts/
 grep -Fq 'ManagedPrimaryDisplayNameBase64' runtime/scripts/deepdesert.sh
 grep -Fq 'ManagedThirdRole=$third_role' runtime/scripts/deepdesert.sh
 grep -Fq 'global_pvp_enabled_partition_add "$third"' runtime/scripts/deepdesert.sh
+grep -Fq 'require_empty_deepdesert' runtime/scripts/deepdesert.sh
+grep -Fq 'runtime/scripts/start-director.sh' runtime/scripts/deepdesert.sh
+if grep -Eq '^[[:space:]]*runtime/scripts/restart-director\.sh' runtime/scripts/deepdesert.sh; then
+  echo "FAIL: Deep Desert layout still uses the Director recovery path that restarts Hagga Basin" >&2
+  exit 1
+fi
+enable_body="$(awk '/^enable_layout\(\)/,/^enable_dual\(\)/' runtime/scripts/deepdesert.sh)"
+for expected in \
+  'ensure_partitions "$count"' \
+  'configure_sietch_dimensions "$count"' \
+  'apply_partition_labels "$count" "$third_role"' \
+  'write_director_override "$count" "$original_display_name" "$third_role"' \
+  'apply_usergame "$count" "$third_role"' \
+  'restart_director_if_running' \
+  'activate_sietch_dimensions "$count"'
+do
+  grep -Fq "$expected" <<< "$enable_body"
+done
+python3 - "$enable_body" <<'PY'
+import sys
+
+body = sys.argv[1]
+ordered = [
+    'ensure_partitions "$count"',
+    'configure_sietch_dimensions "$count"',
+    'apply_partition_labels "$count" "$third_role"',
+    'write_director_override "$count" "$original_display_name" "$third_role"',
+    'apply_usergame "$count" "$third_role"',
+    'restart_director_if_running',
+    'activate_sietch_dimensions "$count"',
+]
+positions = [body.index(token) for token in ordered]
+if positions != sorted(positions):
+    raise SystemExit("Deep Desert configuration is not persisted before activation")
+PY
 grep -Fq 'prune_sietch_dimension_config "$target" "${removed_ids[@]}"' runtime/scripts/deepdesert.sh
 grep -Fq 'Deep Desert Layout' console/web/src/features/maps/MapsPanel.tsx
 grep -Fq '([1, 2, 3] as const)' console/web/src/features/maps/MapsPanel.tsx

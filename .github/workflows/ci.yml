@@ -137,6 +137,7 @@ jobs:
           runtime/tests/test-bind-ip-resolution.sh
           runtime/tests/test-deepdesert-dual-startup-reconcile.sh
           runtime/tests/test-deepdesert-dual-selector-cleanup.sh
+          runtime/tests/test-deepdesert-layout-apply-safety.sh
           runtime/tests/test-director-log-id-normalization.sh
           tests/fls-signals-test.sh
           tests/steamcmd-signals-test.sh
