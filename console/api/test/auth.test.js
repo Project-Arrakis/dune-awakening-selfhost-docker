@@ -176,6 +176,37 @@ test("json response serialization preserves ordinary public payloads", () => {
   assert.deepEqual(JSON.parse(output), { ok: true, result: { status: "ready" } });
 });
 
+// RFC §2.3/§5, #407 phase 6: credential rotation invalidates every OTHER
+// password/TOTP-authenticated session, scoped by credential type -- Discord-
+// (and future passkey-) authenticated sessions are untouched.
+//
+// NOTE: `sessions` is a module-level Map shared by every createAuth() call in
+// this process (correct for production's single instantiation; a test-file-
+// wide side effect here). These assertions deliberately check only the
+// specific sessions each test creates, never a global count, so they hold
+// regardless of what earlier tests in this file left behind.
+test("invalidatePasswordSessions revokes other password sessions but keeps the acting one", () => {
+  const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false });
+  const acting = auth.makeSession();
+  const otherPasswordSession = auth.makeSession();
+  const revoked = auth.invalidatePasswordSessions(acting.id);
+  assert.ok(revoked >= 1, "at least the sibling session created in this test was revoked");
+  assert.notEqual(auth.readSession(reqWithCookie(acting.cookie)), null, "the acting session survives its own rotation");
+  assert.equal(auth.readSession(reqWithCookie(otherPasswordSession.cookie)), null, "a sibling password session is revoked");
+});
+
+test("invalidatePasswordSessions leaves Discord-authenticated sessions untouched", () => {
+  const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false });
+  const acting = auth.makeSession();
+  const discordSession = auth.makeSession({ tier: "moderator", userId: "123456789012345678", guildId: "999" });
+  auth.invalidatePasswordSessions(acting.id);
+  assert.notEqual(auth.readSession(reqWithCookie(discordSession.cookie)), null, "a Discord-authenticated session is a different credential type and is not revoked");
+});
+
+function reqWithCookie(cookie) {
+  return { headers: { cookie: `asc_session=${encodeURIComponent(cookie)}` } };
+}
+
 function fakeResponse() {
   return {
     status: null,
