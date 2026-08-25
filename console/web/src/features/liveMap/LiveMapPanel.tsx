@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Car, Gem, Home, Landmark, MapPin, Package, Users, Wrench, type LucideIcon } from "lucide-react";
+import { Car, Gem, Home, Landmark, MapPin, Package, Sparkles, Users, Wrench } from "lucide-react";
 import { liveMapApi, type LiveMapConfig, type LiveMapMarker, type LiveMapPartition } from "../../api/liveMap";
+import { CaveIcon, EcolabIcon, FlourSandIcon, ShipwreckIcon, TaxiServiceIcon, type MarkerIconProps } from "./resourceIcons";
 import type { Task } from "../../api/setup";
 import { DataTable } from "../../components/common/DataTable";
 import { KeyValueGrid, TechnicalDetails } from "../../components/common/DisplayPrimitives";
@@ -414,7 +415,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                 const isDraggingThisPlayer = Boolean(playerDrag && String(playerDrag.marker.id) === String(marker.id) && String(playerDrag.marker.type) === String(marker.type));
                 const isPreviewingThisPlayer = Boolean(playerTeleportPreview && String(playerTeleportPreview.marker.id) === String(marker.id) && String(playerTeleportPreview.marker.type) === String(marker.type));
                 const renderPoint = isDraggingThisPlayer ? playerDrag!.point : isPreviewingThisPlayer ? playerTeleportPreview!.point : point;
-                const MarkerIcon = liveMapMarkerIcon(String(marker.type));
+                const MarkerIcon = liveMapMarkerIcon(String(marker.type), marker.name);
                 return <button key={`${marker.type}-${marker.id}-${index}`} className={`live-map-marker marker-${marker.type} ${playerStatus} ${isDraggingThisPlayer ? "dragging" : ""} ${isPreviewingThisPlayer ? "teleport-preview" : ""}`} title={`${friendlyMarkerType(String(marker.type))}: ${friendlyMarkerName(marker)}`} onMouseDown={(event) => {
                   if (!isPlayer) return;
                   event.stopPropagation();
@@ -553,10 +554,16 @@ function friendlyMarkerType(type: string) {
   }[type.toLowerCase()] || titleCase(type.replaceAll("_", " "));
 }
 
+// A lucide-react icon and one of resourceIcons.tsx's game-icons.net-backed
+// components both satisfy this shape (className/size are all either kind
+// actually receives here; strokeWidth is lucide-only and simply ignored by
+// the game-icons.net ones).
+type MarkerIconComponent = React.ComponentType<MarkerIconProps>;
+
 // Known categories today; "poi" and "resource" are here ahead of any backend
 // data (see issue #462) so a marker type introduced later renders with a
 // sensible icon immediately instead of silently falling back to a bare pin.
-const LIVE_MAP_MARKER_ICONS: Record<string, LucideIcon> = {
+const LIVE_MAP_MARKER_ICONS: Record<string, MarkerIconComponent> = {
   player: Users,
   vehicle: Car,
   base: Home,
@@ -566,8 +573,29 @@ const LIVE_MAP_MARKER_ICONS: Record<string, LucideIcon> = {
   resource: Gem
 };
 
-export function liveMapMarkerIcon(type: string): LucideIcon {
-  return LIVE_MAP_MARKER_ICONS[type.toLowerCase()] || MapPin;
+// Specific marker *names* within the poi/resource categories -- confirmed
+// live on Deep Desert (dune-dev) that every poi/resource pin was rendering
+// with the same one or two category icons above, since marker.type alone
+// (not marker.name) was all liveMapMarkerIcon keyed on. Cave/Ecolab/
+// Shipwreck/TaxiService/Flour Sand use real game-icons.net icons (CC-BY
+// 3.0, see NOTICE and resourceIcons.tsx) picked for thematic fit, not
+// authentic in-game iconography -- see #476 for why extracting the game's
+// own assets is out of scope. Spice has no game-icons.net equivalent worth
+// forcing a fit for, so it keeps the generic lucide Sparkles. Names not
+// listed here fall back to their category icon, same as an unrecognized
+// type falls back to MapPin.
+const LIVE_MAP_MARKER_ICONS_BY_NAME: Record<string, MarkerIconComponent> = {
+  cave: CaveIcon,
+  ecolab: EcolabIcon,
+  shipwreck: ShipwreckIcon,
+  taxiservice: TaxiServiceIcon,
+  spice: Sparkles,
+  "flour sand": FlourSandIcon
+};
+
+export function liveMapMarkerIcon(type: string, name?: string): MarkerIconComponent {
+  const byName = name ? LIVE_MAP_MARKER_ICONS_BY_NAME[name.toLowerCase()] : undefined;
+  return byName || LIVE_MAP_MARKER_ICONS[type.toLowerCase()] || MapPin;
 }
 
 function liveMapPlayerStatus(marker: LiveMapMarker) {

@@ -17,3 +17,17 @@ secrets, or proprietary assets with this project.
 
 Please keep the LICENSE and NOTICE files intact when redistributing or
 modifying this project.
+
+Third-party assets
+-------------------
+
+Live Map marker icons for specific POI/resource kinds (Cave, Ecolab,
+Shipwreck, TaxiService, Flour Sand) in console/web/src/features/liveMap/
+resourceIcons.tsx are from game-icons.net (https://game-icons.net),
+licensed under Creative Commons Attribution 3.0 (CC-BY 3.0,
+https://creativecommons.org/licenses/by/3.0/). These are generic icons
+chosen for thematic fit, independent of and not derived from any Dune:
+Awakening or Funcom copyrighted asset. Icons made by:
+  - Delapouite (cave-entrance, ship-wreck, caravan, sandstorm)
+  - Game-icons.net contributors (flask)
+Available on https://game-icons.net.
