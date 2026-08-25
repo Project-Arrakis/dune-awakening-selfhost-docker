@@ -9,7 +9,48 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.3.95)
 
+### Added
+
+- **Real in-place upgrade coverage for the Tier 3 TOTP second factor**
+  (issue #487, RFC `docs/rfc-console-auth.md` §4/§6). Every existing Tier 3
+  test booted the console against a *fresh* state directory, which only ever
+  exercised the fresh-install path — so the operator-visible behavior change
+  that Strict Requirement 0 actually cares about (what happens to someone
+  already running this console when they enable the flag) was never tested.
+  New `console/api/test/upgradePath.integration.test.js` carries the same
+  state directory across a real stop/restart and asserts the upgrade event
+  end to end: a pre-upgrade single-factor session does not survive the
+  restart, the first post-upgrade password login yields an enrollment-only
+  session (and nothing else in the console is reachable from it), enrollment
+  issues exactly 10 recovery codes once, and the password alone is rejected
+  afterwards. Also closes three RFC §6 upgrade-path gaps that had no
+  coverage anywhere: the enrollment session's 10-minute cap, rollback
+  (turning the flag back off restores single-factor login and preserves the
+  enrolled state byte-for-byte), and an abandoned enrollment regenerating its
+  secret so a stale authenticator entry cannot silently linger.
+- **`docs/console/two-factor-recovery.md`** — the operator-facing recovery
+  and lockout runbook that RFC §3.4's procedures previously lacked. Covers
+  recovery-code login, regenerating a lost code sheet, the total-loss host
+  reset (verified against this repo's real service name and `dune console`
+  commands, not written from the RFC's prose), and how to tell from the audit
+  log whether an enrollment you did not perform has happened on your install.
+
 ### Changed
+
+- **`.env.example`'s `CONSOLE_TOTP_ENABLED` block now states the upgrade
+  consequence up front** (issue #487). It previously read as an ordinary
+  opt-in beta toggle, with no indication that setting it to `1` on an install
+  you already use redirects your very next login into a mandatory enrollment,
+  shows the 10 recovery codes exactly once, and has no login-surface recovery
+  if both factors are lost. That omission is how the flag came to be enabled
+  unattended on a live install, locking its operator out of a working
+  console. Now warns explicitly, points at the recovery runbook above, and
+  notes that rolling the flag back off is safe and non-destructive.
+- **`docs/security/console-rbac-implementation-and-testing.md` §10** no longer
+  lists non-Discord break-glass/TOTP as an open design question — it shipped
+  as Tier 3 (#407). Marked resolved with pointers to the RFC sections, the
+  default-on gate (#424), the recovery runbook, and the upgrade test.
+
 
 - **Synced upstream's Live Map marker overlay redesign onto this fork**
   (PR #480). Upstream (`Red-Blink/dune-awakening-selfhost-docker`) spent

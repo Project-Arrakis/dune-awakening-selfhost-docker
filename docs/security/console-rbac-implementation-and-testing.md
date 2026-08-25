@@ -407,7 +407,16 @@ returns the tiered identity; plus a 403 for a non-home-guild member and a
 2. Player login: do players get console accounts (read-only tabs) at all,
    or is the player tier bot-side only for v1? (Player tier exists in the
    shared registry either way.)
-3. Non-Discord bootstrap beyond admin password (break-glass code / TOTP).
+3. **RESOLVED (2026-08-25):** non-Discord bootstrap beyond admin password
+   — shipped as **Tier 3** (password + mandatory TOTP + 10 single-use
+   recovery codes), designed in `docs/rfc-console-auth.md` §2.3/§3.4/§4 and
+   implemented across issue #407's phases. Gated behind
+   `CONSOLE_TOTP_ENABLED`, which is **off by default** and must stay off by
+   default until gate #424's prerequisites all ship. Operator-facing
+   recovery and lockout procedures (including the §3.4 total-loss host
+   reset) are in `docs/console/two-factor-recovery.md`; the in-place
+   upgrade behavior is covered by
+   `console/api/test/upgradePath.integration.test.js` (issue #487).
 4. Persisted vs in-memory sessions if multi-user scale emerges.
 5. Handoff secret distribution: shared secret vs. per-install key
    exchange (issue #135 shaping conversation) — consent deferred to
