@@ -423,9 +423,15 @@ returns the tiered identity; plus a 403 for a non-home-guild member and a
    recovery and lockout procedures (including the §3.4 total-loss host
    reset) are in `docs/console/two-factor-recovery.md`; in-place upgrade
    behavior is covered by
-   `console/api/test/upgradePath.integration.test.js` (issue #487).
-   Remaining before default-on: the real-client-IP rate key (#406) and
-   release notes.
+   `console/api/test/upgradePath.integration.test.js` (issue #487). The
+   real-client-IP rate key (#406) shipped as `resolveClientIp()` in
+   `console/api/src/rateLimit.js`, gated by `CONSOLE_TRUSTED_PROXY_IPS`
+   (empty by default — byte-identical to before this existed). Deliberately
+   generic rather than Cloudflare-specific, matching this RFC's own §4
+   rejection of a `CF-Connecting-IP`-only mechanism: an operator declares
+   the exact IP(s) of their own reverse proxy/tunnel daemon, and only then
+   is `X-Forwarded-For` honored. **Remaining before default-on: release
+   notes only** (gate #424 item 5).
 4. Persisted vs in-memory sessions if multi-user scale emerges.
 5. Handoff secret distribution: shared secret vs. per-install key
    exchange (issue #135 shaping conversation) — consent deferred to

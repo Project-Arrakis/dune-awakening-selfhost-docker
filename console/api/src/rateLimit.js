@@ -1,3 +1,34 @@
+// Resolves the address used to key the login rate limiter (#406, gate #424
+// prerequisite 3). Deliberately generic, not Cloudflare-specific -- an
+// earlier RFC draft's CF-Connecting-IP mechanism was rejected because most
+// operators of this project don't run Cloudflare Tunnel/Access at all (see
+// docs/rfc-console-auth.md). Default behavior (trustedProxyIps empty) is
+// byte-identical to before this existed: the raw socket address, so an
+// operator who never sets CONSOLE_TRUSTED_PROXY_IPS sees no change.
+//
+// X-Forwarded-For is trusted ONLY when the immediate TCP peer is in the
+// operator-declared trustedProxyIps list -- an untrusted peer can put
+// anything in that header, so honoring it unconditionally would let a
+// remote attacker forge their rate-limit key and dodge the limiter entirely
+// (or frame another client for their own failures). The leftmost entry is
+// taken as the original client; this does not handle a chain of more than
+// one trusted proxy, which is out of scope for this fix (see
+// docs/rfc-console-auth.md's own "generic proxy-aware fix... deferred" note).
+export function resolveClientIp(req, trustedProxyIps = []) {
+  const socketIp = normalizeIp(req.socket?.remoteAddress);
+  if (!trustedProxyIps.length || !socketIp || !trustedProxyIps.includes(socketIp)) {
+    return socketIp || "unknown";
+  }
+  const header = req.headers?.["x-forwarded-for"];
+  if (!header) return socketIp;
+  const forwarded = normalizeIp(String(header).split(",")[0].trim());
+  return forwarded || socketIp;
+}
+
+function normalizeIp(ip) {
+  return ip ? ip.replace(/^::ffff:/, "") : "";
+}
+
 export function createLoginRateLimiter(options = {}) {
   const {
     maxAttempts = 8,

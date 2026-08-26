@@ -6,7 +6,7 @@ import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, read
 import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig, publicConfig, parseAllowedIps, resolvePorts } from "./config.js";
 import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders, parseCookies } from "./auth.js";
-import { createLoginRateLimiter, createMutationRateLimiter } from "./rateLimit.js";
+import { createLoginRateLimiter, createMutationRateLimiter, resolveClientIp } from "./rateLimit.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
 import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, TaskManager, publicTask } from "./tasks.js";
 import { preflight } from "./preflight.js";
@@ -5252,7 +5252,7 @@ function mockCommand(operation) {
 }
 
 function loginRateLimitKey(req) {
-  return req.socket?.remoteAddress || "unknown";
+  return resolveClientIp(req, config.trustedProxyIps);
 }
 
 // Strips query strings before an audit write so the Discord OAuth `code` and

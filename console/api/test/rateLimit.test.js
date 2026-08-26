@@ -1,6 +1,45 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createLoginRateLimiter, createMutationRateLimiter } from "../src/rateLimit.js";
+import { createLoginRateLimiter, createMutationRateLimiter, resolveClientIp } from "../src/rateLimit.js";
+
+function fakeReq(remoteAddress, headers = {}) {
+  return { socket: { remoteAddress }, headers };
+}
+
+test("resolveClientIp: with no trusted proxies configured, always returns the raw socket address", () => {
+  const req = fakeReq("203.0.113.9", { "x-forwarded-for": "198.51.100.1" });
+  assert.equal(resolveClientIp(req, []), "203.0.113.9");
+  assert.equal(resolveClientIp(req), "203.0.113.9");
+});
+
+test("resolveClientIp: strips the IPv4-mapped IPv6 prefix from the socket address", () => {
+  assert.equal(resolveClientIp(fakeReq("::ffff:203.0.113.9"), []), "203.0.113.9");
+});
+
+test("resolveClientIp: an untrusted peer's X-Forwarded-For is ignored, even if present", () => {
+  const req = fakeReq("203.0.113.9", { "x-forwarded-for": "198.51.100.1" });
+  assert.equal(resolveClientIp(req, ["10.0.0.5"]), "203.0.113.9");
+});
+
+test("resolveClientIp: a trusted peer's X-Forwarded-For is honored, leftmost entry wins", () => {
+  const req = fakeReq("10.0.0.5", { "x-forwarded-for": "198.51.100.1, 10.0.0.5" });
+  assert.equal(resolveClientIp(req, ["10.0.0.5"]), "198.51.100.1");
+});
+
+test("resolveClientIp: trusted peer with no X-Forwarded-For header falls back to the socket address", () => {
+  const req = fakeReq("10.0.0.5", {});
+  assert.equal(resolveClientIp(req, ["10.0.0.5"]), "10.0.0.5");
+});
+
+test("resolveClientIp: a spoofed empty forwarded entry falls back to the socket address rather than key on ''", () => {
+  const req = fakeReq("10.0.0.5", { "x-forwarded-for": "" });
+  assert.equal(resolveClientIp(req, ["10.0.0.5"]), "10.0.0.5");
+});
+
+test("resolveClientIp: missing socket address never throws and returns 'unknown'", () => {
+  assert.equal(resolveClientIp({ headers: {} }, []), "unknown");
+  assert.equal(resolveClientIp({ headers: {} }, ["10.0.0.5"]), "unknown");
+});
 
 test("login rate limiter blocks repeated failures and resets after success", () => {
   let currentTime = 1000;
