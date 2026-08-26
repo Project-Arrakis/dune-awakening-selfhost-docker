@@ -72,6 +72,29 @@ import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
 import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
 
 const config = loadConfig();
+// #141: ADMIN_AUTH_DISABLED bypasses both password auth (auth.js requireAuth)
+// and the CSRF check (auth.js, and the mutation-route check at ~5276) -- a
+// full, unauthenticated API, not just a login skip. This must be loud
+// regardless of bind host (an operator can misjudge their own LAN's
+// exposure), and on a non-loopback bind with no ADMIN_ALLOWED_IPS -- the
+// listen()-time warning a few lines below already treats 0.0.0.0 as worth a
+// banner for password-protected installs -- refuse to start entirely rather
+// than silently serve a fully open API on the network default (0.0.0.0).
+if (config.authDisabled) {
+  const loopbackHosts = new Set(["127.0.0.1", "localhost", "::1"]);
+  if (!loopbackHosts.has(config.host) && config.allowedIps.length === 0) {
+    console.error(
+      `FATAL: ADMIN_AUTH_DISABLED=1 with ADMIN_BIND_HOST=${config.host} (not loopback) and no ADMIN_ALLOWED_IPS set. ` +
+      "This would serve a fully unauthenticated API -- including the CSRF check, which ADMIN_AUTH_DISABLED also disables -- " +
+      "to that entire bind host. Set ADMIN_BIND_HOST to 127.0.0.1/localhost, or set ADMIN_ALLOWED_IPS to restrict who can reach it, before starting."
+    );
+    process.exit(1);
+  }
+  console.warn(
+    "Warning: ADMIN_AUTH_DISABLED=1 -- password authentication AND the CSRF check are both bypassed on every request. " +
+    "This is intended for local development only; never set it on an install anyone else can reach."
+  );
+}
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
 try {
   edaRetirement = retireLegacyEdaExchangeBot(config);
