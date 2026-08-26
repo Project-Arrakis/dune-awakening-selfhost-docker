@@ -11,6 +11,19 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- **`ADMIN_AUTH_DISABLED` refuses to start on a non-loopback bind with no
+  `ADMIN_ALLOWED_IPS`** (issue #141). This flag disables both password auth
+  and the CSRF check on every request, not just the login screen, but the
+  console had no warning at all for it — a stark contrast with the existing
+  `0.0.0.0`-bind banner shown for password-protected installs. It now warns
+  loudly every time it's set, and on a non-loopback `ADMIN_BIND_HOST` with no
+  `ADMIN_ALLOWED_IPS` configured, the console logs the exact reason and
+  refuses to start rather than silently serving a fully open API on the
+  network default (`ADMIN_BIND_HOST` defaults to `0.0.0.0`). Loopback binds
+  (`127.0.0.1`/`localhost`/`::1`) and any bind with `ADMIN_ALLOWED_IPS` set
+  are unaffected beyond the warning — this is intended for local development,
+  which this guard does not block.
+
 - **Real-client-IP rate-limit key for the login limiter** (issue #406, gate
   #424 prerequisite 3 -- the last of six blockers on `CONSOLE_TOTP_ENABLED`
   defaulting on). Behind a reverse proxy or tunnel, the login rate limiter
