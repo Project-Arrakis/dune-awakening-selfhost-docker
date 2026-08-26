@@ -23,6 +23,10 @@ work/
 .DS_Store
 console/api/node_modules/
 console/web/node_modules/
+# Any other node_modules, wherever it appears. A stray `npx vitest` run from
+# the repo root creates node_modules/.vite/ here, and the two paths above did
+# not cover it -- a cache artifact reached main that way (see #538).
+node_modules/
 console/web/dist/
 *.tsbuildinfo
 **/bin/
