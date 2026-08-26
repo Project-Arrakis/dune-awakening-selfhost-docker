@@ -11,6 +11,42 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- **Backup/restore rollback detection for Tier 3 recovery codes** (issue
+  #425, RFC §2.3.1/§3.4). Restoring an older `console-second-factor.json`
+  (a single-file backup restore, distinct from restoring the whole
+  `runtime/generated/` directory) silently un-consumed recovery codes, making
+  a resurrected, previously-spent code exploitable now that recovery-code
+  login is real (#426). `secondFactorStore.js` now tracks a monotonic
+  `epoch` on every mutating write plus an independent watermark file
+  (`console-second-factor.json.watermark`); if a loaded state's epoch is
+  behind the watermark, the next recovery-code login wipes the entire code
+  set instead of consuming or plain-rejecting the submitted one, and the
+  attempt is audited under its own event, `auth.second-factor-reset-detected`
+  (previously named in the RFC but never actually emitted). A non-blocking
+  startup banner reports the same condition; TOTP login is unaffected by
+  design (an out-of-date counter self-heals against wall-clock time, as
+  already documented). Existing files with no `epoch` field (every install
+  predating this change) load as epoch 0 and behave exactly as before —
+  Requirement 0. **Honest scope limit, stated in the module's own header:**
+  a restore of the whole `runtime/generated/` directory (state and watermark
+  together) is not detectable by any local mechanism; that case remains
+  covered only by the existing documented guidance to regenerate recovery
+  codes after any restore. `clear()` (the §3.4 host-filesystem reset) now
+  also removes the watermark, and `docs/console/two-factor-recovery.md`'s
+  reset command was updated to delete both files — leaving the watermark
+  behind would make the very next post-reset recovery-code login wrongly
+  treat the deliberate reset as a rollback.
+- **RFC corrections found while implementing #425**, since they were the
+  actual source used to design against: `docs/rfc-console-auth.md` claimed
+  the recovery-codes-regenerate settings action and the false-VPN-guidance-
+  citation were already resolved, but two more gaps surfaced under closer
+  reading — the regenerate action has no HTTP route or frontend control at
+  all (issue #512), and the "no TOTP state where state previously existed"
+  audit-history-based detection (a genuinely different mechanism from this
+  entry's epoch/watermark one, needed for a *deleted* file rather than a
+  *restored* one) was never built (issue #513). Both corrected in the RFC
+  rather than left to overclaim shipped behavior.
+
 - **`ADMIN_AUTH_DISABLED` refuses to start on a non-loopback bind with no
   `ADMIN_ALLOWED_IPS`** (issue #141). This flag disables both password auth
   and the CSRF check on every request, not just the login screen, but the

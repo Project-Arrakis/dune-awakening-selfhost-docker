@@ -33,15 +33,33 @@
 // transcends console auth (RFC §3.4); encryption-at-rest is deferred to the
 // separate KEK/DEK secrets system (Requirement 27), a deferral recorded in #407.
 //
-// Backup/restore integrity (RFC §2.3.1) is NOT handled here and is NOT yet
-// handled anywhere: restoring an older file un-consumes recovery codes (and
-// rolls lastUsedCounter back, which self-heals since TOTP validates near
-// wall-clock time). As of the recovery-code-login phase (#426), recovery codes
-// are consumable at login, so a restored old file resurrecting a spent code is
-// directly exploitable -- the restore-detection + `auth.second-factor-reset-
-// detected` audit event + "regenerate after restore" operator guidance remain
-// UNWIRED and are tracked in #425 (re-scoped to the rotation phase). Do not
-// read this comment as a claim that any reset-detection exists today.
+// Backup/restore integrity (RFC §2.3.1, issue #425): a monotonic `epoch`
+// counter (bumped on every mutating op) plus an independent watermark file
+// (`watermarkFilePath`, sibling to the main store, same 0600/atomic-write
+// discipline) detect a restored-file rollback. On every consumeRecoveryCode()
+// call the loaded state's epoch is compared against the watermark's highest
+// ever seen; if the state is BEHIND the watermark, the file has moved
+// backward in time relative to what this process previously observed, so the
+// entire current recovery-code set is invalidated (not just the submitted
+// code) and the call fails with reason "reset_detected" rather than
+// consuming or silently rejecting -- an attacker replaying a resurrected,
+// previously-spent code cannot succeed, and the operator must regenerate via
+// Settings (already authenticated by TOTP, which self-heals on rollback and
+// needs no special handling here) before recovery-code login works again.
+// checkForRollback() offers the same comparison, read-only, for a startup
+// informational banner (does not block boot -- TOTP is unaffected).
+//
+// Deliberate, honest limit: a backup/restore that replaces BOTH the store
+// and its watermark consistently (the realistic outcome of restoring the
+// whole runtime/generated/ directory, which is how this project's own backup
+// guidance already assumes an operator restores) is NOT detectable by any
+// local mechanism -- there is nothing left un-rolled-back to compare against.
+// That case remains covered only by the existing documented operator
+// guidance (RFC §3.4: regenerate recovery codes after ANY restore,
+// unconditionally). This mechanism specifically catches the narrower, still
+// real and plausible case of an operator or tool restoring the second-factor
+// file alone (a single-file recovery from an old backup/tarball/object,
+// distinct from a full-directory restore) while the watermark survives.
 
 import { resolve as resolvePath } from "node:path";
 import { readFile, rm } from "node:fs/promises";
@@ -83,8 +101,9 @@ export class SecondFactorVersionError extends Error {
 // enforced one rather than a comment a future wiring change could silently break.
 const openPaths = new Set();
 
-export function createSecondFactorStore({ filePath }) {
+export function createSecondFactorStore({ filePath, watermarkFilePath }) {
   if (!filePath) throw new Error("createSecondFactorStore requires a filePath");
+  const resolvedWatermarkPath = watermarkFilePath || `${filePath}.watermark`;
   const key = resolvePath(filePath);
   if (openPaths.has(key)) {
     throw new Error(
@@ -108,6 +127,34 @@ export function createSecondFactorStore({ filePath }) {
 
   function persist(state) {
     return writeJsonAtomicAsync(filePath, state, 0o600);
+  }
+
+  // Watermark: the highest epoch this store has ever persisted, kept in an
+  // independent file so a restore of the main store alone leaves something to
+  // compare against (see the module header for what this does and does not
+  // catch). Never throws on a missing/corrupt watermark -- a lost or
+  // unreadable watermark degrades to "no rollback detectable yet", not a
+  // second-factor outage; the main store's own corruption handling is what
+  // must fail closed, not this side channel.
+  async function loadWatermarkEpoch() {
+    try {
+      const raw = await readFile(resolvedWatermarkPath, "utf8");
+      const parsed = JSON.parse(raw);
+      return Number.isInteger(parsed?.epoch) ? parsed.epoch : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  async function bumpWatermark(epoch) {
+    const current = await loadWatermarkEpoch();
+    if (epoch <= current) return;
+    try {
+      await writeJsonAtomicAsync(resolvedWatermarkPath, { version: 1, epoch }, 0o600);
+    } catch {
+      // Best-effort: a watermark write failure must never block the second
+      // factor's own real write, which already succeeded by the time this runs.
+    }
   }
 
   // Read + validate the current state. Returns null when genuinely absent
@@ -155,6 +202,13 @@ export function createSecondFactorStore({ filePath }) {
     if (!Array.isArray(parsed.recoveryCodes) || parsed.recoveryCodes.some((d) => typeof d !== "string")) {
       throw new SecondFactorCorruptError("second-factor store recoveryCodes section is malformed");
     }
+    // epoch predates issue #425: a file written before this feature has no
+    // field at all. Treated as 0, not corruption -- every existing install's
+    // file continues to load exactly as before (Requirement 0).
+    if (parsed.epoch !== undefined && !Number.isInteger(parsed.epoch)) {
+      throw new SecondFactorCorruptError("second-factor store epoch is malformed");
+    }
+    parsed.epoch = Number.isInteger(parsed.epoch) ? parsed.epoch : 0;
     return parsed;
   }
 
@@ -170,7 +224,11 @@ export function createSecondFactorStore({ filePath }) {
   // initialCounter seeds totp.lastUsedCounter so the enrollment-confirm code's
   // own step is already "used" -- the RFC (§4) forbids reusing the confirm code
   // at the forced first login, and seeding the matched step enforces that.
-  function makeState(secretBytes, digests, initialCounter = NO_COUNTER) {
+  // epoch is issue #425's rollback-detection counter (see module header) --
+  // enroll() always starts a fresh install at 0; commit() carries the prior
+  // state's epoch forward (or starts at 0 if none existed) so a legitimate
+  // rotation is never mistaken for the backward jump it's meant to catch.
+  function makeState(secretBytes, digests, initialCounter = NO_COUNTER, epoch = 0) {
     if (!Number.isInteger(initialCounter) || initialCounter < NO_COUNTER) {
       throw new RangeError(`initialCounter must be an integer >= ${NO_COUNTER}, got ${initialCounter}`);
     }
@@ -178,7 +236,13 @@ export function createSecondFactorStore({ filePath }) {
       version: SECOND_FACTOR_VERSION,
       totp: { secret: Buffer.from(secretBytes).toString("base64"), lastUsedCounter: initialCounter },
       recoveryCodes: digests,
+      epoch,
     };
+  }
+
+  async function persistAndBumpWatermark(state) {
+    await persist(state);
+    await bumpWatermark(state.epoch);
   }
 
   // ---- public API (all mutating ops serialized through runExclusive) ----
@@ -187,6 +251,23 @@ export function createSecondFactorStore({ filePath }) {
   // closed) -- callers must not treat a throw as "not configured".
   function isConfigured() {
     return runExclusive(async () => (await loadRaw()) !== null);
+  }
+
+  // Read-only rollback check for a startup informational banner (issue #425).
+  // Never throws, never blocks boot, never mutates anything -- a corrupt or
+  // unreadable store/watermark degrades to "nothing to report" here, since
+  // the store's own corruption handling (fail closed on the auth path) is
+  // what actually matters; this is advisory only.
+  async function checkForRollback() {
+    let state;
+    try {
+      state = await loadRaw();
+    } catch {
+      return { detected: false };
+    }
+    if (state === null) return { detected: false };
+    const watermarkEpoch = await loadWatermarkEpoch();
+    return { detected: state.epoch < watermarkEpoch };
   }
 
   // Atomic first-time enrollment: create the second factor ONLY if none exists,
@@ -199,7 +280,7 @@ export function createSecondFactorStore({ filePath }) {
       assertSecretBytes(secretBytes);
       if ((await loadRaw()) !== null) return { ok: false, reason: "already_configured" };
       const { codes, digests } = count ? generateRecoveryCodes(count) : generateRecoveryCodes();
-      await persist(makeState(secretBytes, digests, initialCounter));
+      await persistAndBumpWatermark(makeState(secretBytes, digests, initialCounter, 0));
       return { ok: true, codes };
     });
   }
@@ -210,8 +291,10 @@ export function createSecondFactorStore({ filePath }) {
   function commit(secretBytes, { count, initialCounter } = {}) {
     return runExclusive(async () => {
       assertSecretBytes(secretBytes);
+      const previous = await loadRaw().catch(() => null);
+      const epoch = (previous?.epoch ?? -1) + 1;
       const { codes, digests } = count ? generateRecoveryCodes(count) : generateRecoveryCodes();
-      await persist(makeState(secretBytes, digests, initialCounter));
+      await persistAndBumpWatermark(makeState(secretBytes, digests, initialCounter, epoch));
       return { ok: true, codes };
     });
   }
@@ -237,14 +320,30 @@ export function createSecondFactorStore({ filePath }) {
   // Consume a recovery code (single-use). On success the digest is removed and
   // the reduced set persisted, all inside the critical section so the same code
   // cannot be spent twice by concurrent logins. Returns { ok, reason, remaining }.
+  //
+  // Rollback check (#425) happens here, not on every read: this is the one
+  // operation a resurrected old code could exploit, so it's the one place the
+  // cost of the watermark comparison is worth paying. If the loaded state is
+  // behind the watermark, the whole set is poisoned -- wiped, not consumed --
+  // and the call fails with reason "reset_detected" before the submitted code
+  // is even checked, so a resurrected previously-spent code can never succeed
+  // by riding along with this call.
   function consumeRecoveryCode(code) {
     return runExclusive(async () => {
       const state = await loadRaw();
       if (state === null) return { ok: false, reason: "not_configured" };
+      const watermarkEpoch = await loadWatermarkEpoch();
+      if (state.epoch < watermarkEpoch) {
+        state.recoveryCodes = [];
+        state.epoch = watermarkEpoch + 1;
+        await persistAndBumpWatermark(state);
+        return { ok: false, reason: "reset_detected", remaining: 0 };
+      }
       const result = consumeRecoveryCodePure(code, state.recoveryCodes);
       if (!result.ok) return { ok: false, reason: result.reason };
       state.recoveryCodes = result.remaining;
-      await persist(state);
+      state.epoch += 1;
+      await persistAndBumpWatermark(state);
       return { ok: true, remaining: result.remaining.length };
     });
   }
@@ -258,7 +357,8 @@ export function createSecondFactorStore({ filePath }) {
       if (state === null) return { ok: false, reason: "not_configured" };
       const { codes, digests } = count ? generateRecoveryCodes(count) : generateRecoveryCodes();
       state.recoveryCodes = digests;
-      await persist(state);
+      state.epoch += 1;
+      await persistAndBumpWatermark(state);
       return { ok: true, codes };
     });
   }
@@ -273,10 +373,15 @@ export function createSecondFactorStore({ filePath }) {
   }
 
   // Remove all second-factor state (the documented total-loss host reset, RFC
-  // §3.4, and the pre-rotation clear). Idempotent.
+  // §3.4, and the pre-rotation clear). Idempotent. Also removes the watermark
+  // (#425): a deliberate reset must start genuinely fresh at epoch 0, or the
+  // very next recovery-code use after re-enrollment would find epoch 0 behind
+  // the old watermark and wrongly treat this intentional reset as the
+  // backward-file-move it's meant to catch.
   function clear() {
     return runExclusive(async () => {
       await rm(filePath, { force: true });
+      await rm(resolvedWatermarkPath, { force: true });
       return { ok: true };
     });
   }
@@ -290,6 +395,7 @@ export function createSecondFactorStore({ filePath }) {
 
   return {
     isConfigured,
+    checkForRollback,
     enroll,
     commit,
     verifyTotpToken,
