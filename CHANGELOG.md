@@ -22,6 +22,36 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   `console/api` nor `console/web` declares a sqlite dependency, and both CVEs
   require parsing attacker-influenced SQLite/FTS5 data the console never
   touches. Time-boxed: re-check on the next base-image bump.
+- **Restored `.github/dependabot.yml`, switching Dependabot version updates
+  back on after five weeks off** (issue #496, audit #491). The file was added
+  by #93 on 2026-07-19 and destroyed on 2026-07-22 when `main`'s history was
+  replaced by upstream's rather than merged with it — not deleted by any
+  commit, which is why nothing flagged it. Since then only the org-wide
+  *security*-update channel has run; the scheduled weekly version sweep across
+  `docker` (`/runtime/public-probe`, `/orchestrator`, `/console/api`) and
+  `github-actions` (`/`) has not run at all. Two different configs were lost in
+  the same event, covering **disjoint** ecosystems — `fbac815d` (2026-07-10)
+  swept `npm`, and #93 (2026-07-19) replaced that with `docker` — so the
+  restored file is the union of both, and neither surface is left unswept
+  again. Each entry also carries the `cooldown: default-days: 7` block that
+  `fbac815d` originally added to satisfy semgrep's
+  `dependabot-missing-cooldown` rule, which is part of this repo's CI gate;
+  restoring #93's version alone would have failed that gate. The two `npm`
+  entries are grouped (`patch-minor`) to keep the first sweep from opening a
+  PR per package. Operators should still expect a burst of version-update PRs
+  on the first run after this lands — five weeks of drift across four
+  ecosystems.
+- **Incident record for the two `main` history resets**
+  (`docs/incidents/INC-2026-07-22-MAIN-HISTORY-RESET-TO-UPSTREAM.md`, audit
+  #491). Documents both events — 2026-06-30/07-03 and 2026-07-21/07-22 —
+  dated to within hours from file presence at historical merge commits, the
+  content confirmed lost (console world-partition controls #50, seven docs
+  #76, three dependency bumps #58/#60/#97, `compliance/README.md`), the reason
+  five weeks passed before anyone noticed, and the three audit methodologies
+  that give confidently wrong answers on this repository. Neither event was
+  written up at the time, which is why the second had no chance of being
+  recognised as a recurrence. No operator deployment or player-facing system
+  was affected by either event.
 
 - **Real in-place upgrade coverage for the Tier 3 TOTP second factor**
   (issue #487, RFC `docs/rfc-console-auth.md` §4/§6). Every existing Tier 3

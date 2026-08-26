@@ -1,0 +1,120 @@
+# Dependabot configuration.
+#
+# History note (see docs/incidents/INC-2026-07-22-MAIN-HISTORY-RESET-TO-UPSTREAM.md):
+# this file was destroyed on 2026-07-22 when main's history was replaced by
+# upstream's, switching version updates off for five weeks. Two different
+# versions were lost, covering DISJOINT ecosystems -- fbac815d (2026-07-10)
+# swept npm, and #93 (2026-07-19) replaced that with docker. This file is the
+# union of both, so neither surface is left unswept again.
+#
+# `cooldown` is required: semgrep's dependabot-missing-cooldown rule is part of
+# this repo's CI gate, and the commit that originally satisfied it (fbac815d)
+# was lost in the same event.
+version: 2
+updates:
+  # --- npm (recovered from fbac815d; the largest dependency surface here) ---
+  - package-ecosystem: "npm"
+    directory: "/console/api"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      patch-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    open-pull-requests-limit: 3
+    reviewers:
+      - "yacketrj"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "chore(deps):"
+
+  - package-ecosystem: "npm"
+    directory: "/console/web"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      patch-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    open-pull-requests-limit: 3
+    reviewers:
+      - "yacketrj"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "chore(deps):"
+
+  # --- docker (recovered from #93 / merge commit 691f06a5) ---
+  - package-ecosystem: "docker"
+    directory: "/runtime/public-probe"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    reviewers:
+      - "yacketrj"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "chore(deps):"
+
+  - package-ecosystem: "docker"
+    directory: "/orchestrator"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    reviewers:
+      - "yacketrj"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "chore(deps):"
+
+  - package-ecosystem: "docker"
+    directory: "/console/api"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    reviewers:
+      - "yacketrj"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "chore(deps):"
+
+  # --- github-actions (present in BOTH lost versions) ---
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    reviewers:
+      - "yacketrj"
+    labels:
+      - "ci-cd"
+      - "security"
+    commit-message:
+      prefix: "chore(ci):"
