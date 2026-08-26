@@ -23,6 +23,20 @@ CVE-2025-69720  # libncursesw6/ncurses-base/libtinfo6
 CVE-2026-12064  # curl/libcurl4t64
 CVE-2026-13221  # perl-base
 CVE-2026-14456  # libssl3t64/openssl
+# Added 2026-08-26 (issue #498). Two SQLite advisories published between
+# 2026-08-25T23:49Z (when main last passed this gate) and 2026-08-26T01:44Z,
+# both with no Debian fix available at triage time. libsqlite3-0 ships in the
+# base image itself -- confirmed by running node:24-trixie-slim directly, so
+# this is NOT a consequence of the python3 addition in #490 even though
+# libpython3.13-stdlib is one of its reverse-dependencies (liblastlog2-2 and
+# gpg are the others, and both are base-image packages). Exposure is nil: the
+# console's database is Postgres, neither console/api nor console/web declares
+# any sqlite dependency, `git grep -il sqlite -- console/` is empty, and both
+# CVEs require the process to parse attacker-influenced SQLite/FTS5 data. The
+# library is linked in transitively and never called. Re-check on the next
+# base-image bump.
+CVE-2026-11822  # libsqlite3-0 -- FTS5 arbitrary code execution; no fix in Debian
+CVE-2026-11824  # libsqlite3-0 -- arbitrary code execution/crash; no fix in Debian
 CVE-2026-24882  # dirmngr
 CVE-2026-41992  # gzip
 CVE-2026-42496  # perl-base

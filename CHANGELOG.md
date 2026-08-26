@@ -11,6 +11,18 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- **Suppressed two unfixed `libsqlite3-0` CVEs blocking `trivy-image-scan`**
+  (issue #498). `CVE-2026-11822` and `CVE-2026-11824` were published between
+  `main`'s last green run and the next PR, failing the required `Release gate`
+  on every open and future PR. Debian has published no fix for either, so
+  `.trivyignore`'s own "a real version bump beats a suppression" precondition
+  is satisfied. Exposure is nil — `libsqlite3-0` ships in the `node:24-trixie-slim`
+  base image (verified by running it directly, so this is not a consequence of
+  #490's python3 addition), the console's database is Postgres, neither
+  `console/api` nor `console/web` declares a sqlite dependency, and both CVEs
+  require parsing attacker-influenced SQLite/FTS5 data the console never
+  touches. Time-boxed: re-check on the next base-image bump.
+
 - **Real in-place upgrade coverage for the Tier 3 TOTP second factor**
   (issue #487, RFC `docs/rfc-console-auth.md` §4/§6). Every existing Tier 3
   test booted the console against a *fresh* state directory, which only ever
