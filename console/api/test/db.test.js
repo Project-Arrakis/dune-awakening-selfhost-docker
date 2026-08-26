@@ -9158,31 +9158,39 @@ test("flush backs off a failed entry instead of retrying it every tick", async (
   });
 });
 
-test("flush drops an entry that keeps failing instead of retrying it forever", async () => {
+test("generator flush immediately clears a refill whose target no longer exists", async () => {
   await withTempRepoRoot(async (repoRoot) => {
     queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
 
-    // No devices: the base was released while its refill sat queued. Each round
-    // steps past the retry delay so the backoff does not skip it.
-    let round = 0;
-    const runFlush = () => flushGeneratorRefills(
+    // No devices: the base was released or its generators were removed while
+    // the refill sat queued. There is nothing left that a retry could apply to.
+    const result = await flushGeneratorRefills(
       fakeQueueDb([], { devices: [], partitions: DESPAWNED_PARTITIONS }).db,
       repoRoot,
-      { now: () => 1_000_000 + (round++) * 120_000 }
+      { now: () => 1_000_000 }
     );
 
-    const first = await runFlush();
-    assert.equal(first.flushed[0].ok, false);
-    assert.equal(first.flushed[0].attempts, 1);
-    assert.equal(first.flushed[0].dropped, false);
-    assert.equal(listQueuedGeneratorRefills(repoRoot).length, 1);
-
-    await runFlush();
-    const third = await runFlush();
-
-    assert.equal(third.flushed[0].attempts, 3);
-    assert.equal(third.flushed[0].dropped, true);
+    assert.equal(result.flushed[0].ok, true);
+    assert.equal(result.flushed[0].cleared, true);
+    assert.equal(result.flushed[0].noLongerApplicable, true);
     assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
+  });
+});
+
+test("water flush immediately clears a refill whose base or storage no longer exists", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    queueWaterRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+
+    const result = await flushWaterRefills(
+      fakeQueueDb([], { devices: [], partitions: DESPAWNED_PARTITIONS }).db,
+      repoRoot,
+      { now: () => 1_000_000 }
+    );
+
+    assert.equal(result.flushed[0].ok, true);
+    assert.equal(result.flushed[0].cleared, true);
+    assert.equal(result.flushed[0].noLongerApplicable, true);
+    assert.deepEqual(listQueuedWaterRefills(repoRoot), []);
   });
 });
 
