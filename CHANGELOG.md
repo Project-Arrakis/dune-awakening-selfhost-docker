@@ -11,6 +11,32 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- **Recovery-code regeneration route** (issue #512, RFC §2.3/§3.4).
+  `secondFactorStore.js`'s `regenerateRecoveryCodes()` has existed and been
+  correct since #415, and has participated in restore-detection since #425 —
+  but nothing ever called it, so an operator who still held their
+  authenticator and had burned their recovery codes had no way to get a fresh
+  set short of the total-loss host reset (RFC §3.4), which also destroys the
+  TOTP enrollment. `POST /api/auth/2fa/recovery-codes/regenerate` now issues a
+  fresh set of 10, requiring the same fresh proof of possession as password
+  rotation (current password + current TOTP code) and sitting behind the same
+  login limiter, so a stolen session cookie buys no unlimited guessing at that
+  pair. It emits `settings.recovery-codes-regenerated` — named in the RFC since
+  it was written and never actually emitted until now — and returns the new set
+  once, for the acknowledgment gate built in #484. Mapped to the
+  `settings:regenerate-recovery-codes` action rather than an `auth:` one, so the
+  default `admin` policy's explicit `Deny settings:*` keeps it owner-only like
+  the rotation it mirrors, and deliberately excluded from `ENROLL_ALLOWED` so a
+  restricted setup-scope session cannot reach it (asserted by a test, so the
+  exclusion cannot be undone by pattern-matching the other `/api/auth/2fa/*`
+  routes). Unlike password rotation it revokes **no** sibling sessions —
+  rotating a recovery-code sheet is not a login-credential change (RFC §2.3/§5).
+  **Backend only:** the settings-panel control is deferred to the same change
+  that fixes #515, so both land as one coherent edit to that component; until
+  then this action is reachable via the API but not from the console UI. No
+  effect on any install with `CONSOLE_TOTP_ENABLED` unset (the default) —
+  Requirement 0.
+
 - **Backup/restore rollback detection for Tier 3 recovery codes** (issue
   #425, RFC §2.3.1/§3.4). Restoring an older `console-second-factor.json`
   (a single-file backup restore, distinct from restoring the whole
