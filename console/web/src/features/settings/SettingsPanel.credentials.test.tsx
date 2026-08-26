@@ -15,9 +15,11 @@ const onPasswordChanged = vi.fn();
 const STRONG_PASSWORD = "New-Correct-Horse-9!Battery";
 
 // /api/settings is read first, then /api/auth/me for secondFactorEnrolled.
-function mockBackend({ enrolled }: { enrolled: boolean }) {
+function mockBackend({ enrolled, unavailable = false }: { enrolled: boolean; unavailable?: boolean }) {
   mockApi.mockImplementation((path: string) => {
-    if (path === "/api/auth/me") return Promise.resolve({ secondFactorEnrolled: enrolled } as never);
+    if (path === "/api/auth/me") {
+      return Promise.resolve({ secondFactorEnrolled: enrolled, secondFactorUnavailable: unavailable } as never);
+    }
     return Promise.resolve({ config: { port: 8088 }, publicDirectory: {}, serverConfig: {} } as never);
   });
 }
@@ -163,5 +165,86 @@ describe("SettingsPanel credential controls", () => {
       ).toBe(""));
       expect(screen.queryByText("Save your new recovery codes")).toBeNull();
     });
+  });
+});
+
+describe("credential-state robustness (#524, #525, #526)", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  // #525: /api/auth/me is read independently of /api/settings. That await used to
+  // sit outside any try/catch, so a blip there aborted refresh() before /me ran
+  // and silently left the panel asserting "not enrolled" -- the #515 dead end
+  // again, reached through a fail-open default.
+  it("still learns the credential state when /api/settings fails", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/auth/me") return Promise.resolve({ secondFactorEnrolled: true } as never);
+      return Promise.reject(new Error("settings unavailable"));
+    });
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    await openLoginPasswordSection();
+
+    expect(await screen.findByPlaceholderText("6-digit code")).toBeTruthy();
+  });
+
+  // #525: an unreadable store is "unknown", not "no". Hiding the controls is the
+  // worst response -- that is exactly when the operator needs them.
+  it("says so when the second-factor state is unreadable, instead of silently hiding it", async () => {
+    mockBackend({ enrolled: false, unavailable: true });
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+
+    expect(await screen.findByText(/two-factor state could not be read/i)).toBeTruthy();
+  });
+
+  it("treats a failed /api/auth/me as unknown rather than as not-enrolled", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/auth/me") return Promise.reject(new Error("boom"));
+      return Promise.resolve({ config: { port: 8088 }, publicDirectory: {}, serverConfig: {} } as never);
+    });
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+
+    expect(await screen.findByText(/two-factor state could not be read/i)).toBeTruthy();
+  });
+
+  // #526: authenticator apps show "123 456" and the server strips whitespace so
+  // that paste validates. maxLength={6} truncated it to "123 45" before the
+  // server saw it, and every rejection spent rate-limiter budget.
+  it("accepts a pasted space-separated code without truncating it", async () => {
+    mockBackend({ enrolled: true });
+    mockPost.mockResolvedValue({ ok: true } as never);
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    await openLoginPasswordSection();
+    await screen.findByPlaceholderText("6-digit code");
+
+    fillPasswordFields();
+    fireEvent.change(screen.getByPlaceholderText("6-digit code"), { target: { value: "123 456" } });
+    fireEvent.click(screen.getByText("Change Password"));
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
+      "/api/settings/admin-password",
+      { currentPassword: "old-password", newPassword: STRONG_PASSWORD, totpCode: "123456" }
+    ));
+  });
+
+  // #524: the codes are the only copy that will ever exist. Gating their display
+  // on a flag the panel's own Refresh button can flip to false destroyed them.
+  it("keeps displaying regenerated codes even if the enrolled flag goes false", async () => {
+    mockBackend({ enrolled: true });
+    mockPost.mockResolvedValue({ ok: true, recoveryCodes: ["aaaa-bbbb", "cccc-dddd"] } as never);
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    fireEvent.click(await screen.findByLabelText("Expand Two-Factor Authentication"));
+
+    fireEvent.change(screen.getByPlaceholderText("Current password"), { target: { value: "old-password" } });
+    fireEvent.change(screen.getByPlaceholderText("6-digit code"), { target: { value: "654321" } });
+    fireEvent.click(screen.getByText("Regenerate Recovery Codes"));
+    expect(await screen.findByText("aaaa-bbbb")).toBeTruthy();
+
+    // Simulate what Refresh does on a console whose store just became unreadable.
+    mockBackend({ enrolled: false, unavailable: true });
+    fireEvent.click(screen.getByText("Refresh"));
+
+    // The codes must survive: the old sheet is already dead server-side.
+    await waitFor(() => expect(screen.queryByText(/two-factor state could not be read/i)).toBeTruthy());
+    expect(screen.getByText("aaaa-bbbb")).toBeTruthy();
+    expect(screen.getByText("cccc-dddd")).toBeTruthy();
   });
 });

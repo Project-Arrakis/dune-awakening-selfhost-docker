@@ -790,19 +790,27 @@ async function handleApi(req, res) {
       try { linkedCharacters = await duneDb.getAllLinkedPlayers(db, session.userId) || []; } catch { linkedCharacters = []; }
     }
     // Whether a Tier 3 second factor is actually enrolled (#515). The client
-    // needs this to know that credential actions require an authenticator code
-    // BEFORE it submits -- inferring it from a failed request instead leaves
-    // the operator staring at "enter your authenticator code" with no field to
-    // type it into, which is the bug this exists to fix. Reported as false
-    // whenever the flag is off, so the UI never asks for a code the server
-    // would ignore. Never throws: an unreadable store degrades to false rather
-    // than 500-ing /me and taking the whole console down with it.
+    // needs this BEFORE it submits a credential action -- inferring it from a
+    // failed request is what left the password form unable to satisfy the
+    // server. False whenever the flag is off (or auth is disabled), so the UI
+    // never asks for a code the server would ignore.
+    //
+    // `unavailable` is reported separately (#525) rather than collapsing an
+    // unreadable store into `false`. secondFactorStore's own contract says
+    // callers "must not treat a throw as 'not configured'" -- doing so told the
+    // UI to hide the authenticator field AND the whole Two-Factor section at
+    // exactly the moment 2FA state is broken, which for a
+    // SecondFactorVersionError (a deploy rollback, where the state is GOOD) is
+    // precisely when the operator needs the recovery controls. /me still does
+    // not throw -- an unreadable store must not take the console down -- but it
+    // now says "unknown", not "no".
     let secondFactorEnrolled = false;
-    if (config.consoleTotpEnabled) {
+    let secondFactorUnavailable = false;
+    if (config.consoleTotpEnabled && !config.authDisabled) {
       try {
         secondFactorEnrolled = await secondFactor.isConfigured();
       } catch {
-        secondFactorEnrolled = false;
+        secondFactorUnavailable = true;
       }
     }
     return json(res, 200, {
@@ -815,6 +823,7 @@ async function handleApi(req, res) {
       scope: session.scope || null,
       linkedCharacters,
       secondFactorEnrolled,
+      secondFactorUnavailable,
       allowedActions: SETUP_SCOPES.has(session.scope) ? [] : resolveAllowedActions(session.tier || "owner")
     });
   }
