@@ -23,6 +23,10 @@ vi.mock("../../api/bases", () => ({
     setPermissions: vi.fn(),
     transferToSystemCustodian: vi.fn(),
     permissionCandidates: vi.fn(),
+    childAccess: vi.fn(),
+    setChildAccess: vi.fn(),
+    pendingChildAccess: vi.fn(),
+    cancelQueuedChildAccess: vi.fn(),
     water: vi.fn(),
     refillWater: vi.fn(),
     cancelQueuedWaterRefill: vi.fn(),
@@ -596,6 +600,36 @@ describe("BasesPanel base deletion", () => {
     await waitFor(() => expect(basesApi.cancelQueuedDelete).toHaveBeenCalledWith("2105"));
     expect(await screen.findByText('Queued delete for "Sietch Cancel Delete" was canceled.')).toBeInTheDocument();
   });
+
+  // A queued permission change is invisible from the list otherwise: unlike
+  // refills and deletes it has no always-present button to swap out, so the
+  // badge is the only signal a queue exists before opening the row.
+  it("shows the queued-permission pill counting pieces, and discards through basesApi.cancelQueuedChildAccess", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse(
+      { bases: true, baseChildAccess: true, baseChildAccessQueue: true },
+      { ...deletableBase, base_id: "2106", name: "Sietch Pending Permissions" }
+    ));
+    vi.mocked(basesApi.pendingChildAccess).mockResolvedValue({
+      supported: true,
+      total: 1,
+      pending: [{
+        baseId: 2106, map: "DeepDesert", partitionId: 59, queuedAt: new Date().toISOString(), attempts: 0, lastError: "",
+        updates: [{ actorId: "44186", accessLevel: 3 }, { actorId: "44187", accessLevel: 5 }]
+      }],
+      byTarget: [{ map: "DeepDesert", partitionId: 59, partitionMap: "Deep_Desert", dimensionIndex: 0, count: 1 }]
+    });
+    vi.mocked(basesApi.cancelQueuedChildAccess).mockResolvedValue({ supported: true, result: { ok: true, baseId: 2106, pending: 0 } });
+
+    const props = renderPanel();
+    await screen.findByText("Sietch Pending Permissions");
+
+    // Two pieces on one base reads as 2, not 1 -- a restart applies two writes.
+    expect(await screen.findByText(/2 permissions/)).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Discard Queued Permission Changes" }));
+    await waitFor(() => expect(basesApi.cancelQueuedChildAccess).toHaveBeenCalledWith("2106"));
+    expect(props.confirmAction).toHaveBeenCalled();
+  });
 });
 
 describe("BasesPanel auto-refill", () => {
@@ -971,12 +1005,35 @@ describe("BasesPanel permissions editing", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
     const powerTab = screen.getByRole("tab", { name: "Power" });
     expect(powerTab).toBeInTheDocument();
-    // Details live outside the table so its sticky header ends with the final
-    // base row instead of following the page through a tall editor tab.
-    expect(powerTab.closest("table")).toBeNull();
+    // Details render directly under the clicked row (DataTable's default
+    // "inline" placement), not in a separate panel after the whole table.
+    expect(powerTab.closest("table")).not.toBeNull();
     expect(screen.getByRole("tab", { name: "Water" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Inventory" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Sub-Fief Permissions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Base Permissions" })).not.toBeInTheDocument();
+  });
+
+  it("shows the Base Permissions tab only when the schema supports child access auditing", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true, basePermissions: false, baseChildAccess: true },
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 4,
+      rows: [permissionRow]
+    } as never);
+    vi.mocked(basesApi.childAccess).mockResolvedValue({
+      supported: true,
+      inspected: 1,
+      rows: [{ actorId: "14274", name: "Generator", buildingType: "Generator_Placeable", currentAccess: 2, currentAccessLabel: "Guild", isSubFief: false }]
+    } as never);
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
+    expect(screen.queryByRole("tab", { name: "Sub-Fief Permissions" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("tab", { name: "Base Permissions" }));
+    expect(await screen.findByText("Generator", { selector: "strong" })).toBeInTheDocument();
   });
 
   // Inventory sits between Water and Permissions, and is ungated the way Water

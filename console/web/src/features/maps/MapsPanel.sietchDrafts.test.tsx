@@ -39,8 +39,19 @@ vi.mock("../../api/setup", () => ({ setupApi: new Proxy({} as Record<string, unk
 }) }));
 vi.mock("../../lib/usePendingRefills", () => ({
   usePendingRefills: () => ({ pending: null, refresh: () => {} }),
+  usePendingQueues: () => ({
+    fuel: { pending: null, refresh: () => {} },
+    water: { pending: null, refresh: () => {} },
+    deletes: { pending: null, refresh: () => {} },
+    vehicleDeletes: { pending: null, refresh: () => {} },
+    permissions: { pending: null, refresh: () => {} }
+  }),
   pendingRefillCountForMap: () => 0,
-  pendingRefillCountForPartition: () => 0
+  pendingRefillCountForPartition: () => 0,
+  vehicleDeleteCountForMap: () => 0,
+  vehicleDeleteCountForPartition: () => 0,
+  childAccessPieceCountForMap: () => 0,
+  childAccessPieceCountForPartition: () => 0
 }));
 
 // Real `dune sietches dimensions Survival_1` output. The --ids output is one

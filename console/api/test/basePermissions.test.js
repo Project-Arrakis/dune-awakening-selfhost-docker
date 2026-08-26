@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { setBasePermissions, listBasePermissions, permissionSystemCustodian, transferBaseToSystemCustodian, listBaseChildAccess, resetBaseChildAccess } from "../src/duneDb.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setBasePermissions, listBasePermissions, permissionSystemCustodian, transferBaseToSystemCustodian, listBaseChildAccess, setBaseChildAccessLevels, queueBaseChildAccess, listQueuedBaseChildAccess, cancelQueuedBaseChildAccess } from "../src/duneDb.js";
 
 const SUPPORTED_TABLES = ["dune.permission_actor_rank", "dune.permission_actor", "dune.actors", "dune.player_state", "dune.encrypted_player_state", "dune.map_names"];
 const SUPPORTED_FUNCTIONS = [
@@ -341,6 +344,8 @@ test("listBasePermissions labels ranks and flags rows the game ignores", async (
   assert.deepEqual(result.entries.map((entry) => entry.canonical), [true, true, false]);
 });
 
+// One of the three rows already matches Sub-Fief (Associate/3) -- the list
+// covers every child piece on the base, not just the ones that deviate.
 function childAccessDb() {
   const calls = [];
   const db = {
@@ -350,12 +355,10 @@ function childAccessDb() {
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
       if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
       if (text.includes("with base_entities")) return { rows: [
-        { actor_id: "44186", actor_name: "##MTX_Neut_DesertMechanic_Prudence_Door_Placeable", access_level: 5, building_type: "MTX_Neut_DesertMechanic_Prudence_Door_Placeable", is_door: true },
-        { actor_id: "44187", actor_name: "##Neut_Desert_Mechanic_Garage_Door_Placeable", access_level: 3, building_type: "Neut_Desert_Mechanic_Garage_Door_Placeable", is_door: true }
-      ] };
-      if (text.includes("group by coalesce(p.building_type")) return { rows: [
-        { building_type: "OtherDoor", is_door: true, access_level: 3, row_count: 255 },
-        { building_type: "MTX_Neut_DesertMechanic_Prudence_Door_Placeable", is_door: true, access_level: 5, row_count: 1 }
+        { actor_id: "44186", actor_name: "##MTX_Neut_DesertMechanic_Prudence_Door_Placeable", access_level: 5, building_type: "MTX_Neut_DesertMechanic_Prudence_Door_Placeable", is_child: true },
+        { actor_id: "44187", actor_name: "##Neut_Desert_Mechanic_Garage_Door_Placeable", access_level: 2, building_type: "Neut_Desert_Mechanic_Garage_Door_Placeable", is_child: true },
+        { actor_id: "44188", actor_name: "##Neut_Desert_Mechanic_Front_Door_Placeable", access_level: 3, building_type: "Neut_Desert_Mechanic_Front_Door_Placeable", is_child: true },
+        { actor_id: "459", actor_name: "Kovalt Main", access_level: 3, building_type: "Totem_Placeable", is_child: false }
       ] };
       if (text.includes("select a.id::text as actor_id")) return { rows: [{ actor_id: ACTOR_ID, map: "HaggaBasin", map_name_id: 1, partition_id: 67 }] };
       if (text.includes("for update")) return { rows: [{ id: ACTOR_ID }], rowCount: 1 };
@@ -367,25 +370,181 @@ function childAccessDb() {
   return db;
 }
 
-test("child access audit flags the lone door that differs from the live server standard", async () => {
+test("listBaseChildAccess lists every child piece plus the base's own root object, flagging which ones match Sub-Fief", async () => {
   const result = await listBaseChildAccess(childAccessDb(), BASE_ID);
-  assert.equal(result.inspected, 2);
-  assert.equal(result.anomalies.length, 1);
-  assert.deepEqual(result.anomalies[0], {
-    actorId: "44186",
-    name: "DesertMechanic Prudence Door",
-    kind: "Door",
-    currentAccess: 5,
-    expectedAccess: 3,
-    basis: "Door Standard",
-    unusual: true
+  assert.equal(result.inspected, 4);
+  assert.deepEqual(result.rows, [
+    { actorId: "44186", name: "DesertMechanic Prudence Door", buildingType: "MTX_Neut_DesertMechanic_Prudence_Door_Placeable", group: "door", currentAccess: 5, currentAccessLabel: "Owner", isSubFief: false },
+    { actorId: "44187", name: "Desert Mechanic Garage Door", buildingType: "Neut_Desert_Mechanic_Garage_Door_Placeable", group: "door", currentAccess: 2, currentAccessLabel: "Guild", isSubFief: false },
+    { actorId: "44188", name: "Desert Mechanic Front Door", buildingType: "Neut_Desert_Mechanic_Front_Door_Placeable", group: "door", currentAccess: 3, currentAccessLabel: "Associate", isSubFief: true },
+    // is_child = false: the base's own totem, not a door/device -- grouped
+    // as Sub-Fief regardless of its building_type.
+    { actorId: "459", name: "Kovalt Main", buildingType: "Totem_Placeable", group: "subfief", currentAccess: 3, currentAccessLabel: "Associate", isSubFief: true }
+  ]);
+});
+
+test("listBaseChildAccess categorizes a piece into the right Type filter group", async (t) => {
+  const cases = [
+    ["StorageContainer_Placeable", "storage"],
+    ["SmallOreRefinery_Placeable", "refining"],
+    ["Fabricator_Placeable", "crafting"],
+    // Substring rules, not exact curated keys: anything with "generator" or
+    // "water" in its name, matching how the user asked for these two --
+    // "Generators" and "Water Storage" for anything with water in its name.
+    ["Generator_Placeable", "generators"],
+    // Wind turbines are generators too -- "turbine", not "wind", so a
+    // moisture-collecting Windtrap (below) is not swept in alongside them.
+    ["WindTurbineDirectional_Placeable", "generators"],
+    ["WindTurbineOmnidirectional_Placeable", "generators"],
+    ["WaterCistern_Placeable", "water"],
+    ["MediumWaterCistern_Placeable", "water"],
+    ["BloodWaterExtractionAdvanced_Placeable", "water"],
+    // Moisture collector, not a generator -- no "turbine" substring.
+    ["Windtrap_Placeable", "other"],
+    ["Choam_PentashieldSurfaceHorizontal_Placeable", "pentashield"],
+    ["Choam_PentashieldSurfaceVertical_Placeable", "pentashield"],
+    ["Atreides_DoorTall_Placeable", "door"],
+    ["Choam_Shelter_DoorWide_Placeable", "door"],
+    // Not in the curated map and no other substring rule applies.
+    ["Wall_Placeable", "other"],
+    // is_child = false always wins Sub-Fief, regardless of building_type --
+    // even one that would otherwise match a substring rule.
+    ["Totem_Placeable", "subfief", false],
+    ["Generator_Placeable", "subfief", false]
+  ];
+  for (const [buildingType, expectedGroup, isChild = true] of cases) {
+    await t.test(`${buildingType} (is_child=${isChild}) -> ${expectedGroup}`, async () => {
+      const db = {
+        query: async (text) => {
+          if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+          if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+          if (text.includes("with base_entities")) return { rows: [
+            { actor_id: "44190", actor_name: `##${buildingType}`, access_level: 2, building_type: buildingType, is_child: isChild }
+          ] };
+          return { rows: [] };
+        }
+      };
+      const result = await listBaseChildAccess(db, BASE_ID);
+      assert.equal(result.rows[0].group, expectedGroup);
+    });
+  }
+});
+
+test("setBaseChildAccessLevels writes each requested level, including a piece that already matched Sub-Fief, and refuses an actor that isn't a child of this base", async () => {
+  const db = childAccessDb();
+  const result = await setBaseChildAccessLevels(db, BASE_ID, [
+    { actorId: "44186", accessLevel: 3 },
+    { actorId: "44188", accessLevel: 1 }
+  ]);
+  assert.equal(result.updated, 2);
+  assert.deepEqual(procCalls(db, "permission_set_access_level"), [["44186", 3], ["44188", 1]]);
+  await assert.rejects(
+    () => setBaseChildAccessLevels(childAccessDb(), BASE_ID, [{ actorId: "99999", accessLevel: 3 }]),
+    /no longer children/i);
+});
+
+test("setBaseChildAccessLevels rejects an access level outside the 1-5 scale", async () => {
+  await assert.rejects(
+    () => setBaseChildAccessLevels(childAccessDb(), BASE_ID, [{ actorId: "44186", accessLevel: 0 }]),
+    /access level/i);
+  await assert.rejects(
+    () => setBaseChildAccessLevels(childAccessDb(), BASE_ID, [{ actorId: "44186", accessLevel: 6 }]),
+    /access level/i);
+});
+
+// The queue exists because a running map never picks up an access_level
+// change (see docs/console/base-child-permissions.md), so a save aimed at a
+// live map is recorded and written in the map-down window instead.
+async function withTempRepoRoot(fn) {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-child-access-queue-"));
+  try {
+    return await fn(repoRoot);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+}
+
+test("queueBaseChildAccess records a base's pending pieces and cancel clears them", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    assert.deepEqual(listQueuedBaseChildAccess(repoRoot), []);
+    const entry = queueBaseChildAccess(repoRoot, {
+      baseId: BASE_ID,
+      map: "DeepDesert",
+      partitionId: 59,
+      updates: [{ actorId: "44186", accessLevel: 3 }, { actorId: "44187", accessLevel: 5 }]
+    });
+    assert.equal(entry.baseId, BASE_ID);
+    assert.equal(entry.partitionId, 59);
+    assert.deepEqual(entry.updates, [{ actorId: "44186", accessLevel: 3 }, { actorId: "44187", accessLevel: 5 }]);
+
+    const queued = listQueuedBaseChildAccess(repoRoot);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].updates.length, 2);
+
+    cancelQueuedBaseChildAccess(repoRoot, BASE_ID);
+    assert.deepEqual(listQueuedBaseChildAccess(repoRoot), []);
+    assert.throws(() => cancelQueuedBaseChildAccess(repoRoot, BASE_ID), /no queued permission changes/i);
   });
 });
 
-test("child access reset uses the game's notifying function and refuses unrelated actors", async () => {
-  const db = childAccessDb();
-  const result = await resetBaseChildAccess(db, BASE_ID, ["44186"]);
-  assert.equal(result.reset, 1);
-  assert.deepEqual(procCalls(db, "permission_set_access_level"), [["44186", 3]]);
-  await assert.rejects(() => resetBaseChildAccess(childAccessDb(), BASE_ID, ["99999"]), /no longer unusual/i);
+// Unlike the refill/delete queues, whose entries are pure intent and can be
+// replaced wholesale, this entry carries a payload: a second save touching
+// different pieces must not discard the first one's.
+test("queueBaseChildAccess merges a second save into the existing entry, last write winning per piece", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    const first = queueBaseChildAccess(repoRoot, {
+      baseId: BASE_ID,
+      map: "DeepDesert",
+      partitionId: 59,
+      updates: [{ actorId: "44186", accessLevel: 3 }, { actorId: "44187", accessLevel: 5 }]
+    });
+    queueBaseChildAccess(repoRoot, {
+      baseId: BASE_ID,
+      map: "DeepDesert",
+      partitionId: 59,
+      updates: [{ actorId: "44187", accessLevel: 1 }, { actorId: "44188", accessLevel: 2 }]
+    });
+
+    const queued = listQueuedBaseChildAccess(repoRoot);
+    assert.equal(queued.length, 1, "still one entry for the base");
+    assert.deepEqual(queued[0].updates, [
+      { actorId: "44186", accessLevel: 3 },
+      { actorId: "44187", accessLevel: 1 },
+      { actorId: "44188", accessLevel: 2 }
+    ]);
+    // queuedAt is preserved so re-saving cannot reset the entry's age limit.
+    assert.equal(queued[0].queuedAt, first.queuedAt);
+  });
+});
+
+test("queueBaseChildAccess rejects an empty or fully invalid update set", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    assert.throws(() => queueBaseChildAccess(repoRoot, { baseId: BASE_ID, updates: [] }), /at least one piece/i);
+    assert.throws(
+      () => queueBaseChildAccess(repoRoot, { baseId: BASE_ID, updates: [{ actorId: "44186", accessLevel: 9 }] }),
+      /at least one piece/i);
+    assert.deepEqual(listQueuedBaseChildAccess(repoRoot), []);
+  });
+});
+
+// A request-time save must refuse a stale actorId, but an entry drained days
+// later would otherwise be permanently failed by one demolished door.
+test("setBaseChildAccessLevels skips stale pieces only under skipStale, and refuses when none remain", async () => {
+  await assert.rejects(
+    () => setBaseChildAccessLevels(childAccessDb(), BASE_ID, [
+      { actorId: "44186", accessLevel: 3 },
+      { actorId: "999999", accessLevel: 3 }
+    ]),
+    /no longer children of this base/i);
+
+  const result = await setBaseChildAccessLevels(childAccessDb(), BASE_ID, [
+    { actorId: "44186", accessLevel: 3 },
+    { actorId: "999999", accessLevel: 3 }
+  ], { skipStale: true });
+  assert.equal(result.updated, 1);
+  assert.deepEqual(result.skipped, ["999999"]);
+
+  await assert.rejects(
+    () => setBaseChildAccessLevels(childAccessDb(), BASE_ID, [{ actorId: "999999", accessLevel: 3 }], { skipStale: true }),
+    /none of the queued pieces/i);
 });

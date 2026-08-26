@@ -28,6 +28,16 @@ export type PendingRefills = {
   byTarget: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; count: number }[];
 };
 
+// Unlike QueuedRefill, a queued permission change carries a payload: which
+// pieces go to which level once the map is next down.
+export type QueuedChildAccess = QueuedRefill & {
+  updates: { actorId: string; accessLevel: BaseAccessLevel }[];
+};
+
+export type PendingChildAccess = Omit<PendingRefills, "pending"> & {
+  pending: QueuedChildAccess[];
+};
+
 export type AutoRefillBase = {
   baseId: number;
   enabledAt: string;
@@ -314,21 +324,32 @@ export type BasePermissionEntry = {
   canonical: boolean;
 };
 
-export type BaseChildAccessAnomaly = {
+// permission_actor.access_level: a separate 5-tier scale from
+// BasePermissionRank (1-3). 3/Associate is "Sub-Fief" -- it matches the base's
+// own roster-wide default; every other value was deliberately set wider
+// (Public, Guild) or narrower (Co-Owner, Owner) than that.
+export type BaseAccessLevel = 1 | 2 | 3 | 4 | 5;
+
+// Matches childAccessGroupFor's categories in duneDb.js -- its own map, not
+// BASE_INVENTORY_TYPES: most child pieces (doors, generators, turbines, the
+// totem) carry no inventory at all, so this tab's grouping is broader than
+// the Inventory tab's (which only covers actual dune.inventories rows).
+export type BaseChildAccessGroup = "subfief" | "storage" | "refining" | "crafting" | "generators" | "water" | "pentashield" | "door" | "other";
+
+export type BaseChildAccessRow = {
   actorId: string;
   name: string;
-  kind: "Door" | "Device";
-  currentAccess: number;
-  expectedAccess: number;
-  basis: string;
-  unusual: true;
+  buildingType: string;
+  group: BaseChildAccessGroup;
+  currentAccess: BaseAccessLevel;
+  currentAccessLabel: string;
+  isSubFief: boolean;
 };
 
 export type BaseChildAccessAudit = {
   supported: boolean;
   inspected: number;
-  baselined: number;
-  anomalies: BaseChildAccessAnomaly[];
+  rows: BaseChildAccessRow[];
   reason?: string;
 };
 
@@ -352,7 +373,6 @@ export type BasePermissions = {
     reason?: string;
   };
   entries: BasePermissionEntry[];
-  childAccess?: BaseChildAccessAudit;
   reason?: string;
 };
 
@@ -492,9 +512,17 @@ export const basesApi = {
     api<{ supported: boolean; result?: SetBasePermissionsResult; reason?: string }>(
       `/api/bases/${encodeURIComponent(baseId)}/permissions`,
       { method: "PUT", body: JSON.stringify({ entries }) }),
-  resetChildAccess: (baseId: string, actorIds: string[]) =>
-    post<{ supported: boolean; result?: { ok: boolean; baseId: number; reset: number; message: string }; reason?: string }>(
-      `/api/bases/${encodeURIComponent(baseId)}/child-access/reset`, { actorIds, confirmation: "RESET CHILD ACCESS" }),
+  childAccess: (baseId: string) =>
+    api<BaseChildAccessAudit>(`/api/bases/${encodeURIComponent(baseId)}/child-access`),
+  // result.queued is true when the base's map was live and the change was
+  // recorded for the next restart instead of written now.
+  setChildAccess: (baseId: string, updates: { actorId: string; accessLevel: BaseAccessLevel }[]) =>
+    post<{ supported: boolean; result?: { ok: boolean; baseId: number; updated?: number; queued?: boolean; message?: string }; reason?: string }>(
+      `/api/bases/${encodeURIComponent(baseId)}/child-access`, { updates, confirmation: "SET CHILD ACCESS" }),
+  pendingChildAccess: () => api<PendingChildAccess>("/api/bases/pending-child-access"),
+  cancelQueuedChildAccess: (baseId: string) =>
+    api<{ supported: boolean; result?: { ok: boolean; baseId: number; pending: number }; reason?: string }>(
+      `/api/bases/${encodeURIComponent(baseId)}/queued-child-access`, { method: "DELETE" }),
   transferToSystemCustodian: (baseId: string) =>
     post<{ supported: boolean; result?: SetBasePermissionsResult; reason?: string }>(
       `/api/bases/${encodeURIComponent(baseId)}/system-custodian`, {}),
