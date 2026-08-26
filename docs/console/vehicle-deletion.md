@@ -133,7 +133,7 @@ runs immediately. If not, it is recorded in
 200 entries — vehicles are far more numerous than bases, so this cap is
 tracked independently) and applied the next time that partition is confirmed
 down — the same 5-second poll and restart-task `onMapDown` hook that flushes
-queued base refills and deletes, extended with a fourth independent leg.
+the other queued writes, extended with its own independent vehicle-delete leg.
 
 **Same divergence as the base queue:** at flush time, finding that the
 vehicle no longer exists counts as **success**, not a failure to retry.

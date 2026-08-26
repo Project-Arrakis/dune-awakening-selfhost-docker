@@ -3978,8 +3978,7 @@ export async function listBasePermissions(db, baseId) {
     claimed,
     unclaimedReason: claimed ? "" : BASE_UNCLAIMED_MESSAGE,
     systemCustodian,
-    entries,
-    childAccess: await listBaseChildAccess(db, baseId)
+    entries
   };
 }
 
@@ -3995,19 +3994,6 @@ function friendlyChildAccessName(row) {
   return raw || "Base Object";
 }
 
-function accessMode(rows) {
-  const counts = new Map();
-  for (const row of rows) {
-    const level = Number(row.access_level);
-    const count = Number(row.row_count || 0);
-    counts.set(level, (counts.get(level) || 0) + count);
-  }
-  const ranked = [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0] - right[0]);
-  const total = ranked.reduce((sum, entry) => sum + entry[1], 0);
-  if (!ranked.length || (ranked[1] && ranked[0][1] === ranked[1][1])) return null;
-  return { level: ranked[0][0], count: ranked[0][1], total };
-}
-
 async function baseChildAccessSupported(db) {
   for (const table of ["buildings", "building_instances", "placeables", "permission_actor"]) {
     if (!(await tableExists(db, table))) return false;
@@ -4015,17 +4001,70 @@ async function baseChildAccessSupported(db) {
   return functionExists(db, "dune.permission_set_access_level(bigint,smallint)");
 }
 
-// Child actors normally inherit the base roster but retain their own access
-// level. Ownership transfers must preserve intentional per-object choices, so
-// this is an audit, not part of transferBaseToSystemCustodian. A recommendation
-// is made only from a strong live-server baseline: all doors share the dominant
-// door level, while other devices need at least three peers of the exact same
-// building type and a 75% majority. This catches a lone odd door without
-// guessing at singleton devices or overwriting legitimate customization.
+// permission_actor.access_level is a distinct 5-tier scale from
+// permission_actor_rank.rank (Owner/Co-Owner/Associate, 1-3): every top-level
+// base actor and the overwhelming majority of child pieces carry exactly this
+// value, so it is the game's "matches the base's own Sub-Fief roster" default.
+// A child piece set to any other level was deliberately opened wider (Public,
+// Guild) or narrowed further (Co-Owner, Owner) than that default.
+const SUB_FIEF_ACCESS_LEVEL = 3;
+const ACCESS_LEVEL_LABELS = { 1: "Public", 2: "Guild", 3: "Associate", 4: "Co-Owner", 5: "Owner" };
+
+// Categorizes a child piece for the Base Permissions tab's Type filter.
+// Deliberately its own map, not a reuse of BASE_INVENTORY_TYPES: that one
+// drives baseInventory's SQL join against real dune.inventories rows, and
+// most child pieces here (doors, generators, turbines, the totem) carry no
+// inventory at all -- extending it would risk changing what the Inventory
+// tab actually shows for a reason unrelated to this feature. Storage/
+// Refining/Crafting still borrow that map's own curated building-type keys
+// for consistent naming where the two features genuinely overlap; Generators
+// and Water Storage are their own simple substring rules, matching the
+// same "anything with X in its name" logic for both. Order here is the
+// filter's display order.
+const CHILD_ACCESS_GROUP_ORDER = ["subfief", "storage", "refining", "crafting", "generators", "water", "pentashield", "door", "other"];
+const CHILD_ACCESS_GROUP_LABELS = {
+  subfief: "Sub-Fief",
+  storage: "Storage",
+  refining: "Refining",
+  crafting: "Crafting",
+  generators: "Generators",
+  water: "Water Storage",
+  pentashield: "Pentashield",
+  door: "Door",
+  other: "Other"
+};
+// isChild is permission_actor.is_child straight from the row: the base's own
+// root object (the totem, always exactly one per base -- Totem_Placeable or
+// Totem_Small_Placeable) is the only is_child=false row this query returns,
+// so that flag -- not a name guess -- is what marks it Sub-Fief.
+function childAccessGroupFor(buildingType, isChild) {
+  if (isChild === false) return "subfief";
+  const key = String(buildingType || "").toLowerCase();
+  for (const group of ["storage", "refining", "crafting"]) {
+    if (Object.prototype.hasOwnProperty.call(BASE_INVENTORY_TYPES[group].buildingTypes, key)) return group;
+  }
+  // Wind turbines are generators too (WindTurbineDirectional_Placeable,
+  // WindTurbineOmnidirectional_Placeable) -- "turbine", not "wind", so this
+  // does not also pull in Windtrap_Placeable/LargeWindtrap_Placeable, which
+  // are moisture collectors, not power generation.
+  if (key.includes("generator") || key.includes("turbine")) return "generators";
+  if (key.includes("water")) return "water";
+  if (key.includes("pentashield")) return "pentashield";
+  if (key.includes("door")) return "door";
+  return "other";
+}
+
+// Every object on the base with its own access level: every child piece
+// (doors, devices) plus the base's own root object (the totem, is_child =
+// false -- the "Sub-Fief" group), regardless of current access level, not
+// just the ones that deviate from it. These actors normally match the
+// base's own Sub-Fief access level but retain their own setting; ownership
+// transfers must preserve intentional per-object choices, so this is a
+// read-only list, not part of transferBaseToSystemCustodian.
 export async function listBaseChildAccess(db, baseId) {
   const target = intParam(baseId, "base id", 1);
   if (!(await baseChildAccessSupported(db))) {
-    return { supported: false, inspected: 0, baselined: 0, anomalies: [], reason: "Child access auditing is unsupported by the detected game database." };
+    return { supported: false, inspected: 0, rows: [], reason: "Child access auditing is unsupported by the detected game database." };
   }
   const children = await db.query(`
     with base_entities as (
@@ -4036,90 +4075,246 @@ export async function listBaseChildAccess(db, baseId) {
     )
     select pa.actor_id::text as actor_id, coalesce(pa.actor_name, '') as actor_name,
            pa.access_level::int as access_level, coalesce(p.building_type, '') as building_type,
-           (coalesce(pa.actor_name, '') ilike '%door%' or coalesce(p.building_type, '') ilike '%door%') as is_door
+           pa.is_child as is_child
     from base_entities be
     join dune.placeables p on p.owner_entity_id = be.owner_entity_id
-    join dune.permission_actor pa on pa.actor_id = p.id and pa.is_child = true
+    join dune.permission_actor pa on pa.actor_id = p.id
     order by pa.actor_id`, [target]);
-  if (!children.rows.length) return { supported: true, inspected: 0, baselined: 0, anomalies: [] };
-
-  const peerStats = await db.query(`
-    select coalesce(p.building_type, '') as building_type,
-           (coalesce(pa.actor_name, '') ilike '%door%' or coalesce(p.building_type, '') ilike '%door%') as is_door,
-           pa.access_level::int as access_level, count(*)::int as row_count
-    from dune.placeables p
-    join dune.permission_actor pa on pa.actor_id = p.id and pa.is_child = true
-    group by coalesce(p.building_type, ''), is_door, pa.access_level`);
-  const doorMode = accessMode(peerStats.rows.filter((row) => row.is_door === true));
-  const byType = new Map();
-  for (const row of peerStats.rows) {
-    const key = String(row.building_type || "");
-    if (!byType.has(key)) byType.set(key, []);
-    byType.get(key).push(row);
-  }
-
-  const rows = children.rows.map((row) => {
-    const currentAccess = Number(row.access_level);
-    let baseline = null;
-    let basis = "";
-    if (row.is_door === true && doorMode && doorMode.total >= 3) {
-      baseline = doorMode.level;
-      basis = "Door Standard";
-    } else {
-      const typeMode = accessMode(byType.get(String(row.building_type || "")) || []);
-      if (typeMode && typeMode.total >= 3 && typeMode.count / typeMode.total >= 0.75) {
-        baseline = typeMode.level;
-        basis = "Device Standard";
-      }
-    }
-    return {
-      actorId: String(row.actor_id),
-      name: friendlyChildAccessName(row),
-      kind: row.is_door === true ? "Door" : "Device",
-      currentAccess,
-      expectedAccess: baseline,
-      basis,
-      unusual: baseline !== null && currentAccess !== baseline
-    };
-  });
-  return {
-    supported: true,
-    inspected: rows.length,
-    baselined: rows.filter((row) => row.expectedAccess !== null).length,
-    anomalies: rows.filter((row) => row.unusual)
-  };
+  const rows = children.rows.map((row) => ({
+    actorId: String(row.actor_id),
+    name: friendlyChildAccessName(row),
+    buildingType: String(row.building_type || ""),
+    group: childAccessGroupFor(row.building_type, row.is_child),
+    currentAccess: Number(row.access_level),
+    currentAccessLabel: ACCESS_LEVEL_LABELS[Number(row.access_level)] || String(row.access_level),
+    isSubFief: Number(row.access_level) === SUB_FIEF_ACCESS_LEVEL
+  }));
+  return { supported: true, inspected: rows.length, rows };
 }
 
-export async function resetBaseChildAccess(db, baseId, actorIds) {
+// skipStale is for the queue flush path only: a request-time save must reject
+// an actorId that no longer resolves (the operator is acting on a stale list),
+// but an entry drained days later would be permanently failed by one demolished
+// door in an otherwise-valid batch. The flush drops those ids and applies the
+// rest, reporting what it skipped.
+export async function setBaseChildAccessLevels(db, baseId, updates, { skipStale = false } = {}) {
   const target = intParam(baseId, "base id", 1);
-  if (!Array.isArray(actorIds) || actorIds.length < 1 || actorIds.length > 100) {
-    throw new Error("Choose between 1 and 100 unusual doors or devices to reset.");
+  if (!Array.isArray(updates) || updates.length < 1 || updates.length > 100) {
+    throw new Error("Choose between 1 and 100 pieces to update.");
   }
-  const selected = [...new Set(actorIds.map((id) => String(intParam(id, "child actor id", 1))))];
+  const requested = new Map(updates.map((entry) => [
+    String(intParam(entry.actorId, "child actor id", 1)),
+    intParam(entry.accessLevel, "access level", 1, 5)
+  ]));
   await requireCapability(await baseChildAccessSupported(db),
-    "Child access reset requires the game permission_set_access_level function.");
+    "Setting child access requires the game permission_set_access_level function.");
   return db.transaction(async (tx) => {
     await tx.query("set local search_path to dune, public");
     const actor = await basePermissionActor(tx, target);
     const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
     if (!locked.rowCount) throw new Error("That base was not found.");
     const audit = await listBaseChildAccess(tx, target);
-    const unusual = new Map(audit.anomalies.map((row) => [row.actorId, row]));
-    const chosen = selected.map((id) => unusual.get(id));
-    if (chosen.some((row) => !row)) {
-      throw new Error("One or more selected objects are no longer unusual members of this base. Reload the audit and try again.");
+    const current = new Map(audit.rows.map((row) => [row.actorId, row]));
+    const all = [...requested.entries()].map(([actorId, accessLevel]) => ({ actorId, accessLevel, row: current.get(actorId) }));
+    const skipped = all.filter((entry) => !entry.row).map((entry) => entry.actorId);
+    if (skipped.length && !skipStale) {
+      throw new Error("One or more selected objects are no longer children of this base. Reload and try again.");
     }
-    for (const row of chosen) {
-      await tx.query("select dune.permission_set_access_level($1::bigint, $2::smallint)", [row.actorId, row.expectedAccess]);
+    const chosen = skipStale ? all.filter((entry) => entry.row) : all;
+    if (!chosen.length) throw new Error("None of the queued pieces are still children of this base.");
+    for (const entry of chosen) {
+      await tx.query("select dune.permission_set_access_level($1::bigint, $2::smallint)", [entry.actorId, entry.accessLevel]);
     }
     return {
       ok: true,
       baseId: target,
-      reset: chosen.length,
-      objects: chosen.map((row) => ({ actorId: row.actorId, name: row.name, accessLevel: row.expectedAccess })),
-      message: `${chosen.length} unusual child access setting${chosen.length === 1 ? " was" : "s were"} reset and sent to the running map.`
+      updated: chosen.length,
+      skipped,
+      objects: chosen.map((entry) => ({ actorId: entry.actorId, name: entry.row.name, accessLevel: entry.accessLevel })),
+      message: `${chosen.length} piece${chosen.length === 1 ? "" : "s"} updated. The running map applies this at its next restart.`
     };
   });
+}
+
+// Pending base child-access queue. Unlike the refill and delete queues, this
+// one does not exist to dodge an autosave race -- a permission_actor write is
+// durable immediately. It exists because the game server never picks up an
+// access_level change on a running map (relogging does not help, and a
+// pg_notify carrying the same "Map" field permission_set_player_rank uses was
+// live-tested and had no effect), so writing while the map is up leaves the
+// console showing a value the game does not honor. Queuing defers the write
+// to the window where the map is down, which is also the only window where it
+// takes effect, so what the console shows and what the game enforces agree.
+//
+// Diverges from the refill/delete queues in one way: those entries are pure
+// intent (which base), while this one carries a payload (which pieces, to
+// which levels), so re-queuing merges per actorId instead of replacing the
+// whole entry -- two saves touching different pieces must both survive.
+const PENDING_BASE_CHILD_ACCESS_PATH = "runtime/generated/pending-base-child-access.json";
+const MAX_PENDING_BASE_CHILD_ACCESS = 200;
+const MAX_CHILD_ACCESS_QUEUED_UPDATES = 500;
+
+function pendingBaseChildAccessFile(repoRoot) {
+  return resolve(repoRoot || "", PENDING_BASE_CHILD_ACCESS_PATH);
+}
+
+function normalizeQueuedChildAccessUpdates(updates) {
+  if (!Array.isArray(updates)) return [];
+  const merged = new Map();
+  for (const update of updates) {
+    const actorId = Math.floor(Number(update?.actorId));
+    const accessLevel = Math.floor(Number(update?.accessLevel));
+    if (!Number.isInteger(actorId) || actorId < 1) continue;
+    if (!Number.isInteger(accessLevel) || accessLevel < 1 || accessLevel > 5) continue;
+    merged.set(String(actorId), accessLevel);
+  }
+  return [...merged.entries()]
+    .slice(0, MAX_CHILD_ACCESS_QUEUED_UPDATES)
+    .map(([actorId, accessLevel]) => ({ actorId, accessLevel }));
+}
+
+function normalizePendingChildAccess(entry) {
+  const baseId = Math.floor(Number(entry?.baseId));
+  if (!Number.isInteger(baseId) || baseId < 1) return null;
+  const updates = normalizeQueuedChildAccessUpdates(entry?.updates);
+  if (!updates.length) return null;
+  const partitionId = Math.floor(Number(entry?.partitionId));
+  return {
+    baseId,
+    map: String(entry?.map ?? "").slice(0, 120),
+    partitionId: Number.isInteger(partitionId) && partitionId > 0 ? partitionId : 0,
+    queuedAt: typeof entry?.queuedAt === "string" ? entry.queuedAt.slice(0, 40) : "",
+    attempts: clampInt(entry?.attempts, 0, 0, MAX_REFILL_FLUSH_ATTEMPTS),
+    nextRetryAt: Number.isFinite(Number(entry?.nextRetryAt)) ? Number(entry.nextRetryAt) : 0,
+    lastError: String(entry?.lastError ?? "").slice(0, 300),
+    updates
+  };
+}
+
+export function listQueuedBaseChildAccess(repoRoot) {
+  const file = pendingBaseChildAccessFile(repoRoot);
+  if (!existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    return parsed.map(normalizePendingChildAccess).filter((entry) => {
+      if (!entry || seen.has(entry.baseId)) return false;
+      seen.add(entry.baseId);
+      return true;
+    });
+  } catch (error) {
+    console.warn(`Ignoring unreadable pending base child access queue: ${redact(error?.message || "Unexpected error.")}`);
+    return [];
+  }
+}
+
+function writeQueuedBaseChildAccess(repoRoot, entries) {
+  writeJsonAtomic(pendingBaseChildAccessFile(repoRoot), entries);
+  return entries;
+}
+
+// Merges into an existing entry for the same base rather than replacing it,
+// keeping the original queuedAt so a base cannot dodge the age limit by being
+// re-saved. A later save wins per piece.
+export function queueBaseChildAccess(repoRoot, { baseId, map = "", partitionId = 0, updates = [], now = () => new Date() } = {}) {
+  const target = intParam(baseId, "base id", 1);
+  const incoming = normalizeQueuedChildAccessUpdates(updates);
+  if (!incoming.length) throw new Error("Choose at least one piece to update.");
+  const existing = listQueuedBaseChildAccess(repoRoot);
+  const previous = existing.find((row) => row.baseId === target);
+  const others = existing.filter((row) => row.baseId !== target);
+  if (!previous && others.length >= MAX_PENDING_BASE_CHILD_ACCESS) {
+    throw new Error(`The pending base permission queue already holds ${MAX_PENDING_BASE_CHILD_ACCESS} bases. Restart the affected maps to apply them first.`);
+  }
+  const entry = normalizePendingChildAccess({
+    baseId: target,
+    map,
+    partitionId,
+    queuedAt: previous?.queuedAt || now().toISOString(),
+    updates: [...(previous?.updates || []), ...incoming]
+  });
+  if (!entry) throw new Error("Invalid base id");
+  writeQueuedBaseChildAccess(repoRoot, [...others, entry]);
+  return entry;
+}
+
+export function cancelQueuedBaseChildAccess(repoRoot, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const entries = listQueuedBaseChildAccess(repoRoot);
+  const remaining = entries.filter((entry) => entry.baseId !== target);
+  if (remaining.length === entries.length) throw new Error("That base has no queued permission changes.");
+  writeQueuedBaseChildAccess(repoRoot, remaining);
+  return { ok: true, baseId: target, pending: remaining.length };
+}
+
+function reconcileQueuedBaseChildAccess(repoRoot, outcomes) {
+  const next = [];
+  for (const entry of listQueuedBaseChildAccess(repoRoot)) {
+    const outcome = outcomes.get(entry.baseId);
+    if (!outcome || outcome.queuedAt !== entry.queuedAt) {
+      next.push(entry);
+      continue;
+    }
+    if (outcome.keep) next.push({ ...entry, attempts: outcome.attempts, nextRetryAt: outcome.nextRetryAt, lastError: outcome.lastError });
+  }
+  writeQueuedBaseChildAccess(repoRoot, next);
+  return next;
+}
+
+// Applies every queued permission change whose map is currently down and
+// leaves the rest queued. Same driver and reasoning as flushWaterRefills,
+// except each entry's payload is applied in 100-update batches (the cap
+// setBaseChildAccessLevels enforces) and stale pieces are skipped rather than
+// failing the whole entry.
+export async function flushBaseChildAccess(db, repoRoot, { now = Date.now } = {}) {
+  const pending = listQueuedBaseChildAccess(repoRoot);
+  if (!pending.length) return { flushed: [], pending: 0 };
+  const observed = await observeRefillPartitions(db, { now });
+  if (!observed) return { flushed: [], pending: pending.length, unsupported: true };
+
+  const flushed = [];
+  const outcomes = new Map();
+  const timestamp = now();
+  for (const entry of pending) {
+    const queuedMs = Date.parse(entry.queuedAt);
+    if (Number.isFinite(queuedMs) && timestamp - queuedMs >= pendingRefillMaxAgeMs()) {
+      const message = `Queued for longer than the ${Math.round(pendingRefillMaxAgeMs() / 3600000)}h limit without being applied.`;
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
+      continue;
+    }
+    if (!partitionWriteSafe(observed, entry.partitionId)) continue;
+    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    try {
+      let updated = 0;
+      const skipped = [];
+      for (let i = 0; i < entry.updates.length; i += 100) {
+        const result = await setBaseChildAccessLevels(db, entry.baseId, entry.updates.slice(i, i + 100), { skipStale: true });
+        updated += result.updated;
+        skipped.push(...result.skipped);
+      }
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: true, updated, skipped });
+    } catch (error) {
+      const message = String(error?.message || "Unexpected error.").slice(0, 300);
+      const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
+      const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
+      const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: !dropped, attempts, nextRetryAt, lastError: message });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, attempts, dropped, error: message });
+    }
+  }
+  const remaining = outcomes.size ? reconcileQueuedBaseChildAccess(repoRoot, outcomes) : pending;
+  return { flushed, pending: remaining.length };
+}
+
+// Mirrors supportsBaseDeleteQueue: without dune.world_partition there is no
+// way to tell a running map from a stopped one, so changes stay immediate.
+export async function supportsBaseChildAccessQueue(db, { baseChildAccess } = {}) {
+  const supported = baseChildAccess !== undefined ? baseChildAccess : await baseChildAccessSupported(db);
+  if (!supported) return false;
+  return tableExists(db, "world_partition");
 }
 
 // System identities stay out of ordinary player search. Prefer the RedBlink
@@ -5092,24 +5287,26 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     // columns the generator capability check requires, so reusing that check
     // would wrongly hide Refill Water on a schema that has everything water
     // actually needs.
-    const [generatorRefill, basePermissions, waterRefill, baseDelete] = await Promise.all([
+    const [generatorRefill, basePermissions, waterRefill, baseDelete, baseChildAccess] = await Promise.all([
       supportsGeneratorRefill(db).catch(() => false),
       supportsBasePermissionEditing(db).catch(() => false),
       supportsWaterRefill(db).catch(() => false),
-      supportsBaseDelete(db).catch(() => false)
+      supportsBaseDelete(db).catch(() => false),
+      baseChildAccessSupported(db).catch(() => false)
     ]);
     // Without world_partition the console cannot tell a running map from a
     // stopped one, so the panel hides the queue entirely and refills/deletes
     // stay immediate. Each check reuses the flag just computed above instead
     // of re-deriving it, and all run concurrently for the same reason as above.
-    const [generatorRefillQueue, waterRefillQueue, baseDeleteQueue] = await Promise.all([
+    const [generatorRefillQueue, waterRefillQueue, baseDeleteQueue, baseChildAccessQueue] = await Promise.all([
       generatorRefill ? supportsGeneratorRefillQueue(db, { generatorRefill }).catch(() => false) : Promise.resolve(false),
       waterRefill ? supportsWaterRefillQueue(db, { waterRefill }).catch(() => false) : Promise.resolve(false),
-      baseDelete ? supportsBaseDeleteQueue(db, { baseDelete }).catch(() => false) : Promise.resolve(false)
+      baseDelete ? supportsBaseDeleteQueue(db, { baseDelete }).catch(() => false) : Promise.resolve(false),
+      baseChildAccess ? supportsBaseChildAccessQueue(db, { baseChildAccess }).catch(() => false) : Promise.resolve(false)
     ]);
 
     return {
-      capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions, waterRefill, waterRefillQueue, baseDelete, baseDeleteQueue },
+      capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions, waterRefill, waterRefillQueue, baseDelete, baseDeleteQueue, baseChildAccess, baseChildAccessQueue },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalBases: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_bases) : 0,
       totalOwned: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_owned || 0) : 0,
@@ -10617,11 +10814,19 @@ const BASE_INVENTORY_TYPES = {
       vehiclesfabricator_placeable: "Vehicles Fabricator",
       weaponsfabricator_placeable: "Weapons Fabricator",
       wearablesfabricator_placeable: "Garment Fabricator",
-      advancedsurvivalfabricator_placeable: "Advanced Survival Fabricator",
-      // Singular "Vehicle" -- the game is inconsistent here, the base building
-      // is VehiclesFabricator_Placeable but the advanced one is
-      // AdvancedVehicleFabricator_Placeable. Verified in the shipped paks.
-      advancedvehiclefabricator_placeable: "Advanced Vehicle Fabricator",
+      // Both Advanced_ entries carry a literal underscore after "Advanced"
+      // that the other three Advanced fabricators below do not -- confirmed
+      // against real placed buildings (kovalt_test.backup), not the pak
+      // asset names the no-underscore forms were pulled from (see
+      // [[reference_building_type_extraction_from_paks]]: presence in the
+      // paks is proof an asset exists, not proof of the exact instantiated
+      // building_type string). Getting this wrong silently dropped every
+      // Advanced Survival/Vehicles Fabricator out of the Inventory tab's
+      // Crafting group entirely, via baseInventory's inner join.
+      advanced_survivalfabricator_placeable: "Advanced Survival Fabricator",
+      // Also plural "Vehicles", matching the base building below it, not the
+      // singular "Vehicle" a prior pak-only read assumed.
+      advanced_vehiclesfabricator_placeable: "Advanced Vehicles Fabricator",
       advancedweaponsfabricator_placeable: "Advanced Weapons Fabricator",
       advancedwearablesfabricator_placeable: "Advanced Garment Fabricator"
     }
@@ -10661,6 +10866,7 @@ function baseInventoryTypeParams() {
     BASE_INVENTORY_TRIPLES.map(([, , typeName]) => typeName)
   ];
 }
+
 
 // Every stored item at a base, rolled up two ways off one query: by item
 // template (what does this base hold, and where) and by container (what is in

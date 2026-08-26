@@ -5,15 +5,25 @@ import { redact } from "../redact.js";
 // deliberate: if one queue fails, we still wait for the others rather than
 // returning early while one of them is writing to PostgreSQL.
 //
-// flushDeletes and flushVehicleDeletes are optional and additive: existing
+// The delete and permission flushes are optional and additive: existing
 // callers that pass only flushGenerators/flushWater are unaffected, since an
 // undefined leg is simply skipped rather than awaited.
-export async function flushBaseRefillQueues({ flushGenerators, flushWater, flushDeletes, flushVehicleDeletes }) {
+export async function flushBaseRefillQueues({
+  flushGenerators,
+  flushWater,
+  flushDeletes,
+  flushChildAccess,
+  flushVehicleDeletes
+}) {
   const jobs = [Promise.resolve().then(flushGenerators), Promise.resolve().then(flushWater)];
   const labels = ["generator", "water"];
   if (flushDeletes) {
     jobs.push(Promise.resolve().then(flushDeletes));
     labels.push("delete");
+  }
+  if (flushChildAccess) {
+    jobs.push(Promise.resolve().then(flushChildAccess));
+    labels.push("childAccess");
   }
   if (flushVehicleDeletes) {
     jobs.push(Promise.resolve().then(flushVehicleDeletes));
