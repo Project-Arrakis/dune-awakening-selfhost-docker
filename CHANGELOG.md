@@ -9,7 +9,40 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.3.95)
 
+### Fixed
+
+- **The Settings panel's Change Login Password form was a dead end once TOTP
+  was enrolled** (issue #515). The server has required fresh proof of
+  possession since #407 phase 6 — current password *and* a current
+  authenticator code (`server.js`, "Enter your current authenticator code to
+  change the password") — but `SettingsPanel.tsx` never sent `totpCode`, had no
+  field for one, and had no test coverage of the form at all. An operator with
+  a second factor enrolled saw the server's error with nowhere to act on it,
+  and the only documented workaround was the total-loss host reset, which also
+  destroys the TOTP enrollment. The form now renders an authenticator-code
+  field when a factor is enrolled, sends the code, and clears it after a
+  rejected attempt so a stale code is never resubmitted. No operator was
+  affected in practice — `CONSOLE_TOTP_ENABLED` defaults off — but this was a
+  hard blocker for flipping that default (gate #424).
+
 ### Added
+
+- **Settings-panel control for recovery-code regeneration** (issue #512,
+  completing the route shipped earlier). A Two-Factor Authentication section
+  appears in Settings when (and only when) a second factor is enrolled, taking
+  the current password plus an authenticator code and displaying the new set of
+  10 once, behind the same "I have saved these codes" acknowledgment gate used
+  by enrollment. That gate is now a shared `RecoveryCodesPanel` component used
+  by both the login-flow enrollment screen and Settings, so the two cannot
+  drift into describing once-only codes differently.
+
+- **`secondFactorEnrolled` on `GET /api/auth/me`.** The client needs to know a
+  factor is enrolled *before* submitting a credential action, rather than
+  inferring it from a failed request — inferring it is exactly what left the
+  password form unable to satisfy the server. Reported as `false` whenever
+  `CONSOLE_TOTP_ENABLED` is off, so the UI never asks for a code the server
+  would ignore, and degrades to `false` rather than failing the endpoint if the
+  second-factor store is unreadable.
 
 - **Recovery-code regeneration route** (issue #512, RFC §2.3/§3.4).
   `secondFactorStore.js`'s `regenerateRecoveryCodes()` has existed and been

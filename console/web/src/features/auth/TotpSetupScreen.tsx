@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { post } from "../../api/client";
+import { RecoveryCodesPanel } from "./RecoveryCodesPanel";
 
 // Tier 3 enrollment/re-setup screen (RFC docs/rfc-console-auth.md §4/§2.3).
 // Shown after a login response carries enrollmentRequired (first post-upgrade
@@ -84,19 +85,15 @@ export function TotpSetupScreen({ mode, onComplete, onCancel }: TotpSetupScreenP
     return (
       <main className="login-screen">
         <section className="login-panel totp-recovery-codes-panel">
-          <h1>Save your recovery codes</h1>
-          <p>
-            These 10 codes are shown once, right now. If you ever lose your authenticator, use
-            one of these (with your password) to sign back in. Each code works only once.
-          </p>
-          <ul className="totp-recovery-codes-list">
-            {recoveryCodes.map((recoveryCode) => <li key={recoveryCode}><code>{recoveryCode}</code></li>)}
-          </ul>
-          <label className="totp-ack-checkbox">
-            <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />
-            I have saved these codes somewhere safe
-          </label>
-          <button type="button" disabled={!acknowledged} onClick={onComplete}>Continue to sign in</button>
+          <RecoveryCodesPanel
+            codes={recoveryCodes}
+            heading="Save your recovery codes"
+            intro="These 10 codes are shown once, right now. If you ever lose your authenticator, use one of these (with your password) to sign back in. Each code works only once."
+            confirmLabel="Continue to sign in"
+            onConfirm={onComplete}
+            acknowledged={acknowledged}
+            onAcknowledgedChange={setAcknowledged}
+          />
         </section>
       </main>
     );

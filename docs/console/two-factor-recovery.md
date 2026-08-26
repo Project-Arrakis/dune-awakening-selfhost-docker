@@ -48,29 +48,19 @@ old one is worthless from that moment, which is the intent. You keep your
 existing authenticator — this rotates the recovery codes only, and does not
 sign out any of your other console sessions.
 
-**Corrected 2026-08-26 (issue #512):** this section previously said to
-regenerate "from the console's own settings once you are signed in." That was
-never true — no route and no settings control existed, so an operator
-following this page reached a dead end and the only real way back was the
-Case 3 host reset below, which also destroys the TOTP enrollment. The route
-now exists; **the settings-panel button does not yet** (tracked as #515,
-which also fixes the password-change form's own missing authenticator-code
-field). Until that ships, this is reachable from the API only:
+Open **Settings → Two-Factor Authentication → Regenerate Recovery Codes**, enter your
+current login password and a code from your authenticator, and the console issues a
+fresh set of 10. They are displayed once, behind a "I have saved these codes"
+confirmation — only their digests are stored, so there is no way to retrieve them
+afterwards.
 
-```bash
-# Signed in already: reuse your browser session cookie and CSRF token, or
-# call this from a script that has just logged in.
-curl -sS -X POST https://<your-console>/api/auth/2fa/recovery-codes/regenerate \
-  -H 'content-type: application/json' \
-  -H "x-csrf-token: <token from GET /api/auth/state>" \
-  -b "asc_session=<your session cookie>" \
-  -d '{"currentPassword":"<your password>","totpCode":"<current 6-digit code>"}'
-```
+The section only appears when a second factor is actually enrolled.
 
-The response carries the new codes **once** — only their digests are stored,
-so there is no way to retrieve them again. Save them before closing the
-terminal. If you cannot use the API, Case 3's host reset still works, at the
-cost of also re-enrolling your authenticator.
+**History (issues #512 / #515):** this page previously said to regenerate "from the
+console's own settings" at a time when neither the route nor the control existed, so
+anyone following it hit a dead end and the only real way back was the Case 3 host reset
+below — which also destroys the TOTP enrollment. The route shipped in #512 and the
+settings control in #515; the instructions above now describe what is actually there.
 
 ## Case 3 — you lost both
 
