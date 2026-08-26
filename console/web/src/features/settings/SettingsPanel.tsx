@@ -6,6 +6,14 @@ import { InfoTooltip, KeyValueGrid, StatusPill } from "../../components/common/D
 import { RecoveryCodesPanel } from "../auth/RecoveryCodesPanel";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
 
+// Authenticator apps display codes as "123 456" and the server strips whitespace
+// (auth/totp.js) precisely so a paste of that form validates. The inputs used to
+// carry maxLength={6}, which truncated the paste to "123 45" before the server
+// ever saw it -- and every resulting rejection spent rate-limiter budget (#526).
+function stripCodeWhitespace(value: string) {
+  return value.replace(/\s/g, "");
+}
+
 type SettingsTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 type PublicDirectorySettings = {
   available?: boolean;
@@ -59,6 +67,10 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
   // fixes was the server demanding an authenticator code the form had no field
   // for, which is only avoidable by knowing BEFORE submitting.
   const [secondFactorEnrolled, setSecondFactorEnrolled] = useState(false);
+  // Distinct from "not enrolled" (#525): the store threw, so 2FA state is
+  // unreadable. Hiding the controls here is the worst possible response --
+  // that is exactly when the operator needs them.
+  const [secondFactorUnavailable, setSecondFactorUnavailable] = useState(false);
   const [passwordTotpCode, setPasswordTotpCode] = useState("");
   const [twoFactorOpen, setTwoFactorOpen] = useState(false);
   const [regeneratePassword, setRegeneratePassword] = useState("");
@@ -67,18 +79,25 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
   const [regenerateResult, setRegenerateResult] = useState<SettingsTaskResult | null>(null);
   const [regeneratedCodes, setRegeneratedCodes] = useState<string[] | null>(null);
   const [regenerateAcknowledged, setRegenerateAcknowledged] = useState(false);
+  async function refreshCredentialState() {
+    // Read independently of /api/settings (#525): that await used to sit outside
+    // any try/catch, so a transient failure there aborted refresh() before this
+    // ran and silently left secondFactorEnrolled at its `false` initializer --
+    // rendering the #515 dead end again, reached through a fail-open default.
+    try {
+      const me = await api<{ secondFactorEnrolled?: boolean; secondFactorUnavailable?: boolean }>("/api/auth/me");
+      setSecondFactorEnrolled(Boolean(me.secondFactorEnrolled));
+      setSecondFactorUnavailable(Boolean(me.secondFactorUnavailable));
+    } catch {
+      // Unknown, not "no". Treat it the same as an unreadable store so the
+      // panel says so instead of quietly offering a form the server will reject.
+      setSecondFactorUnavailable(true);
+    }
+  }
   async function refresh() {
+    await refreshCredentialState();
     const nextSettings = await api<Record<string, unknown>>("/api/settings");
     setSettings(nextSettings);
-    // Tolerated failure: /me is not essential to rendering the rest of the
-    // panel, and a console with an unreadable second-factor store should still
-    // show its settings rather than a blank screen.
-    try {
-      const me = await api<{ secondFactorEnrolled?: boolean }>("/api/auth/me");
-      setSecondFactorEnrolled(Boolean(me.secondFactorEnrolled));
-    } catch {
-      setSecondFactorEnrolled(false);
-    }
     const config = (nextSettings.config as Record<string, unknown> | undefined) || {};
     const directory = (nextSettings.publicDirectory as PublicDirectorySettings | undefined) || {};
     const serverConfig = (nextSettings.serverConfig as Record<string, string> | undefined) || {};
@@ -93,6 +112,22 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
   useEffect(() => {
     refresh().catch(() => undefined);
   }, []);
+  // Warn before a reload/close destroys codes the operator has not confirmed
+  // saving (#524). They are shown once and only digests persist, so leaving this
+  // page with them unacknowledged loses them for good -- and the previous sheet
+  // is already dead. This covers reload/close; an in-app tab change unmounts the
+  // panel and cannot be intercepted from here, which is why the acknowledgment
+  // gate stays the primary protection.
+  useEffect(() => {
+    if (!regeneratedCodes || regenerateAcknowledged) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+      return "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [regeneratedCodes, regenerateAcknowledged]);
   useEffect(() => {
     if (!passwordResult || passwordResult.status === "running") return;
     const id = window.setTimeout(() => setPasswordResult(null), 5400);
@@ -394,10 +429,9 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
             {secondFactorEnrolled && <label>Authenticator Code<input
               disabled={passwordEnvManaged || passwordSaving}
               value={passwordTotpCode}
-              onChange={(event) => setPasswordTotpCode(event.target.value)}
+              onChange={(event) => setPasswordTotpCode(stripCodeWhitespace(event.target.value))}
               inputMode="numeric"
               autoComplete="one-time-code"
-              maxLength={6}
               placeholder="6-digit code"
             /></label>}
           </div>
@@ -417,22 +451,36 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
           </div>
         </div>}
       </div>
-      {secondFactorEnrolled && <div className={`playerAdmin_toggle settings-two-factor-toggle ${twoFactorOpen ? "open" : ""}`}>
+      {/* Rendered OUTSIDE the secondFactorEnrolled gate (#524). While these codes
+          are on screen they are the ONLY copy that will ever exist -- the previous
+          sheet is already invalidated server-side and only digests persist. Gating
+          them on a flag that any /api/auth/me re-read can flip to false meant the
+          panel's own Refresh button, sitting a few rows above, destroyed them. */}
+      {regeneratedCodes && <div className="playerAdmin_toggle settings-two-factor-toggle open">
+        <div className="playerAdmin_toggleBody">
+          <div className="totp-recovery-codes-panel">
+            <RecoveryCodesPanel
+              codes={regeneratedCodes}
+              heading="Save your new recovery codes"
+              intro="These 10 codes replace your previous set, which no longer works. They are shown once, right now, and cannot be retrieved again."
+              confirmLabel="Done"
+              onConfirm={() => { setRegeneratedCodes(null); setRegenerateAcknowledged(false); }}
+              acknowledged={regenerateAcknowledged}
+              onAcknowledgedChange={setRegenerateAcknowledged}
+            />
+          </div>
+        </div>
+      </div>}
+      {secondFactorUnavailable && <p className="attention-text">
+        This console&apos;s two-factor state could not be read, so password changes and
+        recovery-code regeneration are unavailable right now. Do not delete
+        <code> runtime/generated/console-second-factor.json</code> &mdash; see the sign-in
+        page&apos;s error for recovery guidance.
+      </p>}
+      {secondFactorEnrolled && !regeneratedCodes && <div className={`playerAdmin_toggle settings-two-factor-toggle ${twoFactorOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={twoFactorOpen ? "Collapse Two-Factor Authentication" : "Expand Two-Factor Authentication"} onClick={() => setTwoFactorOpen(!twoFactorOpen)}>{twoFactorOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Two-Factor Authentication</span></button>
         {twoFactorOpen && <div className="playerAdmin_toggleBody">
-          {regeneratedCodes
-            ? <div className="totp-recovery-codes-panel">
-                <RecoveryCodesPanel
-                  codes={regeneratedCodes}
-                  heading="Save your new recovery codes"
-                  intro="These 10 codes replace your previous set, which no longer works. They are shown once, right now, and cannot be retrieved again."
-                  confirmLabel="Done"
-                  onConfirm={() => { setRegeneratedCodes(null); setRegenerateAcknowledged(false); }}
-                  acknowledged={regenerateAcknowledged}
-                  onAcknowledgedChange={setRegenerateAcknowledged}
-                />
-              </div>
-            : <>
+          <>
                 <p className="muted">Generate a fresh set of 10 recovery codes. Your authenticator is unchanged, and you stay signed in everywhere.</p>
                 <p className="attention-text">Your existing recovery codes stop working the moment new ones are issued.</p>
                 <div className="settings-password-grid">
@@ -440,10 +488,9 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
                   <label>Authenticator Code<input
                     disabled={regenerateSaving}
                     value={regenerateTotpCode}
-                    onChange={(event) => setRegenerateTotpCode(event.target.value)}
+                    onChange={(event) => setRegenerateTotpCode(stripCodeWhitespace(event.target.value))}
                     inputMode="numeric"
                     autoComplete="one-time-code"
-                    maxLength={6}
                     placeholder="6-digit code"
                   /></label>
                 </div>
@@ -454,7 +501,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
                     {regenerateResult.message && <span className="inline-task-message">{formatResultMessage(regenerateResult.message)}</span>}
                   </span>}
                 </div>
-              </>}
+          </>
         </div>}
       </div>}
       <div className={`playerAdmin_toggle ${discordOAuthOpen ? "open" : ""}`}>
