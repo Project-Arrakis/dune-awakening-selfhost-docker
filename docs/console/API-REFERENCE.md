@@ -765,7 +765,8 @@ Layers legend's default-settings mechanism.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| POST | `/api/settings/admin-password` | Change admin password | `currentPassword`, `newPassword` |
+| POST | `/api/settings/admin-password` | Change admin password | `currentPassword`, `newPassword`, plus `totpCode` once a second factor is enrolled |
+| POST | `/api/auth/2fa/recovery-codes/regenerate` | Issue a fresh set of 10 recovery codes, invalidating the old set. Owner-only (`settings:regenerate-recovery-codes`); requires `CONSOLE_TOTP_ENABLED=1` and an enrolled factor. Returns the new codes **once**. Revokes no sessions. | `currentPassword`, `totpCode` |
 | POST | `/api/settings/web-port` | Change web console port | `port` (number 1-65535) |
 | POST | `/api/settings` | Write config | Config object |
 | GET | `/api/settings` | Get setup state | None |
