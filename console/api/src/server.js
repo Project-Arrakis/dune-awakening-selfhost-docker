@@ -951,6 +951,11 @@ async function handleApi(req, res) {
   if (path === "/api/database/export" && req.method === "POST") return databaseExport(req, res);
   if (path === "/api/database/password" && req.method === "POST") return databasePasswordRoute(req, res);
   if (path === "/api/settings/admin-password" && req.method === "POST") return adminPasswordRoute(req, res);
+  // Registered here, below the central auth+policy gate, rather than beside the
+  // other /api/auth/2fa/* routes above it: those two are reachable from a
+  // restricted setup-scope session by design (ENROLL_ALLOWED), this one must
+  // not be. See recoveryCodesRegenerate.integration.test.js for the guard.
+  if (path === "/api/auth/2fa/recovery-codes/regenerate" && req.method === "POST") return recoveryCodesRegenerateRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
   if (path === "/api/settings/iam/policies" && req.method === "GET") {
     const policies = getAllPolicies();
@@ -2222,6 +2227,67 @@ async function adminPasswordRoute(req, res) {
   const sessionsRevoked = auth.invalidatePasswordSessions(req.authSession?.id);
   audit(config, req, "auth.password-changed.sessions-revoked", { count: sessionsRevoked });
   return json(res, 200, { ok: true, sessionsRevoked });
+}
+
+// RFC §2.3 "recovery-code regeneration outside an emergency": the standing
+// settings action for an operator who still holds their authenticator but has
+// run low on, lost, or wants to rotate their recovery-code sheet. Without it
+// the only route to a fresh set is the total-loss host reset (§3.4), which also
+// destroys the TOTP enrollment -- wildly disproportionate to "I want new codes".
+//
+// Deliberately NOT a credential rotation: it re-proves the Tier 3 credential
+// but does not change it, so (unlike adminPasswordRoute) it revokes no sibling
+// sessions. Rotating a recovery-code sheet is not a login-credential change.
+async function recoveryCodesRegenerateRoute(req, res) {
+  const body = await readJson(req);
+  if (config.authDisabled) return json(res, 400, { error: "Recovery codes are unavailable while admin authentication is disabled." });
+  if (!config.consoleTotpEnabled) {
+    return json(res, 400, { error: "Two-factor authentication is not enabled on this console, so there are no recovery codes to regenerate." });
+  }
+  // Same limiter as login and password rotation: a stolen session cookie must
+  // not buy unlimited offline-speed guesses at the password/TOTP pair.
+  const rateKey = loginRateLimitKey(req);
+  const rate = loginRateLimiter.check(rateKey);
+  if (!rate.allowed) {
+    return json(res, 429, { error: "Too many attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
+  }
+  if (!auth.passwordMatches(body.currentPassword)) {
+    loginRateLimiter.recordFailure(rateKey);
+    return json(res, 400, { error: "Current password is incorrect." });
+  }
+  let configured;
+  try {
+    configured = await secondFactor.isConfigured();
+  } catch (err) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, req, "settings.recovery-codes-regenerated", { ok: false, reason: err?.name === "SecondFactorVersionError" ? "second_factor_version" : "second_factor_unavailable" });
+    return json(res, 503, { error: "Two-factor state on this console is unreadable, so recovery codes cannot be regenerated right now. See the sign-in page's error for recovery guidance." });
+  }
+  if (!configured) {
+    return json(res, 400, { error: "No second factor is set up on this console yet, so there are no recovery codes to regenerate." });
+  }
+  const totpCode = String(body.totpCode || "").trim();
+  if (!totpCode) {
+    loginRateLimiter.recordFailure(rateKey);
+    return json(res, 400, { totpRequired: true, error: "Enter your current authenticator code to regenerate your recovery codes." });
+  }
+  const verify = await secondFactor.verifyTotpToken(totpCode, nowSeconds());
+  if (!verify.ok) {
+    loginRateLimiter.recordFailure(rateKey);
+    return json(res, 400, { totpRequired: true, error: "That authenticator code was not accepted. Check your device's clock and enter the current code." });
+  }
+  loginRateLimiter.recordSuccess(rateKey);
+  const result = await secondFactor.regenerateRecoveryCodes();
+  if (!result.ok) {
+    // not_configured: the factor was cleared between isConfigured() and here.
+    audit(config, req, "settings.recovery-codes-regenerated", { ok: false, reason: result.reason });
+    return json(res, 409, { error: "Two-factor setup changed while regenerating. Sign in again, then retry." });
+  }
+  audit(config, req, "settings.recovery-codes-regenerated", { ok: true, count: result.codes.length });
+  // Returned once, for the frontend's existing "I have saved these codes"
+  // acknowledgment gate (#484). Never retrievable again -- only the digests
+  // are persisted.
+  return json(res, 200, { ok: true, recoveryCodes: result.codes });
 }
 
 async function webPortRoute(req, res) {
