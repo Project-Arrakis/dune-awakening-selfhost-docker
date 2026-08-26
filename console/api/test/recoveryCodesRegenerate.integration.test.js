@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer as createTcpServer } from "node:net";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -299,6 +299,202 @@ test("/api/auth/me reports secondFactorEnrolled:false when the TOTP flag is off"
 
     const me = await (await api(port, "/api/auth/me", { method: "GET", cookie: session.cookie })).json();
     assert.equal(me.secondFactorEnrolled, false, "never asks the UI for a code the server would ignore");
+  } finally {
+    await stopProcess(consoleProc.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// ---- #519: the route's own authentication, independent of registration order ----
+
+// Every other test in this file supplies a cookie + CSRF token, so nothing
+// pinned that the route needs a session AT ALL. Its only protection used to be
+// its physical position below the central gate; moving the registration line
+// made it answer unauthenticated POSTs with live recovery codes while this
+// whole file stayed green. These two assert the guarantee directly.
+test("the regenerate route rejects a request with no session cookie", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-nocookie-"));
+  const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+  try {
+    await waitForHealth(port);
+    const { password, secret, step } = await enroll(port, tempDir);
+    await waitForStepAfter(step);
+
+    const res = await api(port, REGENERATE_PATH, {
+      body: { currentPassword: password, totpCode: codeFor(secret, 0) },
+    });
+    assert.equal(res.status, 401, "no cookie must not reach the handler's credential check");
+
+    const state = JSON.parse(readFileSync(secondFactorPath(tempDir), "utf8"));
+    assert.equal(state.recoveryCodes.length, 10, "an unauthenticated attempt changes nothing");
+  } finally {
+    await stopProcess(consoleProc.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("the regenerate route rejects an authenticated request with no CSRF token", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-nocsrf-"));
+  const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+  try {
+    await waitForHealth(port);
+    const { password, secret, step: confirmStep } = await enroll(port, tempDir);
+    await waitForStepAfter(confirmStep);
+    const step = currentTotpStep();
+    const actor = await login(port, { password, totpCode: codeFor(secret, 0) });
+    assert.equal(actor.body.authenticated, true);
+
+    await waitForStepAfter(step);
+    const res = await api(port, REGENERATE_PATH, {
+      cookie: actor.cookie, // deliberately no csrf
+      body: { currentPassword: password, totpCode: codeFor(secret, 0) },
+    });
+    assert.equal(res.status, 403, "a valid cookie without a CSRF token is refused");
+  } finally {
+    await stopProcess(consoleProc.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// ---- #520: the TOTP verification branch ----
+
+// Deleting verifyTotpToken and its guard used to leave this whole file green:
+// no test ever submitted a CORRECT password with a BAD code, so the verifier's
+// failure path was never reached. Both cases below do.
+test("regeneration is refused for a wrong authenticator code and for a replayed one", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-totpfail-"));
+  const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+  try {
+    await waitForHealth(port);
+    const { password, secret, enrollmentCodes, step: confirmStep } = await enroll(port, tempDir);
+    await waitForStepAfter(confirmStep);
+    let step = currentTotpStep();
+    const actor = await login(port, { password, totpCode: codeFor(secret, 0) });
+    assert.equal(actor.body.authenticated, true);
+
+    // Correct password, DEFINITELY wrong code -- derived from the real one so
+    // it can never coincidentally be valid, unlike a hardcoded "000000".
+    await waitForStepAfter(step);
+    step = currentTotpStep();
+    const real = codeFor(secret, 0);
+    const wrong = String((Number(real[0]) + 1) % 10) + real.slice(1);
+    const badCode = await api(port, REGENERATE_PATH, {
+      cookie: actor.cookie, csrf: actor.csrf,
+      body: { currentPassword: password, totpCode: wrong },
+    });
+    assert.equal(badCode.status, 400);
+    assert.equal((await badCode.json()).totpRequired, true, "a wrong code is a second-factor failure, not a password failure");
+
+    // The same code twice: the second attempt is a replay and must be refused
+    // even though the code was valid moments earlier.
+    await waitForStepAfter(step);
+    const fresh = codeFor(secret, 0);
+    const first = await api(port, REGENERATE_PATH, {
+      cookie: actor.cookie, csrf: actor.csrf,
+      body: { currentPassword: password, totpCode: fresh },
+    });
+    assert.equal(first.status, 200, "the first use of a fresh code succeeds");
+    const replay = await api(port, REGENERATE_PATH, {
+      cookie: actor.cookie, csrf: actor.csrf,
+      body: { currentPassword: password, totpCode: fresh },
+    });
+    assert.equal(replay.status, 400, "the same code cannot be spent twice");
+    assert.equal((await replay.json()).totpRequired, true);
+
+    // The refused attempts changed nothing beyond the one successful rotation.
+    const recovery = await login(port, { password, recoveryCode: enrollmentCodes[0] });
+    assert.notEqual(recovery.status, 200, "the enrollment set was replaced by the one successful call");
+  } finally {
+    await stopProcess(consoleProc.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("regeneration fails closed (503) when the second-factor state file is corrupt", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-corrupt-"));
+  const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+  try {
+    await waitForHealth(port);
+    const { password, secret, step: confirmStep } = await enroll(port, tempDir);
+    await waitForStepAfter(confirmStep);
+    const actor = await login(port, { password, totpCode: codeFor(secret, 0) });
+    assert.equal(actor.body.authenticated, true);
+
+    // A corrupt file must never read as "no second factor configured" -- that
+    // would be a 2FA bypass, which secondFactorStore.js warns about explicitly.
+    writeFileSync(secondFactorPath(tempDir), "{ not valid json", { mode: 0o600 });
+    const res = await api(port, REGENERATE_PATH, {
+      cookie: actor.cookie, csrf: actor.csrf,
+      body: { currentPassword: password, totpCode: "123456" },
+    });
+    assert.equal(res.status, 503, "an unreadable store fails closed, it does not fall through to 400/200");
+
+    const auditLines = readFileSync(auditLogPath(tempDir), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const failure = auditLines.find((l) => l.action === "settings.recovery-codes-regenerated" && l.detail?.ok === false);
+    assert.ok(failure, "the fail-closed path is audited, not silent");
+    assert.equal(failure.detail.reason, "second_factor_unavailable");
+  } finally {
+    await stopProcess(consoleProc.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// ---- #518: regeneration heals a detected rollback ----
+
+// The console's own startup banner and recovery-login error tell the operator to
+// "regenerate recovery codes from Settings" after a rollback is detected. Before
+// this fix, doing exactly that returned 10 codes into a still-poisoned state and
+// the first one used was wiped unread -- the remedy was a trap.
+test("regenerating after a restored-backup rollback issues codes that actually work", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-heal-"));
+  const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+  try {
+    await waitForHealth(port);
+    const { password, secret, enrollmentCodes, step: confirmStep } = await enroll(port, tempDir);
+    const filePath = secondFactorPath(tempDir);
+    const preConsumption = readFileSync(filePath, "utf8");
+    assert.equal(JSON.parse(preConsumption).epoch, 0);
+
+    // Spend a code for real: epoch and watermark both advance to 1.
+    const spend = await login(port, { password, recoveryCode: enrollmentCodes[0] });
+    assert.equal(spend.status, 200);
+    assert.equal(JSON.parse(readFileSync(filePath, "utf8")).epoch, 1);
+
+    // Restore the main store alone, leaving the watermark at 1 -- the exact
+    // single-file-restore case #425 exists to catch. State epoch is now 0 < 1.
+    writeFileSync(filePath, preConsumption, { mode: 0o600 });
+
+    await waitForStepAfter(confirmStep);
+    let step = currentTotpStep();
+    const actor = await login(port, { password, totpCode: codeFor(secret, 0) });
+    assert.equal(actor.body.authenticated, true, "TOTP login is unaffected by a rollback");
+
+    await waitForStepAfter(step);
+    step = currentTotpStep();
+    const res = await api(port, REGENERATE_PATH, {
+      cookie: actor.cookie, csrf: actor.csrf,
+      body: { currentPassword: password, totpCode: codeFor(secret, 0) },
+    });
+    assert.equal(res.status, 200);
+    const newCodes = (await res.json()).recoveryCodes;
+    assert.equal(newCodes.length, 10);
+
+    // The healing itself: epoch must now be ABOVE the watermark, not merely
+    // one greater than a stale value.
+    assert.ok(JSON.parse(readFileSync(filePath, "utf8")).epoch > 1, "regeneration lifts the epoch past the watermark");
+
+    // The real assertion: a brand-new code logs in instead of being wiped unread.
+    const useNew = await login(port, { password, recoveryCode: newCodes[0] });
+    assert.equal(useNew.status, 200, "a freshly regenerated code works after a healed rollback");
+    assert.notEqual(
+      JSON.parse(readFileSync(filePath, "utf8")).recoveryCodes.length, 0,
+      "the set was consumed normally, not wiped as a rollback"
+    );
   } finally {
     await stopProcess(consoleProc.child);
     rmSync(tempDir, { recursive: true, force: true });

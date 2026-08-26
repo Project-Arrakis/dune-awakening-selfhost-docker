@@ -351,15 +351,28 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
   // Regenerate the recovery-code set (invalidating all current codes). Returns
   // { ok:true, codes } with the one-time plaintext codes, or
   // { ok:false, reason:"not_configured" }. TOTP secret/counter are untouched.
+  //
+  // Heals a detected rollback rather than leaving it armed (#518). A plain
+  // `epoch += 1` was a trap: after a single-file restore the loaded epoch is
+  // BELOW the watermark, `bumpWatermark` no-ops while `epoch <= current`, and
+  // the freshly-issued set is therefore wiped unread by the next
+  // consumeRecoveryCode() -- so the remedy the console's own rollback banner
+  // tells the operator to perform produced codes guaranteed to fail in the one
+  // emergency they exist for. Regeneration behind fresh password+TOTP proof is
+  // exactly the deliberate, authenticated event that should RESOLVE a rollback,
+  // which is why it clears the condition the way consumeRecoveryCode() does
+  // (and clear() does by deleting the watermark outright).
   function regenerateRecoveryCodes({ count } = {}) {
     return runExclusive(async () => {
       const state = await loadRaw();
       if (state === null) return { ok: false, reason: "not_configured" };
+      const watermarkEpoch = await loadWatermarkEpoch();
+      const healedRollback = state.epoch < watermarkEpoch;
       const { codes, digests } = count ? generateRecoveryCodes(count) : generateRecoveryCodes();
       state.recoveryCodes = digests;
-      state.epoch += 1;
+      state.epoch = Math.max(state.epoch, watermarkEpoch) + 1;
       await persistAndBumpWatermark(state);
-      return { ok: true, codes };
+      return { ok: true, codes, healedRollback };
     });
   }
 

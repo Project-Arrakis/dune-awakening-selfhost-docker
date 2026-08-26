@@ -116,11 +116,17 @@ const auth = createAuth(config);
 const secondFactor = createSecondFactorStore({ filePath: config.secondFactorFile });
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 // Restricted second-factor setup scopes (RFC §4 enrollment, §2.3 recovery
-// re-setup). Both are confined by the allowlist guard to the /2fa/* endpoints;
-// they differ only in how /2fa/confirm persists (enroll = if-absent, resetup =
-// overwrite an existing factor whose device was lost).
+// re-setup). They differ only in how /2fa/confirm persists (enroll = if-absent,
+// resetup = overwrite an existing factor whose device was lost).
 const SETUP_SCOPES = new Set(["enroll", "resetup"]);
 // Routes a restricted setup-scope session may reach (allowlist guard below).
+//
+// DO NOT add a route here just because it is under /api/auth/2fa/ (#519). Not
+// every 2fa route is an enrollment route: /2fa/recovery-codes/regenerate is
+// deliberately absent, because a re-setup session must not be able to mint a
+// fresh code set and stop there without completing re-enrollment. Adding an
+// entry here EXEMPTS that path from the setup-scope 403 below -- it never
+// tightens anything.
 const ENROLL_ALLOWED = new Set([
   "/api/auth/2fa/setup",
   "/api/auth/2fa/confirm",
@@ -968,10 +974,13 @@ async function handleApi(req, res) {
   if (path === "/api/database/export" && req.method === "POST") return databaseExport(req, res);
   if (path === "/api/database/password" && req.method === "POST") return databasePasswordRoute(req, res);
   if (path === "/api/settings/admin-password" && req.method === "POST") return adminPasswordRoute(req, res);
-  // Registered here, below the central auth+policy gate, rather than beside the
-  // other /api/auth/2fa/* routes above it: those two are reachable from a
-  // restricted setup-scope session by design (ENROLL_ALLOWED), this one must
-  // not be. See recoveryCodesRegenerate.integration.test.js for the guard.
+  // Registered below the central auth+policy gate so it gets requireAuth + the
+  // IAM evaluate() -- which is what actually protects it, NOT the ENROLL_ALLOWED
+  // allowlist an earlier version of this comment credited (#519: that allowlist
+  // sits above every route and denies by omission, so it would 403 a setup-scope
+  // session wherever this line lived, and the containment test asserting that
+  // 403 could not detect the move). The handler now also calls requireAuth
+  // itself, so this placement is defence in depth rather than the only guard.
   if (path === "/api/auth/2fa/recovery-codes/regenerate" && req.method === "POST") return recoveryCodesRegenerateRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
   if (path === "/api/settings/iam/policies" && req.method === "GET") {
@@ -2256,6 +2265,15 @@ async function adminPasswordRoute(req, res) {
 // but does not change it, so (unlike adminPasswordRoute) it revokes no sibling
 // sessions. Rotating a recovery-code sheet is not a login-credential change.
 async function recoveryCodesRegenerateRoute(req, res) {
+  // Fail closed on session/CSRF regardless of where this route is registered
+  // (#519). Previously the ONLY thing authenticating this endpoint was its
+  // physical position below the central gate: moving the registration line up
+  // beside the other /api/auth/2fa/* routes -- which the old comment there
+  // actively invited -- made it answer unauthenticated POSTs with 10 live
+  // recovery codes, with the whole suite still green. requireAuth re-checks the
+  // signed session and the CSRF token, so the guarantee now travels with the
+  // handler instead of with a line number.
+  if (!auth.requireAuth(req, res)) return;
   const body = await readJson(req);
   if (config.authDisabled) return json(res, 400, { error: "Recovery codes are unavailable while admin authentication is disabled." });
   if (!config.consoleTotpEnabled) {
