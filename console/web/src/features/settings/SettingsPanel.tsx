@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import { api, post } from "../../api/client";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill } from "../../components/common/DisplayPrimitives";
+import { RecoveryCodesPanel } from "../auth/RecoveryCodesPanel";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
 
 type SettingsTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
@@ -53,9 +54,31 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
   const [webPort, setWebPort] = useState("");
   const [webPortRedirectUrl, setWebPortRedirectUrl] = useState("");
   const [webPortRedirectCountdown, setWebPortRedirectCountdown] = useState<number | null>(null);
+  // Tier 3 credential state (#515/#512). secondFactorEnrolled is read from
+  // /api/auth/me, never inferred from a failed request: the whole bug this
+  // fixes was the server demanding an authenticator code the form had no field
+  // for, which is only avoidable by knowing BEFORE submitting.
+  const [secondFactorEnrolled, setSecondFactorEnrolled] = useState(false);
+  const [passwordTotpCode, setPasswordTotpCode] = useState("");
+  const [twoFactorOpen, setTwoFactorOpen] = useState(false);
+  const [regeneratePassword, setRegeneratePassword] = useState("");
+  const [regenerateTotpCode, setRegenerateTotpCode] = useState("");
+  const [regenerateSaving, setRegenerateSaving] = useState(false);
+  const [regenerateResult, setRegenerateResult] = useState<SettingsTaskResult | null>(null);
+  const [regeneratedCodes, setRegeneratedCodes] = useState<string[] | null>(null);
+  const [regenerateAcknowledged, setRegenerateAcknowledged] = useState(false);
   async function refresh() {
     const nextSettings = await api<Record<string, unknown>>("/api/settings");
     setSettings(nextSettings);
+    // Tolerated failure: /me is not essential to rendering the rest of the
+    // panel, and a console with an unreadable second-factor store should still
+    // show its settings rather than a blank screen.
+    try {
+      const me = await api<{ secondFactorEnrolled?: boolean }>("/api/auth/me");
+      setSecondFactorEnrolled(Boolean(me.secondFactorEnrolled));
+    } catch {
+      setSecondFactorEnrolled(false);
+    }
     const config = (nextSettings.config as Record<string, unknown> | undefined) || {};
     const directory = (nextSettings.publicDirectory as PublicDirectorySettings | undefined) || {};
     const serverConfig = (nextSettings.serverConfig as Record<string, string> | undefined) || {};
@@ -112,19 +135,64 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
       setPasswordResult({ status: "failed", title: "Password Change Failed", message: "New password and confirmation do not match." });
       return;
     }
+    // RFC §2.3/§5: once a second factor is enrolled the server requires fresh
+    // proof of it, not just the current password. Caught here so the operator
+    // is told before a round-trip that burns a login-limiter attempt.
+    if (secondFactorEnrolled && !passwordTotpCode.trim()) {
+      setPasswordResult({ status: "failed", title: "Password Change Failed", message: "Enter your current authenticator code." });
+      return;
+    }
     setPasswordSaving(true);
     setPasswordResult({ status: "running", title: "Changing Login Password..." });
     try {
-      await post("/api/settings/admin-password", { currentPassword, newPassword });
+      await post("/api/settings/admin-password", secondFactorEnrolled
+        ? { currentPassword, newPassword, totpCode: passwordTotpCode.trim() }
+        : { currentPassword, newPassword });
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
+      setPasswordTotpCode("");
       setPasswordResult({ status: "succeeded", title: "Login Password Changed", message: "Signing you out so you can log back in with the new password." });
       window.setTimeout(() => { void onPasswordChanged(); }, 1600);
     } catch (error) {
+      // A rejected attempt consumes that authenticator code either way (the
+      // server advances lastUsedCounter on a match, and a mismatch was never
+      // valid), so clear it: the operator must read a fresh one off their
+      // device rather than re-submitting the same digits.
+      setPasswordTotpCode("");
       setPasswordResult({ status: "failed", title: "Password Change Failed", message: error instanceof Error ? error.message : String(error) });
     } finally {
       setPasswordSaving(false);
+    }
+  }
+  async function regenerateRecoveryCodes() {
+    if (!regeneratePassword) {
+      setRegenerateResult({ status: "failed", title: "Regeneration Failed", message: "Enter your current login password." });
+      return;
+    }
+    if (!regenerateTotpCode.trim()) {
+      setRegenerateResult({ status: "failed", title: "Regeneration Failed", message: "Enter your current authenticator code." });
+      return;
+    }
+    setRegenerateSaving(true);
+    setRegenerateResult({ status: "running", title: "Generating New Recovery Codes..." });
+    try {
+      const result = await post<{ ok: boolean; recoveryCodes: string[] }>(
+        "/api/auth/2fa/recovery-codes/regenerate",
+        { currentPassword: regeneratePassword, totpCode: regenerateTotpCode.trim() }
+      );
+      setRegeneratePassword("");
+      setRegenerateTotpCode("");
+      setRegenerateAcknowledged(false);
+      // Shown exactly once -- only digests are stored server-side, so there is
+      // no second chance to retrieve these.
+      setRegeneratedCodes(result.recoveryCodes);
+      setRegenerateResult(null);
+    } catch (error) {
+      setRegenerateTotpCode("");
+      setRegenerateResult({ status: "failed", title: "Regeneration Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setRegenerateSaving(false);
     }
   }
   async function changeWebPort() {
@@ -323,7 +391,17 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
             <label>Current Password<SecretInput disabled={passwordEnvManaged || passwordSaving} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} placeholder="Current password" /></label>
             <label>New Password<SecretInput disabled={passwordEnvManaged || passwordSaving} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="At Least 13 Characters" /></label>
             <label><span className="field-label-row"><span>Confirm New Password</span>{confirmStarted && <span className={`password-match-inline ${passwordsMatch ? "passed" : "missing"}`}>{passwordsMatch ? "Matches" : "Passwords do not match"}</span>}</span><SecretInput disabled={passwordEnvManaged || passwordSaving} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Confirm new password" /></label>
+            {secondFactorEnrolled && <label>Authenticator Code<input
+              disabled={passwordEnvManaged || passwordSaving}
+              value={passwordTotpCode}
+              onChange={(event) => setPasswordTotpCode(event.target.value)}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              placeholder="6-digit code"
+            /></label>}
           </div>
+          {secondFactorEnrolled && <p className="muted">Two-factor is enabled, so changing the password needs a current code from your authenticator as well.</p>}
           {passwordStarted && <div className="password-check-box">
             <strong>Password Requirements</strong>
             <ul className="password-requirements" aria-label="Password requirements">
@@ -331,7 +409,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
             </ul>
           </div>}
           <div className="action-row">
-            <button disabled={passwordEnvManaged || passwordSaving || !passwordMeetsRequirements || !passwordsMatch} onClick={() => { void changeLoginPassword(); }}>{passwordSaving ? "Saving..." : "Change Password"}</button>
+            <button disabled={passwordEnvManaged || passwordSaving || !passwordMeetsRequirements || !passwordsMatch || (secondFactorEnrolled && !passwordTotpCode.trim())} onClick={() => { void changeLoginPassword(); }}>{passwordSaving ? "Saving..." : "Change Password"}</button>
             {passwordResult && <span className={`inline-task-result result-${passwordResult.status === "succeeded" ? "ok" : passwordResult.status === "failed" ? "fail" : "running"}`}>
               <strong className={passwordResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(passwordResult.title, passwordResult.status === "running")}</strong>
               {passwordResult.message && <span className="inline-task-message">{formatResultMessage(passwordResult.message)}</span>}
@@ -339,6 +417,46 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
           </div>
         </div>}
       </div>
+      {secondFactorEnrolled && <div className={`playerAdmin_toggle settings-two-factor-toggle ${twoFactorOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={twoFactorOpen ? "Collapse Two-Factor Authentication" : "Expand Two-Factor Authentication"} onClick={() => setTwoFactorOpen(!twoFactorOpen)}>{twoFactorOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Two-Factor Authentication</span></button>
+        {twoFactorOpen && <div className="playerAdmin_toggleBody">
+          {regeneratedCodes
+            ? <div className="totp-recovery-codes-panel">
+                <RecoveryCodesPanel
+                  codes={regeneratedCodes}
+                  heading="Save your new recovery codes"
+                  intro="These 10 codes replace your previous set, which no longer works. They are shown once, right now, and cannot be retrieved again."
+                  confirmLabel="Done"
+                  onConfirm={() => { setRegeneratedCodes(null); setRegenerateAcknowledged(false); }}
+                  acknowledged={regenerateAcknowledged}
+                  onAcknowledgedChange={setRegenerateAcknowledged}
+                />
+              </div>
+            : <>
+                <p className="muted">Generate a fresh set of 10 recovery codes. Your authenticator is unchanged, and you stay signed in everywhere.</p>
+                <p className="attention-text">Your existing recovery codes stop working the moment new ones are issued.</p>
+                <div className="settings-password-grid">
+                  <label>Current Password<SecretInput disabled={regenerateSaving} value={regeneratePassword} onChange={(event) => setRegeneratePassword(event.target.value)} placeholder="Current password" /></label>
+                  <label>Authenticator Code<input
+                    disabled={regenerateSaving}
+                    value={regenerateTotpCode}
+                    onChange={(event) => setRegenerateTotpCode(event.target.value)}
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    placeholder="6-digit code"
+                  /></label>
+                </div>
+                <div className="action-row">
+                  <button disabled={regenerateSaving || !regeneratePassword || !regenerateTotpCode.trim()} onClick={() => { void regenerateRecoveryCodes(); }}>{regenerateSaving ? "Generating..." : "Regenerate Recovery Codes"}</button>
+                  {regenerateResult && <span className={`inline-task-result result-${regenerateResult.status === "succeeded" ? "ok" : regenerateResult.status === "failed" ? "fail" : "running"}`}>
+                    <strong className={regenerateResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(regenerateResult.title, regenerateResult.status === "running")}</strong>
+                    {regenerateResult.message && <span className="inline-task-message">{formatResultMessage(regenerateResult.message)}</span>}
+                  </span>}
+                </div>
+              </>}
+        </div>}
+      </div>}
       <div className={`playerAdmin_toggle ${discordOAuthOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={discordOAuthOpen ? "Collapse Discord OAuth" : "Expand Discord OAuth"} onClick={() => setDiscordOAuthOpen(!discordOAuthOpen)}>{discordOAuthOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Discord OAuth</span></button>
         {discordOAuthOpen && <div className="playerAdmin_toggleBody">

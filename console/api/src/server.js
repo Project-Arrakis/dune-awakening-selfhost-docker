@@ -765,6 +765,22 @@ async function handleApi(req, res) {
     if (session.userId) {
       try { linkedCharacters = await duneDb.getAllLinkedPlayers(db, session.userId) || []; } catch { linkedCharacters = []; }
     }
+    // Whether a Tier 3 second factor is actually enrolled (#515). The client
+    // needs this to know that credential actions require an authenticator code
+    // BEFORE it submits -- inferring it from a failed request instead leaves
+    // the operator staring at "enter your authenticator code" with no field to
+    // type it into, which is the bug this exists to fix. Reported as false
+    // whenever the flag is off, so the UI never asks for a code the server
+    // would ignore. Never throws: an unreadable store degrades to false rather
+    // than 500-ing /me and taking the whole console down with it.
+    let secondFactorEnrolled = false;
+    if (config.consoleTotpEnabled) {
+      try {
+        secondFactorEnrolled = await secondFactor.isConfigured();
+      } catch {
+        secondFactorEnrolled = false;
+      }
+    }
     return json(res, 200, {
       user: {
         id: session.userId || "local-admin",
@@ -774,6 +790,7 @@ async function handleApi(req, res) {
       },
       scope: session.scope || null,
       linkedCharacters,
+      secondFactorEnrolled,
       allowedActions: SETUP_SCOPES.has(session.scope) ? [] : resolveAllowedActions(session.tier || "owner")
     });
   }

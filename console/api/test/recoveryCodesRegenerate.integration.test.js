@@ -262,3 +262,45 @@ test("regeneration is refused when two-factor is not enabled on this console", a
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+// The settings UI drives its "this credential action needs an authenticator
+// code" branching off this flag (#515). Tested here rather than in a ninth
+// copy of this harness (#427 item 1) because it gates the same Tier 3
+// credential surface these tests already stand up.
+test("/api/auth/me reports secondFactorEnrolled:false before enrollment and true after", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-flag-"));
+  const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+  try {
+    await waitForHealth(port);
+    const { password, secret, step: confirmStep } = await enroll(port, tempDir);
+
+    await waitForStepAfter(confirmStep);
+    const session = await login(port, { password, totpCode: codeFor(secret, 0) });
+    assert.equal(session.body.authenticated, true);
+
+    const me = await (await api(port, "/api/auth/me", { method: "GET", cookie: session.cookie })).json();
+    assert.equal(me.secondFactorEnrolled, true, "an enrolled console reports the flag");
+  } finally {
+    await stopProcess(consoleProc.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("/api/auth/me reports secondFactorEnrolled:false when the TOTP flag is off", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-flag-off-"));
+  const consoleProc = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const password = readGeneratedPassword(tempDir);
+    const session = await login(port, { password });
+    assert.equal(session.body.authenticated, true);
+
+    const me = await (await api(port, "/api/auth/me", { method: "GET", cookie: session.cookie })).json();
+    assert.equal(me.secondFactorEnrolled, false, "never asks the UI for a code the server would ignore");
+  } finally {
+    await stopProcess(consoleProc.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});

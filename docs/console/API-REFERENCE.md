@@ -39,6 +39,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | GET | `/api/auth/state` | Get authentication state and CSRF token | None |
 | POST | `/api/auth/login` | Login with password | `password` (string) |
 | POST | `/api/auth/logout` | Logout current session | None |
+| GET | `/api/auth/me` | Current session identity, tier, allowed actions, and `secondFactorEnrolled` (whether a Tier 3 second factor is enrolled — always `false` when `CONSOLE_TOTP_ENABLED` is off) | None |
 | GET | `/api/health` | Health check | None |
 | GET | `/api/setup/state` | Get setup completion state | None |
 | POST | `/api/setup/preflight` | Run preflight checks | None |
