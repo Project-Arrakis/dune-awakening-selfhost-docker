@@ -147,6 +147,24 @@ function secondFactorUnavailable(res, loginUrl, req, err) {
   return json(res, 503, { error: "Two-factor state on this console is unreadable, so sign-in is blocked. An operator with server access must inspect runtime/generated/console-second-factor.json -- restore it from backup, or remove it to re-enroll a fresh authenticator on the next password sign-in." });
 }
 const loginRateLimiter = createLoginRateLimiter();
+// Separate bucket for re-proving the Tier 3 credential from an ALREADY
+// AUTHENTICATED session (password rotation, recovery-code regeneration).
+//
+// These used to share the login limiter, which was documented as deliberate but
+// is a real denial-of-service path (#522/#527): the sharing let anyone holding a
+// stolen session cookie exhaust the login bucket -- and, at 32 failures, the
+// process-wide `__global__` bucket that recordSuccess never clears -- locking
+// every operator out of /api/auth/login, the only route back in. It also newly
+// exposed ADMIN_PASSWORD-managed installs, where adminPasswordRoute short-
+// circuits before the limiter and no authenticated route could previously burn
+// login budget at all.
+//
+// Same thresholds, independent accounting. The trade-off, stated plainly: an
+// attacker now gets a separate allowance here instead of one shared pool. That
+// is the right side to err on, because these routes are reachable only WITH a
+// valid session and CSRF token, while /api/auth/login is reachable by anyone --
+// two very different exposures should not share one lockout.
+const credentialProofRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
 const oauthPendingStates = createPendingStateStore();
@@ -2197,6 +2215,11 @@ function validateDatabasePassword(value) {
 
 async function adminPasswordRoute(req, res) {
   const body = await readJson(req);
+  // readJson returns raw JSON.parse output, so a literal `null` body used to
+  // throw a TypeError and surface as a 500 with an internal JS message (#527).
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return json(res, 400, { error: "Request body must be a JSON object." });
+  }
   if (config.authDisabled) return json(res, 400, { error: "Login password changes are unavailable while admin authentication is disabled." });
   if (config.adminPasswordEnvManaged) return json(res, 400, { error: "The login password is managed by ADMIN_PASSWORD. Update the environment value instead." });
   // This route re-proves the same Tier 3 credential the login route guards --
@@ -2204,12 +2227,12 @@ async function adminPasswordRoute(req, res) {
   // secret must face the same throttle as a fresh login attempt (L2 audit,
   // Security/Network finding on #407 phase 6), not an unlimited local check.
   const rateKey = loginRateLimitKey(req);
-  const rate = loginRateLimiter.check(rateKey);
+  const rate = credentialProofRateLimiter.check(rateKey);
   if (!rate.allowed) {
     return json(res, 429, { error: "Too many attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
   }
   if (!auth.passwordMatches(body.currentPassword)) {
-    loginRateLimiter.recordFailure(rateKey);
+    credentialProofRateLimiter.recordFailure(rateKey);
     return json(res, 400, { error: "Current password is incorrect." });
   }
   // RFC §2.3/§5 (#407 phase 6): rotation requires fresh proof of the CURRENT
@@ -2220,24 +2243,24 @@ async function adminPasswordRoute(req, res) {
     try {
       configured = await secondFactor.isConfigured();
     } catch (err) {
-      loginRateLimiter.recordFailure(rateKey);
+      credentialProofRateLimiter.recordFailure(rateKey);
       audit(config, req, "settings.change-admin-password", { ok: false, reason: err?.name === "SecondFactorVersionError" ? "second_factor_version" : "second_factor_unavailable" });
       return json(res, 503, { error: "Two-factor state on this console is unreadable, so the password cannot be changed right now. See the sign-in page's error for recovery guidance." });
     }
     if (configured) {
       const totpCode = String(body.totpCode || "").trim();
       if (!totpCode) {
-        loginRateLimiter.recordFailure(rateKey);
+        credentialProofRateLimiter.recordFailure(rateKey);
         return json(res, 400, { totpRequired: true, error: "Enter your current authenticator code to change the password." });
       }
       const verify = await secondFactor.verifyTotpToken(totpCode, nowSeconds());
       if (!verify.ok) {
-        loginRateLimiter.recordFailure(rateKey);
+        credentialProofRateLimiter.recordFailure(rateKey);
         return json(res, 400, { totpRequired: true, error: "That authenticator code was not accepted. Check your device's clock and enter the current code." });
       }
     }
   }
-  loginRateLimiter.recordSuccess(rateKey);
+  credentialProofRateLimiter.recordSuccess(rateKey);
   const password = validateAdminPassword(body.newPassword);
   writeFileSync(config.adminPasswordFile, `${password}\n`, { mode: 0o600 });
   try {
@@ -2273,56 +2296,117 @@ async function recoveryCodesRegenerateRoute(req, res) {
   // recovery codes, with the whole suite still green. requireAuth re-checks the
   // signed session and the CSRF token, so the guarantee now travels with the
   // handler instead of with a line number.
-  if (!auth.requireAuth(req, res)) return;
-  const body = await readJson(req);
-  if (config.authDisabled) return json(res, 400, { error: "Recovery codes are unavailable while admin authentication is disabled." });
-  if (!config.consoleTotpEnabled) {
-    return json(res, 400, { error: "Two-factor authentication is not enabled on this console, so there are no recovery codes to regenerate." });
+  const session = auth.requireAuth(req, res);
+  if (!session) return;
+  // Audit with a sanitized URL, never the raw req (#523): audit() writes
+  // req.url verbatim including any query string, and redactValue only inspects
+  // `detail`, so credentials pasted into a query string would land in
+  // web-admin-audit.jsonl in cleartext (Requirement 24).
+  const auditUrl = sanitizedUrl(req, "/api/auth/2fa/recovery-codes/regenerate");
+  // Identify WHO acted, not just the source IP (#522). This route is reachable
+  // by two structurally different principals -- the local password/TOTP owner
+  // (empty userId) and a Discord-OAuth owner -- and without this a compromised
+  // Discord owner rotating the local credential's sheet is indistinguishable
+  // from the real operator doing it.
+  const actor = { tier: session.tier || "owner", userId: session.userId || "local-owner" };
+  const deny = (status, payload, detail, headers) => {
+    audit(config, auditUrl, "settings.recovery-codes-regenerated", { ok: false, ...actor, ...detail });
+    return json(res, status, payload, headers || {});
+  };
+
+  // Config guards first: they reject without reading the body at all, and on
+  // the default configuration (flag off) that is the only reachable outcome.
+  if (config.authDisabled) {
+    return deny(400, { error: "Recovery codes are unavailable while admin authentication is disabled." }, { reason: "auth_disabled" });
   }
-  // Same limiter as login and password rotation: a stolen session cookie must
-  // not buy unlimited offline-speed guesses at the password/TOTP pair.
+  if (!config.consoleTotpEnabled) {
+    // Deliberately does NOT claim "there are no recovery codes" (#527): if a
+    // factor was enrolled and the flag later turned off, a live sheet is still
+    // on disk and becomes valid again the moment the flag returns.
+    return deny(400, { error: "Two-factor authentication is not enabled on this console, so recovery codes cannot be regenerated. If codes were issued before it was disabled, they remain on disk and become valid again if it is re-enabled." }, { reason: "totp_disabled" });
+  }
+
+  const body = await readJson(req);
+  // readJson returns whatever JSON.parse yields -- null, a number, a string, an
+  // array -- and only substitutes {} for an EMPTY body, so a literal `null`
+  // body used to throw a TypeError and surface as a 500 with an internal JS
+  // message (#527).
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return deny(400, { error: "Request body must be a JSON object." }, { reason: "malformed_body" });
+  }
+
   const rateKey = loginRateLimitKey(req);
-  const rate = loginRateLimiter.check(rateKey);
+  const rate = credentialProofRateLimiter.check(rateKey);
   if (!rate.allowed) {
-    return json(res, 429, { error: "Too many attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
+    return deny(429, { error: "Too many attempts. Please wait a few minutes, then try again." }, { reason: "rate_limited" }, { "retry-after": String(rate.retryAfterSeconds) });
   }
   if (!auth.passwordMatches(body.currentPassword)) {
-    loginRateLimiter.recordFailure(rateKey);
-    return json(res, 400, { error: "Current password is incorrect." });
+    credentialProofRateLimiter.recordFailure(rateKey);
+    return deny(400, { error: "Current password is incorrect." }, { reason: "bad_password" });
   }
-  let configured;
+  // Every store call is guarded, not just the first (#521). verifyTotpToken and
+  // regenerateRecoveryCodes both re-enter loadRaw() in their own runExclusive
+  // task, so the file can go corrupt, be replaced, or the volume fill between
+  // the check and the write -- and an unguarded throw there escaped to the
+  // generic 500 handler with the raw errno and its absolute host path, no audit
+  // row, and (past recordSuccess) a cleared limiter bucket.
+  const unavailable = (err) => deny(503, {
+    error: err?.name === "SecondFactorVersionError"
+      ? "This console's two-factor state was written by a NEWER console version. Do NOT delete runtime/generated/console-second-factor.json -- upgrade the console instead."
+      : "Two-factor state on this console is unreadable, so recovery codes cannot be regenerated right now. See the sign-in page's error for recovery guidance."
+  }, { reason: err?.name === "SecondFactorVersionError" ? "second_factor_version" : "second_factor_unavailable" });
+
   try {
-    configured = await secondFactor.isConfigured();
+    if (!(await secondFactor.isConfigured())) {
+      // Reached only after the password verified, so meter it like its
+      // siblings rather than leaving a silent, unlogged password oracle (#527).
+      credentialProofRateLimiter.recordSuccess(rateKey);
+      return deny(400, { error: "No second factor is set up on this console yet, so there are no recovery codes to regenerate." }, { reason: "not_configured" });
+    }
+    const totpCode = String(body.totpCode ?? "").trim();
+    if (!totpCode) {
+      credentialProofRateLimiter.recordFailure(rateKey);
+      return deny(400, { totpRequired: true, error: "Enter your current authenticator code to regenerate your recovery codes." }, { reason: "totp_missing" });
+    }
+    const verify = await secondFactor.verifyTotpToken(totpCode, nowSeconds());
+    if (!verify.ok) {
+      credentialProofRateLimiter.recordFailure(rateKey);
+      // A replay is the code you just signed in with -- the default first
+      // attempt from the settings form. Saying "check your clock" sent the
+      // operator hunting a problem they do not have (#527).
+      const replay = verify.reason === "replay";
+      return deny(400, {
+        totpRequired: true,
+        error: replay
+          ? "That code was already used. Wait for your authenticator to show the next one, then try again."
+          : "That authenticator code was not accepted. Check your device's clock and enter the current code."
+      }, { reason: `totp_${verify.reason || "invalid"}` });
+    }
+    credentialProofRateLimiter.recordSuccess(rateKey);
+    const result = await secondFactor.regenerateRecoveryCodes();
+    if (!result.ok) {
+      // not_configured: the factor was cleared between isConfigured() and here.
+      return deny(409, { error: "Two-factor setup changed while regenerating. Sign in again, then retry." }, { reason: result.reason });
+    }
+    // healedRollback records whether THIS regeneration was the remedy for a
+    // detected restore-rollback (#534). Without it the audit log cannot
+    // distinguish the fix the startup banner told the operator to perform from
+    // a routine rotation -- which is exactly the question asked after a restore.
+    audit(config, auditUrl, "settings.recovery-codes-regenerated", {
+      ok: true, ...actor, count: result.codes.length, healedRollback: Boolean(result.healedRollback),
+    });
+    // Returned once, for the frontend's existing "I have saved these codes"
+    // acknowledgment gate (#484). Never retrievable again -- only the digests
+    // are persisted -- so tell every cache and proxy in the path not to keep it.
+    return json(res, 200, { ok: true, recoveryCodes: result.codes }, {
+      "cache-control": "no-cache, no-store, must-revalidate",
+      pragma: "no-cache",
+      expires: "0",
+    });
   } catch (err) {
-    loginRateLimiter.recordFailure(rateKey);
-    audit(config, req, "settings.recovery-codes-regenerated", { ok: false, reason: err?.name === "SecondFactorVersionError" ? "second_factor_version" : "second_factor_unavailable" });
-    return json(res, 503, { error: "Two-factor state on this console is unreadable, so recovery codes cannot be regenerated right now. See the sign-in page's error for recovery guidance." });
+    if (err?.name === "SecondFactorCorruptError" || err?.name === "SecondFactorVersionError") return unavailable(err);
+    throw err;
   }
-  if (!configured) {
-    return json(res, 400, { error: "No second factor is set up on this console yet, so there are no recovery codes to regenerate." });
-  }
-  const totpCode = String(body.totpCode || "").trim();
-  if (!totpCode) {
-    loginRateLimiter.recordFailure(rateKey);
-    return json(res, 400, { totpRequired: true, error: "Enter your current authenticator code to regenerate your recovery codes." });
-  }
-  const verify = await secondFactor.verifyTotpToken(totpCode, nowSeconds());
-  if (!verify.ok) {
-    loginRateLimiter.recordFailure(rateKey);
-    return json(res, 400, { totpRequired: true, error: "That authenticator code was not accepted. Check your device's clock and enter the current code." });
-  }
-  loginRateLimiter.recordSuccess(rateKey);
-  const result = await secondFactor.regenerateRecoveryCodes();
-  if (!result.ok) {
-    // not_configured: the factor was cleared between isConfigured() and here.
-    audit(config, req, "settings.recovery-codes-regenerated", { ok: false, reason: result.reason });
-    return json(res, 409, { error: "Two-factor setup changed while regenerating. Sign in again, then retry." });
-  }
-  audit(config, req, "settings.recovery-codes-regenerated", { ok: true, count: result.codes.length });
-  // Returned once, for the frontend's existing "I have saved these codes"
-  // acknowledgment gate (#484). Never retrievable again -- only the digests
-  // are persisted.
-  return json(res, 200, { ok: true, recoveryCodes: result.codes });
 }
 
 async function webPortRoute(req, res) {
