@@ -62,8 +62,12 @@ cd /path/to/dune-awakening-selfhost-docker
 #    Game servers are a separate compose file and are unaffected.
 docker compose -f docker-compose.web.yml stop redblink-dune-docker-console
 
-# 2. Delete the second-factor state.
+# 2. Delete the second-factor state -- both files. The second one is the
+#    restore-detection watermark (issue #425); leaving it behind makes the
+#    very next recovery-code login wrongly treat this deliberate reset as a
+#    restored-backup rollback and wipe your brand-new codes on the spot.
 rm runtime/generated/console-second-factor.json
+rm -f runtime/generated/console-second-factor.json.watermark
 
 # 3. Bring the console back.
 dune console restart

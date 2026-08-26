@@ -317,3 +317,135 @@ test("a second store for the SAME file throws; close() releases the path", async
     await assert.rejects(() => store.isConfigured(), /closed/);
   } finally { cleanup(dir); }
 });
+
+// ---- backup/restore rollback detection (issue #425) ----
+
+test("epoch starts at 0 on enroll and advances on every mutating op", async () => {
+  const { store, filePath, dir } = freshStore();
+  try {
+    await store.enroll(SECRET);
+    assert.equal(JSON.parse(readFileSync(filePath, "utf8")).epoch, 0);
+
+    const { codes } = await store.enroll(SECRET); // already_configured, no-op
+    assert.equal(codes, undefined);
+    assert.equal(JSON.parse(readFileSync(filePath, "utf8")).epoch, 0, "a no-op enroll attempt does not advance the epoch");
+
+    await store.regenerateRecoveryCodes();
+    assert.equal(JSON.parse(readFileSync(filePath, "utf8")).epoch, 1);
+
+    await store.regenerateRecoveryCodes();
+    assert.equal(JSON.parse(readFileSync(filePath, "utf8")).epoch, 2);
+  } finally { cleanup(dir); }
+});
+
+test("commit() carries the prior epoch forward across a legitimate rotation, not back to 0", async () => {
+  const { store, filePath, dir } = freshStore();
+  try {
+    await store.commit(SECRET); // epoch 0
+    await store.regenerateRecoveryCodes(); // epoch 1
+    await store.commit(SECRET); // a real rotation -- must NOT reset to 0
+    const state = JSON.parse(readFileSync(filePath, "utf8"));
+    assert.equal(state.epoch, 2, "rotation continues the epoch sequence, so a legitimate rotation is never mistaken for a rollback");
+  } finally { cleanup(dir); }
+});
+
+test("checkForRollback reports false for a normal install with no watermark yet", async () => {
+  const { store, dir } = freshStore();
+  try {
+    await store.commit(SECRET);
+    assert.deepEqual(await store.checkForRollback(), { detected: false });
+  } finally { cleanup(dir); }
+});
+
+test("checkForRollback reports false with no state at all", async () => {
+  const { store, dir } = freshStore();
+  try {
+    assert.deepEqual(await store.checkForRollback(), { detected: false });
+  } finally { cleanup(dir); }
+});
+
+test("a file restored to an older epoch is detected on the next recovery-code consumption: whole set wiped, code rejected", async () => {
+  const { store, filePath, dir } = freshStore();
+  try {
+    const { codes } = await store.commit(SECRET); // epoch 0
+    await store.regenerateRecoveryCodes(); // epoch 1, watermark now 1
+    const stateAtEpoch1 = readFileSync(filePath, "utf8");
+    const { codes: freshCodes } = await store.regenerateRecoveryCodes(); // epoch 2, watermark now 2
+
+    // Simulate a restored backup: the file goes back to its epoch-1 content,
+    // but the watermark file (a separate file) is untouched and still says 2.
+    writeFileSync(filePath, stateAtEpoch1, { mode: 0o600 });
+
+    assert.deepEqual(await store.checkForRollback(), { detected: true }, "the read-only check sees it too");
+
+    // Even a code that WAS valid in the restored epoch-1 file is rejected --
+    // the whole set is poisoned, not just the specific submitted code.
+    const result = await store.consumeRecoveryCode(freshCodes[0]);
+    assert.deepEqual(result, { ok: false, reason: "reset_detected", remaining: 0 });
+    assert.equal(await store.remainingRecoveryCodes(), 0, "the entire set was wiped, not just the one code");
+
+    // The pre-restore codes (from the original commit, long since superseded)
+    // are equally rejected -- this isn't "only new codes are protected".
+    const secondAttempt = await store.consumeRecoveryCode(codes[0]);
+    assert.equal(secondAttempt.ok, false);
+    assert.notEqual(secondAttempt.reason, "reset_detected", "the poisoning is one-shot -- the epoch is already past the watermark now");
+    assert.equal(secondAttempt.reason, "unknown");
+  } finally { cleanup(dir); }
+});
+
+test("after a detected rollback, TOTP login is unaffected (self-heals, no special handling)", async () => {
+  const { store, filePath, dir } = freshStore();
+  try {
+    await store.commit(SECRET); // epoch 0
+    await store.regenerateRecoveryCodes(); // epoch 1
+    const stateAtEpoch0 = JSON.parse(readFileSync(filePath, "utf8"));
+    stateAtEpoch0.epoch = 0;
+    // Directly craft an epoch-0 file with a valid TOTP secret (simulating a
+    // restore that also rolled back the TOTP counter -- the documented
+    // self-healing case, not this issue's concern).
+    writeFileSync(filePath, JSON.stringify(stateAtEpoch0), { mode: 0o600 });
+
+    const step = counterForTime(T, TOTP_PERIOD_SECONDS);
+    const code = totpCode(SECRET, T);
+    const result = await store.verifyTotpToken(code, T);
+    assert.equal(result.ok, true, "TOTP verification does not consult the watermark at all");
+    void step;
+  } finally { cleanup(dir); }
+});
+
+test("clear() removes the watermark too, so re-enrollment after a host reset starts genuinely fresh", async () => {
+  const { store, filePath, dir } = freshStore();
+  try {
+    await store.commit(SECRET); // epoch 0
+    await store.regenerateRecoveryCodes(); // epoch 1, watermark 1
+    await store.clear();
+    assert.equal(existsSync(filePath), false);
+    assert.equal(existsSync(`${filePath}.watermark`), false, "the watermark must not survive a deliberate reset");
+
+    const { codes } = await store.commit(SECRET); // fresh epoch 0
+    assert.deepEqual(await store.checkForRollback(), { detected: false }, "a genuinely fresh enrollment is never flagged as a rollback");
+    const consumed = await store.consumeRecoveryCode(codes[0]);
+    assert.equal(consumed.ok, true, "recovery-code login works normally post-reset");
+  } finally { cleanup(dir); }
+});
+
+test("a pre-#425 file with no epoch field loads as epoch 0 and behaves normally (Requirement 0)", async () => {
+  const { store, filePath, dir } = freshStore();
+  try {
+    const { generateRecoveryCodes } = await import("../src/auth/recoveryCodes.js");
+    const { codes, digests } = generateRecoveryCodes();
+    // No `epoch` key at all -- exactly what every install's file looked like
+    // before this feature existed.
+    writeFileSync(filePath, JSON.stringify({
+      version: 1,
+      totp: { secret: SECRET.toString("base64"), lastUsedCounter: -1 },
+      recoveryCodes: digests,
+    }), { mode: 0o600 });
+
+    assert.deepEqual(await store.checkForRollback(), { detected: false });
+    const result = await store.consumeRecoveryCode(codes[0]);
+    assert.equal(result.ok, true, "an old-format file with no watermark file present consumes normally");
+    const state = JSON.parse(readFileSync(filePath, "utf8"));
+    assert.equal(state.epoch, 1, "the epoch field is added on the first mutating write after upgrade");
+  } finally { cleanup(dir); }
+});

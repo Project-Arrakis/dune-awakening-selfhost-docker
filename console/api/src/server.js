@@ -305,6 +305,15 @@ createServer(async (req, res) => {
     console.warn("Make sure DISCORD_HOME_GUILD_ID, DISCORD_OAUTH_REDIRECT_URI, and the client secret are all configured.");
     console.warn("See .env.example for the full list of Discord OAuth environment variables.");
   }
+  // #425: informational only -- never blocks boot, and TOTP login is
+  // unaffected by a detected rollback (verifyTotpToken self-heals). Only
+  // recovery-code login enforces anything, at the moment it's actually used.
+  secondFactor.checkForRollback().then(({ detected }) => {
+    if (detected) {
+      console.warn("Warning: the console's second-factor state file appears older than a previously observed version (possibly a restored backup).");
+      console.warn("Recovery codes will be invalidated automatically the next time one is used. Consider regenerating them now from Settings.");
+    }
+  }).catch(() => {});
   scheduleBootAutoStart();
   recoverRestartQueue();
   publicDirectory.start();
@@ -630,6 +639,18 @@ async function handleApi(req, res) {
       }
       if (!consumed.ok) {
         loginRateLimiter.recordFailure(rateKey);
+        if (consumed.reason === "reset_detected") {
+          // #425: the store detected its own file had moved backward in time
+          // (a restored older backup) and wiped the entire recovery-code set
+          // rather than risk honoring a resurrected, previously-spent code.
+          // Named separately from the generic auth.login audit line below --
+          // this is a security-relevant event on its own, not a login failure.
+          audit(config, loginUrl, "auth.second-factor-reset-detected", { via: "recovery-code-consumption" });
+          return json(res, 401, {
+            recoveryFailed: true,
+            error: "The recovery-code state on this console appears to have been restored from an older backup, so all existing recovery codes have been invalidated for safety. Sign in with your authenticator app instead, then regenerate recovery codes from Settings.",
+          });
+        }
         audit(config, loginUrl, "auth.login", { ok: false, reason: `recovery_${consumed.reason}` });
         return json(res, 401, { recoveryFailed: true, error: "That recovery code was not accepted. Check for typos, or use a different unused code." });
       }
