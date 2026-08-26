@@ -260,6 +260,16 @@ export function loadConfig() {
     // flag flips to default-on / is removed once the frontend ships, restoring
     // the RFC's mandatory behavior for the release.
     consoleTotpEnabled: process.env.CONSOLE_TOTP_ENABLED === "1",
+    // Real-client-IP rate-limit key (#406, gate #424 prerequisite 3). Empty by
+    // default -- every operator who never sets this sees byte-identical
+    // behavior (the raw socket address). Only exact IPs, not CIDRs: an
+    // operator's reverse proxy/tunnel daemon has one fixed address (loopback,
+    // or a docker network gateway/service IP), and getting IP-range matching
+    // wrong is itself a security bug, so this deliberately does not attempt it.
+    trustedProxyIps: String(process.env.CONSOLE_TRUSTED_PROXY_IPS || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
     secondFactorFile: resolve(generatedDir, "console-second-factor.json"),
     totpIssuer: APP_NAME,
     enrollmentSessionTtlMs: 10 * 60 * 1000, // §4: short-lived, non-renewable enrollment session

@@ -11,6 +11,20 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Added
 
+- **Real-client-IP rate-limit key for the login limiter** (issue #406, gate
+  #424 prerequisite 3 -- the last of six blockers on `CONSOLE_TOTP_ENABLED`
+  defaulting on). Behind a reverse proxy or tunnel, the login rate limiter
+  previously keyed on the proxy's own address, so every real visitor shared
+  one bucket and a single attacker (or confused user) could lock out
+  everyone else. `resolveClientIp()` (`console/api/src/rateLimit.js`) now
+  honors `X-Forwarded-For`, but only from a peer address the operator
+  explicitly lists in the new `CONSOLE_TRUSTED_PROXY_IPS` env var (empty by
+  default, so behavior is byte-identical for every operator who never sets
+  it). Deliberately generic rather than Cloudflare-specific, matching
+  `docs/rfc-console-auth.md`'s own prior rejection of a `CF-Connecting-IP`-only
+  mechanism -- most operators of this project don't run Cloudflare Tunnel at
+  all. Gate #424's remaining prerequisite is release notes only.
+
 - **Suppressed two unfixed `libsqlite3-0` CVEs blocking `trivy-image-scan`**
   (issue #498). `CVE-2026-11822` and `CVE-2026-11824` were published between
   `main`'s last green run and the next PR, failing the required `Release gate`
