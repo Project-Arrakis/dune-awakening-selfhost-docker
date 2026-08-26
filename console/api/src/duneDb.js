@@ -9974,6 +9974,18 @@ function isTransientFlushError(message) {
   return /connect|ECONNREFUSED|ECONNRESET|terminated|timeout|does not exist|relation|shutting down|starting up|deadlock|too many clients/i.test(message);
 }
 
+// A queued refill can outlive the thing it targets: players may abandon the
+// claim or remove its last compatible storage device before the map next goes
+// down. Retrying cannot make that original request applicable again, and it
+// leaves a permanently misleading queue badge in the Console. Treat the two
+// domain-level "nothing to refill" results as successful reconciliation, not
+// as database failures. Keep this deliberately narrower than generic "not
+// found" matching so a schema/connection problem can never discard a request.
+function refillNoLongerApplicable(message) {
+  return message === "No generators or wind turbines were found at this base"
+    || message === "No water storage was found at this base";
+}
+
 // Applies every queued refill whose map is currently down and leaves the rest
 // queued. Driven by a background tick rather than by the restart task runner:
 // stop-all.sh removes the Postgres container along with the game servers, so
@@ -10022,6 +10034,19 @@ export async function flushGeneratorRefills(db, repoRoot, { now = Date.now } = {
       // strikes at a few seconds apart would otherwise all land inside one
       // migration and silently discard the operator's request.
       const message = String(error?.message || "Unexpected error.").slice(0, 300);
+      if (refillNoLongerApplicable(message)) {
+        outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+        flushed.push({
+          baseId: entry.baseId,
+          map: entry.map,
+          partitionId: entry.partitionId,
+          ok: true,
+          cleared: true,
+          noLongerApplicable: true,
+          reason: message
+        });
+        continue;
+      }
       const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
@@ -12094,6 +12119,19 @@ export async function flushWaterRefills(db, repoRoot, { now = Date.now } = {}) {
       });
     } catch (error) {
       const message = String(error?.message || "Unexpected error.").slice(0, 300);
+      if (refillNoLongerApplicable(message)) {
+        outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+        flushed.push({
+          baseId: entry.baseId,
+          map: entry.map,
+          partitionId: entry.partitionId,
+          ok: true,
+          cleared: true,
+          noLongerApplicable: true,
+          reason: message
+        });
+        continue;
+      }
       const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingRefillRetryDelayMs();

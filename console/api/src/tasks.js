@@ -185,10 +185,15 @@ export class TaskManager {
     try {
       const result = await this.onMapDown(operation);
       const applied = (result?.flushed || []).filter((entry) => entry.ok);
-      const generators = applied.filter((entry) => entry.refillType !== "water").length;
-      const water = applied.filter((entry) => entry.refillType === "water").length;
+      const cleared = applied.filter((entry) => entry.noLongerApplicable);
+      const generators = applied.filter((entry) => entry.refillType !== "water" && !entry.noLongerApplicable).length;
+      const water = applied.filter((entry) => entry.refillType === "water" && !entry.noLongerApplicable).length;
+      const clearedGenerators = cleared.filter((entry) => entry.refillType !== "water").length;
+      const clearedWater = cleared.filter((entry) => entry.refillType === "water").length;
       if (generators) this.append(task, `Applied ${generators} queued generator refill${generators === 1 ? "" : "s"}.`, "stdout");
       if (water) this.append(task, `Applied ${water} queued water refill${water === 1 ? "" : "s"}.`, "stdout");
+      if (clearedGenerators) this.append(task, `Cleared ${clearedGenerators} obsolete generator refill${clearedGenerators === 1 ? "" : "s"}; the base or its generators no longer exist.`, "stdout");
+      if (clearedWater) this.append(task, `Cleared ${clearedWater} obsolete water refill${clearedWater === 1 ? "" : "s"}; the base or its water storage no longer exists.`, "stdout");
       for (const failure of result?.failures || []) {
         const label = failure.refillType === "water" ? "water refills" : "generator refills";
         this.append(task, `Queued ${label} were not applied: ${failure.error || "unknown error"}`, "stderr");

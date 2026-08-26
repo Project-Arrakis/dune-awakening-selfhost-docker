@@ -487,7 +487,9 @@ test("map-down refill results distinguish generator, water, and queue-specific f
       onMapDown: async () => ({
         flushed: [
           { ok: true, refillType: "generator" },
-          { ok: true, refillType: "water" }
+          { ok: true, refillType: "water" },
+          { ok: true, refillType: "generator", noLongerApplicable: true },
+          { ok: true, refillType: "water", noLongerApplicable: true }
         ],
         failures: [{ refillType: "water", error: "database unavailable" }]
       })
@@ -501,6 +503,8 @@ test("map-down refill results distinguish generator, water, and queue-specific f
   assert.deepEqual(lines, [
     "Applied 1 queued generator refill.",
     "Applied 1 queued water refill.",
+    "Cleared 1 obsolete generator refill; the base or its generators no longer exist.",
+    "Cleared 1 obsolete water refill; the base or its water storage no longer exists.",
     "Queued water refills were not applied: database unavailable"
   ]);
 });
