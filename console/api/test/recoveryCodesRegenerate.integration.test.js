@@ -500,3 +500,114 @@ test("regenerating after a restored-backup rollback issues codes that actually w
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+// ---- #521/#522/#523/#527/#534: hardening ----
+
+test("every refusal is audited with a reason and an actor, and a malformed body is a 400 not a 500", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-audit-"));
+  const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+  try {
+    await waitForHealth(port);
+    const { password, secret, step: confirmStep } = await enroll(port, tempDir);
+    await waitForStepAfter(confirmStep);
+    const actor = await login(port, { password, totpCode: codeFor(secret, 0) });
+    assert.equal(actor.body.authenticated, true);
+
+    // A literal `null` body: readJson returns raw JSON.parse output, so this
+    // used to dereference null and surface an internal JS error as a 500.
+    const malformed = await fetch(`http://127.0.0.1:${port}${REGENERATE_PATH}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: `asc_session=${actor.cookie}`, "x-csrf-token": actor.csrf },
+      body: "null",
+    });
+    assert.equal(malformed.status, 400, "a malformed body is a client error, not a server error");
+    assert.ok(!/Cannot read properties/.test((await malformed.json()).error), "no internal JS error text reaches the client");
+
+    const badPw = await api(port, REGENERATE_PATH, {
+      cookie: actor.cookie, csrf: actor.csrf,
+      body: { currentPassword: "not-the-password", totpCode: "123456" },
+    });
+    assert.equal(badPw.status, 400);
+
+    const lines = readFileSync(auditLogPath(tempDir), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const failures = lines.filter((l) => l.action === "settings.recovery-codes-regenerated" && l.detail?.ok === false);
+    assert.ok(failures.length >= 2, "refusals are audited, not silent -- an unaudited route cannot distinguish 'nobody tried' from 'someone tried 500 times'");
+    assert.ok(failures.some((l) => l.detail.reason === "malformed_body"));
+    assert.ok(failures.some((l) => l.detail.reason === "bad_password"));
+    for (const line of failures) {
+      assert.ok(line.detail.userId, "each audited refusal names the acting principal");
+      assert.ok(line.detail.tier, "each audited refusal names the acting tier");
+    }
+  } finally {
+    await stopProcess(consoleProc.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("a successful regeneration records healedRollback and forbids caching of the codes", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-heal-audit-"));
+  const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+  try {
+    await waitForHealth(port);
+    const { password, secret, step: confirmStep } = await enroll(port, tempDir);
+    await waitForStepAfter(confirmStep);
+    const step = currentTotpStep();
+    const actor = await login(port, { password, totpCode: codeFor(secret, 0) });
+
+    await waitForStepAfter(step);
+    const res = await api(port, REGENERATE_PATH, {
+      cookie: actor.cookie, csrf: actor.csrf,
+      body: { currentPassword: password, totpCode: codeFor(secret, 0) },
+    });
+    assert.equal(res.status, 200);
+    // The one plaintext copy of a bearer credential must not be storable by any
+    // proxy or browser cache in the path.
+    assert.match(res.headers.get("cache-control") || "", /no-store/);
+
+    const lines = readFileSync(auditLogPath(tempDir), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const ok = lines.find((l) => l.action === "settings.recovery-codes-regenerated" && l.detail?.ok === true);
+    assert.ok(ok, "the success is audited");
+    assert.equal(ok.detail.count, 10);
+    assert.equal(ok.detail.healedRollback, false, "a routine rotation is distinguishable from the rollback remedy");
+    assert.ok(ok.detail.userId, "the success names the acting principal");
+  } finally {
+    await stopProcess(consoleProc.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// The reason the credential-proof limiter is a separate bucket: exhausting it
+// from an authenticated session must not lock the operator out of /api/auth/login,
+// which is the only route back in.
+test("exhausting the credential-proof limiter does not block sign-in", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-limiter-"));
+  const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+  try {
+    await waitForHealth(port);
+    const { password, secret, step: confirmStep } = await enroll(port, tempDir);
+    await waitForStepAfter(confirmStep);
+    const step = currentTotpStep();
+    const actor = await login(port, { password, totpCode: codeFor(secret, 0) });
+    assert.equal(actor.body.authenticated, true);
+
+    let sawBlock = false;
+    for (let i = 0; i < 12; i++) {
+      const res = await api(port, REGENERATE_PATH, {
+        cookie: actor.cookie, csrf: actor.csrf,
+        body: { currentPassword: "wrong-password", totpCode: "123456" },
+      });
+      if (res.status === 429) { sawBlock = true; break; }
+    }
+    assert.ok(sawBlock, "the credential-proof route is still throttled");
+
+    await waitForStepAfter(step);
+    const stillIn = await login(port, { password, totpCode: codeFor(secret, 0) });
+    assert.equal(stillIn.body.authenticated, true, "sign-in survives an exhausted credential-proof bucket");
+  } finally {
+    await stopProcess(consoleProc.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
