@@ -30,6 +30,7 @@ import io
 import json
 import sys
 import unittest
+from base64 import b64encode
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -40,6 +41,10 @@ import usersettings  # noqa: E402
 MAP_NAME = "Survival_1"
 PARTITION_ID = "3"
 OTHER_PARTITION_ID = "7"
+
+
+def _encode_bulk_save_payload(values: dict) -> str:
+    return b64encode(json.dumps(values).encode("utf-8")).decode("ascii")
 
 
 class ProfilePathTestCase(unittest.TestCase):
@@ -182,7 +187,7 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         expected = {
             "coriolis_cycle_start_year": ("m_CycleStartYear", "2024", 1, 9999),
             "coriolis_cycle_start_month": ("m_CycleStartMonth", "12", 1, 12),
-            "coriolis_cycle_start_day": ("m_CycleStartDay", "3", 1, 7),
+            "coriolis_cycle_start_day": ("m_CycleStartDay", "3", 1, 31),
             "coriolis_cycle_start_hour": ("m_CycleStartHour", "5", 0, 23),
             "coriolis_cycle_start_minute": ("m_CycleStartMinute", "0", 0, 59),
         }
@@ -195,17 +200,64 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
                 self.assertEqual(field["type"], "integer")
                 self.assertEqual(field["minimum"], minimum)
                 self.assertEqual(field["maximum"], maximum)
-        self.assertIn("1=Sunday", fields["coriolis_cycle_start_day"]["description"])
+        self.assertIn("calendar day of the month", fields["coriolis_cycle_start_day"]["description"])
         self.assertIn("UTC hour", fields["coriolis_cycle_start_hour"]["description"])
         self.assertEqual(fields["coriolis_cycle_start_seed_index"]["key"], "m_CycleStartSeedIndex")
         self.assertEqual(fields["coriolis_cycle_start_seed_index"]["type"], "integer")
+
+    def test_coriolis_region_hours_match_field_description(self):
+        # CORIOLIS_REGION_HOURS is the authoritative table (used by
+        # migrate_coriolis_region_fields); the field's own description is the text an
+        # admin actually reads. Parse the description independently of the dict's own
+        # construction, so a typo in either place is a real test failure instead of the
+        # same mistake checking itself.
+        description = usersettings.FIELD_DESCRIPTIONS["coriolis_cycle_start_hour"]
+        segment = description.split(":", 1)[1].strip().rstrip(".")
+        described = {}
+        for chunk in segment.split(","):
+            chunk = chunk.strip()
+            if chunk.startswith("and "):
+                chunk = chunk[4:]
+            region, hour = chunk.rsplit(" ", 1)
+            described[region] = int(hour)
+        self.assertEqual(described, usersettings.CORIOLIS_REGION_HOURS)
+
+    def test_coriolis_region_hours_match_the_console_frontend_table(self):
+        # console/web/src/features/maps/MapsPanel.tsx keeps its own copy (documented as
+        # such at CORIOLIS_REGION_HOURS's definition here) because the toggle's
+        # inference renders without a round trip; only the migration write is
+        # server-side. Parse the frontend's literal object directly so the two tables
+        # cannot drift without a test noticing.
+        import re
+        frontend_path = Path(__file__).resolve().parents[2] / "console" / "web" / "src" / "features" / "maps" / "MapsPanel.tsx"
+        text = frontend_path.read_text(encoding="utf-8")
+        match = re.search(r"CORIOLIS_REGION_HOURS: Record<string, number> = \{(.*?)\};", text, re.DOTALL)
+        self.assertIsNotNone(match, "CORIOLIS_REGION_HOURS literal not found in MapsPanel.tsx -- update this test's pattern if it was reshaped")
+        frontend_table = {region: int(hour) for region, hour in re.findall(r'"([^"]+)":\s*(\d+)', match.group(1))}
+        self.assertEqual(frontend_table, usersettings.CORIOLIS_REGION_HOURS)
+
+    def test_coriolis_region_days_match_field_description(self):
+        # Keep the user-facing description honest about the two regional anchor
+        # dates. Table parity with the frontend is checked independently below.
+        description = usersettings.FIELD_DESCRIPTIONS["coriolis_cycle_start_day"]
+        self.assertIn("Europe, North America, and South America use day 3", description)
+        self.assertIn("Asia and Oceania use day 2", description)
+
+    def test_coriolis_region_days_match_the_console_frontend_table(self):
+        import re
+        frontend_path = Path(__file__).resolve().parents[2] / "console" / "web" / "src" / "features" / "maps" / "MapsPanel.tsx"
+        text = frontend_path.read_text(encoding="utf-8")
+        match = re.search(r"CORIOLIS_REGION_DAYS: Record<string, number> = \{(.*?)\};", text, re.DOTALL)
+        self.assertIsNotNone(match, "CORIOLIS_REGION_DAYS literal not found in MapsPanel.tsx -- update this test's pattern if it was reshaped")
+        frontend_table = {region: int(day) for region, day in re.findall(r'"([^"]+)":\s*(\d+)', match.group(1))}
+        self.assertEqual(frontend_table, usersettings.CORIOLIS_REGION_DAYS)
 
     def test_coriolis_cycle_start_components_are_validated(self):
         profile = usersettings.empty_profile()
         for field_id, value in (
             ("coriolis_cycle_start_year", "0"),
             ("coriolis_cycle_start_month", "13"),
-            ("coriolis_cycle_start_day", "8"),
+            ("coriolis_cycle_start_day", "32"),
             ("coriolis_cycle_start_hour", "24"),
             ("coriolis_cycle_start_minute", "60"),
             ("coriolis_cycle_start_minute", "1.5"),
@@ -239,6 +291,167 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         data_lines = [line for line in rendered.splitlines() if line.startswith("Data=(")]
         self.assertEqual(len(data_lines), 1)
         self.assertIn("m_VotingPeriodStartBeforeCoriolisCycleInSec=122400", data_lines[0])
+
+    def test_legacy_dunegamemode_cycle_and_wipe_fields_are_hidden_behind_coriolis(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(usersettings.metadata(), 0)
+        payload = json.loads(output.getvalue())
+        ids = {row["id"] for row in payload["game"]}
+        self.assertNotIn("cycle_duration_in_days", ids)
+        self.assertNotIn("db_wipe_enabled", ids)
+        fields = {row["id"]: row for row in payload["game"]}
+        self.assertEqual(fields["coriolis_cycle_duration_days"]["label"], "Cycle Duration Days")
+        self.assertEqual(fields["coriolis_db_wipe_enabled"]["label"], "Db Wipe Enabled")
+
+    def test_saving_the_canonical_coriolis_field_compiles_into_both_sections(self):
+        # cycle_duration_in_days (legacy DuneGameMode) is hidden from the editor,
+        # but compiled_usergame_ini still writes it alongside the canonical
+        # CoriolisSubsystem key -- via sync_legacy_values() backfilling
+        # profile_map_values(), not by mirroring the raw saved profile -- so any
+        # code path still reading the legacy key keeps seeing the new value.
+        profile = usersettings.empty_profile()
+        usersettings.set_profile_field(profile, "global", "", "", "coriolis_cycle_duration_days", "3")
+        rendered = usersettings.compiled_usergame_ini(profile, MAP_NAME)
+        self.assertIn(f"[{usersettings.CORIOLIS_SUBSYSTEM_SECTION}]\nm_CycleDurationInDays=3", rendered)
+        self.assertIn("[/Script/DuneSandbox.DuneGameMode]\nm_CycleDurationInDays=3", rendered)
+
+    def test_an_existing_legacy_only_value_still_surfaces_through_the_canonical_field(self):
+        legacy_section, legacy_key, _default = usersettings.MAP_FIELDS["db_wipe_enabled"]
+        profile = usersettings.parse_profile_text(
+            f"[Global:{legacy_section}]\n{legacy_key}=False\n"
+        )
+        values = usersettings.profile_map_values(profile, MAP_NAME)
+        self.assertEqual(values["coriolis_db_wipe_enabled"], "False")
+
+    def _assert_explicit_canonical_save_wins_over_stale_legacy(self, legacy_field, canonical_field, stale_legacy_value):
+        # Presence, not a value-vs-default comparison, must decide the winner: a stale
+        # legacy value must never outrank a canonical value the admin explicitly saved,
+        # even when that explicit save happens to equal the canonical schema default --
+        # sync_legacy_values() used to read that case as "canonical was never touched"
+        # and let the legacy value silently win.
+        legacy_section, legacy_key, legacy_default = usersettings.MAP_FIELDS[legacy_field]
+        _canonical_section, _canonical_key, canonical_default = usersettings.MAP_FIELDS[canonical_field]
+        self.assertNotEqual(stale_legacy_value, legacy_default, "the injected legacy value must be non-default to represent a real explicit legacy override")
+        profile = usersettings.parse_profile_text(f"[Global:{legacy_section}]\n{legacy_key}={stale_legacy_value}\n")
+        usersettings.set_profile_field(profile, "global", "", "", canonical_field, canonical_default)
+        values = usersettings.profile_global_values(profile)
+        self.assertEqual(values[canonical_field], canonical_default)
+        rendered = usersettings.compiled_usergame_ini(profile, MAP_NAME)
+        self.assertNotIn(f"{legacy_key}={stale_legacy_value}", rendered)
+
+    def test_explicit_canonical_save_wins_over_stale_legacy_coriolis_value(self):
+        # db_wipe_enabled's canonical default is "True"; give the profile a stale
+        # explicit legacy value ("False") and an explicit canonical save that equals
+        # the canonical default ("True") -- the exact production shape from the PR
+        # review's H5 repro.
+        self._assert_explicit_canonical_save_wins_over_stale_legacy("db_wipe_enabled", "coriolis_db_wipe_enabled", "False")
+
+    def test_explicit_canonical_save_wins_over_stale_legacy_guild_value(self):
+        # Same bug, pre-existing on the guild aliases before this branch touched them --
+        # see the PR callout: a deployment with a stale legacy guild cap silently
+        # overriding an explicit canonical save sees its effective cap change once this
+        # lands, and that is the intended fix, not a regression.
+        self._assert_explicit_canonical_save_wins_over_stale_legacy("max_guild_members_allowed", "guild_settings_max_guild_members_allowed", "20")
+
+    def test_conflicting_legacy_and_canonical_values_both_present_resolve_to_canonical_and_warn(self):
+        legacy_section, legacy_key, _legacy_default = usersettings.MAP_FIELDS["cycle_duration_in_days"]
+        profile = usersettings.parse_profile_text(f"[Global:{legacy_section}]\n{legacy_key}=3\n")
+        usersettings.set_profile_field(profile, "global", "", "", "coriolis_cycle_duration_days", "14")
+        values = usersettings.profile_global_values(profile)
+        self.assertEqual(values["coriolis_cycle_duration_days"], "14")
+        rendered = usersettings.compiled_usergame_ini(profile, MAP_NAME)
+        self.assertIn(f"{legacy_key}=14", rendered)
+        self.assertNotIn(f"{legacy_key}=3\n", rendered)
+        warnings = usersettings.legacy_alias_conflict_warnings(profile, "global")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("m_CycleDurationInDays=3", warnings[0])
+        self.assertIn("m_CycleDurationInDays=14", warnings[0])
+        # Both sides share the same ini key name -- the section is what actually tells an
+        # admin which block to go edit; without it "m_CycleDurationInDays=3" vs "=14" reads
+        # as two values for the same setting with no way to tell them apart.
+        self.assertIn(legacy_section, warnings[0])
+        self.assertIn(usersettings.CORIOLIS_SUBSYSTEM_SECTION, warnings[0])
+
+    def test_raw_editor_legacy_conflict_warning_names_both_sections(self):
+        # _advanced_editor_legacy_field_warnings is the raw/Advanced-editor counterpart to
+        # legacy_alias_conflict_warnings above -- previously only run manually via
+        # profile_selftest(), not CI. Both sides share the same ini key name (the whole
+        # reason they're aliased), so the section is what actually tells an admin which
+        # block to go edit; pin that it's present, not just the key/value pair.
+        sections = usersettings.parse_profile_text(
+            "[Global:/Script/DuneSandbox.DuneGameMode]\nm_MaxGuildMembersAllowed=5\n"
+            "[Global:/Script/DuneSandbox.GuildSettings]\nm_MaxGuildMembersAllowed=32\n"
+        ).get("sections", [])
+        warnings = usersettings._advanced_editor_legacy_field_warnings(sections)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("m_MaxGuildMembersAllowed=5", warnings[0])
+        self.assertIn("m_MaxGuildMembersAllowed=32", warnings[0])
+        self.assertIn("/Script/DuneSandbox.DuneGameMode", warnings[0])
+        self.assertIn("/Script/DuneSandbox.GuildSettings", warnings[0])
+
+    def test_bulk_save_prints_a_warning_for_a_legacy_canonical_conflict(self):
+        legacy_section, legacy_key, _legacy_default = usersettings.MAP_FIELDS["cycle_duration_in_days"]
+        usersettings.write_profile(usersettings.parse_profile_text(f"[Global:{legacy_section}]\n{legacy_key}=3\n"))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(usersettings.bulk_save("global", MAP_NAME, "", _encode_bulk_save_payload({"coriolis_cycle_duration_days": "14"})), 0)
+        self.assertIn("USERSETTINGS_WARNING:", output.getvalue())
+        self.assertIn("m_CycleDurationInDays", output.getvalue())
+
+    def test_bulk_save_prints_no_warning_when_only_the_canonical_field_is_saved(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(usersettings.bulk_save("global", MAP_NAME, "", _encode_bulk_save_payload({"coriolis_cycle_duration_days": "14"})), 0)
+        self.assertNotIn("USERSETTINGS_WARNING:", output.getvalue())
+
+    def test_migrate_coriolis_region_fields_is_a_noop_for_an_unmapped_region(self):
+        self.assertEqual(usersettings.migrate_coriolis_region_fields("Atlantis"), "skip:unmapped-region")
+        values = usersettings.profile_global_values(usersettings.read_profile())
+        self.assertEqual(values["coriolis_cycle_start_hour"], usersettings.MAP_FIELDS["coriolis_cycle_start_hour"][2])
+        self.assertEqual(values["coriolis_cycle_start_day"], usersettings.MAP_FIELDS["coriolis_cycle_start_day"][2])
+
+    def test_migrate_coriolis_region_fields_migrates_both_fields_once(self):
+        self.assertEqual(usersettings.migrate_coriolis_region_fields("North America"), "migrated:coriolis_cycle_start_hour=11,coriolis_cycle_start_day=3")
+        values = usersettings.profile_global_values(usersettings.read_profile())
+        self.assertEqual(values["coriolis_cycle_start_hour"], "11")
+        self.assertEqual(values["coriolis_cycle_start_day"], "3")
+        # Idempotent by presence, not value -- a second call must be a true
+        # no-op regardless of what either field now holds.
+        self.assertEqual(usersettings.migrate_coriolis_region_fields("North America"), "skip:already-present")
+
+    def test_migrate_coriolis_region_fields_never_loops_when_the_regions_day_equals_its_default(self):
+        # coriolis_cycle_start_day's schema default is "3", which is ALSO the
+        # region value for Europe, North America, and South America -- three of
+        # the five regions, not a one-region edge case like the hour's Europe
+        # (whose region value, 5, also equals the hour default). This is the
+        # direct regression guard for the "value equals default" bug class the
+        # server-side migration exists to make structurally impossible: presence,
+        # not value, must be what stops it, or this majority case would still
+        # write on every single startup.
+        for region in ("Europe", "North America", "South America"):
+            with self.subTest(region=region):
+                usersettings.write_profile(usersettings.empty_profile())
+                first = usersettings.migrate_coriolis_region_fields(region)
+                self.assertTrue(first.startswith("migrated:"), f"{region} did not migrate on first call: {first}")
+                for attempt in range(3):
+                    with self.subTest(attempt=attempt):
+                        self.assertEqual(usersettings.migrate_coriolis_region_fields(region), "skip:already-present")
+                values = usersettings.profile_global_values(usersettings.read_profile())
+                self.assertEqual(values["coriolis_cycle_start_day"], "3")
+
+    def test_migrate_coriolis_region_fields_only_writes_the_field_not_already_present(self):
+        # An admin who already saved the hour explicitly (to any value, even a
+        # non-region one) must keep it untouched -- only the still-unset day
+        # field should be written, and in the same profile pass as the presence
+        # check, not a second read-modify-write cycle that could race it.
+        profile = usersettings.empty_profile()
+        usersettings.set_profile_field(profile, "global", "", "", "coriolis_cycle_start_hour", "22")
+        usersettings.write_profile(profile)
+        self.assertEqual(usersettings.migrate_coriolis_region_fields("Asia"), "migrated:coriolis_cycle_start_day=2")
+        values = usersettings.profile_global_values(usersettings.read_profile())
+        self.assertEqual(values["coriolis_cycle_start_hour"], "22")
+        self.assertEqual(values["coriolis_cycle_start_day"], "2")
 
 
 class ClientGameIniAllowlistTests(ProfilePathTestCase):
