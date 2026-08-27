@@ -159,6 +159,9 @@ person typing. Give it the full window rather than retrying into the block.
 
 ## See also
 
+- [authentication-upgrade-guide.md](authentication-upgrade-guide.md) — the
+  operator walkthrough for turning this on in the first place.
+
 - `docs/rfc-console-auth.md` §2.3 (Tier 3 design), §3.4 (credential loss,
   including the total-loss reset above), §4 (migration path)
 - `docs/security/console-rbac-implementation-and-testing.md`
