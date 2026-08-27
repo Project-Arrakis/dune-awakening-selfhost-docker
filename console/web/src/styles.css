@@ -6611,3 +6611,4 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 .discord-setup-panel h2 { margin: 14px 0 2px; }
 .discord-setup-panel select { width: 100%; }
 .login-discord-button.disabled { opacity: .5; pointer-events: none; }
+button.login-discord-button { border: none; cursor: pointer; font: inherit; font-weight: 600; }

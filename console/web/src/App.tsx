@@ -819,13 +819,15 @@ export function App() {
             </>
           ) : (
             <>
-              {wantDiscordSetup && <p className="muted">Enter the admin password to set up Discord sign-in.</p>}
-              {passwordFields}
               {!totpRequired && !wantDiscordSetup && (
-                <button type="button" className="login-password-toggle" onClick={() => setWantDiscordSetup(true)}>
-                  <DiscordLogo size={16} aria-hidden="true" /> Set up Discord sign-in
+                <button type="button" className="login-discord-button login-discord-button-primary" onClick={() => setWantDiscordSetup(true)}>
+                  <DiscordLogo size={19} aria-hidden="true" /> Set up Discord sign-in
                 </button>
               )}
+              {wantDiscordSetup
+                ? <p className="muted">Enter the admin password to set up Discord sign-in. <button type="button" className="login-password-toggle" onClick={() => setWantDiscordSetup(false)}>cancel</button></p>
+                : !totpRequired && <p className="muted">or sign in with the admin password</p>}
+              {passwordFields}
             </>
           )}
           {error && <p className="error">{error === AUTH_SESSION_EXPIRED_MESSAGE
