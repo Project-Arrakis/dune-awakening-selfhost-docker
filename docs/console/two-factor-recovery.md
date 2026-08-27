@@ -114,11 +114,24 @@ Check the audit log first, so you know what happened before you change
 anything:
 
 ```bash
-grep -E 'totp-setup|auth\.2fa|auth\.login' runtime/generated/web-admin-audit.jsonl | tail -20
+grep -E 'totp-setup|totp-regenerated|recovery-codes-regenerated|second-factor-reset-detected|auth\.2fa|auth\.login' \
+  runtime/generated/web-admin-audit.jsonl | tail -20
 ```
 
-A `settings.totp-setup` entry tells you exactly when enrollment was
-committed. If that timestamp lines up with a deploy, a test run, or someone
+**Corrected 2026-08-26 (#530):** this pattern previously matched only
+`totp-setup|auth\.2fa|auth\.login`, which does **not** match
+`settings.recovery-codes-regenerated` — the one event that explains a recovery
+sheet that has stopped working. Anyone following this page saw an audit trail
+that read as though nothing had touched the second factor, and reasonably
+concluded the store was corrupt: straight to the Case 3 host reset, which also
+destroys the TOTP enrollment. `auth.second-factor-reset-detected` was missing
+for the same reason.
+
+A `settings.recovery-codes-regenerated` entry means someone deliberately issued
+a new sheet, invalidating yours; its `userId`/`tier` fields say who, and
+`healedRollback: true` means it was the remedy for a detected restore-rollback
+rather than a routine rotation. A `settings.totp-setup` entry tells you exactly
+when enrollment was committed. If that timestamp lines up with a deploy, a test run, or someone
 else's session, this is Case 3 — follow the reset above. If it does not
 line up with anything you can account for, treat the shared
 `ADMIN_PASSWORD` as compromised: rotate it *first*, then do the reset, then

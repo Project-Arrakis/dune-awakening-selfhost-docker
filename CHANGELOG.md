@@ -64,11 +64,9 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   exclusion cannot be undone by pattern-matching the other `/api/auth/2fa/*`
   routes). Unlike password rotation it revokes **no** sibling sessions —
   rotating a recovery-code sheet is not a login-credential change (RFC §2.3/§5).
-  **Backend only:** the settings-panel control is deferred to the same change
-  that fixes #515, so both land as one coherent edit to that component; until
-  then this action is reachable via the API but not from the console UI. No
-  effect on any install with `CONSOLE_TOTP_ENABLED` unset (the default) —
-  Requirement 0.
+  The settings-panel control landed alongside the #515 fix, so the action is
+  reachable from the console UI as well as the API. No effect on any install
+  with `CONSOLE_TOTP_ENABLED` unset (the default) — Requirement 0.
 
 - **Backup/restore rollback detection for Tier 3 recovery codes** (issue
   #425, RFC §2.3.1/§3.4). Restoring an older `console-second-factor.json`
