@@ -73,7 +73,7 @@ export const ROUTE_ACTIONS = {
   "GET /api/setup/discord-identity":           "settings:read",
   "POST /api/setup/discord-finalize":          "settings:write",
   "POST /api/setup/discord-restart":           "settings:write",
-  "POST /api/setup/save-token":                "setup:write",
+  "POST /api/setup/save-token":                "server:write-credentials",
   "POST /api/setup/init":                      "setup:write",
   "GET /api/public-directory/status":          "setup:read",
 
@@ -98,12 +98,12 @@ export const ROUTE_ACTIONS = {
   "POST /api/server/network-bind/fix":         "server:network-fix",
   "POST /api/server/storage/cleanup-images":   "server:storage-cleanup",
   "POST /api/server/storage/cleanup-build-cache":"server:storage-cleanup",
-  "POST /api/server/funcom-token":             "server:write-config",
+  "POST /api/server/funcom-token":             "server:write-credentials",
   "POST /api/server/title":                    "server:write-config",
   "POST /api/server/config":                   "server:write-config",
   "POST /api/server/restart-schedule":         "server:write-config",
-  "POST /api/server/ip-change-restart":        "server:write-config",
-  "POST /api/server/ip-change-restart/check":  "server:write-config",
+  "POST /api/server/ip-change-restart":        "server:write-credentials",
+  "POST /api/server/ip-change-restart/check":  "server:write-credentials",
   "POST /api/server/shutdown-protection":      "server:write-config",
   "POST /api/server/shutdown-protection/remove":"server:write-config",
   "POST /api/server/restart-queue":            "server:write-config",
@@ -423,6 +423,16 @@ export const REGEX_ACTIONS_BY_METHOD = {
 // the part that would distinguish them. Routes that need that distinction
 // go here instead, tested as a real regex before the prefix fallback.
 export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
+  // --- Player MODERATION, split out of the players:mutate economy bucket so a
+  //     moderator/admin can act on an individual griefer (kick/ban/teleport)
+  //     WITHOUT holding give-item / add-currency / reset-progression. Every
+  //     other POST/DELETE/PATCH /api/players/* route still falls through to the
+  //     "POST /api/players/" -> players:mutate prefix rule below. These are
+  //     checked first (patterns run before the prefix fallback). ---
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/kick$/,     action: "players:kick" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/ban$/,      action: "players:ban" },
+  { method: "DELETE", pattern: /^\/api\/players\/[^/]+\/ban$/,      action: "players:ban" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/teleport$/, action: "players:teleport" },
   // DELETE /api/bases/{baseId} — the actual, irreversible base delete.
   // Deliberately its own action rather than the shared bases:mutate bucket
   // every other base mutation uses (refills, permission edits, cancelling

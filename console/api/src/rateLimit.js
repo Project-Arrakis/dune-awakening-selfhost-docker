@@ -10,10 +10,11 @@
 // operator-declared trustedProxyIps list -- an untrusted peer can put
 // anything in that header, so honoring it unconditionally would let a
 // remote attacker forge their rate-limit key and dodge the limiter entirely
-// (or frame another client for their own failures). The leftmost entry is
-// taken as the original client; this does not handle a chain of more than
-// one trusted proxy, which is out of scope for this fix (see
-// docs/rfc-console-auth.md's own "generic proxy-aware fix... deferred" note).
+// (or frame another client for their own failures). The RIGHTMOST entry --
+// the one the trusted proxy itself appended -- is taken as the real client;
+// the client-controlled leftmost entry is never trusted. This handles a single
+// trusted-proxy hop only; a chain of more than one trusted proxy is out of
+// scope (see docs/rfc-console-auth.md's "generic proxy-aware fix... deferred").
 export function resolveClientIp(req, trustedProxyIps = []) {
   const socketIp = normalizeIp(req.socket?.remoteAddress);
   if (!trustedProxyIps.length || !socketIp || !trustedProxyIps.includes(socketIp)) {

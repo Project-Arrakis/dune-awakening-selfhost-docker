@@ -987,7 +987,7 @@ async function handleApi(req, res) {
       }
       const pending = oauthPendingStates.issue(undefined, { purpose: "setup", sessionId: ownerSession.id });
       if (!pending) return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
-      res.setHeader("Set-Cookie", oauthStateCookie(pending.state, config.secureCookies));
+      res.setHeader("Set-Cookie", oauthStateCookie(pending.state));
       res.writeHead(302, { Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: pending.state, codeChallenge: pending.challenge }) });
       res.end();
       audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true, purpose: "setup" });
@@ -1015,7 +1015,7 @@ async function handleApi(req, res) {
       return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
     }
     const { state, challenge } = pending;
-    res.setHeader("Set-Cookie", oauthStateCookie(state, config.secureCookies));
+    res.setHeader("Set-Cookie", oauthStateCookie(state));
     const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state, codeChallenge: challenge });
     res.writeHead(302, { Location: authorizeUrl });
     res.end();
@@ -2358,6 +2358,13 @@ async function databaseQuery(req, res) {
   const body = await readJson(req);
   const query = String(body.query || "");
   const readOnly = isReadOnlySql(query);
+  // The route gate only requires database:query (admin holds it). Destructive
+  // SQL, however, is a direct DB write -- gate it on database:mutate, which is
+  // owner-only, so an admin can run read-only queries but cannot DROP/DELETE/
+  // UPDATE the live game DB through this endpoint.
+  if (!readOnly && !evaluate(req.authSession, "database:mutate")) {
+    return json(res, 403, { error: "Destructive SQL requires owner-level access. Admins may run read-only queries; sign in as owner for writes." });
+  }
   if (!readOnly && !applyMutationRateLimit(req, res, "database.query.write")) return;
   if (!config.mockMode && !readOnly) {
     await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "destructive-sql" } });
@@ -5813,7 +5820,7 @@ async function saveOAuthClientSecret(req, res) {
   } catch (error) {
     return json(res, 500, { error: "Failed to save client secret." });
   }
-  audit(config, req, "setup.save-oauth-secret", { secret: "<redacted>", overwrite: Boolean(body.overwrite) });
+  audit(config, sanitizedUrl(req, "/api/setup/save-oauth-secret"), "setup.save-oauth-secret", { secret: "<redacted>", overwrite: Boolean(body.overwrite) });
   return json(res, 200, { ok: true });
 }
 
@@ -6352,7 +6359,7 @@ async function handleOAuthCallback(req, res) {
     }
     ownerSession.pendingDiscordSetup = captured; // readSessionById returns the live object, so this sticks
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, purpose: "setup", userId: identity.userId, guilds: identity.guilds.length });
-    res.setHeader("Set-Cookie", [clearOAuthStateCookie(config.secureCookies)]);
+    res.setHeader("Set-Cookie", [clearOAuthStateCookie()]);
     return html(res, 200, `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Discord connected</title></head><body><noscript><a href="/?discordSetup=done">Continue Discord setup</a></noscript><script>window.location.replace("/?discordSetup=done");</script></body></html>`);
   }
   const resolved = await resolveOAuthTier(identity);
@@ -6378,7 +6385,7 @@ async function handleOAuthCallback(req, res) {
     return html(res, 403, oauthErrorPage("Discord sign-in succeeded, but this account is not authorized to sign in to this console. If you believe it should be, contact this server's administrator."));
   }
   const session = auth.makeSession({ tier: resolved.tier, userId: identity.userId, username: identity.username, guildId: config.discordHomeGuildId });
-  res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie(config.secureCookies)]);
+  res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie()]);
   audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: resolved.tier });
   return html(res, 200, oauthReturnPage());
 }

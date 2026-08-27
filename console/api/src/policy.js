@@ -186,102 +186,99 @@ const DEFAULT_POLICIES = {
       { Effect: "Allow", Action: "*" }
     ]
   },
+
+  // ADMIN -- "operate the live server and moderate players; change nothing
+  // persistent." Deliberately over-restrictive: admin holds an EXPLICIT allow
+  // list, so any capability added to the catalog later defaults to owner-only
+  // until an operator grants it; and a Deny block keeps the crown-jewel actions
+  // unreachable even if a future edit widens the allow list. Everything an admin
+  // lacks -- all *:write-config, credentials, update/addon deployment,
+  // destructive backup/data ops, and the economy -- is owner-only by design.
+  // Loosen per-deployment via the Access Control editor (tracked for revision).
   admin: {
     version: 1,
     tier: "admin",
     statements: [
       { Effect: "Allow", Action: [
-        "setup:*",
-        "server:*",
-        "logs:*",
-        "backups:*",
-        "database:read",
-        "database:query",
-        "database:export",
-        "updates:*",
-        "players:*",
-        "guilds:*",
-        "bases:*",
-        "storage:*",
-        "blueprints:*",
-        "vehicles:*",
-        "exchange:*",
-        "maps:*",
-        "sietches:*",
-        "deepdesert:*",
-        "admin:*",
-        "landsraad:*",
-        "addons:*",
-        "carepackage:*",
+        // Server lifecycle -- transient operations, no persistent config write
+        "server:read", "server:start", "server:stop", "server:restart",
+        "server:restart-service", "server:network-fix", "server:storage-cleanup",
+        // Player moderation -- act on an individual griefer + mass kick
+        "players:read", "players:kick-all", "players:kick", "players:ban", "players:teleport",
+        // Live-ops -- bring a map shard up/down + in-world moderation movement
+        "maps:read", "maps:spawn", "maps:despawn", "maps:teleport", "maps:restart", "maps:reconcile",
+        // Communications / moderation tooling
+        "admin:broadcast", "admin:broadcast-shutdown", "admin:map-chat",
+        "admin:motd:read", "admin:motd:write",
+        "admin:announcements:read", "admin:announcements:write",
+        "admin:history:read", "admin:history:clear",
+        "admin:transfer-settings:read", "admin:items:read",
+        "admin:vehicles:read", "admin:skills:read",
+        // Read-only visibility across the console
+        "logs:read",
+        "bases:read", "blueprints:read", "deepdesert:read", "exchange:read",
+        "guilds:read", "landsraad:read", "sietches:read", "storage:read", "vehicles:read",
+        "database:read", "database:query",   // query is read-only-enforced in the handler
+        "updates:check", "updates:read",
+        "backups:create", "backups:read",
+        "setup:read",
+        "addons:read",
       ]},
       { Effect: "Deny", Action: [
-        "settings:*",
-        "database:write-config",
-        "database:mutate",
+        // Crown jewels -- never reachable by admin, even via a future widened Allow.
+        "settings:*",                                     // IAM policies, admin password, port, recovery codes
+        "server:write-credentials",                       // Funcom game-server token + server IP change
+        "database:write-config", "database:mutate",       // DB password + direct table edits
+        "updates:apply", "updates:fix", "updates:repair", // deploying / altering the running code
+        "backups:restore", "backups:import",              // irreversible DB overwrite / untrusted import
+        "addons:install", "addons:update",                // third-party code into the console process
+        "setup:write",                                    // first-run provisioning
+        "players:mutate",                                 // give-item / add-currency / reset-progression (economy)
+        "carepackage:grant", "carepackage:write-config",  // minting in-game value
+        "exchange:market", "exchange:market-write",       // seeding the market economy
       ]}
     ]
   },
+
+  // MODERATOR -- live moderation only: read everything, talk to players, and act
+  // on individual griefers (kick/ban/teleport). No config, no economy, nothing
+  // destructive or persistent.
   moderator: {
     version: 1,
     tier: "moderator",
     statements: [
       { Effect: "Allow", Action: [
-        "server:read",
-        "maps:read",
-        "sietches:read",
-        "deepdesert:read",
-        "players:read",
-        "players:kick-all",
-        "guilds:read",
-        "bases:read",
-        "storage:read",
-        "blueprints:read",
-        "vehicles:read",
-        "exchange:read",
-        "logs:*",
-        "landsraad:read",
-        "admin:broadcast",
-        "admin:map-chat",
+        "server:read", "maps:read", "sietches:read", "deepdesert:read",
+        "players:read", "players:kick-all", "players:kick", "players:ban", "players:teleport",
+        "guilds:read", "bases:read", "storage:read", "blueprints:read",
+        "vehicles:read", "exchange:read", "logs:read", "landsraad:read",
+        "admin:broadcast", "admin:map-chat",
       ]},
     ]
   },
+
+  // PLAYER -- read-only view of the game world (a participant's-eye view).
   player: {
     version: 1,
     tier: "player",
     statements: [
       { Effect: "Allow", Action: [
-        "server:read",
-        "maps:read",
-        "sietches:read",
-        "deepdesert:read",
-        "players:read",
-        "guilds:read",
-        "bases:read",
-        "storage:read",
-        "blueprints:read",
-        "vehicles:read",
-        "exchange:read",
-        "landsraad:read",
+        "server:read", "maps:read", "sietches:read", "deepdesert:read",
+        "players:read", "guilds:read", "bases:read", "storage:read",
+        "blueprints:read", "vehicles:read", "exchange:read", "landsraad:read",
       ]},
     ]
   },
+
+  // OBSERVER -- minimal server-status viewer ("is the server up?"). Deliberately
+  // the tightest tier; a richer read-only ops/audit definition (logs + backup +
+  // update health) is tracked as a follow-up revision.
   observer: {
     version: 1,
     tier: "observer",
     statements: [
       { Effect: "Allow", Action: [
         "server:read",
-        "maps:read",
-        "sietches:read",
-        "deepdesert:read",
-        "players:read",
-        "guilds:read",
-        "bases:read",
-        "storage:read",
-        "blueprints:read",
-        "vehicles:read",
-        "exchange:read",
-        "landsraad:read",
       ]},
     ]
   },
