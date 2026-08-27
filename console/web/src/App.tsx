@@ -819,25 +819,37 @@ export function App() {
           <h1>Dune Docker Console</h1>
           <img className="login-logo" src="/dune-docker-logo.png" alt="Dune Docker Console logo" />
           <p>Beyond the Dunes, Every Choice Shapes the Future</p>
-          {/* Password is the predominant, always-present method (opt-in model):
-              the admin credential always works and is the break-glass path.
-              Discord, when available, is offered as a clearly secondary option
-              below it -- never above it. */}
-          {passwordFields}
-          {!totpRequired && (
-            discordSignInAvailable ? (
-              <a className="login-discord-button login-discord-button-secondary" href="/api/auth/discord/start">
-                <DiscordLogo size={17} aria-hidden="true" /> Sign in with Discord
+          {/* Predominance flips by state. While Discord is opt-in and not yet
+              configured, the password leads and Discord is a secondary "set it
+              up" option. Once configured, Discord is the primary sign-in (most
+              people have only Discord) and the password becomes the secondary,
+              break-glass path -- revealed on demand, never a second factor on
+              top of Discord. */}
+          {discordSignInAvailable && !totpRequired ? (
+            <>
+              <a className="login-discord-button login-discord-button-primary" href="/api/auth/discord/start">
+                <DiscordLogo size={19} aria-hidden="true" /> Sign in with Discord
               </a>
-            ) : discordPendingRestart ? (
-              <p className="muted">Discord sign-in is set up — restart the console to switch it on.</p>
-            ) : wantDiscordSetup ? (
-              <p className="muted">Enter the admin password above to set up Discord sign-in. <button type="button" className="login-password-toggle" onClick={() => setWantDiscordSetup(false)}>cancel</button></p>
-            ) : (
-              <button type="button" className="login-discord-button login-discord-button-secondary" onClick={() => setWantDiscordSetup(true)}>
-                <DiscordLogo size={17} aria-hidden="true" /> Set up Discord sign-in
+              <button type="button" className="login-password-toggle" onClick={() => setShowPasswordLogin(!showPasswordLogin)}>
+                {showPasswordLogin ? "Hide the admin password" : "Use the admin password instead"}
               </button>
-            )
+              {showPasswordLogin && passwordFields}
+            </>
+          ) : (
+            <>
+              {passwordFields}
+              {!totpRequired && (
+                discordPendingRestart ? (
+                  <p className="muted">Discord sign-in is set up — restart the console to switch it on.</p>
+                ) : wantDiscordSetup ? (
+                  <p className="muted">Enter the admin password above to set up Discord sign-in. <button type="button" className="login-password-toggle" onClick={() => setWantDiscordSetup(false)}>cancel</button></p>
+                ) : (
+                  <button type="button" className="login-discord-button login-discord-button-secondary" onClick={() => setWantDiscordSetup(true)}>
+                    <DiscordLogo size={17} aria-hidden="true" /> Set up Discord sign-in
+                  </button>
+                )
+              )}
+            </>
           )}
           {error && <p className="error">{error === AUTH_SESSION_EXPIRED_MESSAGE
             ? <>Your browser login session expired.<br />Sign in again to continue.</>
