@@ -567,13 +567,12 @@ test("guided setup: password first -- anonymous cannot start; the owner's round-
     assert.deepEqual(identity.guilds.map((g) => [g.name, g.owner]), [["Fleetyard", true], ["Elsewhere", false]]);
     const fin = (body) => fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-finalize`, { method: "POST", headers: H, body: JSON.stringify(body) });
 
-    let r = await fin({ adminPassword: "nope", guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE });
-    assert.equal(r.status, 400); assert.match((await r.json()).error, /admin password is incorrect/);
-    r = await fin({ adminPassword: "correct-password", guildId: "123456789012345678", adminRoleIds: ADMIN_ROLE });
+    // No password here: the owner session is the proof, plus guild ownership.
+    let r = await fin({ guildId: "123456789012345678", adminRoleIds: ADMIN_ROLE });
     assert.equal(r.status, 403); assert.match((await r.json()).error, /do not own Elsewhere/);
-    r = await fin({ adminPassword: "correct-password", guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE, moderatorRoleIds: ADMIN_ROLE });
+    r = await fin({ guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE, moderatorRoleIds: ADMIN_ROLE });
     assert.equal(r.status, 400, "separation of duties applies here too");
-    r = await fin({ adminPassword: "correct-password", guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE, playerRoleIds: PLAYER_ROLE, requireMfa: true });
+    r = await fin({ guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE, playerRoleIds: PLAYER_ROLE, requireMfa: true });
     const okText = await r.text();
     assert.equal(r.status, 200, okText);
     const ok = JSON.parse(okText);
@@ -585,5 +584,7 @@ test("guided setup: password first -- anonymous cannot start; the owner's round-
     // The captured identity is consumed; the owner session itself lives on.
     assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-identity`, { headers: H })).status, 404);
     assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, { headers: H })).status, 200);
+    // Anonymous finalize is refused outright (owner session required).
+    assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-finalize`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401);
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });

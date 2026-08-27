@@ -5702,12 +5702,12 @@ function publicDirectorySettings() {
   };
 }
 
-// Completes the guided Discord setup from an OWNER session: the admin password
-// again as fresh proof (enabling a sign-in method is a credential change, same
-// rule as rotating the password), the chosen server (which the captured
-// identity must OWN, so Owner is the person doing the setup), and the role
-// mapping. Writes the same keys as writeOAuthConfig, then ends a setup-scope
-// session; an owner session stays.
+// Completes the guided Discord setup from an OWNER session. No password here:
+// authorization is the owner session itself (which was created by entering the
+// password to START setup), plus the requirement that the captured Discord
+// identity OWNS the chosen server -- so the person turning this on is the
+// server's owner and becomes the console Owner. The console password is the
+// break-glass path, not a step in this flow.
 async function discordSetupFinalize(req, res, session) {
   const auditUrl = sanitizedUrl(req, "/api/setup/discord-finalize");
   const deny = (status, payload, reason) => { audit(config, auditUrl, "setup.discord-finalize", { ok: false, reason }); return json(res, status, payload); };
@@ -5716,14 +5716,6 @@ async function discordSetupFinalize(req, res, session) {
   if (!config.authDisabled && req.headers["x-csrf-token"] !== session.csrf) return deny(403, { error: "Your setup session expired. Start Discord setup again." }, "csrf");
   const captured = session.pendingDiscordSetup;
   if (!captured) return deny(400, { error: "Continue with Discord first." }, "no_identity");
-  const rateKey = loginRateLimitKey(req);
-  const rate = credentialProofRateLimiter.check(rateKey);
-  if (!rate.allowed) return deny(429, { error: "Too many attempts. Please wait a few minutes, then try again." }, "rate_limited");
-  if (config.authDisabled ? false : !auth.passwordMatches(String(body.adminPassword ?? ""))) {
-    credentialProofRateLimiter.recordFailure(rateKey);
-    return deny(400, { error: "The admin password is incorrect." }, "bad_password");
-  }
-  credentialProofRateLimiter.recordSuccess(rateKey);
   const guildId = String(body.guildId || "").trim();
   const guild = captured.guilds.find((g) => g.id === guildId);
   if (!guild) return deny(400, { error: "Choose one of your Discord servers." }, "guild_not_in_list");

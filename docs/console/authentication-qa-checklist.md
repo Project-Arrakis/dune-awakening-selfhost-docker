@@ -390,7 +390,7 @@ have Discord 2FA **off** for T31.
 
 **Expected**
 - Discord's authorization screen names the application and asks for: who you are, your servers, your roles in a server. After **Authorize** you land back on the setup screen **not** signed in to the console as Discord; it shows *Signed in to Discord as <you>*, your server preselected and marked *you own this server*, and *You own <server>, so you are the console Owner.*
-4. Fill **Admin Role** only. Leave the two-factor box ticked. Enter the admin password again. **Turn on Discord sign-in**. `dune console restart`.
+4. Fill **Admin Role** only. Leave the two-factor box ticked (it is about each person's *Discord account* 2FA, not the console password). **Turn on Discord sign-in** — no password prompt. `dune console restart`.
 
 **Expected**
 - *Done. <server> is connected and <you> is the Owner…* After restart the sign-in page shows **Sign in with Discord** as the main button and **Use the admin password instead** beneath it.

@@ -760,7 +760,7 @@ export function App() {
   }
 
   if (auth && discordSetupOpen) {
-    return <DiscordSetupWizard appConfigured={discordAppConfigured} onDone={() => { setDiscordSetupOpen(false); void post("/api/auth/logout").catch(() => {}); setCsrfToken(null); setAuth(false); setPassword(""); }} onCancel={() => setDiscordSetupOpen(false)} />;
+    return <DiscordSetupWizard onDone={() => { setDiscordSetupOpen(false); void post("/api/auth/logout").catch(() => {}); setCsrfToken(null); setAuth(false); setPassword(""); }} onCancel={() => setDiscordSetupOpen(false)} />;
   }
 
   if (!auth) {

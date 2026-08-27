@@ -242,8 +242,9 @@ enter them once on the setup screen. After that you never see it again.
 4. Type the role IDs — Admin (required), Moderator and Player (optional). Leave
    *Require two-factor on the Discord account for Owner and Admin* ticked
    unless you have a reason not to.
-5. Enter the admin password once more to confirm (the same fresh-proof rule as
-   changing the password), then `dune console restart` on the host.
+5. Save, then `dune console restart` on the host. No password again — you
+   already proved you are the owner when you started, and Discord is now your
+   primary sign-in; the admin password is the break-glass path.
 
 From then on the sign-in page shows **Sign in with Discord** as the main
 button, with **Use the admin password instead** beneath it — that is your way
