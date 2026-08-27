@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { resolvedAllowedActions, nsFromAction } from "./iamPolicy";
+import { resolvedAllowedActions, nsFromAction, type PolicyStatement } from "./iamPolicy";
 
 // Pins the two rules the IAM editor must mirror from console/api/src/policy.js
 // (#529): explicit Deny beats Allow, and grouping follows the IAM action's
@@ -19,14 +19,14 @@ const actionMap: Record<string, string> = {
 
 describe("IAM editor mirrors the server's policy decision", () => {
   // This is the default admin policy's actual shape.
-  const adminLike = [
+  const adminLike: PolicyStatement[] = [
     { Effect: "Allow", Action: ["setup:*", "server:*", "players:*"] },
     { Effect: "Deny", Action: ["settings:*"] },
   ];
 
   it("does not show a Deny'd action as granted", () => {
     const allowed = resolvedAllowedActions(
-      [{ Effect: "Allow", Action: ["*"] }, ...adminLike.filter((s) => s.Effect === "Deny")],
+      ([{ Effect: "Allow", Action: ["*"] }, ...adminLike.filter((s) => s.Effect === "Deny")] as PolicyStatement[]),
       actionMap
     );
     expect(allowed.has(REGENERATE)).toBe(false);
@@ -36,12 +36,12 @@ describe("IAM editor mirrors the server's policy decision", () => {
   it("still grants what Allow covers and Deny does not", () => {
     const allowed = resolvedAllowedActions(adminLike, actionMap);
     expect(allowed.has("GET /api/care-package/capabilities")).toBe(false); // not in Allow
-    expect(resolvedAllowedActions([{ Effect: "Allow", Action: ["carepackage:*"] }], actionMap)
+    expect(resolvedAllowedActions([{ Effect: "Allow", Action: ["carepackage:*"] }] as PolicyStatement[], actionMap)
       .has("GET /api/care-package/capabilities")).toBe(true);
   });
 
   it("owner's Allow * grants everything when nothing denies", () => {
-    const allowed = resolvedAllowedActions([{ Effect: "Allow", Action: ["*"] }], actionMap);
+    const allowed = resolvedAllowedActions([{ Effect: "Allow", Action: ["*"] }] as PolicyStatement[], actionMap);
     expect(allowed.has(REGENERATE)).toBe(true);
   });
 
