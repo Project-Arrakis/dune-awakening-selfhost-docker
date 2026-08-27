@@ -41,7 +41,7 @@ import { useStaleBuildWatcher } from "./lib/staleBuildWatcher";
 // The array is the source of truth (not just a type-level union) so restoring
 // a persisted tab (see loadPersistedTab below) can validate against the real,
 // current list at runtime instead of a hand-duplicated copy that could drift.
-export const ALL_TABS = ["Home", "Server Control", "Services", "Players", "Guilds", "Bases", "Vehicles", "Exchange", "Landsraad", "Admin Tools", "Live Map", "Maps", "Care Package", "Addons", "Database", "Storage", "Backups", "Logs", "Updates", "Settings"] as const;
+export const ALL_TABS = ["Home", "Server Control", "Services", "Players", "Guilds", "Bases", "Vehicles", "Exchange", "Landsraad", "Admin Tools", "Live Map", "Maps", "Care Package", "Addons", "Database", "Storage", "Backups", "Logs", "Updates", "Settings", "Access Control"] as const;
 type Tab = typeof ALL_TABS[number];
 const ACTIVE_TAB_STORAGE_KEY = "dune-console:active-tab";
 
@@ -96,6 +96,7 @@ let openConfirmDialog: ((request: ConfirmDialogRequest) => void) | null = null;
 
 const AddonsPanel = lazy(() => import("./features/addons/AddonsPanel").then((module) => ({ default: module.AddonsPanel })));
 const AdminToolsPanel = lazy(() => import("./features/adminTools/AdminToolsPanel").then((module) => ({ default: module.AdminToolsPanel })));
+const IamPolicyEditor = lazy(() => import("./features/settings/IamPolicyEditor").then((module) => ({ default: module.IamPolicyEditor })));
 const BasesPanel = lazy(() => import("./features/bases/BasesPanel").then((module) => ({ default: module.BasesPanel })));
 const BackupsPanel = lazy(() => import("./features/backups/BackupsPanel").then((module) => ({ default: module.BackupsPanel })));
 const CarePackagePanel = lazy(() => import("./features/carePackage/CarePackagePanel").then((module) => ({ default: module.CarePackagePanel })));
@@ -278,7 +279,8 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode }[] }
       { tab: "Database", icon: <Database size={18} /> },
       { tab: "Updates", icon: <RefreshCw size={18} /> },
       { tab: "Logs", icon: <FileText size={18} /> },
-      { tab: "Settings", icon: <Settings size={18} /> }
+      { tab: "Settings", icon: <Settings size={18} /> },
+      { tab: "Access Control", icon: <Shield size={18} /> }
     ]
   },
   {
@@ -921,7 +923,7 @@ export function App() {
           {navGroups.map((group) => (
             <section className="sidebar-nav-group" key={group.title} aria-label={group.title}>
               <p className="sidebar-nav-heading">{group.title}</p>
-              {group.items.filter((item) => item.tab !== "Settings" || allowedActions.length === 0 || allowedActions.some((a) => a === "settings:read" || a.startsWith("settings:"))).map((item) => (
+              {group.items.filter((item) => (item.tab !== "Settings" && item.tab !== "Access Control") || allowedActions.length === 0 || allowedActions.some((a) => a === "settings:read" || a.startsWith("settings:"))).map((item) => (
                 <Fragment key={item.tab}>
                   <button className={tab === item.tab && (!selectedPinnedAddonId || item.tab !== "Addons") ? "active" : ""} onClick={() => {
                     setRedeploySetupOpen(false);
@@ -1025,6 +1027,7 @@ export function App() {
             formatResultTitle={formatResultTitle}
             formatResultMessage={formatResultMessage}
           /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Access Control" && <LazyTabBoundary label="Loading Access Control"><IamPolicyEditor /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Settings" && <LazyTabBoundary label="Loading Settings"><SettingsPanel
           onPasswordChanged={logoutAfterPasswordChange}
           publicListingUrl={publicDirectoryStatus?.serverId ? publicServerListingUrl(publicDirectoryStatus.serverId) : undefined}
