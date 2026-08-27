@@ -208,9 +208,11 @@ does **not** change password sign-in — it adds a second button.
   one owner per server, and the console takes that as the truth; there is no
   owner setting anywhere.
 - A Discord application: https://discord.com/developers/applications — create
-  one, or reuse the one your bot uses. You will need its **Client ID** and a
-  **Client Secret**, and you will register a Redirect URI that the setup screen
-  shows you.
+  one, or reuse the one your bot uses. Copy its **Client ID** and a **Client
+  Secret**, and under the application's **OAuth2** settings add your console's
+  callback as a redirect URI: `https://<your-console-host>/api/auth/discord/callback`.
+  Registering the application is a one-time **deployment** step done in `.env`
+  (below), the same as a bot token — the sign-in flow never asks anyone for it.
 - Role IDs from your server, for the access levels below. Turn on Developer
   Mode in Discord (User Settings → Advanced), then right-click a role → **Copy
   Role ID**.
@@ -227,32 +229,64 @@ does **not** change password sign-in — it adds a second button.
 
 ### Turning it on — the guided setup
 
-The application is deployment configuration, like a bot's: put its Client ID,
-Client Secret and Redirect URI in `.env` (see `.env.example`) and restart, or
-enter them once on the setup screen. After that you never see it again.
+**First, the one-time deployment step** (skip if the application is already in
+`.env`): on the host, set these three in `.env` and run `dune console restart`:
+
+```ini
+DISCORD_OAUTH_CLIENT_ID=<the application's Client ID>
+DISCORD_OAUTH_CLIENT_SECRET=<its Client Secret>   # or put it in runtime/secrets/discord-oauth-client-secret.txt (chmod 600)
+DISCORD_OAUTH_REDIRECT_URI=https://<your-console-host>/api/auth/discord/callback
+```
+
+The setup screen shows you the exact redirect URI to register (with a copy
+button) if you have not done it yet. There is no client-ID or secret field in
+the browser — the application is deployment config, never something the sign-in
+flow collects.
+
+**Then, the guided part** (the console owner, in a browser):
 
 1. On the sign-in page, click **Set up Discord sign-in** and enter the admin
    password. Only the console owner can connect Discord — without this step,
    anyone who owns some Discord server could point your console at it.
 2. Click **Continue with Discord**. Discord asks you to authorize the
    application; nothing is signed in yet. You come back with everything Discord
-   can tell the console already filled in: who you are, your servers, and which
-   one you own — that one makes you the console **Owner**.
-3. Pick your server (the one marked *you own this server*).
+   can tell the console already filled in: who you are and the server you own —
+   that server makes you the console **Owner**.
+3. Your server is chosen for you (only servers you own are offered; if you own
+   more than one, pick it).
 4. Type the role IDs — Admin (required), Moderator and Player (optional). Leave
-   *Require two-factor on the Discord account for Owner and Admin* ticked
-   unless you have a reason not to.
-5. Save, then `dune console restart` on the host. No password again — you
-   already proved you are the owner when you started, and Discord is now your
-   primary sign-in; the admin password is the break-glass path.
+   **Require two-factor for Owner and Admin** ticked unless you have a reason
+   not to (it uses each person's own Discord-account 2FA, not the console
+   password).
+5. Click **Turn on Discord sign-in**. No password again — you already proved
+   you are the owner when you started.
+6. On the "done" screen, click **Restart the console now** — the console
+   rebuilds and restarts itself, then reloads you into the new sign-in page.
+   (Prefer to do it by hand? Run `dune console restart` on the host instead.)
 
-From then on the sign-in page shows **Sign in with Discord** as the main
-button, with **Use the admin password instead** beneath it — that is your way
-back in if Discord is ever unavailable, so keep the password (and, ideally,
-the authenticator from earlier in this guide).
+Once Discord is on, the sign-in page leads with **Sign in with Discord**, and
+the admin password moves to a secondary **Use the admin password instead**
+link beneath it — your break-glass path if Discord is ever unavailable, so keep
+the password (and, ideally, the authenticator from earlier in this guide).
+Signing in with Discord never asks for the console password; the two are
+independent methods, not a password-plus-Discord combination.
 
 You can change the role mapping or the two-factor option later under
 **Settings → Discord OAuth**, or run the guided setup again from there.
+
+### Managing access afterwards
+
+- **Settings → Discord OAuth** — change which Discord role maps to Admin,
+  Moderator or Player, or the two-factor requirement, after setup. (There is no
+  owner field: the owner is always the Discord server's owner.) Changes take a
+  `dune console restart` to load.
+- **Access Control** (sidebar, owner only) — edit what each tier is actually
+  allowed to do. The console ships sensible defaults (Admin runs the server but
+  cannot reach Settings or the database; Moderator and Player are read-plus a
+  little), so most operators never need this. When you do want to tune a tier —
+  say, let Admins export the database — this is where you do it, per tier,
+  per action. It is hidden from everyone below owner, because deciding
+  who-can-do-what is an owner's job, not an admin's.
 
 ### What people will see
 
@@ -263,9 +297,7 @@ them. Tabs they may not use are hidden; the server refuses them regardless.
 
 If they are refused, the page tells them why in plain words: not a member of
 the server, no mapped role, or — with the 2FA option on — their Discord account
-has no two-factor enabled (with the Discord setting to fix that). A message
-saying Discord sign-in *"is not finished being set up"* means no server was
-chosen — finish the guided setup.
+has no two-factor enabled (and names the Discord setting to fix it).
 
 ### Things to know
 

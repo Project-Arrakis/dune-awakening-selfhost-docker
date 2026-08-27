@@ -377,7 +377,7 @@ callback registered, Developer Mode on to copy IDs. One of the accounts must
 have Discord 2FA **off** for T31.
 
 ### T26 · Guided setup, as an operator would
-*Host precondition:* the application is in `.env` (`DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_CLIENT_SECRET` or the secret file, `DISCORD_OAUTH_REDIRECT_URI`), console restarted. (If it is not, the setup screen asks the owner for them once — also worth a pass.)
+*Host precondition:* the Discord application is in `.env` (`DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_CLIENT_SECRET` or the secret file, `DISCORD_OAUTH_REDIRECT_URI`), console restarted. (If it is not, the setup screen shows the `.env` keys to set and restart — there is **no** client-ID/secret form in the browser; worth a pass too.)
 1. On the sign-in page click **Set up Discord sign-in**.
 
 **Expected**
@@ -390,10 +390,14 @@ have Discord 2FA **off** for T31.
 
 **Expected**
 - Discord's authorization screen names the application and asks for: who you are, your servers, your roles in a server. After **Authorize** you land back on the setup screen **not** signed in to the console as Discord; it shows *Signed in to Discord as <you>*, your server preselected and marked *you own this server*, and *You own <server>, so you are the console Owner.*
-4. Fill **Admin Role** only. Leave the two-factor box ticked (it is about each person's *Discord account* 2FA, not the console password). **Turn on Discord sign-in** — no password prompt. `dune console restart`.
+4. Fill **Admin Role** only. Leave the two-factor box ticked (it is about each person's *Discord account* 2FA, not the console password). **Turn on Discord sign-in** — no password prompt.
 
 **Expected**
-- *Done. <server> is connected and <you> is the Owner…* After restart the sign-in page shows **Sign in with Discord** as the main button and **Use the admin password instead** beneath it.
+- *Done. <server> is connected and <you> is the Owner…* with a **Restart the console now** button (and `dune console restart` offered as the manual alternative).
+5. Click **Restart the console now**.
+
+**Expected**
+- The page shows it is restarting, reconnects on its own in ~10–20s, and reloads to a sign-in page that now leads with **Sign in with Discord**, the admin password moved to a secondary **Use the admin password instead** link.
 
 ### T27 · Role → tier, highest wins
 1. Give account A the Admin role, account B the Player role (map Player Role in Settings first), account C both.
