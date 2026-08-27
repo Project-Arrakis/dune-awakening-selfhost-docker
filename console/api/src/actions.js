@@ -248,7 +248,12 @@ export const ROUTE_ACTIONS = {
   "GET /api/care-package/eligible":            "carepackage:read",
   "POST /api/care-package/config":             "carepackage:write-config",
   "POST /api/care-package/history/clear":      "carepackage:clear-history",
-  "POST /api/care-package/grant-eligible":     "carepackage:grant",
+  // Its own action, narrower than carepackage:grant (#219). Per-player grants
+  // stay at carepackage:grant; this one hits EVERY eligible player at once, so
+  // it needs to be separately deniable. Same precedent as the base-container
+  // give/fill/bulk-delete routes, which resolve to their own narrow actions
+  // rather than a broad bases:mutate.
+  "POST /api/care-package/grant-eligible":     "carepackage:grant-all",
   "POST /api/care-package/run":                "carepackage:scan",
   "POST /api/care-package/enable":             "carepackage:write-config",
   "POST /api/care-package/disable":            "carepackage:write-config",
