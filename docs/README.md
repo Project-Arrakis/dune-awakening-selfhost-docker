@@ -50,6 +50,7 @@ by nature, so it gets its own.
 - [API-REFERENCE.md](console/API-REFERENCE.md) — Current. Full HTTP API reference for every console endpoint.
 - [authentication-upgrade-guide.md](console/authentication-upgrade-guide.md) — Current. **Start here if you already run the console.** How to turn on password + authenticator-app sign-in on an existing install: what to prepare, what each step looks like on screen, how to manage it afterwards, and what to do when something goes wrong.
 - [two-factor-recovery.md](console/two-factor-recovery.md) — Current. The lockout cases for authenticator sign-in, including the host-side reset when both the phone and the recovery codes are gone.
+- [authentication-qa-checklist.md](console/authentication-qa-checklist.md) — Current. Manual end-user test plan for authenticator sign-in: 25 cases a person runs in a real browser with a real phone, with expected on-screen text and a results table.
 - [blueprints.md](console/blueprints.md) — Current. Blueprint import/export developer documentation.
 - [PRE-AUGMENTED-GEAR.md](console/PRE-AUGMENTED-GEAR.md) — Current. API reference for granting gear with augments pre-applied.
 - [generator-fuel-burn-rates.md](console/generator-fuel-burn-rates.md) — Current. Per-generator fuel burn constants and where they live in code.
