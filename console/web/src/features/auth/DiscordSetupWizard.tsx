@@ -28,6 +28,7 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState<{ guild: string; owner: string } | null>(null);
+  const [restarting, setRestarting] = useState(false);
 
   // Learn the host's state on mount, and every time it might have changed. Both
   // probes are unconditional -- NOT gated on a URL param -- so a refresh at any
@@ -75,6 +76,27 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
       setDone({ guild: res.guild.name, owner: res.owner.username });
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(false); }
+  }
+
+  async function restartNow() {
+    setRestarting(true); setError("");
+    try {
+      await post("/api/setup/discord-restart", {});
+    } catch { /* the container may drop the connection mid-response; that is expected */ }
+    // Poll health: it dips while the container recreates, then returns. When it
+    // is back and Discord now reads as configured, reload into the new sign-in.
+    let downSeen = false;
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const res = await fetch("/api/auth/state", { cache: "no-store" });
+        const cfg = res.ok ? (await res.json()).config : null;
+        if (!downSeen) { /* wait until we have seen it go down at least once, so we don't reload before the restart takes */ }
+        if (downSeen && cfg?.discordOAuthConfigured) { window.location.replace("/"); return; }
+      } catch { downSeen = true; }
+    }
+    setRestarting(false);
+    setError("The console did not come back automatically. Run `dune console restart` on the host, then reload this page.");
   }
 
   // Derived step -- the fix for the loop. identity present => map; else app
@@ -135,11 +157,17 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
         )}
 
         {step === "done" && done && (
-          <p className="attention-text">Done. <strong>{done.guild}</strong> is connected and <strong>{done.owner}</strong> is the Owner. Run <code>dune console restart</code> on the host; after it comes back, the sign-in page shows <strong>Sign in with Discord</strong>, with the admin password beneath it as the way back in.</p>
+          <>
+            <p className="attention-text">Done. <strong>{done.guild}</strong> is connected and <strong>{done.owner}</strong> is the Owner. One restart applies it — then the sign-in page shows <strong>Sign in with Discord</strong>, with the admin password beneath it as the way back in.</p>
+            {restarting
+              ? <p className="loading-dots">Restarting the console — this page will reconnect shortly</p>
+              : <button type="button" className="login-primary-button" onClick={() => { void restartNow(); }}>Restart the console now</button>}
+            <p className="muted">Prefer to do it yourself? Run <code>dune console restart</code> on the host instead.</p>
+          </>
         )}
 
         {error && <p className="error">{error}</p>}
-        <button type="button" className="login-password-toggle" onClick={done ? onDone : onCancel}>{done ? "Back to sign in" : "Cancel"}</button>
+        {!restarting && <button type="button" className="login-password-toggle" onClick={done ? onDone : onCancel}>{done ? "Back to sign in" : "Cancel"}</button>}
       </section>
     </main>
   );

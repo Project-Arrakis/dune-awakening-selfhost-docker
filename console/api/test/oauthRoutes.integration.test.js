@@ -578,6 +578,10 @@ test("guided setup: anonymous cannot start; the owner round-trip mints no sessio
     assert.equal(r.status, 200, okText);
     const ok = JSON.parse(okText);
     assert.equal(ok.guild.name, "Fleetyard"); assert.equal(ok.owner.id, USER_ID); assert.equal(ok.restartRequired, true);
+    // The sign-in page now reports "configured -- restart pending" (not the
+    // setup entry), so an operator between finalize and restart is not looped.
+    const afterState = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/state`)).json();
+    assert.equal(afterState.config.discordSetupPendingRestart, true);
     const env = readFileSync(join(tempDir, ".env"), "utf8");
     assert.match(env, new RegExp(`^DISCORD_HOME_GUILD_ID="?${HOME_GUILD}"?$`, "m"));
     assert.match(env, new RegExp(`^DISCORD_CONSOLE_ADMIN_ROLE_IDS="?${ADMIN_ROLE}"?$`, "m"));

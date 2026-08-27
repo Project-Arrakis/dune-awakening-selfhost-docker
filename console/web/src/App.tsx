@@ -373,6 +373,7 @@ export function App() {
   // OAuth application is fully configured; the button is otherwise absent.
   const [discordSignInAvailable, setDiscordSignInAvailable] = useState(false);
   const [discordAppConfigured, setDiscordAppConfigured] = useState(false);
+  const [discordPendingRestart, setDiscordPendingRestart] = useState(false);
   // Guided first-run setup: opened from the sign-in page (after the password),
   // or automatically when returning from the setup-mode Discord round-trip.
   const [discordSetupOpen, setDiscordSetupOpen] = useState(() => new URLSearchParams(window.location.search).has("discordSetup"));
@@ -468,10 +469,11 @@ export function App() {
   }, [pinnedAddons]);
 
   useEffect(() => {
-    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean; discordOAuthAppConfigured?: boolean; ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
+    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean; discordOAuthAppConfigured?: boolean; discordSetupPendingRestart?: boolean; ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
       setAuth(state.authenticated);
       setDiscordSignInAvailable(Boolean(state.config?.discordOAuthConfigured));
       setDiscordAppConfigured(Boolean(state.config?.discordOAuthAppConfigured));
+      setDiscordPendingRestart(Boolean(state.config?.discordSetupPendingRestart));
       setCsrfToken(state.csrfToken);
       setServerPorts(state.config?.ports);
       setAdminPort(state.config?.port);
@@ -760,7 +762,7 @@ export function App() {
   }
 
   if (auth && discordSetupOpen) {
-    return <DiscordSetupWizard onDone={() => { setDiscordSetupOpen(false); void post("/api/auth/logout").catch(() => {}); setCsrfToken(null); setAuth(false); setPassword(""); }} onCancel={() => setDiscordSetupOpen(false)} />;
+    return <DiscordSetupWizard onDone={() => { setDiscordSetupOpen(false); setWantDiscordSetup(false); setShowPasswordLogin(false); void post("/api/auth/logout").catch(() => {}); setCsrfToken(null); setAuth(false); setPassword(""); }} onCancel={() => { setDiscordSetupOpen(false); setWantDiscordSetup(false); setShowPasswordLogin(false); }} />;
   }
 
   if (!auth) {
@@ -824,6 +826,11 @@ export function App() {
                 {showPasswordLogin ? "Hide the admin password" : "Use the admin password instead"}
               </button>
               {showPasswordLogin && passwordFields}
+            </>
+          ) : discordPendingRestart && !totpRequired ? (
+            <>
+              <p className="muted">Discord sign-in is set up. An operator needs to run <code>dune console restart</code> on the host to switch it on — until then, sign in with the admin password.</p>
+              {passwordFields}
             </>
           ) : (
             <>

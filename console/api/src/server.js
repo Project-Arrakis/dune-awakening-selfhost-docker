@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { totalmem } from "node:os";
 import { spawn } from "node:child_process";
-import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync } from "node:fs";
+import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig, publicConfig, parseAllowedIps, resolvePorts } from "./config.js";
 import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders, parseCookies } from "./auth.js";
@@ -93,6 +93,10 @@ try {
   console.warn(`EDA Exchange Bot retirement deferred: ${redact(error?.message || "Unexpected error.")}`);
 }
 loadPolicies(config.repoRoot);
+// Discord setup took effect on this boot: drop the "restart pending" marker.
+if (config.discordOAuthConfigured) {
+  try { const m = resolve(config.generatedDir, "discord-setup-pending-restart"); if (existsSync(m)) unlinkSync(m); } catch { /* ignore */ }
+}
 const auth = createAuth(config);
 // One second-factor store instance for the process (the store enforces this;
 // constructing a second one for the same file would defeat serialization).
@@ -703,7 +707,12 @@ async function handleApi(req, res) {
   if (path === "/api/health") return json(res, 200, { ok: true, app: config.appName });
   if (path === "/api/auth/state") {
     const session = auth.readSession(req);
-    return json(res, 200, { authenticated: Boolean(session), csrfToken: session?.csrf || null, config: publicConfig(config) });
+    // Live, not baked into publicConfig: true when setup wrote a config the
+    // running process has not loaded yet (it reads .env only at boot). Lets the
+    // sign-in page show "configured -- restart pending" rather than re-offer
+    // setup, which is the loop an operator hits between finalize and restart.
+    const discordSetupPendingRestart = !config.discordOAuthConfigured && existsSync(resolve(config.generatedDir, "discord-setup-pending-restart"));
+    return json(res, 200, { authenticated: Boolean(session), csrfToken: session?.csrf || null, config: { ...publicConfig(config), discordSetupPendingRestart } });
   }
   if (path === "/api/auth/login" && req.method === "POST") {
     const loginUrl = sanitizedUrl(req, "/api/auth/login");
@@ -1028,6 +1037,15 @@ async function handleApi(req, res) {
   if (path === "/api/setup/save-token" && req.method === "POST") return saveToken(req, res);
   if (path === "/api/setup/save-oauth-secret" && req.method === "POST") return saveOAuthClientSecret(req, res);
   if (path === "/api/setup/discord-finalize" && req.method === "POST") return discordSetupFinalize(req, res, session);
+  if (path === "/api/setup/discord-restart" && req.method === "POST") {
+    // Reuses the same self-recreate the web-port change uses (a detached helper
+    // container rebuilds and brings this one back), so an operator can finish
+    // Discord setup without touching the host. Owner-only via the setup:write
+    // gate above.
+    audit(config, sanitizedUrl(req, "/api/setup/discord-restart"), "setup.discord-restart", { ok: true, ...({ tier: session.tier || "owner" }) });
+    scheduleConsoleRestart(config.port);
+    return json(res, 202, { ok: true, message: "The console is restarting. This page will reconnect in about 10-20 seconds." });
+  }
   if (path === "/api/setup/discord-identity" && req.method === "GET") {
     // The wizard's server picker. Only ever the identity captured by THIS
     // session's own setup round-trip; never anyone else's, never persisted.
@@ -5739,6 +5757,10 @@ async function discordSetupFinalize(req, res, session) {
   });
   if (conflicts.length) return deny(400, { error: `Each Discord role can map to only one access level -- ${describeRoleTierConflicts(conflicts)}.` }, "role_mapping_unsound");
   for (const [key, value] of Object.entries(fields)) updateEnvFileValue(key, value);
+  // A live marker so the sign-in page can say "configured, restart pending"
+  // instead of showing the setup entry again (which loops). config reads .env
+  // only at boot; boot removes this marker once discordOAuthConfigured is true.
+  try { writeFileSync(resolve(config.generatedDir, "discord-setup-pending-restart"), `${guildId}\n`, { mode: 0o600 }); } catch { /* best effort */ }
   audit(config, auditUrl, "setup.discord-finalize", { ok: true, guildId, userId: captured.userId, keys: Object.keys(fields) });
   delete session.pendingDiscordSetup;
   return json(res, 200, { ok: true, guild: { id: guild.id, name: guild.name }, owner: { id: captured.userId, username: captured.username }, restartRequired: true });
