@@ -89,8 +89,13 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
       setSecondFactorEnrolled(Boolean(me.secondFactorEnrolled));
       setSecondFactorUnavailable(Boolean(me.secondFactorUnavailable));
     } catch {
-      // Unknown, not "no". Treat it the same as an unreadable store so the
-      // panel says so instead of quietly offering a form the server will reject.
+      // Unknown, not "no". Mirror the server's canonical unknown shape --
+      // {enrolled:false, unavailable:true}, BOTH flags (#547). Setting only
+      // `unavailable` left `enrolled` stale from an earlier success, producing
+      // {enrolled:true, unavailable:true}, which the server never emits: the
+      // panel then rendered the "state could not be read" banner AND the
+      // interactive regenerate form it had just declared unavailable.
+      setSecondFactorEnrolled(false);
       setSecondFactorUnavailable(true);
     }
   }

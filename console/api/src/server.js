@@ -897,12 +897,20 @@ async function handleApi(req, res) {
     // not throw -- an unreadable store must not take the console down -- but it
     // now says "unknown", not "no".
     let secondFactorEnrolled = false;
-    let secondFactorUnavailable = false;
+    // NOT named `secondFactorUnavailable` (#547): that is the module-level 503
+    // helper, and a local `let` of the same name shadows it for this whole
+    // block. Nothing here calls it today -- /me deliberately swallows the throw
+    // -- but the two credential routes established the pattern
+    // `catch (err) { secondFactorUnavailable(res, auditUrl, req, err, ...) }`,
+    // so a maintainer later hardening /me from "silently unknown" to
+    // "audit + 503" would reach for that name and get
+    // `TypeError: secondFactorUnavailable is not a function` on an auth surface.
+    let factorStoreUnavailable = false;
     if (config.consoleTotpEnabled && !config.authDisabled) {
       try {
         secondFactorEnrolled = await secondFactor.isConfigured();
       } catch {
-        secondFactorUnavailable = true;
+        factorStoreUnavailable = true;
       }
     }
     return json(res, 200, {
@@ -915,7 +923,7 @@ async function handleApi(req, res) {
       scope: session.scope || null,
       linkedCharacters,
       secondFactorEnrolled,
-      secondFactorUnavailable,
+      secondFactorUnavailable: factorStoreUnavailable,
       allowedActions: SETUP_SCOPES.has(session.scope) ? [] : resolveAllowedActions(session.tier || "owner")
     });
   }
@@ -2317,21 +2325,34 @@ function validateDatabasePassword(value) {
 async function adminPasswordRoute(req, res) {
   const session = req.authSession;
   const auditUrl = sanitizedUrl(req, "/api/settings/admin-password");
+  const ACTION = "settings.change-admin-password";
   const actor = { tier: session?.tier || "owner", userId: session?.userId || "local-owner" };
+  // Same deny() shape as the sibling regenerate route (#547). #544 extracted the
+  // shared preamble so the two routes would behave identically and then stopped
+  // at this caller's edges: these three pre-proof refusals audited nothing,
+  // while the sibling routed the equivalent cases through its own deny().
+  const deny = (status, payload, reason) => {
+    audit(config, auditUrl, ACTION, { ok: false, ...actor, reason });
+    return json(res, status, payload);
+  };
   const body = await readJson(req);
   // readJson returns raw JSON.parse output, so a literal `null` body used to
   // throw a TypeError and surface as a 500 with an internal JS message (#527).
   if (!body || typeof body !== "object" || Array.isArray(body)) {
-    return json(res, 400, { error: "Request body must be a JSON object." });
+    return deny(400, { error: "Request body must be a JSON object." }, "malformed_body");
   }
-  if (config.authDisabled) return json(res, 400, { error: "Login password changes are unavailable while admin authentication is disabled." });
-  if (config.adminPasswordEnvManaged) return json(res, 400, { error: "The login password is managed by ADMIN_PASSWORD. Update the environment value instead." });
+  if (config.authDisabled) {
+    return deny(400, { error: "Login password changes are unavailable while admin authentication is disabled." }, "auth_disabled");
+  }
+  if (config.adminPasswordEnvManaged) {
+    return deny(400, { error: "The login password is managed by ADMIN_PASSWORD. Update the environment value instead." }, "env_managed");
+  }
   // RFC §2.3/§5 (#407 phase 6): rotation requires fresh proof of the CURRENT
   // Tier 3 credential from the acting session, not just the existing cookie.
   // requireEnrolled:false -- with no factor yet there is nothing to prove, so
   // the password alone is the whole credential.
   const proof = await requireFreshTier3Proof(req, res, body, {
-    auditUrl, action: "settings.change-admin-password", actor, requireEnrolled: false,
+    auditUrl, action: ACTION, actor, requireEnrolled: false,
   });
   if (!proof.ok) return;
   const password = validateAdminPassword(body.newPassword);
@@ -2342,12 +2363,12 @@ async function adminPasswordRoute(req, res) {
     // Best effort on non-POSIX development hosts.
   }
   config.adminPassword = password;
-  audit(config, req, "settings.change-admin-password", { password: "<redacted>" });
+  audit(config, auditUrl, ACTION, { ok: true, ...actor, password: "<redacted>" });
   // Scoped invalidation (RFC §2.3/§5): every OTHER password/TOTP-authenticated
   // session is revoked; the acting session (already fresh-proven above) and
   // any Discord/passkey session are untouched.
   const sessionsRevoked = auth.invalidatePasswordSessions(req.authSession?.id);
-  audit(config, req, "auth.password-changed.sessions-revoked", { count: sessionsRevoked });
+  audit(config, auditUrl, "auth.password-changed.sessions-revoked", { ...actor, count: sessionsRevoked });
   return json(res, 200, { ok: true, sessionsRevoked });
 }
 
