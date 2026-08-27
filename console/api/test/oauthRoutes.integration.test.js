@@ -66,7 +66,8 @@ function startFakeDiscord(port) {
     if (url.pathname === "/users/@me/guilds") {
       const nonMember = String(req.headers.authorization || "").includes("token-notmember");
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(nonMember ? [{ id: "123456789012345678" }] : [{ id: HOME_GUILD }, { id: "123456789012345678" }]));
+      const isOwner = String(req.headers.authorization || "").includes("token-guildowner");
+      res.end(JSON.stringify(nonMember ? [{ id: "123456789012345678", name: "Elsewhere" }] : [{ id: HOME_GUILD, name: "Fleetyard", owner: isOwner }, { id: "123456789012345678", name: "Elsewhere" }]));
       return;
     }
     res.writeHead(404, { "content-type": "application/json" });
@@ -426,18 +427,19 @@ test("2FA gate: opt-in; when set, an admin without Discord 2FA is refused and to
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
 
-test("no tier source at all: the callback denies early with an actionable message", async () => {
+test("guild chosen, no roles mapped: only the server owner can sign in; a plain member is denied", async () => {
   const consolePort = await getFreePort(); const discordPort = await getFreePort();
-  const tempDir = mkdtempSync(join(tmpdir(), "oauth-nosource-"));
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-owneronly-"));
   const console = startConsole(consolePort, discordPort, tempDir, { DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "0", DISCORD_OAUTH_OWNER_ALLOWLIST: "" });
   const discordServer = await startFakeDiscord(discordPort);
   try {
     await waitForHealth(consolePort);
-    const r = await signInWithCode(consolePort, "admin");
-    assert.equal(r.status, 403);
-    assert.match(r.body, /no way to decide what a Discord user may do/);
-    // oauthErrorPage HTML-escapes the message, so the arrow arrives as -&gt;.
-    assert.match(r.body, /Settings -&gt; Discord OAuth/);
+    const member = await signInWithCode(consolePort, "admin");
+    assert.equal(member.status, 403); assert.match(member.body, /not authorized to sign in/);
+    const owner = await signInWithCode(consolePort, "guildowner");
+    assert.equal(owner.status, 200, owner.body.slice(0, 200));
+    const me = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, { headers: { cookie: `asc_session=${owner.sessionValue}` } })).json();
+    assert.equal(me.user.tier, "owner");
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
 
@@ -446,7 +448,7 @@ test("no tier source at all: the callback denies early with an actionable messag
 test("SoD: a hand-edited .env mapping one role to owner AND admin disables Discord sign-in, naming the role", async () => {
   const consolePort = await getFreePort(); const discordPort = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "oauth-sod-"));
-  const console = startConsole(consolePort, discordPort, tempDir, { ...ROLE_ENV, DISCORD_CONSOLE_OWNER_ROLE_IDS: ADMIN_ROLE });
+  const console = startConsole(consolePort, discordPort, tempDir, { ...ROLE_ENV, DISCORD_CONSOLE_MODERATOR_ROLE_IDS: ADMIN_ROLE });
   const discordServer = await startFakeDiscord(discordPort);
   try {
     await waitForHealth(consolePort);
@@ -454,7 +456,7 @@ test("SoD: a hand-edited .env mapping one role to owner AND admin disables Disco
     assert.equal(start.status, 403, "must not even send the user to Discord");
     const body = await start.text();
     assert.match(body, /two different access levels/);
-    assert.match(body, new RegExp(`role ${ADMIN_ROLE} is mapped to owner and admin`));
+    assert.match(body, new RegExp(`role ${ADMIN_ROLE} is mapped to admin and moderator`));
     // Password sign-in is unaffected.
     const login = await fetch(`http://127.0.0.1:${consolePort}/api/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "correct-password" }) });
     assert.equal(login.status, 200);
@@ -474,17 +476,70 @@ test("SoD: the settings API refuses to save a mapping that gives one role two ti
     const post = (payload) => fetch(`http://127.0.0.1:${consolePort}/api/setup/write-oauth-config`, { method: "POST", headers: { "content-type": "application/json", cookie, "x-csrf-token": csrfToken }, body: JSON.stringify(payload) });
 
     // Same role submitted for owner and admin in one request.
-    const same = await post({ DISCORD_CONSOLE_OWNER_ROLE_IDS: ADMIN_ROLE, DISCORD_CONSOLE_ADMIN_ROLE_IDS: ADMIN_ROLE });
+    const same = await post({ DISCORD_CONSOLE_MODERATOR_ROLE_IDS: ADMIN_ROLE, DISCORD_CONSOLE_ADMIN_ROLE_IDS: ADMIN_ROLE });
     assert.equal(same.status, 400);
-    assert.match((await same.json()).error, /Owner and Admin must be different roles/);
+    assert.match((await same.json()).error, /Owner is never a role/);
 
     // Save a sound admin mapping, then try to add that role as owner in a SEPARATE request.
     assert.equal((await post({ DISCORD_CONSOLE_ADMIN_ROLE_IDS: ADMIN_ROLE })).status, 200);
-    const partial = await post({ DISCORD_CONSOLE_OWNER_ROLE_IDS: ADMIN_ROLE });
+    const partial = await post({ DISCORD_CONSOLE_MODERATOR_ROLE_IDS: ADMIN_ROLE });
     assert.equal(partial.status, 400, "a partial update must be checked against the fields it did not touch");
-    assert.match((await partial.json()).error, new RegExp(`role ${ADMIN_ROLE} is mapped to owner and admin`));
+    assert.match((await partial.json()).error, new RegExp(`role ${ADMIN_ROLE} is mapped to admin and moderator`));
 
-    // A distinct owner role is fine.
-    assert.equal((await post({ DISCORD_CONSOLE_OWNER_ROLE_IDS: "400000000000000009" })).status, 200);
+    // A distinct moderator role is fine; an owner-role key is simply not a thing.
+    assert.equal((await post({ DISCORD_CONSOLE_MODERATOR_ROLE_IDS: "400000000000000009" })).status, 200);
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+
+// ---- owner is the Discord server's owner; the guided setup round-trip ----
+
+test("owner derivation: the server's owner is Owner even with only a player role; owning another server is nothing", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-owner-"));
+  const console = startConsole(consolePort, discordPort, tempDir, ROLE_ENV);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const r = await signInWithCode(consolePort, "guildowner");
+    assert.equal(r.status, 200, r.body.slice(0, 200));
+    const me = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, { headers: { cookie: `asc_session=${r.sessionValue}` } })).json();
+    assert.equal(me.user.tier, "owner");
+    assert.ok(me.allowedActions.includes("settings:read"));
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+async function passwordOwnerSession(consolePort) {
+  const login = await fetch(`http://127.0.0.1:${consolePort}/api/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "correct-password" }) });
+  const { csrfToken } = await login.json();
+  return { cookie: `asc_session=${sessionCookieValue(login.headers.getSetCookie(), "asc_session")}`, csrfToken };
+}
+
+test("guided setup: an owner's setup-mode round-trip captures identity + guilds, mints NO session, and only an owner may start it", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-setup-"));
+  // App configured (id/secret/redirect) but NO home guild yet -- the state the wizard is in at step 2.
+  const console = startConsole(consolePort, discordPort, tempDir, { DISCORD_HOME_GUILD_ID: "", DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "0", DISCORD_OAUTH_OWNER_ALLOWLIST: "" });
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    // Login-mode start is refused without a guild; setup-mode start is not.
+    assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" })).status, 404);
+    assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start?setup=1`, { redirect: "manual" })).status, 401, "anonymous may not start setup");
+
+    const owner = await passwordOwnerSession(consolePort);
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start?setup=1`, { redirect: "manual", headers: { cookie: owner.cookie } });
+    assert.equal(start.status, 302);
+    const state = sessionCookieValue(start.headers.getSetCookie(), "discord_oauth_state");
+    const cb = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=guildowner&state=${encodeURIComponent(state)}`, { redirect: "manual", headers: { cookie: `discord_oauth_state=${state}` } });
+    assert.equal(cb.status, 200);
+    assert.match(await cb.text(), /discordSetup=done/);
+    assert.equal(sessionCookieValue(cb.headers.getSetCookie(), "asc_session"), null, "setup mode must mint no session");
+
+    const identity = await (await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-identity`, { headers: { cookie: owner.cookie } })).json();
+    assert.equal(identity.user.id, USER_ID);
+    assert.deepEqual(identity.guilds.map((g) => [g.name, g.owner]), [["Fleetyard", true], ["Elsewhere", false]]);
+    // A stranger's session sees nothing.
+    assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-identity`)).status, 401);
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });

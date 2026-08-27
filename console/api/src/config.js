@@ -217,8 +217,8 @@ export function loadConfig() {
   // a comma-separated list of Discord role IDs; malformed entries are dropped,
   // never fatal. "player" maps to the console's player tier (the companion bot's
   // form calls the same field "Player Role").
+  // No "owner" key: Owner is the Discord server's owner, derived at sign-in.
   const discordConsoleRoleTiers = {
-    owner: parseRoleIdList(process.env.DISCORD_CONSOLE_OWNER_ROLE_IDS),
     admin: parseRoleIdList(process.env.DISCORD_CONSOLE_ADMIN_ROLE_IDS),
     moderator: parseRoleIdList(process.env.DISCORD_CONSOLE_MODERATOR_ROLE_IDS),
     player: parseRoleIdList(process.env.DISCORD_CONSOLE_PLAYER_ROLE_IDS),
@@ -278,6 +278,14 @@ export function loadConfig() {
     enrollmentSessionTtlMs: 10 * 60 * 1000, // §4: short-lived, non-renewable enrollment session
     adminPasswordEnvManaged,
     // ---- Discord OAuth sign-in (Tier 1, rfc-console-auth.md §2.1 / §2.1.1) ----
+    // "App configured" = the console can start an OAuth round-trip (setup mode
+    // uses this); "configured" additionally has a home guild, i.e. sign-in can
+    // actually decide a tier.
+    discordOAuthAppConfigured: Boolean(
+      process.env.DISCORD_OAUTH_CLIENT_ID &&
+      (process.env.DISCORD_OAUTH_CLIENT_SECRET || existsSync(resolve(secretsDir, "discord-oauth-client-secret.txt"))) &&
+      process.env.DISCORD_OAUTH_REDIRECT_URI
+    ),
     discordOAuthConfigured: Boolean(
       process.env.DISCORD_OAUTH_CLIENT_ID &&
       (process.env.DISCORD_OAUTH_CLIENT_SECRET || existsSync(resolve(secretsDir, "discord-oauth-client-secret.txt"))) &&
@@ -511,6 +519,7 @@ export function publicConfig(config) {
     allowHostBootstrap: config.allowHostBootstrap,
     mockMode: config.mockMode,
     consoleTotpEnabled: config.consoleTotpEnabled,
-    discordOAuthConfigured: config.discordOAuthConfigured
+    discordOAuthConfigured: config.discordOAuthConfigured,
+    discordOAuthAppConfigured: config.discordOAuthAppConfigured
   };
 }

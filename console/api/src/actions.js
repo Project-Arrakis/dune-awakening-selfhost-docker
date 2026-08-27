@@ -67,6 +67,7 @@ export const ROUTE_ACTIONS = {
   "POST /api/setup/write-config":              "setup:write",
   "POST /api/setup/write-oauth-config":        "setup:write",
   "POST /api/setup/save-oauth-secret":         "setup:write",
+  "GET /api/setup/discord-identity":           "setup:write",
   "POST /api/setup/save-token":                "setup:write",
   "POST /api/setup/write-oauth-config":        "setup:write",
   "POST /api/setup/save-oauth-secret":         "setup:write",

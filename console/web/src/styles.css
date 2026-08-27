@@ -6607,3 +6607,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 .login-discord-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 200px; justify-self: center; padding: 9px 14px; border-radius: 6px; background: #5865F2; color: #fff; font-weight: 600; text-decoration: none; box-shadow: 0 4px 16px rgba(88, 101, 242, .35); }
 .login-discord-button:hover { background: #6774f5; }
 .login-discord-button-primary { width: 260px; padding: 12px 18px; font-size: 1rem; margin-bottom: 4px; }
+.discord-setup-panel { width: min(560px, calc(100vw - 32px)); text-align: left; gap: 10px; }
+.discord-setup-panel h2 { margin: 14px 0 2px; }
+.discord-setup-panel select { width: 100%; }
+.login-discord-button.disabled { opacity: .5; pointer-events: none; }

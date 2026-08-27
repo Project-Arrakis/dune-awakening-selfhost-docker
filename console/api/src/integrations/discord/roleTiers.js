@@ -7,6 +7,10 @@
 // testable in isolation and the resolver in oauth.js stays small.
 
 export const TIER_ORDER = ["owner", "admin", "moderator", "player", "observer"];
+// Tiers a Discord ROLE may map to. Owner is deliberately absent: it is derived
+// from Discord guild ownership (rfc-console-auth.md §2.1.1), never from a role,
+// so no mapping can ever make an admin an owner.
+export const ROLE_MAPPABLE_TIERS = ["admin", "moderator", "player"];
 const SNOWFLAKE_RE = /^\d{17,19}$/;
 
 // "123, 456" -> ["123","456"]; anything that is not a snowflake is dropped,
@@ -20,7 +24,7 @@ export function parseRoleIdList(value) {
 // { owner: [...], admin: [...], moderator: [...], player: [...] } -> true when
 // at least one tier has at least one role mapped.
 export function roleTiersConfigured(roleTiers) {
-  return TIER_ORDER.some((tier) => Array.isArray(roleTiers?.[tier]) && roleTiers[tier].length > 0);
+  return ROLE_MAPPABLE_TIERS.some((tier) => Array.isArray(roleTiers?.[tier]) && roleTiers[tier].length > 0);
 }
 
 // Highest tier whose mapped roles intersect the member's roles, or "" when
@@ -28,7 +32,7 @@ export function roleTiersConfigured(roleTiers) {
 export function resolveRoleTier(memberRoleIds, roleTiers) {
   const held = new Set(Array.isArray(memberRoleIds) ? memberRoleIds.map(String) : []);
   if (!held.size) return "";
-  for (const tier of TIER_ORDER) {
+  for (const tier of ROLE_MAPPABLE_TIERS) {
     const mapped = roleTiers?.[tier] || [];
     if (mapped.some((id) => held.has(String(id)))) return tier;
   }
@@ -64,7 +68,7 @@ export function parseTierList(value) {
 // per offending role: { roleId, tiers: [...] }. Empty when the mapping is sound.
 export function roleTierConflicts(roleTiers) {
   const seen = new Map();
-  for (const tier of TIER_ORDER) {
+  for (const tier of ROLE_MAPPABLE_TIERS) {
     for (const id of roleTiers?.[tier] || []) {
       const key = String(id);
       if (!seen.has(key)) seen.set(key, []);

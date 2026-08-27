@@ -231,6 +231,7 @@ test("fetchDiscordIdentity reads member roles and mfa_enabled; a 404 member is s
   };
   const id = await fetchDiscordIdentity({ accessToken: "t", homeGuildId: HOME, apiBaseUrl: "https://api.test", fetchImpl });
   assert.deepEqual(id.roleIds, ["400000000000000002"]); assert.equal(id.mfaEnabled, true);
+  assert.deepEqual(id.guilds, [{ id: HOME, name: "", owner: false }]); assert.deepEqual(id.ownedGuildIds, []);
   assert.ok(calls.some((u) => u.endsWith(`/guilds/${HOME}/member`)));
 
   const fetch404 = async (url) => String(url).endsWith("/member")
@@ -238,4 +239,39 @@ test("fetchDiscordIdentity reads member roles and mfa_enabled; a 404 member is s
     : fetchImpl(url);
   const id2 = await fetchDiscordIdentity({ accessToken: "t", homeGuildId: HOME, apiBaseUrl: "https://api.test", fetchImpl: fetch404 });
   assert.deepEqual(id2.roleIds, []);
+});
+
+
+test("owner is the Discord server's owner: derived from the guild list, above any role", async () => {
+  const resolve = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: ROLES });
+  const r = await resolve(identity({ ownedGuildIds: [HOME], roleIds: ["400000000000000004"] }));
+  assert.deepEqual(r, { tier: "owner", source: "guild-owner", reason: "" });
+  // Owning a DIFFERENT guild confers nothing here.
+  const other = await resolve(identity({ ownedGuildIds: ["300000000000000009"], roleIds: ["400000000000000004"] }));
+  assert.equal(other.tier, "player");
+});
+
+test("no role can confer owner: an 'owner' key in the mapping is ignored", async () => {
+  const resolve = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: { ...ROLES, owner: ["400000000000000004"] } });
+  const r = await resolve(identity({ roleIds: ["400000000000000004"] }));
+  assert.equal(r.tier, "player");
+});
+
+test("pending state carries its purpose: a setup state is consumed as setup, a login state as login", () => {
+  const store = createPendingStateStore();
+  const setup = store.issue(undefined, { purpose: "setup", sessionId: "sess-1" });
+  const login = store.issue();
+  assert.deepEqual({ ...store.consume(setup.state, setup.state), verifier: "x" }, { ok: true, verifier: "x", purpose: "setup", sessionId: "sess-1" });
+  assert.equal(store.consume(login.state, login.state).purpose, "login");
+});
+
+test("fetchDiscordIdentity marks owned guilds and keeps guild names for the setup picker", async () => {
+  const fetchImpl = async (url) => {
+    if (String(url).endsWith("/users/@me")) return new Response(JSON.stringify({ id: "200000000000000001", username: "op" }), { status: 200, headers: { "content-type": "application/json" } });
+    if (String(url).endsWith("/users/@me/guilds")) return new Response(JSON.stringify([{ id: HOME, name: "Fleetyard", owner: true }, { id: "300000000000000009", name: "Other", owner: false }]), { status: 200, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify({ roles: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const id = await fetchDiscordIdentity({ accessToken: "t", homeGuildId: HOME, apiBaseUrl: "https://api.test", fetchImpl });
+  assert.deepEqual(id.ownedGuildIds, [HOME]);
+  assert.deepEqual(id.guilds.map((g) => g.name), ["Fleetyard", "Other"]);
 });

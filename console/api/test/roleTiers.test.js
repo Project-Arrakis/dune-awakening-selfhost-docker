@@ -12,7 +12,7 @@ test("parseRoleIdList keeps only snowflakes, dedupes, never throws", () => {
 
 test("resolveRoleTier returns the HIGHEST mapped tier the member holds", () => {
   assert.equal(resolveRoleTier(["100000000000000004", "100000000000000003"], R), "moderator");
-  assert.equal(resolveRoleTier(["100000000000000004", "100000000000000001"], R), "owner");
+  assert.equal(resolveRoleTier(["100000000000000004", "100000000000000001"], R), "player", "an 'owner' mapping is ignored: no role confers owner");
   assert.equal(resolveRoleTier(["100000000000000004"], R), "player");
 });
 
@@ -55,9 +55,9 @@ test("roleTiersConfigured and parseTierList", () => {
 import { roleTierConflicts, describeRoleTierConflicts } from "../src/integrations/discord/roleTiers.js";
 
 test("roleTierConflicts: a role under two tiers is reported with both tiers", () => {
-  const dup = { owner: ["100000000000000002"], admin: ["100000000000000002"], moderator: [], player: [] };
-  assert.deepEqual(roleTierConflicts(dup), [{ roleId: "100000000000000002", tiers: ["owner", "admin"] }]);
-  assert.equal(describeRoleTierConflicts(roleTierConflicts(dup)), "role 100000000000000002 is mapped to owner and admin");
+  const dup = { admin: ["100000000000000002"], moderator: ["100000000000000002"], player: [] };
+  assert.deepEqual(roleTierConflicts(dup), [{ roleId: "100000000000000002", tiers: ["admin", "moderator"] }]);
+  assert.equal(describeRoleTierConflicts(roleTierConflicts(dup)), "role 100000000000000002 is mapped to admin and moderator");
 });
 
 test("roleTierConflicts: a sound mapping has none; the same role twice under ONE tier is not a conflict", () => {
@@ -66,7 +66,7 @@ test("roleTierConflicts: a sound mapping has none; the same role twice under ONE
   assert.deepEqual(roleTierConflicts(null), []);
 });
 
-test("resolveRoleTier would have silently promoted on a conflict -- which is why it must never see one", () => {
-  const dup = { owner: ["100000000000000002"], admin: ["100000000000000002"], moderator: [], player: [] };
-  assert.equal(resolveRoleTier(["100000000000000002"], dup), "owner");
+test("resolveRoleTier would silently promote on a conflict -- which is why it must never see one", () => {
+  const dup = { admin: ["100000000000000002"], moderator: ["100000000000000002"], player: [] };
+  assert.equal(resolveRoleTier(["100000000000000002"], dup), "admin");
 });

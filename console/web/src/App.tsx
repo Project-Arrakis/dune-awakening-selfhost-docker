@@ -2,6 +2,7 @@ import { Fragment, lazy, useCallback, useEffect, useRef, useState } from "react"
 import { Archive, Bug, Building2, Car, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, loginRequest, post, setCsrfToken } from "./api/client";
 import { TotpSetupScreen } from "./features/auth/TotpSetupScreen";
+import { DiscordSetupWizard } from "./features/auth/DiscordSetupWizard";
 import { setServerPorts, setAdminPort, type ServerPorts } from "./api/serverPorts";
 import { serverApi, type RestartQueueTarget } from "./api/server";
 import { updatesApi } from "./api/updates";
@@ -371,6 +372,11 @@ export function App() {
   // Tier 1 (Discord sign-in). Available only when the server reports the
   // OAuth application is fully configured; the button is otherwise absent.
   const [discordSignInAvailable, setDiscordSignInAvailable] = useState(false);
+  const [discordAppConfigured, setDiscordAppConfigured] = useState(false);
+  // Guided first-run setup: opened from the sign-in page (after the password),
+  // or automatically when returning from the setup-mode Discord round-trip.
+  const [discordSetupOpen, setDiscordSetupOpen] = useState(() => new URLSearchParams(window.location.search).has("discordSetup"));
+  const [wantDiscordSetup, setWantDiscordSetup] = useState(false);
   const [showPasswordLogin, setShowPasswordLogin] = useState(false);
   // What the policy engine will allow this session. Used only to hide the
   // Settings tab from Discord tiers a 403 would refuse anyway; enforcement
@@ -462,9 +468,10 @@ export function App() {
   }, [pinnedAddons]);
 
   useEffect(() => {
-    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean; ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
+    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean; discordOAuthAppConfigured?: boolean; ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
       setAuth(state.authenticated);
       setDiscordSignInAvailable(Boolean(state.config?.discordOAuthConfigured));
+      setDiscordAppConfigured(Boolean(state.config?.discordOAuthAppConfigured));
       setCsrfToken(state.csrfToken);
       setServerPorts(state.config?.ports);
       setAdminPort(state.config?.port);
@@ -584,6 +591,7 @@ export function App() {
     if (status === 200 && result.authenticated) {
       setCsrfToken(String(result.csrfToken || ""));
       setAuth(true);
+      if (wantDiscordSetup) { setWantDiscordSetup(false); setDiscordSetupOpen(true); }
       setTotpRequired(false);
       setTotpCode("");
       setRecoveryCode("");
@@ -751,6 +759,10 @@ export function App() {
     return <TotpSetupScreen mode={setupMode} onComplete={afterTotpSetup} onCancel={afterTotpSetup} />;
   }
 
+  if (auth && discordSetupOpen) {
+    return <DiscordSetupWizard secretSaved={discordAppConfigured} onDone={() => { setDiscordSetupOpen(false); void post("/api/auth/logout").catch(() => {}); setCsrfToken(null); setAuth(false); setPassword(""); }} onCancel={() => setDiscordSetupOpen(false)} />;
+  }
+
   if (!auth) {
     const passwordFields = totpRequired ? (
       <div className="login-password-fields">
@@ -801,11 +813,21 @@ export function App() {
                 <DiscordLogo size={19} aria-hidden="true" /> Sign in with Discord
               </a>
               <button type="button" className="login-password-toggle" onClick={() => setShowPasswordLogin(!showPasswordLogin)}>
-                {showPasswordLogin ? "Hide password sign-in" : "Sign in with password instead"}
+                {showPasswordLogin ? "Hide the admin password" : "Use the admin password instead"}
               </button>
               {showPasswordLogin && passwordFields}
             </>
-          ) : passwordFields}
+          ) : (
+            <>
+              {wantDiscordSetup && <p className="muted">Enter the admin password to set up Discord sign-in.</p>}
+              {passwordFields}
+              {!totpRequired && !wantDiscordSetup && (
+                <button type="button" className="login-password-toggle" onClick={() => setWantDiscordSetup(true)}>
+                  <DiscordLogo size={16} aria-hidden="true" /> Set up Discord sign-in
+                </button>
+              )}
+            </>
+          )}
           {error && <p className="error">{error === AUTH_SESSION_EXPIRED_MESSAGE
             ? <>Your browser login session expired.<br />Sign in again to continue.</>
             : error}</p>}

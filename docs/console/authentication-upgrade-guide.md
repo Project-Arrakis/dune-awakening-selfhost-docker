@@ -203,50 +203,52 @@ does **not** change password sign-in — it adds a second button.
 
 ### What you need first
 
-- A Discord server (the "home guild") where your admins and players are members.
-- A Discord application: go to https://discord.com/developers/applications,
-  create one, and under **OAuth2** add a redirect URL that is your console's
-  address plus `/api/auth/discord/callback` (for example
-  `https://console.example.org/api/auth/discord/callback`). Copy the
-  **Client ID** and generate a **Client Secret**.
-- Role IDs from your server. Turn on Developer Mode in Discord (User Settings
-  → Advanced), then right-click a role → **Copy Role ID**. Decide which role
-  means which access:
+- A Discord server (the "home server") where your admins and players are members.
+  **Its owner will be the console owner — automatically.** Discord has exactly
+  one owner per server, and the console takes that as the truth; there is no
+  owner setting anywhere.
+- A Discord application: https://discord.com/developers/applications — create
+  one, or reuse the one your bot uses. You will need its **Client ID** and a
+  **Client Secret**, and you will register a Redirect URI that the setup screen
+  shows you.
+- Role IDs from your server, for the access levels below. Turn on Developer
+  Mode in Discord (User Settings → Advanced), then right-click a role → **Copy
+  Role ID**.
 
-  | Console tier | What it can do (default policy) | Typical Discord role |
+  | Console tier | What it can do (default policy) | Comes from |
   |---|---|---|
-  | Owner | everything, including Settings | the server owner's role, or none — use "Owner user IDs" instead |
-  | Admin | run the server, players, bases, backups, updates — **not** Settings or the database | your admin/staff role |
-  | Moderator | read everything, kick, broadcast | your mod role |
-  | Player | read-only views | your member/player role |
+  | Owner | everything, including Settings | the server's owner — automatic |
+  | Admin | run the server, players, bases, backups, updates — **not** Settings or the database | the role you map as Admin (required) |
+  | Moderator | read everything, kick, broadcast | the role you map as Moderator |
+  | Player | read-only views | the role you map as Player |
 
-  A person holding several mapped roles gets the **highest** one.
+  A person holding several mapped roles gets the **highest** one. One role can
+  be mapped to only one level — the console refuses anything else.
 
-  **Owner and Admin must be different roles.** If the same role were mapped to
-  both, every admin would be an owner — so the console refuses to save that,
-  and refuses Discord sign-in if it finds it in `.env`. Give Owner to specific
-  people via *Owner user IDs* instead of a role, unless you have a role that
-  genuinely only the owners hold.
+### Turning it on — the guided setup
 
-### Turning it on
+1. On the sign-in page, click **Set up Discord sign-in** and enter the admin
+   password. (Only the console owner can do this.)
+2. **Connect the application** — paste the Client ID and Client Secret. The
+   screen shows the exact Redirect URI to add under the application's OAuth2
+   settings, with a copy button. Save.
+3. **Continue with Discord** — Discord asks you to authorize the application.
+   Nothing is signed in yet; the console only learns who you are and which
+   servers you are in.
+4. **Choose the server** from the list. Servers you own are marked; pick one
+   you own and the screen confirms you will be the console Owner.
+5. **Map roles** — Admin (required), Moderator and Player (optional). Leave
+   *Require two-factor on the Discord account for Owner and Admin* ticked
+   unless you have a reason not to.
+6. **Save**, then `dune console restart` on the host.
 
-1. Sign in with the password. Open **Settings → Discord OAuth**.
-2. Fill in **Client ID**, **Redirect URI** (exactly as registered in Discord),
-   **Client Secret**, and your **Discord Server ID**.
-3. Fill in the role fields — **Admin Role** is required unless you list an owner
-   user ID; **Player Role** is recommended; the others are optional. If you are
-   signed in with Discord already, **add me** puts your own user ID in
-   *Owner user IDs*; otherwise paste it. Tick *Allow the owner user IDs above to
-   sign in as owner* if you want those IDs to be owners regardless of roles.
-4. Optional but recommended: set **Require Discord 2FA for** to `owner,admin`
-   (click *use recommended*). Anyone signing in for those tiers must have
-   two-factor enabled on their **Discord account**; the console does not run a
-   second enrollment for Discord users.
-5. **Save Discord OAuth**, then `dune console restart`.
+From then on the sign-in page shows **Sign in with Discord** as the main
+button, with **Use the admin password instead** beneath it — that is your way
+back in if Discord is ever unavailable, so keep the password (and, ideally,
+the authenticator from earlier in this guide).
 
-The sign-in page now shows **Sign in with Discord** above a *Sign in with
-password instead* link. Have someone with a mapped role try it before you
-tell everyone.
+You can change the role mapping or the two-factor option later under
+**Settings → Discord OAuth**, or run the guided setup again from there.
 
 ### What people will see
 
@@ -257,15 +259,19 @@ them. Tabs they may not use are hidden; the server refuses them regardless.
 
 If they are refused, the page tells them why in plain words: not a member of
 the server, no mapped role, or — with the 2FA option on — their Discord account
-has no two-factor enabled (with the Discord setting to fix that). An operator
-who sees *"this console has no way to decide what a Discord user may do"* has
-saved the OAuth settings without any role mapping or owner list — go back to
-Settings and map at least an Admin or Owner role.
+has no two-factor enabled (with the Discord setting to fix that). A message
+saying Discord sign-in *"is not finished being set up"* means no server was
+chosen — finish the guided setup.
 
 ### Things to know
 
-- **Password sign-in stays available** and is always the owner. Keep it (and,
-  ideally, the authenticator from earlier in this guide) as your way back in.
+- **Password sign-in stays available** and is always the owner — it is the
+  break-glass path. Keep it (and, ideally, the authenticator from earlier in
+  this guide).
+- **Owner is whoever owns the Discord server.** Transfer server ownership in
+  Discord and the console owner changes with it at their next sign-in. There
+  is no console-side override in the settings screen (an advanced `.env` key
+  exists for additional owners, documented in `.env.example`).
 - **Changing someone's Discord role takes effect at their next sign-in.** A
   person you demote keeps their current session until it expires or they sign
   out; restart the console to end every session at once.

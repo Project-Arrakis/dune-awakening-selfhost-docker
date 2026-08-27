@@ -94,9 +94,8 @@ This is the entire authorization fix — no cache, no grace window, no new persi
 | Field | Required | Stored as |
 |---|---|---|
 | Home guild | yes | `DISCORD_HOME_GUILD_ID` (exists) |
-| Owner user IDs | at least one of Owner user IDs / Owner role / Admin role | `DISCORD_OAUTH_OWNER_ALLOWLIST` (exists; prefilled with the connecting operator's own Discord user ID) |
-| Owner role ID | optional | `DISCORD_CONSOLE_OWNER_ROLE_IDS` |
-| Admin role ID | see above | `DISCORD_CONSOLE_ADMIN_ROLE_IDS` |
+| Owner | automatic: the Discord server's owner | (derived; `DISCORD_OAUTH_OWNER_ALLOWLIST` env-only for additional owners) |
+| Admin role ID | required | `DISCORD_CONSOLE_ADMIN_ROLE_IDS` |
 | Moderator role ID | optional | `DISCORD_CONSOLE_MODERATOR_ROLE_IDS` |
 | Player role ID | recommended | `DISCORD_CONSOLE_PLAYER_ROLE_IDS` |
 | Require Discord 2FA for tiers | optional (suggested `owner,admin`) | `DISCORD_OAUTH_REQUIRE_MFA_TIERS` |
@@ -113,6 +112,18 @@ Each role field accepts one or more Discord role IDs (17–19-digit snowflakes, 
    - otherwise → the **highest** tier among: `owner` if the user ID is in the owner allowlist (only when bootstrap is enabled, as today); the tier of every mapped role the member holds. Precedence owner > admin > moderator > player. A member with no mapped role and no allowlist entry is denied.
 4. **Discord-account 2FA gate.** The `identify` scope already returns `mfa_enabled`. If the resolved tier is in `DISCORD_OAUTH_REQUIRE_MFA_TIERS` and the account has no 2FA, sign-in is denied with a message that says so and names the remedy (enable 2FA on the Discord account). This is the MFA story for Tier 1: it reuses the factor the user already carries for Discord rather than adding a second enrollment flow on top of OAuth. It does not, and is not meant to, prove anything about the *console's* own second factor; §2.3 remains the only place a console-held factor exists. **Opt-in**, not default-on: an existing operator signing in through owner bootstrap whose Discord account has no 2FA would otherwise lose Discord sign-in on upgrade (found by the ported end-to-end test, which models exactly that operator). The settings form suggests `owner,admin`; nothing is enforced until a value is saved.
 5. The callback's early deny "Discord sign-in is enabled but owner bootstrap is disabled" becomes "no tier source is configured": it fires only when there is no handoff, no role mapping, and no enabled allowlist.
+
+**Owner is the Discord server's owner — derived, not configured.** `GET /users/@me/guilds` (the `guilds` scope already requested) marks the guild the signing-in user owns with `owner: true`, and Discord permits exactly one owner per server. The console therefore grants **owner** to whoever Discord says owns the home guild, with no configuration and no way to misassign it — which is also the strongest form of the separation-of-duties invariant above, since no role can ever confer owner. The former "owner user IDs" allowlist (`DISCORD_OAUTH_OWNER_ALLOWLIST`) is retained env-only, for back-compatibility and for the rare install that wants additional owners; it is no longer in the settings form. Precedence: guild owner > allowlisted owner > highest mapped role.
+
+**First-run setup is a guided flow, not a settings section.** An unconfigured console shows *Set up Discord sign-in* on the sign-in page. It requires the admin password (only the owner may configure sign-in), then:
+
+1. **Connect the application** — paste the Discord application's Client ID and Client Secret; the page shows the exact Redirect URI to register in the Developer Portal, with a copy button, and links to it. (An OAuth round-trip cannot happen before this; the console is not itself a Discord app the way a bot is.)
+2. **Continue with Discord** — a real OAuth round-trip in *setup mode*: `/api/auth/discord/start?setup=1` is reachable only from an owner session and issues a pending state tagged `setup`; the callback, seeing that tag, fetches identity but **mints no tiered session and resolves no tier** — it records the operator's Discord identity and their guild list (id, name, owner flag) on the existing owner session and returns to the wizard.
+3. **Choose the server** — a dropdown of the operator's guilds, the ones they own marked; choosing one they own confirms they will be Owner; choosing one they do not own says who will be, and that they themselves will get whatever their roles map to.
+4. **Map roles** — Admin (required), Moderator and Player (optional/recommended), typed role IDs with the Developer-Mode instructions; optional *Require Discord 2FA for*.
+5. **Save and restart** — writes the same keys as the settings API; after restart the sign-in page shows *Sign in with Discord* as the primary action with *Use the admin password instead* beneath it as the break-glass path.
+
+The settings section remains for editing the role mapping and the 2FA option afterwards, and offers *Run setup again*.
 
 **What does not change.** Sessions, the policy engine, the per-tier defaults, the route→action gate, the fail-closed handoff semantics of §2.1, the `bootstrap_disabled`/`handoff_misconfigured` refusals, PKCE, the state cookie, the login rate limiter on every OAuth endpoint. Player linking (`/api/auth/characters`, `multiAccountLinkProvider`) is out of scope for this amendment.
 

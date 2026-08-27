@@ -42,12 +42,16 @@ export function createPendingStateStore({
 } = {}) {
   const pending = new Map();
 
-  function issue(random = randomBytes) {
+  // `purpose` is "login" (mint a tiered session) or "setup" (first-run wizard:
+  // fetch identity only, mint nothing, hand the guild list back to the owner
+  // session identified by `sessionId`). It travels with the pending state so a
+  // login-purpose callback can never be replayed as setup or vice versa.
+  function issue(random = randomBytes, { purpose = "login", sessionId = "" } = {}) {
     if (pending.size >= maxEntries) return null;
     const state = random(16).toString("base64url");
     const verifier = random(32).toString("base64url");
     const challenge = createHash("sha256").update(verifier).digest("base64url");
-    pending.set(state, { createdAt: now(), used: false, verifier, challenge });
+    pending.set(state, { createdAt: now(), used: false, verifier, challenge, purpose, sessionId });
     return { state, challenge };
   }
 
@@ -65,7 +69,7 @@ export function createPendingStateStore({
     if (!constantTimeStringEqual(state, cookieValue)) return { ok: false, reason: "state_cookie_mismatch" };
     if (timestamp - entry.createdAt > ttlMs) return { ok: false, reason: "stale_state" };
     entry.used = true;
-    return { ok: true, verifier: entry.verifier };
+    return { ok: true, verifier: entry.verifier, purpose: entry.purpose || "login", sessionId: entry.sessionId || "" };
   }
 
   return { issue, consume, size: () => pending.size };
@@ -151,9 +155,14 @@ export async function fetchDiscordIdentity({ accessToken, homeGuildId = "", apiB
   if (username.length === 0 || username.length > 64) {
     throw oauthError("oauth_bad_identity", "Discord identity response is missing a username.", 502);
   }
-  const guildIds = Array.isArray(guilds)
-    ? guilds.map((guild) => String(guild?.id || "")).filter((id) => /^\d{17,19}$/.test(id))
-    : [];
+  // Partial guild objects from /users/@me/guilds carry `owner: true` for the
+  // guild the user owns (exactly one owner per guild, by Discord's rule) --
+  // this is how the console decides Owner, with no configuration.
+  const guildList = (Array.isArray(guilds) ? guilds : [])
+    .map((guild) => ({ id: String(guild?.id || ""), name: String(guild?.name || "").slice(0, 100), owner: guild?.owner === true }))
+    .filter((guild) => /^\d{17,19}$/.test(guild.id));
+  const guildIds = guildList.map((guild) => guild.id);
+  const ownedGuildIds = guildList.filter((guild) => guild.owner).map((guild) => guild.id);
   const mfaEnabled = user?.mfa_enabled === true;
   // Member roles for the home guild, from the user's own token. Only asked for
   // when a home guild is configured and the user is in it; a 403/404 here means
@@ -169,7 +178,7 @@ export async function fetchDiscordIdentity({ accessToken, homeGuildId = "", apiB
       if (error?.upstreamStatus !== 403 && error?.upstreamStatus !== 404) throw error;
     }
   }
-  return { userId, username, guildIds, roleIds, mfaEnabled };
+  return { userId, username, guildIds, guilds: guildList, ownedGuildIds, roleIds, mfaEnabled };
 }
 
 // ---- Tier decision (Phase 3: signed handoff, authoritative when configured) ----
@@ -195,7 +204,7 @@ export function resolveBootstrapTier({ userId, guildIds, allowOwnerBootstrap, ho
 // decision, which is tier-empty-means-deny regardless of reason.
 export function createOAuthTierResolver({ bootstrap = {}, handoff = null, roleTiers = null, requireMfaTiers = [] } = {}) {
   return async function resolveOAuthTier(identity) {
-    const { userId, guildIds, roleIds = [], mfaEnabled = false } = identity;
+    const { userId, guildIds, roleIds = [], ownedGuildIds = [], mfaEnabled = false } = identity;
 
     // A configured handoff stays authoritative (§2.1): the bot is the single
     // source of truth for operators who run one, and this resolver must never
@@ -216,9 +225,11 @@ export function createOAuthTierResolver({ bootstrap = {}, handoff = null, roleTi
     // already returns no roles otherwise, but the membership check is repeated
     // here so the decision does not depend on how identity was assembled.
     const inHomeGuild = Boolean(bootstrap.homeGuildId) && guildIds.includes(bootstrap.homeGuildId);
+    // Owner = the Discord server's owner (§2.1.1), derived from Discord itself.
+    const guildOwnerTier = inHomeGuild && ownedGuildIds.includes(bootstrap.homeGuildId) ? "owner" : "";
     const roleTier = inHomeGuild ? resolveRoleTier(roleIds, roleTiers) : "";
-    const tier = higherTier(bootstrapTier, roleTier);
-    const source = tier === roleTier && roleTier ? "roles" : "bootstrap";
+    const tier = higherTier(guildOwnerTier, higherTier(bootstrapTier, roleTier));
+    const source = guildOwnerTier ? "guild-owner" : (tier === roleTier && roleTier ? "roles" : "bootstrap");
     if (!tier) return { tier: "", source, reason: "not_authorized" };
 
     // Discord-account 2FA gate (§2.1.1 item 4): reuses the factor the user

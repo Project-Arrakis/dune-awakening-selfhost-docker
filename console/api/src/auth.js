@@ -81,6 +81,14 @@ export function createAuth(config) {
   }
 
   // Invalidate one session by id (enrollment completion, logout, rotation).
+  // Server-side lookup by session id, for a flow that must hand data back to
+  // a specific live session it did not receive a cookie for (the Discord setup
+  // callback). Expiry is honored exactly as readSession does.
+  function readSessionById(id) {
+    const session = sessions.get(id);
+    if (!session || session.expiresAt < now()) return null;
+    return session;
+  }
   function invalidateSession(id) {
     return sessions.delete(id);
   }
@@ -124,7 +132,7 @@ export function createAuth(config) {
     return session;
   }
 
-  return { makeSession, readSession, passwordMatches, requireAuth, invalidateSession, invalidatePasswordSessions };
+  return { makeSession, readSession, readSessionById, passwordMatches, requireAuth, invalidateSession, invalidatePasswordSessions };
 }
 
 export function setSessionCookie(res, session, config = {}, { maxAgeSeconds = 43200 } = {}) {
