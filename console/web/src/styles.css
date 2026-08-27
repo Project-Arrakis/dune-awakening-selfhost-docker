@@ -6768,3 +6768,12 @@ button.login-discord-button { border: none; cursor: pointer; font: inherit; font
 /* Save footer */
 .iam-editor-footer { display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border); }
 .iam-editor-footer .iam-json-error { margin-right: auto; }
+
+/* Editor a11y + locked-permission affordance */
+.iam-policy-editor button:focus-visible,
+.iam-policy-editor input:focus-visible,
+.iam-policy-editor textarea:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
+.iam-perm-row:focus-within { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
+.iam-perm-row.perm-locked { opacity: .82; }
+.iam-perm-row.perm-locked input[type="checkbox"] { accent-color: var(--muted); }
+.iam-perm-lock { flex: 0 0 auto; font-size: 11px; opacity: .7; }

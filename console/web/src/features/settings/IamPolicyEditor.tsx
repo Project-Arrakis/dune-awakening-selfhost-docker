@@ -105,6 +105,27 @@ export function IamPolicyEditor() {
   const statements = useMemo(() => parseStatements(jsonText) || [], [jsonText]);
   const allowed = useMemo(() => resolvedAllowedActions(statements, catalog?.actionMap || {}), [statements, catalog?.actionMap]);
 
+  // A checkbox can only cleanly toggle an EXACT Allow literal. When a permission
+  // is granted by a wildcard (e.g. "server:*") or blocked by a Deny, the grid
+  // can't express the change -- mark it locked (still clickable, so the hint
+  // fires) and point the operator at the JSON tab.
+  const { allowLiterals, denyPatterns } = useMemo(() => {
+    const al = new Set<string>();
+    const dp: string[] = [];
+    for (const st of statements) {
+      if (st.Effect === "Allow") for (const a of st.Action) al.add(a);
+      else for (const a of st.Action) dp.push(a);
+    }
+    return { allowLiterals: al, denyPatterns: dp };
+  }, [statements]);
+
+  const lockReason = (action: string): string => {
+    const iamAction = catalog?.actionMap?.[action] || action;
+    if (iamActionAllowed(iamAction, denyPatterns)) return "Blocked by a Deny rule — edit in the JSON tab.";
+    if (allowed.has(action) && !allowLiterals.has(iamAction)) return "Granted by a wildcard rule — edit in the JSON tab.";
+    return "";
+  };
+
   const namespaceOrder = [
     "server", "players", "guilds", "bases", "storage", "maps",
     "sietches", "deepdesert", "admin", "landsraad", "addons",
@@ -255,32 +276,33 @@ export function IamPolicyEditor() {
 
   return (
     <section className="iam-policy-editor">
-      <div className="iam-tier-selector">
+      <div className="iam-tier-selector" role="group" aria-label="Policy tier">
         {TIERS.map((tier) => (
-          <button key={tier} className={`iam-tier-btn ${selectedTier === tier ? "active" : ""}`} onClick={() => selectTier(tier)}>
+          <button key={tier} className={`iam-tier-btn ${selectedTier === tier ? "active" : ""}`} aria-pressed={selectedTier === tier} onClick={() => selectTier(tier)}>
             {capitalize(tier)}
           </button>
         ))}
       </div>
 
-      <div className="iam-editor-tabs">
-        <button className={editorTab === "builder" ? "active" : ""} onClick={() => setEditorTab("builder")}>Permissions</button>
-        <button className={editorTab === "json" ? "active" : ""} onClick={() => setEditorTab("json")}>JSON</button>
-        <button className={editorTab === "test" ? "active" : ""} onClick={() => { runTest(); setEditorTab("test"); }}>Test</button>
+      <div className="iam-editor-tabs" role="tablist" aria-label="Policy editor view">
+        <button role="tab" id="iam-tab-builder" aria-selected={editorTab === "builder"} aria-controls="iam-panel-builder" className={editorTab === "builder" ? "active" : ""} onClick={() => setEditorTab("builder")}>Permissions</button>
+        <button role="tab" id="iam-tab-json" aria-selected={editorTab === "json"} aria-controls="iam-panel-json" className={editorTab === "json" ? "active" : ""} onClick={() => setEditorTab("json")}>JSON</button>
+        <button role="tab" id="iam-tab-test" aria-selected={editorTab === "test"} aria-controls="iam-panel-test" className={editorTab === "test" ? "active" : ""} onClick={() => { runTest(); setEditorTab("test"); }}>Test</button>
       </div>
 
       <div className="iam-editor-body">
         {editorTab === "builder" && (
-          <>
+          <div id="iam-panel-builder" role="tabpanel" aria-labelledby="iam-tab-builder">
             <div className="iam-search-bar">
               <input
                 type="text"
+                aria-label="Search permissions"
                 placeholder="Search permissions..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
               {search && (
-                <button className="iam-search-clear" onClick={() => setSearch("")}>×</button>
+                <button className="iam-search-clear" aria-label="Clear search" onClick={() => setSearch("")}>×</button>
               )}
             </div>
             {toggleHint && <p className="iam-toggle-hint" role="status">{toggleHint}</p>}
@@ -297,26 +319,30 @@ export function IamPolicyEditor() {
                     </span>
                   </div>
                   <div className="iam-ns-actions">
-                    {actions.map((action) => (
-                      <label key={action} className={`iam-perm-row ${allowed.has(action) ? "perm-on" : "perm-off"}`}>
-                        <input
-                          type="checkbox"
-                          checked={allowed.has(action)}
-                          onChange={() => toggleAction(action)}
-                        />
-                        <span className="iam-perm-label">{humanLabel(action)}</span>
-                        <span className="iam-perm-action" title={action}>{action.split("/api/")[1] || action}</span>
-                      </label>
-                    ))}
+                    {actions.map((action) => {
+                      const lock = lockReason(action);
+                      return (
+                        <label key={action} className={`iam-perm-row ${allowed.has(action) ? "perm-on" : "perm-off"}${lock ? " perm-locked" : ""}`} title={lock || undefined}>
+                          <input
+                            type="checkbox"
+                            checked={allowed.has(action)}
+                            onChange={() => toggleAction(action)}
+                          />
+                          <span className="iam-perm-label">{humanLabel(action)}</span>
+                          {lock && <span className="iam-perm-lock" aria-hidden="true">🔒</span>}
+                          <span className="iam-perm-action" title={action}>{action.split("/api/")[1] || action}</span>
+                        </label>
+                      );
+                    })}
                   </div>
                 </div>
               ))}
             </div>
-          </>
+          </div>
         )}
 
         {editorTab === "json" && (
-          <div className="iam-json-editor">
+          <div className="iam-json-editor" id="iam-panel-json" role="tabpanel" aria-labelledby="iam-tab-json">
             <textarea
               className={`iam-json-textarea ${jsonError ? "has-error" : ""}`}
               value={jsonText}
@@ -329,7 +355,7 @@ export function IamPolicyEditor() {
         )}
 
         {editorTab === "test" && (
-          <div className="iam-test-panel">
+          <div className="iam-test-panel" id="iam-panel-test" role="tabpanel" aria-labelledby="iam-tab-test">
             {testError && <p className="error">{testError}</p>}
             {!testResults && (
               <button className="stable-action-button" onClick={runTest}>Run test</button>
