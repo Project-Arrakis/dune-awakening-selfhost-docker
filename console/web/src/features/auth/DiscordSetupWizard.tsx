@@ -83,20 +83,22 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
     try {
       await post("/api/setup/discord-restart", {});
     } catch { /* the container may drop the connection mid-response; that is expected */ }
-    // Poll health: it dips while the container recreates, then returns. When it
-    // is back and Discord now reads as configured, reload into the new sign-in.
-    let downSeen = false;
-    for (let i = 0; i < 60; i++) {
+    // Poll /api/auth/state until the NEW process reports Discord configured, then
+    // reload. Keying on discordOAuthConfigured (not on the connection dropping)
+    // is what makes this robust behind a reverse proxy/tunnel: while the
+    // container recreates the proxy returns 502 *responses* (fetch resolves,
+    // never throws), so a "did we see it go down" gate would never fire. The
+    // pre-restart process reports discordOAuthConfigured=false; only the
+    // restarted one reports true, so this cannot reload early.
+    for (let i = 0; i < 90; i++) {
       await new Promise((r) => setTimeout(r, 2000));
       try {
         const res = await fetch("/api/auth/state", { cache: "no-store" });
-        const cfg = res.ok ? (await res.json()).config : null;
-        if (!downSeen) { /* wait until we have seen it go down at least once, so we don't reload before the restart takes */ }
-        if (downSeen && cfg?.discordOAuthConfigured) { window.location.replace("/"); return; }
-      } catch { downSeen = true; }
+        if (res.ok && (await res.json()).config?.discordOAuthConfigured) { window.location.replace("/"); return; }
+      } catch { /* container mid-recreate; keep polling */ }
     }
     setRestarting(false);
-    setError("The console did not come back automatically. Run `dune console restart` on the host, then reload this page.");
+    setError("The console is taking longer than expected to restart. Give it another minute and reload this page, or run `dune console restart` on the host.");
   }
 
   // Derived step -- the fix for the loop. identity present => map; else app

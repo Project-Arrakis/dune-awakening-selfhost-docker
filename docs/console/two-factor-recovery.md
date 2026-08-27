@@ -56,11 +56,11 @@ afterwards.
 
 The section only appears when a second factor is actually enrolled.
 
-**History ():** this page previously said to regenerate "from the
+**History:** this page previously said to regenerate "from the
 console's own settings" at a time when neither the route nor the control existed, so
 anyone following it hit a dead end and the only real way back was the Case 3 host reset
-below — which also destroys the TOTP enrollment. The route shipped in  and the
-settings control in ; the instructions above now describe what is actually there.
+below — which also destroys the TOTP enrollment. The dedicated regenerate route and the
+settings control were added later; the instructions above now describe what is actually there.
 
 ## Case 3 — you lost both
 
@@ -93,7 +93,7 @@ some months from now would no longer be recognised as a rollback, and
 previously-spent recovery codes could come back to life.
 
 (An earlier revision of this page told you to delete both files. That was a
-workaround for , where re-enrollment hardcoded its epoch to zero and so
+workaround for the earlier break-glass bug, where re-enrollment hardcoded its epoch to zero and so
 landed behind a surviving watermark -- the console then treated your
 brand-new codes as a restored backup and wiped all ten, unused, the first
 time you tried to use one. The fix was to seed the epoch from the watermark
@@ -155,7 +155,7 @@ Cloudflare tunnel the limiter currently sees the proxy's address rather than
 each real client's, so repeated failed attempts can lock out everyone
 reaching the console through that proxy for the lockout window, not just the
 person typing. Give it the full window rather than retrying into the block.
-(Tracked as.)
+
 
 ## See also
 
@@ -164,5 +164,4 @@ person typing. Give it the full window rather than retrying into the block.
 
 - `docs/rfc-console-auth.md` §2.3 (Tier 3 design), §3.4 (credential loss,
   including the total-loss reset above), §4 (migration path)
-- `docs/security/console-rbac-implementation-and-testing.md`
 - `.env.example` — the `CONSOLE_TOTP_ENABLED` block

@@ -74,6 +74,7 @@ export function IamPolicyEditor() {
   const [saved, setSaved] = useState(false);
   const [editorTab, setEditorTab] = useState<"builder" | "json" | "test">("builder");
   const [testResults, setTestResults] = useState<Record<string, boolean> | null>(null);
+  const [testError, setTestError] = useState("");
   const [search, setSearch] = useState("");
 
   useEffect(() => {
@@ -189,7 +190,7 @@ export function IamPolicyEditor() {
     const valid = validateJson(jsonText);
     if (!valid || !catalog) return;
     if (selectedTier === "owner" && Array.isArray(valid) && valid.length === 0) {
-      setJsonError("Cannot save an empty policy for the owner tier. At least one own er-level permission is required to prevent permanent lock-out.");
+      setJsonError("Cannot save an empty policy for the owner tier. At least one owner-level permission is required to prevent permanent lock-out.");
       return;
     }
     setSaving(true);
@@ -208,10 +209,14 @@ export function IamPolicyEditor() {
   const runTest = async () => {
     const valid = validateJson(jsonText);
     if (!valid) return;
+    setTestError("");
     try {
       const res = await post<{ results: Record<string, boolean> }>("/api/settings/iam/policy/test", { statements: valid });
       setTestResults(res.results);
-    } catch {}
+    } catch (err) {
+      setTestResults(null);
+      setTestError(err instanceof Error ? err.message : "The test could not be run. Try again.");
+    }
   };
 
   if (!catalog) return <section className="iam-editor-loading"><p className="loading-dots">Loading policies</p></section>;
@@ -292,6 +297,7 @@ export function IamPolicyEditor() {
 
         {editorTab === "test" && (
           <div className="iam-test-panel">
+            {testError && <p className="error">{testError}</p>}
             {!testResults && (
               <button className="stable-action-button" onClick={runTest}>Run test</button>
             )}

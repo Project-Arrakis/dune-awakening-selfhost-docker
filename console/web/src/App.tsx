@@ -374,7 +374,6 @@ export function App() {
   // Tier 1 (Discord sign-in). Available only when the server reports the
   // OAuth application is fully configured; the button is otherwise absent.
   const [discordSignInAvailable, setDiscordSignInAvailable] = useState(false);
-  const [discordAppConfigured, setDiscordAppConfigured] = useState(false);
   const [discordPendingRestart, setDiscordPendingRestart] = useState(false);
   // Guided first-run setup: opened from the sign-in page (after the password),
   // or automatically when returning from the setup-mode Discord round-trip.
@@ -471,10 +470,9 @@ export function App() {
   }, [pinnedAddons]);
 
   useEffect(() => {
-    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean; discordOAuthAppConfigured?: boolean; discordSetupPendingRestart?: boolean; ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
+    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean; discordSetupPendingRestart?: boolean; ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
       setAuth(state.authenticated);
       setDiscordSignInAvailable(Boolean(state.config?.discordOAuthConfigured));
-      setDiscordAppConfigured(Boolean(state.config?.discordOAuthAppConfigured));
       setDiscordPendingRestart(Boolean(state.config?.discordSetupPendingRestart));
       setCsrfToken(state.csrfToken);
       setServerPorts(state.config?.ports);
@@ -929,7 +927,7 @@ export function App() {
           {navGroups.map((group) => (
             <section className="sidebar-nav-group" key={group.title} aria-label={group.title}>
               <p className="sidebar-nav-heading">{group.title}</p>
-              {group.items.filter((item) => (item.tab !== "Settings" && item.tab !== "Access Control") || allowedActions.length === 0 || allowedActions.some((a) => a === "settings:read" || a.startsWith("settings:"))).map((item) => (
+              {group.items.filter((item) => (item.tab !== "Settings" && item.tab !== "Access Control") || allowedActions.length === 0 || allowedActions.some((a) => a.startsWith("settings:"))).map((item) => (
                 <Fragment key={item.tab}>
                   <button className={tab === item.tab && (!selectedPinnedAddonId || item.tab !== "Addons") ? "active" : ""} onClick={() => {
                     setRedeploySetupOpen(false);

@@ -805,6 +805,7 @@ Layers legend's default-settings mechanism.
 | POST | `/api/settings/admin-password` | Change admin password | `currentPassword`, `newPassword`, plus `totpCode` when a second factor is enrolled |
 | POST | `/api/setup/write-oauth-config` | Save Discord OAuth settings incl. role→tier mapping and the 2FA-required tiers | `DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_REDIRECT_URI`, `DISCORD_HOME_GUILD_ID`, `DISCORD_OAUTH_OWNER_ALLOWLIST`, `DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP`, `DISCORD_CONSOLE_{ADMIN,MODERATOR,PLAYER}_ROLE_IDS`, `DISCORD_OAUTH_REQUIRE_MFA_TIERS` |
 | POST | `/api/setup/discord-finalize` | Complete the guided setup from an owner session (owner session is the authorization; no password): a server the captured identity **owns**, and the role mapping; writes the config and reports `restartRequired` | `guildId`, `adminRoleIds`, `moderatorRoleIds`, `playerRoleIds`, `requireMfa` |
+| POST | `/api/setup/discord-restart` | Owner-only: rebuild and restart the console container (via the docker socket) so a just-saved Discord config takes effect; returns 202 | None |
 | GET | `/api/setup/discord-identity` | The identity and guild list (with owner flags) captured by this owner session's setup-mode round-trip; 404 until one has happened | None |
 | POST | `/api/setup/save-oauth-secret` | Store the Discord client secret at `runtime/secrets/discord-oauth-client-secret.txt` (0600) | `secret`, `overwrite` |
 | POST | `/api/settings/web-port` | Change web console port | `port` (number 1-65535) |

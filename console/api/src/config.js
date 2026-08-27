@@ -304,7 +304,7 @@ export function loadConfig() {
     // mapping is unsound and Discord sign-in is refused until it is fixed.
     discordConsoleRoleTierConflicts: roleTierConflicts(discordConsoleRoleTiers),
     // Tiers that require the Discord ACCOUNT to have 2FA enabled (§2.1.1 item 4).
-    // Unset -> owner,admin. Set to empty to disable the gate.
+    // Unset or empty -> gate off (opt-in). A value like "owner,admin" enables it.
     // Opt-in (Requirement 0): an existing operator whose Discord account has no
     // 2FA must not lose sign-in on upgrade. The settings form suggests
     // "owner,admin"; nothing is enforced until the operator saves a value.

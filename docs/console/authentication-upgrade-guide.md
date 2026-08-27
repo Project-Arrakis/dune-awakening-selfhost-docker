@@ -239,9 +239,19 @@ DISCORD_OAUTH_REDIRECT_URI=https://<your-console-host>/api/auth/discord/callback
 ```
 
 The setup screen shows you the exact redirect URI to register (with a copy
-button) if you have not done it yet. There is no client-ID or secret field in
-the browser — the application is deployment config, never something the sign-in
-flow collects.
+button) if you have not done it yet. The first-run sign-in flow never asks for
+the client ID or secret — the application is deployment config. (Once set up,
+**Settings → Discord OAuth** does expose a Client ID and Client Secret field,
+for rotation; see below.)
+
+**Rotating the Discord client secret.** If the secret ever leaks (in `.env`, a
+screenshot, a paste), reset it in the Discord Developer Portal, then put the new
+value on the console — either replace `runtime/secrets/discord-oauth-client-secret.txt`
+(mode 0600) on the host, or paste it into **Settings → Discord OAuth → Client
+Secret**. **A restart is required**: the console reads the secret only at
+startup, so run `dune console restart` (or the in-app restart) after replacing
+it, or token exchanges keep using the old secret and you will believe the
+rotation took effect when it has not.
 
 **Then, the guided part** (the console owner, in a browser):
 

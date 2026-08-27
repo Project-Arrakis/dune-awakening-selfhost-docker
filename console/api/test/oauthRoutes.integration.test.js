@@ -593,3 +593,60 @@ test("guided setup: anonymous cannot start; the owner round-trip mints no sessio
     assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-finalize`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401);
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
+
+// ---- C1 regression: the auth-config routes are OWNER-only ----
+// A Discord admin/moderator session must NOT be able to rewrite the console's
+// own auth config or self-restart -- gating these on setup:write (which admin
+// holds) was an admin->owner privilege escalation.
+
+test("auth-config routes reject a non-owner Discord session (admin/moderator), owner allowed", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "authcfg-owner-"));
+  const console = startConsole(consolePort, discordPort, tempDir, ROLE_ENV);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const mod = await signInWithCode(consolePort, "moderator");
+    assert.equal(mod.status, 200);
+    const H = { cookie: `asc_session=${mod.sessionValue}`, "content-type": "application/json" };
+    const csrf = (await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/state`, { headers: H })).json()).csrfToken;
+    const post = (path, body) => fetch(`http://127.0.0.1:${consolePort}${path}`, { method: "POST", headers: { ...H, "x-csrf-token": csrf }, body: JSON.stringify(body || {}) });
+
+    // Every auth-config route must be 403 for a moderator.
+    assert.equal((await post("/api/setup/write-oauth-config", { DISCORD_OAUTH_OWNER_ALLOWLIST: USER_ID })).status, 403, "moderator must not write oauth config");
+    assert.equal((await post("/api/setup/save-oauth-secret", { secret: "x".repeat(30) })).status, 403, "moderator must not save the client secret");
+    assert.equal((await post("/api/setup/discord-finalize", { guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE })).status, 403, "moderator must not finalize");
+    assert.equal((await post("/api/setup/discord-restart", {})).status, 403, "moderator must not self-restart the console");
+    assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-identity`, { headers: H })).status, 403, "moderator must not read setup identity");
+
+    // Sanity: the moderator's escalation payload did not poison .env (it may not
+    // exist at all -- config came from env vars -- which equally proves nothing
+    // was written).
+    let env = "";
+    try { env = readFileSync(join(tempDir, ".env"), "utf8"); } catch { /* no .env == nothing written */ }
+    assert.doesNotMatch(env, /^DISCORD_OAUTH_OWNER_ALLOWLIST=/m, "moderator's write must not have landed");
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+// ---- C2 regression: GET /api/settings/iam/policies returns the editor's catalog ----
+test("iam/policies returns the action catalog (policies + actions + actionMap + namespaces)", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "iam-catalog-"));
+  const console = startConsole(consolePort, discordPort, tempDir, ROLE_ENV);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const owner = await signInWithCode(consolePort, "guildowner");
+    assert.equal(owner.status, 200);
+    const res = await fetch(`http://127.0.0.1:${consolePort}/api/settings/iam/policies`, { headers: { cookie: `asc_session=${owner.sessionValue}` } });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.policies && body.policies.owner, "policies present");
+    assert.ok(Array.isArray(body.actions) && body.actions.length > 0, "actions[] present (the editor reads catalog.actions)");
+    assert.ok(body.actionMap && typeof body.actionMap === "object", "actionMap present (route -> IAM action)");
+    assert.ok(body.namespaces && typeof body.namespaces === "object", "namespaces present");
+    // The editor does nsFromAction(action, actionMap) — a route key must resolve.
+    const anyRoute = body.actions[0];
+    assert.ok(body.actionMap[anyRoute], "every actions[] key exists in actionMap");
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});

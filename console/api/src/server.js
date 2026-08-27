@@ -40,7 +40,7 @@ import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
-import { actionForRoute, ROUTE_ACTIONS } from "./actions.js";
+import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
 import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions } from "./policy.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
@@ -1217,7 +1217,15 @@ async function handleApi(req, res) {
   if (path === "/api/auth/2fa/recovery-codes/regenerate" && req.method === "POST") return recoveryCodesRegenerateRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
   if (path === "/api/settings/iam/policies" && req.method === "GET") {
-    return json(res, 200, { policies: getAllPolicies() });
+    // The Access Control editor needs the action catalog, not just the policy
+    // documents: `actions` (route keys), `actionMap` (route -> IAM action) and
+    // `namespaces`. Returning only { policies } crashed the tab on load.
+    return json(res, 200, {
+      policies: getAllPolicies(),
+      actions: Object.keys(ROUTE_ACTIONS).sort(),
+      actionMap: ROUTE_ACTIONS,
+      namespaces: NAMESPACES
+    });
   }
   if (path === "/api/settings/iam/policy" && req.method === "PUT") {
     const body = await readJson(req);

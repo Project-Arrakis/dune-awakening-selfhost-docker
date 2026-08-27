@@ -65,14 +65,15 @@ export const ROUTE_ACTIONS = {
   "GET /api/setup/tasks":                      "setup:read",
   "POST /api/setup/preflight":                 "setup:write",
   "POST /api/setup/write-config":              "setup:write",
-  "POST /api/setup/write-oauth-config":        "setup:write",
-  "POST /api/setup/save-oauth-secret":         "setup:write",
-  "GET /api/setup/discord-identity":           "setup:write",
-  "POST /api/setup/discord-finalize":          "setup:write",
-  "POST /api/setup/discord-restart":           "setup:write",
+  // Owner-only (settings:*, which the admin tier is explicitly denied): these
+  // routes rewrite the console's own authentication trust anchor. Gating them
+  // on setup:write let an admin-tier Discord session escalate to owner.
+  "POST /api/setup/write-oauth-config":        "settings:write",
+  "POST /api/setup/save-oauth-secret":         "settings:write",
+  "GET /api/setup/discord-identity":           "settings:read",
+  "POST /api/setup/discord-finalize":          "settings:write",
+  "POST /api/setup/discord-restart":           "settings:write",
   "POST /api/setup/save-token":                "setup:write",
-  "POST /api/setup/write-oauth-config":        "setup:write",
-  "POST /api/setup/save-oauth-secret":         "setup:write",
   "POST /api/setup/init":                      "setup:write",
   "GET /api/public-directory/status":          "setup:read",
 

@@ -83,11 +83,19 @@ function constantTimeStringEqual(left, right) {
 }
 
 // ---- Discord HTTP helpers (injected fetchImpl for tests) ----
+const DISCORD_HTTP_TIMEOUT_MS = 5_000;
 async function discordJsonRequest(url, init, { fetchImpl, label }) {
   let response;
+  // Bound every outbound Discord call (parity with handoff.js). Without this a
+  // discord.com brownout or an operator's egress-drop firewall hangs the whole
+  // request for undici's multi-minute default -- a real DoS on the auth path.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DISCORD_HTTP_TIMEOUT_MS);
   try {
-    response = await fetchImpl(url, init);
+    response = await fetchImpl(url, { ...init, signal: controller.signal });
+    clearTimeout(timer);
   } catch {
+    clearTimeout(timer);
     throw oauthError("discord_unreachable", `Discord ${label} request failed.`, 502);
   }
   if (!response.ok) {
