@@ -28,7 +28,7 @@ export function createAuth(config) {
 
   // Integrity tag over an opaque session id -- NOT password storage.
   //
-  // CodeQL flags this as js/insufficient-password-hash (#483), which fires when a
+  // CodeQL flags this as js/insufficient-password-hash, which fires when a
   // credential is hashed with a fast hash instead of a slow KDF. There is no
   // password here and no stored digest for anyone to crack: `value` is a
   // server-generated random id, `config.sessionSecret` is an HMAC KEY, and the
@@ -90,7 +90,7 @@ export function createAuth(config) {
   // Discord- (and future passkey-) authenticated sessions always carry a
   // non-empty userId and are left untouched; this fork has not yet adopted
   // upstream's explicit `local-owner` principal for the password/TOTP tier
-  // (deferred, meta issue #357), so an empty userId is what currently marks
+  // (deferred, meta), so an empty userId is what currently marks
   // this credential type. Returns the number of sessions invalidated.
   function invalidatePasswordSessions(exceptId) {
     let count = 0;

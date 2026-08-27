@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { base32Decode, totpCode, TOTP_PERIOD_SECONDS } from "../src/auth/totp.js";
 
-// In-place upgrade tests (Requirement 0, gate #424 prereq 4, RFC §6 "Upgrade-path").
+// In-place upgrade tests (Requirement 0, gate  prereq 4, RFC §6 "Upgrade-path").
 //
 // Every other Tier 3 test boots a server against a FRESH state directory, which
 // only ever exercises the fresh-install path. The distinguishing property of an

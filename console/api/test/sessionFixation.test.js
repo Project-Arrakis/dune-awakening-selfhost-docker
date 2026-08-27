@@ -4,8 +4,8 @@ import { randomBytes } from "node:crypto";
 
 import { createAuth, parseCookies } from "../src/auth.js";
 
-// Evidence for the session-fixation suppressions (#243) and, transitively, for
-// #483's read of what sign() is actually for.
+// Evidence for the session-fixation suppressions and, transitively, for the
+// review's read of what sign() is actually for.
 //
 // Semgrep's `javascript.express.session-fixation` is a taint heuristic: it sees
 // `req` reach a handler that calls `res.setHeader` with a session cookie, and

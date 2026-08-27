@@ -240,7 +240,7 @@ export function loadConfig() {
     // flag flips to default-on / is removed once the frontend ships, restoring
     // the RFC's mandatory behavior for the release.
     consoleTotpEnabled: process.env.CONSOLE_TOTP_ENABLED === "1",
-    // Real-client-IP rate-limit key (#406, gate #424 prerequisite 3). Empty by
+    // Real-client-IP rate-limit key (, gate  prerequisite 3). Empty by
     // default -- every operator who never sets this sees byte-identical
     // behavior (the raw socket address). Only exact IPs, not CIDRs: an
     // operator's reverse proxy/tunnel daemon has one fixed address (loopback,

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Wiring test for #406 / gate #424 prerequisite 3: the login rate limiter's
+// Wiring test for  / gate  prerequisite 3: the login rate limiter's
 // key must resolve through resolveClientIp(), not a bare req.socket read.
 // rateLimit.test.js unit-tests resolveClientIp() itself; this test proves it
 // is actually connected to the real HTTP server and its config, over real

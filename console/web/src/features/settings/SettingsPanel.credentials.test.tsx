@@ -58,7 +58,7 @@ describe("SettingsPanel credential controls", () => {
     });
   });
 
-  describe("password change with a second factor enrolled (#515)", () => {
+  describe("password change with a second factor enrolled", () => {
     it("renders an authenticator-code field", async () => {
       mockBackend({ enrolled: true });
       render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
@@ -117,7 +117,7 @@ describe("SettingsPanel credential controls", () => {
     });
   });
 
-  describe("recovery-code regeneration (#512 UI)", () => {
+  describe("recovery-code regeneration ( UI)", () => {
     it("is hidden entirely when no second factor is enrolled", async () => {
       mockBackend({ enrolled: false });
       render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
@@ -168,12 +168,12 @@ describe("SettingsPanel credential controls", () => {
   });
 });
 
-describe("credential-state robustness (#524, #525, #526)", () => {
+describe("credential-state robustness (, , )", () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
-  // #525: /api/auth/me is read independently of /api/settings. That await used to
+  // /api/auth/me is read independently of /api/settings. That await used to
   // sit outside any try/catch, so a blip there aborted refresh() before /me ran
-  // and silently left the panel asserting "not enrolled" -- the #515 dead end
+  // and silently left the panel asserting "not enrolled" -- the  dead end
   // again, reached through a fail-open default.
   it("still learns the credential state when /api/settings fails", async () => {
     mockApi.mockImplementation((path: string) => {
@@ -186,7 +186,7 @@ describe("credential-state robustness (#524, #525, #526)", () => {
     expect(await screen.findByPlaceholderText("6-digit code")).toBeTruthy();
   });
 
-  // #525: an unreadable store is "unknown", not "no". Hiding the controls is the
+  // an unreadable store is "unknown", not "no". Hiding the controls is the
   // worst response -- that is exactly when the operator needs them.
   it("says so when the second-factor state is unreadable, instead of silently hiding it", async () => {
     mockBackend({ enrolled: false, unavailable: true });
@@ -205,7 +205,7 @@ describe("credential-state robustness (#524, #525, #526)", () => {
     expect(await screen.findByText(/two-factor state could not be read/i)).toBeTruthy();
   });
 
-  // #526: authenticator apps show "123 456" and the server strips whitespace so
+  // authenticator apps show "123 456" and the server strips whitespace so
   // that paste validates. maxLength={6} truncated it to "123 45" before the
   // server saw it, and every rejection spent rate-limiter budget.
   it("accepts a pasted space-separated code without truncating it", async () => {
@@ -225,7 +225,7 @@ describe("credential-state robustness (#524, #525, #526)", () => {
     ));
   });
 
-  // #524: the codes are the only copy that will ever exist. Gating their display
+  // the codes are the only copy that will ever exist. Gating their display
   // on a flag the panel's own Refresh button can flip to false destroyed them.
   it("keeps displaying regenerated codes even if the enrolled flag goes false", async () => {
     mockBackend({ enrolled: true });
@@ -249,7 +249,7 @@ describe("credential-state robustness (#524, #525, #526)", () => {
   });
 });
 
-// #531: with a factor enrolled, the Login Password and Two-Factor sections used
+// with a factor enrolled, the Login Password and Two-Factor sections used
 // to render byte-identical fields -- same placeholders, same label text, and no
 // id/name on any of them -- and both can be open at once. A password manager or
 // iOS one-time-code autofill had nothing to tell them apart, and an operator
@@ -257,7 +257,7 @@ describe("credential-state robustness (#524, #525, #526)", () => {
 // authenticator code" with a code already on screen.
 //
 // The suite passed before only because every test opened exactly one section.
-describe("the two credential forms are distinguishable (#531)", () => {
+describe("the two credential forms are distinguishable", () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
   it("keeps both sections' fields addressable when both are open", async () => {
@@ -294,12 +294,12 @@ describe("the two credential forms are distinguishable (#531)", () => {
   });
 });
 
-// #531: RecoveryCodesPanel hardcoded an <h1>. The app shell already renders one
+// RecoveryCodesPanel hardcoded an <h1>. The app shell already renders one
 // and the panel titles itself with an <h2>, so the settings copy emitted a
 // page-level heading nested under an h2 -- an inverted outline (WCAG 1.3.1)
 // that no lint in console/web would have caught. Added after a mutation test
 // showed reverting the fix left the whole suite green.
-describe("recovery-codes heading level (#531)", () => {
+describe("recovery-codes heading level", () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
   it("renders the settings copy as an h3, not a second page-level h1", async () => {
@@ -318,7 +318,7 @@ describe("recovery-codes heading level (#531)", () => {
   });
 });
 
-// #547: the catch in refreshCredentialState set only `unavailable`, leaving
+// the catch in refreshCredentialState set only `unavailable`, leaving
 // `enrolled` stale from an earlier success -- {enrolled:true, unavailable:true},
 // a shape the server never emits. Both JSX gates are independent, so the panel
 // rendered the "could not be read" banner AND the interactive regenerate form
@@ -328,7 +328,7 @@ describe("recovery-codes heading level (#531)", () => {
 // this: it only exercises the INITIAL MOUNT, where `enrolled` is already at its
 // false initializer, so the missing reset is invisible. This primes enrolled
 // first, then fails /me -- the transition is the whole point.
-describe("stale credential state after a transient /me failure (#547)", () => {
+describe("stale credential state after a transient /me failure", () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
   it("clears enrolled when /me starts failing, instead of showing the banner beside a live form", async () => {

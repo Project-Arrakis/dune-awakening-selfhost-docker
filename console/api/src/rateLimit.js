@@ -1,4 +1,4 @@
-// Resolves the address used to key the login rate limiter (#406, gate #424
+// Resolves the address used to key the login rate limiter.
 // prerequisite 3). Deliberately generic, not Cloudflare-specific -- an
 // earlier RFC draft's CF-Connecting-IP mechanism was rejected because most
 // operators of this project don't run Cloudflare Tunnel/Access at all (see

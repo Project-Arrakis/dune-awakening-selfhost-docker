@@ -318,7 +318,7 @@ test("a second store for the SAME file throws; close() releases the path", async
   } finally { cleanup(dir); }
 });
 
-// ---- backup/restore rollback detection (issue #425) ----
+// ---- backup/restore rollback detection ----
 
 test("epoch starts at 0 on enroll and advances on every mutating op", async () => {
   const { store, filePath, dir } = freshStore();
@@ -429,7 +429,7 @@ test("clear() removes the watermark too, so re-enrollment after a host reset sta
   } finally { cleanup(dir); }
 });
 
-test("a pre-#425 file with no epoch field loads as epoch 0 and behaves normally (Requirement 0)", async () => {
+test("a pre- file with no epoch field loads as epoch 0 and behaves normally (Requirement 0)", async () => {
   const { store, filePath, dir } = freshStore();
   try {
     const { generateRecoveryCodes } = await import("../src/auth/recoveryCodes.js");
@@ -451,7 +451,7 @@ test("a pre-#425 file with no epoch field loads as epoch 0 and behaves normally 
 });
 
 // ---- break-glass: recovery after BOTH the authenticator and every recovery
-// code are lost (#553) ----
+// code are lost ----
 //
 // The documented last resort for that operator is to delete this store and
 // re-enroll on the next password sign-in. The watermark is a separate sibling
@@ -491,7 +491,7 @@ test("break-glass: commit() re-key after a store deletion also clears the surviv
   } finally { cleanup(dir); }
 });
 
-test("break-glass healing does NOT weaken #425: a restored old backup is still caught", async () => {
+test("break-glass healing does NOT weaken a restored old backup is still caught", async () => {
   const { store, filePath, dir } = freshStore();
   try {
     const { codes } = await store.enroll(SECRET);

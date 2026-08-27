@@ -101,7 +101,7 @@ const nowSeconds = () => Math.floor(Date.now() / 1000);
 const SETUP_SCOPES = new Set(["enroll", "resetup"]);
 // Routes a restricted setup-scope session may reach (allowlist guard below).
 //
-// DO NOT add a route here just because it is under /api/auth/2fa/ (#519). Not
+// DO NOT add a route here just because it is under /api/auth/2fa/. Not
 // every 2fa route is an enrollment route: /2fa/recovery-codes/regenerate is
 // deliberately absent, because a re-setup session must not be able to mint a
 // fresh code set and stop there without completing re-enrollment. Adding an
@@ -117,13 +117,13 @@ const ENROLL_ALLOWED = new Set([
 // Fail-closed responder for a second-factor store error on the login path.
 // Distinguishes a NEWER-version file (deploy rollback: the state is GOOD -- the
 // operator must upgrade, NOT delete) from genuine corruption, so the 503 text
-// can never instruct an operator to destroy valid 2FA state (store #415's
+// can never instruct an operator to destroy valid 2FA state (store 's
 // SecondFactorVersionError exists precisely for this).
 export function secondFactorFailureReason(err) {
   return err?.name === "SecondFactorVersionError" ? "second_factor_version" : "second_factor_unavailable";
 }
 
-// `action` is parameterised (#532): this was hardcoded to "auth.login", which
+// `action` is parameterised: this was hardcoded to "auth.login", which
 // is why both credential routes hand-rolled their own copy of the ternary AND
 // dropped the version-specific guidance below -- sending an operator whose
 // state is GOOD off to "the sign-in page's error" to find the do-not-delete
@@ -140,7 +140,7 @@ function secondFactorUnavailable(res, loginUrl, req, err, action = "auth.login",
 // This preamble -- limiter key, throttle check, password compare, second-factor
 // probe, TOTP verify, metered failure on every refusal and recordSuccess
 // exactly once -- was written three times: the login route (its origin),
-// adminPasswordRoute, and recoveryCodesRegenerateRoute (#532). Each copy
+// adminPasswordRoute, and recoveryCodesRegenerateRoute. Each copy
 // independently repeated the metering discipline, so a future fix to it had to
 // land in three places or one route would silently stop throttling. The
 // operator-facing strings travelled with it and could drift apart on a surface
@@ -223,7 +223,7 @@ const loginRateLimiter = createLoginRateLimiter();
 // AUTHENTICATED session (password rotation, recovery-code regeneration).
 //
 // These used to share the login limiter, which was documented as deliberate but
-// is a real denial-of-service path (#522/#527): the sharing let anyone holding a
+// is a real denial-of-service path: the sharing let anyone holding a
 // stolen session cookie exhaust the login bucket -- and, at 32 failures, the
 // process-wide `__global__` bucket that recordSuccess never clears -- locking
 // every operator out of /api/auth/login, the only route back in. It also newly
@@ -351,7 +351,7 @@ createServer(async (req, res) => {
   if (!config.authDisabled) {
     console.log("Initial admin password is stored in runtime/secrets/admin-web-password.txt");
   }
-  // #425: informational only -- never blocks boot, and TOTP login is
+  // informational only -- never blocks boot, and TOTP login is
   // unaffected by a detected rollback (verifyTotpToken self-heals). Only
   // recovery-code login enforces anything, at the moment it's actually used.
   secondFactor.checkForRollback().then(({ detected }) => {
@@ -731,7 +731,7 @@ async function handleApi(req, res) {
       if (!consumed.ok) {
         loginRateLimiter.recordFailure(rateKey);
         if (consumed.reason === "reset_detected") {
-          // #425: the store detected its own file had moved backward in time
+          // the store detected its own file had moved backward in time
           // (a restored older backup) and wiped the entire recovery-code set
           // rather than risk honoring a resurrected, previously-spent code.
           // Named separately from the generic auth.login audit line below --
@@ -850,12 +850,12 @@ async function handleApi(req, res) {
     return json(res, 200, { [isResetup ? "reconfigured" : "enrolled"]: true, recoveryCodes: result.codes });
   }
   // Authenticated second-factor state for the settings UI. The client needs
-  // this BEFORE it submits a credential action (#515) -- inferring enrollment
+  // this BEFORE it submits a credential action -- inferring enrollment
   // from a failed request is what left the password form unable to satisfy the
   // server. False whenever the flag is off (or auth is disabled), so the UI
   // never asks for a code the server would ignore.
   //
-  // `unavailable` is reported separately (#525) rather than collapsing an
+  // `unavailable` is reported separately rather than collapsing an
   // unreadable store into `false`. secondFactorStore's contract says callers
   // must not treat a throw as "not configured" -- doing so hides the
   // authenticator field AND the whole Two-Factor section at exactly the moment
@@ -867,7 +867,7 @@ async function handleApi(req, res) {
     const session = auth.requireAuth(req, res);
     if (!session) return;
     let secondFactorEnrolled = false;
-    // NOT named `secondFactorUnavailable` (#547): that is the module-level 503
+    // NOT named `secondFactorUnavailable`: that is the module-level 503
     // helper, and a local binding of the same name shadows it for this whole
     // block. Nothing here calls it today, but the credential routes established
     // the pattern `catch (err) { secondFactorUnavailable(res, ...) }`, so a
@@ -1063,7 +1063,7 @@ async function handleApi(req, res) {
   // Sits BELOW the central policy gate so the settings:regenerate-recovery-codes
   // action is enforced, and below the enrollment-scope allowlist guard so a
   // restricted setup session cannot mint a fresh code set and stop there without
-  // completing re-enrollment (#519). The handler also calls requireAuth itself,
+  // completing re-enrollment. The handler also calls requireAuth itself,
   // so this placement is defence in depth rather than the only guard.
   if (path === "/api/auth/2fa/recovery-codes/regenerate" && req.method === "POST") return recoveryCodesRegenerateRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
@@ -2260,7 +2260,7 @@ async function adminPasswordRoute(req, res) {
   const auditUrl = sanitizedUrl(req, "/api/settings/admin-password");
   const ACTION = "settings.change-admin-password";
   const actor = { tier: session?.tier || "owner", userId: session?.userId || "local-owner" };
-  // Same deny() shape as the sibling regenerate route (#547). #544 extracted the
+  // Same deny() shape as the sibling regenerate route.  extracted the
   // shared preamble so the two routes would behave identically and then stopped
   // at this caller's edges: these three pre-proof refusals audited nothing,
   // while the sibling routed the equivalent cases through its own deny().
@@ -2270,7 +2270,7 @@ async function adminPasswordRoute(req, res) {
   };
   const body = await readJson(req);
   // readJson returns raw JSON.parse output, so a literal `null` body used to
-  // throw a TypeError and surface as a 500 with an internal JS message (#527).
+  // throw a TypeError and surface as a 500 with an internal JS message.
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return deny(400, { error: "Request body must be a JSON object." }, "malformed_body");
   }
@@ -2280,7 +2280,7 @@ async function adminPasswordRoute(req, res) {
   if (config.adminPasswordEnvManaged) {
     return deny(400, { error: "The login password is managed by ADMIN_PASSWORD. Update the environment value instead." }, "env_managed");
   }
-  // RFC §2.3/§5 (#407 phase 6): rotation requires fresh proof of the CURRENT
+  // RFC §2.3/§5 ( phase 6): rotation requires fresh proof of the CURRENT
   // Tier 3 credential from the acting session, not just the existing cookie.
   // requireEnrolled:false -- with no factor yet there is nothing to prove, so
   // the password alone is the whole credential.
@@ -2307,17 +2307,17 @@ async function adminPasswordRoute(req, res) {
 
 async function recoveryCodesRegenerateRoute(req, res) {
   // Fail closed on session/CSRF regardless of where this route is registered
-  // (#519). Its only authentication used to be its physical position below the
+  //. Its only authentication used to be its physical position below the
   // central gate: moving the registration line up beside the other
   // /api/auth/2fa/* routes made it answer unauthenticated POSTs with 10 live
   // recovery codes, with the whole suite still green.
   const session = auth.requireAuth(req, res);
   if (!session) return;
-  // Sanitized URL, never the raw req (#523): audit() writes req.url verbatim
+  // Sanitized URL, never the raw req: audit() writes req.url verbatim
   // including any query string, and redactValue only inspects `detail`.
   const auditUrl = sanitizedUrl(req, "/api/auth/2fa/recovery-codes/regenerate");
   const ACTION = "settings.recovery-codes-regenerated";
-  // Identify WHO acted (#522): two structurally different principals reach this
+  // Identify WHO acted: two structurally different principals reach this
   // route -- the local password/TOTP owner (empty userId) and a Discord-OAuth
   // owner -- and without this a compromised Discord owner rotating the local
   // sheet is indistinguishable from the real operator.
@@ -2333,7 +2333,7 @@ async function recoveryCodesRegenerateRoute(req, res) {
     return deny(400, { error: "Recovery codes are unavailable while admin authentication is disabled." }, { reason: "auth_disabled" });
   }
   if (!config.consoleTotpEnabled) {
-    // Deliberately does NOT claim "there are no recovery codes" (#527): a sheet
+    // Deliberately does NOT claim "there are no recovery codes": a sheet
     // enrolled before the flag was turned off is still on disk and valid again
     // the moment it returns.
     return deny(400, { error: "Two-factor authentication is not enabled on this console, so recovery codes cannot be regenerated. If codes were issued before it was disabled, they remain on disk and become valid again if it is re-enabled." }, { reason: "totp_disabled" });
@@ -2358,14 +2358,14 @@ async function recoveryCodesRegenerateRoute(req, res) {
       return deny(409, { error: "Two-factor setup changed while regenerating. Sign in again, then retry." }, { reason: result.reason });
     }
     // healedRollback records whether THIS regeneration was the remedy for a
-    // detected restore-rollback (#534). Without it the audit log cannot
+    // detected restore-rollback. Without it the audit log cannot
     // distinguish the fix the startup banner told the operator to perform from
     // a routine rotation -- which is exactly the question asked after a restore.
     audit(config, auditUrl, "settings.recovery-codes-regenerated", {
       ok: true, ...actor, count: result.codes.length, healedRollback: Boolean(result.healedRollback),
     });
     // Returned once, for the frontend's existing "I have saved these codes"
-    // acknowledgment gate (#484). Never retrievable again -- only the digests
+    // acknowledgment gate. Never retrievable again -- only the digests
     // are persisted -- so tell every cache and proxy in the path not to keep it.
     return json(res, 200, { ok: true, recoveryCodes: result.codes }, {
       "cache-control": "no-cache, no-store, must-revalidate",

@@ -22,7 +22,7 @@ type RecoveryCodesPanelProps = {
  * The "here are your recovery codes, confirm you saved them" gate (RFC §4).
  *
  * Shared deliberately between first-time enrollment / recovery re-setup
- * (TotpSetupScreen) and the settings-panel regenerate action (#512), so the two
+ * (TotpSetupScreen) and the settings-panel regenerate action, so the two
  * cannot drift into saying different things about codes that are shown exactly
  * once and are unrecoverable afterwards. The surrounding chrome differs (a
  * full-screen login panel vs. an inline settings section), so only the codes +

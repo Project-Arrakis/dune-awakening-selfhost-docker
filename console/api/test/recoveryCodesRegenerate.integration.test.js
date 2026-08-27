@@ -14,7 +14,7 @@ const REGENERATE_PATH = "/api/auth/2fa/recovery-codes/regenerate";
 
 // Hands out successive TOTP codes, tracking the last step the server consumed so
 // each hop takes the free one-step look-ahead when one is available and sleeps
-// only when it is not (#532). Chaining the step through here -- rather than
+// only when it is not. Chaining the step through here -- rather than
 // re-reading the clock between hops -- is also what closes the original flake:
 // a re-read can land below the consumed step and hand back an already-spent code.
 function totpChain(secret, startStep) {
@@ -26,7 +26,7 @@ function totpChain(secret, startStep) {
   };
 }
 
-// Run concurrently, bounded (#532). Each test owns its port, temp dir and
+// Run concurrently, bounded. Each test owns its port, temp dir and
 // console process, so there is no shared state -- and the file was the suite's
 // critical path at ~10 minutes, almost all of it idle TOTP waits.
 //
@@ -69,7 +69,7 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
         assert.ok(!enrollmentCodes.includes(code), "no code from the enrollment set is reissued");
       }
 
-      // Compared against the pre-rotation state (#528). `length === 10` was a
+      // Compared against the pre-rotation state. `length === 10` was a
       // tautology -- it holds identically before and after, so it could not tell
       // "rotated" from "untouched" -- and the comment above it claimed a check on
       // the TOTP secret that nothing actually performed.
@@ -131,7 +131,7 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
 
       // Neither failure touched the stored set: the enrollment codes still work.
       const state = JSON.parse(readFileSync(secondFactorPath(tempDir), "utf8"));
-      // "intact" means the same digests, not merely ten of them (#528).
+      // "intact" means the same digests, not merely ten of them.
       assert.deepStrictEqual(state.recoveryCodes, before.recoveryCodes, "a refused regeneration leaves the stored set byte-identical");
       const recovery = await login(port, { password, recoveryCode: enrollmentCodes[0] });
       assert.equal(recovery.status, 200, "an original recovery code still works after refused regeneration attempts");
@@ -191,8 +191,8 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
   });
 
   // The settings UI drives its "this credential action needs an authenticator
-  // code" branching off this flag (#515). Tested here rather than in a ninth
-  // copy of this harness (#427 item 1) because it gates the same Tier 3
+  // code" branching off this flag. Tested here rather than in a ninth
+  // copy of this harness ( item 1) because it gates the same Tier 3
   // credential surface these tests already stand up.
   test("/api/auth/me reports secondFactorEnrolled:false before enrollment and true after", async () => {
     const port = await getFreePort();
@@ -232,7 +232,7 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
     }
   });
 
-  // ---- #519: the route's own authentication, independent of registration order ----
+  // ---- the route's own authentication, independent of registration order ----
 
   // Every other test in this file supplies a cookie + CSRF token, so nothing
   // pinned that the route needs a session AT ALL. Its only protection used to be
@@ -283,7 +283,7 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
     }
   });
 
-  // ---- #520: the TOTP verification branch ----
+  // ---- the TOTP verification branch ----
 
   // Deleting verifyTotpToken and its guard used to leave this whole file green:
   // no test ever submitted a CORRECT password with a BAD code, so the verifier's
@@ -364,7 +364,7 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
     }
   });
 
-  // ---- #518: regeneration heals a detected rollback ----
+  // ---- regeneration heals a detected rollback ----
 
   // The console's own startup banner and recovery-login error tell the operator to
   // "regenerate recovery codes from Settings" after a rollback is detected. Before
@@ -388,7 +388,7 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
       assert.equal(JSON.parse(readFileSync(filePath, "utf8")).epoch, 1);
 
       // Restore the main store alone, leaving the watermark at 1 -- the exact
-      // single-file-restore case #425 exists to catch. State epoch is now 0 < 1.
+      // single-file-restore case  exists to catch. State epoch is now 0 < 1.
       writeFileSync(filePath, preConsumption, { mode: 0o600 });
 
       const actor = await login(port, { password, totpCode: await nextCode() });
@@ -419,7 +419,7 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
     }
   });
 
-  // ---- #521/#522/#523/#527/#534: hardening ----
+  // ---- hardening ----
 
   test("every refusal is audited with a reason and an actor, and a malformed body is a 400 not a 500", async () => {
     const port = await getFreePort();
@@ -527,7 +527,7 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
   });
 
   // Pins requireFreshTier3Proof's `requireEnrolled` parameter -- the one real
-  // behavioural difference between the two credential routes (#532). Password
+  // behavioural difference between the two credential routes. Password
   // rotation skips TOTP when no factor exists (nothing to prove yet); this
   // route has nothing to regenerate and must refuse.
   //
@@ -566,10 +566,10 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
     }
   });
 
-  // #525's whole point was that /me distinguishes "unknown" from "not enrolled".
+  // 's whole point was that /me distinguishes "unknown" from "not enrolled".
   // Until now only the CLIENT side was tested, against a mocked API -- so the
   // server never actually had to emit the flag. Found while mutation-testing
-  // #547's rename of the local that shadowed the 503 helper: breaking the wire
+  // 's rename of the local that shadowed the 503 helper: breaking the wire
   // field left every suite green.
   test("/api/auth/me reports secondFactorUnavailable when the store is unreadable", async () => {
     const port = await getFreePort();

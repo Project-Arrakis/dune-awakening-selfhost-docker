@@ -279,7 +279,7 @@ test("rotation fails closed (503) and revokes nothing when the second-factor sta
   }
 });
 
-// #547: #544 extracted the shared credential-proof preamble so rotation and
+//  extracted the shared credential-proof preamble so rotation and
 // regeneration would behave identically, and stopped at this caller's edges --
 // the three pre-proof refusals audited nothing, while the sibling route routed
 // the equivalent cases through its own deny(). An operator diffing the audit log
@@ -309,7 +309,7 @@ test("pre-proof refusals on the rotation route are audited with a reason and an 
     assert.ok(refusal, "a pre-proof refusal is audited, not silent");
     assert.equal(refusal.detail.reason, "malformed_body");
     assert.ok(refusal.detail.userId, "the refusal names the acting principal");
-    // Sanitized path, never req.url verbatim (#523).
+    // Sanitized path, never req.url verbatim.
     assert.equal(refusal.path, "/api/settings/admin-password");
   } finally {
     await stopProcess(consoleProc.child);
@@ -317,7 +317,7 @@ test("pre-proof refusals on the rotation route are audited with a reason and an 
   }
 });
 
-// #547 / #523: the SUCCESS-path audits passed raw `req`, so audit() wrote
+// the SUCCESS-path audits passed raw `req`, so audit() wrote
 // req.url verbatim -- query string included -- while redactValue only inspects
 // `detail`. Added after a mutation pass showed reverting that fix left the file
 // green: the refusal-path test above pins the sanitized path, the success path

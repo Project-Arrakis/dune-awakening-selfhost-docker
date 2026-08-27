@@ -12,7 +12,7 @@
 // both accept the same TOTP step counter (replay within one 30s step). Every
 // mutating op runs inside runExclusive() so the read, the decision, and the
 // persist are one uninterruptible critical section. Closes the carried-forward
-// obligations from the recovery-code (#408) and TOTP (#412) module audits.
+// obligations from the recovery-code and TOTP module audits.
 //
 // SERIALIZATION IS IN-PROCESS AND PER-FILE. The queue only serializes callers of
 // ONE store instance. Two instances over the same file would each have their own
@@ -27,13 +27,13 @@
 //     "totp": { "secret": "<base64 raw bytes>", "lastUsedCounter": <int> },
 //     "recoveryCodes": ["<64-hex digest>", ...] }
 // The TOTP secret is stored as base64 of the RAW bytes and decoded to a Buffer
-// at the verify boundary -- verifyTotpMatch is never handed base32 (#411 audit).
+// at the verify boundary -- verifyTotpMatch is never handed base32.
 // The secret is stored reversibly (base64 is encoding, not encryption) in a 0600
 // file: acceptable for this phase because host-filesystem access already
 // transcends console auth (RFC §3.4); encryption-at-rest is deferred to the
-// separate KEK/DEK secrets system (Requirement 27), a deferral recorded in #407.
+// separate KEK/DEK secrets system, a deliberate and recorded deferral.
 //
-// Backup/restore integrity (RFC §2.3.1, issue #425): a monotonic `epoch`
+// Backup/restore integrity (RFC §2.3.1): a monotonic `epoch`
 // counter (bumped on every mutating op) plus an independent watermark file
 // (`watermarkFilePath`, sibling to the main store, same 0600/atomic-write
 // discipline) detect a restored-file rollback. On every consumeRecoveryCode()
@@ -202,7 +202,7 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
     if (!Array.isArray(parsed.recoveryCodes) || parsed.recoveryCodes.some((d) => typeof d !== "string")) {
       throw new SecondFactorCorruptError("second-factor store recoveryCodes section is malformed");
     }
-    // epoch predates issue #425: a file written before this feature has no
+    // epoch predates: a file written before this feature has no
     // field at all. Treated as 0, not corruption -- every existing install's
     // file continues to load exactly as before (Requirement 0).
     if (parsed.epoch !== undefined && !Number.isInteger(parsed.epoch)) {
@@ -224,7 +224,7 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
   // initialCounter seeds totp.lastUsedCounter so the enrollment-confirm code's
   // own step is already "used" -- the RFC (§4) forbids reusing the confirm code
   // at the forced first login, and seeding the matched step enforces that.
-  // epoch is issue #425's rollback-detection counter (see module header) --
+  // epoch is's rollback-detection counter (see module header) --
   // enroll() always starts a fresh install at 0; commit() carries the prior
   // state's epoch forward (or starts at 0 if none existed) so a legitimate
   // rotation is never mistaken for the backward jump it's meant to catch.
@@ -253,7 +253,7 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
     return runExclusive(async () => (await loadRaw()) !== null);
   }
 
-  // Read-only rollback check for a startup informational banner (issue #425).
+  // Read-only rollback check for a startup informational banner.
   // Never throws, never blocks boot, never mutates anything -- a corrupt or
   // unreadable store/watermark degrades to "nothing to report" here, since
   // the store's own corruption handling (fail closed on the auth path) is
@@ -280,7 +280,7 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
       assertSecretBytes(secretBytes);
       if ((await loadRaw()) !== null) return { ok: false, reason: "already_configured" };
       const { codes, digests } = count ? generateRecoveryCodes(count) : generateRecoveryCodes();
-      // Seed from the watermark, NOT 0 (#553). Break-glass is the case that matters:
+      // Seed from the watermark, NOT 0. Break-glass is the case that matters:
       // an operator who has lost both authenticator and recovery codes recovers
       // by deleting this store (exactly what the login 503 text tells them to
       // do) and re-enrolling on the next password sign-in. The watermark is a
@@ -336,7 +336,7 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
   // the reduced set persisted, all inside the critical section so the same code
   // cannot be spent twice by concurrent logins. Returns { ok, reason, remaining }.
   //
-  // Rollback check (#425) happens here, not on every read: this is the one
+  // Rollback check happens here, not on every read: this is the one
   // operation a resurrected old code could exploit, so it's the one place the
   // cost of the watermark comparison is worth paying. If the loaded state is
   // behind the watermark, the whole set is poisoned -- wiped, not consumed --
@@ -367,7 +367,7 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
   // { ok:true, codes } with the one-time plaintext codes, or
   // { ok:false, reason:"not_configured" }. TOTP secret/counter are untouched.
   //
-  // Heals a detected rollback rather than leaving it armed (#518). A plain
+  // Heals a detected rollback rather than leaving it armed. A plain
   // `epoch += 1` was a trap: after a single-file restore the loaded epoch is
   // BELOW the watermark, `bumpWatermark` no-ops while `epoch <= current`, and
   // the freshly-issued set is therefore wiped unread by the next
@@ -402,7 +402,7 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
 
   // Remove all second-factor state (the documented total-loss host reset, RFC
   // §3.4, and the pre-rotation clear). Idempotent. Also removes the watermark
-  // (#425): a deliberate reset must start genuinely fresh at epoch 0, or the
+  //: a deliberate reset must start genuinely fresh at epoch 0, or the
   // very next recovery-code use after re-enrollment would find epoch 0 behind
   // the old watermark and wrongly treat this intentional reset as the
   // backward-file-move it's meant to catch.

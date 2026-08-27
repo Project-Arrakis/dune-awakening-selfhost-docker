@@ -11,7 +11,7 @@ import { waitForLog } from "../test-support/consoleHarness.js";
 
 import { base32Decode, totpCode, TOTP_PERIOD_SECONDS } from "../src/auth/totp.js";
 
-// Issue #425, end to end through the real login route: a recovery code that
+// Issue , end to end through the real login route: a recovery code that
 // looks valid again only because its backing file was restored to an older
 // state must be rejected, wipe the entire (now-untrustworthy) code set, and
 // be visible in the audit log under its own event name -- not just covered
