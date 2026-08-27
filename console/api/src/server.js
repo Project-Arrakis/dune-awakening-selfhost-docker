@@ -23,7 +23,7 @@ import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPers
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
 import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
 import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon } from "./addons.js";
-import { hardwareStatusSnapshot, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
+import { createHardwareStatusProvider, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { createSecondFactorStore } from "./auth/secondFactorStore.js";
 import { generateTotpSecret, provisioningUri, provisioningQrDataUri, verifyTotpMatch } from "./auth/totp.js";
@@ -105,6 +105,7 @@ if (config.authDisabled) {
     "This is intended for local development only; never set it on an install anyone else can reach."
   );
 }
+const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
 const CONSOLE_PROCESS_STARTED_AT = Date.now();
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
 try {
@@ -2534,7 +2535,7 @@ async function addonBridgeRoute(req, res, path) {
   }
   if (action === "server.hardware.status") {
     const addon = assertInstalledAddonPermission(config, id, "server:status");
-    const result = await hardwareStatusSnapshot();
+    const result = await hardwareStatus();
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, sensorCount: result.temperatures.length, ok: true });
     return json(res, 200, { ok: true, result });
   }
