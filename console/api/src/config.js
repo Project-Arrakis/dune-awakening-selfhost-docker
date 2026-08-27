@@ -231,6 +231,28 @@ export function loadConfig() {
     sessionSecret: getOrCreateSecret(resolve(secretsDir, "admin-web-session-secret.txt"), 48),
     adminPassword: process.env.ADMIN_PASSWORD || getOrCreateSecret(adminPasswordFile, 18),
     adminPasswordFile,
+    // Tier 3 password + mandatory TOTP (RFC docs/rfc-console-auth.md §2.3/§4).
+    // Gated OFF by default during incremental rollout: the backend enrollment/
+    // login flow lands before the console UI that drives it (a later phase), so
+    // activating it on every upgrade now would strand operators at an
+    // enrollment prompt the UI can't yet complete. With the flag unset, password
+    // login is byte-identical to today (single factor) -- Requirement 0. The
+    // flag flips to default-on / is removed once the frontend ships, restoring
+    // the RFC's mandatory behavior for the release.
+    consoleTotpEnabled: process.env.CONSOLE_TOTP_ENABLED === "1",
+    // Real-client-IP rate-limit key (#406, gate #424 prerequisite 3). Empty by
+    // default -- every operator who never sets this sees byte-identical
+    // behavior (the raw socket address). Only exact IPs, not CIDRs: an
+    // operator's reverse proxy/tunnel daemon has one fixed address (loopback,
+    // or a docker network gateway/service IP), and getting IP-range matching
+    // wrong is itself a security bug, so this deliberately does not attempt it.
+    trustedProxyIps: String(process.env.CONSOLE_TRUSTED_PROXY_IPS || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+    secondFactorFile: resolve(generatedDir, "console-second-factor.json"),
+    totpIssuer: APP_NAME,
+    enrollmentSessionTtlMs: 10 * 60 * 1000, // §4: short-lived, non-renewable enrollment session
     adminPasswordEnvManaged,
     generatedDir,
     secretsDir,
@@ -436,6 +458,7 @@ export function publicConfig(config) {
     adminPasswordEnvManaged: config.adminPasswordEnvManaged,
     secureCookies: config.secureCookies,
     allowHostBootstrap: config.allowHostBootstrap,
-    mockMode: config.mockMode
+    mockMode: config.mockMode,
+    consoleTotpEnabled: config.consoleTotpEnabled
   };
 }
