@@ -14,10 +14,11 @@ is until you deliberately turn the new option on.
 |---|---|---|
 | **Password** | Every install has this today | The admin password from `runtime/secrets/admin-web-password.txt` (or `ADMIN_PASSWORD`). |
 | **Password + authenticator app** | New in this release, **off by default** | Your password plus a 6-digit code from an authenticator app (Google Authenticator, Authy, 1Password, Bitwarden, etc.), with 10 one-time recovery codes for the day you lose your phone. |
+| **Sign in with Discord** | New in this release, **off until configured** | People sign in with their Discord account and get console access from the roles they hold in your Discord server — owner, admin, moderator, or player. No shared password to hand out. |
 
-Discord sign-in and passkeys are **not** part of this release. If you have read
-about them in the design document (`docs/rfc-console-auth.md`), that is the
-plan, not something you can turn on today.
+Passkeys are **not** part of this release. If you have read about them in the
+design document (`docs/rfc-console-auth.md`), that is the plan, not something
+you can turn on today.
 
 There is one admin account. If several people sign in to your console, they
 share the password today and they will share the authenticator too. Read the
@@ -193,14 +194,90 @@ Back them up together and restore them together. If you restore only the first
 from an old backup, expect the "restored backup" message above the first time
 you use a recovery code — that is the marker doing its job.
 
+## Sign in with Discord (role-based access)
+
+Everything above is about the one shared admin account. Discord sign-in is
+different: each person signs in as themselves, and what they can do in the
+console comes from the roles they hold in your Discord server. Turning it on
+does **not** change password sign-in — it adds a second button.
+
+### What you need first
+
+- A Discord server (the "home guild") where your admins and players are members.
+- A Discord application: go to https://discord.com/developers/applications,
+  create one, and under **OAuth2** add a redirect URL that is your console's
+  address plus `/api/auth/discord/callback` (for example
+  `https://console.example.org/api/auth/discord/callback`). Copy the
+  **Client ID** and generate a **Client Secret**.
+- Role IDs from your server. Turn on Developer Mode in Discord (User Settings
+  → Advanced), then right-click a role → **Copy Role ID**. Decide which role
+  means which access:
+
+  | Console tier | What it can do (default policy) | Typical Discord role |
+  |---|---|---|
+  | Owner | everything, including Settings | the server owner's role, or none — use "Owner user IDs" instead |
+  | Admin | run the server, players, bases, backups, updates — **not** Settings or the database | your admin/staff role |
+  | Moderator | read everything, kick, broadcast | your mod role |
+  | Player | read-only views | your member/player role |
+
+  A person holding several mapped roles gets the **highest** one.
+
+### Turning it on
+
+1. Sign in with the password. Open **Settings → Discord OAuth**.
+2. Fill in **Client ID**, **Redirect URI** (exactly as registered in Discord),
+   **Client Secret**, and your **Discord Server ID**.
+3. Fill in the role fields — **Admin Role** is required unless you list an owner
+   user ID; **Player Role** is recommended; the others are optional. If you are
+   signed in with Discord already, **add me** puts your own user ID in
+   *Owner user IDs*; otherwise paste it. Tick *Allow the owner user IDs above to
+   sign in as owner* if you want those IDs to be owners regardless of roles.
+4. Optional but recommended: set **Require Discord 2FA for** to `owner,admin`
+   (click *use recommended*). Anyone signing in for those tiers must have
+   two-factor enabled on their **Discord account**; the console does not run a
+   second enrollment for Discord users.
+5. **Save Discord OAuth**, then `dune console restart`.
+
+The sign-in page now shows **Sign in with Discord** above a *Sign in with
+password instead* link. Have someone with a mapped role try it before you
+tell everyone.
+
+### What people will see
+
+The first time, Discord asks them to authorize the application — it needs to
+read who they are and their roles in your server (nothing else, and it cannot
+post as them). Then they land in the console with the tier their roles give
+them. Tabs they may not use are hidden; the server refuses them regardless.
+
+If they are refused, the page tells them why in plain words: not a member of
+the server, no mapped role, or — with the 2FA option on — their Discord account
+has no two-factor enabled (with the Discord setting to fix that). An operator
+who sees *"this console has no way to decide what a Discord user may do"* has
+saved the OAuth settings without any role mapping or owner list — go back to
+Settings and map at least an Admin or Owner role.
+
+### Things to know
+
+- **Password sign-in stays available** and is always the owner. Keep it (and,
+  ideally, the authenticator from earlier in this guide) as your way back in.
+- **Changing someone's Discord role takes effect at their next sign-in.** A
+  person you demote keeps their current session until it expires or they sign
+  out; restart the console to end every session at once.
+- **Upgrading from an earlier build that already had Discord sign-in:** your
+  existing owner list and bootstrap setting keep working unchanged. Because
+  the console now reads roles, Discord asks each person to authorize the
+  application once more. The 2FA requirement is off until you turn it on.
+- **Running a companion bot with a signed tier handoff?** The bot stays the
+  single source of truth; the role fields are ignored while the handoff is
+  configured.
+
 ## Questions operators ask
 
 **Several people sign in to my console. Do they each get their own
-authenticator?** No. There is one admin account, so there is one authenticator
-and one set of recovery codes, the same way there is one password today. Either
-one trusted person holds the phone, or you share the pairing (most apps can
-scan the same QR on two phones during Step 3). Per-person accounts are what
-Discord sign-in is for, and that is not in this release.
+authenticator?** For the password account, no: one account, one authenticator,
+one set of recovery codes. For per-person access, use *Sign in with Discord*
+above — each person is themselves, and their Discord account's own 2FA can be
+required.
 
 **My password is set with `ADMIN_PASSWORD` in `.env`, not the file.** Password
 + authenticator works exactly the same. The only difference is one you already
@@ -218,7 +295,8 @@ not restarted by any step here.
 
 **Can I use a hardware key / passkey instead of a phone app?** Not in this
 release. Any app that does standard time-based codes (TOTP) works, and most
-password managers can act as one.
+password managers can act as one. (If your Discord account uses a security
+key for 2FA, that already satisfies the Discord 2FA requirement above.)
 
 ## See also
 

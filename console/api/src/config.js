@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, statSync, chownSync } from "node:fs";
+import { parseRoleIdList, parseTierList } from "./integrations/discord/roleTiers.js";
 import { dirname, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
@@ -37,6 +38,16 @@ export const APP_NAME = "Dune Docker Console";
 // field in this function, which genuinely are env-var-only with no
 // other source of truth -- confirmed those fields have no equivalent
 // in ENGINE_FIELDS/usersettings.json).
+// Reads a secret from an env value when set, else from a 0600 file (empty when neither).
+function readInlineOrFile(inline, file) {
+  if (inline) return String(inline).trim();
+  try {
+    return readFileSync(file, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
 export function resolvePorts(env = process.env, repoRoot = process.cwd()) {
   const enginePorts = readEnginePortsFromProfile(repoRoot);
   const legacyEnginePorts = enginePorts.port === null || enginePorts.igwPort === null
@@ -201,6 +212,18 @@ export function loadConfig() {
 
   const adminPasswordFile = resolve(secretsDir, "admin-web-password.txt");
   const adminPasswordEnvManaged = Boolean(process.env.ADMIN_PASSWORD);
+  const oauthHomeGuildId = /^\d{17,19}$/.test(process.env.DISCORD_HOME_GUILD_ID || "") ? process.env.DISCORD_HOME_GUILD_ID : "";
+  // Console-native role -> tier mapping (rfc-console-auth.md §2.1.1). Each key is
+  // a comma-separated list of Discord role IDs; malformed entries are dropped,
+  // never fatal. "player" maps to the console's player tier (the companion bot's
+  // form calls the same field "Player Role").
+  const discordConsoleRoleTiers = {
+    owner: parseRoleIdList(process.env.DISCORD_CONSOLE_OWNER_ROLE_IDS),
+    admin: parseRoleIdList(process.env.DISCORD_CONSOLE_ADMIN_ROLE_IDS),
+    moderator: parseRoleIdList(process.env.DISCORD_CONSOLE_MODERATOR_ROLE_IDS),
+    player: parseRoleIdList(process.env.DISCORD_CONSOLE_PLAYER_ROLE_IDS),
+    observer: [],
+  };
   return {
     appName: APP_NAME,
     version: readConsoleVersion(repoRoot),
@@ -254,6 +277,31 @@ export function loadConfig() {
     totpIssuer: APP_NAME,
     enrollmentSessionTtlMs: 10 * 60 * 1000, // §4: short-lived, non-renewable enrollment session
     adminPasswordEnvManaged,
+    // ---- Discord OAuth sign-in (Tier 1, rfc-console-auth.md §2.1 / §2.1.1) ----
+    discordOAuthConfigured: Boolean(
+      process.env.DISCORD_OAUTH_CLIENT_ID &&
+      (process.env.DISCORD_OAUTH_CLIENT_SECRET || existsSync(resolve(secretsDir, "discord-oauth-client-secret.txt"))) &&
+      process.env.DISCORD_OAUTH_REDIRECT_URI &&
+      oauthHomeGuildId
+    ),
+    discordOAuthClientId: process.env.DISCORD_OAUTH_CLIENT_ID || "",
+    discordOAuthClientSecret: readInlineOrFile(process.env.DISCORD_OAUTH_CLIENT_SECRET, resolve(secretsDir, "discord-oauth-client-secret.txt")),
+    discordOAuthRedirectUri: process.env.DISCORD_OAUTH_REDIRECT_URI || "",
+    discordOAuthApiBaseUrl: process.env.DISCORD_OAUTH_BASE_URL || "https://discord.com/api/v10",
+    discordOAuthAllowOwnerBootstrap: process.env.DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP === "1",
+    discordOAuthOwnerAllowlist: String(process.env.DISCORD_OAUTH_OWNER_ALLOWLIST || "").split(",").map((item) => item.trim()).filter((item) => /^\d{17,19}$/.test(item)),
+    discordHomeGuildId: oauthHomeGuildId,
+    discordConsoleRoleTiers,
+    // Tiers that require the Discord ACCOUNT to have 2FA enabled (§2.1.1 item 4).
+    // Unset -> owner,admin. Set to empty to disable the gate.
+    // Opt-in (Requirement 0): an existing operator whose Discord account has no
+    // 2FA must not lose sign-in on upgrade. The settings form suggests
+    // "owner,admin"; nothing is enforced until the operator saves a value.
+    discordOAuthRequireMfaTiers: parseTierList(process.env.DISCORD_OAUTH_REQUIRE_MFA_TIERS),
+    // Optional signed handoff to a companion bot (§2.1). When configured it is
+    // the authoritative tier source and the role mapping above is not used.
+    discordBotHandoffSecret: readInlineOrFile(process.env.DISCORD_BOT_HANDOFF_SECRET, resolve(secretsDir, "discord-bot-handoff-secret.txt")),
+    discordBotHandoffUrl: (process.env.DISCORD_BOT_HANDOFF_URL || "").replace(/\/+$/, ""),
     generatedDir,
     secretsDir,
     auditLog: resolve(generatedDir, "web-admin-audit.jsonl"),
@@ -459,6 +507,7 @@ export function publicConfig(config) {
     secureCookies: config.secureCookies,
     allowHostBootstrap: config.allowHostBootstrap,
     mockMode: config.mockMode,
-    consoleTotpEnabled: config.consoleTotpEnabled
+    consoleTotpEnabled: config.consoleTotpEnabled,
+    discordOAuthConfigured: config.discordOAuthConfigured
   };
 }

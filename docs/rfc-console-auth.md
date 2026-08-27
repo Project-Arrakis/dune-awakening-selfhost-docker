@@ -85,6 +85,38 @@ This is the entire authorization fix — no cache, no grace window, no new persi
 
 **Trade-off, stated explicitly:** once an operator configures the bot handoff, a bot outage now means "no *new* Discord-tiered logins until the bot is back," instead of "the allowlist quietly grants owner regardless of the person's real current role." Already-active sessions are unaffected (session cookies validate against the in-memory session store, never re-checked against the handoff) — only *new* logins during an outage window are affected.
 
+#### 2.1.1 Amendment — console-native role→tier resolution (so Tier 1 works without a companion bot)
+
+**Why this amendment exists.** §2.1 as accepted resolves a Discord user's tier through a signed handoff to the operator's own bot, with a static owner allowlist as the only alternative. §1.2 of this same document names the operator with no bot as a first-class case — and for that operator, §2.1 gives "sign in with Discord as owner, if allowlisted" and nothing else. That is Discord *authentication* without Discord *authorization*, and it is not what an operator means by role-based access. This amendment adds a third tier source that the console evaluates itself, from the Discord roles the signed-in member actually holds.
+
+**What the operator configures.** The same information the companion-bot setup already gathers, as manual entries in the console's Discord OAuth settings (Settings → Discord OAuth):
+
+| Field | Required | Stored as |
+|---|---|---|
+| Home guild | yes | `DISCORD_HOME_GUILD_ID` (exists) |
+| Owner user IDs | at least one of Owner user IDs / Owner role / Admin role | `DISCORD_OAUTH_OWNER_ALLOWLIST` (exists; prefilled with the connecting operator's own Discord user ID) |
+| Owner role ID | optional | `DISCORD_CONSOLE_OWNER_ROLE_IDS` |
+| Admin role ID | see above | `DISCORD_CONSOLE_ADMIN_ROLE_IDS` |
+| Moderator role ID | optional | `DISCORD_CONSOLE_MODERATOR_ROLE_IDS` |
+| Player role ID | recommended | `DISCORD_CONSOLE_PLAYER_ROLE_IDS` |
+| Require Discord 2FA for tiers | optional (suggested `owner,admin`) | `DISCORD_OAUTH_REQUIRE_MFA_TIERS` |
+
+Each role field accepts one or more Discord role IDs (17–19-digit snowflakes, comma-separated); the operator copies them from Discord with Developer Mode on, exactly as for the bot. Nothing is fetched from Discord to populate the form — listing a guild's roles requires a bot token, which the console deliberately does not hold.
+
+**What changes at sign-in.**
+
+1. The authorization request adds the `guilds.members.read` scope. Operators who already authorized the application under the old `identify guilds` scope are asked by Discord to re-authorize once; no other operator-visible change.
+2. After identity is fetched, the console calls `GET /users/@me/guilds/{home guild}/member` with the user's own token and reads the member's `roles` array. A 403/404 (not a member) is a deny, not an error.
+3. Tier resolution order, **unchanged for anyone with a handoff configured**:
+   - handoff configured → the handoff is authoritative, exactly as §2.1 specifies; role mapping and allowlist are not consulted. (An operator who runs the bot keeps the bot as the single source of truth — this amendment must not create two competing answers.)
+   - otherwise → the **highest** tier among: `owner` if the user ID is in the owner allowlist (only when bootstrap is enabled, as today); the tier of every mapped role the member holds. Precedence owner > admin > moderator > player. A member with no mapped role and no allowlist entry is denied.
+4. **Discord-account 2FA gate.** The `identify` scope already returns `mfa_enabled`. If the resolved tier is in `DISCORD_OAUTH_REQUIRE_MFA_TIERS` and the account has no 2FA, sign-in is denied with a message that says so and names the remedy (enable 2FA on the Discord account). This is the MFA story for Tier 1: it reuses the factor the user already carries for Discord rather than adding a second enrollment flow on top of OAuth. It does not, and is not meant to, prove anything about the *console's* own second factor; §2.3 remains the only place a console-held factor exists. **Opt-in**, not default-on: an existing operator signing in through owner bootstrap whose Discord account has no 2FA would otherwise lose Discord sign-in on upgrade (found by the ported end-to-end test, which models exactly that operator). The settings form suggests `owner,admin`; nothing is enforced until a value is saved.
+5. The callback's early deny "Discord sign-in is enabled but owner bootstrap is disabled" becomes "no tier source is configured": it fires only when there is no handoff, no role mapping, and no enabled allowlist.
+
+**What does not change.** Sessions, the policy engine, the per-tier defaults, the route→action gate, the fail-closed handoff semantics of §2.1, the `bootstrap_disabled`/`handoff_misconfigured` refusals, PKCE, the state cookie, the login rate limiter on every OAuth endpoint. Player linking (`/api/auth/characters`, `multiAccountLinkProvider`) is out of scope for this amendment.
+
+**Trade-off, stated explicitly.** Role→tier is evaluated at sign-in only. A member whose role is removed keeps an existing session until it expires or is signed out — identical to the handoff's behaviour today (§2.1, "already-active sessions are unaffected"). Operators who need immediate revocation restart the console.
+
 ### 2.2 Tier 2 — Passkeys (opt-in, secure-context-gated)
 
 **Partially depends on the not-yet-upstreamed Discord OAuth system**: passkeys support two explicit identity sources, never an unspecified "whatever tier system is present." A Discord-authenticated registration is keyed to that Discord user and requires live Discord tier resolution at every passkey login. A password-authenticated registration is keyed to the single built-in `local-owner` principal described below and always resolves to owner. Upstream without Discord therefore supports only `local-owner` passkeys. Gated by an explicit, operator-set config value — never auto-detected from request headers:

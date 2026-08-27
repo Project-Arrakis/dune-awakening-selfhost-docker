@@ -1,0 +1,241 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, resolveBootstrapTier, parseDiscordAllowlist, buildAuthorizeUrl, oauthError, createOAuthTierResolver } from "../src/integrations/discord/oauth.js";
+
+function jsonResponse(payload, status = 200) {
+  return new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
+}
+
+test("pending state issues single-use cookie-bound entries", () => {
+  const now = [1_000_000];
+  const store = createPendingStateStore({ now: () => now[0] });
+  const state = store.issue().state;
+  assert.ok(state && state.length > 0);
+  assert.equal(store.size(), 1);
+
+  const first = store.consume(state, state, 1_000_100);
+  assert.equal(first.ok, true);
+  assert.equal(store.size(), 0);
+
+  const second = store.consume(state, state, 1_000_200);
+  assert.equal(second.ok, false);
+  assert.equal(second.reason, "missing_or_reused_state");
+});
+
+test("pending state: stale TTL is rejected", () => {
+  const now = [1_000_000];
+  const store = createPendingStateStore({ now: () => now[0], ttlMs: 10_000 });
+  const state = store.issue().state;
+  now[0] += 10_001;
+  const result = store.consume(state, state, now[0]);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "stale_state");
+});
+
+test("pending state: cookie mismatch rejected and state still consumed", () => {
+  const now = [1_000_000];
+  const store = createPendingStateStore({ now: () => now[0] });
+  const state = store.issue().state;
+  const result = store.consume(state, "attacker-chosen-cookie", now[0]);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "state_cookie_mismatch");
+  assert.equal(store.size(), 0);
+  const retried = store.consume(state, state, now[0]);
+  assert.equal(retried.ok, false);
+  assert.equal(retried.reason, "missing_or_reused_state");
+});
+
+test("pending state: full store refuses new issues", () => {
+  const store = createPendingStateStore({ maxEntries: 2 });
+  store.issue();
+  store.issue();
+  assert.equal(store.issue(), null);
+});
+
+test("token exchange: missing/invalid code rejected", async () => {
+  await assert.rejects(
+    exchangeDiscordAuthCode({ code: "", redirectUri: "https://console.example/cb", clientId: "id", clientSecret: "sec", fetchImpl: async () => jsonResponse({}) }),
+    (error) => error.code === "missing_code"
+  );
+});
+
+test("token exchange: upstream non-2xx yields oauth_upstream_error", async () => {
+  await assert.rejects(
+    exchangeDiscordAuthCode({ code: "c", redirectUri: "u", clientId: "id", clientSecret: "sec", fetchImpl: () => jsonResponse({ error: "bad" }, 400) }),
+    (error) => error.code === "oauth_upstream_error"
+  );
+});
+
+test("token exchange: unreachable host yields tied-down error, not a throw", async () => {
+  await assert.rejects(
+    exchangeDiscordAuthCode({ code: "c", redirectUri: "u", clientId: "id", clientSecret: "sec", fetchImpl: () => { throw new Error("network"); } }),
+    (error) => error.code === "discord_unreachable"
+  );
+});
+
+test("token exchange: malformed / missing access_token rejected", async () => {
+  await assert.rejects(
+    exchangeDiscordAuthCode({ code: "c", redirectUri: "u", clientId: "id", clientSecret: "sec", fetchImpl: () => jsonResponse({}) }),
+    (error) => error.code === "oauth_missing_token"
+  );
+  await assert.rejects(
+    exchangeDiscordAuthCode({ code: "c", redirectUri: "u", clientId: "id", clientSecret: "sec", fetchImpl: () => jsonResponse({ access_token: "" }) }),
+    (error) => error.code === "oauth_missing_token"
+  );
+});
+
+test("token exchange: happy path returns access token", async () => {
+  const token = await exchangeDiscordAuthCode({
+    code: "auth-code", redirectUri: "https://x.example/api/auth/discord/callback", clientId: "client", clientSecret: "secret",
+    fetchImpl: async (url, init) => {
+      assert.match(String(url), /\/oauth2\/token$/);
+      assert.match(String(init.headers["content-type"]), /application\/x-www-form-urlencoded/);
+      assert.match(String(init.body), /code=auth-code/);
+      return jsonResponse({ access_token: "tok", token_type: "Bearer", expires_in: 604800 });
+    }
+  });
+  assert.equal(token.access_token, "tok");
+});
+
+test("identity: /users/@me + guilds resolve cleanly", async () => {
+  const identity = await fetchDiscordIdentity({
+    accessToken: "tok",
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/users/@me")) return jsonResponse({ id: "123456789012345678", username: "operator" });
+      if (String(url).endsWith("/users/@me/guilds")) return jsonResponse([{ id: "987654321098765432" }, { id: "555", bad: true }]);
+      throw new Error("unexpected fetch");
+    }
+  });
+  assert.equal(identity.userId, "123456789012345678");
+  assert.equal(identity.username, "operator");
+  assert.deepEqual(identity.guildIds, ["987654321098765432"]);
+});
+
+test("identity: malformed user payload rejected", async () => {
+  await assert.rejects(
+    fetchDiscordIdentity({ accessToken: "tok", fetchImpl: () => jsonResponse({ id: "abc", username: "nope" }) }),
+    (error) => error.code === "oauth_bad_identity"
+  );
+  await assert.rejects(
+    fetchDiscordIdentity({ accessToken: "tok", fetchImpl: () => jsonResponse({ id: "123456789012345678", username: "" }) }),
+    (error) => error.code === "oauth_bad_identity"
+  );
+});
+
+test("identity: failed guilds lookup fails closed (no partial identity)", async () => {
+  await assert.rejects(
+    fetchDiscordIdentity({
+      accessToken: "tok",
+      fetchImpl: async (url) => {
+        if (String(url).endsWith("/users/@me")) return jsonResponse({ id: "123456789012345678", username: "x" });
+        return new Response("not json", { status: 500 });
+      }
+    }),
+    (error) => ["oauth_bad_response", "oauth_upstream_error"].includes(error.code)
+  );
+});
+
+test("bootstrap tier: every owner gate must pass", () => {
+  const policy = { userId: "111111111111111111", guildIds: ["222222222222222222"], allowOwnerBootstrap: true, homeGuildId: "222222222222222222", ownerAllowlist: ["111111111111111111"] };
+  assert.equal(resolveBootstrapTier(policy), "owner");
+
+  assert.equal(resolveBootstrapTier({ ...policy, ownerAllowlist: undefined }), "");
+  assert.equal(resolveBootstrapTier({ ...policy, allowOwnerBootstrap: false }), "");
+  assert.equal(resolveBootstrapTier({ ...policy, homeGuildId: "" }), "");
+  assert.equal(resolveBootstrapTier({ ...policy, guildIds: [] }), "");
+  assert.equal(resolveBootstrapTier({ ...policy, ownerAllowlist: ["333333333333333333"] }), "");
+  assert.equal(resolveBootstrapTier({ ...policy, ownerAllowlist: ["111111111111111111"] }), "owner");
+  assert.equal(resolveBootstrapTier({ ...policy, ownerAllowlist: [] }), "", "empty allowlist is fail-closed, never 'any guild member'");
+});
+
+test("allowlist parsing: only snowflake ids survive", () => {
+  assert.deepEqual(parseDiscordAllowlist("111111111111111111, foo, 222222222222222222"), ["111111111111111111", "222222222222222222"]);
+  assert.deepEqual(parseDiscordAllowlist(["123"]), []);
+  assert.deepEqual(parseDiscordAllowlist(""), []);
+});
+
+test("authorize URL carries identify+guilds scope and state", () => {
+  const url = buildAuthorizeUrl({ clientId: "cid", redirectUri: "https://x/r", state: "st" });
+  const parsed = new URL(url);
+  assert.equal(parsed.searchParams.get("response_type"), "code");
+  assert.equal(parsed.searchParams.get("scope"), "identify guilds guilds.members.read");
+  assert.equal(parsed.searchParams.get("state"), "st");
+  assert.equal(parsed.searchParams.get("client_id"), "cid");
+});
+
+test("oauthError carries a status code for routes", () => {
+  const error = oauthError("no_access", "nope", 403);
+  assert.equal(error.statusCode, 403);
+  assert.equal(error.code, "no_access");
+});
+
+
+// ---- §2.1.1: console-native role -> tier, and the Discord-account 2FA gate ----
+
+const HOME = "300000000000000001";
+const ROLES = { owner: ["400000000000000001"], admin: ["400000000000000002"], moderator: ["400000000000000003"], player: ["400000000000000004"] };
+function identity(overrides = {}) {
+  return { userId: "200000000000000001", username: "op", guildIds: [HOME], roleIds: [], mfaEnabled: true, ...overrides };
+}
+
+test("roles: the highest mapped role the member holds decides the tier", async () => {
+  const resolve = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: ROLES });
+  assert.deepEqual(await resolve(identity({ roleIds: ["400000000000000004", "400000000000000003"] })), { tier: "moderator", source: "roles", reason: "" });
+  assert.deepEqual(await resolve(identity({ roleIds: ["400000000000000002"] })), { tier: "admin", source: "roles", reason: "" });
+});
+
+test("roles: no mapped role and no allowlist entry is a deny", async () => {
+  const resolve = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: ROLES });
+  const r = await resolve(identity({ roleIds: ["999999999999999999"] }));
+  assert.equal(r.tier, ""); assert.equal(r.reason, "not_authorized");
+});
+
+test("roles: only count for members of the home guild", async () => {
+  const resolve = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: ROLES });
+  const r = await resolve(identity({ guildIds: ["300000000000000009"], roleIds: ["400000000000000001"] }));
+  assert.equal(r.tier, "");
+});
+
+test("roles + allowlist: the stronger of the two wins", async () => {
+  const resolve = createOAuthTierResolver({
+    bootstrap: { homeGuildId: HOME, allowOwnerBootstrap: true, ownerAllowlist: ["200000000000000001"] },
+    roleTiers: ROLES
+  });
+  const r = await resolve(identity({ roleIds: ["400000000000000004"] }));
+  assert.equal(r.tier, "owner"); assert.equal(r.source, "bootstrap");
+});
+
+test("handoff configured: authoritative, roles are NOT consulted", async () => {
+  const handoff = { enabled: true, async resolveTier() { return { tier: "", reason: "denied" }; } };
+  const resolve = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: ROLES, handoff });
+  const r = await resolve(identity({ roleIds: ["400000000000000001"] }));
+  assert.equal(r.tier, ""); assert.equal(r.source, "handoff");
+});
+
+test("mfa gate: a gated tier without Discord 2FA is denied, with the tier it would have had recorded for audit", async () => {
+  const resolve = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: ROLES, requireMfaTiers: ["owner", "admin"] });
+  const r = await resolve(identity({ roleIds: ["400000000000000002"], mfaEnabled: false }));
+  assert.equal(r.tier, ""); assert.equal(r.reason, "mfa_required"); assert.equal(r.deniedTier, "admin");
+  const ok = await resolve(identity({ roleIds: ["400000000000000004"], mfaEnabled: false }));
+  assert.equal(ok.tier, "player", "ungated tiers are unaffected");
+});
+
+test("fetchDiscordIdentity reads member roles and mfa_enabled; a 404 member is simply no roles", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(String(url));
+    if (String(url).endsWith("/users/@me")) return new Response(JSON.stringify({ id: "200000000000000001", username: "op", mfa_enabled: true }), { status: 200, headers: { "content-type": "application/json" } });
+    if (String(url).endsWith("/users/@me/guilds")) return new Response(JSON.stringify([{ id: HOME }]), { status: 200, headers: { "content-type": "application/json" } });
+    if (String(url).endsWith(`/users/@me/guilds/${HOME}/member`)) return new Response(JSON.stringify({ roles: ["400000000000000002", "bad"] }), { status: 200, headers: { "content-type": "application/json" } });
+    return new Response("{}", { status: 500 });
+  };
+  const id = await fetchDiscordIdentity({ accessToken: "t", homeGuildId: HOME, apiBaseUrl: "https://api.test", fetchImpl });
+  assert.deepEqual(id.roleIds, ["400000000000000002"]); assert.equal(id.mfaEnabled, true);
+  assert.ok(calls.some((u) => u.endsWith(`/guilds/${HOME}/member`)));
+
+  const fetch404 = async (url) => String(url).endsWith("/member")
+    ? new Response(JSON.stringify({ message: "Unknown Member", code: 10007 }), { status: 404, headers: { "content-type": "application/json" } })
+    : fetchImpl(url);
+  const id2 = await fetchDiscordIdentity({ accessToken: "t", homeGuildId: HOME, apiBaseUrl: "https://api.test", fetchImpl: fetch404 });
+  assert.deepEqual(id2.roleIds, []);
+});

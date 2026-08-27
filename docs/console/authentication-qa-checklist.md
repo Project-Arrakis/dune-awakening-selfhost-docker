@@ -6,7 +6,8 @@ deployed build. Automated tests cover the API; this covers what a human sees
 and whether they can get through it without getting stuck.
 
 **Who.** One QA engineer (any operator can run it). Budget about 90 minutes
-for the full pass; the core cases T01–T16 take about 45.
+for Parts 1–7 (the core cases T01–T16 take about 45) and another 45 for
+Part 8 (Discord), which needs a Discord server and test accounts.
 
 **Result rule.** A case passes only if *every* expected line is observed. If a
 screen, message, or button differs from what is written here, that is a
@@ -368,6 +369,79 @@ stat -c %a runtime/generated/console-second-factor.json runtime/generated/web-ad
 
 ---
 
+## Part 8 — Sign in with Discord (role-based access)
+
+Needs: a Discord server you control with at least three test accounts (or one
+account whose roles you can change), a Discord application with this console's
+callback registered, Developer Mode on to copy IDs. One of the accounts must
+have Discord 2FA **off** for T31.
+
+### T26 · Configure from Settings, as an operator would
+1. Password sign-in → Settings → **Discord OAuth**. Fill Client ID, Redirect URI, Client Secret, Discord Server ID. Fill **Admin Role** only. Save. `dune console restart`.
+
+**Expected**
+- Save succeeds with the "restart the console" message. After restart the sign-in page shows **Sign in with Discord** and a *Sign in with password instead* link; the password field is hidden until that link is clicked.
+
+### T27 · Role → tier, highest wins
+1. Give account A the Admin role, account B the Player role (map Player Role in Settings first), account C both.
+2. Each signs in with Discord.
+
+**Expected**
+- Discord shows an authorization screen naming the application and the permissions "know who you are / your servers / your roles in a server". After **Authorize**, each lands in the console.
+- A: Admin — sees Server Control, Players, Bases…; **no Settings tab**; typing the Settings URL directly does not open it. B: Player — read-only tabs only. C: Admin (highest of the two).
+
+### T28 · Not authorized
+1. An account that is a member but holds no mapped role signs in.
+
+**Expected**
+- A plain page: *Discord sign-in succeeded, but this account is not authorized…* with a link back to the console. No session (reloading the console shows the sign-in page).
+2. An account that is **not** a member of the server signs in. Same expectation.
+
+### T29 · Owner user IDs and "add me"
+1. As a Discord-signed-in admin, open Settings → Discord OAuth.
+
+**Expected**
+- Cannot: the tab is hidden and the API refuses. (Settings is owner-only.)
+2. As the password owner: click **add me** next to *Owner user IDs* — it should **not** appear (password session has no Discord ID). Paste account A's user ID instead, tick *Allow the owner user IDs above to sign in as owner*, save, restart. A signs in.
+
+**Expected**
+- A is now Owner and sees Settings.
+
+### T30 · Demotion takes effect at next sign-in
+1. While A is signed in, remove A's Admin role in Discord (and from Owner user IDs). A keeps clicking around.
+
+**Expected**
+- A's current session keeps working. After A signs out and signs in again: refused (T28) or downgraded to whatever mapped role remains.
+
+### T31 · Discord 2FA requirement (opt-in)
+1. With **Require Discord 2FA for** blank, an admin-role account **without** Discord 2FA signs in.
+
+**Expected**: admitted as Admin.
+2. Set the field to `owner,admin` (click *use recommended*), save, restart. Same account signs in.
+
+**Expected**: refused with *…requires two-factor authentication on your Discord account before granting admin access…* and the Discord setting named. A **player**-role account without 2FA is still admitted.
+3. That account enables 2FA in Discord and signs in again.
+
+**Expected**: admitted as Admin.
+
+### T32 · No tier source
+1. Clear every role field and the owner list, save, restart. Anyone signs in with Discord.
+
+**Expected**
+- Refused with *…this console has no way to decide what a Discord user may do…* naming Settings → Discord OAuth. Password sign-in still works. Restore the mapping afterwards.
+
+### T33 · Password path untouched, mixed sessions
+1. With Discord configured, sign in with the password (via *Sign in with password instead*) in one browser and with Discord as a Player in another.
+
+**Expected**
+- Both work at once. The password session is Owner. Changing the admin password (T14) signs out other **password** sessions and leaves the Discord session alone.
+
+### T34 · Re-authorization on upgrade (only if the install had Discord sign-in before this release)
+1. An account that authorized the application under the previous build signs in.
+
+**Expected**
+- Discord shows the authorization screen again (one extra permission: roles in a server). After Authorize, sign-in proceeds. Existing owner list / bootstrap behaviour unchanged.
+
 ## Results
 
 | Case | Result | Evidence / exact text seen | Notes |
@@ -397,6 +471,15 @@ stat -c %a runtime/generated/console-second-factor.json runtime/generated/web-ad
 | T23 | | | |
 | T24 | | | |
 | T25 | | | |
+| T26 | | | |
+| T27 | | | |
+| T28 | | | |
+| T29 | | | |
+| T30 | | | |
+| T31 | | | |
+| T32 | | | |
+| T33 | | | |
+| T34 | | | |
 
 **Tester:** ______  **Date:** ______  **Build:** ______
 **Verdict:** ☐ all pass  ☐ pass with findings filed: ______  ☐ blocked

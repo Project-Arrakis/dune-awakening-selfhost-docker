@@ -368,6 +368,14 @@ export function App() {
   const [recoveryAvailable, setRecoveryAvailable] = useState(false);
   const [useRecoveryCode, setUseRecoveryCode] = useState(false);
   const [setupMode, setSetupMode] = useState<"enroll" | "resetup" | null>(null);
+  // Tier 1 (Discord sign-in). Available only when the server reports the
+  // OAuth application is fully configured; the button is otherwise absent.
+  const [discordSignInAvailable, setDiscordSignInAvailable] = useState(false);
+  const [showPasswordLogin, setShowPasswordLogin] = useState(false);
+  // What the policy engine will allow this session. Used only to hide the
+  // Settings tab from Discord tiers a 403 would refuse anyway; enforcement
+  // stays server-side, and an empty answer (read failed) hides nothing.
+  const [allowedActions, setAllowedActions] = useState<string[]>([]);
   const [tab, setTab] = useActiveTab();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
@@ -416,6 +424,15 @@ export function App() {
   useStaleBuildWatcher();
 
   useEffect(() => {
+    if (!auth) { setAllowedActions([]); return; }
+    let cancelled = false;
+    api<{ user: { id: string; username: string; tier: string; guildId: string }; allowedActions: string[] }>("/api/auth/me")
+      .then((res) => { if (!cancelled) setAllowedActions(res.allowedActions || []); })
+      .catch(() => { /* a failed read leaves the UI ungated; the server still enforces */ });
+    return () => { cancelled = true; };
+  }, [auth]);
+
+  useEffect(() => {
     const handleSessionExpired = () => {
       setCsrfToken(null);
       setAuth(false);
@@ -445,8 +462,9 @@ export function App() {
   }, [pinnedAddons]);
 
   useEffect(() => {
-    api<{ authenticated: boolean; csrfToken: string | null; config?: { ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
+    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean; ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
       setAuth(state.authenticated);
+      setDiscordSignInAvailable(Boolean(state.config?.discordOAuthConfigured));
       setCsrfToken(state.csrfToken);
       setServerPorts(state.config?.ports);
       setAdminPort(state.config?.port);
@@ -777,7 +795,17 @@ export function App() {
           <h1>Dune Docker Console</h1>
           <img className="login-logo" src="/dune-docker-logo.png" alt="Dune Docker Console logo" />
           <p>Beyond the Dunes, Every Choice Shapes the Future</p>
-          {passwordFields}
+          {discordSignInAvailable && !totpRequired ? (
+            <>
+              <a className="login-discord-button login-discord-button-primary" href="/api/auth/discord/start">
+                <DiscordLogo size={19} aria-hidden="true" /> Sign in with Discord
+              </a>
+              <button type="button" className="login-password-toggle" onClick={() => setShowPasswordLogin(!showPasswordLogin)}>
+                {showPasswordLogin ? "Hide password sign-in" : "Sign in with password instead"}
+              </button>
+              {showPasswordLogin && passwordFields}
+            </>
+          ) : passwordFields}
           {error && <p className="error">{error === AUTH_SESSION_EXPIRED_MESSAGE
             ? <>Your browser login session expired.<br />Sign in again to continue.</>
             : error}</p>}
@@ -856,7 +884,7 @@ export function App() {
           {navGroups.map((group) => (
             <section className="sidebar-nav-group" key={group.title} aria-label={group.title}>
               <p className="sidebar-nav-heading">{group.title}</p>
-              {group.items.map((item) => (
+              {group.items.filter((item) => item.tab !== "Settings" || allowedActions.length === 0 || allowedActions.some((a) => a === "settings:read" || a.startsWith("settings:"))).map((item) => (
                 <Fragment key={item.tab}>
                   <button className={tab === item.tab && (!selectedPinnedAddonId || item.tab !== "Addons") ? "active" : ""} onClick={() => {
                     setRedeploySetupOpen(false);
