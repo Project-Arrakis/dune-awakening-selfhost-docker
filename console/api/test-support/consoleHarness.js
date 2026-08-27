@@ -8,7 +8,7 @@ import { base32Decode, totpCode, TOTP_PERIOD_SECONDS, TOTP_DEFAULT_WINDOW } from
 
 // Shared console-boot harness for the auth integration tests.
 //
-// Extracted rather than copied again (#528/#532). Before this, the same ~100
+// Extracted rather than copied again. Before this, the same ~100
 // lines lived in up to nine files: getFreePort in 9, waitForHealth in 9,
 // stopProcess in 9, startConsole in 8, cookieFrom/api/codeFor in 6 each. That
 // is not merely repetitive -- it had ALREADY drifted, in the PR whose own
@@ -146,7 +146,7 @@ export function codeForStep(secretBase32, step, period = TOTP_PERIOD_SECONDS) {
 // The next TOTP code the server will accept after `consumedStep`, waiting only
 // when it genuinely must.
 //
-// This is where the suite's wall clock went (#532). Every test used to pair a
+// This is where the suite's wall clock went. Every test used to pair a
 // full `waitForStepAfter` with `codeFor(secret, 0)` -- a real 30s sleep before
 // each TOTP action -- when one step of look-ahead is free: verifyTotpMatch scans
 // centre-1..centre+1 (TOTP_DEFAULT_WINDOW), so a code for step S+1 is accepted
@@ -193,7 +193,7 @@ export async function waitForStepAfter(step, { timeoutMs = 5 * TOTP_PERIOD_SECON
 // Enrol a second factor. Returns the step the CONFIRM actually consumed --
 // captured from the code that was sent, not from a separate Date.now() read.
 //
-// That distinction is the fix for a real flake (#528): the old helper did
+// That distinction is the fix for a real flake: the old helper did
 // `const step = currentTotpStep()` and then computed the code on the next line.
 // If a 30s boundary fell between those two reads, the confirm consumed step+1
 // while the helper returned step, so the caller's waitForStepAfter(step)

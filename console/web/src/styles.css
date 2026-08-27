@@ -6588,7 +6588,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 .totp-recovery-codes-list code { display: block; padding: 6px 8px; border-radius: 4px; background: rgba(0, 0, 0, .35); font-size: .85rem; }
 .totp-ack-checkbox { display: flex; align-items: center; gap: 8px; justify-content: center; font-size: .85rem; margin-top: 4px; }
 /* The recovery-codes block is rendered in two places with different chrome
-   (#531). On the login screen .login-panel supplies the grid, gap and centring;
+   On the login screen .login-panel supplies the grid, gap and centring;
    the settings section had none of that -- .totp-recovery-codes-panel set only
    a width, so children collapsed with no gap, prose sat left-aligned while the
    acknowledgment checkbox stayed centred above a left-aligned button, and a
