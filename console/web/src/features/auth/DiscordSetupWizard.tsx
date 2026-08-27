@@ -35,6 +35,21 @@ export function DiscordSetupWizard({ appConfigured, onDone, onCancel }: Props) {
   const [redirectUri] = useState(`${window.location.origin}/api/auth/discord/callback`);
   const [appSaved, setAppSaved] = useState(appConfigured);
 
+  // What the host already has (client ID / redirect / a saved secret), so the
+  // one-time step asks only for what is actually missing -- normally nothing,
+  // or just the secret.
+  const [have, setHave] = useState<{ clientId: string; redirectUri: string; secretSaved: boolean } | null>(null);
+  useEffect(() => {
+    if (appConfigured) return;
+    api<{ serverConfig?: Record<string, string> }>("/api/settings")
+      .then((res) => {
+        const c = res.serverConfig || {};
+        setHave({ clientId: c["DISCORD_OAUTH_CLIENT_ID"] || "", redirectUri: c["DISCORD_OAUTH_REDIRECT_URI"] || "", secretSaved: Boolean(c["_discordOAuthSecretSaved"]) });
+        if (c["DISCORD_OAUTH_CLIENT_ID"]) setClientId(c["DISCORD_OAUTH_CLIENT_ID"]);
+      })
+      .catch(() => setHave({ clientId: "", redirectUri: "", secretSaved: false }));
+  }, [appConfigured]);
+
   useEffect(() => {
     if (!new URLSearchParams(window.location.search).has("discordSetup")) return;
     api<Identity>("/api/setup/discord-identity")
@@ -47,10 +62,14 @@ export function DiscordSetupWizard({ appConfigured, onDone, onCancel }: Props) {
     setBusy(true); setError("");
     try {
       if (!SNOWFLAKE.test(clientId.trim())) throw new Error("Client ID should be the 17-19 digit application ID.");
-      if (!clientSecret) throw new Error("Paste the Client Secret.");
-      await post("/api/setup/write-oauth-config", { DISCORD_OAUTH_CLIENT_ID: clientId.trim(), DISCORD_OAUTH_REDIRECT_URI: redirectUri });
+      if (!clientSecret) throw new Error("Paste the client secret.");
+      const patch: Record<string, string> = {};
+      if (clientId.trim() !== (have?.clientId || "")) patch.DISCORD_OAUTH_CLIENT_ID = clientId.trim();
+      if (!have?.redirectUri) patch.DISCORD_OAUTH_REDIRECT_URI = redirectUri;
+      if (Object.keys(patch).length) await post("/api/setup/write-oauth-config", patch);
       await post("/api/setup/save-oauth-secret", { secret: clientSecret, overwrite: true });
       setClientSecret(""); setAppSaved(true);
+      setError("Saved. The console reads this at startup: run `dune console restart` on the host, then come back here and click Continue with Discord.");
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(false); }
   }
@@ -80,19 +99,19 @@ export function DiscordSetupWizard({ appConfigured, onDone, onCancel }: Props) {
       <section className="login-panel discord-setup-panel">
         <h1>Set up Discord sign-in</h1>
 
-        {!appSaved && (
+        {!appSaved && have && (
           <>
-            <p className="attention-text">This console has no Discord application configured yet, so it cannot send you to Discord. This is a one-time deployment step, like a bot's: set <code>DISCORD_OAUTH_CLIENT_ID</code>, <code>DISCORD_OAUTH_CLIENT_SECRET</code> and <code>DISCORD_OAUTH_REDIRECT_URI</code> in <code>.env</code> and restart — or, signed in as the owner, enter them here once.</p>
-            {(
-              <>
-                <p className="muted">In the <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">Developer Portal</a> (your bot's application works), under OAuth2 add this Redirect URI: <code>{redirectUri}</code> <button type="button" className="login-password-toggle" onClick={() => { void navigator.clipboard?.writeText(redirectUri); }}>copy</button></p>
-                <label htmlFor="wiz-client-id">Client ID<input id="wiz-client-id" name="wiz-client-id" value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="Application ID" disabled={busy} inputMode="numeric" /></label>
-                <label htmlFor="wiz-client-secret">Client Secret<SecretInput id="wiz-client-secret" name="wiz-client-secret" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} placeholder="Client secret" disabled={busy} /></label>
-                <button type="button" disabled={busy} onClick={() => { void saveApp(); }}>{busy ? "Saving..." : "Save and continue"}</button>
-              </>
+            {have.clientId && have.redirectUri ? (
+              <p className="muted">This console already knows its Discord application (client ID <code>{have.clientId}</code>{"\u2009"}&mdash; the same one your bot uses). It just has not been given the application&apos;s <strong>client secret</strong> yet. Paste it once here, or put it on the host at <code>runtime/secrets/discord-oauth-client-secret.txt</code> and restart.</p>
+            ) : (
+              <p className="attention-text">This console has not been told which Discord application it belongs to. It is the same application your bot uses (or any application whose OAuth2 redirect list includes <code>{redirectUri}</code> <button type="button" className="login-password-toggle" onClick={() => { void navigator.clipboard?.writeText(redirectUri); }}>copy</button>). This is a one-time deployment detail, like a bot token: set <code>DISCORD_OAUTH_CLIENT_ID</code>, <code>DISCORD_OAUTH_CLIENT_SECRET</code> and <code>DISCORD_OAUTH_REDIRECT_URI</code> in <code>.env</code> and restart, or enter them here once.</p>
             )}
+            {!(have.clientId) && <label htmlFor="wiz-client-id">Client ID<input id="wiz-client-id" name="wiz-client-id" value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="Application ID" disabled={busy} inputMode="numeric" /></label>}
+            <label htmlFor="wiz-client-secret">Client secret<SecretInput id="wiz-client-secret" name="wiz-client-secret" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} placeholder="Client secret" disabled={busy} /></label>
+            <button type="button" disabled={busy} onClick={() => { void saveApp(); }}>{busy ? "Saving..." : "Save and continue"}</button>
           </>
         )}
+        {!appSaved && !have && <p className="loading-dots">Checking this console&apos;s Discord configuration</p>}
 
         {appSaved && !identity && !done && (
           <>
