@@ -144,12 +144,12 @@ FIELD_TYPE_OVERRIDES = {
 }
 
 # Bounds for the Coriolis cycle fields shipped in Funcom's UserGame.ini
-# template. Day is a UTC weekday (1=Sunday through 7=Saturday), not a calendar
-# day. The server validates these values for Web UI, API, and CLI callers.
+# template. These five fields form a UTC calendar date and time. The server
+# validates them for Web UI, API, and CLI callers.
 CORIOLIS_CYCLE_START_BOUNDS = {
     "coriolis_cycle_start_year": (1, 9999),
     "coriolis_cycle_start_month": (1, 12),
-    "coriolis_cycle_start_day": (1, 7),
+    "coriolis_cycle_start_day": (1, 31),
     "coriolis_cycle_start_hour": (0, 23),
     "coriolis_cycle_start_minute": (0, 59),
 }
@@ -364,7 +364,7 @@ FIELD_DESCRIPTIONS = {
     "coriolis_auto_spawn_enabled": "Whether Coriolis storms spawn automatically on their normal cycle.",
     "coriolis_cycle_start_year": "Base year shipped in the Coriolis configuration. Normally leave this unchanged when matching a regional schedule.",
     "coriolis_cycle_start_month": "Base month (1-12) shipped in the Coriolis configuration. Normally leave this unchanged when matching a regional schedule.",
-    "coriolis_cycle_start_day": "UTC weekday: 1=Sunday through 7=Saturday. Europe, North America, and South America use Tuesday (3); Asia and Oceania use Monday (2). The region/farm selection does not automatically rewrite it.",
+    "coriolis_cycle_start_day": "UTC calendar day of the month (1-31). Regional master schedule anchor dates: Europe, North America, and South America use day 3; Asia and Oceania use day 2.",
     "coriolis_cycle_start_hour": "UTC hour (0-23). Regional master schedules: Europe 05, North America 11, South America 08, Asia 09, and Oceania 19.",
     "coriolis_cycle_start_minute": "UTC minute (0-59) for the Coriolis cycle start.",
     "coriolis_cycle_start_seed_index": "Funcom's seed index for the base Coriolis cycle. Leave at 0 unless intentionally coordinating a different cycle seed.",
@@ -378,6 +378,8 @@ FIELD_LABELS = {
     "coriolis_cycle_start_hour": "Cycle Start Hour",
     "coriolis_cycle_start_minute": "Cycle Start Minute",
     "coriolis_cycle_start_seed_index": "Cycle Start Seed Index",
+    "coriolis_cycle_duration_days": "Cycle Duration Days",
+    "coriolis_db_wipe_enabled": "Db Wipe Enabled",
     "guild_settings_creation_cost": "Guild Creation Cost",
     "guild_settings_max_guilds_allowed": "Max Guilds Allowed",
     "guild_settings_max_guild_members_allowed": "Max Guild Members Allowed",
@@ -705,11 +707,82 @@ ENGINE_HEADER_INTERNAL_NAMES = {v: k for k, v in ENGINE_HEADER_DISPLAY_NAMES.ite
 _ENGINE_DISPLAY_HEADER_RE = re.compile(
     r"^\[(" + "|".join(re.escape(name) for name in ENGINE_HEADER_DISPLAY_NAMES.values()) + r"):(.*)\]$"
 )
-LEGACY_GUILD_FIELD_ALIASES = {
+# Legacy DuneGameMode keys that a newer, canonical field also writes to a
+# different section under the same effective setting. Showing both in the
+# structured editor gives admins two controls for one effective setting and
+# makes the legacy value silently win in some cases, so metadata() hides the
+# legacy id and mirror_legacy_profile_field()/sync_legacy_values() keep the
+# legacy ini key and any already-saved legacy value in sync with the canonical
+# one instead.
+LEGACY_FIELD_ALIASES = {
     "guild_creation_cost": "guild_settings_creation_cost",
     "max_guilds_allowed": "guild_settings_max_guilds_allowed",
     "max_guild_members_allowed": "guild_settings_max_guild_members_allowed",
+    "cycle_duration_in_days": "coriolis_cycle_duration_days",
+    "db_wipe_enabled": "coriolis_db_wipe_enabled",
 }
+
+# UTC regional master schedules for coriolis_cycle_start_hour and
+# coriolis_cycle_start_day. These are the authoritative copies --
+# console/web/src/features/maps/MapsPanel.tsx keeps its own copies in sync
+# (checked by test_coriolis_region_hours_match_field_description and
+# test_coriolis_region_days_match_field_description in
+# test_profile_override_precedence.py) because the console frontend renders
+# each Match Region toggle's inference without a round trip, but the only
+# scope-mutating write happens here, from migrate_coriolis_region_fields.
+CORIOLIS_REGION_HOURS = {
+    "Europe": 5,
+    "North America": 11,
+    "South America": 8,
+    "Asia": 9,
+    "Oceania": 19,
+}
+CORIOLIS_REGION_DAYS = {
+    "Europe": 3,
+    "North America": 3,
+    "South America": 3,
+    "Asia": 2,
+    "Oceania": 2,
+}
+# Every region key must resolve on both tables, or a region migrates one
+# field but not the other with no way for an admin to tell that happened --
+# migrate_coriolis_region_fields relies on this to treat "unmapped" as a
+# single yes/no question asked once, not per field.
+assert set(CORIOLIS_REGION_HOURS) == set(CORIOLIS_REGION_DAYS)
+CORIOLIS_REGION_MIGRATION_FIELDS = (
+    ("coriolis_cycle_start_hour", CORIOLIS_REGION_HOURS),
+    ("coriolis_cycle_start_day", CORIOLIS_REGION_DAYS),
+)
+
+
+def migrate_coriolis_region_fields(region: str) -> str:
+    """One-time, idempotent global-scope migration: for each of
+    coriolis_cycle_start_hour/_day, if this deployment's region has a known
+    regional value and the field has never been explicitly saved (the ini key
+    is absent, not merely equal to the schema default -- those are different
+    questions, see sync_legacy_values for the same distinction made the wrong
+    way once already), write the region's value once. Both fields are read
+    and written in a single profile pass so a startup that needs to migrate
+    both never leaves one written and the other not from a race or a crash
+    between two separate read-modify-write cycles. Safe to call on every
+    startup: idempotent by key presence per field, so it can never loop or
+    re-fire once a key exists, regardless of what value it holds.
+    """
+    if region not in CORIOLIS_REGION_HOURS:
+        return "skip:unmapped-region"
+    profile = read_profile()
+    migrated = []
+    for field_id, region_table in CORIOLIS_REGION_MIGRATION_FIELDS:
+        section, ini_key, _ = MAP_FIELDS[field_id]
+        if profile_get_key(profile, "global", section, ini_key) is not None:
+            continue
+        regional_value = region_table[region]
+        set_profile_field(profile, "global", "", "", field_id, str(regional_value))
+        migrated.append(f"{field_id}={regional_value}")
+    if not migrated:
+        return "skip:already-present"
+    write_profile(profile)
+    return "migrated:" + ",".join(migrated)
 
 
 def field_spec(field_id: str):
@@ -1255,8 +1328,8 @@ def append_safe_staking_extension_arrays(section_lines: dict[str, list[str]], va
         entries.extend(f".{key}={value}" for _ in range(STAKING_EXTENSION_ARRAY_LENGTH))
 
 
-def mirror_legacy_guild_profile_field(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str, value: str) -> None:
-    canonical_field = LEGACY_GUILD_FIELD_ALIASES.get(field_id)
+def mirror_legacy_profile_field(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str, value: str) -> None:
+    canonical_field = LEGACY_FIELD_ALIASES.get(field_id)
     if not canonical_field:
         return
     spec = MAP_FIELDS.get(canonical_field)
@@ -1270,17 +1343,82 @@ def mirror_legacy_guild_profile_field(profile: dict, scope: str, map_name: str, 
         profile_set_key(profile, "partition", spec[0], spec[1], value, canonical_map(map_name or "Survival_1"), str(partition_id or ""))
 
 
-def sync_legacy_guild_values(values: dict[str, str]) -> dict[str, str]:
-    for legacy_field, canonical_field in LEGACY_GUILD_FIELD_ALIASES.items():
+def _legacy_alias_scopes(scope: str, map_name: str = "", partition_id: str = "") -> list[tuple[str, str, str]]:
+    """Scope chain to probe for LEGACY_FIELD_ALIASES presence, ordered least to most
+    specific -- mirrors exactly what profile_global_values/profile_map_values/
+    profile_partition_values merge for these fields (all of which live in MAP_FIELDS,
+    never PARTITION_FIELDS, so global/map/partition is the complete chain)."""
+    scopes = [("global", "", "")]
+    if scope in ("map", "partition"):
+        scopes.append(("map", map_name, ""))
+    if scope == "partition":
+        scopes.append(("partition", map_name, partition_id))
+    return scopes
+
+
+def _field_explicitly_present(profile: dict, field_id: str, scopes: list[tuple[str, str, str]]) -> bool:
+    section, ini_key, _ = MAP_FIELDS[field_id]
+    if not section or not ini_key:
+        return False
+    return any(profile_get_key(profile, s, section, ini_key, m, p) is not None for s, m, p in scopes)
+
+
+def _effective_field_value(profile: dict, field_id: str, scopes: list[tuple[str, str, str]]) -> str:
+    section, ini_key, default = MAP_FIELDS[field_id]
+    value = str(default)
+    for s, m, p in scopes:
+        found = profile_get_key(profile, s, section, ini_key, m, p)
+        if found is not None:
+            value = found
+    return value
+
+
+def sync_legacy_values(profile: dict, values: dict[str, str], scope: str, map_name: str = "", partition_id: str = "") -> dict[str, str]:
+    """Resolve each LEGACY_FIELD_ALIASES pair by presence, not by comparing values to
+    their schema defaults. A value-comparison approach cannot distinguish "never saved"
+    from "explicitly saved to a value that happens to equal the default", which let a
+    stale legacy value silently outrank an admin's deliberate canonical save whenever
+    that save happened to be the default (see legacy_alias_conflict_warnings for the
+    admin-visible counterpart on the structured save path)."""
+    scopes = _legacy_alias_scopes(scope, map_name, partition_id)
+    for legacy_field, canonical_field in LEGACY_FIELD_ALIASES.items():
         legacy_default = str(MAP_FIELDS[legacy_field][2])
         canonical_default = str(MAP_FIELDS[canonical_field][2])
-        legacy_value = str(values.get(legacy_field, legacy_default))
-        canonical_value = str(values.get(canonical_field, canonical_default))
-        if legacy_value != legacy_default and canonical_value == canonical_default:
-            values[canonical_field] = legacy_value
-        elif canonical_value != canonical_default and legacy_value == legacy_default:
-            values[legacy_field] = canonical_value
+        if _field_explicitly_present(profile, canonical_field, scopes):
+            # Canonical wins whenever it has been explicitly saved, regardless of value.
+            values[legacy_field] = values.get(canonical_field, canonical_default)
+        elif _field_explicitly_present(profile, legacy_field, scopes):
+            values[canonical_field] = values.get(legacy_field, legacy_default)
+        # Neither present: both fields stay at their already-seeded defaults.
     return values
+
+
+def legacy_alias_conflict_warnings(profile: dict, scope: str, map_name: str = "", partition_id: str = "") -> list[str]:
+    """Structured-save-path counterpart to _advanced_editor_legacy_field_warnings (the
+    raw/Advanced editor's version of this same check): both the legacy and canonical id
+    for one effective setting have been explicitly saved with different values.
+    sync_legacy_values() resolves that silently in canonical's favor -- this is what lets
+    an admin actually see it happened, the same way the raw editor already can."""
+    if scope not in ("global", "map", "partition"):
+        return []
+    scopes = _legacy_alias_scopes(scope, map_name, partition_id)
+    warnings = []
+    for legacy_field, canonical_field in LEGACY_FIELD_ALIASES.items():
+        if not (_field_explicitly_present(profile, legacy_field, scopes) and _field_explicitly_present(profile, canonical_field, scopes)):
+            continue
+        legacy_value = _effective_field_value(profile, legacy_field, scopes)
+        canonical_value = _effective_field_value(profile, canonical_field, scopes)
+        if legacy_value == canonical_value:
+            continue
+        legacy_section, legacy_key, _legacy_default = MAP_FIELDS[legacy_field]
+        canonical_section, canonical_key, _canonical_default = MAP_FIELDS[canonical_field]
+        # Both fields share the same ini key name (that's the whole reason they're aliased),
+        # so the section is what actually tells an admin which block to go edit.
+        warnings.append(
+            f"legacy field [{legacy_section}] {legacy_key}={legacy_value} conflicts with the "
+            f"canonical field [{canonical_section}] {canonical_key}={canonical_value} -- the canonical value is used."
+        )
+    return warnings
 
 
 def seed_profile_from_legacy_config() -> dict:
@@ -1660,7 +1798,7 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         spec = MAP_FIELDS[field_id]
         if spec[0] and spec[1]:
             profile_set_key(profile, "global", spec[0], spec[1], value)
-            mirror_legacy_guild_profile_field(profile, "global", "", "", field_id, value)
+            mirror_legacy_profile_field(profile, "global", "", "", field_id, value)
         return
 
     if scope == "map":
@@ -1669,7 +1807,7 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         spec = MAP_FIELDS[field_id]
         if spec[0] and spec[1]:
             profile_set_key(profile, "map", spec[0], spec[1], value, map_name=map_name)
-            mirror_legacy_guild_profile_field(profile, "map", map_name, "", field_id, value)
+            mirror_legacy_profile_field(profile, "map", map_name, "", field_id, value)
         return
 
     if scope == "partition":
@@ -1692,7 +1830,7 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         spec = MAP_FIELDS.get(field_id)
         if spec and spec[0] and spec[1]:
             profile_set_key(profile, "partition", spec[0], spec[1], value, target_map, target_partition)
-            mirror_legacy_guild_profile_field(profile, "partition", target_map, target_partition, field_id, value)
+            mirror_legacy_profile_field(profile, "partition", target_map, target_partition, field_id, value)
         return
 
     raise SystemExit("Unknown settings scope.")
@@ -1727,7 +1865,7 @@ def profile_map_values(profile: dict, map_name: str) -> dict[str, str]:
             values[key] = map_value
     global_data = profile_get_key(profile, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY)
     values.update(landsraad_virtual_values(global_data or LANDSRAAD_DATA_TEMPLATE))
-    return sync_legacy_guild_values(values)
+    return sync_legacy_values(profile, values, "map", target_map)
 
 
 def profile_global_values(profile: dict) -> dict[str, str]:
@@ -1741,7 +1879,7 @@ def profile_global_values(profile: dict) -> dict[str, str]:
             values[key] = global_value
     global_data = profile_get_key(profile, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY)
     values.update(landsraad_virtual_values(global_data or LANDSRAAD_DATA_TEMPLATE))
-    return sync_legacy_guild_values(values)
+    return sync_legacy_values(profile, values, "global")
 
 
 def profile_partition_array_selector_active(profile: dict, section: str, key: str, target_map: str, target_partition: str) -> bool:
@@ -1795,7 +1933,7 @@ def profile_partition_values(profile: dict, map_name: str, partition_id: str) ->
     values["partition_selector_mode_active"] = "True" if profile_partition_selector_mode_active(
         profile, target_map, target_partition
     ) else "False"
-    return sync_legacy_guild_values(values)
+    return sync_legacy_values(profile, values, "partition", target_map, target_partition)
 
 
 def profile_section_lines(profile: dict, scope: str, section: str, map_name: str = "", partition_id: str = "") -> list[str]:
@@ -1920,17 +2058,16 @@ def metadata() -> int:
         key: spec for key, spec in PARTITION_ENGINE_FIELDS.items()
         if key != "server_login_password"
     }
-    # Keep legacy DuneGameMode guild keys readable and compilable for existing
-    # profiles, but expose only their canonical GuildSettings counterparts in
-    # the structured editor. Showing both gives admins two controls for one
-    # effective setting and makes the legacy value silently win in some cases.
+    # Keep legacy DuneGameMode keys readable and compilable for existing
+    # profiles, but expose only their canonical counterparts (GuildSettings,
+    # CoriolisSubsystem) in the structured editor. See LEGACY_FIELD_ALIASES.
     public_game_fields = {
         key: spec for key, spec in MAP_FIELDS.items()
-        if key not in LEGACY_GUILD_FIELD_ALIASES
+        if key not in LEGACY_FIELD_ALIASES
     }
     public_partition_fields = {
         key: spec for key, spec in PARTITION_FIELDS.items()
-        if key not in LEGACY_GUILD_FIELD_ALIASES
+        if key not in LEGACY_FIELD_ALIASES
     }
     payload = {
         "engine": [row("engine", key, spec) for key, spec in public_engine_fields.items()],
@@ -2528,6 +2665,8 @@ def bulk_save(scope: str, map_name: str, partition_id: str, encoded_values: str)
     if scope == "engine":
         validate_profile_port_ranges(profile)
     write_profile(profile)
+    for message in legacy_alias_conflict_warnings(profile, scope, target_map, target_partition):
+        print(f"USERSETTINGS_WARNING: {message}")
     if landsraad_changed:
         atomic_write_text(LANDSRAAD_RESTART_MARKER_PATH, "Landsraad UserGame settings changed.\n", 0o664)
     return 0
@@ -2818,8 +2957,8 @@ def _advanced_editor_find_scoped_key_value(sections: list[dict], reference_block
     return None
 
 
-def _advanced_editor_legacy_guild_warnings(sections: list[dict]) -> list[str]:
-    """Flag the case sync_legacy_guild_values() (~1024) resolves silently: a non-default
+def _advanced_editor_legacy_field_warnings(sections: list[dict]) -> list[str]:
+    """Flag the case sync_legacy_values() (~1024) resolves silently: a non-default
     legacy field overriding a canonical field explicitly set to its own default. The
     canonical field's explicit line is then also dropped by the known-key filter in
     append_profile_unknown_lines(), so without this warning the admin has no way to know
@@ -2828,7 +2967,7 @@ def _advanced_editor_legacy_guild_warnings(sections: list[dict]) -> list[str]:
     for block in sections:
         section = str(block.get("ini_section", ""))
         where = _advanced_editor_block_label(block)
-        for legacy_field, canonical_field in LEGACY_GUILD_FIELD_ALIASES.items():
+        for legacy_field, canonical_field in LEGACY_FIELD_ALIASES.items():
             legacy_spec = MAP_FIELDS[legacy_field]
             canonical_spec = MAP_FIELDS[canonical_field]
             if section != legacy_spec[0]:
@@ -2838,9 +2977,13 @@ def _advanced_editor_legacy_guild_warnings(sections: list[dict]) -> list[str]:
                 continue
             canonical_value = _advanced_editor_find_scoped_key_value(sections, block, canonical_spec[0], canonical_spec[1])
             if canonical_value is not None and canonical_value == str(canonical_spec[2]):
+                # Both fields share the same ini key name (that's the whole reason they're
+                # aliased) -- name the section too, or an admin has no way to tell which
+                # block to go edit.
                 warnings.append(
-                    f"{where}: legacy field {legacy_spec[1]}={legacy_value} overrides the explicit default "
-                    f"you set on {canonical_spec[1]}={canonical_value} -- the canonical value was dropped."
+                    f"{where}: legacy field [{legacy_spec[0]}] {legacy_spec[1]}={legacy_value} overrides "
+                    f"the explicit default you set on [{canonical_spec[0]}] {canonical_spec[1]}={canonical_value} "
+                    f"-- the canonical value was dropped."
                 )
     return warnings
 
@@ -2873,7 +3016,7 @@ def profile_game_write_encoded(encoded_content: str) -> int:
     warnings = (
         _advanced_editor_duplicate_key_warnings(incoming.get("sections", []))
         + _advanced_editor_pvp_pve_warnings(incoming.get("sections", []))
-        + _advanced_editor_legacy_guild_warnings(incoming.get("sections", []))
+        + _advanced_editor_legacy_field_warnings(incoming.get("sections", []))
     )
     profile = read_profile()
     replace_profile_game_sections(profile, incoming)
@@ -3013,8 +3156,16 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Partition selector mode did not materialize its explicit force-PvP-all=False guard.")
     if compiled_game.count("+m_PvpEnabledPartitions=3") != 1:
         raise SystemExit("Global and partition-toggle PvP array lines for the same value were not deduplicated.")
-    if "[/Script/DuneSandbox.GuildSettings]" not in compiled_game or "m_MaxGuildMembersAllowed=5" not in compiled_game:
-        raise SystemExit("Legacy guild member limit was not mirrored to GuildSettings.")
+    # The seed profile above has BOTH a legacy DuneGameMode value (5) and an explicit
+    # canonical GuildSettings value (32) at global scope. Presence, not a value-vs-default
+    # comparison, must pick the winner (see sync_legacy_values) -- canonical wins, and
+    # since 32 is also both fields' shared schema default, neither section emits the key.
+    if "m_MaxGuildMembersAllowed=5" in compiled_game:
+        raise SystemExit("A stale legacy guild member limit leaked into the compiled UserGame.ini over an explicit canonical value.")
+    if profile_map_values(reparsed, "Survival_1")["guild_settings_max_guild_members_allowed"] != "32":
+        raise SystemExit("An explicit canonical guild member limit did not win over a conflicting legacy value.")
+    if not any("m_MaxGuildMembersAllowed=5" in w and "m_MaxGuildMembersAllowed=32" in w for w in legacy_alias_conflict_warnings(reparsed, "global")):
+        raise SystemExit("A conflicting legacy/canonical guild member limit did not raise a warning.")
     if "UnknownGlobal=abc" not in compiled_game or "CustomPartitionKey=True" not in compiled_game:
         raise SystemExit("Compiled UserGame dropped unknown profile lines.")
     if "m_GlobalXPMultiplier=" in compiled_game:
@@ -3210,7 +3361,7 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
     if not any("m_MaxGuildsAllowed was set 2 times" in w and "(1)" in w and "(2)" in w for w in dup_warnings):
         raise SystemExit("Duplicate-key Advanced Editor warning did not fire correctly.")
 
-    legacy_warnings = _advanced_editor_legacy_guild_warnings(reparsed.get("sections", []))
+    legacy_warnings = _advanced_editor_legacy_field_warnings(reparsed.get("sections", []))
     if not any("m_MaxGuildMembersAllowed=5 overrides" in w for w in legacy_warnings):
         raise SystemExit("Legacy guild-alias override warning did not fire.")
 
@@ -3223,7 +3374,7 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         "[Global:/Script/DuneSandbox.DuneGameMode]\nm_MaxGuildMembersAllowed=5\n"
         "[Global:/Script/DuneSandbox.GuildSettings]\nm_MaxGuildMembersAllowed=99\nm_MaxGuildMembersAllowed=32\n"
     ).get("sections", [])
-    last_wins_warnings = _advanced_editor_legacy_guild_warnings(last_wins_sections)
+    last_wins_warnings = _advanced_editor_legacy_field_warnings(last_wins_sections)
     if not any("m_MaxGuildMembersAllowed=5 overrides" in w and "m_MaxGuildMembersAllowed=32" in w for w in last_wins_warnings):
         raise SystemExit("Legacy guild-alias warning used the first assignment of a duplicated canonical key instead of the last-wins effective value.")
 
@@ -3844,6 +3995,9 @@ def main(argv: list[str]) -> int:
         return raw_write_encoded("game", argv[4], argv[2], argv[3])
     if command == "bulk-save" and len(argv) == 6:
         return bulk_save(argv[2], argv[3], argv[4], argv[5])
+    if command == "migrate-coriolis-region-fields" and len(argv) == 3:
+        print(migrate_coriolis_region_fields(argv[2]))
+        return 0
     if command == "materialize-current":
         return materialize_current_runtime_files()
     if command == "materialize" and len(argv) == 4:
