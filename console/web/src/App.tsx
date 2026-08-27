@@ -61,6 +61,7 @@ const Action = {
   SETTINGS_READ: "settings:read",
   SETTINGS_WRITE: "settings:write",
   SETTINGS_CHANGE_PASSWORD: "settings:change-password",
+  SETTINGS_REGENERATE_RECOVERY_CODES: "settings:regenerate-recovery-codes",
   PLAYERS_READ: "players:read",
   PLAYERS_MUTATE: "players:mutate",
   GUILDS_READ: "guilds:read",
