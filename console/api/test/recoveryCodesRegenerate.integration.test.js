@@ -565,4 +565,31 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  // #525's whole point was that /me distinguishes "unknown" from "not enrolled".
+  // Until now only the CLIENT side was tested, against a mocked API -- so the
+  // server never actually had to emit the flag. Found while mutation-testing
+  // #547's rename of the local that shadowed the 503 helper: breaking the wire
+  // field left every suite green.
+  test("/api/auth/me reports secondFactorUnavailable when the store is unreadable", async () => {
+    const port = await getFreePort();
+    const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-unavail-"));
+    const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+    try {
+      await waitForHealth(port, 20000, consoleProc.logs);
+      const { password, secret, step: confirmStep } = await enroll(port, tempDir, { assert });
+      const nextCode = totpChain(secret, confirmStep);
+      const actor = await login(port, { password, totpCode: await nextCode() });
+      assert.equal(actor.body.authenticated, true);
+
+      writeFileSync(secondFactorPath(tempDir), "{ not valid json", { mode: 0o600 });
+
+      const me = await (await api(port, "/api/auth/me", { method: "GET", cookie: actor.cookie })).json();
+      assert.equal(me.secondFactorUnavailable, true, "an unreadable store is reported as unknown");
+      assert.equal(me.secondFactorEnrolled, false, "and never as enrolled -- the store contract is fail-closed");
+    } finally {
+      await stopProcess(consoleProc.child);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });

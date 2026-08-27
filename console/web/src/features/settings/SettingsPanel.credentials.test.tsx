@@ -317,3 +317,35 @@ describe("recovery-codes heading level (#531)", () => {
     expect(document.querySelectorAll("h1").length).toBe(0);
   });
 });
+
+// #547: the catch in refreshCredentialState set only `unavailable`, leaving
+// `enrolled` stale from an earlier success -- {enrolled:true, unavailable:true},
+// a shape the server never emits. Both JSX gates are independent, so the panel
+// rendered the "could not be read" banner AND the interactive regenerate form
+// it had just declared unavailable.
+//
+// The existing "treats a failed /api/auth/me as unknown" test could not catch
+// this: it only exercises the INITIAL MOUNT, where `enrolled` is already at its
+// false initializer, so the missing reset is invisible. This primes enrolled
+// first, then fails /me -- the transition is the whole point.
+describe("stale credential state after a transient /me failure (#547)", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it("clears enrolled when /me starts failing, instead of showing the banner beside a live form", async () => {
+    mockBackend({ enrolled: true });
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    // Prime it: the Two-Factor section is present because /me said enrolled.
+    expect(await screen.findByLabelText("Expand Two-Factor Authentication")).toBeTruthy();
+
+    // /me now fails transiently (rate limit, network blip) on a Refresh.
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/auth/me") return Promise.reject(new Error("blip"));
+      return Promise.resolve({ config: { port: 8088 }, publicDirectory: {}, serverConfig: {} } as never);
+    });
+    fireEvent.click(screen.getByText("Refresh"));
+
+    await waitFor(() => expect(screen.queryByText(/two-factor state could not be read/i)).toBeTruthy());
+    // The contradiction: the section must NOT still be offering itself.
+    expect(screen.queryByLabelText("Expand Two-Factor Authentication")).toBeNull();
+  });
+});

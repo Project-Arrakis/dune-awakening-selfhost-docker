@@ -278,3 +278,79 @@ test("rotation fails closed (503) and revokes nothing when the second-factor sta
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+// #547: #544 extracted the shared credential-proof preamble so rotation and
+// regeneration would behave identically, and stopped at this caller's edges --
+// the three pre-proof refusals audited nothing, while the sibling route routed
+// the equivalent cases through its own deny(). An operator diffing the audit log
+// after a credential-stuffing suspicion saw every attempt against one route and
+// none against the other.
+test("pre-proof refusals on the rotation route are audited with a reason and an actor", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "pw-rotation-e2e-audit-"));
+  const consoleProc = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const password = readGeneratedPassword(tempDir);
+    const session = await login(port, password);
+    assert.equal(session.status, 200);
+
+    // A literal `null` body: rejected before the credential proof runs.
+    const malformed = await fetch(`http://127.0.0.1:${port}/api/settings/admin-password`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: `asc_session=${session.cookie}`, "x-csrf-token": session.csrf },
+      body: "null",
+    });
+    assert.equal(malformed.status, 400);
+
+    const auditPath = join(tempDir, "runtime", "generated", "web-admin-audit.jsonl");
+    const lines = readFileSync(auditPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const refusal = lines.find((l) => l.action === "settings.change-admin-password" && l.detail?.ok === false);
+    assert.ok(refusal, "a pre-proof refusal is audited, not silent");
+    assert.equal(refusal.detail.reason, "malformed_body");
+    assert.ok(refusal.detail.userId, "the refusal names the acting principal");
+    // Sanitized path, never req.url verbatim (#523).
+    assert.equal(refusal.path, "/api/settings/admin-password");
+  } finally {
+    await stopProcess(consoleProc.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// #547 / #523: the SUCCESS-path audits passed raw `req`, so audit() wrote
+// req.url verbatim -- query string included -- while redactValue only inspects
+// `detail`. Added after a mutation pass showed reverting that fix left the file
+// green: the refusal-path test above pins the sanitized path, the success path
+// had nothing.
+test("a successful rotation audits a sanitized path, not req.url with its query string", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "pw-rotation-e2e-sanitize-"));
+  const consoleProc = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const password = readGeneratedPassword(tempDir);
+    const session = await login(port, password);
+
+    // Routing matches on url.pathname, so a query string is accepted normally --
+    // which is exactly how a credential pasted into one reaches the audit log.
+    const res = await fetch(`http://127.0.0.1:${port}/api/settings/admin-password?leak=SUPERSECRET`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: `asc_session=${session.cookie}`, "x-csrf-token": session.csrf },
+      body: JSON.stringify({ currentPassword: password, newPassword: NEW_PASSWORD }),
+    });
+    assert.equal(res.status, 200);
+
+    const auditPath = join(tempDir, "runtime", "generated", "web-admin-audit.jsonl");
+    const raw = readFileSync(auditPath, "utf8");
+    assert.ok(!raw.includes("SUPERSECRET"), "no query-string content reaches the audit log at all");
+    const lines = raw.trim().split("\n").map((l) => JSON.parse(l));
+    for (const action of ["settings.change-admin-password", "auth.password-changed.sessions-revoked"]) {
+      const row = lines.find((l) => l.action === action && l.detail?.ok !== false);
+      assert.ok(row, `${action} was audited`);
+      assert.equal(row.path, "/api/settings/admin-password", `${action} records the sanitized path`);
+    }
+  } finally {
+    await stopProcess(consoleProc.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
