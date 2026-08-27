@@ -150,7 +150,13 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
             <label htmlFor="wiz-admin">Admin Role <em>(required)</em><input id="wiz-admin" name="wiz-admin" value={adminRoleIds} onChange={(e) => setAdminRoleIds(e.target.value)} placeholder="Discord role ID" disabled={busy} /></label>
             <label htmlFor="wiz-moderator">Moderator Role <em>(optional)</em><input id="wiz-moderator" name="wiz-moderator" value={moderatorRoleIds} onChange={(e) => setModeratorRoleIds(e.target.value)} placeholder="Discord role ID" disabled={busy} /></label>
             <label htmlFor="wiz-player">Player Role <em>(recommended)</em><input id="wiz-player" name="wiz-player" value={playerRoleIds} onChange={(e) => setPlayerRoleIds(e.target.value)} placeholder="Discord role ID" disabled={busy} /></label>
-            <label className="totp-ack-checkbox" htmlFor="wiz-mfa"><input id="wiz-mfa" name="wiz-mfa" type="checkbox" checked={requireMfa} onChange={(e) => setRequireMfa(e.target.checked)} disabled={busy} /> Require two-factor <strong>on each person&apos;s Discord account</strong> before granting Owner or Admin (recommended). This is Discord&apos;s own 2FA, not the console password.</label>
+            <label className="discord-mfa-option" htmlFor="wiz-mfa">
+              <input id="wiz-mfa" name="wiz-mfa" type="checkbox" checked={requireMfa} onChange={(e) => setRequireMfa(e.target.checked)} disabled={busy} />
+              <span className="discord-mfa-text">
+                <span className="discord-mfa-title">Require two-factor for Owner and Admin <span className="discord-mfa-tag">recommended</span></span>
+                <span className="muted">Uses each person&apos;s own Discord-account 2FA &mdash; not the console password.</span>
+              </span>
+            </label>
 
             <button type="button" className="login-primary-button" disabled={busy || !guildId} onClick={() => { void finalize(); }}>{busy ? "Saving..." : "Turn on Discord sign-in"}</button>
           </>
