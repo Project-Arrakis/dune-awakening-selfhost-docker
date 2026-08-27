@@ -2,6 +2,14 @@ import type { ReactNode } from "react";
 
 type RecoveryCodesPanelProps = {
   codes: string[];
+  /**
+   * Heading level for the caller's document outline. The login screen is a
+   * full-page takeover and owns an `h1`; the settings section sits under the
+   * panel's own `h2`, so it needs `h3` -- emitting `h1` there produced a second
+   * page-level heading nested under an h2 (an inverted outline, WCAG 1.3.1),
+   * which no lint in console/web would have caught.
+   */
+  headingLevel?: "h1" | "h3";
   heading: string;
   intro: ReactNode;
   confirmLabel: string;
@@ -28,10 +36,12 @@ export function RecoveryCodesPanel({
   onConfirm,
   acknowledged,
   onAcknowledgedChange,
+  headingLevel = "h1",
 }: RecoveryCodesPanelProps) {
+  const Heading = headingLevel;
   return (
     <>
-      <h1 className="recovery-codes-heading">{heading}</h1>
+      <Heading className="recovery-codes-heading">{heading}</Heading>
       <p>{intro}</p>
       <ul className="totp-recovery-codes-list">
         {codes.map((recoveryCode) => <li key={recoveryCode}><code>{recoveryCode}</code></li>)}

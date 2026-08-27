@@ -423,10 +423,12 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
           <p className="muted">Change the password used to sign in to this web console.</p>
           {passwordEnvManaged && <p className="attention-text">The login password is managed by <code>ADMIN_PASSWORD</code>. Update the environment value to change it.</p>}
           <div className="settings-password-grid">
-            <label>Current Password<SecretInput disabled={passwordEnvManaged || passwordSaving} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} placeholder="Current password" /></label>
+            <label htmlFor="settings-pw-current">Current Password<SecretInput id="settings-pw-current" name="settings-pw-current" disabled={passwordEnvManaged || passwordSaving} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} placeholder="Current password" /></label>
             <label>New Password<SecretInput disabled={passwordEnvManaged || passwordSaving} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="At Least 13 Characters" /></label>
             <label><span className="field-label-row"><span>Confirm New Password</span>{confirmStarted && <span className={`password-match-inline ${passwordsMatch ? "passed" : "missing"}`}>{passwordsMatch ? "Matches" : "Passwords do not match"}</span>}</span><SecretInput disabled={passwordEnvManaged || passwordSaving} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Confirm new password" /></label>
-            {secondFactorEnrolled && <label>Authenticator Code<input
+            {secondFactorEnrolled && <label htmlFor="settings-pw-totp">Authenticator Code<input
+              id="settings-pw-totp"
+              name="settings-pw-totp"
               disabled={passwordEnvManaged || passwordSaving}
               value={passwordTotpCode}
               onChange={(event) => setPasswordTotpCode(stripCodeWhitespace(event.target.value))}
@@ -456,9 +458,9 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
           sheet is already invalidated server-side and only digests persist. Gating
           them on a flag that any /api/auth/me re-read can flip to false meant the
           panel's own Refresh button, sitting a few rows above, destroyed them. */}
-      {regeneratedCodes && <div className="playerAdmin_toggle settings-two-factor-toggle open">
+      {regeneratedCodes && <div className="playerAdmin_toggle open">
         <div className="playerAdmin_toggleBody">
-          <div className="totp-recovery-codes-panel">
+          <div className="settings-recovery-codes">
             <RecoveryCodesPanel
               codes={regeneratedCodes}
               heading="Save your new recovery codes"
@@ -467,6 +469,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
               onConfirm={() => { setRegeneratedCodes(null); setRegenerateAcknowledged(false); }}
               acknowledged={regenerateAcknowledged}
               onAcknowledgedChange={setRegenerateAcknowledged}
+              headingLevel="h3"
             />
           </div>
         </div>
@@ -477,21 +480,23 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
         <code> runtime/generated/console-second-factor.json</code> &mdash; see the sign-in
         page&apos;s error for recovery guidance.
       </p>}
-      {secondFactorEnrolled && !regeneratedCodes && <div className={`playerAdmin_toggle settings-two-factor-toggle ${twoFactorOpen ? "open" : ""}`}>
+      {secondFactorEnrolled && !regeneratedCodes && <div className={`playerAdmin_toggle ${twoFactorOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={twoFactorOpen ? "Collapse Two-Factor Authentication" : "Expand Two-Factor Authentication"} onClick={() => setTwoFactorOpen(!twoFactorOpen)}>{twoFactorOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Two-Factor Authentication</span></button>
         {twoFactorOpen && <div className="playerAdmin_toggleBody">
           <>
                 <p className="muted">Generate a fresh set of 10 recovery codes. Your authenticator is unchanged, and you stay signed in everywhere.</p>
                 <p className="attention-text">Your existing recovery codes stop working the moment new ones are issued.</p>
                 <div className="settings-password-grid">
-                  <label>Current Password<SecretInput disabled={regenerateSaving} value={regeneratePassword} onChange={(event) => setRegeneratePassword(event.target.value)} placeholder="Current password" /></label>
-                  <label>Authenticator Code<input
+                  <label htmlFor="settings-regen-password">Password (to confirm it&apos;s you)<SecretInput id="settings-regen-password" name="settings-regen-password" disabled={regenerateSaving} value={regeneratePassword} onChange={(event) => setRegeneratePassword(event.target.value)} placeholder="Your login password" /></label>
+                  <label htmlFor="settings-regen-totp">Authenticator Code (to confirm it&apos;s you)<input
+                    id="settings-regen-totp"
+                    name="settings-regen-totp"
                     disabled={regenerateSaving}
                     value={regenerateTotpCode}
                     onChange={(event) => setRegenerateTotpCode(stripCodeWhitespace(event.target.value))}
                     inputMode="numeric"
                     autoComplete="one-time-code"
-                    placeholder="6-digit code"
+                    placeholder="Current 6-digit code"
                   /></label>
                 </div>
                 <div className="action-row">

@@ -559,6 +559,21 @@ main { padding: 22px; min-width: 0; }
 .totp-recovery-codes-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
 .totp-recovery-codes-list code { display: block; padding: 6px 8px; border-radius: 4px; background: rgba(0, 0, 0, .35); font-size: .85rem; }
 .totp-ack-checkbox { display: flex; align-items: center; gap: 8px; justify-content: center; font-size: .85rem; margin-top: 4px; }
+/* The recovery-codes block is rendered in two places with different chrome
+   (#531). On the login screen .login-panel supplies the grid, gap and centring;
+   the settings section had none of that -- .totp-recovery-codes-panel set only
+   a width, so children collapsed with no gap, prose sat left-aligned while the
+   acknowledgment checkbox stayed centred above a left-aligned button, and a
+   100vw-derived login-screen width was applied inside a sidebar-offset
+   container. These rules give the settings copy its own layout, and give
+   .recovery-codes-heading a definition -- it previously matched no rule at all
+   and fell through to the global h1 size (up to 32px) inside a section whose
+   own headers are ~16px. */
+.settings-recovery-codes { display: grid; gap: 12px; width: 100%; max-width: 520px; text-align: left; }
+.settings-recovery-codes .recovery-codes-heading { font-size: 1rem; margin: 0; }
+.settings-recovery-codes .totp-ack-checkbox { justify-content: flex-start; }
+.settings-recovery-codes > button { justify-self: start; }
+.login-panel .recovery-codes-heading { margin: 0; }
 .session-user-badge { display: inline-flex; align-items: center; gap: 8px; margin-right: 10px; padding: 4px 10px; border: 1px solid #3a352c; border-radius: 999px; background: #14171a; font-size: 12px; }
 .session-user-name { color: #d9cdbb; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-user-tier { text-transform: capitalize; font-weight: 600; }
