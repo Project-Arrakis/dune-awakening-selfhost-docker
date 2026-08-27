@@ -6973,18 +6973,19 @@ export async function portalLandsraad(db, playerControllerId) {
   };
 }
 
-function portalHomeSietch(identity) {
+function portalHomeSietch(identity, configuredNames = {}) {
   const dimensionIndex = Number(identity.home_sietch_dimension_index);
   if (!Number.isInteger(dimensionIndex) || dimensionIndex < 0) return null;
   const partitionId = Number(identity.home_sietch_partition_id) || 0;
+  const configuredName = String(configuredNames?.[String(partitionId)] || "").trim();
   const label = String(identity.home_sietch_label || "").trim();
-  const name = label
+  const name = configuredName || (label
     ? (/^sietch\b/i.test(label) ? label : `Sietch ${label}`)
     : dimensionIndex === 0
       ? "Sietch Abbir"
       : dimensionIndex === 1
         ? "Sietch Alraab"
-        : `Sietch ${dimensionIndex + 1}`;
+        : `Sietch ${dimensionIndex + 1}`);
   return { name, partitionId, dimensionIndex };
 }
 
@@ -7123,7 +7124,7 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
           guild: leader.guild || "Unavailable",
           online: String(identity.online_status || "").toLowerCase() === "online",
           lastSeen: identity.last_seen || "",
-          homeSietch: portalHomeSietch(identity),
+          homeSietch: portalHomeSietch(identity, portalContext.sietchNames),
           map: identity.player_map || "",
           partitionId: Number(identity.player_partition_id) || 0,
           x: Number(identity.player_x) || 0,
