@@ -376,7 +376,7 @@ export function App() {
   // Guided first-run setup: opened from the sign-in page (after the password),
   // or automatically when returning from the setup-mode Discord round-trip.
   const [discordSetupOpen, setDiscordSetupOpen] = useState(() => new URLSearchParams(window.location.search).has("discordSetup"));
-  const [wantDiscordSetup, setWantDiscordSetup] = useState(false);
+  const [wantDiscordSetup, setWantDiscordSetup] = useState(() => new URLSearchParams(window.location.search).has("discordSetup"));
   const [showPasswordLogin, setShowPasswordLogin] = useState(false);
   // What the policy engine will allow this session. Used only to hide the
   // Settings tab from Discord tiers a 403 would refuse anyway; enforcement
@@ -760,7 +760,7 @@ export function App() {
   }
 
   if (auth && discordSetupOpen) {
-    return <DiscordSetupWizard secretSaved={discordAppConfigured} onDone={() => { setDiscordSetupOpen(false); void post("/api/auth/logout").catch(() => {}); setCsrfToken(null); setAuth(false); setPassword(""); }} onCancel={() => setDiscordSetupOpen(false)} />;
+    return <DiscordSetupWizard appConfigured={discordAppConfigured} onDone={() => { setDiscordSetupOpen(false); void post("/api/auth/logout").catch(() => {}); setCsrfToken(null); setAuth(false); setPassword(""); }} onCancel={() => setDiscordSetupOpen(false)} />;
   }
 
   if (!auth) {
@@ -820,12 +820,10 @@ export function App() {
           ) : (
             <>
               {!totpRequired && !wantDiscordSetup && (
-                <button type="button" className="login-discord-button login-discord-button-primary" onClick={() => setWantDiscordSetup(true)}>
-                  <DiscordLogo size={19} aria-hidden="true" /> Set up Discord sign-in
-                </button>
+                <button type="button" className="login-discord-button login-discord-button-primary" onClick={() => setWantDiscordSetup(true)}><DiscordLogo size={19} aria-hidden="true" /> Set up Discord sign-in</button>
               )}
               {wantDiscordSetup
-                ? <p className="muted">Enter the admin password to set up Discord sign-in. <button type="button" className="login-password-toggle" onClick={() => setWantDiscordSetup(false)}>cancel</button></p>
+                ? <p className="muted">Enter the admin password first — only the console owner can connect Discord. <button type="button" className="login-password-toggle" onClick={() => setWantDiscordSetup(false)}>cancel</button></p>
                 : !totpRequired && <p className="muted">or sign in with the admin password</p>}
               {passwordFields}
             </>

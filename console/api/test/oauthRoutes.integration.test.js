@@ -543,3 +543,47 @@ test("guided setup: an owner's setup-mode round-trip captures identity + guilds,
     assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-identity`)).status, 401);
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
+
+
+test("guided setup: password first -- anonymous cannot start; the owner's round-trip mints no session; finalize needs the password again and guild ownership", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-setupfin-"));
+  const console = startConsole(consolePort, discordPort, tempDir, { DISCORD_HOME_GUILD_ID: "", DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "0", DISCORD_OAUTH_OWNER_ALLOWLIST: "" });
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start?setup=1`, { redirect: "manual" })).status, 401, "no password, no Discord round-trip");
+
+    const owner = await passwordOwnerSession(consolePort);
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start?setup=1`, { redirect: "manual", headers: { cookie: owner.cookie } });
+    assert.equal(start.status, 302);
+    const state = sessionCookieValue(start.headers.getSetCookie(), "discord_oauth_state");
+    const cb = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=guildowner&state=${encodeURIComponent(state)}`, { redirect: "manual", headers: { cookie: `discord_oauth_state=${state}` } });
+    assert.equal(cb.status, 200);
+    assert.equal(sessionCookieValue(cb.headers.getSetCookie(), "asc_session"), null, "setup mode mints no session");
+
+    const H = { cookie: owner.cookie, "x-csrf-token": owner.csrfToken, "content-type": "application/json" };
+    const identity = await (await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-identity`, { headers: H })).json();
+    assert.deepEqual(identity.guilds.map((g) => [g.name, g.owner]), [["Fleetyard", true], ["Elsewhere", false]]);
+    const fin = (body) => fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-finalize`, { method: "POST", headers: H, body: JSON.stringify(body) });
+
+    let r = await fin({ adminPassword: "nope", guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE });
+    assert.equal(r.status, 400); assert.match((await r.json()).error, /admin password is incorrect/);
+    r = await fin({ adminPassword: "correct-password", guildId: "123456789012345678", adminRoleIds: ADMIN_ROLE });
+    assert.equal(r.status, 403); assert.match((await r.json()).error, /do not own Elsewhere/);
+    r = await fin({ adminPassword: "correct-password", guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE, moderatorRoleIds: ADMIN_ROLE });
+    assert.equal(r.status, 400, "separation of duties applies here too");
+    r = await fin({ adminPassword: "correct-password", guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE, playerRoleIds: PLAYER_ROLE, requireMfa: true });
+    const okText = await r.text();
+    assert.equal(r.status, 200, okText);
+    const ok = JSON.parse(okText);
+    assert.equal(ok.guild.name, "Fleetyard"); assert.equal(ok.owner.id, USER_ID); assert.equal(ok.restartRequired, true);
+    const env = readFileSync(join(tempDir, ".env"), "utf8");
+    assert.match(env, new RegExp(`^DISCORD_HOME_GUILD_ID="?${HOME_GUILD}"?$`, "m"));
+    assert.match(env, new RegExp(`^DISCORD_CONSOLE_ADMIN_ROLE_IDS="?${ADMIN_ROLE}"?$`, "m"));
+    assert.match(env, /^DISCORD_OAUTH_REQUIRE_MFA_TIERS="?owner,admin"?$/m);
+    // The captured identity is consumed; the owner session itself lives on.
+    assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-identity`, { headers: H })).status, 404);
+    assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, { headers: H })).status, 200);
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});

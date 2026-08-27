@@ -953,13 +953,18 @@ async function handleApi(req, res) {
     // home guild, and the callback will mint NO session for it -- it only hands
     // the operator's identity and guild list back to this owner session.
     if (startUrl.searchParams.get("setup") === "1") {
+      // Setup mode (rfc-console-auth.md §2.1.1): the callback mints NO session
+      // and resolves no tier -- it hands the operator's identity and guild list
+      // back to the owner session that started the round-trip.
+      // The admin password comes FIRST: without it, anyone who owns some Discord
+      // server could point this console at it and become its owner.
       const ownerSession = auth.requireAuth(req, res);
       if (!ownerSession) return;
       if ((ownerSession.tier || "owner") !== "owner" || SETUP_SCOPES.has(ownerSession.scope)) {
         return json(res, 403, { error: "Only the console owner can set up Discord sign-in." });
       }
       if (!config.discordOAuthAppConfigured) {
-        return json(res, 400, { error: "Save the Discord application's Client ID, Client Secret and Redirect URI first, then continue with Discord." });
+        return json(res, 400, { error: "This console has no Discord application yet. Set DISCORD_OAUTH_CLIENT_ID, DISCORD_OAUTH_CLIENT_SECRET and DISCORD_OAUTH_REDIRECT_URI in .env (like a bot's), or enter them on the setup screen." });
       }
       const pending = oauthPendingStates.issue(undefined, { purpose: "setup", sessionId: ownerSession.id });
       if (!pending) return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
@@ -1022,6 +1027,7 @@ async function handleApi(req, res) {
   if (path === "/api/setup/write-config" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/setup/save-token" && req.method === "POST") return saveToken(req, res);
   if (path === "/api/setup/save-oauth-secret" && req.method === "POST") return saveOAuthClientSecret(req, res);
+  if (path === "/api/setup/discord-finalize" && req.method === "POST") return discordSetupFinalize(req, res, session);
   if (path === "/api/setup/discord-identity" && req.method === "GET") {
     // The wizard's server picker. Only ever the identity captured by THIS
     // session's own setup round-trip; never anyone else's, never persisted.
@@ -5696,6 +5702,56 @@ function publicDirectorySettings() {
   };
 }
 
+// Completes the guided Discord setup from an OWNER session: the admin password
+// again as fresh proof (enabling a sign-in method is a credential change, same
+// rule as rotating the password), the chosen server (which the captured
+// identity must OWN, so Owner is the person doing the setup), and the role
+// mapping. Writes the same keys as writeOAuthConfig, then ends a setup-scope
+// session; an owner session stays.
+async function discordSetupFinalize(req, res, session) {
+  const auditUrl = sanitizedUrl(req, "/api/setup/discord-finalize");
+  const deny = (status, payload, reason) => { audit(config, auditUrl, "setup.discord-finalize", { ok: false, reason }); return json(res, status, payload); };
+  const body = await readJson(req);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return deny(400, { error: "Request body must be a JSON object." }, "malformed_body");
+  if (!config.authDisabled && req.headers["x-csrf-token"] !== session.csrf) return deny(403, { error: "Your setup session expired. Start Discord setup again." }, "csrf");
+  const captured = session.pendingDiscordSetup;
+  if (!captured) return deny(400, { error: "Continue with Discord first." }, "no_identity");
+  const rateKey = loginRateLimitKey(req);
+  const rate = credentialProofRateLimiter.check(rateKey);
+  if (!rate.allowed) return deny(429, { error: "Too many attempts. Please wait a few minutes, then try again." }, "rate_limited");
+  if (config.authDisabled ? false : !auth.passwordMatches(String(body.adminPassword ?? ""))) {
+    credentialProofRateLimiter.recordFailure(rateKey);
+    return deny(400, { error: "The admin password is incorrect." }, "bad_password");
+  }
+  credentialProofRateLimiter.recordSuccess(rateKey);
+  const guildId = String(body.guildId || "").trim();
+  const guild = captured.guilds.find((g) => g.id === guildId);
+  if (!guild) return deny(400, { error: "Choose one of your Discord servers." }, "guild_not_in_list");
+  if (!guild.owner) return deny(403, { error: `You do not own ${guild.name}. Only that server's owner can connect it to this console.` }, "not_guild_owner");
+  const fields = {
+    DISCORD_HOME_GUILD_ID: guildId,
+    DISCORD_CONSOLE_ADMIN_ROLE_IDS: String(body.adminRoleIds || "").trim(),
+    DISCORD_CONSOLE_MODERATOR_ROLE_IDS: String(body.moderatorRoleIds || "").trim(),
+    DISCORD_CONSOLE_PLAYER_ROLE_IDS: String(body.playerRoleIds || "").trim(),
+    DISCORD_OAUTH_REQUIRE_MFA_TIERS: body.requireMfa === false ? "" : "owner,admin",
+    DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "0",
+  };
+  for (const [key, value] of Object.entries(fields)) {
+    const error = validateOAuthWriteConfigKey(key, value);
+    if (error) return deny(400, { error }, "invalid_field");
+  }
+  const conflicts = roleTierConflicts({
+    admin: parseRoleIdList(fields.DISCORD_CONSOLE_ADMIN_ROLE_IDS),
+    moderator: parseRoleIdList(fields.DISCORD_CONSOLE_MODERATOR_ROLE_IDS),
+    player: parseRoleIdList(fields.DISCORD_CONSOLE_PLAYER_ROLE_IDS),
+  });
+  if (conflicts.length) return deny(400, { error: `Each Discord role can map to only one access level -- ${describeRoleTierConflicts(conflicts)}.` }, "role_mapping_unsound");
+  for (const [key, value] of Object.entries(fields)) updateEnvFileValue(key, value);
+  audit(config, auditUrl, "setup.discord-finalize", { ok: true, guildId, userId: captured.userId, keys: Object.keys(fields) });
+  delete session.pendingDiscordSetup;
+  return json(res, 200, { ok: true, guild: { id: guild.id, name: guild.name }, owner: { id: captured.userId, username: captured.username }, restartRequired: true });
+}
+
 async function saveOAuthClientSecret(req, res) {
   const body = await readJson(req);
   const secret = body.secret;
@@ -6239,15 +6295,16 @@ async function handleOAuthCallback(req, res) {
     // Setup mode: no tier, no session. Hand the operator's identity and guild
     // list (with owner flags) to the owner session that started the flow, then
     // return to the wizard. If that session is gone, the wizard simply restarts.
+    const captured = {
+      userId: identity.userId, username: identity.username, mfaEnabled: identity.mfaEnabled,
+      guilds: identity.guilds, capturedAt: Date.now()
+    };
     const ownerSession = consumed.sessionId ? auth.readSessionById(consumed.sessionId) : null;
     if (!ownerSession) {
       audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, purpose: "setup", reason: "owner_session_gone" });
       return html(res, 403, oauthErrorPage("Your console session ended while Discord was authorizing. Sign in with the admin password and start Discord setup again."));
     }
-    ownerSession.pendingDiscordSetup = {
-      userId: identity.userId, username: identity.username, mfaEnabled: identity.mfaEnabled,
-      guilds: identity.guilds, capturedAt: Date.now()
-    };
+    ownerSession.pendingDiscordSetup = captured; // readSessionById returns the live object, so this sticks
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, purpose: "setup", userId: identity.userId, guilds: identity.guilds.length });
     res.setHeader("Set-Cookie", [clearOAuthStateCookie(config.secureCookies)]);
     return html(res, 200, `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Discord connected</title></head><body><noscript><a href="/?discordSetup=done">Continue Discord setup</a></noscript><script>window.location.replace("/?discordSetup=done");</script></body></html>`);

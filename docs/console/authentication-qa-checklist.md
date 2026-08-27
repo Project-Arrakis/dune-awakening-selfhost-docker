@@ -377,22 +377,23 @@ callback registered, Developer Mode on to copy IDs. One of the accounts must
 have Discord 2FA **off** for T31.
 
 ### T26 · Guided setup, as an operator would
-1. On the sign-in page click **Set up Discord sign-in**; enter the admin password.
+*Host precondition:* the application is in `.env` (`DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_CLIENT_SECRET` or the secret file, `DISCORD_OAUTH_REDIRECT_URI`), console restarted. (If it is not, the setup screen asks the owner for them once — also worth a pass.)
+1. On the sign-in page click **Set up Discord sign-in**.
 
 **Expected**
-- A five-step screen: *Connect the Discord application* (Redirect URI shown with a copy button, Client ID, Client Secret), *Continue with Discord* (disabled until step 1 is saved), *Choose the server* (disabled until step 2), *Map roles*, *Save and restart*.
-2. Paste Client ID and Secret; **Save application**. Click **Continue with Discord**.
+- The password field remains, with *Enter the admin password first — only the console owner can connect Discord.* Nothing goes to Discord yet.
+2. Enter the admin password.
 
 **Expected**
-- Discord's authorization screen names the application and asks for: who you are, your servers, your roles in a server. After **Authorize** you land back on the setup screen, **not** signed in, with *Connected as <your name>*.
-3. The server list shows your servers; the one you own says *— you own this server* and is preselected. Pick it.
+- The setup screen with a single **Continue with Discord** button (no application step).
+3. Click it.
 
 **Expected**
-- *You own <server>, so you will be the console Owner…*
-4. Fill **Admin Role** only. Leave the two-factor box ticked. **Save Discord sign-in**. `dune console restart`.
+- Discord's authorization screen names the application and asks for: who you are, your servers, your roles in a server. After **Authorize** you land back on the setup screen **not** signed in to the console as Discord; it shows *Signed in to Discord as <you>*, your server preselected and marked *you own this server*, and *You own <server>, so you are the console Owner.*
+4. Fill **Admin Role** only. Leave the two-factor box ticked. Enter the admin password again. **Turn on Discord sign-in**. `dune console restart`.
 
 **Expected**
-- After restart the sign-in page shows **Sign in with Discord** as the main button and **Use the admin password instead** beneath it; the password field is hidden until that is clicked.
+- *Done. <server> is connected and <you> is the Owner…* After restart the sign-in page shows **Sign in with Discord** as the main button and **Use the admin password instead** beneath it.
 
 ### T27 · Role → tier, highest wins
 1. Give account A the Admin role, account B the Player role (map Player Role in Settings first), account C both.

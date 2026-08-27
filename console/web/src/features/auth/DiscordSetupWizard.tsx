@@ -2,38 +2,43 @@ import { useEffect, useState } from "react";
 import { api, post } from "../../api/client";
 import { SecretInput } from "../../components/SecretInput";
 
-// First-run Discord sign-in setup (docs/rfc-console-auth.md §2.1.1). Five steps
-// on one screen, gated in order: connect the application, authorize with
-// Discord (setup mode -- mints no session), choose the server, map roles, save.
-// Owner is never chosen here: it is whoever Discord says owns the chosen server.
+// Guided Discord sign-in setup (docs/rfc-console-auth.md §2.1.1).
+//
+// Reached only by the console owner (admin password first -- otherwise anyone
+// who owns some Discord server could point this console at it). From there the
+// operator AUTHENTICATES; they do not create anything: Continue with Discord ->
+// everything Discord can tell us is filled in (who you are, your servers, the
+// one you own = Owner) -> type the role IDs -> confirm with the admin password
+// as fresh proof. The Discord application is deployment configuration (like a
+// bot's); it is mentioned only when the install has none yet.
 
 type Guild = { id: string; name: string; owner: boolean };
-type Identity = { user: { id: string; username: string; mfaEnabled: boolean }; guilds: Guild[] };
-type Props = { onDone: () => void; onCancel: () => void; initialClientId?: string; initialRedirectUri?: string; secretSaved?: boolean };
+type Identity = { user: { id: string; username: string; mfaEnabled: boolean }; guilds: Guild[]; requiresPassword?: boolean };
+type Props = { appConfigured: boolean; onDone: () => void; onCancel: () => void };
 
 const SNOWFLAKE = /^\d{17,19}$/;
 
-export function DiscordSetupWizard({ onDone, onCancel, initialClientId = "", initialRedirectUri = "", secretSaved = false }: Props) {
-  const defaultRedirect = `${window.location.origin}/api/auth/discord/callback`;
-  const [clientId, setClientId] = useState(initialClientId);
-  const [clientSecret, setClientSecret] = useState("");
-  const [redirectUri, setRedirectUri] = useState(initialRedirectUri || defaultRedirect);
-  const [appSaved, setAppSaved] = useState(Boolean(initialClientId && initialRedirectUri && secretSaved));
+export function DiscordSetupWizard({ appConfigured, onDone, onCancel }: Props) {
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [guildId, setGuildId] = useState("");
   const [adminRoleIds, setAdminRoleIds] = useState("");
   const [moderatorRoleIds, setModeratorRoleIds] = useState("");
   const [playerRoleIds, setPlayerRoleIds] = useState("");
   const [requireMfa, setRequireMfa] = useState(true);
+  const [adminPassword, setAdminPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [saved, setSaved] = useState(false);
+  const [done, setDone] = useState<{ guild: string; owner: string } | null>(null);
+  // Prerequisite fallback (install with no application configured; owner only).
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [redirectUri] = useState(`${window.location.origin}/api/auth/discord/callback`);
+  const [appSaved, setAppSaved] = useState(appConfigured);
 
-  // Returning from the Discord round-trip: pick up the captured identity.
   useEffect(() => {
     if (!new URLSearchParams(window.location.search).has("discordSetup")) return;
     api<Identity>("/api/setup/discord-identity")
-      .then((res) => { setIdentity(res); setAppSaved(true); const owned = res.guilds.find((g) => g.owner); if (owned) setGuildId(owned.id); })
+      .then((res) => { setIdentity(res); const owned = res.guilds.find((g) => g.owner); if (owned) setGuildId(owned.id); })
       .catch(() => setError("Discord did not hand back an identity. Click Continue with Discord again."));
     window.history.replaceState({}, "", "/");
   }, []);
@@ -41,80 +46,92 @@ export function DiscordSetupWizard({ onDone, onCancel, initialClientId = "", ini
   async function saveApp() {
     setBusy(true); setError("");
     try {
-      if (!SNOWFLAKE.test(clientId.trim())) throw new Error("Client ID should be the 17-19 digit application ID from the Developer Portal.");
-      await post("/api/setup/write-oauth-config", { DISCORD_OAUTH_CLIENT_ID: clientId.trim(), DISCORD_OAUTH_REDIRECT_URI: redirectUri.trim() });
-      if (clientSecret) { await post("/api/setup/save-oauth-secret", { secret: clientSecret, overwrite: true }); setClientSecret(""); }
-      else if (!secretSaved) throw new Error("Paste the Client Secret from the Developer Portal.");
-      setAppSaved(true);
+      if (!SNOWFLAKE.test(clientId.trim())) throw new Error("Client ID should be the 17-19 digit application ID.");
+      if (!clientSecret) throw new Error("Paste the Client Secret.");
+      await post("/api/setup/write-oauth-config", { DISCORD_OAUTH_CLIENT_ID: clientId.trim(), DISCORD_OAUTH_REDIRECT_URI: redirectUri });
+      await post("/api/setup/save-oauth-secret", { secret: clientSecret, overwrite: true });
+      setClientSecret(""); setAppSaved(true);
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(false); }
   }
 
-  async function saveMapping() {
+  async function finalize() {
     setBusy(true); setError("");
     try {
-      if (!SNOWFLAKE.test(guildId)) throw new Error("Choose the Discord server.");
+      if (!SNOWFLAKE.test(guildId)) throw new Error("Choose your Discord server.");
+      if (!adminRoleIds.trim()) throw new Error("Map an Admin role, or only you (the server owner) will be able to use the console through Discord.");
       const bad = [adminRoleIds, moderatorRoleIds, playerRoleIds].flatMap((v) => v.split(",").map((x) => x.trim()).filter(Boolean)).filter((x) => !SNOWFLAKE.test(x));
       if (bad.length) throw new Error(`Not a Discord role ID: ${bad.join(", ")}`);
-      if (!adminRoleIds.trim()) throw new Error("Map an Admin role, or only the server owner will be able to use the console through Discord.");
-      await post("/api/setup/write-oauth-config", {
-        DISCORD_HOME_GUILD_ID: guildId,
-        DISCORD_CONSOLE_ADMIN_ROLE_IDS: adminRoleIds.trim(),
-        DISCORD_CONSOLE_MODERATOR_ROLE_IDS: moderatorRoleIds.trim(),
-        DISCORD_CONSOLE_PLAYER_ROLE_IDS: playerRoleIds.trim(),
-        DISCORD_OAUTH_REQUIRE_MFA_TIERS: requireMfa ? "owner,admin" : "",
-        DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "0"
+      if (!adminPassword) throw new Error("Enter the admin password to confirm.");
+      const res = await post<{ ok: boolean; guild: { name: string }; owner: { username: string } }>("/api/setup/discord-finalize", {
+        adminPassword, guildId, adminRoleIds: adminRoleIds.trim(), moderatorRoleIds: moderatorRoleIds.trim(), playerRoleIds: playerRoleIds.trim(), requireMfa
       });
-      setSaved(true);
+      setAdminPassword("");
+      setDone({ guild: res.guild.name, owner: res.owner.username });
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(false); }
   }
 
   const chosen = identity?.guilds.find((g) => g.id === guildId) || null;
-  const iAmOwner = Boolean(chosen?.owner);
+  const owned = identity?.guilds.filter((g) => g.owner) || [];
 
   return (
     <main className="login-screen">
       <section className="login-panel discord-setup-panel">
         <h1>Set up Discord sign-in</h1>
-        <p className="muted">People will sign in with Discord and get console access from their roles in your server. The server's owner is automatically the console owner. Your admin password keeps working as the way back in.</p>
 
-        <h2 className="recovery-codes-heading">1. Connect the Discord application</h2>
-        <p className="muted">Create one at <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">discord.com/developers/applications</a> (or reuse the one your bot uses). Under <strong>OAuth2</strong>, add this exact Redirect URI, then copy the Client ID and a Client Secret.</p>
-        <label htmlFor="wiz-redirect">Redirect URI to register<span className="field-label-row"><input id="wiz-redirect" name="wiz-redirect" value={redirectUri} onChange={(e) => setRedirectUri(e.target.value)} disabled={busy || appSaved} /><button type="button" className="login-password-toggle" onClick={() => { void navigator.clipboard?.writeText(redirectUri); }}>copy</button></span></label>
-        <label htmlFor="wiz-client-id">Client ID<input id="wiz-client-id" name="wiz-client-id" value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="Application ID" disabled={busy || appSaved} inputMode="numeric" /></label>
-        <label htmlFor="wiz-client-secret">Client Secret{secretSaved && !clientSecret ? <span className="theme-note"> (saved)</span> : null}<SecretInput id="wiz-client-secret" name="wiz-client-secret" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} placeholder={secretSaved ? "Paste a new one to replace" : "Client secret"} disabled={busy || appSaved} /></label>
-        {!appSaved ? <button type="button" disabled={busy} onClick={() => { void saveApp(); }}>{busy ? "Saving..." : "Save application"}</button>
-          : <p className="muted">Application saved. <button type="button" className="login-password-toggle" onClick={() => setAppSaved(false)}>edit</button></p>}
+        {!appSaved && (
+          <>
+            <p className="attention-text">This console has no Discord application configured yet, so it cannot send you to Discord. This is a one-time deployment step, like a bot's: set <code>DISCORD_OAUTH_CLIENT_ID</code>, <code>DISCORD_OAUTH_CLIENT_SECRET</code> and <code>DISCORD_OAUTH_REDIRECT_URI</code> in <code>.env</code> and restart — or, signed in as the owner, enter them here once.</p>
+            {(
+              <>
+                <p className="muted">In the <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">Developer Portal</a> (your bot's application works), under OAuth2 add this Redirect URI: <code>{redirectUri}</code> <button type="button" className="login-password-toggle" onClick={() => { void navigator.clipboard?.writeText(redirectUri); }}>copy</button></p>
+                <label htmlFor="wiz-client-id">Client ID<input id="wiz-client-id" name="wiz-client-id" value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="Application ID" disabled={busy} inputMode="numeric" /></label>
+                <label htmlFor="wiz-client-secret">Client Secret<SecretInput id="wiz-client-secret" name="wiz-client-secret" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} placeholder="Client secret" disabled={busy} /></label>
+                <button type="button" disabled={busy} onClick={() => { void saveApp(); }}>{busy ? "Saving..." : "Save and continue"}</button>
+              </>
+            )}
+          </>
+        )}
 
-        <h2 className="recovery-codes-heading">2. Continue with Discord</h2>
-        <p className="muted">Discord will ask you to authorize the application so the console can see who you are, which servers you are in, and your roles in the one you pick. Nothing is signed in yet.</p>
-        {identity
-          ? <p className="muted">Connected as <strong>{identity.user.username}</strong>{identity.user.mfaEnabled ? "" : " — this Discord account has no two-factor authentication; if you require it for owners below, enable it in Discord before signing in."}</p>
-          : <a className={`login-discord-button login-discord-button-primary${appSaved ? "" : " disabled"}`} href={appSaved ? "/api/auth/discord/start?setup=1" : undefined} aria-disabled={!appSaved}>Continue with Discord</a>}
+        {appSaved && !identity && !done && (
+          <>
+            <p className="muted">Authenticate with Discord. The console will learn who you are and which servers you are in; the server you own makes you its Owner. Nothing is signed in yet.</p>
+            <a className="login-discord-button login-discord-button-primary" href="/api/auth/discord/start?setup=1">Continue with Discord</a>
+          </>
+        )}
 
-        <h2 className="recovery-codes-heading">3. Choose the server</h2>
-        <label htmlFor="wiz-guild">Discord server<select id="wiz-guild" name="wiz-guild" value={guildId} onChange={(e) => setGuildId(e.target.value)} disabled={!identity || busy || saved}>
-          <option value="">{identity ? "Choose…" : "Continue with Discord first"}</option>
-          {identity?.guilds.map((g) => <option key={g.id} value={g.id}>{g.name}{g.owner ? " — you own this server" : ""}</option>)}
-        </select></label>
-        {chosen && (iAmOwner
-          ? <p className="muted">You own <strong>{chosen.name}</strong>, so you will be the console <strong>Owner</strong> when you sign in with Discord.</p>
-          : <p className="attention-text">You do not own <strong>{chosen.name}</strong>. Its owner will be the console Owner; you will get whatever your roles map to below.</p>)}
+        {identity && !done && (
+          <>
+            <p className="muted">Signed in to Discord as <strong>{identity.user.username}</strong>{identity.user.mfaEnabled ? "" : " — this Discord account has no two-factor authentication; enable it in Discord before requiring it below."}</p>
 
-        <h2 className="recovery-codes-heading">4. Map roles to access levels</h2>
-        <p className="muted">Copy role IDs from Discord with Developer Mode on (User Settings &rarr; Advanced), then right-click a role &rarr; Copy Role ID. One or more per field, comma-separated. A person with several mapped roles gets the highest. <strong>Owner is not a role</strong> — it is the server&apos;s owner.</p>
-        <label htmlFor="wiz-admin">Admin Role <em>(required)</em><input id="wiz-admin" name="wiz-admin" value={adminRoleIds} onChange={(e) => setAdminRoleIds(e.target.value)} placeholder="Discord role ID" disabled={!identity || busy || saved} /></label>
-        <label htmlFor="wiz-moderator">Moderator Role <em>(optional)</em><input id="wiz-moderator" name="wiz-moderator" value={moderatorRoleIds} onChange={(e) => setModeratorRoleIds(e.target.value)} placeholder="Discord role ID" disabled={!identity || busy || saved} /></label>
-        <label htmlFor="wiz-player">Player Role <em>(recommended)</em><input id="wiz-player" name="wiz-player" value={playerRoleIds} onChange={(e) => setPlayerRoleIds(e.target.value)} placeholder="Discord role ID" disabled={!identity || busy || saved} /></label>
-        <label className="totp-ack-checkbox" htmlFor="wiz-mfa"><input id="wiz-mfa" name="wiz-mfa" type="checkbox" checked={requireMfa} onChange={(e) => setRequireMfa(e.target.checked)} disabled={!identity || busy || saved} /> Require two-factor on the Discord account for Owner and Admin (recommended)</label>
+            <h2 className="recovery-codes-heading">Your server</h2>
+            {owned.length === 0 && <p className="attention-text">You do not own any of the servers you are in. Only a server's owner can connect it to this console.</p>}
+            <label htmlFor="wiz-guild">Discord server<select id="wiz-guild" name="wiz-guild" value={guildId} onChange={(e) => setGuildId(e.target.value)} disabled={busy}>
+              <option value="">Choose…</option>
+              {identity.guilds.map((g) => <option key={g.id} value={g.id} disabled={!g.owner}>{g.name}{g.owner ? " — you own this server" : " — not yours"}</option>)}
+            </select></label>
+            {chosen?.owner && <p className="muted">You own <strong>{chosen.name}</strong>, so you are the console <strong>Owner</strong>. Everyone else's access comes from the roles below.</p>}
 
-        <h2 className="recovery-codes-heading">5. Save and restart</h2>
-        {!saved
-          ? <button type="button" disabled={!identity || busy} onClick={() => { void saveMapping(); }}>{busy ? "Saving..." : "Save Discord sign-in"}</button>
-          : <p className="attention-text">Saved. Run <code>dune console restart</code> on the host. After it comes back, the sign-in page shows <strong>Sign in with Discord</strong>, with the admin password underneath as the way back in.</p>}
+            <h2 className="recovery-codes-heading">Who gets which access</h2>
+            <p className="muted">Copy role IDs from Discord with Developer Mode on (User Settings &rarr; Advanced), then right-click a role &rarr; Copy Role ID. One or more per field, comma-separated. Owner is not a role — it is you, the server&apos;s owner.</p>
+            <label htmlFor="wiz-admin">Admin Role <em>(required)</em><input id="wiz-admin" name="wiz-admin" value={adminRoleIds} onChange={(e) => setAdminRoleIds(e.target.value)} placeholder="Discord role ID" disabled={busy} /></label>
+            <label htmlFor="wiz-moderator">Moderator Role <em>(optional)</em><input id="wiz-moderator" name="wiz-moderator" value={moderatorRoleIds} onChange={(e) => setModeratorRoleIds(e.target.value)} placeholder="Discord role ID" disabled={busy} /></label>
+            <label htmlFor="wiz-player">Player Role <em>(recommended)</em><input id="wiz-player" name="wiz-player" value={playerRoleIds} onChange={(e) => setPlayerRoleIds(e.target.value)} placeholder="Discord role ID" disabled={busy} /></label>
+            <label className="totp-ack-checkbox" htmlFor="wiz-mfa"><input id="wiz-mfa" name="wiz-mfa" type="checkbox" checked={requireMfa} onChange={(e) => setRequireMfa(e.target.checked)} disabled={busy} /> Require two-factor on the Discord account for Owner and Admin (recommended)</label>
+
+            <h2 className="recovery-codes-heading">Confirm</h2>
+            <label htmlFor="wiz-password">Admin password again <em>(fresh proof, as when changing it)</em><SecretInput id="wiz-password" name="wiz-password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="Admin password" disabled={busy} /></label>
+            <button type="button" disabled={busy || !chosen?.owner} onClick={() => { void finalize(); }}>{busy ? "Saving..." : "Turn on Discord sign-in"}</button>
+          </>
+        )}
+
+        {done && (
+          <p className="attention-text">Done. <strong>{done.guild}</strong> is connected and <strong>{done.owner}</strong> is the Owner. Run <code>dune console restart</code> on the host; after it comes back, the sign-in page shows <strong>Sign in with Discord</strong>, with the admin password beneath it as the way back in.</p>
+        )}
+
         {error && <p className="error">{error}</p>}
-        <button type="button" className="login-password-toggle" onClick={saved ? onDone : onCancel}>{saved ? "Back to sign in" : "Cancel"}</button>
+        <button type="button" className="login-password-toggle" onClick={done ? onDone : onCancel}>{done ? "Back to sign in" : "Cancel"}</button>
       </section>
     </main>
   );

@@ -227,20 +227,23 @@ does **not** change password sign-in — it adds a second button.
 
 ### Turning it on — the guided setup
 
+The application is deployment configuration, like a bot's: put its Client ID,
+Client Secret and Redirect URI in `.env` (see `.env.example`) and restart, or
+enter them once on the setup screen. After that you never see it again.
+
 1. On the sign-in page, click **Set up Discord sign-in** and enter the admin
-   password. (Only the console owner can do this.)
-2. **Connect the application** — paste the Client ID and Client Secret. The
-   screen shows the exact Redirect URI to add under the application's OAuth2
-   settings, with a copy button. Save.
-3. **Continue with Discord** — Discord asks you to authorize the application.
-   Nothing is signed in yet; the console only learns who you are and which
-   servers you are in.
-4. **Choose the server** from the list. Servers you own are marked; pick one
-   you own and the screen confirms you will be the console Owner.
-5. **Map roles** — Admin (required), Moderator and Player (optional). Leave
+   password. Only the console owner can connect Discord — without this step,
+   anyone who owns some Discord server could point your console at it.
+2. Click **Continue with Discord**. Discord asks you to authorize the
+   application; nothing is signed in yet. You come back with everything Discord
+   can tell the console already filled in: who you are, your servers, and which
+   one you own — that one makes you the console **Owner**.
+3. Pick your server (the one marked *you own this server*).
+4. Type the role IDs — Admin (required), Moderator and Player (optional). Leave
    *Require two-factor on the Discord account for Owner and Admin* ticked
    unless you have a reason not to.
-6. **Save**, then `dune console restart` on the host.
+5. Enter the admin password once more to confirm (the same fresh-proof rule as
+   changing the password), then `dune console restart` on the host.
 
 From then on the sign-in page shows **Sign in with Discord** as the main
 button, with **Use the admin password instead** beneath it — that is your way
