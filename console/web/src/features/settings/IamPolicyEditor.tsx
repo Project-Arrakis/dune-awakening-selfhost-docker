@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { resolvedAllowedActions, nsFromAction } from "./iamPolicy";
 import { api, post } from "../../api/client";
 
 interface PolicyStatement {
@@ -27,37 +28,6 @@ function parseStatements(text: string): PolicyStatement[] | null {
   } catch { return null; }
 }
 
-function iamActionAllowed(iamAction: string, allowPatterns: string[]): boolean {
-  for (const pattern of allowPatterns) {
-    if (pattern === "*") return true;
-    if (pattern === iamAction) return true;
-    if (pattern.endsWith(":*") && iamAction.startsWith(pattern.slice(0, -1))) return true;
-  }
-  return false;
-}
-
-function resolvedAllowedActions(statements: PolicyStatement[], actionMap: Record<string, string>): Set<string> {
-  const allowPatterns: string[] = [];
-  for (const stmt of statements) {
-    if (stmt.Effect !== "Allow") continue;
-    for (const a of stmt.Action) allowPatterns.push(a);
-  }
-  const allowed = new Set<string>();
-  for (const catalogAction of Object.keys(actionMap)) {
-    const iamAction = actionMap[catalogAction];
-    if (iamActionAllowed(iamAction, allowPatterns)) {
-      allowed.add(catalogAction);
-    }
-  }
-  return allowed;
-}
-
-function nsFromAction(action: string): string {
-  const afterApi = action.split("/api/")[1];
-  if (!afterApi) return "other";
-  return afterApi.split("/")[0].toLowerCase();
-}
-
 function humanLabel(action: string): string {
   const afterApi = action.split("/api/")[1];
   if (!afterApi) return action;
@@ -82,8 +52,7 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function namespaceLabel(action: string): string {
-  const ns = nsFromAction(action);
+function namespaceLabel(ns: string): string {
   const readable: Record<string, string> = {
     server: "Server", players: "Players", guilds: "Guilds", bases: "Bases",
     storage: "Storage", maps: "Maps", sietches: "Sietches", deepdesert: "Deep Desert",
@@ -145,7 +114,7 @@ export function IamPolicyEditor() {
     const other: string[] = [];
     for (const action of new Set(Object.values(catalog.actions))) {
       if (typeof action !== "string") continue;
-      const ns = nsFromAction(action);
+      const ns = nsFromAction(action, catalog.actionMap || {});
       if (groups[ns]) {
         groups[ns].push(action as string);
       } else {
@@ -284,7 +253,7 @@ export function IamPolicyEditor() {
               {Object.entries(filteredGroups).map(([ns, actions]) => (
                 <div key={ns} className="iam-ns-card">
                   <div className="iam-ns-header">
-                    <span className="iam-ns-name">{namespaceLabel(actions[0])}</span>
+                    <span className="iam-ns-name">{namespaceLabel(ns)}</span>
                     <span className="iam-ns-count">
                       {actions.filter(a => allowed.has(a)).length}/{actions.length} allowed
                     </span>

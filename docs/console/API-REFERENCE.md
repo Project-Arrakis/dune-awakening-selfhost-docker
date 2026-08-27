@@ -774,7 +774,7 @@ Layers legend's default-settings mechanism.
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | POST | `/api/settings/admin-password` | Change admin password | `currentPassword`, `newPassword`, plus `totpCode` once a second factor is enrolled |
-| POST | `/api/auth/2fa/recovery-codes/regenerate` | Issue a fresh set of 10 recovery codes, invalidating the old set. Owner-only (`settings:regenerate-recovery-codes`); requires `CONSOLE_TOTP_ENABLED=1` and an enrolled factor. Returns the new codes **once**. Revokes no sessions. | `currentPassword`, `totpCode` |
+| POST | `/api/auth/2fa/recovery-codes/regenerate` | Issue a fresh set of 10 recovery codes, invalidating the old set. Requires `CONSOLE_TOTP_ENABLED=1` and an enrolled factor. Mapped to `settings:regenerate-recovery-codes`, which the **default** `admin` policy's explicit `Deny settings:*` makes owner-only — that is a default, not an enforced property: `PUT /api/settings/iam/policy` can grant it to another tier (#529). Returns the new codes **once**. Revokes no sessions. | `currentPassword`, `totpCode` |
 | POST | `/api/settings/web-port` | Change web console port | `port` (number 1-65535) |
 | GET | `/api/settings/iam/policies` | Return the active IAM policy store (all tiers) | None |
 | PUT | `/api/settings/iam/policy` | Validate and atomically replace the complete policy store. Rejected if it would remove the owner's `settings:write` | Complete policy store object |
