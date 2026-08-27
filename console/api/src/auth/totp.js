@@ -140,7 +140,12 @@ export function verifyTotpMatch(secretBytes, token, timeSeconds, {
 } = {}) {
   if (typeof token !== "string") return { valid: false, counter: null };
   const candidate = token.replace(/\s/g, "");
-  if (!new RegExp(`^\\d{${digits}}$`).test(candidate)) return { valid: false, counter: null };
+  // Length check + a hardcoded digits-only regex, rather than building
+  // `^\\d{${digits}}$` at call time. Identical semantics, and it keeps a
+  // caller-supplied value out of a RegExp constructor entirely -- no caller
+  // passes `digits` today, but a dynamic regex on this path is a standing
+  // invitation for one to start.
+  if (candidate.length !== digits || !/^\d+$/.test(candidate)) return { valid: false, counter: null };
   const candidateBuf = Buffer.from(candidate, "utf8");
   const center = counterForTime(timeSeconds, period);
   let matchedCounter = null;
