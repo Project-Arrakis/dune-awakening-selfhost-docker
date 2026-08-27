@@ -40,9 +40,13 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | POST | `/api/auth/login` | Login with password | `password` (string) |
 | POST | `/api/auth/logout` | Logout current session | None |
 | GET | `/api/auth/me` | Current session identity, tier, allowed actions, and `secondFactorEnrolled` (whether a Tier 3 second factor is enrolled — always `false` when `CONSOLE_TOTP_ENABLED` is off) | None |
+| POST | `/api/auth/2fa/setup` | Begin TOTP enrollment: generate a secret and return it with a QR data URI. Reachable **only** from the short-lived enrollment/re-setup session issued by `/api/auth/login`, not from a normal session | None |
+| POST | `/api/auth/2fa/confirm` | Confirm enrollment with a code, commit the second factor, and return the recovery codes **once**. Same enrollment-session restriction | `code` (6 digits) |
 | GET | `/api/health` | Health check | None |
 | GET | `/api/setup/state` | Get setup completion state | None |
 | POST | `/api/setup/preflight` | Run preflight checks | None |
+| POST | `/api/setup/save-oauth-secret` | Store the Discord OAuth client secret to `runtime/secrets/` | Client secret |
+| POST | `/api/setup/write-oauth-config` | Write the Discord OAuth settings (client ID, redirect URI, home guild, owner allowlist, bootstrap flag) to `.env` | OAuth config object |
 | POST | `/api/setup/write-config` | Write setup config | `SERVER_IP`, `SERVER_TITLE`, etc. |
 | POST | `/api/setup/save-token` | Save Funcom token | `token` (string) |
 | POST | `/api/setup/init` | Initialize setup | None |
@@ -105,6 +109,7 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | POST | `/api/updates/check-stack` | Check for stack updates | None |
 | POST | `/api/updates/apply-stack` | Apply stack updates | None |
 | GET | `/api/updates/auto-game` | Get auto-update status | None |
+| GET | `/api/updates/stack-progress` | Progress of an in-flight stack update | None |
 | POST | `/api/updates/auto-game` | Save auto-update config | `enabled`, `intervalMinutes`, `applyEnabled`, `notifyEnabled`, `notifyMinutes`, `waitUntilEmpty`, `maxWaitMinutes`, `confirmation` |
 | POST | `/api/updates/repair-runtime` | Repair runtime installation | None |
 
@@ -549,6 +554,7 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | GET | `/api/maps` | List all maps | None |
+| GET | `/api/map/overlays` | Return the configured map overlay definitions | None |
 | GET | `/api/map/status` | Get status of all maps | None |
 | GET | `/api/maps/mode` | Get map mode (static/dynamic) | `map?` (query param) |
 | POST | `/api/maps/mode` | Set map mode | `map`, `mode`, `confirmation: "SET MAP MODE"` |
@@ -650,6 +656,7 @@ Layers legend's default-settings mechanism.
 |--------|-------|-------------|------------|
 | GET | `/api/database/status` | Database status | None |
 | GET | `/api/database/schemas` | List database schemas | None |
+| GET | `/api/database/routines` | List the database routines the console knows about | None |
 | GET | `/api/database/tables` | List tables in schema | `schema?` (default: "dune") |
 | GET | `/api/database/tables/{schema}/{table}/columns` | Get column information | `schema`, `table` |
 | GET | `/api/database/tables/{schema}/{table}/preview` | Preview table data | `schema`, `table`, `limit?`, `offset?`, `filter?` |
@@ -769,6 +776,9 @@ Layers legend's default-settings mechanism.
 | POST | `/api/settings/admin-password` | Change admin password | `currentPassword`, `newPassword`, plus `totpCode` once a second factor is enrolled |
 | POST | `/api/auth/2fa/recovery-codes/regenerate` | Issue a fresh set of 10 recovery codes, invalidating the old set. Owner-only (`settings:regenerate-recovery-codes`); requires `CONSOLE_TOTP_ENABLED=1` and an enrolled factor. Returns the new codes **once**. Revokes no sessions. | `currentPassword`, `totpCode` |
 | POST | `/api/settings/web-port` | Change web console port | `port` (number 1-65535) |
+| GET | `/api/settings/iam/policies` | Return the active IAM policy store (all tiers) | None |
+| PUT | `/api/settings/iam/policy` | Validate and atomically replace the complete policy store. Rejected if it would remove the owner's `settings:write` | Complete policy store object |
+| POST | `/api/settings/iam/policy/test` | Evaluate an action for a tier without changing policy | Tier + action |
 | POST | `/api/settings` | Write config | Config object |
 | GET | `/api/settings` | Get setup state | None |
 | GET | `/api/public-directory/status` | Get public directory status | None |
