@@ -6619,3 +6619,6 @@ button.login-discord-button { border: none; cursor: pointer; font: inherit; font
 .login-primary-button:hover:not(:disabled) { background: #d4b57e; }
 .login-primary-button:disabled { opacity: .5; cursor: default; }
 .discord-setup-panel .auth-step-heading { font-size: 1rem; margin: 14px 0 2px; align-self: flex-start; }
+/* Discord as a secondary, less-prominent option beneath the password (opt-in). */
+.login-discord-button-secondary { width: auto; margin-top: 10px; padding: 8px 14px; font-size: .85rem; font-weight: 500; background: transparent; color: #8ea1f0; border: 1px solid #3b4270; box-shadow: none; }
+.login-discord-button-secondary:hover { background: rgba(88, 101, 242, .12); color: #a9b7f5; }
