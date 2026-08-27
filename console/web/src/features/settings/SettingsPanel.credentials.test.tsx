@@ -132,8 +132,8 @@ describe("SettingsPanel credential controls", () => {
       render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
       fireEvent.click(await screen.findByLabelText("Expand Two-Factor Authentication"));
 
-      fireEvent.change(screen.getByPlaceholderText("Current password"), { target: { value: "old-password" } });
-      fireEvent.change(screen.getByPlaceholderText("6-digit code"), { target: { value: "654321" } });
+      fireEvent.change(screen.getByPlaceholderText("Your login password"), { target: { value: "old-password" } });
+      fireEvent.change(screen.getByPlaceholderText("Current 6-digit code"), { target: { value: "654321" } });
       fireEvent.click(screen.getByText("Regenerate Recovery Codes"));
 
       await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
@@ -156,12 +156,12 @@ describe("SettingsPanel credential controls", () => {
       render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
       fireEvent.click(await screen.findByLabelText("Expand Two-Factor Authentication"));
 
-      fireEvent.change(screen.getByPlaceholderText("Current password"), { target: { value: "wrong" } });
-      fireEvent.change(screen.getByPlaceholderText("6-digit code"), { target: { value: "654321" } });
+      fireEvent.change(screen.getByPlaceholderText("Your login password"), { target: { value: "wrong" } });
+      fireEvent.change(screen.getByPlaceholderText("Current 6-digit code"), { target: { value: "654321" } });
       fireEvent.click(screen.getByText("Regenerate Recovery Codes"));
 
       await waitFor(() => expect(
-        (screen.getByPlaceholderText("6-digit code") as HTMLInputElement).value
+        (screen.getByPlaceholderText("Current 6-digit code") as HTMLInputElement).value
       ).toBe(""));
       expect(screen.queryByText("Save your new recovery codes")).toBeNull();
     });
@@ -233,8 +233,8 @@ describe("credential-state robustness (#524, #525, #526)", () => {
     render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
     fireEvent.click(await screen.findByLabelText("Expand Two-Factor Authentication"));
 
-    fireEvent.change(screen.getByPlaceholderText("Current password"), { target: { value: "old-password" } });
-    fireEvent.change(screen.getByPlaceholderText("6-digit code"), { target: { value: "654321" } });
+    fireEvent.change(screen.getByPlaceholderText("Your login password"), { target: { value: "old-password" } });
+    fireEvent.change(screen.getByPlaceholderText("Current 6-digit code"), { target: { value: "654321" } });
     fireEvent.click(screen.getByText("Regenerate Recovery Codes"));
     expect(await screen.findByText("aaaa-bbbb")).toBeTruthy();
 
@@ -246,5 +246,74 @@ describe("credential-state robustness (#524, #525, #526)", () => {
     await waitFor(() => expect(screen.queryByText(/two-factor state could not be read/i)).toBeTruthy());
     expect(screen.getByText("aaaa-bbbb")).toBeTruthy();
     expect(screen.getByText("cccc-dddd")).toBeTruthy();
+  });
+});
+
+// #531: with a factor enrolled, the Login Password and Two-Factor sections used
+// to render byte-identical fields -- same placeholders, same label text, and no
+// id/name on any of them -- and both can be open at once. A password manager or
+// iOS one-time-code autofill had nothing to tell them apart, and an operator
+// typing into the visually identical field a few rows up got "enter your
+// authenticator code" with a code already on screen.
+//
+// The suite passed before only because every test opened exactly one section.
+describe("the two credential forms are distinguishable (#531)", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it("keeps both sections' fields addressable when both are open", async () => {
+    mockBackend({ enrolled: true });
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    await openLoginPasswordSection();
+    fireEvent.click(screen.getByLabelText("Expand Two-Factor Authentication"));
+
+    // Would throw "Found multiple elements" if the two sections still shared
+    // placeholder text -- which is precisely the regression being pinned.
+    expect(screen.getByPlaceholderText("Current password")).toBeTruthy();
+    expect(screen.getByPlaceholderText("Your login password")).toBeTruthy();
+    expect(screen.getByPlaceholderText("6-digit code")).toBeTruthy();
+    expect(screen.getByPlaceholderText("Current 6-digit code")).toBeTruthy();
+
+    // Every credential input carries a stable id/name, so autofill and the
+    // accessible name can tell the two sections apart.
+    for (const id of ["settings-pw-current", "settings-pw-totp", "settings-regen-password", "settings-regen-totp"]) {
+      const el = document.getElementById(id) as HTMLInputElement | null;
+      expect(el, `#${id} should exist`).toBeTruthy();
+      expect(el!.name).toBe(id);
+    }
+  });
+
+  it("writes to only the field that was targeted", async () => {
+    mockBackend({ enrolled: true });
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    await openLoginPasswordSection();
+    fireEvent.click(screen.getByLabelText("Expand Two-Factor Authentication"));
+
+    fireEvent.change(screen.getByPlaceholderText("Current 6-digit code"), { target: { value: "111111" } });
+    expect((screen.getByPlaceholderText("Current 6-digit code") as HTMLInputElement).value).toBe("111111");
+    expect((screen.getByPlaceholderText("6-digit code") as HTMLInputElement).value).toBe("");
+  });
+});
+
+// #531: RecoveryCodesPanel hardcoded an <h1>. The app shell already renders one
+// and the panel titles itself with an <h2>, so the settings copy emitted a
+// page-level heading nested under an h2 -- an inverted outline (WCAG 1.3.1)
+// that no lint in console/web would have caught. Added after a mutation test
+// showed reverting the fix left the whole suite green.
+describe("recovery-codes heading level (#531)", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it("renders the settings copy as an h3, not a second page-level h1", async () => {
+    mockBackend({ enrolled: true });
+    mockPost.mockResolvedValue({ ok: true, recoveryCodes: ["aaaa-bbbb"] } as never);
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    fireEvent.click(await screen.findByLabelText("Expand Two-Factor Authentication"));
+
+    fireEvent.change(screen.getByPlaceholderText("Your login password"), { target: { value: "pw" } });
+    fireEvent.change(screen.getByPlaceholderText("Current 6-digit code"), { target: { value: "654321" } });
+    fireEvent.click(screen.getByText("Regenerate Recovery Codes"));
+
+    const heading = await screen.findByText("Save your new recovery codes");
+    expect(heading.tagName).toBe("H3");
+    expect(document.querySelectorAll("h1").length).toBe(0);
   });
 });
