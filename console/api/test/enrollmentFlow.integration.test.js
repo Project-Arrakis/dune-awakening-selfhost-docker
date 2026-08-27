@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer as createTcpServer } from "node:net";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, unlinkSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -264,6 +264,102 @@ test("Requirement 0: with CONSOLE_TOTP_ENABLED unset, password login is unchange
     assert.equal((await api(port, "/api/auth/2fa/setup", { cookie })).status, 403);
   } finally {
     await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// The "broken upgrade" case: an operator enrolls on a newer console, then rolls
+// the deployment back to an older one that cannot read the newer state format.
+// The state is GOOD here -- the console is the thing that is behind -- so this
+// must be distinguishable at the login surface from genuine corruption, and the
+// message must never tell the operator to delete a file that holds their only
+// second factor.
+test("login on a console rolled back below the state's version says upgrade, never delete", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "enroll-e2e-version-"));
+  const genDir = join(tempDir, "runtime", "generated");
+  mkdirSync(genDir, { recursive: true });
+  const statePath = join(genDir, "console-second-factor.json");
+  writeFileSync(statePath, JSON.stringify({
+    version: 99, epoch: 0,
+    totp: { secret: Buffer.alloc(20).toString("base64"), lastUsedCounter: -1 },
+    recoveryCodes: [],
+  }), { mode: 0o600 });
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const res = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+    assert.equal(res.status, 503, "a state file from a newer console must fail closed");
+    assert.ok(!cookieFrom(res), "no session cookie on the fail-closed path");
+    const { error } = await res.json();
+    assert.match(error, /NEWER console version/, "the operator must be told the console is behind, not the state");
+    assert.match(error, /upgrade the console/i);
+    assert.doesNotMatch(error, /remove it to re-enroll/,
+      "this message must never carry the corrupt-file 'delete it' remedy -- the state here is valid");
+    assert.ok(existsSync(statePath), "the console must not have deleted or rewritten valid state");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// Break-glass, end to end over HTTP: the operator has lost the authenticator
+// AND every recovery code, so they delete the state file on the host exactly as
+// docs/console/two-factor-recovery.md instructs, and re-enroll. The watermark is
+// a separate sibling file and deliberately survives -- the documented procedure
+// says to leave it, because deleting it would reset rollback detection.
+//
+// The codes handed out by that re-enrollment must actually work. They are the
+// operator's only remaining way back in the next time a device is lost, and
+// nothing in normal operation would ever reveal that they had been dead on
+// arrival.
+test("break-glass: after deleting the state file, re-enrolled recovery codes actually work", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "enroll-e2e-breakglass-"));
+  const statePath = join(tempDir, "runtime", "generated", "console-second-factor.json");
+  const consoleProc = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+
+    // Enroll, then spend one recovery code so the epoch and watermark advance.
+    const l1 = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+    const c1 = cookieFrom(l1), s1 = (await l1.json()).csrfToken;
+    const setup1 = await (await api(port, "/api/auth/2fa/setup", { cookie: c1, csrf: s1 })).json();
+    const conf1 = await (await api(port, "/api/auth/2fa/confirm", { cookie: c1, csrf: s1, body: { code: codeFor(setup1.secret) } })).json();
+    const spend = await api(port, "/api/auth/login", { body: { password: PASSWORD, recoveryCode: conf1.recoveryCodes[0] } });
+    assert.equal(spend.status, 200, "the first recovery login should succeed");
+    assert.ok(existsSync(`${statePath}.watermark`), "spending a code must have written a watermark");
+  } finally {
+    await stopProcess(consoleProc.child);
+  }
+
+  // Host-level break-glass: delete the state file only, leaving the watermark.
+  unlinkSync(statePath);
+  assert.ok(existsSync(`${statePath}.watermark`), "the documented procedure leaves the watermark in place");
+  const watermark = JSON.parse(readFileSync(`${statePath}.watermark`, "utf8")).epoch;
+  assert.ok(watermark > 0, "the surviving watermark is what makes this case non-trivial");
+
+  const port2 = await getFreePort();
+  const consoleProc2 = startConsole(port2, tempDir);
+  try {
+    await waitForHealth(port2);
+    // Password login sees no factor and re-enrolls, issuing a fresh code set.
+    const l2 = await api(port2, "/api/auth/login", { body: { password: PASSWORD } });
+    const body2 = await l2.json();
+    assert.equal(body2.enrollmentRequired, true, "a deleted store must re-enter enrollment");
+    const c2 = cookieFrom(l2), s2 = body2.csrfToken;
+    const setup2 = await (await api(port2, "/api/auth/2fa/setup", { cookie: c2, csrf: s2 })).json();
+    const conf2 = await (await api(port2, "/api/auth/2fa/confirm", { cookie: c2, csrf: s2, body: { code: codeFor(setup2.secret) } })).json();
+    assert.equal(conf2.recoveryCodes.length, 10);
+
+    // The moment that matters: one of those fresh codes must be accepted.
+    const rescue = await api(port2, "/api/auth/login", { body: { password: PASSWORD, recoveryCode: conf2.recoveryCodes[0] } });
+    const rescueBody = await rescue.json();
+    assert.equal(rescue.status, 200,
+      `break-glass codes were rejected (${JSON.stringify(rescueBody)}) -- the operator would be locked out with no remaining path in`);
+    assert.notEqual(rescueBody.recoveryFailed, true);
+  } finally {
+    await stopProcess(consoleProc2.child);
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
