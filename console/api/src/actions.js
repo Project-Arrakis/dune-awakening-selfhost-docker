@@ -139,15 +139,12 @@ export const ROUTE_ACTIONS = {
   "GET /api/settings":                         "settings:read",
   "POST /api/settings":                        "settings:write",
   "POST /api/settings/admin-password":         "settings:change-password",
-  // Standing "regenerate my recovery codes" action (RFC §2.3, #512). Lives in
-  // the settings: namespace, not auth:, precisely so the default admin policy's
-  // explicit `Deny settings:*` keeps it owner-only like the password rotation
-  // it mirrors -- it re-proves the same shared local-owner Tier 3 credential.
-  "POST /api/auth/2fa/recovery-codes/regenerate": "settings:regenerate-recovery-codes",
   "POST /api/settings/web-port":               "settings:change-port",
   "GET /api/settings/iam/policies":            "settings:read",
   "PUT /api/settings/iam/policy":              "settings:write",
   "POST /api/settings/iam/policy/test":        "settings:read",
+  // --- Auth (2FA), settings-namespaced so `Deny settings:*` keeps them owner-only ---
+  "POST /api/auth/2fa/recovery-codes/regenerate": "settings:regenerate-recovery-codes",
   "POST /api/settings/public-directory":       "settings:write",
   "POST /api/settings/public-directory/claim": "settings:write",
 

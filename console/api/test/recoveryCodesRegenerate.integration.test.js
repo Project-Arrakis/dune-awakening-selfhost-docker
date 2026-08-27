@@ -525,4 +525,44 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  // Pins requireFreshTier3Proof's `requireEnrolled` parameter -- the one real
+  // behavioural difference between the two credential routes (#532). Password
+  // rotation skips TOTP when no factor exists (nothing to prove yet); this
+  // route has nothing to regenerate and must refuse.
+  //
+  // Reached the way an operator actually reaches it: enroll, keep the session
+  // live, then perform the RFC 3.4 host reset that deletes the second-factor
+  // state out from under it. A mutation flipping the flag to false left the
+  // whole file green before this existed.
+  test("regeneration refuses when the flag is on but the factor was cleared under a live session", async () => {
+    const port = await getFreePort();
+    const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-cleared-"));
+    const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+    try {
+      await waitForHealth(port, 20000, consoleProc.logs);
+      const { password, secret, step: confirmStep } = await enroll(port, tempDir, { assert });
+      const nextCode = totpChain(secret, confirmStep);
+      const actor = await login(port, { password, totpCode: await nextCode() });
+      assert.equal(actor.body.authenticated, true);
+
+      // The documented total-loss reset (RFC 3.4), performed while a normal
+      // password/TOTP session is still live.
+      rmSync(secondFactorPath(tempDir), { force: true });
+
+      const res = await api(port, REGENERATE_PATH, {
+        cookie: actor.cookie, csrf: actor.csrf,
+        body: { currentPassword: password, totpCode: "123456" },
+      });
+      assert.equal(res.status, 400, "no factor means nothing to regenerate -- refuse, do not skip the second factor");
+      assert.match((await res.json()).error, /No second factor is set up/);
+
+      const lines = readFileSync(auditLogPath(tempDir), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      const refusal = lines.find((l) => l.action === "settings.recovery-codes-regenerated" && l.detail?.reason === "not_configured");
+      assert.ok(refusal, "the refusal is audited with its reason, not silent");
+    } finally {
+      await stopProcess(consoleProc.child);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
