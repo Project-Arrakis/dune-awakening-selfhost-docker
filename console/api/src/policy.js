@@ -218,6 +218,19 @@ const DEFAULT_POLICIES = {
         "settings:*",
         "database:write-config",
         "database:mutate",
+        // Destructive/irreversible actions kept at owner (#218/#219/#220, from
+        // the 2026-08-08 Layer 1 security audit). Its finding: assigning these
+        // to `admin` "concentrates too much destructive power at the most
+        // broadly-assigned write role."
+        //
+        // The audit was written against Discord slash commands that were never
+        // built, but the same actions are live console routes and `admin`
+        // reached all of them via the wildcards above -- verified with
+        // evaluate() before this change, not assumed from the issue text.
+        "server:restart",          // disconnects every player on the server
+        "carepackage:clear-history",  // destroys care-package audit evidence
+        "admin:history:clear",     // destroys admin-command audit evidence
+        "carepackage:grant-all",   // server-wide economy injection in one call
       ]}
     ]
   },

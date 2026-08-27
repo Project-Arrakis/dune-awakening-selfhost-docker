@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { actionForRoute } from "../src/actions.js";
-import { evaluate, matchAction, resolveAllowedActions, setPolicies } from "../src/policy.js";
+import { evaluate, loadPolicies, matchAction, resolveAllowedActions, setPolicies } from "../src/policy.js";
 
 test("policy matching supports exact and namespace wildcards", () => {
   assert.equal(matchAction("players:read", "players:read"), true);
@@ -257,4 +257,59 @@ test("policy updates validate documents and preserve owner recovery access", () 
   assert.equal(setPolicies({ owner: { tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] } }).ok, true);
   assert.equal(setPolicies({ owner: { tier: "owner", statements: [{ Effect: "Maybe", Action: "*" }] } }).ok, false);
   assert.equal(setPolicies({ owner: { tier: "owner", statements: [{ Effect: "Deny", Action: "settings:write" }] } }).ok, false);
+});
+
+// #218/#219/#220 -- the 2026-08-08 Layer 1 security audit found that assigning
+// destructive actions to `admin` "concentrates too much destructive power at the
+// most broadly-assigned write role."
+//
+// The audit was written against Discord slash commands that were never built,
+// but the same actions are live console routes and the default admin policy
+// reached every one of them through its namespace wildcards. Verified with
+// evaluate() before the fix, not inferred from the issue text.
+//
+// NOTE on loadPolicies(): earlier tests in this file call setPolicies() and never
+// restore, so the module-level store leaks forward and whatever the last one
+// installed is what a later test evaluates against. These reset explicitly.
+// That leakage is a pre-existing defect in this file, not introduced here --
+// filed separately rather than refactored inline.
+//
+// These pin the boundary in BOTH directions: the four stay denied, and the
+// routine admin surface stays allowed -- a Deny list is easy to over-broaden,
+// and an admin who cannot do their job is its own defect.
+test("destructive and audit-destroying actions are owner-only by default", () => {
+  loadPolicies(); // reset to shipped defaults -- see the note above
+  for (const action of [
+    "server:restart",             // disconnects every player
+    "carepackage:grant-all",      // server-wide economy injection in one call
+    "carepackage:clear-history",  // destroys care-package audit evidence
+    "admin:history:clear",        // destroys admin-command audit evidence
+  ]) {
+    assert.equal(evaluate({ tier: "owner" }, action), true, `owner keeps ${action}`);
+    assert.equal(evaluate({ tier: "admin" }, action), false, `admin is denied ${action}`);
+    assert.equal(evaluate({ tier: "moderator" }, action), false, `moderator is denied ${action}`);
+  }
+});
+
+test("tightening admin did not take away its routine surface", () => {
+  loadPolicies(); // reset to shipped defaults -- see the note above
+  for (const action of [
+    "carepackage:grant",   // per-player grants stay -- only grant-all was split out
+    "carepackage:read",
+    "players:read", "players:mutate", "players:kick",
+    "server:read", "server:restart-service",
+    "backups:create", "logs:read", "bases:read",
+  ]) {
+    assert.equal(evaluate({ tier: "admin" }, action), true, `admin keeps ${action}`);
+  }
+});
+
+// The split is the mechanism the Deny above depends on: while grant-eligible
+// shared carepackage:grant, denying it at admin would have taken per-player
+// grants with it.
+test("carepackage:grant-all is a distinct action from carepackage:grant", () => {
+  loadPolicies(); // reset to shipped defaults -- see the note above
+  assert.notEqual(actionForRoute("/api/care-package/grant-eligible", "POST"), actionForRoute("/api/care-package/grant/123", "POST"));
+  assert.equal(actionForRoute("/api/care-package/grant-eligible", "POST"), "carepackage:grant-all");
+  assert.equal(actionForRoute("/api/care-package/grant/123", "POST"), "carepackage:grant");
 });
