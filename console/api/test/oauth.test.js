@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, resolveBootstrapTier, parseDiscordAllowlist, buildAuthorizeUrl, oauthError, createOAuthTierResolver } from "../src/integrations/discord/oauth.js";
+import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, resolveBootstrapTier, parseDiscordAllowlist, buildAuthorizeUrl, oauthError, createOAuthTierResolver, oauthStateCookie, clearOAuthStateCookie } from "../src/integrations/discord/oauth.js";
 
 function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
@@ -274,4 +274,33 @@ test("fetchDiscordIdentity marks owned guilds and keeps guild names for the setu
   const id = await fetchDiscordIdentity({ accessToken: "t", homeGuildId: HOME, apiBaseUrl: "https://api.test", fetchImpl });
   assert.deepEqual(id.ownedGuildIds, [HOME]);
   assert.deepEqual(id.guilds.map((g) => g.name), ["Fleetyard", "Other"]);
+});
+
+// ---- OAuth state cookie is always Secure (finding #3, ultra review of PR #554) ----
+
+test("oauth state cookie is always Secure: SameSite=None mandates Secure, independent of ADMIN_SECURE_COOKIES", () => {
+  const set = oauthStateCookie("abc123");
+  assert.match(set, /SameSite=None/);
+  assert.match(set, /;\s*Secure/);
+  assert.match(set, /HttpOnly/);
+  // Old call sites pass config.secureCookies as a 2nd arg; a falsy value must
+  // NOT be able to drop Secure (that dropped the cookie and broke every
+  // Discord sign-in on the default ADMIN_SECURE_COOKIES=0 deploy).
+  assert.match(oauthStateCookie("abc123", false), /;\s*Secure/);
+  assert.match(clearOAuthStateCookie(), /SameSite=None/);
+  assert.match(clearOAuthStateCookie(false), /;\s*Secure/);
+});
+
+// ---- pending-state store evicts expired entries (finding #6) ----
+
+test("pending state store prunes expired entries so an abandoned /discord/start flood cannot permanently fill it", () => {
+  const now = [1000];
+  const store = createPendingStateStore({ now: () => now[0], ttlMs: 10_000, maxEntries: 2 });
+  store.issue();
+  store.issue();
+  assert.equal(store.issue(), null, "full while both entries are still fresh");
+  now[0] += 10_001; // both age past the TTL, still never consumed
+  const revived = store.issue();
+  assert.notEqual(revived, null, "expired, never-consumed entries are evicted, so issuing works again");
+  assert.equal(typeof revived.state, "string");
 });

@@ -20,6 +20,28 @@ function cleanup(dir) {
   rmSync(dir, { recursive: true, force: true });
 }
 
+// ---- rollback protection: commit() must not swallow a newer-version store (finding #8, ultra review of PR #554) ----
+
+test("commit fails closed on a newer-version store instead of clobbering it with a fresh v1", async () => {
+  const { store, filePath, dir } = freshStore();
+  try {
+    await store.commit(SECRET); // valid v1 store on disk
+    const onDisk = JSON.parse(readFileSync(filePath, "utf8"));
+    onDisk.version = SECOND_FACTOR_VERSION + 1; // a newer console wrote it, then the binary was rolled back
+    writeFileSync(filePath, JSON.stringify(onDisk), { mode: 0o600 });
+
+    await assert.rejects(
+      () => store.commit(SECRET),
+      SecondFactorVersionError,
+      "commit must propagate the version error (fail closed), not swallow it and overwrite"
+    );
+
+    // The newer store is left intact -- the destruction the watermark guard exists to prevent.
+    const after = JSON.parse(readFileSync(filePath, "utf8"));
+    assert.equal(after.version, SECOND_FACTOR_VERSION + 1);
+  } finally { cleanup(dir); }
+});
+
 // ---- basic lifecycle ----
 
 test("a fresh install is not configured and no file exists", async () => {

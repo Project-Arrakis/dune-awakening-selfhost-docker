@@ -47,6 +47,15 @@ export function createPendingStateStore({
   // session identified by `sessionId`). It travels with the pending state so a
   // login-purpose callback can never be replayed as setup or vice versa.
   function issue(random = randomBytes, { purpose = "login", sessionId = "" } = {}) {
+    // Evict used and expired entries before the size check. Without this, an
+    // unauthenticated flood of /discord/start requests that never complete a
+    // callback fills the table permanently (entries are only marked used /
+    // aged out inside consume(), which such a flood never reaches) -> issue()
+    // returns null forever -> Discord sign-in DoS until the process restarts.
+    const cutoff = now();
+    for (const [key, entry] of pending) {
+      if (entry.used || cutoff - entry.createdAt > ttlMs) pending.delete(key);
+    }
     if (pending.size >= maxEntries) return null;
     const state = random(16).toString("base64url");
     const verifier = random(32).toString("base64url");
@@ -271,12 +280,18 @@ export function buildAuthorizeUrl({ clientId, redirectUri, state, codeChallenge 
 // The pending OAuth state is bound to a short-lived, path-scoped cookie so a
 // third-party site cannot start a login and complete it in a victim's
 // browser (login CSRF). SameSite=None; Secure + HttpOnly; cleared after the callback.
-export function oauthStateCookie(value, secure = true) {
-  const securePart = secure ? "; Secure" : "";
-  return `discord_oauth_state=${encodeURIComponent(value)}; HttpOnly; SameSite=None; Path=/api/auth/discord/callback; Max-Age=600${securePart}`;
+export function oauthStateCookie(value) {
+  // SameSite=None is required so the cookie survives the cross-site
+  // Discord -> console callback redirect (a SameSite=Lax cookie is dropped on
+  // that top-level navigation -- a real past incident). SameSite=None in turn
+  // *mandates* Secure, so this cookie is ALWAYS Secure, independent of
+  // ADMIN_SECURE_COOKIES: Discord OAuth therefore requires an HTTPS-terminating
+  // front end. Emitting SameSite=None without Secure (the old behavior when
+  // ADMIN_SECURE_COOKIES=0, the shipped default) made browsers drop the cookie
+  // and broke every Discord sign-in.
+  return `discord_oauth_state=${encodeURIComponent(value)}; HttpOnly; SameSite=None; Path=/api/auth/discord/callback; Max-Age=600; Secure`;
 }
 
-export function clearOAuthStateCookie(secure = true) {
-  const securePart = secure ? "; Secure" : "";
-  return `discord_oauth_state=; HttpOnly; SameSite=None; Path=/api/auth/discord/callback; Max-Age=0${securePart}`;
+export function clearOAuthStateCookie() {
+  return `discord_oauth_state=; HttpOnly; SameSite=None; Path=/api/auth/discord/callback; Max-Age=0; Secure`;
 }

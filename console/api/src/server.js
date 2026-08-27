@@ -721,7 +721,7 @@ async function handleApi(req, res) {
     if (!rate.allowed) {
       return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
     }
-    const body = await readJson(req);
+    const body = (await readJson(req)) || {}; // guard: readJson returns null for a literal `null` body
     if (!config.authDisabled && !auth.passwordMatches(body.password)) {
       loginRateLimiter.recordFailure(rateKey);
       return json(res, 401, { error: "Incorrect password. Please try again!" });
@@ -864,7 +864,7 @@ async function handleApi(req, res) {
     const otpauthUri = provisioningUri({ secretBase32: base32, accountName: "console-admin", issuer: config.totpIssuer });
     const qrCodeDataUri = await provisioningQrDataUri(otpauthUri);
     audit(config, sanitizedUrl(req, "/api/auth/2fa/setup"), "auth.2fa.setup", { ok: true });
-    return json(res, 200, { secret: base32, otpauthUri, qrCodeDataUri });
+    return json(res, 200, { secret: base32, otpauthUri, qrCodeDataUri }, { "cache-control": "no-cache, no-store, must-revalidate", pragma: "no-cache", expires: "0" });
   }
   if (path === "/api/auth/2fa/confirm" && req.method === "POST") {
     const session = requireEnrollmentSession(req, res);
@@ -872,7 +872,7 @@ async function handleApi(req, res) {
     if (!session.pendingTotpSecret) {
       return json(res, 400, { error: "Start two-factor setup first, then enter a code from your authenticator." });
     }
-    const body = await readJson(req);
+    const body = (await readJson(req)) || {}; // guard: readJson returns null for a literal `null` body
     const code = String(body.code || "").trim();
     const confirmMatch = verifyTotpMatch(session.pendingTotpSecret, code, nowSeconds());
     if (!confirmMatch.valid) {
@@ -888,9 +888,19 @@ async function handleApi(req, res) {
     // forbids reusing the confirm-time code at the forced first login, and the
     // seed makes the store reject it as a replay (UI copy: wait for the next
     // code).
-    const result = isResetup
-      ? await secondFactor.commit(session.pendingTotpSecret, { initialCounter: confirmMatch.counter })
-      : await secondFactor.enroll(session.pendingTotpSecret, { initialCounter: confirmMatch.counter });
+    let result;
+    try {
+      result = isResetup
+        ? await secondFactor.commit(session.pendingTotpSecret, { initialCounter: confirmMatch.counter })
+        : await secondFactor.enroll(session.pendingTotpSecret, { initialCounter: confirmMatch.counter });
+    } catch (err) {
+      // A corrupt or newer-than-supported store surfacing here must fail closed
+      // (never "healed" by overwriting), exactly as the login path does -- not
+      // fall through to a generic 500. commit() re-throws these now; enroll()
+      // always did.
+      audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: "store_unavailable" });
+      return secondFactorUnavailable(res, sanitizedUrl(req, "/api/auth/2fa/confirm"), req, err);
+    }
     if (!result.ok) {
       // enroll() only: already_configured -- another session enrolled first. End
       // this one; the operator logs in with the factor that won.
@@ -905,7 +915,7 @@ async function handleApi(req, res) {
     clearSessionCookie(res, config);
     audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: true, resetup: isResetup });
     audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), isResetup ? "settings.totp-regenerated" : "settings.totp-setup", { ok: true });
-    return json(res, 200, { [isResetup ? "reconfigured" : "enrolled"]: true, recoveryCodes: result.codes });
+    return json(res, 200, { [isResetup ? "reconfigured" : "enrolled"]: true, recoveryCodes: result.codes }, { "cache-control": "no-cache, no-store, must-revalidate", pragma: "no-cache", expires: "0" });
   }
   // Authenticated second-factor state for the settings UI. The client needs
   // this BEFORE it submits a credential action -- inferring enrollment
@@ -5746,12 +5756,23 @@ async function discordSetupFinalize(req, res, session) {
   const guild = captured.guilds.find((g) => g.id === guildId);
   if (!guild) return deny(400, { error: "Choose one of your Discord servers." }, "guild_not_in_list");
   if (!guild.owner) return deny(403, { error: `You do not own ${guild.name}. Only that server's owner can connect it to this console.` }, "not_guild_owner");
+  // Requiring Discord 2FA for owner/admin while the operator's OWN Discord
+  // account has no 2FA would lock them out of the Discord sign-in path the
+  // moment the console restarts (their session resolves to owner -> MFA gate ->
+  // 403). Their mfa_enabled state was captured at OAuth time, so refuse the
+  // combination with an actionable message rather than shipping a self-lockout.
+  const wantMfaRequirement = body.requireMfa !== false;
+  if (wantMfaRequirement && !captured.mfaEnabled) {
+    return deny(400, {
+      error: "Your Discord account does not have two-factor authentication enabled, but you asked to require it for Owner and Admin. Enable 2FA on your Discord account and try again, or clear the two-factor requirement -- otherwise you would lock yourself out of Discord sign-in.",
+    }, "operator_mfa_missing");
+  }
   const fields = {
     DISCORD_HOME_GUILD_ID: guildId,
     DISCORD_CONSOLE_ADMIN_ROLE_IDS: String(body.adminRoleIds || "").trim(),
     DISCORD_CONSOLE_MODERATOR_ROLE_IDS: String(body.moderatorRoleIds || "").trim(),
     DISCORD_CONSOLE_PLAYER_ROLE_IDS: String(body.playerRoleIds || "").trim(),
-    DISCORD_OAUTH_REQUIRE_MFA_TIERS: body.requireMfa === false ? "" : "owner,admin",
+    DISCORD_OAUTH_REQUIRE_MFA_TIERS: wantMfaRequirement ? "owner,admin" : "",
     DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "0",
   };
   for (const [key, value] of Object.entries(fields)) {
@@ -5775,7 +5796,7 @@ async function discordSetupFinalize(req, res, session) {
 }
 
 async function saveOAuthClientSecret(req, res) {
-  const body = await readJson(req);
+  const body = (await readJson(req)) || {}; // guard: readJson returns null for a literal `null` body
   const secret = body.secret;
   if (!secret || String(secret).length < 20) {
     return json(res, 400, { error: "Client secret must be at least 20 characters." });
@@ -5835,7 +5856,7 @@ function validateOAuthWriteConfigKey(key, value) {
 }
 
 async function writeOAuthConfig(req, res) {
-  const body = await readJson(req);
+  const body = (await readJson(req)) || {}; // guard: readJson returns null for a literal `null` body
   const allowed = [
     "DISCORD_HOME_GUILD_ID",
     "DISCORD_OAUTH_CLIENT_ID",

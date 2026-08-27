@@ -302,7 +302,13 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
   function commit(secretBytes, { count, initialCounter } = {}) {
     return runExclusive(async () => {
       assertSecretBytes(secretBytes);
-      const previous = await loadRaw().catch(() => null);
+      // loadRaw() returns null ONLY for a genuinely-absent store; it THROWS
+      // SecondFactorVersionError / SecondFactorCorruptError for a
+      // newer-than-supported or unreadable store. Those must propagate (fail
+      // closed) -- the previous `.catch(() => null)` swallowed them, letting a
+      // re-key overwrite a newer store with a fresh v1 and destroy exactly the
+      // state the version guard exists to protect.
+      const previous = await loadRaw();
       // Never land at or below the watermark -- same break-glass reasoning as
       // enroll() above. `previous` is null when the store was deleted and this
       // is a re-key rather than a rotation, which is exactly when (-1)+1 = 0

@@ -47,7 +47,7 @@ function startFakeDiscord(port) {
     if (url.pathname === "/users/@me") {
       const auth = String(req.headers.authorization || "");
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ id: USER_ID, username: "fleetyard-operator", mfa_enabled: auth.includes("token-mfa") }));
+      res.end(JSON.stringify({ id: USER_ID, username: "fleetyard-operator", mfa_enabled: auth.includes("token-mfa") || auth.includes("guildowner-mfa") }));
       return;
     }
     // Member endpoint (guilds.members.read): roles are chosen by the code so a
@@ -573,7 +573,15 @@ test("guided setup: anonymous cannot start; the owner round-trip mints no sessio
     assert.equal(r.status, 400); assert.match((await r.json()).error, /Choose one of your Discord servers/);
     r = await fin({ guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE, moderatorRoleIds: ADMIN_ROLE });
     assert.equal(r.status, 400, "separation of duties applies here too");
+    // This owner's OWN Discord account has no 2FA (mfa_enabled=false), so
+    // asking to REQUIRE 2FA for owner/admin would lock them out of Discord
+    // sign-in after the restart -- finalize must refuse that combination and
+    // leave the captured identity intact for a retry (finding #10).
     r = await fin({ guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE, playerRoleIds: PLAYER_ROLE, requireMfa: true });
+    const lockoutBody = await r.json();
+    assert.equal(r.status, 400, JSON.stringify(lockoutBody)); assert.match(lockoutBody.error, /two-factor/i);
+    // Clearing the requirement is the correct path for an owner without 2FA.
+    r = await fin({ guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE, playerRoleIds: PLAYER_ROLE, requireMfa: false });
     const okText = await r.text();
     assert.equal(r.status, 200, okText);
     const ok = JSON.parse(okText);
@@ -585,7 +593,7 @@ test("guided setup: anonymous cannot start; the owner round-trip mints no sessio
     const env = readFileSync(join(tempDir, ".env"), "utf8");
     assert.match(env, new RegExp(`^DISCORD_HOME_GUILD_ID="?${HOME_GUILD}"?$`, "m"));
     assert.match(env, new RegExp(`^DISCORD_CONSOLE_ADMIN_ROLE_IDS="?${ADMIN_ROLE}"?$`, "m"));
-    assert.match(env, /^DISCORD_OAUTH_REQUIRE_MFA_TIERS="?owner,admin"?$/m);
+    assert.match(env, /^DISCORD_OAUTH_REQUIRE_MFA_TIERS=""?$/m, "an owner without Discord 2FA cannot require it");
     // The captured identity is consumed; the owner session itself lives on.
     assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-identity`, { headers: H })).status, 404);
     assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, { headers: H })).status, 200);
@@ -648,5 +656,30 @@ test("iam/policies returns the action catalog (policies + actions + actionMap + 
     // The editor does nsFromAction(action, actionMap) — a route key must resolve.
     const anyRoute = body.actions[0];
     assert.ok(body.actionMap[anyRoute], "every actions[] key exists in actionMap");
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+test("guided setup: an owner WHOSE Discord account has 2FA may require it -- finalize writes owner,admin (finding #10, positive case)", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-setupmfa-"));
+  const console = startConsole(consolePort, discordPort, tempDir, { DISCORD_HOME_GUILD_ID: "", DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "0", DISCORD_OAUTH_OWNER_ALLOWLIST: "" });
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const owner = await passwordOwnerSession(consolePort);
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start?setup=1`, { redirect: "manual", headers: { cookie: owner.cookie } });
+    const state = sessionCookieValue(start.headers.getSetCookie(), "discord_oauth_state");
+    // code "guildowner-mfa": owner of the home guild AND mfa_enabled=true.
+    const cb = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=guildowner-mfa&state=${encodeURIComponent(state)}`, { redirect: "manual", headers: { cookie: `discord_oauth_state=${state}` } });
+    assert.equal(cb.status, 200);
+
+    const H = { cookie: owner.cookie, "x-csrf-token": owner.csrfToken, "content-type": "application/json" };
+    const identity = await (await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-identity`, { headers: H })).json();
+    assert.equal(identity.user.mfaEnabled, true, "the captured owner has Discord 2FA");
+
+    const r = await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-finalize`, { method: "POST", headers: H, body: JSON.stringify({ guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE, playerRoleIds: PLAYER_ROLE, requireMfa: true }) });
+    assert.equal(r.status, 200, await r.text());
+    const env = readFileSync(join(tempDir, ".env"), "utf8");
+    assert.match(env, /^DISCORD_OAUTH_REQUIRE_MFA_TIERS="?owner,admin"?$/m, "an owner with 2FA may require it");
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });

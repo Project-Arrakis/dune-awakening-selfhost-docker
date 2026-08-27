@@ -363,3 +363,39 @@ test("break-glass: after deleting the state file, re-enrolled recovery codes act
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("login with a literal null JSON body is a clean 401, never a 500 (finding #11)", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "nullbody-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    // readJson() returns null for a literal `null` body; without the guard,
+    // body.password threw a TypeError -> 500 leaking the internal error.
+    const r = await fetch(`http://127.0.0.1:${port}/api/auth/login`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "null",
+    });
+    assert.equal(r.status, 401, "a null body must be handled as a bad login, not crash into a 500");
+  } finally { await stopProcess(console.child); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+test("one-time secret responses carry Cache-Control: no-store (finding #15)", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "nostore-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const login = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+    const cookie = cookieFrom(login);
+    const csrf = (await login.json()).csrfToken;
+
+    const setup = await api(port, "/api/auth/2fa/setup", { cookie, csrf });
+    assert.equal(setup.status, 200);
+    assert.match(setup.headers.get("cache-control") || "", /no-store/, "the TOTP secret must not be cached");
+
+    const { secret } = await setup.json();
+    const confirm = await api(port, "/api/auth/2fa/confirm", { cookie, csrf, body: { code: codeFor(secret) } });
+    assert.equal(confirm.status, 200, await confirm.clone().text());
+    assert.match(confirm.headers.get("cache-control") || "", /no-store/, "the one-time recovery codes must not be cached");
+  } finally { await stopProcess(console.child); rmSync(tempDir, { recursive: true, force: true }); }
+});

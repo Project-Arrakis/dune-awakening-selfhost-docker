@@ -130,7 +130,22 @@ CONSOLE_TRUSTED_PROXY_IPS=127.0.0.1
 ```
 
 Comma-separate several. Exact IPs only, no ranges. Leave it unset if there is
-no proxy — that is the safe default.
+no proxy — that is the safe default. The console reads the **last** address the
+trusted proxy appends to `X-Forwarded-For` (the real visitor), never the
+client-supplied leftmost value, so a visitor cannot spoof the header. Only a
+single trusted proxy hop is supported; chained proxies are out of scope.
+
+## Discord sign-in requires HTTPS
+
+Discord OAuth carries a one-time state cookie across the cross-site redirect
+back from Discord. That cookie is `SameSite=None; Secure`, which browsers only
+store over **HTTPS** — so the console must be reached through an HTTPS-terminating
+front end (a reverse proxy or tunnel such as nginx, Caddy, or Cloudflare Tunnel)
+for Discord sign-in to work. Over plain HTTP the cookie is dropped and every
+Discord sign-in fails with *"invalid or expired"*. This is independent of
+`ADMIN_SECURE_COOKIES`; password-only sign-in is unaffected. If you run several
+consoles, give each its own Discord application (or rotate the secret per host)
+rather than copying one production Client Secret onto a lower-trust host.
 
 ## Turning it off again
 

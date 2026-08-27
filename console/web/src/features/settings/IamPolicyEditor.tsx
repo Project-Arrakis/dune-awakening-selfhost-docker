@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
-import { resolvedAllowedActions, nsFromAction } from "./iamPolicy";
-import { api, post } from "../../api/client";
+import { resolvedAllowedActions, nsFromAction, iamActionAllowed } from "./iamPolicy";
+import { api } from "../../api/client";
 
 interface PolicyStatement {
   Effect: "Allow" | "Deny";
@@ -24,7 +24,9 @@ function parseStatements(text: string): PolicyStatement[] | null {
       if (!stmt.Effect || !["Allow", "Deny"].includes(stmt.Effect)) return null;
       if (!stmt.Action || (!Array.isArray(stmt.Action) && typeof stmt.Action !== "string")) return null;
     }
-    return parsed;
+    // Normalize Action to an array so downstream code (toggle/save/eval) never
+    // has to special-case the string form the owner tier uses ("*").
+    return parsed.map((stmt: any) => ({ ...stmt, Action: Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action] }));
   } catch { return null; }
 }
 
@@ -75,6 +77,7 @@ export function IamPolicyEditor() {
   const [editorTab, setEditorTab] = useState<"builder" | "json" | "test">("builder");
   const [testResults, setTestResults] = useState<Record<string, boolean> | null>(null);
   const [testError, setTestError] = useState("");
+  const [toggleHint, setToggleHint] = useState("");
   const [search, setSearch] = useState("");
 
   useEffect(() => {
@@ -92,6 +95,7 @@ export function IamPolicyEditor() {
     setSaved(false);
     setTestResults(null);
     setSearch("");
+    setToggleHint("");
     if (catalog) {
       const doc = catalog.policies[tier];
       setJsonText(doc ? JSON.stringify(doc.statements, null, 2) : "[]");
@@ -147,17 +151,35 @@ export function IamPolicyEditor() {
     const stmts = parseStatements(jsonText) || [];
     const map = catalog?.actionMap || {};
     const iamAction = map[action] || action;
+    setToggleHint("");
     let updated: PolicyStatement[];
 
     if (allowed.has(action)) {
-      updated = stmts.map(s => {
-        if (s.Effect !== "Allow") return s;
-        const filtered = s.Action.filter(a => a !== iamAction);
-        return { ...s, Action: filtered };
-      }).filter(s => s.Action.length > 0);
+      // Revoke. A checkbox can only remove an exact Allow literal; a grant that
+      // comes from a wildcard ("server:*" or "*") cannot be narrowed here
+      // without rewriting the wildcard. Filtering by !== would leave the
+      // wildcard in place and the box would snap back -- tell the operator to
+      // use the JSON tab instead of silently doing nothing.
+      const hasExactLiteral = stmts.some(st => st.Effect === "Allow" && st.Action.includes(iamAction));
+      if (!hasExactLiteral) {
+        setToggleHint(`${iamAction} is granted by a wildcard rule, not a single permission. Edit the JSON tab to change wildcard grants.`);
+        return;
+      }
+      updated = stmts.map(st => {
+        if (st.Effect !== "Allow") return st;
+        return { ...st, Action: st.Action.filter(a => a !== iamAction) };
+      }).filter(st => st.Action.length > 0);
     } else {
+      // Grant. A standing Deny (e.g. admin's "Deny settings:*") overrides any
+      // Allow, so adding the literal would change nothing -- say so rather than
+      // let the box appear to do nothing.
+      const denyBlocked = stmts.some(st => st.Effect === "Deny" && iamActionAllowed(iamAction, st.Action));
+      if (denyBlocked) {
+        setToggleHint(`${iamAction} is blocked by a Deny rule. Remove that Deny in the JSON tab first.`);
+        return;
+      }
       updated = [...stmts];
-      let allowStmt = updated.filter(s => s.Effect === "Allow").pop();
+      let allowStmt = updated.filter(st => st.Effect === "Allow").pop();
       if (!allowStmt) {
         allowStmt = { Effect: "Allow" as const, Action: [] };
         updated.push(allowStmt);
@@ -179,7 +201,7 @@ export function IamPolicyEditor() {
         if (!stmt.Action || (!Array.isArray(stmt.Action) && typeof stmt.Action !== "string")) throw new Error("Action must be a string or array");
       }
       setJsonError("");
-      return parsed;
+      return parsed.map((stmt: any) => ({ ...stmt, Action: Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action] }));
     } catch (e: any) {
       setJsonError(e.message);
       return null;
@@ -195,28 +217,38 @@ export function IamPolicyEditor() {
     }
     setSaving(true);
     try {
-      await post("/api/settings/iam/policy", { tier: selectedTier, statements: valid });
-      const policies = { ...catalog.policies, [selectedTier]: { version: 1, tier: selectedTier, statements: valid } };
-      setCatalog({ ...catalog, policies });
+      // The route is PUT and replaces the WHOLE tier-keyed store, not a single
+      // {tier, statements} document -- send every tier with this one swapped in.
+      const nextPolicies = { ...catalog.policies, [selectedTier]: { version: 1, tier: selectedTier, statements: valid } };
+      const result = await api<{ ok: boolean; policies: PolicyCatalog["policies"] }>(
+        "/api/settings/iam/policy",
+        { method: "PUT", body: JSON.stringify(nextPolicies) }
+      );
+      setCatalog({ ...catalog, policies: result.policies || nextPolicies });
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
-    } catch {
-      setJsonError("Failed to save policy");
+    } catch (err) {
+      setJsonError(err instanceof Error ? err.message : "Failed to save policy");
     }
     setSaving(false);
   };
 
-  const runTest = async () => {
+  const runTest = () => {
     const valid = validateJson(jsonText);
-    if (!valid) return;
+    if (!valid || !catalog) return;
     setTestError("");
-    try {
-      const res = await post<{ results: Record<string, boolean> }>("/api/settings/iam/policy/test", { statements: valid });
-      setTestResults(res.results);
-    } catch (err) {
-      setTestResults(null);
-      setTestError(err instanceof Error ? err.message : "The test could not be run. Try again.");
+    // Evaluate the DRAFT statements locally -- resolvedAllowedActions mirrors
+    // console/api/src/policy.js. The server's /policy/test route evaluates the
+    // SAVED, live policy, not this unsaved edit, so a local pass is what a
+    // pre-save "what would this allow" preview actually needs (and avoids a
+    // round-trip). One row per IAM action, deduped by the actionMap.
+    const allowedRoutes = resolvedAllowedActions(valid, catalog.actionMap || {});
+    const results: Record<string, boolean> = {};
+    for (const route of catalog.actions) {
+      const label = catalog.actionMap[route] || route;
+      results[label] = allowedRoutes.has(route);
     }
+    setTestResults(results);
   };
 
   if (!catalog) return <section className="iam-editor-loading"><p className="loading-dots">Loading policies</p></section>;
@@ -251,6 +283,7 @@ export function IamPolicyEditor() {
                 <button className="iam-search-clear" onClick={() => setSearch("")}>×</button>
               )}
             </div>
+            {toggleHint && <p className="iam-toggle-hint" role="status">{toggleHint}</p>}
             <div className="iam-permission-grid">
               {Object.keys(filteredGroups).length === 0 && (
                 <p className="iam-empty-hint">No permissions match your search.</p>

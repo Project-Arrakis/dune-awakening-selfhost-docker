@@ -21,7 +21,13 @@ export function resolveClientIp(req, trustedProxyIps = []) {
   }
   const header = req.headers?.["x-forwarded-for"];
   if (!header) return socketIp;
-  const forwarded = normalizeIp(String(header).split(",")[0].trim());
+  // Take the RIGHTMOST entry -- the one the immediate trusted proxy appended
+  // (nginx's proxy_add_x_forwarded_for and equivalents append the real peer to
+  // whatever the client sent, so the LEFTMOST entry is fully client-controlled
+  // and must never be trusted). Single-trusted-proxy topology only; chains of
+  // multiple trusted proxies remain out of scope (see the header note above).
+  const parts = String(header).split(",");
+  const forwarded = normalizeIp(parts[parts.length - 1].trim());
   return forwarded || socketIp;
 }
 
