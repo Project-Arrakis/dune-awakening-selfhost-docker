@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { waitForLog } from "../test-support/consoleHarness.js";
+
 import { base32Decode, totpCode, TOTP_PERIOD_SECONDS } from "../src/auth/totp.js";
 
 // Issue #425, end to end through the real login route: a recovery code that
@@ -158,7 +160,12 @@ test("a stale-looking file at boot logs an informational warning without blockin
     consoleProc = startConsole(port, tempDir);
     await waitForHealth(port);
 
-    assert.match(consoleProc.logs(), /second-factor state file appears older/, "the informational banner is logged at boot");
+    // Poll rather than assert immediately: /api/health answering does not mean
+    // the startup banner has been flushed and delivered to our stdout handler.
+    assert.ok(
+      await waitForLog(consoleProc.logs, /second-factor state file appears older/),
+      `the informational banner is logged at boot. Console output:\n${consoleProc.logs()}`
+    );
 
     // Confirms the check is genuinely non-blocking: TOTP login (unaffected by
     // this mechanism by design) still works against the restored file, using
