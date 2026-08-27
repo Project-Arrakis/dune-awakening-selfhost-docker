@@ -120,7 +120,7 @@ describe("the create form", () => {
 
     for (const namespace of ["logs", "updates"]) {
       const group = screen.getByLabelText(`Access level for ${namespace}`);
-      expect(within(group).queryByLabelText(new RegExp(`Read\+write for ${namespace}`, "i"))).toBeNull();
+      expect(within(group).queryByLabelText(new RegExp(`Read\\+write for ${namespace}`, "i"))).toBeNull();
       expect(within(group).getAllByRole("radio")).toHaveLength(2);
     }
 
