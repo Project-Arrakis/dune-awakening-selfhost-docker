@@ -56,3 +56,24 @@ export function mfaGateReason(tier, mfaEnabled, requireMfaTiers = []) {
 export function parseTierList(value) {
   return [...new Set(String(value || "").split(",").map((t) => t.trim().toLowerCase()).filter((t) => TIER_ORDER.includes(t)))];
 }
+
+// Separation of duties: one Discord role may map to ONE console tier. A role
+// listed under two tiers (Sentinel's own data has the same role as both owner
+// and admin) would silently make every holder the higher tier -- with the
+// resolver's highest-wins rule, every admin becomes an owner. Returns one entry
+// per offending role: { roleId, tiers: [...] }. Empty when the mapping is sound.
+export function roleTierConflicts(roleTiers) {
+  const seen = new Map();
+  for (const tier of TIER_ORDER) {
+    for (const id of roleTiers?.[tier] || []) {
+      const key = String(id);
+      if (!seen.has(key)) seen.set(key, []);
+      if (!seen.get(key).includes(tier)) seen.get(key).push(tier); // twice under one tier is redundancy, not a conflict
+    }
+  }
+  return [...seen.entries()].filter(([, tiers]) => tiers.length > 1).map(([roleId, tiers]) => ({ roleId, tiers }));
+}
+
+export function describeRoleTierConflicts(conflicts) {
+  return conflicts.map((c) => `role ${c.roleId} is mapped to ${c.tiers.join(" and ")}`).join("; ");
+}

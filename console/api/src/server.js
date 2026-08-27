@@ -18,7 +18,7 @@ import { createSecondFactorStore } from "./auth/secondFactorStore.js";
 import { generateTotpSecret, provisioningUri, provisioningQrDataUri, verifyTotpMatch } from "./auth/totp.js";
 import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
-import { roleTiersConfigured } from "./integrations/discord/roleTiers.js";
+import { roleTiersConfigured, roleTierConflicts, describeRoleTierConflicts, parseRoleIdList } from "./integrations/discord/roleTiers.js";
 import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
@@ -256,6 +256,21 @@ if (handoff.misconfigured) {
     "Set all of the handoff values -- runtime/secrets/discord-bot-handoff-secret.txt (or DISCORD_BOT_HANDOFF_SECRET), DISCORD_BOT_HANDOFF_URL (http/https), and the Discord home guild id -- or unset the handoff values entirely. Password sign-in is unaffected."
   );
 }
+// Separation of duties: one Discord role, one console tier. A role mapped to
+// two tiers would make every holder the higher one (owner, if that is one of
+// them). Refused at save, and refused here for a hand-edited .env -- Discord
+// sign-in is disabled until the mapping is sound, never silently resolved.
+if (config.discordConsoleRoleTierConflicts.length) {
+  console.warn(
+    `Discord role mapping is unsound (${describeRoleTierConflicts(config.discordConsoleRoleTierConflicts)}) -- ` +
+    "Discord sign-in is disabled until each role maps to exactly one tier. Fix DISCORD_CONSOLE_*_ROLE_IDS in .env (or Settings -> Discord OAuth) and restart. Password sign-in is unaffected."
+  );
+}
+const roleMappingUnsound = () => config.discordConsoleRoleTierConflicts.length > 0;
+const roleMappingUnsoundPage = () => oauthErrorPage(
+  `Discord sign-in is disabled because this console's role mapping gives one Discord role two different access levels (${describeRoleTierConflicts(config.discordConsoleRoleTierConflicts)}). ` +
+  "Each role must map to exactly one of Owner, Admin, Moderator or Player. If you administer this install, fix it under Settings -> Discord OAuth and restart. Sign in with the admin password in the meantime."
+);
 const resolveOAuthTier = createOAuthTierResolver({
   bootstrap: {
     allowOwnerBootstrap: config.discordOAuthAllowOwnerBootstrap,
@@ -941,6 +956,10 @@ async function handleApi(req, res) {
       // refuse anyway (half-configured handoff -- see handleOAuthCallback).
       audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: false, reason: "handoff_misconfigured" });
       return html(res, 403, oauthErrorPage("Discord sign-in is disabled because this console's bot handoff is only partially configured. If you administer this install, check the console logs for the missing value, then either complete or remove the handoff configuration. Sign in with the admin password in the meantime."));
+    }
+    if (roleMappingUnsound()) {
+      audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: false, reason: "role_mapping_unsound" });
+      return html(res, 403, roleMappingUnsoundPage());
     }
     const rate = loginRateLimiter.check(loginRateLimitKey(req));
     if (!rate.allowed) {
@@ -5724,11 +5743,30 @@ async function writeOAuthConfig(req, res) {
     "DISCORD_CONSOLE_PLAYER_ROLE_IDS",
     "DISCORD_OAUTH_REQUIRE_MFA_TIERS"
   ];
-  const changes = [];
+  // Validate every submitted key first, then the mapping as a whole -- the
+  // submitted values merged over what is already saved, so a partial update
+  // cannot create a conflict with a field it did not touch. Nothing is written
+  // until both pass (separation of duties: one role, one tier).
   for (const key of allowed) {
     if (body[key] === undefined) continue;
     const error = validateOAuthWriteConfigKey(key, body[key]);
     if (error) return json(res, 400, { error });
+  }
+  const current = readSetupConfigValues();
+  const merged = (key) => body[key] !== undefined ? String(body[key]) : (current[key] || "");
+  const conflicts = roleTierConflicts({
+    owner: parseRoleIdList(merged("DISCORD_CONSOLE_OWNER_ROLE_IDS")),
+    admin: parseRoleIdList(merged("DISCORD_CONSOLE_ADMIN_ROLE_IDS")),
+    moderator: parseRoleIdList(merged("DISCORD_CONSOLE_MODERATOR_ROLE_IDS")),
+    player: parseRoleIdList(merged("DISCORD_CONSOLE_PLAYER_ROLE_IDS")),
+  });
+  if (conflicts.length) {
+    audit(config, req, "setup.write-oauth-config", { ok: false, reason: "role_mapping_unsound", conflicts: conflicts.map((c) => c.roleId) });
+    return json(res, 400, { error: `Each Discord role can map to only one access level -- ${describeRoleTierConflicts(conflicts)}. Owner and Admin must be different roles (or grant Owner to specific user IDs instead).` });
+  }
+  const changes = [];
+  for (const key of allowed) {
+    if (body[key] === undefined) continue;
     updateEnvFileValue(key, String(body[key]));
     changes.push(key);
   }
@@ -6139,6 +6177,11 @@ async function handleOAuthCallback(req, res) {
   // With a configured handoff, the bot is the tier source and owner
   // bootstrap is not required. Without one, bootstrap is the only
   // possible tier source, so its being disabled is an early deny.
+  if (roleMappingUnsound()) {
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "role_mapping_unsound" });
+    return html(res, 403, roleMappingUnsoundPage());
+  }
   if (!discordTierSourceConfigured()) {
     loginRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "no_tier_source" });

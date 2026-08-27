@@ -222,6 +222,12 @@ does **not** change password sign-in — it adds a second button.
 
   A person holding several mapped roles gets the **highest** one.
 
+  **Owner and Admin must be different roles.** If the same role were mapped to
+  both, every admin would be an owner — so the console refuses to save that,
+  and refuses Discord sign-in if it finds it in `.env`. Give Owner to specific
+  people via *Owner user IDs* instead of a role, unless you have a role that
+  genuinely only the owners hold.
+
 ### Turning it on
 
 1. Sign in with the password. Open **Settings → Discord OAuth**.

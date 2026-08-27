@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, statSync, chownSync } from "node:fs";
-import { parseRoleIdList, parseTierList } from "./integrations/discord/roleTiers.js";
+import { parseRoleIdList, parseTierList, roleTierConflicts } from "./integrations/discord/roleTiers.js";
 import { dirname, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
@@ -292,6 +292,9 @@ export function loadConfig() {
     discordOAuthOwnerAllowlist: String(process.env.DISCORD_OAUTH_OWNER_ALLOWLIST || "").split(",").map((item) => item.trim()).filter((item) => /^\d{17,19}$/.test(item)),
     discordHomeGuildId: oauthHomeGuildId,
     discordConsoleRoleTiers,
+    // Separation of duties (rfc-console-auth.md §2.1.1): non-empty means the
+    // mapping is unsound and Discord sign-in is refused until it is fixed.
+    discordConsoleRoleTierConflicts: roleTierConflicts(discordConsoleRoleTiers),
     // Tiers that require the Discord ACCOUNT to have 2FA enabled (§2.1.1 item 4).
     // Unset -> owner,admin. Set to empty to disable the gate.
     // Opt-in (Requirement 0): an existing operator whose Discord account has no

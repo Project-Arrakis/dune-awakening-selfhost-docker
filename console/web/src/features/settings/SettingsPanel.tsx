@@ -15,6 +15,20 @@ function stripCodeWhitespace(value: string) {
   return value.replace(/\s/g, "");
 }
 
+// Separation of duties for Discord sign-in: one Discord role, one console tier.
+// Mirrors the server's check so the operator is told before the round-trip.
+function discordRoleConflicts(fields: Record<string, string>) {
+  const seen = new Map<string, string[]>();
+  for (const [tier, value] of Object.entries(fields)) {
+    for (const id of value.split(",").map((v) => v.trim()).filter(Boolean)) {
+      const tiers = seen.get(id) || [];
+      if (!tiers.includes(tier)) tiers.push(tier);
+      seen.set(id, tiers);
+    }
+  }
+  return [...seen.entries()].filter(([, tiers]) => tiers.length > 1).map(([id, tiers]) => `${id} is mapped to ${tiers.join(" and ")}`);
+}
+
 type SettingsTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 type PublicDirectorySettings = {
   available?: boolean;
@@ -160,6 +174,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
   const passwordStarted = newPassword.length > 0;
   const confirmStarted = confirmPassword.length > 0;
   const passwordsMatch = newPassword === confirmPassword;
+  const discordRoleConflictList = discordRoleConflicts({ Owner: discordOwnerRoleIds, Admin: discordAdminRoleIds, Moderator: discordModeratorRoleIds, Player: discordPlayerRoleIds });
   async function changeLoginPassword() {
     if (!currentPassword) {
       setPasswordResult({ status: "failed", title: "Password Change Failed", message: "Enter your current login password." });
@@ -532,13 +547,14 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
             <label htmlFor="settings-discord-player-role">Player Role <em>(recommended)</em><input id="settings-discord-player-role" name="settings-discord-player-role" disabled={discordOAuthSaving} value={discordPlayerRoleIds} onChange={(event) => setDiscordPlayerRoleIds(event.target.value)} placeholder="Discord role ID" /></label>
             <label htmlFor="settings-discord-mfa">Require Discord 2FA for <em>(optional)</em>{!discordRequireMfaTiers ? <button type="button" className="login-password-toggle" onClick={() => setDiscordRequireMfaTiers("owner,admin")}>use recommended</button> : null}<input id="settings-discord-mfa" name="settings-discord-mfa" disabled={discordOAuthSaving} value={discordRequireMfaTiers} onChange={(event) => setDiscordRequireMfaTiers(event.target.value)} placeholder="blank = off; recommended: owner,admin" /></label>
           </div>
+          {discordRoleConflictList.length > 0 && <p className="attention-text">Each Discord role can map to only one access level &mdash; {discordRoleConflictList.join("; ")}. Owner and Admin must be different roles; to make specific people owners, use <em>Owner user IDs</em> instead.</p>}
           <label style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "12px" }}>
             <input type="checkbox" disabled={discordOAuthSaving} checked={discordBootstrap} onChange={(event) => setDiscordBootstrap(event.target.checked)} />
             <span>Allow the owner user IDs above to sign in as owner (owner bootstrap)</span>
           </label>
           <p className="muted">With &ldquo;Require Discord 2FA for&rdquo; set, sign-ins for those tiers are refused unless the Discord account itself has two-factor enabled (recommended for owner and admin). If you also run a companion bot with a signed tier handoff, the bot decides tiers and the role fields above are ignored.</p>
           <div className="action-row" style={{ marginTop: "12px" }}>
-            <button disabled={discordOAuthSaving || (!discordClientId && !discordRedirectUri && !discordClientSecret && !discordHomeGuildId && !discordOwnerAllowlist && !discordAdminRoleIds && !discordOwnerRoleIds)} onClick={() => { void saveDiscordOAuth(); }}>
+            <button disabled={discordOAuthSaving || discordRoleConflictList.length > 0 || (!discordClientId && !discordRedirectUri && !discordClientSecret && !discordHomeGuildId && !discordOwnerAllowlist && !discordAdminRoleIds && !discordOwnerRoleIds)} onClick={() => { void saveDiscordOAuth(); }}>
               {discordOAuthSaving ? "Saving..." : "Save Discord OAuth"}
             </button>
             {discordOAuthResult && <span className={`inline-task-result result-${discordOAuthResult.status === "succeeded" ? "ok" : discordOAuthResult.status === "failed" ? "fail" : "running"}`}>

@@ -440,3 +440,51 @@ test("no tier source at all: the callback denies early with an actionable messag
     assert.match(r.body, /Settings -&gt; Discord OAuth/);
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
+
+// ---- separation of duties: one Discord role, one tier ----
+
+test("SoD: a hand-edited .env mapping one role to owner AND admin disables Discord sign-in, naming the role", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-sod-"));
+  const console = startConsole(consolePort, discordPort, tempDir, { ...ROLE_ENV, DISCORD_CONSOLE_OWNER_ROLE_IDS: ADMIN_ROLE });
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" });
+    assert.equal(start.status, 403, "must not even send the user to Discord");
+    const body = await start.text();
+    assert.match(body, /two different access levels/);
+    assert.match(body, new RegExp(`role ${ADMIN_ROLE} is mapped to owner and admin`));
+    // Password sign-in is unaffected.
+    const login = await fetch(`http://127.0.0.1:${consolePort}/api/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "correct-password" }) });
+    assert.equal(login.status, 200);
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+test("SoD: the settings API refuses to save a mapping that gives one role two tiers, including against already-saved fields", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-sod-save-"));
+  const console = startConsole(consolePort, discordPort, tempDir, ROLE_ENV);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const login = await fetch(`http://127.0.0.1:${consolePort}/api/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "correct-password" }) });
+    const { csrfToken } = await login.json();
+    const cookie = `asc_session=${sessionCookieValue(login.headers.getSetCookie(), "asc_session")}`;
+    const post = (payload) => fetch(`http://127.0.0.1:${consolePort}/api/setup/write-oauth-config`, { method: "POST", headers: { "content-type": "application/json", cookie, "x-csrf-token": csrfToken }, body: JSON.stringify(payload) });
+
+    // Same role submitted for owner and admin in one request.
+    const same = await post({ DISCORD_CONSOLE_OWNER_ROLE_IDS: ADMIN_ROLE, DISCORD_CONSOLE_ADMIN_ROLE_IDS: ADMIN_ROLE });
+    assert.equal(same.status, 400);
+    assert.match((await same.json()).error, /Owner and Admin must be different roles/);
+
+    // Save a sound admin mapping, then try to add that role as owner in a SEPARATE request.
+    assert.equal((await post({ DISCORD_CONSOLE_ADMIN_ROLE_IDS: ADMIN_ROLE })).status, 200);
+    const partial = await post({ DISCORD_CONSOLE_OWNER_ROLE_IDS: ADMIN_ROLE });
+    assert.equal(partial.status, 400, "a partial update must be checked against the fields it did not touch");
+    assert.match((await partial.json()).error, new RegExp(`role ${ADMIN_ROLE} is mapped to owner and admin`));
+
+    // A distinct owner role is fine.
+    assert.equal((await post({ DISCORD_CONSOLE_OWNER_ROLE_IDS: "400000000000000009" })).status, 200);
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});

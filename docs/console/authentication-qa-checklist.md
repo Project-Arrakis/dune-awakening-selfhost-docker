@@ -442,6 +442,17 @@ have Discord 2FA **off** for T31.
 **Expected**
 - Discord shows the authorization screen again (one extra permission: roles in a server). After Authorize, sign-in proceeds. Existing owner list / bootstrap behaviour unchanged.
 
+### T35 · Separation of duties — one role, one tier
+1. Settings → Discord OAuth: put the **same** role ID in *Owner Role* and *Admin Role*.
+
+**Expected**
+- An inline message under the fields: *Each Discord role can map to only one access level — <id> is mapped to Owner and Admin…*; **Save Discord OAuth** is disabled.
+2. *Host:* edit `.env` by hand so `DISCORD_CONSOLE_OWNER_ROLE_IDS` equals `DISCORD_CONSOLE_ADMIN_ROLE_IDS`; `dune console restart`. Click **Sign in with Discord**.
+
+**Expected**
+- Refused immediately (no Discord round-trip) with *…gives one Discord role two different access levels (role <id> is mapped to owner and admin)…* naming Settings. Password sign-in still works. The console log at boot carries the same warning.
+3. *Host:* restore the mapping; restart. Discord sign-in works again.
+
 ## Results
 
 | Case | Result | Evidence / exact text seen | Notes |
@@ -480,6 +491,7 @@ have Discord 2FA **off** for T31.
 | T32 | | | |
 | T33 | | | |
 | T34 | | | |
+| T35 | | | |
 
 **Tester:** ______  **Date:** ______  **Build:** ______
 **Verdict:** ☐ all pass  ☐ pass with findings filed: ______  ☐ blocked

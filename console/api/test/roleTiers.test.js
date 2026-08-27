@@ -50,3 +50,23 @@ test("roleTiersConfigured and parseTierList", () => {
   assert.equal(roleTiersConfigured(null), false);
   assert.deepEqual(parseTierList("owner, Admin,bogus,admin"), ["owner", "admin"]);
 });
+
+// ---- separation of duties ----
+import { roleTierConflicts, describeRoleTierConflicts } from "../src/integrations/discord/roleTiers.js";
+
+test("roleTierConflicts: a role under two tiers is reported with both tiers", () => {
+  const dup = { owner: ["100000000000000002"], admin: ["100000000000000002"], moderator: [], player: [] };
+  assert.deepEqual(roleTierConflicts(dup), [{ roleId: "100000000000000002", tiers: ["owner", "admin"] }]);
+  assert.equal(describeRoleTierConflicts(roleTierConflicts(dup)), "role 100000000000000002 is mapped to owner and admin");
+});
+
+test("roleTierConflicts: a sound mapping has none; the same role twice under ONE tier is not a conflict", () => {
+  assert.deepEqual(roleTierConflicts(R), []);
+  assert.deepEqual(roleTierConflicts({ admin: ["100000000000000002", "100000000000000002"] }), []);
+  assert.deepEqual(roleTierConflicts(null), []);
+});
+
+test("resolveRoleTier would have silently promoted on a conflict -- which is why it must never see one", () => {
+  const dup = { owner: ["100000000000000002"], admin: ["100000000000000002"], moderator: [], player: [] };
+  assert.equal(resolveRoleTier(["100000000000000002"], dup), "owner");
+});
