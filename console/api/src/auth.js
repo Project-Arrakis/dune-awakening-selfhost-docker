@@ -26,6 +26,20 @@ export function parseCookies(header = "") {
 export function createAuth(config) {
   const now = config.now || (() => Date.now());
 
+  // Integrity tag over an opaque session id -- NOT password storage.
+  //
+  // CodeQL flags this as js/insufficient-password-hash (#483), which fires when a
+  // credential is hashed with a fast hash instead of a slow KDF. There is no
+  // password here and no stored digest for anyone to crack: `value` is a
+  // server-generated random id, `config.sessionSecret` is an HMAC KEY, and the
+  // output authenticates the cookie rather than standing in for a secret. A KDF
+  // would be the wrong primitive -- it is not a verifier for a low-entropy,
+  // human-chosen input.
+  //
+  // The id's unguessability comes from randomBytes(32), and the server-side
+  // store is the real authority regardless of the signature -- both proven in
+  // test/sessionFixation.test.js.
+  // codeql[js/insufficient-password-hash]
   function sign(value) {
     return createHmac("sha256", config.sessionSecret).update(value).digest("base64url");
   }

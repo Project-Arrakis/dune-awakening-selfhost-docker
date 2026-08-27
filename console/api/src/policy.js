@@ -39,10 +39,42 @@ export function matchAction(pattern, action) {
   // Exact match or wildcard segment
   if (pattern === action) return true;
   if (pattern.includes("*")) {
-    const regex = new RegExp("^" + pattern.replace(/\*/g, ".*") + "$");
-    return regex.test(action);
+    return wildcardRegex(pattern).test(action);
   }
   return false;
+}
+
+// Every regex metacharacter EXCEPT `*` is escaped before compiling (#242).
+//
+// This used to be `pattern.replace(/\*/g, ".*")` alone, so everything else in an
+// operator-supplied policy pattern reached the RegExp constructor raw. Measured,
+// not theorised:
+//
+//   "players.*" matched "playersXread"  -- `.` acted as a wildcard, so a pattern
+//                                          an operator wrote as literal text
+//                                          silently granted more than it reads
+//   "(a+)+$*"   took 15,173ms on a 29-char action -- catastrophic backtracking,
+//                                          on Node's single thread, inside
+//                                          evaluate(), which runs on EVERY
+//                                          authenticated request
+//   "[*"        threw SyntaxError out of evaluate() -- and validPolicyStore
+//                                          accepted it, so it persisted to
+//                                          iam-policies.json and bricked the
+//                                          console on every boot thereafter
+//
+// Escaping removes all three at once: no operator-supplied quantifier, group or
+// character class survives to be compiled, so the pattern language is exactly
+// "literal text plus `*`" -- which is what the policy docs always said it was.
+const REGEX_METACHARACTERS = /[.+?^${}()|[\]\\]/g;
+const wildcardCache = new Map();
+export function wildcardRegex(pattern) {
+  let cached = wildcardCache.get(pattern);
+  if (!cached) {
+    const source = "^" + pattern.replace(REGEX_METACHARACTERS, "\\$&").replace(/\*/g, ".*") + "$";
+    cached = new RegExp(source);
+    wildcardCache.set(pattern, cached);
+  }
+  return cached;
 }
 
 export function evaluate(session, action, policies = null) {
@@ -171,7 +203,13 @@ function validPolicyStore(value) {
     return document.statements.every((statement) => {
       if (!statement || !["Allow", "Deny"].includes(statement.Effect)) return false;
       const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
-      return actions.length > 0 && actions.every((action) => typeof action === "string" && action.trim().length > 0);
+      return actions.length > 0 && actions.every((action) => {
+        if (typeof action !== "string" || action.trim().length === 0) return false;
+        // Belt and braces alongside the escaping above (#242): refuse anything
+        // that cannot compile, so a malformed store is rejected at PUT rather
+        // than persisted and re-loaded into every subsequent boot.
+        try { wildcardRegex(action); return true; } catch { return false; }
+      });
     });
   });
 }

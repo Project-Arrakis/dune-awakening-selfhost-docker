@@ -313,3 +313,51 @@ test("carepackage:grant-all is a distinct action from carepackage:grant", () => 
   assert.equal(actionForRoute("/api/care-package/grant-eligible", "POST"), "carepackage:grant-all");
   assert.equal(actionForRoute("/api/care-package/grant/123", "POST"), "carepackage:grant");
 });
+
+// #242 -- matchAction built a RegExp from operator-supplied policy patterns and
+// escaped nothing but `*`. Filed as "potential ReDoS"; measured impact was
+// broader. Each assertion below corresponds to a behaviour reproduced against
+// the pre-fix code, not to a hypothetical.
+test("a policy pattern is literal text plus `*`, not a regex", () => {
+  loadPolicies();
+  // `.` was a wildcard: a pattern an operator wrote as literal text silently
+  // matched more than it reads.
+  assert.equal(matchAction("players.*", "playersXread"), false, "`.` is a literal, not any-char");
+  assert.equal(matchAction("players.read", "playersXread"), false);
+  // The wildcard itself still works, in both spellings.
+  assert.equal(matchAction("players*", "players:read"), true);
+  assert.equal(matchAction("players:*", "players:read"), true);
+  assert.equal(matchAction("*", "anything:at:all"), true);
+  // Other metacharacters are inert rather than structural.
+  for (const [pattern, action] of [["a+*", "aaa"], ["a(b)*", "ab"], ["x|y*", "x"]]) {
+    assert.equal(matchAction(pattern, action), false, `${pattern} must not behave as a regex`);
+  }
+});
+
+test("a pathological pattern cannot stall request authorization", () => {
+  loadPolicies();
+  // Pre-fix this took 15,173ms on Node's single thread, inside evaluate(),
+  // which runs on every authenticated request. A generous bound: the point is
+  // orders of magnitude, not a specific number.
+  const started = Date.now();
+  matchAction("(a+)+$*", "a".repeat(28) + "!");
+  matchAction("(x+x+)+y*", "x".repeat(26) + "z");
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 1000, `catastrophic backtracking is no longer reachable (took ${elapsed}ms)`);
+});
+
+test("an uncompilable pattern is inert, and cannot be persisted", () => {
+  loadPolicies();
+  // Pre-fix this threw SyntaxError out of evaluate() -- on every request.
+  assert.doesNotThrow(() => matchAction("[*", "players:read"));
+  assert.equal(matchAction("[*", "players:read"), false);
+
+  // And validPolicyStore accepted it, so it reached iam-policies.json and came
+  // back at every boot. A store is now refused if any pattern cannot compile.
+  const store = (action) => ({
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: ["*"] }] },
+    admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: [action] }] },
+  });
+  assert.equal(setPolicies(store("players:*")).ok, true, "a sane pattern still saves");
+  loadPolicies();
+});
