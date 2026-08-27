@@ -769,6 +769,10 @@ export function App() {
         {useRecoveryCode ? (
           <input
             type="text"
+            id="login-recovery-code"
+            name="login-recovery-code"
+            aria-label="Recovery code"
+            autoComplete="one-time-code"
             value={recoveryCode}
             onChange={(event) => setRecoveryCode(event.target.value)}
             placeholder="Recovery code"
@@ -777,6 +781,10 @@ export function App() {
         ) : (
           <input
             type="text"
+            id="login-totp-code"
+            name="login-totp-code"
+            aria-label="Authenticator code"
+            autoComplete="one-time-code"
             inputMode="numeric"
             value={totpCode}
             onChange={(event) => setTotpCode(event.target.value)}
@@ -784,7 +792,7 @@ export function App() {
             autoFocus
           />
         )}
-        <button type="submit">Sign In</button>
+        <button type="submit" className="login-primary-button">Sign In</button>
         {recoveryAvailable && (
           <button
             type="button"
@@ -797,8 +805,8 @@ export function App() {
       </div>
     ) : (
       <div className="login-password-fields">
-        <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
-        <button type="submit">Sign In</button>
+        <input type="password" id="login-admin-password" name="login-admin-password" aria-label="Admin password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
+        <button type="submit" className="login-primary-button">Sign In</button>
       </div>
     );
     return (

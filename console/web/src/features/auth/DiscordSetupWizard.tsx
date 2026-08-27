@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, post } from "../../api/client";
-import { SecretInput } from "../../components/SecretInput";
 
 // Guided Discord sign-in setup (docs/rfc-console-auth.md §2.1.1). Reached only
 // by the console owner (the admin password was entered to start it), so from
@@ -26,11 +25,8 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
   const [moderatorRoleIds, setModeratorRoleIds] = useState("");
   const [playerRoleIds, setPlayerRoleIds] = useState("");
   const [requireMfa, setRequireMfa] = useState(true);
-  const [clientId, setClientId] = useState("");
-  const [clientSecret, setClientSecret] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const [done, setDone] = useState<{ guild: string; owner: string } | null>(null);
 
   // Learn the host's state on mount, and every time it might have changed. Both
@@ -49,7 +45,6 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
         secretSaved: Boolean(c["_discordOAuthSecretSaved"]),
         configured: Boolean(settings.value.config?.discordOAuthAppConfigured),
       });
-      if (c["DISCORD_OAUTH_CLIENT_ID"] && !clientId) setClientId(c["DISCORD_OAUTH_CLIENT_ID"]);
     } else {
       setApp({ clientId: "", redirectUri: "", secretSaved: false, configured: false });
     }
@@ -62,26 +57,10 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
     // A stray ?discordSetup marker in the URL has done its job; drop it so a
     // manual refresh is clean.
     if (new URLSearchParams(window.location.search).has("discordSetup")) window.history.replaceState({}, "", "/");
-  }, [clientId, guildId]);
+  }, [guildId]);
 
   useEffect(() => { void probe(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function saveApp() {
-    setBusy(true); setError(""); setNotice("");
-    try {
-      if (!SNOWFLAKE.test(clientId.trim())) throw new Error("Client ID should be the 17-19 digit application ID.");
-      if (!clientSecret) throw new Error("Paste the client secret.");
-      const patch: Record<string, string> = {};
-      if (clientId.trim() !== (app?.clientId || "")) patch.DISCORD_OAUTH_CLIENT_ID = clientId.trim();
-      if (!app?.redirectUri) patch.DISCORD_OAUTH_REDIRECT_URI = redirectUri;
-      if (Object.keys(patch).length) await post("/api/setup/write-oauth-config", patch);
-      await post("/api/setup/save-oauth-secret", { secret: clientSecret, overwrite: true });
-      setClientSecret("");
-      setNotice("Saved. The console reads this at startup — run `dune console restart` on the host, then reopen this page and click Continue with Discord.");
-      await probe();
-    } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
-    finally { setBusy(false); }
-  }
 
   async function finalize() {
     setBusy(true); setError("");
@@ -111,19 +90,18 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
 
         {step === "loading" && <p className="loading-dots">Checking this console&apos;s Discord configuration</p>}
 
-        {step === "connect" && app && (
+        {step === "connect" && (
           <>
-            {app.clientId ? (
-              <p className="muted">This console already knows its Discord application (client ID <code>{app.clientId}</code>). It just needs the application&apos;s <strong>client secret</strong>. Paste it once here, or put it on the host at <code>runtime/secrets/discord-oauth-client-secret.txt</code> and restart.</p>
-            ) : (
-              <p className="muted">Point this console at a Discord application — the same one your bot uses, or any application whose OAuth2 redirect list includes <code>{redirectUri}</code> <button type="button" className="login-password-toggle" onClick={() => { void navigator.clipboard?.writeText(redirectUri); }}>copy</button>. This is a one-time deployment detail, like a bot token; it can also live in <code>.env</code>.</p>
-            )}
-            {!app.clientId && <label htmlFor="wiz-client-id">Client ID<input id="wiz-client-id" name="wiz-client-id" value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="Application ID" disabled={busy} inputMode="numeric" /></label>}
-            <label htmlFor="wiz-client-secret">Client secret<SecretInput id="wiz-client-secret" name="wiz-client-secret" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} placeholder="Client secret" disabled={busy} /></label>
-            <button type="button" disabled={busy} onClick={() => { void saveApp(); }}>{busy ? "Saving..." : "Save and continue"}</button>
+            <p className="muted">Discord sign-in is not set up on this server yet. Connecting the server to a Discord application is a one-time deployment step done by whoever runs the server &mdash; not something you do here, and not something a person signing in ever sees.</p>
+            <p className="muted">On the host, set these in <code>.env</code> from the <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">Discord Developer Portal</a> (OAuth2 tab), then restart the console:</p>
+            <ul className="discord-setup-envlist">
+              <li><code>DISCORD_OAUTH_CLIENT_ID</code> &mdash; the application&apos;s Client ID</li>
+              <li><code>DISCORD_OAUTH_CLIENT_SECRET</code> &mdash; its Client Secret (or a <code>runtime/secrets/discord-oauth-client-secret.txt</code> file, 0600)</li>
+              <li><code>DISCORD_OAUTH_REDIRECT_URI</code> &mdash; <code>{redirectUri}</code> <button type="button" className="login-password-toggle" onClick={() => { void navigator.clipboard?.writeText(redirectUri); }}>copy</button>, which must also be in the application&apos;s OAuth2 redirect list</li>
+            </ul>
+            <p className="muted">Once that is done, this becomes a single <strong>Continue with Discord</strong> button &mdash; no IDs to type.</p>
           </>
         )}
-
         {step === "authorize" && (
           <>
             <p className="muted">Sign in with Discord. The console will learn who you are and which servers you are in; the server you own makes you its Owner. Your admin password is not needed again — it stays as the way back in if Discord is ever unavailable.</p>
@@ -135,22 +113,24 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
           <>
             <p className="muted">Signed in with Discord as <strong>{identity.user.username}</strong>.{identity.user.mfaEnabled ? "" : " This Discord account has no two-factor authentication; enable it in Discord if you turn on the requirement below."}</p>
 
-            <h2 className="recovery-codes-heading">Your server</h2>
-            {identity.guilds.every((g) => !g.owner) && <p className="attention-text">You do not own any of the servers you are in. Only a server&apos;s owner can connect it to this console.</p>}
-            <label htmlFor="wiz-guild">Discord server<select id="wiz-guild" name="wiz-guild" value={guildId} onChange={(e) => setGuildId(e.target.value)} disabled={busy}>
-              <option value="">Choose…</option>
-              {identity.guilds.map((g) => <option key={g.id} value={g.id} disabled={!g.owner}>{g.name}{g.owner ? " — you own this server" : " — not yours"}</option>)}
-            </select></label>
-            {chosen?.owner && <p className="muted">You own <strong>{chosen.name}</strong>, so you are the console <strong>Owner</strong>. Everyone else&apos;s access comes from the roles below.</p>}
+            <h2 className="auth-step-heading">Your server</h2>
+            {identity.guilds.length === 0
+              ? <p className="attention-text">You do not own any Discord server. Only a server&apos;s owner can connect it to this console &mdash; ownership is what makes you the console Owner.</p>
+              : identity.guilds.length === 1
+                ? <p className="muted">Connecting <strong>{identity.guilds[0].name}</strong>, which you own. That makes you the console <strong>Owner</strong>; everyone else&apos;s access comes from the roles below.</p>
+                : <label htmlFor="wiz-guild">Which of your servers<select id="wiz-guild" name="wiz-guild" value={guildId} onChange={(e) => setGuildId(e.target.value)} disabled={busy}>
+                    <option value="">Choose…</option>
+                    {identity.guilds.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                  </select></label>}
 
-            <h2 className="recovery-codes-heading">Who gets which access</h2>
+            <h2 className="auth-step-heading">Who gets which access</h2>
             <p className="muted">Copy role IDs from Discord with Developer Mode on (User Settings &rarr; Advanced), then right-click a role &rarr; Copy Role ID. One or more per field, comma-separated. Owner is not a role — it is you, the server&apos;s owner.</p>
             <label htmlFor="wiz-admin">Admin Role <em>(required)</em><input id="wiz-admin" name="wiz-admin" value={adminRoleIds} onChange={(e) => setAdminRoleIds(e.target.value)} placeholder="Discord role ID" disabled={busy} /></label>
             <label htmlFor="wiz-moderator">Moderator Role <em>(optional)</em><input id="wiz-moderator" name="wiz-moderator" value={moderatorRoleIds} onChange={(e) => setModeratorRoleIds(e.target.value)} placeholder="Discord role ID" disabled={busy} /></label>
             <label htmlFor="wiz-player">Player Role <em>(recommended)</em><input id="wiz-player" name="wiz-player" value={playerRoleIds} onChange={(e) => setPlayerRoleIds(e.target.value)} placeholder="Discord role ID" disabled={busy} /></label>
             <label className="totp-ack-checkbox" htmlFor="wiz-mfa"><input id="wiz-mfa" name="wiz-mfa" type="checkbox" checked={requireMfa} onChange={(e) => setRequireMfa(e.target.checked)} disabled={busy} /> Require two-factor <strong>on each person&apos;s Discord account</strong> before granting Owner or Admin (recommended). This is Discord&apos;s own 2FA, not the console password.</label>
 
-            <button type="button" disabled={busy || !chosen?.owner} onClick={() => { void finalize(); }}>{busy ? "Saving..." : "Turn on Discord sign-in"}</button>
+            <button type="button" className="login-primary-button" disabled={busy || !guildId} onClick={() => { void finalize(); }}>{busy ? "Saving..." : "Turn on Discord sign-in"}</button>
           </>
         )}
 
@@ -158,7 +138,6 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
           <p className="attention-text">Done. <strong>{done.guild}</strong> is connected and <strong>{done.owner}</strong> is the Owner. Run <code>dune console restart</code> on the host; after it comes back, the sign-in page shows <strong>Sign in with Discord</strong>, with the admin password beneath it as the way back in.</p>
         )}
 
-        {notice && <p className="muted">{notice}</p>}
         {error && <p className="error">{error}</p>}
         <button type="button" className="login-password-toggle" onClick={done ? onDone : onCancel}>{done ? "Back to sign in" : "Cancel"}</button>
       </section>

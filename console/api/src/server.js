@@ -6289,7 +6289,10 @@ async function handleOAuthCallback(req, res) {
     // return to the wizard. If that session is gone, the wizard simply restarts.
     const captured = {
       userId: identity.userId, username: identity.username, mfaEnabled: identity.mfaEnabled,
-      guilds: identity.guilds, capturedAt: Date.now()
+      // Only servers this person OWNS. Owner tier is derived from ownership and
+      // finalize refuses any other server, so the rest are noise -- and the
+      // console has no reason to hold a list of every guild the operator is in.
+      guilds: identity.guilds.filter((g) => g.owner), capturedAt: Date.now()
     };
     const ownerSession = consumed.sessionId ? auth.readSessionById(consumed.sessionId) : null;
     if (!ownerSession) {

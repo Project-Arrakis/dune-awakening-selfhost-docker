@@ -128,7 +128,7 @@ export function TotpSetupScreen({ mode, onComplete, onCancel }: TotpSetupScreenP
               placeholder="6-digit code"
               autoFocus
             />
-            <button type="submit" disabled={confirming}>Confirm</button>
+            <button type="submit" className="login-primary-button" disabled={confirming}>Confirm</button>
           </>
         ) : !error ? (
           <p className="loading-dots">Loading setup</p>

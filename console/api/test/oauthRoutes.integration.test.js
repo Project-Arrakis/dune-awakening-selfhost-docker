@@ -538,14 +538,14 @@ test("guided setup: an owner's setup-mode round-trip captures identity + guilds,
 
     const identity = await (await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-identity`, { headers: { cookie: owner.cookie } })).json();
     assert.equal(identity.user.id, USER_ID);
-    assert.deepEqual(identity.guilds.map((g) => [g.name, g.owner]), [["Fleetyard", true], ["Elsewhere", false]]);
+    assert.deepEqual(identity.guilds.map((g) => [g.name, g.owner]), [["Fleetyard", true]], "only owned servers are exposed to setup");
     // A stranger's session sees nothing.
     assert.equal((await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-identity`)).status, 401);
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
 
 
-test("guided setup: password first -- anonymous cannot start; the owner's round-trip mints no session; finalize needs the password again and guild ownership", async () => {
+test("guided setup: anonymous cannot start; the owner round-trip mints no session; finalize needs no password but requires an owned server", async () => {
   const consolePort = await getFreePort(); const discordPort = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "oauth-setupfin-"));
   const console = startConsole(consolePort, discordPort, tempDir, { DISCORD_HOME_GUILD_ID: "", DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "0", DISCORD_OAUTH_OWNER_ALLOWLIST: "" });
@@ -564,12 +564,13 @@ test("guided setup: password first -- anonymous cannot start; the owner's round-
 
     const H = { cookie: owner.cookie, "x-csrf-token": owner.csrfToken, "content-type": "application/json" };
     const identity = await (await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-identity`, { headers: H })).json();
-    assert.deepEqual(identity.guilds.map((g) => [g.name, g.owner]), [["Fleetyard", true], ["Elsewhere", false]]);
+    assert.deepEqual(identity.guilds.map((g) => [g.name, g.owner]), [["Fleetyard", true]], "only owned servers are exposed to setup");
     const fin = (body) => fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-finalize`, { method: "POST", headers: H, body: JSON.stringify(body) });
 
-    // No password here: the owner session is the proof, plus guild ownership.
+    // No password: the owner session is the proof, plus guild ownership. A
+    // server not in the owned list the console captured is refused.
     let r = await fin({ guildId: "123456789012345678", adminRoleIds: ADMIN_ROLE });
-    assert.equal(r.status, 403); assert.match((await r.json()).error, /do not own Elsewhere/);
+    assert.equal(r.status, 400); assert.match((await r.json()).error, /Choose one of your Discord servers/);
     r = await fin({ guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE, moderatorRoleIds: ADMIN_ROLE });
     assert.equal(r.status, 400, "separation of duties applies here too");
     r = await fin({ guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE, playerRoleIds: PLAYER_ROLE, requireMfa: true });
