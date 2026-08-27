@@ -25,12 +25,21 @@ finding even when the flow still works — record the exact text you saw.
 | Second browser or private window | for "other sessions" checks |
 | Somewhere to record recovery codes | password manager entry / paper |
 | Host access (SSH) for T17–T20 and T24 | tester: `________` or a named proxy who has it |
-| Starting state | ☐ A: no two-factor state on the host (fresh)  ☐ B: an authenticator already enrolled |
+| Starting state | **A — no two-factor state on the host and `CONSOLE_TOTP_ENABLED` unset.** This is what every operator upgrading from the previous release has, so it is the only valid start for a release test. (B — an authenticator already enrolled — is for re-testing an install that has already been through this checklist once; it is not a release test.) |
 
 **Host paths referenced below** (relative to the repository root on the host):
 `.env`, `runtime/generated/console-second-factor.json`,
 `runtime/generated/console-second-factor.json.watermark`,
 `runtime/generated/web-admin-audit.jsonl`. Restart with `dune console restart`.
+
+**Putting the host into starting state A** (skip if it is a fresh install that has never had this feature):
+```bash
+cp -p runtime/generated/console-second-factor.json* ~/qa-2fa-backup/ 2>/dev/null   # keep whatever was there
+rm -f runtime/generated/console-second-factor.json runtime/generated/console-second-factor.json.watermark
+sed -i '/^CONSOLE_TOTP_ENABLED=/d' .env
+dune console restart
+```
+You should now be able to sign in with the password alone, and Settings should show no Two-Factor section. That is T01.
 
 **Before starting, take a backup** on the host:
 ```bash
@@ -68,7 +77,7 @@ results table at the end into the tracking issue for the release.
 
 ## Part 2 — Turning it on and enrolling (starting state A)
 
-If you are in starting state B, skip to Part 3 and come back to Part 2 via T17.
+Run Parts 1 and 2 in order — this is the path every upgrading operator takes. (Only an install in state B skips to Part 3; see the Environment table.)
 
 ### T03 · Enabling the flag changes nothing until sign-in
 *Host:* set `CONSOLE_TOTP_ENABLED=1` in `.env`; `dune console restart`.
