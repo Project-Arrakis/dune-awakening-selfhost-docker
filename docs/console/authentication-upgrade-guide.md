@@ -222,12 +222,18 @@ does **not** change password sign-in — it adds a second button.
   **Its owner will be the console owner — automatically.** Discord has exactly
   one owner per server, and the console takes that as the truth; there is no
   owner setting anywhere.
-- A Discord application: https://discord.com/developers/applications — create
-  one, or reuse the one your bot uses. Copy its **Client ID** and a **Client
-  Secret**, and under the application's **OAuth2** settings add your console's
-  callback as a redirect URI: `https://<your-console-host>/api/auth/discord/callback`.
-  Registering the application is a one-time **deployment** step done in `.env`
-  (below), the same as a bot token — the sign-in flow never asks anyone for it.
+- A Discord application: https://discord.com/developers/applications — create a
+  **dedicated one for this console**. Its **name and icon are exactly what
+  everyone sees on the Discord sign-in screen** ("*&lt;name&gt;* wants to access
+  your account"), so name it for your server or console (for example your
+  server's name, or "Dune Docker Console") and give it an icon. **Do not reuse
+  the application your bot uses** — if you do, people signing in see the bot's
+  name and icon and it looks like they are logging into the bot. Copy the app's
+  **Client ID** and a **Client Secret**, and under its **OAuth2** settings add
+  your console's callback as a redirect URI:
+  `https://<your-console-host>/api/auth/discord/callback`. Registering the
+  application is a one-time **deployment** step done in `.env` (below), the same
+  as a bot token — the sign-in flow never asks anyone for it.
 - Role IDs from your server, for the access levels below. Turn on Developer
   Mode in Discord (User Settings → Advanced), then right-click a role → **Copy
   Role ID**.
