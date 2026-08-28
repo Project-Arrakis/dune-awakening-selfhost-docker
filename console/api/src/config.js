@@ -315,6 +315,7 @@ export function loadConfig() {
     discordBotHandoffUrl: (process.env.DISCORD_BOT_HANDOFF_URL || "").replace(/\/+$/, ""),
     generatedDir,
     secretsDir,
+    apiKeysFile: resolve(secretsDir, "api-keys.json"),
     auditLog: resolve(generatedDir, "web-admin-audit.jsonl"),
     spicefieldOverridesFile: resolve(generatedDir, "spicefield-overrides.json"),
     // Committed data, not runtime state: Large-spice coordinates are a

@@ -43,7 +43,7 @@ describe("SettingsPanel credential controls", () => {
     it("does not ask for an authenticator code and posts without one", async () => {
       mockBackend({ enrolled: false });
       mockPost.mockResolvedValue({ ok: true } as never);
-      render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+      render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
       await openLoginPasswordSection();
 
       expect(screen.queryByPlaceholderText("6-digit code")).toBeNull();
@@ -61,7 +61,7 @@ describe("SettingsPanel credential controls", () => {
   describe("password change with a second factor enrolled", () => {
     it("renders an authenticator-code field", async () => {
       mockBackend({ enrolled: true });
-      render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+      render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
       await openLoginPasswordSection();
 
       expect(await screen.findByPlaceholderText("6-digit code")).toBeTruthy();
@@ -73,7 +73,7 @@ describe("SettingsPanel credential controls", () => {
     it("sends the authenticator code with the rotation request", async () => {
       mockBackend({ enrolled: true });
       mockPost.mockResolvedValue({ ok: true } as never);
-      render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+      render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
       await openLoginPasswordSection();
       await screen.findByPlaceholderText("6-digit code");
 
@@ -89,7 +89,7 @@ describe("SettingsPanel credential controls", () => {
 
     it("keeps the submit button disabled until a code is entered", async () => {
       mockBackend({ enrolled: true });
-      render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+      render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
       await openLoginPasswordSection();
       await screen.findByPlaceholderText("6-digit code");
 
@@ -103,7 +103,7 @@ describe("SettingsPanel credential controls", () => {
     it("clears the code after a rejected attempt so a stale one is not resubmitted", async () => {
       mockBackend({ enrolled: true });
       mockPost.mockRejectedValue(new Error("That authenticator code was not accepted."));
-      render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+      render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
       await openLoginPasswordSection();
       await screen.findByPlaceholderText("6-digit code");
 
@@ -120,7 +120,7 @@ describe("SettingsPanel credential controls", () => {
   describe("recovery-code regeneration ( UI)", () => {
     it("is hidden entirely when no second factor is enrolled", async () => {
       mockBackend({ enrolled: false });
-      render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+      render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
       await screen.findByLabelText("Expand Login Password");
 
       expect(screen.queryByLabelText("Expand Two-Factor Authentication")).toBeNull();
@@ -129,7 +129,7 @@ describe("SettingsPanel credential controls", () => {
     it("posts password + code, then shows the new codes behind an acknowledgment gate", async () => {
       mockBackend({ enrolled: true });
       mockPost.mockResolvedValue({ ok: true, recoveryCodes: ["aaaa-bbbb", "cccc-dddd"] } as never);
-      render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+      render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
       fireEvent.click(await screen.findByLabelText("Expand Two-Factor Authentication"));
 
       fireEvent.change(screen.getByPlaceholderText("Your login password"), { target: { value: "old-password" } });
@@ -153,7 +153,7 @@ describe("SettingsPanel credential controls", () => {
     it("surfaces a rejection and clears the code without showing any codes", async () => {
       mockBackend({ enrolled: true });
       mockPost.mockRejectedValue(new Error("Current password is incorrect."));
-      render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+      render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
       fireEvent.click(await screen.findByLabelText("Expand Two-Factor Authentication"));
 
       fireEvent.change(screen.getByPlaceholderText("Your login password"), { target: { value: "wrong" } });
@@ -180,7 +180,7 @@ describe("credential-state robustness (, , )", () => {
       if (path === "/api/auth/me") return Promise.resolve({ secondFactorEnrolled: true } as never);
       return Promise.reject(new Error("settings unavailable"));
     });
-    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
     await openLoginPasswordSection();
 
     expect(await screen.findByPlaceholderText("6-digit code")).toBeTruthy();
@@ -190,7 +190,7 @@ describe("credential-state robustness (, , )", () => {
   // worst response -- that is exactly when the operator needs them.
   it("says so when the second-factor state is unreadable, instead of silently hiding it", async () => {
     mockBackend({ enrolled: false, unavailable: true });
-    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
 
     expect(await screen.findByText(/two-factor state could not be read/i)).toBeTruthy();
   });
@@ -200,7 +200,7 @@ describe("credential-state robustness (, , )", () => {
       if (path === "/api/auth/me") return Promise.reject(new Error("boom"));
       return Promise.resolve({ config: { port: 8088 }, publicDirectory: {}, serverConfig: {} } as never);
     });
-    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
 
     expect(await screen.findByText(/two-factor state could not be read/i)).toBeTruthy();
   });
@@ -211,7 +211,7 @@ describe("credential-state robustness (, , )", () => {
   it("accepts a pasted space-separated code without truncating it", async () => {
     mockBackend({ enrolled: true });
     mockPost.mockResolvedValue({ ok: true } as never);
-    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
     await openLoginPasswordSection();
     await screen.findByPlaceholderText("6-digit code");
 
@@ -230,7 +230,7 @@ describe("credential-state robustness (, , )", () => {
   it("keeps displaying regenerated codes even if the enrolled flag goes false", async () => {
     mockBackend({ enrolled: true });
     mockPost.mockResolvedValue({ ok: true, recoveryCodes: ["aaaa-bbbb", "cccc-dddd"] } as never);
-    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
     fireEvent.click(await screen.findByLabelText("Expand Two-Factor Authentication"));
 
     fireEvent.change(screen.getByPlaceholderText("Your login password"), { target: { value: "old-password" } });
@@ -262,7 +262,7 @@ describe("the two credential forms are distinguishable", () => {
 
   it("keeps both sections' fields addressable when both are open", async () => {
     mockBackend({ enrolled: true });
-    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
     await openLoginPasswordSection();
     fireEvent.click(screen.getByLabelText("Expand Two-Factor Authentication"));
 
@@ -284,7 +284,7 @@ describe("the two credential forms are distinguishable", () => {
 
   it("writes to only the field that was targeted", async () => {
     mockBackend({ enrolled: true });
-    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
     await openLoginPasswordSection();
     fireEvent.click(screen.getByLabelText("Expand Two-Factor Authentication"));
 
@@ -305,7 +305,7 @@ describe("recovery-codes heading level", () => {
   it("renders the settings copy as an h3, not a second page-level h1", async () => {
     mockBackend({ enrolled: true });
     mockPost.mockResolvedValue({ ok: true, recoveryCodes: ["aaaa-bbbb"] } as never);
-    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
     fireEvent.click(await screen.findByLabelText("Expand Two-Factor Authentication"));
 
     fireEvent.change(screen.getByPlaceholderText("Your login password"), { target: { value: "pw" } });
@@ -333,7 +333,7 @@ describe("stale credential state after a transient /me failure", () => {
 
   it("clears enrolled when /me starts failing, instead of showing the banner beside a live form", async () => {
     mockBackend({ enrolled: true });
-    render(<SettingsPanel onPasswordChanged={onPasswordChanged} />);
+    render(<SettingsPanel onPasswordChanged={onPasswordChanged} confirmAction={vi.fn()} />);
     // Prime it: the Two-Factor section is present because /me said enrolled.
     expect(await screen.findByLabelText("Expand Two-Factor Authentication")).toBeTruthy();
 

@@ -135,7 +135,13 @@ export const ROUTE_ACTIONS = {
   "POST /api/updates/check-game":              "updates:check",
   "POST /api/updates/apply-game":              "updates:apply",
   "POST /api/updates/fix-steamcmd":            "updates:fix",
-  "POST /api/updates/check-stack":             "updates:check",
+  // Its own action, deliberately NOT updates:check. updates:check is in
+  // EXTRA_READ_ACTIONS so a monitoring key can ask "is a game update
+  // available" -- that route is absorbed by updateCheckCache. This one runs
+  // selfUpdateCheck, which has no cache, so every call spawns a real
+  // subprocess. Classifying it as a write keeps it out of reach of a
+  // read-scoped key (and `updates` is write-denied to keys entirely).
+  "POST /api/updates/check-stack":             "updates:self-check",
   "POST /api/updates/apply-stack":             "updates:apply",
   "GET /api/updates/qa/status":                "updates:read",
   "POST /api/updates/qa/login":                "updates:apply",
@@ -156,6 +162,9 @@ export const ROUTE_ACTIONS = {
   "GET /api/settings/iam/policies":            "settings:read",
   "PUT /api/settings/iam/policy":              "settings:write",
   "POST /api/settings/iam/policy/test":        "settings:read",
+  "GET /api/settings/api-keys":                "settings:read",
+  "GET /api/settings/api-keys/catalog":        "settings:read",
+  "POST /api/settings/api-keys":               "settings:write",
   "POST /api/settings/public-directory":       "settings:write",
   "POST /api/settings/public-directory/claim": "settings:write",
 
@@ -386,6 +395,15 @@ export const REGEX_ACTIONS = [
 // has different actions depending on HTTP method.
 
 export const REGEX_ACTIONS_BY_METHOD = {
+  // PUT/DELETE /api/settings/api-keys/{id} -- update and revoke. There is
+  // no "/api/settings/" fallback anywhere in REGEX_ACTIONS, so without
+  // these two lines both routes resolve to null and fail closed for every
+  // tier. Kept as prefix rules rather than regexes because
+  // rbacParity.test.js extracts path.startsWith() dispatches but not
+  // path.match() ones, so this form stays visible to the parity gate.
+  "PUT /api/settings/api-keys/":    "settings:write",
+  "DELETE /api/settings/api-keys/": "settings:write",
+
   "POST /api/players/":    "players:mutate",
   "DELETE /api/players/":  "players:mutate",
   "PATCH /api/players/":   "players:mutate",
@@ -520,7 +538,24 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // no "DELETE /api/vehicles/" prefix rule for it to fall through to, so
   // without this line it would resolve via the method-agnostic
   // "/api/vehicles/" -> vehicles:read fallback instead.
-  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/queued-delete$/, action: "vehicles:mutate" }
+  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/queued-delete$/, action: "vehicles:mutate" },
+  // Vehicle cargo deletion. Carved out of vehicles:mutate for the same reason
+  // the base container deletes are carved out of bases:mutate: the vehicle
+  // panel shipped without any way to destroy items, so an operator whose
+  // hand-authored policy grants vehicles:mutate (roster edits, refuel, repair)
+  // cannot have agreed to item destruction -- folding this in would silently
+  // widen every existing narrow policy. Default tiers are unaffected: owner
+  // ("*") and admin ("vehicles:*") still match, moderator/player/observer hold
+  // only vehicles:read.
+  //
+  // The bulk action is "vehicles:bulk-delete-items", NOT "vehicles:delete-items"
+  // (issue #351's lesson, mirrored from bases): policy.js's `-*` wildcard means
+  // a pattern written as "vehicles:delete-item*" to grant single-item delete
+  // would silently also grant bulk. The two names share no prefix a wildcard
+  // can bridge.
+  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/storage\/items\/[^/]+$/, action: "vehicles:delete-item" },
+  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/storage\/items$/, action: "vehicles:bulk-delete-items" },
+  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/storage\/all-items$/, action: "vehicles:bulk-delete-items" }
 ];
 
 // ---- Action resolution ----

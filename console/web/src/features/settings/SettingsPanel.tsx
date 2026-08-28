@@ -5,6 +5,7 @@ import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill } from "../../components/common/DisplayPrimitives";
 import { RecoveryCodesPanel } from "../auth/RecoveryCodesPanel";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
+import { ApiKeysSection } from "./ApiKeysSection";
 
 // Authenticator apps display codes as "123 456" and the server strips whitespace
 // (auth/totp.js) precisely so a paste of that form validates. Do not add
@@ -41,12 +42,19 @@ type PublicDirectorySettings = {
   probeError?: string | null;
 };
 
+type ConfirmAction = (
+  message: string,
+  options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }
+) => Promise<boolean>;
+
 type SettingsPanelProps = {
   onPasswordChanged: () => Promise<void>;
   publicListingUrl?: string;
+  // Needed by the API Keys section, which confirms before revoking a key.
+  confirmAction: ConfirmAction;
 };
 
-export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsPanelProps) {
+export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmAction }: SettingsPanelProps) {
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   // Tier 3 credential state. secondFactorEnrolled is read from /api/auth/me,
@@ -117,6 +125,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
       setSecondFactorUnavailable(true);
     }
   }
+  const [apiKeysOpen, setApiKeysOpen] = useState(false);
   async function refresh() {
     await refreshCredentialState();
     const nextSettings = await api<Record<string, unknown>>("/api/settings");
@@ -547,6 +556,10 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
             </span>}
           </div>
         </div>}
+      </div>
+      <div className={`playerAdmin_toggle settings-api-keys-toggle ${apiKeysOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={apiKeysOpen ? "Collapse API Keys" : "Expand API Keys"} onClick={() => setApiKeysOpen(!apiKeysOpen)}>{apiKeysOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>API Keys</span></button>
+        {apiKeysOpen && <div className="playerAdmin_toggleBody"><ApiKeysSection confirmAction={confirmAction} /></div>}
       </div>
     </div>
   </section>;

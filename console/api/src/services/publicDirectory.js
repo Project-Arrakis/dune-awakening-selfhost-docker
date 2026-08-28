@@ -11,6 +11,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import * as duneDb from "../duneDb.js";
 import { playerPortalMarketSnapshot } from "../addonJobs.js";
+import { liveMapPoi } from "./liveMapPoi.js";
+import { liveMapSpice } from "./liveMapSpice.js";
 import { carePackageConfig, carePackageHistory } from "../carePackage.js";
 import { readCharacterTransferSettings, incomingCharacterTransferPolicies } from "./characterTransferSettings.js";
 import { readMessageOfTheDay } from "./messageOfTheDay.js";
@@ -59,6 +61,10 @@ export function collectPlayerPortalContext(config, directorySnapshot = {}) {
   const transfer = readCharacterTransferSettings(config).settings;
   const incoming = incomingCharacterTransferPolicies.find((entry) => entry.value === transfer.IncomingCharacterTransfers);
   const care = carePackageConfig(config);
+  const instanceNames = readPublicInstanceNames(config.repoRoot);
+  const sietchNames = Object.fromEntries([...instanceNames.byPartition]
+    .filter(([key, value]) => key.startsWith("Survival_1\0") && value?.name)
+    .map(([key, value]) => [key.slice("Survival_1\0".length), value.name]));
   return {
     serverInfo: {
       status: {
@@ -87,7 +93,8 @@ export function collectPlayerPortalContext(config, directorySnapshot = {}) {
     carePackages: {
       enabled: care.enabled === true,
       history: carePackageHistory(config, 500).rows || []
-    }
+    },
+    sietchNames
   };
 }
 
@@ -227,6 +234,88 @@ const PUBLIC_MODIFIER_SETTINGS = new Map([
   publicModifier("/Script/DuneSandbox.AugmentSettings", "m_MaxArmorAugments", "Armor Augments", "2", "number")
 ]);
 
+const PLAYER_PORTAL_MAP_MARKER_TYPES = new Set([
+  "spice", "spice_active", "flour_sand", "ore", "scrap", "flora",
+  "poi", "house_representative", "trainer", "fortress", "hazard", "enemy"
+]);
+
+// Server-level world layers for the private Player Portal. Player-specific
+// markers deliberately stay in playerPortalSnapshots, where the authenticated
+// Steam-account hash scopes them to one character. This shared snapshot only
+// contains public world resources/POIs, map geometry, and partitions; it can
+// never carry another player's location, base, vehicle, storage, or identity.
+export async function playerPortalMapSnapshot(config, db, options = {}) {
+  const fetchPoi = options.fetchPoi || ((database, map) => liveMapPoi(database, map));
+  const fetchSpice = options.fetchSpice || ((database, map) => liveMapSpice(database, config, map));
+  const fetchPartitions = options.fetchPartitions || duneDb.liveMapPartitions;
+  const mapPayload = duneDb.liveMapConfigPayload();
+  const capabilities = {};
+  const rows = [];
+  const cycles = {};
+
+  for (const mapConfig of Object.values(mapPayload.maps || {})) {
+    const actorMap = String(mapConfig?.actorMap || mapConfig?.key || "");
+    if (!actorMap) continue;
+    const [poi, spice] = await Promise.all([
+      fetchPoi(db, actorMap).catch(() => ({ capabilities: {}, rows: [] })),
+      fetchSpice(db, actorMap).catch(() => ({ capabilities: {}, rows: [] }))
+    ]);
+    Object.assign(capabilities, poi.capabilities || {}, spice.capabilities || {});
+    cycles[String(mapConfig.key)] = {
+      coriolisSeed: String(spice.currentSeed || ""),
+      coriolisNextCycleAt: String(spice.nextCycleAt || "")
+    };
+    for (const marker of [...(poi.rows || []), ...(spice.rows || [])]) {
+      const type = String(marker?.type || "");
+      const x = Number(marker?.x);
+      const y = Number(marker?.y);
+      if (!PLAYER_PORTAL_MAP_MARKER_TYPES.has(type) || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const row = {
+        id: String(marker.id || ""),
+        type,
+        name: String(marker.name || "Map Marker"),
+        map: String(marker.map || actorMap),
+        x,
+        y,
+        z: marker.z == null || !Number.isFinite(Number(marker.z)) ? null : Number(marker.z)
+      };
+      if (marker.subtype) row.subtype = String(marker.subtype);
+      if (marker.confidence) row.confidence = String(marker.confidence);
+      if (marker.partition_id != null && Number.isInteger(Number(marker.partition_id))) {
+        row.partitionId = Number(marker.partition_id);
+      }
+      rows.push(row);
+    }
+  }
+
+  const partitionResult = await fetchPartitions(db).catch(() => ({ rows: [] }));
+  const instanceNames = config?.repoRoot
+    ? readPublicInstanceNames(config.repoRoot)
+    : { byPartition: new Map() };
+  return {
+    maps: mapPayload.maps || {},
+    defaultMap: mapPayload.defaultMap || "HaggaBasin",
+    capabilities,
+    cycles,
+    partitions: (partitionResult.rows || []).map((partition) => {
+      const map = String(partition.map || "");
+      const partitionId = Number(partition.partition_id) || 0;
+      const configuredMap = map === "HaggaBasin"
+        ? "Survival_1"
+        : map === "DeepDesert"
+          ? "DeepDesert_1"
+          : map;
+      const configured = instanceNames.byPartition.get(`${configuredMap}\0${partitionId}`)?.name;
+      return {
+        map,
+        partitionId,
+        name: String(configured || partition.name || `Partition ${partitionId}`)
+      };
+    }),
+    rows
+  };
+}
+
 export function createPublicDirectoryReporter(config, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   const getDb = options.getDb || (() => options.db);
@@ -238,6 +327,8 @@ export function createPublicDirectoryReporter(config, options = {}) {
   const collectPlayerServerMemberships = options.collectPlayerServerMemberships || duneDb.playerServerMemberships;
   const collectPlayerPortalMarketSnapshot = options.collectPlayerPortalMarketSnapshot
     || ((database) => playerPortalMarketSnapshot(config, database));
+  const collectPlayerPortalMapSnapshot = options.collectPlayerPortalMapSnapshot
+    || ((database) => playerPortalMapSnapshot(config, database));
   const buildPlayerPortalContext = options.collectPlayerPortalContext
     || (async (directorySnapshot) => {
       const context = collectPlayerPortalContext(config, directorySnapshot);
@@ -279,6 +370,7 @@ export function createPublicDirectoryReporter(config, options = {}) {
   let state = readStatus(statusPath);
   let lastPlayerPortalUploadAt = 0;
   let lastPlayerPortalRequestSignature = "";
+  let lastPlayerPortalMapUploadAt = 0;
   let lastMembershipUploadAt = 0;
   let lastMembershipRequestSignature = "";
 
@@ -376,7 +468,25 @@ export function createPublicDirectoryReporter(config, options = {}) {
               // Market details are optional; core player snapshots must still
               // upload if the local Market Bot configuration is unavailable.
             }
+            const observedAt = new Date(now()).toISOString();
             const portalContext = await buildPlayerPortalContext(snapshot);
+            if (now() - lastPlayerPortalMapUploadAt >= 60_000) {
+              try {
+                const mapSnapshot = await collectPlayerPortalMapSnapshot(getDb());
+                const result = await requestJson(fetchImpl, `${claimBaseUrl}/${encodeURIComponent(identity.serverId)}/player-portal/map-snapshot`, {
+                  method: "POST",
+                  headers: {
+                    authorization: `Bearer ${identity.secret}`,
+                    "content-type": "application/json"
+                  },
+                  body: JSON.stringify({ observedAt, map: mapSnapshot })
+                });
+                if (result?.stored === true) lastPlayerPortalMapUploadAt = now();
+              } catch {
+                // Compatibility with directory services that do not yet
+                // support the read-only Player Portal map snapshot.
+              }
+            }
             const snapshots = await collectPlayerPortalSnapshots(
               getDb(),
               requested,
@@ -385,7 +495,6 @@ export function createPublicDirectoryReporter(config, options = {}) {
               marketSnapshot,
               portalContext
             );
-            const observedAt = new Date(now()).toISOString();
             let marketOverviewStoredSeparately = false;
             if (marketSnapshot?.overview && typeof marketSnapshot.overview === "object") {
               try {

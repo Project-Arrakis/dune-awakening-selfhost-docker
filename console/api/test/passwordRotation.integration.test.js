@@ -295,11 +295,13 @@ test("pre-proof refusals on the rotation route are audited with a reason and an 
     const session = await login(port, password);
     assert.equal(session.status, 200);
 
-    // A literal `null` body: rejected before the credential proof runs.
+    // A malformed (non-object) body -- an array -- is rejected before the
+    // credential proof runs. (A literal `null` is normalized to `{}` at the
+    // source in readJsonBody, so it is no longer "malformed"; an array still is.)
     const malformed = await fetch(`http://127.0.0.1:${port}/api/settings/admin-password`, {
       method: "POST",
       headers: { "content-type": "application/json", cookie: `asc_session=${session.cookie}`, "x-csrf-token": session.csrf },
-      body: "null",
+      body: "[]",
     });
     assert.equal(malformed.status, 400);
 

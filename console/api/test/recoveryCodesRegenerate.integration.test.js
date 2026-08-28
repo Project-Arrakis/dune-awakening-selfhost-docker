@@ -432,12 +432,13 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
       const actor = await login(port, { password, totpCode: await nextCode() });
       assert.equal(actor.body.authenticated, true);
 
-      // A literal `null` body: readJson returns raw JSON.parse output, so this
-      // used to dereference null and surface an internal JS error as a 500.
+      // A malformed (non-object) body -- an array. (A literal `null` used to
+      // dereference to a 500; readJsonBody now normalizes null to `{}` at the
+      // source, so an array is the remaining "malformed" shape the guard catches.)
       const malformed = await fetch(`http://127.0.0.1:${port}${REGENERATE_PATH}`, {
         method: "POST",
         headers: { "content-type": "application/json", cookie: `asc_session=${actor.cookie}`, "x-csrf-token": actor.csrf },
-        body: "null",
+        body: "[]",
       });
       assert.equal(malformed.status, 400, "a malformed body is a client error, not a server error");
       assert.ok(!/Cannot read properties/.test((await malformed.json()).error), "no internal JS error text reaches the client");

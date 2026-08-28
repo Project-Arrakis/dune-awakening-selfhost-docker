@@ -6,7 +6,9 @@ import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, read
 import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig, publicConfig, parseAllowedIps, resolvePorts } from "./config.js";
 import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders, parseCookies } from "./auth.js";
-import { createLoginRateLimiter, createMutationRateLimiter, resolveClientIp } from "./rateLimit.js";
+import { createLoginRateLimiter, createMutationRateLimiter, resolveClientIp, createApiKeyRateLimiter } from "./rateLimit.js";
+import { createApiKeyStore, GLOBAL_RATE_LIMIT_PER_MINUTE } from "./apiKeys.js";
+import { scopeCatalog } from "./apiKeyScopes.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
 import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, TaskManager, publicTask } from "./tasks.js";
 import { preflight } from "./preflight.js";
@@ -26,7 +28,7 @@ import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPers
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
 import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
 import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon } from "./addons.js";
-import { hardwareStatusSnapshot, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
+import { createHardwareStatusProvider, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
 import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
@@ -77,6 +79,7 @@ import { createScheduledMapMessageScheduler } from "./services/scheduledMapMessa
 import { createQaUpdates } from "./services/qaUpdates.js";
 
 const config = loadConfig();
+const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
 const CONSOLE_PROCESS_STARTED_AT = Date.now();
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
 try {
@@ -291,6 +294,32 @@ const resolveOAuthTier = createOAuthTierResolver({
 // With a home guild set there is always at least one possible tier: its owner.
 const discordTierSourceConfigured = () => handoff.enabled || Boolean(config.discordHomeGuildId);
 const mutationRateLimiter = createMutationRateLimiter();
+const apiKeyRateLimiter = createApiKeyRateLimiter({ globalMaxRequests: GLOBAL_RATE_LIMIT_PER_MINUTE });
+// Failed bearer attempts are bucketed by client address under this cap, on a
+// limiter of their own so pre-auth traffic cannot touch the per-key budget.
+const API_KEY_AUTH_FAILURES_PER_MINUTE = 30;
+const API_KEY_AUTH_THROTTLE_WINDOW_MS = 60 * 1000;
+const apiKeyAuthFailureLimiter = createApiKeyRateLimiter({ globalMaxRequests: API_KEY_AUTH_FAILURES_PER_MINUTE * 200 });
+
+// A capped bucket must not go silent — a sustained attacker would be
+// invisible for as long as they kept trying. remoteIpOf has no
+// X-Forwarded-For, so behind a proxy this is one bucket for everyone.
+const apiKeyAuthThrottleNotices = new Map();
+
+function shouldNoteApiKeyAuthThrottle(failureKey, at = Date.now()) {
+  const last = apiKeyAuthThrottleNotices.get(failureKey);
+  if (last && at - last < API_KEY_AUTH_THROTTLE_WINDOW_MS) return false;
+  // Bounded cleanup: entries are only useful for one window, and the key space
+  // is attacker-controlled, so prune whenever it grows past a sane size.
+  if (apiKeyAuthThrottleNotices.size > 1000) {
+    for (const [key, seen] of apiKeyAuthThrottleNotices) {
+      if (at - seen >= API_KEY_AUTH_THROTTLE_WINDOW_MS) apiKeyAuthThrottleNotices.delete(key);
+    }
+  }
+  apiKeyAuthThrottleNotices.set(failureKey, at);
+  return true;
+}
+const apiKeys = createApiKeyStore({ file: config.apiKeysFile });
 const bridgeRateLimiter = createBridgeRateLimiter();
 // Deferred db read: db is assigned below and is reassignable on reconnect.
 // Both flush paths go through flushQueuedGeneratorRefills/flushQueuedWaterRefills
@@ -423,6 +452,9 @@ createServer(async (req, res) => {
   }
   ensureExchangeHistory(db).catch((error) => {
     console.warn(`Market transaction recorder initialization failed: ${redact(error?.message || "Unexpected error.")}`);
+  });
+  migrateCoriolisRegionFields().catch((error) => {
+    console.warn(`Coriolis cycle start region migration deferred: ${redact(error?.message || "Unexpected error.")}`);
   });
   runBackgroundTick("Player playtime tracker", () => duneDb.trackPlayerPlaytime(db));
 });
@@ -1032,13 +1064,59 @@ async function handleApi(req, res) {
     return handleDiscordAdapterRoute({ req, res, path, config, readJson, json, db });
   }
 
-  const session = auth.requireAuth(req, res);
+  // Runs BEFORE requireAuth: that couples session lookup with a CSRF check,
+  // and CSRF does not apply to bearer auth. Returns null when there is no
+  // bearer header so cookie requests fall through untouched; an invalid one
+  // returns 401 rather than falling through, which would let a stale key ride
+  // a logged-in session.
+  const bearer = apiKeys.authenticate(req);
+  if (bearer?.error) {
+    // Rate-limited and audited by client address, mirroring /api/auth/login.
+    // Brute-forcing a 256-bit secret is infeasible, but a failed credential
+    // used to produce no signal at all -- nothing to alert on, nothing to see
+    // afterwards. The limiter is keyed by address because a refused request
+    // has no key id to attribute it to.
+    // Its OWN limiter, not the per-key one: failures come from unauthenticated
+    // clients, so counting them in the shared bucket let anyone with a bogus
+    // header drain the ceiling and 429 every legitimate key -- reintroducing
+    // the starvation the global-ceiling fix closed, from in front of the door.
+    const failureKey = `apikey-auth:${remoteIpOf(req) || "unknown"}`;
+    const failureRate = apiKeyAuthFailureLimiter.record(failureKey, API_KEY_AUTH_FAILURES_PER_MINUTE);
+    if (!failureRate.allowed) {
+      // audit() is a synchronous mkdirSync + appendFileSync carrying req.url, so a
+      // row per attempt is an unbounded write for anyone who can reach the port.
+      if (shouldNoteApiKeyAuthThrottle(failureKey)) {
+        audit(config, req, "auth.api-key-failed", { reason: bearer.error, throttled: true, afterFailures: API_KEY_AUTH_FAILURES_PER_MINUTE });
+      }
+      return json(res, 429, { error: "Too many failed API key attempts. Try again shortly." }, { "retry-after": String(failureRate.retryAfterSeconds) });
+    }
+    audit(config, req, "auth.api-key-failed", { reason: bearer.error });
+    return json(res, bearer.status, { error: bearer.error });
+  }
+  if (bearer) {
+    const rate = apiKeyRateLimiter.record(bearer.key.id, bearer.key.rateLimitPerMinute);
+    if (!rate.allowed) {
+      return json(res, 429, { error: "This API key has exceeded its request limit. Try again shortly." }, { "retry-after": String(rate.retryAfterSeconds) });
+    }
+  }
+
+  const session = bearer?.session || auth.requireAuth(req, res);
   if (!session) return;
   req.authSession = session;
 
   const action = actionForRoute(path, req.method);
   if (!action || !evaluate(session, action)) {
     return json(res, 403, { error: "Your account does not have permission to access this resource." });
+  }
+  // The key's own scope grid, applied on top of the policy engine. This is the
+  // check that actually constrains a key (see the tier comment in apiKeys.js).
+  // settings:* and database:* are denied inside allows(), so a key can never
+  // reach the routes below that mint, list or revoke keys.
+  if (bearer) {
+    if (!apiKeys.allows(bearer.key, action)) {
+      return json(res, 403, { error: "This API key is not permitted to use this endpoint." });
+    }
+    apiKeys.recordUse(bearer.key.id, remoteIpOf(req));
   }
 
   if (path === "/api/setup/state") return json(res, 200, await setupState());
@@ -1120,7 +1198,12 @@ async function handleApi(req, res) {
 
   if (path === "/api/updates/check-game" && req.method === "POST") {
     const body = await readJson(req);
-    return task(req, res, "updates", "updateCheck", { fresh: body.fresh === true });
+    // `fresh` bypasses the dedupe cache and spawns a real subprocess every
+    // call. updates:check is reachable at READ level, so an API key could hold
+    // it -- keys are pinned to the cached path, leaving the forced refresh to
+    // the browser session that is actually sitting in front of the console.
+    const fresh = body.fresh === true && !req.authSession?.apiKeyId;
+    return task(req, res, "updates", "updateCheck", { fresh });
   }
   if (path === "/api/updates/apply-game" && req.method === "POST") return task(req, res, "updates", "updateApply", {});
   if (path === "/api/updates/fix-steamcmd" && req.method === "POST") return task(req, res, "updates", "updateFixSteamcmd", {});
@@ -1244,6 +1327,14 @@ async function handleApi(req, res) {
     audit(config, req, "iam.policy-set", { tiers: Object.keys(body) });
     return json(res, 200, result);
   }
+  if (path === "/api/settings/api-keys/catalog" && req.method === "GET") {
+    return json(res, 200, { namespaces: scopeCatalog() });
+  }
+  if (path === "/api/settings/api-keys" && req.method === "GET") {
+    return json(res, 200, { keys: apiKeys.list() });
+  }
+  if (path === "/api/settings/api-keys" && req.method === "POST") return apiKeyCreateRoute(req, res);
+  if (path.startsWith("/api/settings/api-keys/")) return apiKeyItemRoute(req, res, path);
   if (path === "/api/settings/iam/policy/test" && req.method === "POST") {
     const body = await readJson(req);
     const testAction = String(body?.action || "").trim();
@@ -1334,6 +1425,10 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/vehicles\/[^/]+\/permissions$/) && req.method === "GET") return vehiclePermissionsRoute(res, path);
   if (path.match(/^\/api\/vehicles\/[^/]+\/permissions$/) && req.method === "PUT") return vehicleSetPermissionsRoute(req, res, path);
   if (path.match(/^\/api\/vehicles\/[^/]+\/system-custodian$/) && req.method === "POST") return vehicleSystemCustodianRoute(req, res, path);
+  if (path.match(/^\/api\/vehicles\/[^/]+\/storage$/) && req.method === "GET") return vehicleStorageRoute(res, path);
+  if (path.match(/^\/api\/vehicles\/[^/]+\/storage\/items\/[^/]+$/) && req.method === "DELETE") return vehicleStorageItemDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/vehicles\/[^/]+\/storage\/items$/) && req.method === "DELETE") return vehicleStorageItemsDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/vehicles\/[^/]+\/storage\/all-items$/) && req.method === "DELETE") return vehicleStorageAllItemsDeleteRoute(req, res, path);
   if (path.match(/^\/api\/vehicles\/[^/]+\/queued-delete$/) && req.method === "DELETE") return vehicleCancelQueuedDeleteRoute(req, res, path);
   if (path.match(/^\/api\/vehicles\/[^/]+$/) && req.method === "DELETE") return vehicleDeleteRoute(req, res, path);
   if (path === "/api/admin/items/catalog") return json(res, 200, { rows: listCatalogItems(config.repoRoot, { q: url.searchParams.get("q") || "", limit: url.searchParams.get("limit") || 500 }) });
@@ -1626,6 +1721,14 @@ async function handleApi(req, res) {
 }
 
 async function addonBridgeRoute(req, res, path) {
+  // The bridge authorizes against the installed addon's manifest, not the
+  // caller, so a key could install an addon declaring `database: write` and
+  // reach arbitrary SQL. `addons` is write-denied in apiKeyScopes.js; this is
+  // the second lock, so relaxing that cannot silently reopen the path.
+  if (req.authSession?.apiKeyId) {
+    audit(config, req, "addons.bridge", { ok: false, reason: "api-key principal" });
+    return json(res, 403, { error: "API keys cannot use the addon bridge. Use a browser session." });
+  }
   const id = decodeURIComponent(path.split("/").at(-2));
   if (id === EDA_EXCHANGE_BOT_ADDON_ID && edaRetirement.retired) {
     audit(config, req, "addons.bridge", { id, ok: false, reason: "Addon retired; use native Market Bot" });
@@ -1689,7 +1792,7 @@ async function addonBridgeRoute(req, res, path) {
   }
   if (action === "server.hardware.status") {
     const addon = assertInstalledAddonPermission(config, id, "server:status");
-    const result = await hardwareStatusSnapshot();
+    const result = await hardwareStatus();
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, sensorCount: result.temperatures.length, ok: true });
     return json(res, 200, { ok: true, result });
   }
@@ -2552,6 +2655,58 @@ async function recoveryCodesRegenerateRoute(req, res) {
     }
     throw err;
   }
+}
+
+async function apiKeyCreateRoute(req, res) {
+  const body = await readJson(req);
+  const created = await apiKeys.create({
+    name: body.name,
+    scopes: body.scopes,
+    expiresAt: body.expiresAt,
+    rateLimitPerMinute: body.rateLimitPerMinute
+  });
+  audit(config, req, "settings.api-key-create", { id: created.key.id, name: created.key.name, scopes: created.key.scopes });
+  // `secret` is the only time the full key leaves the server. It is not
+  // stored -- only its hash is -- so this response cannot be reproduced.
+  return json(res, 200, { key: created.key, secret: created.secret });
+}
+
+async function apiKeyItemRoute(req, res, path) {
+  // decodeURIComponent throws URIError on a malformed escape (%ZZ), which
+  // surfaced as a 500 from an authenticated admin route rather than the 404
+  // this path already intends for an unknown id.
+  let id;
+  try {
+    id = decodeURIComponent(path.slice("/api/settings/api-keys/".length));
+  } catch {
+    return json(res, 404, { error: "That API key no longer exists." });
+  }
+  if (!id || id.includes("/")) return json(res, 404, { error: "That API key no longer exists." });
+
+  if (req.method === "PUT") {
+    const body = await readJson(req);
+    const patch = {};
+    for (const field of ["name", "scopes", "enabled", "expiresAt", "rateLimitPerMinute"]) {
+      if (body[field] !== undefined) patch[field] = body[field];
+    }
+    const updated = await apiKeys.update(id, patch);
+    if (!updated) return json(res, 404, { error: "That API key no longer exists." });
+    audit(config, req, "settings.api-key-update", { id: updated.id, name: updated.name, scopes: updated.scopes, enabled: updated.enabled });
+    return json(res, 200, { key: updated });
+  }
+
+  if (req.method === "DELETE") {
+    const revoked = await apiKeys.revoke(id);
+    if (!revoked) return json(res, 404, { error: "That API key no longer exists." });
+    audit(config, req, "settings.api-key-revoke", { id: revoked.id, name: revoked.name });
+    return json(res, 200, { ok: true });
+  }
+
+  // No 405 branch: only PUT and DELETE resolve to an action for this prefix
+  // (actions.js), so every other method returns null from actionForRoute and is
+  // refused with 403 by the gate before reaching here. A 405 would be dead code
+  // documenting a contract the dispatcher does not actually implement.
+  return json(res, 404, { error: "That API key no longer exists." });
 }
 
 async function webPortRoute(req, res) {
@@ -4314,6 +4469,92 @@ async function vehiclePermissionsRoute(res, path) {
   }
 }
 
+// One vehicle's cargo hold, read-only -- so no directDbMutation wrapper and
+// no confirmation phrase, same as baseContainerSlotsRoute. Same id guard as
+// vehiclePermissionsRoute above, for the same reason. A schema without the
+// inventory tables comes back as a 200 carrying supported:false rather than
+// an error status, so the overlay's Retry always means something real.
+// repoRoot is passed through only to resolve each item's catalog icon.
+async function vehicleStorageRoute(res, path) {
+  const vehicleId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid vehicle ID" });
+  }
+  try {
+    // deleteSafety rides along the same way baseContainerSlotsRoute carries
+    // its own: it is what lets the overlay disable and explain its delete
+    // controls before the operator clicks. The authoritative refusal still
+    // happens atomically inside the delete transaction.
+    const storage = await duneDb.vehicleStorage(db, vehicleId, { repoRoot: config.repoRoot });
+    return json(res, 200, {
+      ...storage,
+      deleteSafety: await duneDb.vehicleStorageDeleteSafety(db, vehicleId)
+    });
+  } catch (error) {
+    return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Vehicle cargo deletion.
+//
+// Unlike the base container delete family there is no route-level safety
+// pre-check here. The base version's baseContainerDeleteSafety(baseId) call
+// is documented dead code on those routes -- the group always defaults to
+// "storage", so the branch can never fire, and the real check happens
+// atomically downstream. This mirrors the working half of that design without
+// the wart: duneDb.resolveVehicleCargoHold takes the lock and refuses a
+// blocked vehicle inside the transaction, and vehicleStorageDeleteSafety is
+// carried on the READ so the UI can gate ahead of the click.
+//
+// No safety backup either, unlike vehicleDeleteRoute: these are item rows, not
+// a whole vehicle.
+// ---------------------------------------------------------------------------
+
+// Matches bigintParam's contract rather than Number()'ing: an item id past
+// Number.MAX_SAFE_INTEGER silently rounds, and a destructive request that
+// retargets a different row is the worst failure mode available here.
+function validVehicleStorageItemId(itemId) {
+  return /^[1-9][0-9]*$/.test(itemId) && BigInt(itemId) <= 9223372036854775807n;
+}
+
+function parseVehicleStoragePath(path) {
+  const vehicleId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) return null;
+  return vehicleId;
+}
+
+async function vehicleStorageItemDeleteRoute(req, res, path) {
+  const vehicleId = parseVehicleStoragePath(path);
+  const itemId = decodeURIComponent(path.split("/")[6]);
+  if (vehicleId === null || !validVehicleStorageItemId(itemId)) {
+    return json(res, 400, { error: "Invalid vehicle or item ID" });
+  }
+  if (vehicleDeletePending(vehicleId)) return json(res, 409, { error: VEHICLE_DELETE_PENDING_MESSAGE });
+  return directDbMutation(req, res, "vehicles.storage-item-delete", "DELETE ITEM", async (body) => {
+    const count = body?.count === undefined || body?.count === null ? null : Number(body.count);
+    return duneDb.deleteVehicleStorageItem(db, vehicleId, itemId, { count });
+  }, { vehicleId, itemId });
+}
+
+async function vehicleStorageItemsDeleteRoute(req, res, path) {
+  const vehicleId = parseVehicleStoragePath(path);
+  if (vehicleId === null) return json(res, 400, { error: "Invalid vehicle ID" });
+  if (vehicleDeletePending(vehicleId)) return json(res, 409, { error: VEHICLE_DELETE_PENDING_MESSAGE });
+  return directDbMutation(req, res, "vehicles.storage-items-delete", "DELETE ITEMS", async (body) => {
+    return duneDb.deleteMultipleVehicleStorageItems(db, vehicleId, body?.itemIds);
+  }, { vehicleId });
+}
+
+async function vehicleStorageAllItemsDeleteRoute(req, res, path) {
+  const vehicleId = parseVehicleStoragePath(path);
+  if (vehicleId === null) return json(res, 400, { error: "Invalid vehicle ID" });
+  if (vehicleDeletePending(vehicleId)) return json(res, 409, { error: VEHICLE_DELETE_PENDING_MESSAGE });
+  return directDbMutation(req, res, "vehicles.storage-all-items-delete", "DELETE ALL ITEMS", async () => {
+    return duneDb.deleteAllVehicleStorageItems(db, vehicleId);
+  }, { vehicleId });
+}
+
 async function vehiclePermissionCandidatesRoute(res, url) {
   try {
     const rows = await duneDb.vehiclePermissionCandidates(db, {
@@ -5922,6 +6163,33 @@ function readSetupConfigValues() {
   return values;
 }
 
+// One-time, idempotent migration: for each of coriolis_cycle_start_hour and
+// _day, if this deployment's SERVER_REGION has a known regional value and the
+// field has never been explicitly saved, write it once. Deliberately
+// server-side and global-scope-only, not driven by the Maps UI -- an earlier
+// version fired this from a frontend effect keyed off "field still at its
+// schema default", which could not tell "never saved" from "explicitly saved
+// to the default" (looped forever on a Europe deployment, whose region hour
+// equals the default -- coriolis_cycle_start_day's default equals the
+// region value for 3 of 5 regions, so this class of bug is not a one-region
+// edge case here) and pinned whichever scope an admin happened to have open
+// (breaking Global -> Map -> Partition inheritance). Idempotency here is by
+// ini-key presence per field (checked in Python), never by value, so it is
+// safe to call on every startup. Both fields are migrated in one Python
+// invocation/profile write -- see migrate_coriolis_region_fields -- so a
+// startup that needs to migrate both can't leave one written and the other
+// not. Mirrors the fire-and-forget migration pattern already used for
+// initializeDiscordAdapterSchema/ensureExchangeHistory below.
+async function migrateCoriolisRegionFields() {
+  const region = readSetupConfigValues().SERVER_REGION || "";
+  if (!region) return;
+  const result = await runDune(config, buildDuneArgs("userSettingsMigrateCoriolisRegionFields", { region }), { timeoutMs: 8000 });
+  const [status, detail] = String(result.stdout || "").trim().split(":");
+  if (status !== "migrated") return;
+  audit(config, null, "maps.user-settings.auto-migrate", { scope: "global", fields: detail, region });
+  markDeferredRestartPending(config, "Coriolis cycle start settings (region default)");
+}
+
 function readEnvFileValue(key) {
   const file = resolve(config.repoRoot, ".env");
   if (!existsSync(file)) return "";
@@ -6222,6 +6490,14 @@ async function readJson(req) {
 
 function mockCommand(operation) {
   return { operation, stdout: `Mock ${operation} output\n`, stderr: "", exitCode: 0 };
+}
+
+// Best-effort client address, IPv4-mapped IPv6 unwrapped. No X-Forwarded-For
+// handling, matching every other limiter here -- behind a reverse proxy this
+// records the proxy, not the caller. Per-key limits are unaffected: they key
+// on the key id, not on this.
+function remoteIpOf(req) {
+  return (req?.socket?.remoteAddress || "").replace(/^::ffff:/, "") || null;
 }
 
 function loginRateLimitKey(req) {
