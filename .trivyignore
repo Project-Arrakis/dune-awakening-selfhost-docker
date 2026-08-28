@@ -56,6 +56,22 @@ CVE-2026-8458   # curl/libcurl4t64
 CVE-2026-8927   # curl/libcurl4t64
 CVE-2026-9538   # perl-base
 
+# Added 2026-08-28 (issue #580). Published after main last passed this gate
+# (2026-08-27T07:24Z); first failed on a docs-only PR (#579), so the diff is
+# not the cause. Per this file's policy a version bump was checked FIRST and
+# does not exist: trivy reports `Installed Version: 2.8.3-1~deb13u1, Fixed
+# Version: (none)` and the Debian security tracker lists the CVE as open with
+# "urgency: not yet assigned" in every release (bullseye through sid), so no
+# base-image tag can resolve it. libexpat1 is NOT in node:24-trixie-slim
+# itself -- the build log shows it installed by console/api/Dockerfile's
+# apt-get layer as a transitive dependency (libpython3.13-stdlib's pyexpat).
+# Exposure is nil: the CVE is quadratic CPU cost when parsing attacker-supplied
+# XML attributes, and nothing in this image parses XML -- `git grep -iE
+# "expat|xml2js|fast-xml|xmldom|DOMParser|import xml|from xml|xml\.etree"
+# -- console/api/src console/web runtime/scripts` is empty. Re-check on every
+# image rebuild and drop this line when Debian publishes a fixed libexpat1.
+CVE-2026-66046  # libexpat1 -- expat storeAtts() quadratic DoS; no fix in Debian
+
 # Debian 13.6 (trixie) python3.13, added 2026-08-25 alongside issue #489's fix
 # (console/api/Dockerfile now installs python3 explicitly -- see that file's
 # comment for why the console cannot function without it). Per this file's own
