@@ -33,9 +33,11 @@ Use one at the login screen.
 2. Click **"Lost access to your authenticator?"**.
 3. Enter your password and one unused recovery code.
 
-That code is consumed, **every remaining code in the set is invalidated**,
-and you are dropped into a forced re-enrollment: scan a new QR, confirm a
-code, and you are issued a fresh set of 10 codes. Save those too.
+That code is consumed and you are dropped into a forced re-enrollment: scan
+a new QR, confirm a code, and you are issued a fresh set of 10 codes. Save
+those too. **The old authenticator and the remaining old codes stop working
+the moment that re-enrollment is confirmed** — not before. Until you finish,
+the old set is still valid, so do not walk away from the setup screen.
 
 This is deliberate. A recovery code is a one-shot escape hatch that always
 lands you in a re-setup, never in a normal session — so a leaked code sheet
@@ -150,11 +152,14 @@ enroll.
 
 ## A note on rate limiting
 
-Failed login attempts are rate-limited. Behind a reverse proxy or a
-Cloudflare tunnel the limiter currently sees the proxy's address rather than
-each real client's, so repeated failed attempts can lock out everyone
-reaching the console through that proxy for the lockout window, not just the
-person typing. Give it the full window rather than retrying into the block.
+Failed login attempts are rate-limited (8 per address, then a 15-minute
+block). Behind a reverse proxy or a Cloudflare tunnel every visitor arrives
+from the proxy's address, so one person's failed attempts lock out everyone
+reaching the console through that proxy — unless you set
+`CONSOLE_TRUSTED_PROXY_IPS` to the proxy's IP so the limiter keys on the real
+visitor instead (see the upgrade guide, *Running behind a reverse proxy or
+tunnel*). Either way, give a block its full window rather than retrying into
+it.
 
 
 ## See also
