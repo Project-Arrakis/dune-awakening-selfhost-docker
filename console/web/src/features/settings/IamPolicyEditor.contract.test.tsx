@@ -86,4 +86,39 @@ describe("IamPolicyEditor server contracts", () => {
     fireEvent.click(checkboxes[0]); // wildcard-granted: cannot be toggled off by checkbox
     expect(await screen.findByText(/granted by a wildcard rule/i)).toBeTruthy();
   });
+
+  it("action-centric grid: many routes sharing one IAM action render ONE checkbox (unchecking no longer clears siblings)", async () => {
+    // GET /api/server, /status, /health all map to server:read. The old
+    // route-centric grid drew THREE "Read" checkboxes and unchecking one cleared
+    // the others (the reported bug). Action-centric => one "Read" checkbox.
+    const dup = structuredClone(CATALOG);
+    dup.actions = ["GET /api/server", "GET /api/server/status", "GET /api/server/health", "POST /api/server/restart"];
+    dup.actionMap = {
+      "GET /api/server": "server:read",
+      "GET /api/server/status": "server:read",
+      "GET /api/server/health": "server:read",
+      "POST /api/server/restart": "server:restart",
+    };
+    mockApi.mockImplementation((path: string, opts?: RequestInit) => {
+      if (path === "/api/settings/iam/policies" && (!opts || opts.method === undefined)) return Promise.resolve(dup as never);
+      if (path === "/api/settings/iam/policy" && opts?.method === "PUT") return Promise.resolve({ ok: true, policies: JSON.parse(String(opts.body)) } as never);
+      return Promise.reject(new Error("unexpected"));
+    });
+    render(<IamPolicyEditor />);
+    fireEvent.click(await screen.findByText("Moderator")); // moderator allows exactly server:read (exact literal, toggleable)
+
+    // 3 read routes collapse to ONE "Read" checkbox; one "Restart" too.
+    await waitFor(() => expect(screen.getAllByText("Read").length).toBe(1));
+    expect(screen.getAllByText("Restart").length).toBe(1);
+
+    // Unchecking Read removes only server:read; save PUTs moderator without it.
+    const readRow = screen.getByText("Read").closest("label")!;
+    fireEvent.click(readRow.querySelector('input[type="checkbox"]')!);
+    fireEvent.click(screen.getByText("Save moderator policy"));
+    await waitFor(() => expect(mockApi).toHaveBeenCalledWith("/api/settings/iam/policy", expect.objectContaining({ method: "PUT" })));
+    const put = mockApi.mock.calls.find(([p, o]) => p === "/api/settings/iam/policy" && (o as RequestInit)?.method === "PUT")!;
+    const body = JSON.parse(String((put[1] as RequestInit).body));
+    const modActions = body.moderator.statements.flatMap((st: { Action: string[] }) => st.Action);
+    expect(modActions).not.toContain("server:read");
+  });
 });

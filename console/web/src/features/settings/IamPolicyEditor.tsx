@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { resolvedAllowedActions, nsFromAction, iamActionAllowed } from "./iamPolicy";
+import { iamActionAllowed } from "./iamPolicy";
 import { api } from "../../api/client";
 
 interface PolicyStatement {
@@ -30,24 +30,13 @@ function parseStatements(text: string): PolicyStatement[] | null {
   } catch { return null; }
 }
 
-function humanLabel(action: string): string {
-  const afterApi = action.split("/api/")[1];
-  if (!afterApi) return action;
-  const method = action.split(" ")[0];
-  const segments = afterApi.split("/");
-  const tail = segments[segments.length - 1].replace(/-/g, " ");
-
-  if (method === "GET") {
-    if (segments.length === 1) return `View ${segments[0]}`;
-    if (tail === segments[0]) return `View ${tail}`;
-    return `${capitalize(tail)}`;
-  }
-  if (method === "DELETE") return `Delete ${tail}`;
-  if (method === "PUT") return `Update ${tail}`;
-  // POST
-  if (segments.length === 1) return `Manage ${segments[0]}`;
-  const meaningful = segments.slice(1).map(s => s.replace(/-/g, " "));
-  return capitalize(meaningful.join(" "));
+// Human label for an IAM ACTION (e.g. "bases:read" -> "Read",
+// "server:restart-service" -> "Restart Service", "admin:motd:write" ->
+// "Motd Write"). The grid is action-centric: one row per grantable action,
+// not per HTTP route (many routes share one action).
+function actionLabel(action: string): string {
+  const rest = action.includes(":") ? action.slice(action.indexOf(":") + 1) : action;
+  return rest.split(/[:-]/).map(w => (w ? w.charAt(0).toUpperCase() + w.slice(1) : w)).join(" ");
 }
 
 function capitalize(s: string): string {
@@ -103,7 +92,20 @@ export function IamPolicyEditor() {
   };
 
   const statements = useMemo(() => parseStatements(jsonText) || [], [jsonText]);
-  const allowed = useMemo(() => resolvedAllowedActions(statements, catalog?.actionMap || {}), [statements, catalog?.actionMap]);
+  // Which IAM ACTIONS the draft grants (Allow minus Deny), computed over the
+  // distinct actions in the catalog -- not routes, so one action = one checkbox.
+  const allowedActions = useMemo(() => {
+    const allow: string[] = [];
+    const deny: string[] = [];
+    for (const st of statements) for (const a of st.Action) (st.Effect === "Deny" ? deny : allow).push(a);
+    const granted = new Set<string>();
+    for (const action of new Set(Object.values(catalog?.actionMap || {}))) {
+      if (typeof action !== "string") continue;
+      if (iamActionAllowed(action, deny)) continue;
+      if (iamActionAllowed(action, allow)) granted.add(action);
+    }
+    return granted;
+  }, [statements, catalog?.actionMap]);
 
   // A checkbox can only cleanly toggle an EXACT Allow literal. When a permission
   // is granted by a wildcard (e.g. "server:*") or blocked by a Deny, the grid
@@ -119,10 +121,9 @@ export function IamPolicyEditor() {
     return { allowLiterals: al, denyPatterns: dp };
   }, [statements]);
 
-  const lockReason = (action: string): string => {
-    const iamAction = catalog?.actionMap?.[action] || action;
+  const lockReason = (iamAction: string): string => {
     if (iamActionAllowed(iamAction, denyPatterns)) return "Blocked by a Deny rule — edit in the JSON tab.";
-    if (allowed.has(action) && !allowLiterals.has(iamAction)) return "Granted by a wildcard rule — edit in the JSON tab.";
+    if (allowedActions.has(iamAction) && !allowLiterals.has(iamAction)) return "Granted by a wildcard rule — edit in the JSON tab.";
     return "";
   };
 
@@ -138,9 +139,9 @@ export function IamPolicyEditor() {
     const groups: Record<string, string[]> = {};
     for (const ns of namespaceOrder) groups[ns] = [];
     const other: string[] = [];
-    for (const action of new Set(Object.values(catalog.actions))) {
+    for (const action of new Set(Object.values(catalog.actionMap))) {
       if (typeof action !== "string") continue;
-      const ns = nsFromAction(action, catalog.actionMap || {});
+      const ns = action.includes(":") ? action.split(":")[0].toLowerCase() : "other";
       if (groups[ns]) {
         groups[ns].push(action as string);
       } else {
@@ -161,21 +162,19 @@ export function IamPolicyEditor() {
     const result: Record<string, string[]> = {};
     for (const [ns, actions] of Object.entries(groupedActions)) {
       const matching = actions.filter(a =>
-        a.toLowerCase().includes(q) || humanLabel(a).toLowerCase().includes(q)
+        a.toLowerCase().includes(q) || actionLabel(a).toLowerCase().includes(q)
       );
       if (matching.length) result[ns] = matching;
     }
     return result;
   }, [groupedActions, search]);
 
-  const toggleAction = (action: string) => {
+  const toggleAction = (iamAction: string) => {
     const stmts = parseStatements(jsonText) || [];
-    const map = catalog?.actionMap || {};
-    const iamAction = map[action] || action;
     setToggleHint("");
     let updated: PolicyStatement[];
 
-    if (allowed.has(action)) {
+    if (allowedActions.has(iamAction)) {
       // Revoke. A checkbox can only remove an exact Allow literal; a grant that
       // comes from a wildcard ("server:*" or "*") cannot be narrowed here
       // without rewriting the wildcard. Filtering by !== would leave the
@@ -263,11 +262,13 @@ export function IamPolicyEditor() {
     // SAVED, live policy, not this unsaved edit, so a local pass is what a
     // pre-save "what would this allow" preview actually needs (and avoids a
     // round-trip). One row per IAM action, deduped by the actionMap.
-    const allowedRoutes = resolvedAllowedActions(valid, catalog.actionMap || {});
+    const allow: string[] = [];
+    const deny: string[] = [];
+    for (const st of valid) for (const a of st.Action) (st.Effect === "Deny" ? deny : allow).push(a);
     const results: Record<string, boolean> = {};
-    for (const route of catalog.actions) {
-      const label = catalog.actionMap[route] || route;
-      results[label] = allowedRoutes.has(route);
+    for (const action of new Set(Object.values(catalog.actionMap))) {
+      if (typeof action !== "string") continue;
+      results[action] = !iamActionAllowed(action, deny) && iamActionAllowed(action, allow);
     }
     setTestResults(results);
   };
@@ -315,22 +316,22 @@ export function IamPolicyEditor() {
                   <div className="iam-ns-header">
                     <span className="iam-ns-name">{namespaceLabel(ns)}</span>
                     <span className="iam-ns-count">
-                      {actions.filter(a => allowed.has(a)).length}/{actions.length} allowed
+                      {actions.filter(a => allowedActions.has(a)).length}/{actions.length} allowed
                     </span>
                   </div>
                   <div className="iam-ns-actions">
                     {actions.map((action) => {
                       const lock = lockReason(action);
                       return (
-                        <label key={action} className={`iam-perm-row ${allowed.has(action) ? "perm-on" : "perm-off"}${lock ? " perm-locked" : ""}`} title={lock || undefined}>
+                        <label key={action} className={`iam-perm-row ${allowedActions.has(action) ? "perm-on" : "perm-off"}${lock ? " perm-locked" : ""}`} title={lock || undefined}>
                           <input
                             type="checkbox"
-                            checked={allowed.has(action)}
+                            checked={allowedActions.has(action)}
                             onChange={() => toggleAction(action)}
                           />
-                          <span className="iam-perm-label">{humanLabel(action)}</span>
+                          <span className="iam-perm-label">{actionLabel(action)}</span>
                           {lock && <span className="iam-perm-lock" aria-hidden="true">🔒</span>}
-                          <span className="iam-perm-action" title={action}>{action.split("/api/")[1] || action}</span>
+                          <span className="iam-perm-action" title={action}>{action}</span>
                         </label>
                       );
                     })}
