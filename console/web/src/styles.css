@@ -6624,7 +6624,7 @@ button.login-discord-button { border: none; cursor: pointer; font: inherit; font
 .login-discord-button-secondary:hover { background: rgba(88, 101, 242, .12); color: #a9b7f5; }
 /* Discord 2FA option: checkbox + title + helper, cleanly stacked (not bunched). */
 .discord-mfa-option { display: flex; align-items: flex-start; gap: 10px; margin: 10px 0 4px; text-align: left; }
-.discord-mfa-option > input { margin: 3px 0 0; flex: 0 0 auto; }
+.discord-mfa-option > input { width: 16px; height: 16px; margin: 2px 0 0; flex: 0 0 auto; accent-color: var(--accent-strong); cursor: pointer; }
 .discord-mfa-text { display: flex; flex-direction: column; gap: 3px; }
 .discord-mfa-title { font-weight: 600; font-size: .9rem; display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .discord-mfa-tag { font-weight: 500; font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; color: #c6a56e; border: 1px solid #4a3f2c; border-radius: 4px; padding: 1px 6px; }
