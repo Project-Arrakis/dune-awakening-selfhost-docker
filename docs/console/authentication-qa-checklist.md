@@ -19,7 +19,7 @@ finding even when the flow still works — record the exact text you saw.
 
 | Item | Value |
 |---|---|
-| Console URL used in the browser | `https://________________` (must be the URL you normally sign in with; on HTTPS installs a plain `http://host:port` URL will never keep you signed in because the session cookie is `Secure`) |
+| Console URL used in the browser | `https://________________` (must be the URL you normally sign in with; if the install sets `ADMIN_SECURE_COOKIES=1` — recommended behind HTTPS — a plain `http://host:port` URL will never keep you signed in, because the session cookie is `Secure`) |
 | Build under test | commit `________` (from the PR head, e.g. `git rev-parse --short HEAD` on the host) |
 | Admin password | held by tester, **not** written here |
 | Phone with an authenticator app | app name: `________` |
@@ -91,9 +91,9 @@ Run Parts 1 and 2 in order — this is the path every upgrading operator takes. 
 1. Enter the correct password. Sign In.
 
 **Expected**
-- A setup screen appears instead of the console, with a QR code, a
-  *Can't scan? Enter this code manually* link, a 6-digit code field, and
-  *Back to sign in*.
+- A setup screen appears instead of the console, with a QR code, the text
+  secret printed beneath it under *Can't scan? Enter this code manually:*,
+  a 6-digit code field, a **Confirm** button, and *Back to sign in*.
 - Nothing else in the console is reachable (try the browser Back button or
   typing a console URL — you land back on setup or sign-in).
 
@@ -105,8 +105,8 @@ Run Parts 1 and 2 in order — this is the path every upgrading operator takes. 
   codes that change every 30 seconds. Record the entry name: `________`.
 
 ### T06 · Manual entry works (no camera)
-1. Click *Can't scan? Enter this code manually*.
-2. On the phone, add a second entry by typing the shown code (or use a second
+1. Read the text secret shown under *Can't scan? Enter this code manually:*.
+2. On the phone, add a second entry by typing that secret (or use a second
    phone/desktop authenticator).
 
 **Expected**
@@ -114,13 +114,13 @@ Run Parts 1 and 2 in order — this is the path every upgrading operator takes. 
   **same** 6-digit code at the same time.
 
 ### T07 · Wrong confirmation code
-1. Enter a made-up 6-digit code. Continue.
+1. Enter a made-up 6-digit code. **Confirm**.
 
 **Expected**
 - Message: *That code was not accepted. Check your device's clock and enter the current code.* Still on the setup screen; the QR is unchanged.
 
 ### T08 · Correct confirmation → recovery codes, shown once
-1. Enter the code the phone shows now. Continue.
+1. Enter the code the phone shows now. **Confirm**.
 
 **Expected**
 - Screen headed *Save your recovery codes* with **exactly 10** codes and the
@@ -256,8 +256,9 @@ break-glass reset, see T17) and `dune console restart`, so setup runs again.
 
 **Expected**
 - Blocked with a message like *Finish setting up two-factor authentication before using the console.*
-4. Scan the new QR (delete the old entry on the phone first), confirm, save the
-   **new** 10 codes, Done, sign in with password + new-phone code.
+4. Scan the new QR (delete the old entry on the phone first), **Confirm**, save
+   the **new** 10 codes, tick the box, *Continue to sign in*, then sign in with
+   password + new-phone code.
 
 **Expected**
 - Signed in.
