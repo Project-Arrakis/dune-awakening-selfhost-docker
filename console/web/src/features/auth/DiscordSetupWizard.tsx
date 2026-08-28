@@ -156,8 +156,8 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
             <label className="discord-mfa-option" htmlFor="wiz-mfa">
               <input id="wiz-mfa" name="wiz-mfa" type="checkbox" checked={requireMfa} onChange={(e) => setRequireMfa(e.target.checked)} disabled={busy} />
               <span className="discord-mfa-text">
-                <span className="discord-mfa-title">Require two-factor for Owner and Admin <span className="discord-mfa-tag">recommended</span></span>
-                <span className="muted">Uses each person&apos;s own Discord-account 2FA &mdash; not the console password.</span>
+                <span className="discord-mfa-title">Require <strong>Discord</strong> two-factor for Owner and Admin <span className="discord-mfa-tag">recommended</span></span>
+                <span className="muted">Requires each person&apos;s <strong>Discord account</strong> to have two-factor enabled &mdash; it reuses Discord&apos;s own 2FA, and does <strong>not</strong> add a separate code the console asks for (that is the password tier&apos;s console 2FA, a different thing). An Owner or Admin whose Discord account has 2FA off is refused.</span>
               </span>
             </label>
 

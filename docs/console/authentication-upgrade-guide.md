@@ -327,9 +327,13 @@ rotation took effect when it has not.
 3. Your server is chosen for you (only servers you own are offered; if you own
    more than one, pick it).
 4. Type the role IDs — Admin (required), Moderator and Player (optional). Leave
-   **Require two-factor for Owner and Admin** ticked unless you have a reason
-   not to (it uses each person's own Discord-account 2FA, not the console
-   password).
+   **Require Discord two-factor for Owner and Admin** ticked unless you have a
+   reason not to. **This means their Discord *account* must have two-factor
+   enabled — it reuses Discord's own 2FA, not the console's.** It is a *gate*,
+   not a prompt: it does **not** add a separate code the console asks for (that
+   is Tier 3, the password + console-TOTP option, a different mechanism). An
+   Owner or Admin whose Discord account has 2FA turned off is refused sign-in,
+   with a message naming the Discord setting to fix.
 5. Click **Turn on Discord sign-in**. No password again — you already proved
    you are the owner when you started.
 6. On the "done" screen, click **Restart the console now** — the console
