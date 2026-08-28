@@ -28,9 +28,10 @@ function matchPattern(pattern: string, action: string): boolean {
   }
   if (pattern === action) return true;
   if (pattern.includes("*")) {
-    // Same transform as the server (only `*` is special); IAM actions are
-    // lowercase/colon/hyphen, so no other regex metacharacter appears.
-    return new RegExp("^" + pattern.replace(/\*/g, ".*") + "$").test(action);
+    // Same transform as the server's matchAction(): only `*` is special, every
+    // other character is escaped so a stray metacharacter can never throw.
+    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+    return new RegExp("^" + escaped + "$").test(action);
   }
   return false;
 }

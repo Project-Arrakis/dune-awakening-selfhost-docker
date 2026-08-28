@@ -26,6 +26,11 @@ export const DISCORD_OAUTH_AUTHORIZE_URL = "https://discord.com/oauth2/authorize
 export const OAUTH_SCOPES = "identify guilds guilds.members.read";
 export const STATE_TTL_MS = 10 * 60 * 1000;
 export const MAX_PENDING_STATES = 256;
+// A single client (keyed by the caller, normally its address) may hold at most
+// this many fresh, unconsumed states. Past it, that client's own oldest state
+// is evicted -- never anyone else's -- so a /discord/start loop from one
+// address cannot push another user's in-flight sign-in out of the table.
+export const MAX_PENDING_PER_OWNER = 16;
 
 export function oauthError(code, message, statusCode = 400) {
   const error = new Error(message);
@@ -38,7 +43,8 @@ export function oauthError(code, message, statusCode = 400) {
 export function createPendingStateStore({
   now = () => Date.now(),
   ttlMs = STATE_TTL_MS,
-  maxEntries = MAX_PENDING_STATES
+  maxEntries = MAX_PENDING_STATES,
+  maxPerOwner = MAX_PENDING_PER_OWNER
 } = {}) {
   const pending = new Map();
 
@@ -46,7 +52,7 @@ export function createPendingStateStore({
   // fetch identity only, mint nothing, hand the guild list back to the owner
   // session identified by `sessionId`). It travels with the pending state so a
   // login-purpose callback can never be replayed as setup or vice versa.
-  function issue(random = randomBytes, { purpose = "login", sessionId = "" } = {}) {
+  function issue(random = randomBytes, { purpose = "login", sessionId = "", owner = "" } = {}) {
     // Evict used and expired entries before the size check. Without this, an
     // unauthenticated flood of /discord/start requests that never complete a
     // callback fills the table permanently (entries are only marked used /
@@ -56,24 +62,39 @@ export function createPendingStateStore({
     for (const [key, entry] of pending) {
       if (entry.used || cutoff - entry.createdAt > ttlMs) pending.delete(key);
     }
-    if (pending.size >= maxEntries) {
-      // Still full after evicting used/expired means the table is full of FRESH,
-      // not-yet-completed states -- a /discord/start flood that never reaches a
-      // callback. Rather than reject every new sign-in until the TTL ages them
-      // out (the hard DoS this guards against), evict the OLDEST pending state to
-      // make room. Graceful degradation: at worst the single oldest in-flight
-      // attempt must be retried, and a flooder cannot exceed the cap, so its own
-      // oldest states are the ones evicted as it keeps pushing.
+    // Per-owner cap first: a client already holding maxPerOwner fresh states
+    // recycles its own oldest one. This is what stops one address from evicting
+    // anyone else -- the store has no other notion of who asked.
+    const evictOldest = (predicate) => {
       let oldestKey; let oldestAt = Infinity;
       for (const [key, entry] of pending) {
-        if (entry.createdAt < oldestAt) { oldestAt = entry.createdAt; oldestKey = key; }
+        if (predicate(entry) && entry.createdAt < oldestAt) { oldestAt = entry.createdAt; oldestKey = key; }
       }
       if (oldestKey !== undefined) pending.delete(oldestKey);
+      return oldestKey !== undefined;
+    };
+    if (owner) {
+      let held = 0;
+      for (const entry of pending.values()) if (entry.owner === owner) held += 1;
+      if (held >= maxPerOwner) evictOldest((entry) => entry.owner === owner);
+    }
+    if (pending.size >= maxEntries) {
+      // Still full after evicting used/expired means the table is full of FRESH,
+      // not-yet-completed states from many owners. Rather than reject every new
+      // sign-in until the TTL ages them out (the hard DoS this guards against),
+      // evict the oldest state of whichever owner holds the MOST -- a
+      // distributed flood pays with its own states first -- and only fall back
+      // to the globally oldest when every owner holds one.
+      const counts = new Map();
+      for (const entry of pending.values()) counts.set(entry.owner, (counts.get(entry.owner) || 0) + 1);
+      let heaviest = ""; let heaviestCount = 0;
+      for (const [who, count] of counts) if (count > heaviestCount) { heaviestCount = count; heaviest = who; }
+      if (!(heaviestCount > 1 && evictOldest((entry) => entry.owner === heaviest))) evictOldest(() => true);
     }
     const state = random(16).toString("base64url");
     const verifier = random(32).toString("base64url");
     const challenge = createHash("sha256").update(verifier).digest("base64url");
-    pending.set(state, { createdAt: now(), used: false, verifier, challenge, purpose, sessionId });
+    pending.set(state, { createdAt: now(), used: false, verifier, challenge, purpose, sessionId, owner });
     return { state, challenge };
   }
 

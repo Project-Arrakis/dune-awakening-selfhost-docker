@@ -717,3 +717,30 @@ test("Discord sign-in attempts silently (prompt=none) and, when interaction is n
     assert.match((await denied.text()).toLowerCase(), /cancel|admin password/, "loud, actionable error page");
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
+
+// ---- review finding: /start was unmetered (the login limiter only counts
+// failures, which /start never records), so a loop could fill the pending-state
+// table. It is now metered per client. ----
+test("GET /api/auth/discord/start is rate-limited per client after a burst", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-start-rate-"));
+  const console = startConsole(consolePort, discordPort, tempDir);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    let limited = null;
+    for (let i = 0; i < 40; i += 1) {
+      const response = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" });
+      if (response.status === 429) { limited = { at: i, retryAfter: response.headers.get("retry-after") }; break; }
+      assert.equal(response.status, 302, `request ${i} should still redirect`);
+    }
+    assert.ok(limited, "a 40-request burst from one client must hit the per-client /start limit");
+    assert.ok(limited.at >= 10, `the limit must be generous enough for a human (tripped at ${limited.at})`);
+    assert.ok(Number(limited.retryAfter) > 0, "429 must carry retry-after");
+  } finally {
+    await stopProcess(console.child);
+    await closeDiscordServer(discordServer);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});

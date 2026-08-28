@@ -204,3 +204,16 @@ test("the shared api key ceiling stays above the per-key maximum", async () => {
   assert.equal(limiter.record("noisy", MAX_RATE_LIMIT_PER_MINUTE).allowed, false, "the noisy key should hit its own limit");
   assert.equal(limiter.record("victim", 60).allowed, true, "another key was starved by the noisy one");
 });
+
+// ---- review finding: the OAuth callback limiter must not share a global
+// lockout bucket -- anonymous junk callbacks from a few addresses were able to
+// 429 every user's Discord sign-in for 15 minutes. ----
+test("login rate limiter with globalMaxAttempts: Infinity never trips a cross-client lockout", () => {
+  let currentTime = 1000;
+  const limiter = createLoginRateLimiter({ maxAttempts: 8, globalMaxAttempts: Infinity, windowMs: 1000, blockMs: 5000, now: () => currentTime });
+  for (let i = 0; i < 200; i += 1) limiter.recordFailure(`attacker-${i}`);
+  assert.equal(limiter.check("victim").allowed, true, "distinct clients' failures must not lock a fresh client out");
+  // The per-client bucket is untouched by that choice.
+  for (let i = 0; i < 8; i += 1) limiter.recordFailure("victim");
+  assert.equal(limiter.check("victim").allowed, false);
+});
