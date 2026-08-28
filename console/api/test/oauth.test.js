@@ -304,3 +304,12 @@ test("pending state store prunes expired entries so an abandoned /discord/start 
   assert.notEqual(revived, null, "expired, never-consumed entries are evicted, so issuing works again");
   assert.equal(typeof revived.state, "string");
 });
+
+// ---- buildAuthorizeUrl: prompt=none silent attempt (finding: silent re-auth) ----
+
+test("buildAuthorizeUrl adds prompt=none only when asked, for a silent re-auth attempt", () => {
+  const silent = buildAuthorizeUrl({ clientId: "c", redirectUri: "https://x/cb", state: "s", codeChallenge: "ch", prompt: "none" });
+  assert.match(silent, /[?&]prompt=none(&|$)/);
+  const interactive = buildAuthorizeUrl({ clientId: "c", redirectUri: "https://x/cb", state: "s", codeChallenge: "ch" });
+  assert.doesNotMatch(interactive, /prompt=/);
+});

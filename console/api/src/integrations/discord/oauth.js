@@ -262,7 +262,7 @@ export function parseDiscordAllowlist(value) {
   return list.map((item) => String(item || "").trim()).filter((item) => /^\d{17,19}$/.test(item));
 }
 
-export function buildAuthorizeUrl({ clientId, redirectUri, state, codeChallenge }) {
+export function buildAuthorizeUrl({ clientId, redirectUri, state, codeChallenge, prompt }) {
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
@@ -274,6 +274,12 @@ export function buildAuthorizeUrl({ clientId, redirectUri, state, codeChallenge 
     params.set("code_challenge", codeChallenge);
     params.set("code_challenge_method", "S256");
   }
+  // prompt=none asks Discord to complete SILENTLY when the user is already
+  // signed in to Discord and has authorized these scopes (no visible screen).
+  // If it can't, Discord returns ?error=login_required|consent_required|
+  // interaction_required (no code), which the callback retries interactively.
+  // Omitted -> Discord's default (interactive) flow.
+  if (prompt) params.set("prompt", prompt);
   return `${DISCORD_OAUTH_AUTHORIZE_URL}?${params.toString()}`;
 }
 

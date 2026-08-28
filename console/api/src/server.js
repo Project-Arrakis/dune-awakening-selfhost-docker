@@ -988,7 +988,7 @@ async function handleApi(req, res) {
       const pending = oauthPendingStates.issue(undefined, { purpose: "setup", sessionId: ownerSession.id });
       if (!pending) return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
       res.setHeader("Set-Cookie", oauthStateCookie(pending.state));
-      res.writeHead(302, { Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: pending.state, codeChallenge: pending.challenge }) });
+      res.writeHead(302, { Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: pending.state, codeChallenge: pending.challenge, prompt: "none" }) });
       res.end();
       audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true, purpose: "setup" });
       return;
@@ -1016,7 +1016,7 @@ async function handleApi(req, res) {
     }
     const { state, challenge } = pending;
     res.setHeader("Set-Cookie", oauthStateCookie(state));
-    const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state, codeChallenge: challenge });
+    const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state, codeChallenge: challenge, prompt: "none" });
     res.writeHead(302, { Location: authorizeUrl });
     res.end();
     audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true });
@@ -6295,6 +6295,32 @@ async function handleOAuthCallback(req, res) {
     return html(res, 429, oauthErrorPage("Too many sign-in attempts. Please wait a few minutes, then try again."), { "retry-after": String(rate.retryAfterSeconds) });
   }
   const consumed = oauthPendingStates.consume(state, cookieState);
+  // Silent (prompt=none) outcome handling. When Discord cannot satisfy a
+  // prompt=none attempt without user interaction it redirects back with
+  // ?error=login_required|consent_required|interaction_required and NO code --
+  // that is not a failure, it just means "show your UI once". Retry the SAME
+  // flow INTERACTIVELY (no prompt=none), preserving purpose + owner sessionId.
+  // A valid consumed state is required so a third party cannot drive the retry;
+  // the interactive attempt can never itself return these errors, so there is
+  // no loop. Any OTHER error (access_denied, unexpected code) fails LOUDLY.
+  const oauthError = url.searchParams.get("error") || "";
+  if (oauthError && consumed.ok) {
+    if (["login_required", "consent_required", "interaction_required"].includes(oauthError)) {
+      const retry = oauthPendingStates.issue(undefined, { purpose: consumed.purpose, sessionId: consumed.sessionId });
+      if (!retry) return html(res, 429, oauthErrorPage("Too many Discord sign-in sessions in progress. Try again in a moment."));
+      res.setHeader("Set-Cookie", oauthStateCookie(retry.state));
+      audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: `silent_${oauthError}`, retry: "interactive", purpose: consumed.purpose });
+      res.writeHead(302, { Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: retry.state, codeChallenge: retry.challenge }) });
+      res.end();
+      return;
+    }
+    loginRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: `oauth_error_${oauthError}` });
+    const msg = oauthError === "access_denied"
+      ? "Discord sign-in was cancelled. Return to the console and try again, or sign in with the admin password."
+      : `Discord sign-in failed (${oauthError}). Return to the console and try again, or sign in with the admin password.`;
+    return html(res, 403, oauthErrorPage(msg));
+  }
   // A half-configured handoff is refused outright: the operator
   // demonstrably intended handoff-authoritative auth, so silently
   // degrading to the static bootstrap allowlist would reopen the exact

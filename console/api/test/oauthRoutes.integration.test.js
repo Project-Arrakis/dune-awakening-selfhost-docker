@@ -683,3 +683,37 @@ test("guided setup: an owner WHOSE Discord account has 2FA may require it -- fin
     assert.match(env, /^DISCORD_OAUTH_REQUIRE_MFA_TIERS="?owner,admin"?$/m, "an owner with 2FA may require it");
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
+
+test("Discord sign-in attempts silently (prompt=none) and, when interaction is needed, retries LOUDLY interactively; a decline fails loudly", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-silent-"));
+  const console = startConsole(consolePort, discordPort, tempDir);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+
+    // start attempts silently: the authorize redirect carries prompt=none.
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" });
+    assert.equal(start.status, 302);
+    assert.match(start.headers.get("location"), /[?&]prompt=none(&|$)/, "start attempts prompt=none");
+    const state = sessionCookieValue(start.headers.getSetCookie(), "discord_oauth_state");
+
+    // Discord could not complete silently -> ?error=login_required with no code.
+    // The console retries INTERACTIVELY (no prompt=none) with a fresh state cookie.
+    const retry = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/callback?error=login_required&state=${encodeURIComponent(state)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${state}` } });
+    assert.equal(retry.status, 302, "needs-interaction error retries, not errors out");
+    const retryLoc = retry.headers.get("location");
+    assert.match(retryLoc, /oauth2\/authorize/, "retry goes back to Discord");
+    assert.doesNotMatch(retryLoc, /prompt=none/, "retry is interactive");
+    assert.ok(sessionCookieValue(retry.headers.getSetCookie(), "discord_oauth_state"), "retry sets a fresh state cookie");
+
+    // A genuine decline fails LOUDLY (403 readable page), not a silent loop.
+    const start2 = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" });
+    const state2 = sessionCookieValue(start2.headers.getSetCookie(), "discord_oauth_state");
+    const denied = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/callback?error=access_denied&state=${encodeURIComponent(state2)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${state2}` } });
+    assert.equal(denied.status, 403, "an explicit decline is a loud 403");
+    assert.match((await denied.text()).toLowerCase(), /cancel|admin password/, "loud, actionable error page");
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
