@@ -78,7 +78,7 @@ lower tiers per-deployment via the Access Control editor.
 - **moderator** — live moderation only: read everything, broadcast/map-chat,
   and act on individual griefers (kick/ban/teleport). No config, no economy, no
   server lifecycle, nothing destructive.
-- **player** — read-only view of the game world.
+- **player** — a tight read-only self-service view: Home health, Players, Guilds, and the Live Map only (not the broad game-world reads). Own-player/guild scoping is tracked separately (ownership-based access).
 - **observer** — minimal server-status viewer (`server:read`) — "is the server
   up?" A richer read-only ops/audit definition is tracked for revision.
 

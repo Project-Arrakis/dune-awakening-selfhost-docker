@@ -91,7 +91,7 @@ describe("IamPolicyEditor server contracts", () => {
     // GET /api/server, /status, /health all map to server:read. The old
     // route-centric grid drew THREE "Read" checkboxes and unchecking one cleared
     // the others (the reported bug). Action-centric => one "Read" checkbox.
-    const dup = structuredClone(CATALOG);
+    const dup = structuredClone(CATALOG) as { policies: typeof CATALOG.policies; actions: string[]; actionMap: Record<string, string>; namespaces: Record<string, unknown> };
     dup.actions = ["GET /api/server", "GET /api/server/status", "GET /api/server/health", "POST /api/server/restart"];
     dup.actionMap = {
       "GET /api/server": "server:read",

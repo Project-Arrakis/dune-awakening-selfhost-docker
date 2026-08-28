@@ -143,9 +143,34 @@ store over **HTTPS** — so the console must be reached through an HTTPS-termina
 front end (a reverse proxy or tunnel such as nginx, Caddy, or Cloudflare Tunnel)
 for Discord sign-in to work. Over plain HTTP the cookie is dropped and every
 Discord sign-in fails with *"invalid or expired"*. This is independent of
-`ADMIN_SECURE_COOKIES`; password-only sign-in is unaffected. If you run several
-consoles, give each its own Discord application (or rotate the secret per host)
-rather than copying one production Client Secret onto a lower-trust host.
+`ADMIN_SECURE_COOKIES` — and note the shipped console image builds with
+`NODE_ENV=production`, so the console's own session cookie defaults to `Secure`
+too: **password sign-in also expects HTTPS** in a normal deployment (unless you
+deliberately set `ADMIN_SECURE_COOKIES=0`). Discord *additionally* hard-requires
+it regardless of that toggle. If you run several consoles, give each its own
+Discord application (or rotate the secret per host) rather than copying one
+production Client Secret onto a lower-trust host.
+
+**Setting up HTTPS (a real pointer, not just tool names).** The least-effort
+options for this project — the same ones the
+[API keys doc's Transport section](api-keys.md) recommends — are:
+
+- **A reverse proxy with automatic TLS.** Caddy is the least work; a whole
+  Caddyfile can be two lines:
+  ```
+  console.example.org {
+      reverse_proxy 127.0.0.1:8088
+  }
+  ```
+  Then set `DISCORD_OAUTH_REDIRECT_URI=https://console.example.org/api/auth/discord/callback`
+  and register that exact `https://` URL on the Discord app. See also *Running
+  behind a reverse proxy or tunnel* above for the `CONSOLE_TRUSTED_PROXY_IPS`
+  setting you will also want.
+- **A tunnel** — Cloudflare Tunnel (what this project's own live deployment
+  uses) terminates TLS for you and needs no open inbound port.
+- **A private network** — WireGuard or Tailscale — encrypts at the network
+  layer; combine with a local TLS terminator if the browser still needs
+  `https://`.
 
 ## Turning it off again
 
@@ -235,7 +260,7 @@ does **not** change password sign-in — it adds a second button.
   | Owner | **everything** — the only tier that can change Settings, rotate credentials (the Funcom token, passwords), change the server IP, apply updates, restore backups, install addons, run write SQL, or set the economy | the server's owner — automatic |
   | Admin | **operate and moderate** — start/stop/restart the server and its map shards, kick/ban/teleport players, broadcast, take backups, and read everything (including read-only SQL) — but **cannot** change any config, apply updates, restore backups, install addons, run destructive SQL, or touch the economy | the role you map as Admin (required) |
   | Moderator | read everything, and moderate individuals — kick, ban, teleport, broadcast, map chat; no config, no economy | the role you map as Moderator |
-  | Player | read-only views of the game world | the role you map as Player |
+  | Player | read-only: Home health, Players, Guilds, and the Live Map (not bases, vehicles, exchange, etc.) | the role you map as Player |
 
   A person holding several mapped roles gets the **highest** one. One role can
   be mapped to only one level — the console refuses anything else. These
@@ -371,8 +396,8 @@ You can change the role mapping or the two-factor option later under
 ### What people will see
 
 The first time, Discord asks them to authorize the application — it needs to
-read who they are and their roles in your server (nothing else, and it cannot
-post as them). Then they land in the console with the tier their roles give
+read who they are, the servers they're in, and their roles in your server
+(nothing else, and it cannot post as them). Then they land in the console with the tier their roles give
 them. Tabs they may not use are hidden; the server refuses them regardless.
 
 If they are refused, the page tells them why in plain words: not a member of

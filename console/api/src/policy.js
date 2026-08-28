@@ -257,15 +257,22 @@ const DEFAULT_POLICIES = {
     ]
   },
 
-  // PLAYER -- read-only view of the game world (a participant's-eye view).
+  // PLAYER -- a tight read-only self-service view. Only Home (server health),
+  // Players, Guilds, and the Live Map. Deliberately does NOT include the broad
+  // game-world reads (bases/storage/blueprints/vehicles/exchange/landsraad/
+  // sietches/deepdesert) an operator does not want ordinary players browsing.
+  // NOTE: these grants are still tier-wide (players:read = all players); scoping
+  // a player to *their own* player/guild is ownership-based access tracked
+  // separately (#571), as is hiding the tabs a player cannot use (#567).
   player: {
     version: 1,
     tier: "player",
     statements: [
       { Effect: "Allow", Action: [
-        "server:read", "maps:read", "sietches:read", "deepdesert:read",
-        "players:read", "guilds:read", "bases:read", "storage:read",
-        "blueprints:read", "vehicles:read", "exchange:read", "landsraad:read",
+        "server:read",   // Home: performance / readiness / health
+        "players:read",  // Players (own-only scoping -> #571)
+        "guilds:read",   // Guilds (own-only scoping -> #571)
+        "maps:read",     // Live Map
       ]},
     ]
   },

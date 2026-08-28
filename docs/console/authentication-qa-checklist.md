@@ -355,7 +355,7 @@ stat -c %a runtime/generated/console-second-factor.json runtime/generated/web-ad
 
 **Expected**
 - Actions seen for this session include `auth.login`, `auth.2fa.setup`,
-  `auth.2fa.confirm`, `auth.recovery-code-consumed`,
+  `auth.2fa.confirm`, `settings.totp-setup`, `auth.recovery-code-consumed`,
   `settings.recovery-codes-regenerated`, `settings.change-admin-password`.
 - The grep count is **0**. Both files are mode `600`.
 
@@ -467,7 +467,7 @@ have Discord 2FA **off** for T31.
 1. Settings → Discord OAuth: put the **same** role ID in *Admin Role* and *Moderator Role*.
 
 **Expected**
-- An inline message: *Each Discord role can map to only one access level — <id> is mapped to Admin and Moderator. Owner is never a role…*; **Save Discord OAuth** is disabled.
+- An inline message: *Each Discord role can map to only one access level — role <id> is mapped to admin and moderator. Owner is never a role…*; **Save Discord OAuth** is disabled.
 2. *Host:* edit `.env` by hand so `DISCORD_CONSOLE_MODERATOR_ROLE_IDS` equals `DISCORD_CONSOLE_ADMIN_ROLE_IDS`; `dune console restart`. Click **Sign in with Discord**.
 
 **Expected**

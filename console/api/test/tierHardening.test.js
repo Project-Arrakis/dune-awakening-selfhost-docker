@@ -55,6 +55,15 @@ test("observer sees only server status; not players/bases/logs/db", () => {
   for (const a of ["players:read", "bases:read", "logs:read", "database:read"]) assert.equal(can("observer", a), false, a);
 });
 
+// --- Player is a tight read-only self-service set (server/players/guilds/maps) ---
+test("player reads only server health, players, guilds, and the live map", () => {
+  for (const a of ["server:read", "players:read", "guilds:read", "maps:read"]) assert.equal(can("player", a), true, a);
+});
+test("player cannot read the broad game world or write anything", () => {
+  for (const a of ["bases:read", "storage:read", "blueprints:read", "vehicles:read", "exchange:read", "landsraad:read", "sietches:read", "deepdesert:read", "backups:read", "database:read"]) assert.equal(can("player", a), false, `read ${a}`);
+  for (const a of ["players:mutate", "players:kick", "server:restart", "maps:write-config"]) assert.equal(can("player", a), false, `write ${a}`);
+});
+
 // --- Owner keeps the crown jewels ---
 test("owner retains every owner-only action", () => {
   for (const a of ["server:write-credentials", "updates:apply", "backups:restore", "database:mutate", "addons:install", "players:mutate", "settings:write"]) assert.equal(can("owner", a), true, a);

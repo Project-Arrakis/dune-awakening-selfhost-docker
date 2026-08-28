@@ -125,7 +125,7 @@ Check the audit log first, so you know what happened before you change
 anything:
 
 ```bash
-grep -E 'totp-setup|totp-regenerated|recovery-codes-regenerated|second-factor-reset-detected|auth\.2fa|auth\.login' \
+grep -E 'totp-setup|totp-regenerated|recovery-codes-regenerated|recovery-code-consumed|second-factor-reset-detected|auth\.2fa|auth\.login' \
   runtime/generated/web-admin-audit.jsonl | tail -20
 ```
 

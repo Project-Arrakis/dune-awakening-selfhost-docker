@@ -17,6 +17,7 @@ const SNOWFLAKE = /^\d{17,19}$/;
 
 export function DiscordSetupWizard({ onDone, onCancel }: Props) {
   const redirectUri = `${window.location.origin}/api/auth/discord/callback`;
+  const isHttps = typeof window !== "undefined" && window.location.protocol === "https:";
   const [app, setApp] = useState<HostApp | null>(null);       // what the host already has
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [probed, setProbed] = useState(false);                // both probes have resolved
@@ -123,6 +124,8 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
               <li><code>DISCORD_OAUTH_CLIENT_SECRET</code> &mdash; its Client Secret (or a <code>runtime/secrets/discord-oauth-client-secret.txt</code> file, 0600)</li>
               <li><code>DISCORD_OAUTH_REDIRECT_URI</code> &mdash; <code>{redirectUri}</code> <button type="button" className="login-password-toggle" onClick={() => { void navigator.clipboard?.writeText(redirectUri); }}>copy</button>, which must also be in the application&apos;s OAuth2 redirect list</li>
             </ul>
+            {!isHttps && <p className="attention-text"><strong>This page is loaded over HTTP.</strong> Discord sign-in requires <strong>HTTPS</strong>: reach the console through an HTTPS reverse proxy or tunnel and register an <code>https://</code> redirect URI. An <code>http://</code> callback is dropped by the browser, so every sign-in fails with &ldquo;invalid or expired.&rdquo;</p>}
+            <p className="muted"><strong>Discord sign-in requires HTTPS</strong> &mdash; the redirect URI must be <code>https://</code>. See the console sign-in guide for standing up a reverse proxy or tunnel.</p>
             <p className="muted">Tip: use a <strong>dedicated</strong> Discord application for the console, not your bot&apos;s. The application&apos;s <strong>name and icon are what people see on the Discord sign-in screen</strong>, so name it for your server or console and give it an icon &mdash; reusing the bot&apos;s application makes sign-in look like logging into the bot.</p>
             <p className="muted">Once that is done, this becomes a single <strong>Continue with Discord</strong> button &mdash; no IDs to type.</p>
           </>
