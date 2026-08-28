@@ -291,7 +291,16 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
       // discovers it the next time they have lost their device, i.e. precisely
       // when this is their last resort. A fresh install has no watermark, so
       // this still starts at 0 there.
-      await persistAndBumpWatermark(makeState(secretBytes, digests, initialCounter, await loadWatermarkEpoch()));
+      // Seed STRICTLY ABOVE any surviving watermark (W+1), not AT it. A used
+      // factor always advances the watermark to >= 1, so `> 0` distinguishes a
+      // break-glass re-enroll (store deleted, watermark survived) from a genuine
+      // fresh install (no watermark, epoch 0). Seeding at exactly W left the
+      // fresh factor at the SAME epoch as a retained old store file (also W), so
+      // restoring that old file passed the `epoch < watermark` check (W < W is
+      // false) and resurrected its already-spent recovery codes. W+1 puts the
+      // old file strictly behind, so the restore is detected.
+      const seedWatermark = await loadWatermarkEpoch();
+      await persistAndBumpWatermark(makeState(secretBytes, digests, initialCounter, seedWatermark > 0 ? seedWatermark + 1 : 0));
       return { ok: true, codes };
     });
   }
@@ -313,7 +322,12 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
       // enroll() above. `previous` is null when the store was deleted and this
       // is a re-key rather than a rotation, which is exactly when (-1)+1 = 0
       // would put the new state behind a surviving watermark.
-      const epoch = Math.max((previous?.epoch ?? -1) + 1, await loadWatermarkEpoch());
+      // Same break-glass reasoning as enroll(): never land AT or below a
+      // surviving watermark. When `previous` is null (deleted store re-key) and
+      // a watermark survived at W, seed W+1 so a restored old file (<= W) is
+      // detected as a rollback rather than silently accepted at the same epoch.
+      const commitWatermark = await loadWatermarkEpoch();
+      const epoch = Math.max((previous?.epoch ?? -1) + 1, commitWatermark > 0 ? commitWatermark + 1 : 0);
       const { codes, digests } = count ? generateRecoveryCodes(count) : generateRecoveryCodes();
       await persistAndBumpWatermark(makeState(secretBytes, digests, initialCounter, epoch));
       return { ok: true, codes };

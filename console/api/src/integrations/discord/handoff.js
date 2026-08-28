@@ -84,9 +84,15 @@ export function validatePayload(payload) {
   return { ok: true, payload };
 }
 
-export function isFresh(payload, maxAgeMs = MAX_HANDOFF_AGE_MS, now = Date.now) {
+// A small negative tolerance absorbs the bot's clock being slightly AHEAD of
+// the console's. The bot and console run on separate VMs; without it, even a
+// ~100ms forward skew makes every freshly-signed handoff read as age < 0 and
+// therefore "stale", denying ALL Discord sign-ins (the handoff is authoritative)
+// until the clocks resync. maxAgeMs still bounds PAST skew/latency.
+export const HANDOFF_CLOCK_SKEW_MS = 5000;
+export function isFresh(payload, maxAgeMs = MAX_HANDOFF_AGE_MS, now = Date.now, skewMs = HANDOFF_CLOCK_SKEW_MS) {
   const age = now() - payload.ts;
-  return age >= 0 && age < maxAgeMs;
+  return age >= -skewMs && age < maxAgeMs;
 }
 
 // ---- Handoff implementation ----
@@ -111,18 +117,22 @@ function liveHandoff(config) {
     }
 
     let response;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
       response = await fetchImpl(`${botUrl}/resolve-console-tier`, {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify({ userId, guildId: homeGuildId }),
         signal: controller.signal
       });
-      clearTimeout(timer);
     } catch {
       return { tier: "", reason: "unreachable" };
+    } finally {
+      // Always clear -- on the reject path too, or the abort timer lingers ~5s
+      // (a no-op abort on a settled controller) and keeps the event loop alive;
+      // during a bot outage every failed login would leak another dangling timer.
+      clearTimeout(timer);
     }
 
     if (!response.ok) return { tier: "", reason: `http_${response.status}` };

@@ -25,6 +25,9 @@ const CATALOG = {
     "GET /api/server": "server:read",
     "POST /api/settings/admin-password": "settings:change-password",
   },
+  // players:kick is a parameterized-route action: it has NO literal actionMap
+  // key, so it exists only here. #9 regression -- the grid must still show it.
+  allActions: ["server:restart", "server:read", "settings:change-password", "players:kick"],
   namespaces: {},
 };
 
@@ -42,6 +45,14 @@ function mockLoad() {
 
 describe("IamPolicyEditor server contracts", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("#9 renders a checkbox for a parameterized-route action present only in allActions (players:kick)", async () => {
+    mockLoad();
+    render(<IamPolicyEditor />);
+    // players:kick has no actionMap route key; before the fix the grid iterated
+    // only actionMap values and this action never appeared (raw-JSON only).
+    expect(await screen.findByText("players:kick")).toBeTruthy();
+  });
 
   it("#5 save PUTs the whole tier-keyed store, not POST {tier, statements}", async () => {
     mockLoad();
@@ -68,9 +79,10 @@ describe("IamPolicyEditor server contracts", () => {
     render(<IamPolicyEditor />);
     fireEvent.click(await screen.findByText("Test"));
 
-    // admin: server:* -> server:restart + server:read allowed (2); settings:* Deny -> change-password denied (1).
+    // admin: server:* -> server:restart + server:read allowed (2); settings:* Deny -> change-password
+    // denied, and players:kick is neither allowed nor denied so it default-denies too (2 denied).
     expect(await screen.findByText("2 allowed")).toBeTruthy();
-    expect(screen.getByText("1 denied")).toBeTruthy();
+    expect(screen.getByText("2 denied")).toBeTruthy();
     expect(mockApi).not.toHaveBeenCalledWith("/api/settings/iam/policy/test", expect.anything());
   });
 
@@ -91,7 +103,7 @@ describe("IamPolicyEditor server contracts", () => {
     // GET /api/server, /status, /health all map to server:read. The old
     // route-centric grid drew THREE "Read" checkboxes and unchecking one cleared
     // the others (the reported bug). Action-centric => one "Read" checkbox.
-    const dup = structuredClone(CATALOG) as { policies: typeof CATALOG.policies; actions: string[]; actionMap: Record<string, string>; namespaces: Record<string, unknown> };
+    const dup = structuredClone(CATALOG) as { policies: typeof CATALOG.policies; actions: string[]; actionMap: Record<string, string>; allActions: string[]; namespaces: Record<string, unknown> };
     dup.actions = ["GET /api/server", "GET /api/server/status", "GET /api/server/health", "POST /api/server/restart"];
     dup.actionMap = {
       "GET /api/server": "server:read",

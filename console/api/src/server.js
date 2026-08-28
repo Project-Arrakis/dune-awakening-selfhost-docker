@@ -43,7 +43,7 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
-import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions } from "./policy.js";
+import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions } from "./policy.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
@@ -229,6 +229,11 @@ async function requireFreshTier3Proof(req, res, body, { auditUrl, action, actor 
 }
 const qaUpdates = createQaUpdates(config);
 const loginRateLimiter = createLoginRateLimiter();
+// A SEPARATE bucket for the Discord OAuth callback/start: it is reached by
+// unauthenticated third parties (junk state, not-a-member), and must never be
+// able to spend the password-login limiter's shared __global__ budget and lock
+// operators out of the password fallback. Same limits, independent bucket.
+const oauthCallbackRateLimiter = createLoginRateLimiter();
 // Separate bucket for re-proving the Tier 3 credential from an ALREADY
 // AUTHENTICATED session (password rotation, recovery-code regeneration).
 //
@@ -1039,7 +1044,7 @@ async function handleApi(req, res) {
       audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: false, reason: "role_mapping_unsound" });
       return html(res, 403, roleMappingUnsoundPage());
     }
-    const rate = loginRateLimiter.check(loginRateLimitKey(req));
+    const rate = oauthCallbackRateLimiter.check(loginRateLimitKey(req));
     if (!rate.allowed) {
       return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
     }
@@ -1318,6 +1323,12 @@ async function handleApi(req, res) {
       policies: getAllPolicies(),
       actions: Object.keys(ROUTE_ACTIONS).sort(),
       actionMap: ROUTE_ACTIONS,
+      // The COMPLETE IAM action vocabulary, including parameterized-route
+      // actions (players:kick/ban/teleport, bases:delete, vehicles:delete-item)
+      // that live only in the regex/pattern tables and have no literal
+      // ROUTE_ACTIONS key. The action-centric editor iterates this so those
+      // actions get a real checkbox instead of being editable only via raw JSON.
+      allActions: [...allKnownActions()].sort(),
       namespaces: NAMESPACES
     });
   }
@@ -6134,7 +6145,11 @@ async function writeOAuthConfig(req, res) {
     if (error) return json(res, 400, { error });
   }
   const current = readSetupConfigValues();
-  const merged = (key) => body[key] !== undefined ? String(body[key]) : (current[key] || "");
+  // A null field value means "clear this field", not the literal string "null":
+  // validation collapses null -> "" (a valid empty), so the write/merge paths
+  // must do the same or they persist DISCORD_OAUTH_REDIRECT_URI=null (non-empty,
+  // so OAuth reads as configured while every sign-in fails at Discord).
+  const merged = (key) => body[key] !== undefined ? (body[key] == null ? "" : String(body[key])) : (current[key] || "");
   const conflicts = roleTierConflicts({
     admin: parseRoleIdList(merged("DISCORD_CONSOLE_ADMIN_ROLE_IDS")),
     moderator: parseRoleIdList(merged("DISCORD_CONSOLE_MODERATOR_ROLE_IDS")),
@@ -6147,7 +6162,7 @@ async function writeOAuthConfig(req, res) {
   const changes = [];
   for (const key of allowed) {
     if (body[key] === undefined) continue;
-    updateEnvFileValue(key, String(body[key]));
+    updateEnvFileValue(key, body[key] == null ? "" : String(body[key]));
     changes.push(key);
   }
   audit(config, req, "setup.write-oauth-config", { keys: changes });
@@ -6574,7 +6589,7 @@ async function handleOAuthCallback(req, res) {
   const state = url.searchParams.get("state") || "";
   const cookieState = parseCookies(req.headers.cookie || "").get("discord_oauth_state") || "";
   const rateKey = loginRateLimitKey(req);
-  const rate = loginRateLimiter.check(rateKey);
+  const rate = oauthCallbackRateLimiter.check(rateKey);
   if (!rate.allowed) {
     return html(res, 429, oauthErrorPage("Too many sign-in attempts. Please wait a few minutes, then try again."), { "retry-after": String(rate.retryAfterSeconds) });
   }
@@ -6598,7 +6613,7 @@ async function handleOAuthCallback(req, res) {
       res.end();
       return;
     }
-    loginRateLimiter.recordFailure(rateKey);
+    oauthCallbackRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: `oauth_error_${oauthError}` });
     const msg = oauthError === "access_denied"
       ? "Discord sign-in was cancelled. Return to the console and try again, or sign in with the admin password."
@@ -6611,7 +6626,7 @@ async function handleOAuthCallback(req, res) {
   // stale-allowlist fail-open this change removes (L2 audit, Architect
   // finding 2 on ). Password sign-in is unaffected.
   if (handoff.misconfigured) {
-    loginRateLimiter.recordFailure(rateKey);
+    oauthCallbackRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "handoff_misconfigured" });
     return html(res, 403, oauthErrorPage("Discord sign-in is disabled because this console's bot handoff is only partially configured. If you administer this install, check the console logs for the missing value, then either complete or remove the handoff configuration. Sign in with the admin password in the meantime."));
   }
@@ -6619,17 +6634,17 @@ async function handleOAuthCallback(req, res) {
   // bootstrap is not required. Without one, bootstrap is the only
   // possible tier source, so its being disabled is an early deny.
   if (roleMappingUnsound()) {
-    loginRateLimiter.recordFailure(rateKey);
+    oauthCallbackRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "role_mapping_unsound" });
     return html(res, 403, roleMappingUnsoundPage());
   }
   if (!consumed.ok) {
-    loginRateLimiter.recordFailure(rateKey);
+    oauthCallbackRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: consumed.reason });
     return html(res, 400, oauthErrorPage("Discord sign-in could not be completed. The request was invalid or expired — return to the console and start again."));
   }
   if (consumed.ok && consumed.purpose !== "setup" && !discordTierSourceConfigured()) {
-    loginRateLimiter.recordFailure(rateKey);
+    oauthCallbackRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "no_tier_source" });
     return html(res, 403, oauthErrorPage("Discord sign-in is not finished being set up: no Discord server has been chosen, so the console cannot decide what a Discord user may do. If you administer this install, sign in with the admin password and finish Discord setup (choose the server and map an Admin role)."));
   }
@@ -6646,7 +6661,7 @@ async function handleOAuthCallback(req, res) {
     });
     identity = await fetchDiscordIdentity({ accessToken: token.access_token, homeGuildId: config.discordHomeGuildId, apiBaseUrl: config.discordOAuthApiBaseUrl });
   } catch (error) {
-    loginRateLimiter.recordFailure(rateKey);
+    oauthCallbackRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: error.code || "oauth_error" });
     const status = error.statusCode && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 400;
     return html(res, status, oauthErrorPage("Discord sign-in failed. Please try again, or sign in with the admin password."));
@@ -6674,7 +6689,7 @@ async function handleOAuthCallback(req, res) {
   }
   const resolved = await resolveOAuthTier(identity);
   if (!resolved.tier) {
-    loginRateLimiter.recordFailure(rateKey);
+    oauthCallbackRateLimiter.recordFailure(rateKey);
     if (resolved.source === "handoff") {
       // The reason code is recorded for forensics/debugging only; the
       // response deliberately does not distinguish outage from an
@@ -6694,6 +6709,10 @@ async function handleOAuthCallback(req, res) {
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "not_authorized", userId: identity.userId });
     return html(res, 403, oauthErrorPage("Discord sign-in succeeded, but this account is not authorized to sign in to this console. If you believe it should be, contact this server's administrator."));
   }
+  // A successful Discord sign-in relieves this client's OAuth rate-limit
+  // bucket (symmetric with the password-login route), so transient denials
+  // during the flow do not linger against a user who ultimately succeeds.
+  oauthCallbackRateLimiter.recordSuccess(rateKey);
   const session = auth.makeSession({ tier: resolved.tier, userId: identity.userId, username: identity.username, displayName: identity.displayName, guildId: config.discordHomeGuildId });
   res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie()]);
   audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: resolved.tier });

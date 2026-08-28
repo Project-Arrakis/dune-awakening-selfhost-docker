@@ -423,6 +423,17 @@ has no two-factor enabled (and names the Discord setting to fix it).
 - **Running a companion bot with a signed tier handoff?** The bot stays the
   single source of truth; the role fields are ignored while the handoff is
   configured.
+- **Upgrading a *hand-authored* IAM policy?** Player moderation was split into
+  its own permissions: `players:kick`, `players:ban`, and `players:teleport`
+  are now separate from `players:mutate` (give-item / add-currency /
+  reset-progression), so a moderator can police a griefer without touching the
+  economy. The default Admin and Moderator policies already grant all of these,
+  so a normal upgrade needs no action. **But if you wrote a custom policy that
+  granted `players:mutate` to a tier expecting it to cover kick/ban/teleport,
+  add `players:kick`, `players:ban`, and `players:teleport` to that tier after
+  upgrading** — otherwise that tier keeps the economy actions but loses
+  kick/ban/teleport. Open **Settings → Access Control**, pick the tier, and
+  tick those three (or add them to the tier's `Allow` in the raw policy).
 
 ## Questions operators ask
 

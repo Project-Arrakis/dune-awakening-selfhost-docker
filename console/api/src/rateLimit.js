@@ -65,6 +65,19 @@ export function createLoginRateLimiter(options = {}) {
 
   function recordSuccess(key) {
     attempts.delete(key);
+    // A completing success also relieves one unit of the shared distributed-
+    // brute-force bucket. Without this, every metered-but-legitimate step (the
+    // 2FA two-step first POST, an OAuth denial) increments __global__ and
+    // nothing ever decrements it, so normal traffic ratchets the shared bucket
+    // monotonically into a console-wide 15-minute lockout of ALL sign-in. Only
+    // relieved while __global__ is not already in its block window -- once
+    // tripped, the block serves its full penalty.
+    const timestamp = now();
+    const global = attempts.get(globalKey);
+    if (global && !(global.blockedUntil && global.blockedUntil > timestamp)) {
+      if (global.count <= 1) attempts.delete(globalKey);
+      else attempts.set(globalKey, { ...global, count: global.count - 1, blockedUntil: 0 });
+    }
   }
 
   function activeAttempt(key, timestamp) {

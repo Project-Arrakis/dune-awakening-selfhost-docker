@@ -11,7 +11,16 @@ interface PolicyCatalog {
   policies: Record<string, { version: number; tier: string; statements: PolicyStatement[] }>;
   actions: string[];
   actionMap: Record<string, string>;
+  allActions?: string[];
   namespaces: Record<string, string>;
+}
+
+// The complete distinct IAM-action list the grid renders. Prefer the catalog's
+// allActions (which includes parameterized-route actions that have no literal
+// actionMap key); fall back to actionMap values for an older backend.
+function distinctActions(catalog?: PolicyCatalog | null): string[] {
+  if (catalog?.allActions?.length) return catalog.allActions;
+  return [...new Set(Object.values(catalog?.actionMap || {}))].filter((a): a is string => typeof a === "string");
 }
 
 const TIERS = ["owner", "admin", "moderator", "player"] as const;
@@ -99,13 +108,13 @@ export function IamPolicyEditor() {
     const deny: string[] = [];
     for (const st of statements) for (const a of st.Action) (st.Effect === "Deny" ? deny : allow).push(a);
     const granted = new Set<string>();
-    for (const action of new Set(Object.values(catalog?.actionMap || {}))) {
+    for (const action of distinctActions(catalog)) {
       if (typeof action !== "string") continue;
       if (iamActionAllowed(action, deny)) continue;
       if (iamActionAllowed(action, allow)) granted.add(action);
     }
     return granted;
-  }, [statements, catalog?.actionMap]);
+  }, [statements, catalog]);
 
   // A checkbox can only cleanly toggle an EXACT Allow literal. When a permission
   // is granted by a wildcard (e.g. "server:*") or blocked by a Deny, the grid
@@ -139,7 +148,7 @@ export function IamPolicyEditor() {
     const groups: Record<string, string[]> = {};
     for (const ns of namespaceOrder) groups[ns] = [];
     const other: string[] = [];
-    for (const action of new Set(Object.values(catalog.actionMap))) {
+    for (const action of distinctActions(catalog)) {
       if (typeof action !== "string") continue;
       const ns = action.includes(":") ? action.split(":")[0].toLowerCase() : "other";
       if (groups[ns]) {
@@ -266,7 +275,7 @@ export function IamPolicyEditor() {
     const deny: string[] = [];
     for (const st of valid) for (const a of st.Action) (st.Effect === "Deny" ? deny : allow).push(a);
     const results: Record<string, boolean> = {};
-    for (const action of new Set(Object.values(catalog.actionMap))) {
+    for (const action of distinctActions(catalog)) {
       if (typeof action !== "string") continue;
       results[action] = !iamActionAllowed(action, deny) && iamActionAllowed(action, allow);
     }

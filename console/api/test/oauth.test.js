@@ -45,11 +45,19 @@ test("pending state: cookie mismatch rejected and state still consumed", () => {
   assert.equal(retried.reason, "missing_or_reused_state");
 });
 
-test("pending state: full store refuses new issues", () => {
-  const store = createPendingStateStore({ maxEntries: 2 });
-  store.issue();
-  store.issue();
-  assert.equal(store.issue(), null);
+test("pending state: a fresh-state flood evicts the oldest instead of permanently refusing sign-in (LRU DoS mitigation)", () => {
+  const t = [1000];
+  const store = createPendingStateStore({ maxEntries: 2, now: () => t[0] });
+  const first = store.issue().state; t[0] += 10;
+  const second = store.issue().state; t[0] += 10;
+  // The table is full of two fresh, un-consumed states (the flood shape). A new
+  // /discord/start still succeeds -- it evicts the OLDEST rather than 429ing
+  // every future sign-in until the TTL ages the flood out.
+  const third = store.issue(); t[0] += 10;
+  assert.notEqual(third, null, "issue() no longer hard-fails when full of fresh states");
+  // The evicted oldest state can no longer be consumed; the newer one still can.
+  assert.equal(store.consume(first, first).ok, false, "the oldest in-flight state was evicted to make room");
+  assert.equal(store.consume(second, second).ok, true, "newer in-flight states survive");
 });
 
 test("token exchange: missing/invalid code rejected", async () => {
@@ -212,6 +220,21 @@ test("handoff configured: authoritative, roles are NOT consulted", async () => {
   assert.equal(r.tier, ""); assert.equal(r.source, "handoff");
 });
 
+test("handoff path ALSO enforces the console-side 2FA gate (regression: was silently skipped on the handoff branch)", async () => {
+  // The bot returns admin, but the operator requires Discord 2FA for admin and
+  // the user has it disabled -> denied with the would-be tier recorded. Before
+  // the fix, mfaGateReason ran only on the non-handoff branch, so the gate was
+  // silently unenforced for exactly the installs that run a handoff.
+  const handoff = { enabled: true, async resolveTier() { return { tier: "admin" }; } };
+  const resolve = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: ROLES, handoff, requireMfaTiers: ["owner", "admin"] });
+  const denied = await resolve(identity({ mfaEnabled: false }));
+  assert.equal(denied.tier, ""); assert.equal(denied.source, "handoff");
+  assert.equal(denied.reason, "mfa_required"); assert.equal(denied.deniedTier, "admin");
+  // Same user WITH Discord 2FA on is granted the bot's tier.
+  const ok = await resolve(identity({ mfaEnabled: true }));
+  assert.equal(ok.tier, "admin"); assert.equal(ok.reason, "");
+});
+
 test("mfa gate: a gated tier without Discord 2FA is denied, with the tier it would have had recorded for audit", async () => {
   const resolve = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: ROLES, requireMfaTiers: ["owner", "admin"] });
   const r = await resolve(identity({ roleIds: ["400000000000000002"], mfaEnabled: false }));
@@ -293,16 +316,16 @@ test("oauth state cookie is always Secure: SameSite=None mandates Secure, indepe
 
 // ---- pending-state store evicts expired entries (finding #6) ----
 
-test("pending state store prunes expired entries so an abandoned /discord/start flood cannot permanently fill it", () => {
+test("pending state store prunes EXPIRED entries at the top of issue(), independently of the LRU path", () => {
   const now = [1000];
   const store = createPendingStateStore({ now: () => now[0], ttlMs: 10_000, maxEntries: 2 });
   store.issue();
   store.issue();
-  assert.equal(store.issue(), null, "full while both entries are still fresh");
-  now[0] += 10_001; // both age past the TTL, still never consumed
+  now[0] += 10_001; // both age past the TTL, never consumed
   const revived = store.issue();
-  assert.notEqual(revived, null, "expired, never-consumed entries are evicted, so issuing works again");
+  assert.notEqual(revived, null, "expired, never-consumed entries are pruned, so issuing works again");
   assert.equal(typeof revived.state, "string");
+  assert.equal(store.size(), 1, "the two expired states were pruned (not merely LRU-evicted one at a time)");
 });
 
 // ---- buildAuthorizeUrl: prompt=none silent attempt (finding: silent re-auth) ----

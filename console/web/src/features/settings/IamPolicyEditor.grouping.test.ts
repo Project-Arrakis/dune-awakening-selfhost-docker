@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { resolvedAllowedActions, nsFromAction, type PolicyStatement } from "./iamPolicy";
+import { resolvedAllowedActions, nsFromAction, iamActionAllowed, type PolicyStatement } from "./iamPolicy";
 
 // Pins the two rules the IAM editor must mirror from console/api/src/policy.js
 //: explicit Deny beats Allow, and grouping follows the IAM action's
@@ -52,5 +52,28 @@ describe("IAM editor mirrors the server's policy decision", () => {
     expect(nsFromAction(REGENERATE, actionMap)).toBe("settings");
     expect(nsFromAction(REGENERATE)).toBe("auth"); // the old, wrong derivation
     expect(nsFromAction("POST /api/settings/admin-password", actionMap)).toBe("settings");
+  });
+});
+
+describe("iamActionAllowed mirrors the server matchAction wildcard forms", () => {
+  it("matches the `-*` prefix form the server supports (regression: was rendered as un-matched)", () => {
+    // players:reset-* is a documented server pattern. Before the fix the client
+    // matcher ignored `-*`, so a Deny [players:reset-*] never applied in the grid.
+    expect(iamActionAllowed("players:reset-progression", ["players:reset-*"])).toBe(true);
+    expect(iamActionAllowed("players:kick", ["players:reset-*"])).toBe(false);
+  });
+  it("matches an embedded `*` via the same regex transform as the server", () => {
+    expect(iamActionAllowed("bases:delete-item", ["bases:*-item"])).toBe(true);
+    expect(iamActionAllowed("bases:delete", ["bases:*-item"])).toBe(false);
+  });
+  it("matches a bare namespace against `ns:*` (server: action === ns || startsWith(ns+':'))", () => {
+    expect(iamActionAllowed("server", ["server:*"])).toBe(true);
+    expect(iamActionAllowed("server:read", ["server:*"])).toBe(true);
+    expect(iamActionAllowed("servers:read", ["server:*"])).toBe(false);
+  });
+  it("still handles `*`, exact, and non-matches", () => {
+    expect(iamActionAllowed("anything:here", ["*"])).toBe(true);
+    expect(iamActionAllowed("players:read", ["players:read"])).toBe(true);
+    expect(iamActionAllowed("players:read", ["bases:read"])).toBe(false);
   });
 });

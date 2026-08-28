@@ -10,11 +10,34 @@
 
 export type PolicyStatement = { Effect: "Allow" | "Deny"; Action: string[] };
 
+// Mirror of console/api/src/policy.js matchAction, character-for-character, so
+// the builder/Test grid never shows a checkbox state the server would refuse.
+// The earlier version handled only `*`, exact, and a partial `:*`, so a
+// hand-authored Deny using the `-*` prefix form (e.g. `players:reset-*`, which
+// actions.js documents as supported) or an embedded `*` rendered as GRANTED
+// while the server denied it -- inviting an operator to delete the Deny "to fix
+// the checkbox" and complete an escalation the UI invented.
+function matchPattern(pattern: string, action: string): boolean {
+  if (pattern === "*") return true;
+  if (pattern.endsWith(":*")) {
+    const ns = pattern.slice(0, -2);
+    return action === ns || action.startsWith(ns + ":");
+  }
+  if (pattern.endsWith("-*")) {
+    return action.startsWith(pattern.slice(0, -1));
+  }
+  if (pattern === action) return true;
+  if (pattern.includes("*")) {
+    // Same transform as the server (only `*` is special); IAM actions are
+    // lowercase/colon/hyphen, so no other regex metacharacter appears.
+    return new RegExp("^" + pattern.replace(/\*/g, ".*") + "$").test(action);
+  }
+  return false;
+}
+
 export function iamActionAllowed(iamAction: string, patterns: string[]): boolean {
   for (const pattern of patterns) {
-    if (pattern === "*") return true;
-    if (pattern === iamAction) return true;
-    if (pattern.endsWith(":*") && iamAction.startsWith(pattern.slice(0, -1))) return true;
+    if (matchPattern(pattern, iamAction)) return true;
   }
   return false;
 }

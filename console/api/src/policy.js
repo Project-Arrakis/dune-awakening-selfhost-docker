@@ -229,6 +229,8 @@ const DEFAULT_POLICIES = {
         "settings:*",                                     // IAM policies, admin password, port, recovery codes
         "server:write-credentials",                       // Funcom game-server token + server IP change
         "database:write-config", "database:mutate",       // DB password + direct table edits
+        "database:export",                                // full DB dump = whole-database exfiltration
+        "admin:transfer-settings:write",                  // character/server-transfer policy (identity + economy)
         "updates:apply", "updates:fix", "updates:repair", // deploying / altering the running code
         "backups:restore", "backups:import",              // irreversible DB overwrite / untrusted import
         "addons:install", "addons:update",                // third-party code into the console process

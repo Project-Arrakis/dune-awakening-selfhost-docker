@@ -407,6 +407,11 @@ export const REGEX_ACTIONS_BY_METHOD = {
   "POST /api/players/":    "players:mutate",
   "DELETE /api/players/":  "players:mutate",
   "PATCH /api/players/":   "players:mutate",
+  // PUT included for parity with the /api/bases/ bucket: without it a future
+  // PUT /api/players/* route with no explicit entry would fall through to the
+  // method-agnostic REGEX_ACTIONS "/api/players/" -> players:read fallback and
+  // be authorized for every read-holding tier instead of owner-only mutate.
+  "PUT /api/players/":     "players:mutate",
 
   "POST /api/guilds/":     "guilds:mutate",
   "DELETE /api/guilds/":   "guilds:mutate",

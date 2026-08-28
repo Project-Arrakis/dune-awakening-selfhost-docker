@@ -20,6 +20,7 @@ const ADMIN_FORBIDDEN = [
   "setup:write",
   "players:mutate",
   "carepackage:grant", "carepackage:write-config",
+  "admin:transfer-settings:write",
   "exchange:market", "exchange:market-write", "exchange:write-config",
   "maps:write-config",
 ];

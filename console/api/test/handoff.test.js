@@ -54,6 +54,16 @@ test("isFresh: within the window is fresh, beyond it is stale", () => {
   assert.equal(isFresh(goodPayload({ ts: NOW - 31_000 }), 30_000, () => NOW), false);
 });
 
+test("isFresh: a small forward clock skew (bot ahead of console) is tolerated, not treated as stale", () => {
+  // Bot clock ~2s ahead -> ts is in the console's near future (age negative).
+  // Before the fix age >= 0 rejected it, denying every Discord login until the
+  // clocks resynced. The default skew tolerance now accepts it; large forward
+  // skew beyond the tolerance is still rejected.
+  assert.equal(isFresh(goodPayload({ ts: NOW + 2_000 }), 30_000, () => NOW), true);
+  assert.equal(isFresh(goodPayload({ ts: NOW + 2_000 }), 30_000, () => NOW, 5_000), true);
+  assert.equal(isFresh(goodPayload({ ts: NOW + 10_000 }), 30_000, () => NOW, 5_000), false, "skew beyond tolerance is still rejected");
+});
+
 // ---- resolveTier: the authoritative path, one rejection per test ----
 
 function handoff(bodyFor) {

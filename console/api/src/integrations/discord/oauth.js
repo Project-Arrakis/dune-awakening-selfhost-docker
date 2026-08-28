@@ -56,7 +56,20 @@ export function createPendingStateStore({
     for (const [key, entry] of pending) {
       if (entry.used || cutoff - entry.createdAt > ttlMs) pending.delete(key);
     }
-    if (pending.size >= maxEntries) return null;
+    if (pending.size >= maxEntries) {
+      // Still full after evicting used/expired means the table is full of FRESH,
+      // not-yet-completed states -- a /discord/start flood that never reaches a
+      // callback. Rather than reject every new sign-in until the TTL ages them
+      // out (the hard DoS this guards against), evict the OLDEST pending state to
+      // make room. Graceful degradation: at worst the single oldest in-flight
+      // attempt must be retried, and a flooder cannot exceed the cap, so its own
+      // oldest states are the ones evicted as it keeps pushing.
+      let oldestKey; let oldestAt = Infinity;
+      for (const [key, entry] of pending) {
+        if (entry.createdAt < oldestAt) { oldestAt = entry.createdAt; oldestKey = key; }
+      }
+      if (oldestKey !== undefined) pending.delete(oldestKey);
+    }
     const state = random(16).toString("base64url");
     const verifier = random(32).toString("base64url");
     const challenge = createHash("sha256").update(verifier).digest("base64url");
@@ -231,7 +244,17 @@ export function createOAuthTierResolver({ bootstrap = {}, handoff = null, roleTi
     // produce a second, competing answer beside it.
     if (handoff && handoff.enabled) {
       const { tier, reason } = await handoff.resolveTier({ userId, username: identity.username });
-      return { tier, source: "handoff", reason: tier ? "" : (reason || "denied") };
+      if (!tier) return { tier: "", source: "handoff", reason: reason || "denied" };
+      // The bot is authoritative for WHICH tier, but the operator's console-side
+      // 2FA gate (DISCORD_OAUTH_REQUIRE_MFA_TIERS) is a separate policy layered
+      // on top of that tier, not a competing tier source -- so it must apply on
+      // the handoff path too. Otherwise the gate is silently unenforced for
+      // exactly the production installs that run a handoff (the recommended
+      // path), and a user with Discord 2FA disabled is granted owner/admin the
+      // operator meant to deny. identity.mfaEnabled is available here.
+      const mfaReason = mfaGateReason(tier, mfaEnabled, requireMfaTiers);
+      if (mfaReason) return { tier: "", source: "handoff", reason: mfaReason, deniedTier: tier };
+      return { tier, source: "handoff", reason: "" };
     }
 
     const bootstrapTier = resolveBootstrapTier({

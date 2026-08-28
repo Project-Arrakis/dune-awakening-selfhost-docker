@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -383,6 +383,31 @@ test("checkForRollback reports false with no state at all", async () => {
   const { store, dir } = freshStore();
   try {
     assert.deepEqual(await store.checkForRollback(), { detected: false });
+  } finally { cleanup(dir); }
+});
+
+test("break-glass re-enroll seeds strictly above the surviving watermark, so a same-epoch old-file restore is still detected", async () => {
+  // Regression for the seed-AT-watermark rollback-evasion finding. A used factor
+  // reaches epoch W with watermark W; the operator break-glass deletes the store
+  // (watermark survives) and re-enrolls. Seeding the fresh factor AT W left it at
+  // the SAME epoch as a retained copy of the old store file, so restoring that
+  // copy passed `epoch < watermark` (W < W = false) and resurrected its spent
+  // recovery codes. The fresh factor must land at W+1.
+  const { store, filePath, dir } = freshStore();
+  try {
+    await store.commit(SECRET);                       // epoch 0, watermark 0
+    const { codes: oldCodes } = await store.regenerateRecoveryCodes(); // epoch 1, watermark 1
+    const oldFileAtEpoch1 = readFileSync(filePath, "utf8");            // retained "backup"
+
+    unlinkSync(filePath);                             // break-glass: delete the store; watermark survives
+    await store.enroll(SECRET);                        // re-enroll on the absent store -> must seed 2, not 1
+    assert.equal(JSON.parse(readFileSync(filePath, "utf8")).epoch, 2, "fresh factor seeds above the surviving watermark, not at it");
+
+    writeFileSync(filePath, oldFileAtEpoch1, { mode: 0o600 }); // restore the old epoch-1 file
+    assert.deepEqual(await store.checkForRollback(), { detected: true });
+    const result = await store.consumeRecoveryCode(oldCodes[0]);
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "reset_detected", "the resurrected old recovery set is rejected, not honored");
   } finally { cleanup(dir); }
 });
 

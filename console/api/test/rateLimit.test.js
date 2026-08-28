@@ -48,6 +48,24 @@ test("login rate limiter blocks aggregate failures across rotating clients", () 
   assert.equal(limiter.check("client-e").allowed, true);
 });
 
+test("login rate limiter: a completing success relieves the shared __global__ bucket so ordinary traffic never ratchets into a console-wide lockout", () => {
+  let t = 1000;
+  const limiter = createLoginRateLimiter({ maxAttempts: 99, globalMaxAttempts: 3, windowMs: 60000, blockMs: 5000, now: () => t });
+  // Regression for the code-review finding: recordFailure fed __global__ but
+  // recordSuccess never relieved it, so metered-but-legitimate steps (the 2FA
+  // two-step first POST, OAuth denials) accumulated to a 15-minute lockout of
+  // ALL sign-in that nothing cleared. Now each success decrements the bucket.
+  assert.equal(limiter.recordFailure("a").allowed, true); // __global__ 1
+  assert.equal(limiter.recordFailure("b").allowed, true); // __global__ 2
+  limiter.recordSuccess("a");                             // 2 -> 1 (relieved)
+  limiter.recordFailure("d");                             // 1 -> 2
+  limiter.recordSuccess("d");                             // 2 -> 1 (relieved)
+  limiter.recordFailure("e");                             // 1 -> 2
+  assert.equal(limiter.check("z").allowed, true, "interleaved successes keep __global__ under the cap");
+  limiter.recordFailure("f");                             // 2 -> 3 => blocks at the cap
+  assert.equal(limiter.check("z").allowed, false, "the block still trips once genuine failures actually reach the cap");
+});
+
 test("mutation rate limiter blocks repeated authenticated writes and resets after the window", () => {
   let currentTime = 1000;
   const limiter = createMutationRateLimiter({
