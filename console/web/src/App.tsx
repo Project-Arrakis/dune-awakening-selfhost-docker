@@ -940,14 +940,16 @@ export function App() {
         </div>
         {userInfo && (
           <div className="sidebar-user">
-            <span className="sidebar-user-identity">
-              <UserRound size={15} aria-hidden="true" />
+            <div className="sidebar-user-identity">
+              <UserRound size={16} aria-hidden="true" />
               <span className="sidebar-user-name" title={userInfo.username}>{userInfo.username}</span>
+            </div>
+            <div className="sidebar-user-meta">
               <span className={`sidebar-user-tier tier-${userInfo.tier}`}>{userInfo.tier}</span>
-            </span>
-            <button className="sidebar-logout" type="button" onClick={() => { void doLogout(); }} title="Sign out">
-              <LogOut size={14} aria-hidden="true" /><span>Sign out</span>
-            </button>
+              <button className="sidebar-logout" type="button" onClick={() => { void doLogout(); }} title="Sign out">
+                <LogOut size={13} aria-hidden="true" /><span>Sign out</span>
+              </button>
+            </div>
           </div>
         )}
         <nav id="console-navigation" className={`sidebar-nav ${mobileNavOpen ? "mobile-open" : ""}`}>
