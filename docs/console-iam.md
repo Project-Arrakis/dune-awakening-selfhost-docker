@@ -59,7 +59,9 @@ The shipped defaults follow a **governance vs. operation** split, biased
 over-restrictive by design: anything that could compromise, re-deploy, or
 destroy the deployment is owner-only, and a capability added to the catalog
 later defaults to owner-only until an operator grants it. Operators loosen the
-lower tiers per-deployment via the Access Control editor.
+lower tiers per-deployment via the Access Control editor (owner, admin,
+moderator and player; the observer tier is editable only through
+`PUT /api/settings/iam/policy` or the policy file).
 
 - **owner** — everything (`Allow: "*"`). The single root of trust: the only
   tier that can edit IAM policies, rotate credentials (the Funcom game-server
@@ -71,13 +73,17 @@ lower tiers per-deployment via the Access Control editor.
   shards), player moderation (kick/ban/teleport + mass kick), communications
   (broadcast/MOTD/announcements), read-only visibility, read-only SQL, taking
   (not restoring) backups. A Deny block keeps the crown jewels
-  (`server:write-credentials`, `settings:*`, `database:mutate`/`write-config`,
-  `updates:apply/fix/repair`, `backups:restore/import`, `addons:install/update`,
-  `setup:write`, `players:mutate`, and the economy actions) unreachable even if
-  a future edit widens the allow-list.
-- **moderator** — live moderation only: read everything, broadcast/map-chat,
-  and act on individual griefers (kick/ban/teleport). No config, no economy, no
-  server lifecycle, nothing destructive.
+  (`server:write-credentials`, `settings:*`, `database:mutate`/`write-config`/
+  `export`, `admin:transfer-settings:write`, `updates:apply/fix/repair`,
+  `backups:restore/import`, `addons:install/update`, `setup:write`,
+  `players:mutate`, and the economy actions) unreachable even if a future edit
+  widens the allow-list.
+- **moderator** — live moderation only: read the live game world (server
+  status, players, guilds, bases, storage, blueprints, vehicles, exchange,
+  landsraad, sietches, deep desert, maps, logs), broadcast/map-chat, and act on
+  individual griefers (kick/ban/teleport, mass kick). No database, backups,
+  updates, addons, setup, care-package or `admin:*` reads; no config, no
+  economy, no server lifecycle, nothing destructive.
 - **player** — a tight read-only self-service view: Home health, Players, Guilds, and the Live Map only (not the broad game-world reads). Own-player/guild scoping is tracked separately (ownership-based access).
 - **observer** — minimal server-status viewer (`server:read`) — "is the server
   up?" A richer read-only ops/audit definition is tracked for revision.

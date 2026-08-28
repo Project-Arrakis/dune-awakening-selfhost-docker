@@ -215,9 +215,10 @@ attempt leaves a trace to alert on.
 A key holding `updates: read` is pinned to the cached update check — it cannot force the
 uncached path that spawns a subprocess per call. That stays with the browser session.
 
-Like every other limiter in the console, this has no `X-Forwarded-For` awareness. Behind a
-reverse proxy the per-key limits still work correctly, because they key on the key id rather
-than on an address; only the recorded last-used IP is affected.
+This limiter has no `X-Forwarded-For` awareness (unlike the sign-in limiter, which honours
+`CONSOLE_TRUSTED_PROXY_IPS`). Behind a reverse proxy the per-key limits still work correctly,
+because they key on the key id rather than on an address; only the recorded last-used IP and the
+failed-credential bucket see the proxy's address.
 
 ## What the server enforces
 

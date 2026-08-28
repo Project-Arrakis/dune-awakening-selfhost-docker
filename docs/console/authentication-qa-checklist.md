@@ -85,7 +85,9 @@ Run Parts 1 and 2 in order — this is the path every upgrading operator takes. 
 1. Reload the sign-in page.
 
 **Expected**
-- Sign-in page looks the same: one password field, one Sign In button.
+- Sign-in page looks the same: one password field, one Sign In button (plus
+  the secondary **Set up Discord sign-in** button if Discord is not yet
+  configured — unrelated to this feature).
 
 ### T04 · First sign-in lands on setup, not the console
 1. Enter the correct password. Sign In.
@@ -382,7 +384,7 @@ have Discord 2FA **off** for T31.
 1. On the sign-in page click **Set up Discord sign-in**.
 
 **Expected**
-- The password field remains, with *Enter the admin password first — only the console owner can connect Discord.* Nothing goes to Discord yet.
+- The password field remains, with *Enter the admin password above to set up Discord sign-in.* and a *cancel* link. Nothing goes to Discord yet.
 2. Enter the admin password.
 
 **Expected**
@@ -390,7 +392,7 @@ have Discord 2FA **off** for T31.
 3. Click it.
 
 **Expected**
-- Discord's authorization screen names the application and asks for: who you are, your servers, your roles in a server. After **Authorize** you land back on the setup screen **not** signed in to the console as Discord; it shows *Signed in to Discord as <you>*, your server preselected and marked *you own this server*, and *You own <server>, so you are the console Owner.*
+- Discord's authorization screen names the application and asks to authorize it (the `identify`, `guilds` and `guilds.members.read` scopes). After **Authorize** you land back on the setup screen **not** signed in to the console as Discord; it shows *Signed in with Discord as **<you>**.* and, under **Your server**, either *Connecting **<server>**, which you own. That makes you the console **Owner**; everyone else's access comes from the roles below.* (one owned server) or a *Which of your servers* picker listing only servers you own.
 4. Fill **Admin Role** only. Leave the two-factor box ticked (it is about each person's *Discord account* 2FA, not the console password). **Turn on Discord sign-in** — no password prompt.
 
 **Expected**
@@ -427,7 +429,7 @@ have Discord 2FA **off** for T31.
 3. Settings → Discord OAuth.
 
 **Expected**
-- No owner field of any kind — the section says *Owner is the Discord server's owner — automatic, not a role.* Only Admin / Moderator / Player role fields and the two-factor field.
+- No owner field of any kind — the section says *Owner is the Discord server's owner — automatic, not a role.* The fields are the application settings (Client ID, Redirect URI, Client Secret, Discord Server ID) and the Admin / Moderator / Player role fields plus *Require Discord 2FA for*; nothing names an owner.
 
 ### T30 · Demotion takes effect at next sign-in
 1. While A is signed in, remove A's Admin role in Discord. A keeps clicking around.
@@ -453,7 +455,7 @@ have Discord 2FA **off** for T31.
 - Refused: *…not authorized to sign in…* (no mapped role). The server owner still signs in as Owner. Restore the mapping afterwards.
 
 ### T33 · Password path untouched, mixed sessions
-1. With Discord configured, sign in with the password (via *Sign in with password instead*) in one browser and with Discord as a Player in another.
+1. With Discord configured, sign in with the password (via **Use the admin password instead**) in one browser and with Discord as a Player in another.
 
 **Expected**
 - Both work at once. The password session is Owner. Changing the admin password (T14) signs out other **password** sessions and leaves the Discord session alone.

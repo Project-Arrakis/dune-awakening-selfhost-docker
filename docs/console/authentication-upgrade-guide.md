@@ -144,11 +144,11 @@ store over **HTTPS** — so the console must be reached through an HTTPS-termina
 front end (a reverse proxy or tunnel such as nginx, Caddy, or Cloudflare Tunnel)
 for Discord sign-in to work. Over plain HTTP the cookie is dropped and every
 Discord sign-in fails with *"invalid or expired"*. This is independent of
-`ADMIN_SECURE_COOKIES` — and note the shipped console image builds with
-`NODE_ENV=production`, so the console's own session cookie defaults to `Secure`
-too: **password sign-in also expects HTTPS** in a normal deployment (unless you
-deliberately set `ADMIN_SECURE_COOKIES=0`). Discord *additionally* hard-requires
-it regardless of that toggle. If you run several consoles, give each its own
+`ADMIN_SECURE_COOKIES`, which governs the console's *own* session cookie and
+ships **off** (`docker-compose.web.yml` passes `ADMIN_SECURE_COOKIES=0` unless
+you set it). Once the console is behind HTTPS, set `ADMIN_SECURE_COOKIES=1` in
+`.env` so the session cookie is `Secure` as well; Discord's state cookie is
+`Secure` regardless of that toggle. If you run several consoles, give each its own
 Discord application (or rotate the secret per host) rather than copying one
 production Client Secret onto a lower-trust host.
 
@@ -261,7 +261,7 @@ does **not** change password sign-in — it adds a second button.
   |---|---|---|
   | Owner | **everything** — the only tier that can change Settings, rotate credentials (the Funcom token, passwords), change the server IP, apply updates, restore backups, install addons, run write SQL, or set the economy | the server's owner — automatic |
   | Admin | **operate and moderate** — start/stop/restart the server and its map shards, kick/ban/teleport players, broadcast, take backups, and read everything (including read-only SQL) — but **cannot** change any config, apply updates, restore backups, install addons, run destructive SQL, or touch the economy | the role you map as Admin (required) |
-  | Moderator | read everything, and moderate individuals — kick, ban, teleport, broadcast, map chat; no config, no economy | the role you map as Moderator |
+  | Moderator | read the live game world (server, players, guilds, bases, storage, blueprints, vehicles, exchange, landsraad, sietches, deep desert, live map, logs) and moderate individuals — kick, ban, teleport, broadcast, map chat; no database, backups, updates, addons or settings, no config, no economy | the role you map as Moderator |
   | Player | read-only: Home health, Players, Guilds, and the Live Map (not bases, vehicles, exchange, etc.) | the role you map as Player |
 
   A person holding several mapped roles gets the **highest** one. One role can
@@ -353,7 +353,8 @@ rotation took effect when it has not.
    that server makes you the console **Owner**.
 3. Your server is chosen for you (only servers you own are offered; if you own
    more than one, pick it).
-4. Type the role IDs — Admin (required), Moderator and Player (optional). Leave
+4. Type the role IDs — Admin (required), Moderator (optional) and Player
+   (recommended). Leave
    **Require Discord two-factor for Owner and Admin** ticked unless you have a
    reason not to. **This means their Discord *account* must have two-factor
    enabled — it reuses Discord's own 2FA, not the console's.** It is a *gate*,
@@ -434,8 +435,9 @@ has no two-factor enabled (and names the Discord setting to fix it).
   granted `players:mutate` to a tier expecting it to cover kick/ban/teleport,
   add `players:kick`, `players:ban`, and `players:teleport` to that tier after
   upgrading** — otherwise that tier keeps the economy actions but loses
-  kick/ban/teleport. Open **Settings → Access Control**, pick the tier, and
-  tick those three (or add them to the tier's `Allow` in the raw policy).
+  kick/ban/teleport. Open **Access Control** (sidebar, owner only), pick the
+  tier, and tick those three (or add them to the tier's `Allow` in the JSON
+  tab).
 
 ## Questions operators ask
 
