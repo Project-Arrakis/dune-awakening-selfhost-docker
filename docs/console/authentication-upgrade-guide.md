@@ -222,31 +222,72 @@ does **not** change password sign-in — it adds a second button.
   **Its owner will be the console owner — automatically.** Discord has exactly
   one owner per server, and the console takes that as the truth; there is no
   owner setting anywhere.
-- A Discord application: https://discord.com/developers/applications — create a
-  **dedicated one for this console**. Its **name and icon are exactly what
-  everyone sees on the Discord sign-in screen** ("*&lt;name&gt;* wants to access
-  your account"), so name it for your server or console (for example your
-  server's name, or "Dune Docker Console") and give it an icon. **Do not reuse
-  the application your bot uses** — if you do, people signing in see the bot's
-  name and icon and it looks like they are logging into the bot. Copy the app's
-  **Client ID** and a **Client Secret**, and under its **OAuth2** settings add
-  your console's callback as a redirect URI:
-  `https://<your-console-host>/api/auth/discord/callback`. Registering the
-  application is a one-time **deployment** step done in `.env` (below), the same
-  as a bot token — the sign-in flow never asks anyone for it.
+- **A Discord application of your own.** Every console needs its own — you
+  cannot share one across installs (the callback URL is tied to your host and
+  the client secret must stay private to your server). It takes about five
+  minutes; see **Create your Discord application** immediately below.
 - Role IDs from your server, for the access levels below. Turn on Developer
   Mode in Discord (User Settings → Advanced), then right-click a role → **Copy
   Role ID**.
 
   | Console tier | What it can do (default policy) | Comes from |
   |---|---|---|
-  | Owner | everything, including Settings | the server's owner — automatic |
-  | Admin | run the server, players, bases, backups, updates — **not** Settings or the database | the role you map as Admin (required) |
-  | Moderator | read everything, kick, broadcast | the role you map as Moderator |
-  | Player | read-only views | the role you map as Player |
+  | Owner | **everything** — the only tier that can change Settings, rotate credentials (the Funcom token, passwords), change the server IP, apply updates, restore backups, install addons, run write SQL, or set the economy | the server's owner — automatic |
+  | Admin | **operate and moderate** — start/stop/restart the server and its map shards, kick/ban/teleport players, broadcast, take backups, and read everything (including read-only SQL) — but **cannot** change any config, apply updates, restore backups, install addons, run destructive SQL, or touch the economy | the role you map as Admin (required) |
+  | Moderator | read everything, and moderate individuals — kick, ban, teleport, broadcast, map chat; no config, no economy | the role you map as Moderator |
+  | Player | read-only views of the game world | the role you map as Player |
 
   A person holding several mapped roles gets the **highest** one. One role can
-  be mapped to only one level — the console refuses anything else.
+  be mapped to only one level — the console refuses anything else. These
+  defaults are deliberately strict (anything that could break or compromise the
+  server is owner-only); an owner can loosen any tier under **Access Control**
+  (see below).
+
+### Create your Discord application (one-time)
+
+Every console needs its **own** Discord application. It is a five-minute,
+one-time job in the Discord Developer Portal — no bot, no permissions, nothing
+invited to your server:
+
+1. Go to the **[Discord Developer Portal](https://discord.com/developers/applications)**
+   and click **New Application**.
+2. **Name it for your console or server** — for example your server's name, or
+   "Dune Docker Console". This name (and the icon in the next step) is **exactly
+   what everyone sees on the sign-in screen** — "*&lt;name&gt;* wants to access
+   your account". **Do not reuse your bot's application**, or signing in looks
+   like logging into the bot (the bot's name and icon).
+3. Under **General Information**, upload an **App Icon** — it also shows on the
+   sign-in screen.
+4. Open the **OAuth2** tab. Copy the **Client ID** (this one is public). Under
+   **Client Secret**, click **Reset Secret** and copy the value — Discord shows
+   it only once, so keep it safe for the next section.
+5. Still on **OAuth2**, under **Redirects**, click **Add Redirect** and paste
+   your console's callback URL **exactly**:
+
+   ```
+   https://<your-console-host>/api/auth/discord/callback
+   ```
+
+   (The console's setup screen shows you this exact URL with a copy button.)
+   Click **Save Changes**.
+6. Done. You do not add a bot, choose scopes, or invite anything — the console
+   asks Discord for the `identify`, `guilds`, and `guilds.members.read` scopes
+   automatically at sign-in.
+
+You now have the three values the next section needs: the **Client ID**, the
+**Client Secret**, and the **redirect URL** (which must match what you just
+registered). Keep in mind:
+
+- **HTTPS is required** for Discord sign-in — see *Discord sign-in requires
+  HTTPS* above. The redirect URL must be `https://`, reached through a reverse
+  proxy or tunnel; plain HTTP will not work.
+- **One application serves everyone who signs in to this console** — all your
+  admins, moderators, and players go through it; there is no per-person setup
+  and no user limit, and the app does not need Discord "verification" for
+  sign-in.
+- **Rotating the secret later** is easy (Developer Portal → Reset Secret, then
+  update the console and restart) — see *Rotating the Discord client secret*
+  below.
 
 ### Turning it on — the guided setup
 
@@ -312,12 +353,16 @@ You can change the role mapping or the two-factor option later under
   owner field: the owner is always the Discord server's owner.) Changes take a
   `dune console restart` to load.
 - **Access Control** (sidebar, owner only) — edit what each tier is actually
-  allowed to do. The console ships sensible defaults (Admin runs the server but
-  cannot reach Settings or the database; Moderator and Player are read-plus a
-  little), so most operators never need this. When you do want to tune a tier —
-  say, let Admins export the database — this is where you do it, per tier,
-  per action. It is hidden from everyone below owner, because deciding
-  who-can-do-what is an owner's job, not an admin's.
+  allowed to do. The defaults are deliberately **strict**: Admin can operate and
+  moderate but cannot change config, apply updates, install addons, restore
+  backups, run destructive SQL, or touch the economy — anything that could
+  compromise or break the deployment is owner-only, and any capability added in
+  a future update defaults to owner-only until you grant it. Most operators
+  never need to change this. When you *do* want to loosen a tier for how you run
+  your server — say, let your Admins apply game updates or export the database —
+  this is where you grant it, per tier, per action. It is hidden from everyone
+  below owner, because deciding who-can-do-what is an owner's job, not an
+  admin's.
 
 ### What people will see
 
