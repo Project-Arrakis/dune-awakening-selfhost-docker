@@ -9,6 +9,27 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.3.95)
 
+### Changed
+
+- **The layered-auth upstream candidate (#554, branch `tier4-totp-upstream`) was
+  split into two stacked upstream drafts** (issue #575). Tier 3 (password +
+  mandatory TOTP + recovery codes, #407) now lives on its own branch
+  `tier3-upstream` cut from `upstream-main-base` (internal PR #577; upstream
+  target Red-Blink #199); Tier 1 (Discord OAuth sign-in, role→tier, guided
+  setup, IAM editor, RBAC tier hardening) is `tier1-upstream`, exactly one
+  commit on top of it (internal PR #578; upstream draft Red-Blink #200). The
+  split was re-derived rather than cherry-picked: `server.js` had seven Tier-1
+  regions excised, `App.tsx`/`SettingsPanel.tsx`/`.env.example`/
+  `docker-compose.web.yml`/the operator guide and QA checklist were
+  partitioned, and the objective gates were the full API + web suites on each
+  branch (Tier 3: 1937/770; Tier 1: 2077/783) plus an empty
+  `git diff --stat tier4-totp-upstream tier1-upstream` before the fork-artifact
+  strip. The pre-split combined tip `f9c316be` is preserved as
+  `tier4-totp-upstream-combined`. No runtime behaviour changes — this is
+  packaging for upstream review. One low finding surfaced by the Req-10 scanners
+  during the split was filed as #576 (semgrep `detect-non-literal-regexp` on
+  upstream's `matchAction`, mirrored in `iamPolicy.ts`).
+
 ### Fixed
 
 - **The Settings panel's Change Login Password form was a dead end once TOTP
