@@ -56,11 +56,11 @@ export function createAuth(config) {
   // second-factor enrollment session (RFC §4) that the route gate restricts to
   // the enrollment endpoints only. renewable:false keeps the enrollment window
   // fixed so it can't be extended by activity.
-  function makeSession({ tier = "owner", userId = "", username = "", guildId = "", scope = null, ttlMs = DEFAULT_TTL_MS, renewable = true } = {}) {
+  function makeSession({ tier = "owner", userId = "", username = "", displayName = "", guildId = "", scope = null, ttlMs = DEFAULT_TTL_MS, renewable = true } = {}) {
     const id = randomBytes(32).toString("base64url");
     const csrf = randomBytes(24).toString("base64url");
     const expiresAt = now() + ttlMs;
-    const session = { id, csrf, expiresAt, tier, userId, username, guildId, scope, renewable };
+    const session = { id, csrf, expiresAt, tier, userId, username, displayName, guildId, scope, renewable };
     sessions.set(id, session);
     return { ...session, cookie: `${id}.${sign(id)}` };
   }

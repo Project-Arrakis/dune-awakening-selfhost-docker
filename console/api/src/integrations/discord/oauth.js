@@ -166,6 +166,9 @@ export async function fetchDiscordIdentity({ accessToken, homeGuildId = "", apiB
   ]);
   const userId = String(user?.id || "");
   const username = String(user?.username || "");
+  // Discord's newer display name (global_name) is what users recognize
+  // ("Dark Dante"); fall back to the legacy username handle if absent.
+  const displayName = String(user?.global_name || user?.username || "").slice(0, 64);
   if (!/^\d{17,19}$/.test(userId)) {
     throw oauthError("oauth_bad_identity", "Discord identity response is missing a valid user id.", 502);
   }
@@ -195,7 +198,7 @@ export async function fetchDiscordIdentity({ accessToken, homeGuildId = "", apiB
       if (error?.upstreamStatus !== 403 && error?.upstreamStatus !== 404) throw error;
     }
   }
-  return { userId, username, guildIds, guilds: guildList, ownedGuildIds, roleIds, mfaEnabled };
+  return { userId, username, displayName, guildIds, guilds: guildList, ownedGuildIds, roleIds, mfaEnabled };
 }
 
 // ---- Tier decision (Phase 3: signed handoff, authoritative when configured) ----

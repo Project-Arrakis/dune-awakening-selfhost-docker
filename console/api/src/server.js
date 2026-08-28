@@ -986,6 +986,7 @@ async function handleApi(req, res) {
       user: {
         id: session.userId || "local-owner",
         username: session.username || "Admin",
+        displayName: session.displayName || session.username || "Admin",
         tier: session.tier || "owner",
         guildId: session.guildId || ""
       },
@@ -6693,7 +6694,7 @@ async function handleOAuthCallback(req, res) {
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "not_authorized", userId: identity.userId });
     return html(res, 403, oauthErrorPage("Discord sign-in succeeded, but this account is not authorized to sign in to this console. If you believe it should be, contact this server's administrator."));
   }
-  const session = auth.makeSession({ tier: resolved.tier, userId: identity.userId, username: identity.username, guildId: config.discordHomeGuildId });
+  const session = auth.makeSession({ tier: resolved.tier, userId: identity.userId, username: identity.username, displayName: identity.displayName, guildId: config.discordHomeGuildId });
   res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie()]);
   audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: resolved.tier });
   return html(res, 200, oauthReturnPage());

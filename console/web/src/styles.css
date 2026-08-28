@@ -6840,12 +6840,12 @@ button.login-discord-button { border: none; cursor: pointer; font: inherit; font
    style; Sign out is a small secondary ghost button, not a full-width one. */
 .sidebar-user { display: flex; flex-direction: column; gap: 5px; padding: 10px 12px 12px; margin-bottom: 4px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .sidebar-user-identity { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.sidebar-user-identity > svg { flex: 0 0 auto; color: var(--muted); }
-.sidebar-user-name { flex: 1 1 auto; min-width: 0; font-weight: 700; font-size: 14px; color: var(--text-strong); text-transform: capitalize; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sidebar-user-meta { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding-left: 24px; }
-.sidebar-user-tier { font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--muted-warm); }
-.sidebar-user-tier.tier-owner { color: var(--title); }
-.sidebar-logout { border: 0; background: transparent; color: var(--muted); padding: 2px 2px; font-size: 12px; gap: 5px; min-width: 0; }
+.sidebar-user-identity > svg { flex: 0 0 auto; color: #f0c760; }
+.sidebar-user-name { flex: 1 1 auto; min-width: 0; font-weight: 700; font-size: 14px; color: #f0c760; text-transform: capitalize; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-user-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 24px; }
+.sidebar-user-tier { padding: 3px 7px; border: 1px solid rgba(240, 199, 96, .42); border-radius: 999px; background: rgba(240, 199, 96, .08); color: #ffe095; font-size: 11px; font-weight: 700; line-height: 1; text-transform: capitalize; letter-spacing: .02em; }
+.sidebar-user-tier.tier-owner { border-color: rgba(240, 199, 96, .7); color: #ffe9b0; }
+.sidebar-logout { display: inline-flex; align-items: center; border: 0; background: transparent; color: var(--muted); padding: 2px 2px; font-size: 12px; gap: 6px; min-width: 0; }
 .sidebar-logout:hover { color: var(--accent-strong); border-color: transparent; background: transparent; }
 /* --- API Keys (Settings) --------------------------------------------------
    Generic segmented control, same visual spec as .bases-rank-segments. That

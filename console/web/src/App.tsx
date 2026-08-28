@@ -1,5 +1,5 @@
 import { Fragment, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Archive, Bug, Building2, Car, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, LogOut, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, UserRound, Users, X } from "lucide-react";
+import { Archive, Bug, Building2, Car, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, LogOut, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, ShieldCheck, Sparkles, Store, UserRound, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, loginRequest, post, setCsrfToken } from "./api/client";
 import { TotpSetupScreen } from "./features/auth/TotpSetupScreen";
 import { DiscordSetupWizard } from "./features/auth/DiscordSetupWizard";
@@ -384,7 +384,7 @@ export function App() {
   // Settings tab from Discord tiers a 403 would refuse anyway; enforcement
   // stays server-side, and an empty answer (read failed) hides nothing.
   const [allowedActions, setAllowedActions] = useState<string[]>([]);
-  const [userInfo, setUserInfo] = useState<{ username: string; tier: string } | null>(null);
+  const [userInfo, setUserInfo] = useState<{ username: string; displayName: string; tier: string } | null>(null);
   const [tab, setTab] = useActiveTab();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
@@ -435,8 +435,8 @@ export function App() {
   useEffect(() => {
     if (!auth) { setAllowedActions([]); setUserInfo(null); return; }
     let cancelled = false;
-    api<{ user: { id: string; username: string; tier: string; guildId: string }; allowedActions: string[] }>("/api/auth/me")
-      .then((res) => { if (!cancelled) { setAllowedActions(res.allowedActions || []); setUserInfo({ username: res.user.username, tier: res.user.tier }); } })
+    api<{ user: { id: string; username: string; displayName: string; tier: string; guildId: string }; allowedActions: string[] }>("/api/auth/me")
+      .then((res) => { if (!cancelled) { setAllowedActions(res.allowedActions || []); setUserInfo({ username: res.user.username, displayName: res.user.displayName || res.user.username, tier: res.user.tier }); } })
       .catch(() => { /* a failed read leaves the UI ungated; the server still enforces */ });
     return () => { cancelled = true; };
   }, [auth]);
@@ -940,14 +940,14 @@ export function App() {
         </div>
         {userInfo && (
           <div className="sidebar-user">
-            <div className="sidebar-user-identity">
-              <UserRound size={16} aria-hidden="true" />
-              <span className="sidebar-user-name" title={userInfo.username}>{userInfo.username}</span>
-            </div>
+            <span className="sidebar-user-identity">
+              <ShieldCheck size={16} aria-hidden="true" />
+              <span className="sidebar-user-name" title={userInfo.username}>{userInfo.displayName}</span>
+            </span>
             <div className="sidebar-user-meta">
-              <span className={`sidebar-user-tier tier-${userInfo.tier}`}>{userInfo.tier}</span>
-              <button className="sidebar-logout" type="button" onClick={() => { void doLogout(); }} title="Sign out">
-                <LogOut size={13} aria-hidden="true" /><span>Sign out</span>
+              <span className={`sidebar-user-tier tier-${userInfo.tier}`} title={`Console access tier: ${userInfo.tier}`}>{userInfo.tier}</span>
+              <button className="sidebar-logout" type="button" onClick={() => { void doLogout(); }} title="Log out">
+                <LogOut size={14} aria-hidden="true" /><span>Logout</span>
               </button>
             </div>
           </div>
