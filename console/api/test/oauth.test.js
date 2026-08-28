@@ -336,3 +336,33 @@ test("buildAuthorizeUrl adds prompt=none only when asked, for a silent re-auth a
   const interactive = buildAuthorizeUrl({ clientId: "c", redirectUri: "https://x/cb", state: "s", codeChallenge: "ch" });
   assert.doesNotMatch(interactive, /prompt=/);
 });
+
+// ---- review finding: a /discord/start flood from ONE client evicted OTHER
+// users' fresh pending states (the store had no notion of who asked). ----
+test("pending state: one owner's flood recycles only its own states, never another user's", () => {
+  const now = [1_000_000];
+  const store = createPendingStateStore({ now: () => now[0], maxEntries: 32, maxPerOwner: 4 });
+  const victim = store.issue(undefined, { owner: "victim-ip" }).state;
+  now[0] += 1;
+  for (let i = 0; i < 300; i += 1) { store.issue(undefined, { owner: "attacker-ip" }); now[0] += 1; }
+  assert.ok(store.size() <= 5, `attacker held ${store.size() - 1} states, cap is 4`);
+  const result = store.consume(victim, victim, now[0]);
+  assert.equal(result.ok, true, "the victim's earlier state must survive a single-owner flood");
+});
+
+test("pending state: when the table is full, the heaviest owner pays first", () => {
+  const now = [1_000_000];
+  const store = createPendingStateStore({ now: () => now[0], maxEntries: 8, maxPerOwner: 100 });
+  const victim = store.issue(undefined, { owner: "victim-ip" }).state;   // oldest entry overall
+  now[0] += 1;
+  for (let i = 0; i < 7; i += 1) { store.issue(undefined, { owner: "flooder" }); now[0] += 1; }
+  assert.equal(store.size(), 8);
+  store.issue(undefined, { owner: "flooder" }); // full: evicts the flooder's own oldest, not the victim's
+  assert.equal(store.consume(victim, victim, now[0]).ok, true);
+});
+
+test("pending state: anonymous (unowned) issuing still cannot grow past maxEntries", () => {
+  const store = createPendingStateStore({ maxEntries: 4 });
+  for (let i = 0; i < 10; i += 1) store.issue();
+  assert.equal(store.size(), 4);
+});

@@ -133,3 +133,29 @@ describe("IamPolicyEditor server contracts", () => {
     expect(modActions).not.toContain("server:read");
   });
 });
+
+describe("IamPolicyEditor: the Permissions grid is read-only while the JSON tab holds invalid JSON", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("does not replace the draft with a single Allow when a box is clicked over unparseable JSON", async () => {
+    mockLoad();
+    render(<IamPolicyEditor />);
+    fireEvent.click(await screen.findByText("Admin"));
+    fireEvent.click(await screen.findByText("JSON"));
+    const textarea = document.querySelector("textarea.iam-json-textarea") as HTMLTextAreaElement;
+    const broken = '[{"Effect":"Allow","Action":["server:*"]},{"Effect":"Deny","Action":["settings:*"]},]'; // trailing comma
+    fireEvent.change(textarea, { target: { value: broken } });
+    fireEvent.click(screen.getByText("Permissions"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/invalid JSON/i);
+    const boxes = document.querySelectorAll('input[type="checkbox"]') as NodeListOf<HTMLInputElement>;
+    expect(boxes.length).toBeGreaterThan(0);
+    for (const box of boxes) expect(box).toBeDisabled();
+    fireEvent.click(boxes[0]);
+
+    fireEvent.click(screen.getByText("JSON"));
+    const after = document.querySelector("textarea.iam-json-textarea") as HTMLTextAreaElement;
+    expect(after.value).toBe(broken); // the operator's draft -- Deny block included -- is untouched
+    expect(mockApi).not.toHaveBeenCalledWith("/api/settings/iam/policy", expect.objectContaining({ method: "PUT" }));
+  });
+});

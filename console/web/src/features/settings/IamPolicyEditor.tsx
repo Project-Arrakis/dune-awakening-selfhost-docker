@@ -100,7 +100,13 @@ export function IamPolicyEditor() {
     }
   };
 
-  const statements = useMemo(() => parseStatements(jsonText) || [], [jsonText]);
+  // null while the JSON tab holds unparseable text. The grid must then be
+  // read-only: treating an unparseable draft as "no statements" made every box
+  // show unchecked, and one click replaced the operator's whole draft with a
+  // single Allow -- which Save would then persist.
+  const parsedDraft = useMemo(() => parseStatements(jsonText), [jsonText]);
+  const draftInvalid = parsedDraft === null;
+  const statements = useMemo(() => parsedDraft || [], [parsedDraft]);
   // Which IAM ACTIONS the draft grants (Allow minus Deny), computed over the
   // distinct actions in the catalog -- not routes, so one action = one checkbox.
   const allowedActions = useMemo(() => {
@@ -179,7 +185,11 @@ export function IamPolicyEditor() {
   }, [groupedActions, search]);
 
   const toggleAction = (iamAction: string) => {
-    const stmts = parseStatements(jsonText) || [];
+    const stmts = parseStatements(jsonText);
+    if (!stmts) {
+      setToggleHint("The JSON tab contains invalid JSON, so permissions cannot be changed here until it is fixed.");
+      return;
+    }
     setToggleHint("");
     let updated: PolicyStatement[];
 
@@ -315,6 +325,7 @@ export function IamPolicyEditor() {
                 <button className="iam-search-clear" aria-label="Clear search" onClick={() => setSearch("")}>×</button>
               )}
             </div>
+            {draftInvalid && <p className="iam-toggle-hint iam-draft-invalid" role="alert">The JSON tab contains invalid JSON. Fix it there before changing permissions here -- the grid is read-only until it parses.</p>}
             {toggleHint && <p className="iam-toggle-hint" role="status">{toggleHint}</p>}
             <div className="iam-permission-grid">
               {Object.keys(filteredGroups).length === 0 && (
@@ -336,6 +347,7 @@ export function IamPolicyEditor() {
                           <input
                             type="checkbox"
                             checked={allowedActions.has(action)}
+                            disabled={draftInvalid}
                             onChange={() => toggleAction(action)}
                           />
                           <span className="iam-perm-label">{actionLabel(action)}</span>
