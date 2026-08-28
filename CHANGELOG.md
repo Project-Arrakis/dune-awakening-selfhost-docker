@@ -11,6 +11,29 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Changed
 
+- **Tier 1 upstream candidate hardened against an independent review** (issue
+  #575, PR #578 / Red-Blink #202, commit `174f515f`). A `/code-review max`
+  pass on the split diff confirmed 15 findings; the six HIGH ones are fixed
+  with failing-first regression tests: non-owner Discord tiers were trapped in
+  the first-run setup wizard (the app gated on a route those tiers cannot
+  read); an unmetered `/api/auth/discord/start` plus global oldest-first
+  eviction let ~256 anonymous requests evict another user's in-flight OAuth
+  state (now metered per client, states keyed per client, heaviest owner
+  evicted first); the OAuth callback limiter shared the password limiter's
+  global lockout bucket (removed — nothing guessable to protect); the IAM
+  editor's Permissions grid replaced an unparseable JSON draft with a single
+  Allow on the first click (now read-only until the JSON parses);
+  `docker-compose.web.yml` never passed `DISCORD_OAUTH_CLIENT_SECRET`,
+  `DISCORD_BOT_HANDOFF_SECRET` or `DISCORD_OAUTH_BASE_URL` into the container
+  (passed through, and a test pins every documented `DISCORD_*`/`CONSOLE_*`
+  key); and a policy action pattern with a regex metacharacter could be saved
+  and then 500 every request for that tier (patterns restricted to
+  `[a-z0-9:*-]` at save, `matchAction` escapes everything but `*`). The
+  API-key upgrade note (keys with `server: write` / `backups: write` lose the
+  credential and whole-database routes) was added to `docs/console/api-keys.md`.
+  Eight medium/low findings were filed as #582–#589; register + STRIDE table
+  on #575.
+
 - **The layered-auth upstream candidate (#554, branch `tier4-totp-upstream`) was
   split into two stacked upstream drafts** (issue #575). Tier 3 (password +
   mandatory TOTP + recovery codes, #407) now lives on its own branch
