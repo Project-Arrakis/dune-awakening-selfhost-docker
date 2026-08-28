@@ -151,6 +151,53 @@ test("manual backups use the server name and trigger no market-bot prune", () =>
   }
 });
 
+test("vehicle delete backups are named and pruned without touching other safety backups", () => {
+  const { fixture, bin, backupDir } = makeFixture();
+  try {
+    seedBackup(backupDir, "dune-db-all_maps-20260801-000001.backup", "vehicle-delete");
+    seedBackup(backupDir, "dune-db-all_maps-20260802-000001.backup", "vehicle-delete");
+    seedBackup(backupDir, "dune-db-all_maps-20260803-000001.backup", "vehicle-delete");
+    seedBackup(backupDir, "dune-db-all_maps-20200102-000001.backup", "restore-safety");
+    seedBackup(backupDir, "dune-db-all_maps-20200101-000001.backup", "manual");
+
+    const result = runDb(fixture, bin, ["backup"], { DB_BACKUP_ORIGIN: "vehicle-delete", DUNE_VEHICLE_DELETE_BACKUP_KEEP: "3" });
+    assert.equal(result.status, 0, `backup must succeed (stderr: ${result.stderr})`);
+
+    const names = backupNames(backupDir);
+    const created = names.find((name) => /^kovalt-test-server-vehicle-delete-\d{8}-\d{6}\.backup$/.test(name));
+    assert.ok(created, "vehicle delete backup includes its origin in the filename");
+    assert.ok(!names.includes("dune-db-all_maps-20260801-000001.backup"), "oldest vehicle delete backup is pruned");
+    assert.ok(names.includes("dune-db-all_maps-20260802-000001.backup"));
+    assert.ok(names.includes("dune-db-all_maps-20260803-000001.backup"));
+    assert.ok(names.includes("dune-db-all_maps-20200101-000001.backup"), "manual backup is untouched");
+    assert.ok(names.includes("dune-db-all_maps-20200102-000001.backup"), "other safety backups are untouched");
+    assert.match(result.stdout, /Pruned 1 Vehicle Delete backup\(s\); the newest 3 are kept\./);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("one database command deletes several selected backups and their sidecars", () => {
+  const { fixture, bin, backupDir } = makeFixture();
+  try {
+    const first = "dune-db-all_maps-20260801-000001.backup";
+    const second = "dune-db-all_maps-20260802-000001.backup";
+    const kept = "dune-db-all_maps-20260803-000001.backup";
+    seedBackup(backupDir, first, "manual");
+    seedBackup(backupDir, second, "vehicle-delete");
+    seedBackup(backupDir, kept, "automatic");
+
+    const result = runDb(fixture, bin, ["delete", first, second], { DUNE_DB_ASSUME_YES: "1" });
+    assert.equal(result.status, 0, `selected delete must succeed (stderr: ${result.stderr})`);
+    assert.deepEqual(backupNames(backupDir), [kept]);
+    assert.equal(existsSync(join(backupDir, `${first}.yaml`)), false);
+    assert.equal(existsSync(join(backupDir, `${second}.yaml`)), false);
+    assert.match(result.stdout, /Deleted 2 selected database backup\(s\)\./);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test("prune keeps the newest five by embedded timestamp across labeled and legacy names", () => {
   const { fixture, bin, backupDir } = makeFixture();
   try {
@@ -196,4 +243,6 @@ test("the documented retention override is forwarded into the console container"
   const envExample = readFileSync(resolve(repoRoot, ".env.example"), "utf8");
   assert.match(compose, /^\s+DUNE_MARKET_BOT_BACKUP_KEEP:\s+"\$\{DUNE_MARKET_BOT_BACKUP_KEEP:-5\}"$/m);
   assert.match(envExample, /^DUNE_MARKET_BOT_BACKUP_KEEP=5$/m);
+  assert.match(compose, /^\s+DUNE_VEHICLE_DELETE_BACKUP_KEEP:\s+"\$\{DUNE_VEHICLE_DELETE_BACKUP_KEEP:-10\}"$/m);
+  assert.match(envExample, /^DUNE_VEHICLE_DELETE_BACKUP_KEEP=10$/m);
 });

@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { formatChatBodyMessage, isValidHexFlsId, isValidWhisperIdentity, listReadyRabbitQueues, publishCarePackageWhisper } from "../rmq.js";
 import { ensureMessageOfTheDayPersona, MESSAGE_OF_THE_DAY_PERSONA } from "../carePackage.js";
 import { redact } from "../redact.js";
+import { renderPlayerMessageTemplate } from "./messageTemplate.js";
 
 const DEFAULT_MESSAGE_OF_THE_DAY = {
   enabled: false,
@@ -171,7 +172,7 @@ export function normalizeSettings(input = {}) {
 }
 
 export function renderMessageOfTheDay(template, playerName) {
-  return formatChatBodyMessage(String(template || "").replaceAll("{playerName}", String(playerName || "Player")));
+  return renderPlayerMessageTemplate(template, playerName);
 }
 
 export function messageOfTheDayDeliveryPlan(settings, players, state = EMPTY_STATE) {

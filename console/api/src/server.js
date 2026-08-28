@@ -131,7 +131,13 @@ const tasks = new TaskManager(config, {
     flushWater: flushQueuedWaterRefills,
     flushDeletes: flushQueuedBaseDeletes,
     flushChildAccess: flushQueuedBaseChildAccess,
-    flushVehicleDeletes: flushQueuedVehicleDeletes
+    // A background probe may have sampled the map immediately before the stop.
+    // Wait for it, then perform a fresh pass while the map is positively down.
+    // The task hook runs only after the requested map servers have positively
+    // stopped. At that point an explicit admin delete may safely remove even
+    // a stale Travel/backup/recovery row; the background poller remains
+    // conservative and leaves those states queued while maps may be live.
+    flushVehicleDeletes: () => flushQueuedVehicleDeletes({ forceFresh: true, allowBlockedStates: true })
   })
 });
 let db = createDb(config);
@@ -151,7 +157,7 @@ let baseDeleteFlushRunning = false;
 // Same reasoning as generatorRefillFlushRunning, for the base permission queue.
 let baseChildAccessFlushRunning = false;
 // Same reasoning as baseDeleteFlushRunning, for the vehicle pending-delete queue.
-let vehicleDeleteFlushRunning = false;
+let vehicleDeleteFlushPromise = null;
 let messageOfTheDayAutoRunning = false;
 let messageOfTheDayAutoLastRun = 0;
 let messageOfTheDayAutoNextAllowedRun = 0;
@@ -388,11 +394,14 @@ async function flushQueuedBaseDeletes() {
 }
 
 // Same guard reasoning as flushQueuedBaseDeletes, for the vehicle queue.
-async function flushQueuedVehicleDeletes() {
-  if (vehicleDeleteFlushRunning) return { flushed: [] };
-  vehicleDeleteFlushRunning = true;
-  try {
+async function flushQueuedVehicleDeletes({ forceFresh = false, allowBlockedStates = false } = {}) {
+  if (vehicleDeleteFlushPromise) {
+    const inFlight = await vehicleDeleteFlushPromise;
+    if (!forceFresh) return inFlight;
+  }
+  const current = (async () => {
     const result = await duneDb.flushVehicleDeletes(db, config.repoRoot, {
+      allowBlockedStates,
       onBeforeApply: config.mockMode
         ? undefined
         : () => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "vehicle-delete" } })
@@ -402,8 +411,12 @@ async function flushQueuedVehicleDeletes() {
       audit(config, null, "vehicles.flush-queued-delete-backup-failed", { error: result.error, pending: result.pending });
     }
     return result;
+  })();
+  vehicleDeleteFlushPromise = current;
+  try {
+    return await current;
   } finally {
-    vehicleDeleteFlushRunning = false;
+    if (vehicleDeleteFlushPromise === current) vehicleDeleteFlushPromise = null;
   }
 }
 
@@ -750,6 +763,10 @@ async function handleApi(req, res) {
   if (path === "/api/backups/auto") return backupAutoStatusRoute(res);
   if (path === "/api/backups/create" && req.method === "POST") return task(req, res, "backup", "backupCreate", {});
   if (path === "/api/backups/delete-all" && req.method === "POST") return task(req, res, "backup", "backupDeleteAll", {});
+  if (path === "/api/backups/delete-selected" && req.method === "POST") {
+    const body = await readJson(req);
+    return task(req, res, "backup", "backupDeleteSelected", { backups: body.backups });
+  }
   if (path === "/api/backups/restore" && req.method === "POST") {
     const body = await readJson(req);
     return task(req, res, "backup", "backupRestore", { backup: body.backup, identityMode: body.identityMode });
