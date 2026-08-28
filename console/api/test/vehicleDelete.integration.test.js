@@ -233,6 +233,18 @@ for (const state of ["Travel", "VehicleBackup", "VehicleRecovery"]) {
   });
 }
 
+for (const state of ["Travel", "VehicleBackup", "VehicleRecovery"]) {
+  test(`real PostgreSQL: an explicit map-down delete allows a vehicle in ${state} state`, async (t) => {
+    await withDatabase(t, async (pool) => {
+      await pool.query("insert into dune.actor_state (actor_id, state) values ($1, $2)", [VEHICLE_ID, state]);
+      const db = pgTransactionalDb(pool);
+      const result = await deleteVehicleCompletely(db, VEHICLE_ID, { allowBlockedState: true });
+      assert.equal(result.ok, true);
+      assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
+    });
+  });
+}
+
 for (const state of ["Default", "AbortedAuthorityTransfer", "BaseBackup"]) {
   test(`real PostgreSQL: deleteVehicleCompletely allows a vehicle in ${state} state`, async (t) => {
     await withDatabase(t, async (pool) => {
@@ -336,6 +348,44 @@ test("real PostgreSQL: flush applies a delete once its partition is confirmed do
       assert.deepEqual(result.flushed.map((entry) => ({ vehicleId: entry.vehicleId, ok: entry.ok })), [{ vehicleId: VEHICLE_ID, ok: true }]);
       assert.equal(result.pending, 0);
       assert.deepEqual(listQueuedVehicleDeletes(repoRoot), []);
+      assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
+    });
+  });
+});
+
+test("real PostgreSQL: background flush retains a Travel-state vehicle without burning attempts", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', null)");
+      await pool.query("insert into dune.actor_state (actor_id, state) values ($1, 'Travel')", [VEHICLE_ID]);
+      queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
+
+      const db = pgTransactionalDb(pool);
+      for (let round = 0; round < 4; round += 1) {
+        const result = await flushVehicleDeletes(db, repoRoot, { now: () => 1_000_000 + round * 120_000 });
+        assert.equal(result.flushed[0].ok, false);
+        assert.equal(result.flushed[0].attempts, 0);
+        assert.equal(result.flushed[0].dropped, false);
+      }
+      assert.equal(listQueuedVehicleDeletes(repoRoot)[0].attempts, 0);
+      assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
+    });
+  });
+});
+
+test("real PostgreSQL: explicit map-down flush deletes a Travel-state vehicle", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', null)");
+      await pool.query("insert into dune.actor_state (actor_id, state) values ($1, 'Travel')", [VEHICLE_ID]);
+      queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
+
+      const db = pgTransactionalDb(pool);
+      const result = await flushVehicleDeletes(db, repoRoot, { allowBlockedStates: true });
+      assert.equal(result.flushed[0].ok, true);
+      assert.equal(result.pending, 0);
       assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
     });
   });

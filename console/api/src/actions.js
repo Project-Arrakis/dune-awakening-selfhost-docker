@@ -112,6 +112,7 @@ export const ROUTE_ACTIONS = {
   "POST /api/backups/restore":                 "backups:restore",
   "POST /api/backups/auto":                    "backups:write-config",
   "POST /api/backups/delete-all":              "backups:delete",
+  "POST /api/backups/delete-selected":         "backups:delete",
   "POST /api/backups/import-external":         "backups:import",
 
   // --- Database ---

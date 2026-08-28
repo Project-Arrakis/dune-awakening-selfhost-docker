@@ -804,7 +804,10 @@ test("player portal snapshot bases report generatorUnstockedCount and generatorA
       ]
     }]
   };
-  const result = await playerPortalSnapshots(db, [accountHash], {}, [], marketSnapshot, { sietchNames: { "2": "Sietch Custom" } });
+  const result = await playerPortalSnapshots(db, [accountHash], {}, [], marketSnapshot, {
+    sietchNames: { "2": "Sietch Custom" },
+    serverInfo: { messageOfTheDay: { enabled: true, title: "Welcome", message: "Welcome {playerName}!" } }
+  });
 
   assert.equal(result.length, 1, "should return one result");
   assert.equal(result[0].found, true, "account should be found");
@@ -831,6 +834,7 @@ test("player portal snapshot bases report generatorUnstockedCount and generatorA
   assert.deepEqual(result[0].data.overview.homeSietch, { name: "Sietch Custom", partitionId: 2, dimensionIndex: 1 });
   assert.equal(result[0].data.specializations.unspentSkillPoints, 0);
   assert.equal(Object.hasOwn(result[0].data.specializations, "unspentPoints"), false, "portal payload must not misname skill points as generic specialization points");
+  assert.equal(result[0].data.serverInfo.messageOfTheDay.message, "Welcome Test Player!");
 });
 
 test("player portal prefers custom vehicle names and ignores internal labels", async () => {
