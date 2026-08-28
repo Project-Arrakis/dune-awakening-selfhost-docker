@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createLoginRateLimiter, createMutationRateLimiter, createApiKeyRateLimiter } from "../src/rateLimit.js";
+import { createLoginRateLimiter, createMutationRateLimiter, resolveClientIp, createApiKeyRateLimiter } from "../src/rateLimit.js";
 
 test("login rate limiter blocks repeated failures and resets after success", () => {
   let currentTime = 1000;
@@ -48,6 +48,24 @@ test("login rate limiter blocks aggregate failures across rotating clients", () 
   assert.equal(limiter.check("client-e").allowed, true);
 });
 
+test("login rate limiter: a completing success relieves the shared __global__ bucket so ordinary traffic never ratchets into a console-wide lockout", () => {
+  let t = 1000;
+  const limiter = createLoginRateLimiter({ maxAttempts: 99, globalMaxAttempts: 3, windowMs: 60000, blockMs: 5000, now: () => t });
+  // Regression for the code-review finding: recordFailure fed __global__ but
+  // recordSuccess never relieved it, so metered-but-legitimate steps (the 2FA
+  // two-step first POST, OAuth denials) accumulated to a 15-minute lockout of
+  // ALL sign-in that nothing cleared. Now each success decrements the bucket.
+  assert.equal(limiter.recordFailure("a").allowed, true); // __global__ 1
+  assert.equal(limiter.recordFailure("b").allowed, true); // __global__ 2
+  limiter.recordSuccess("a");                             // 2 -> 1 (relieved)
+  limiter.recordFailure("d");                             // 1 -> 2
+  limiter.recordSuccess("d");                             // 2 -> 1 (relieved)
+  limiter.recordFailure("e");                             // 1 -> 2
+  assert.equal(limiter.check("z").allowed, true, "interleaved successes keep __global__ under the cap");
+  limiter.recordFailure("f");                             // 2 -> 3 => blocks at the cap
+  assert.equal(limiter.check("z").allowed, false, "the block still trips once genuine failures actually reach the cap");
+});
+
 test("mutation rate limiter blocks repeated authenticated writes and resets after the window", () => {
   let currentTime = 1000;
   const limiter = createMutationRateLimiter({
@@ -87,6 +105,38 @@ test("mutation rate limiter applies a global cap across rotating write scopes", 
 
   currentTime += 1001;
   assert.equal(limiter.check("session-a:players.give-item").allowed, true);
+});
+
+// ---- resolveClientIp: X-Forwarded-For handling (review finding) ----
+
+function fakeReq(remoteAddress, forwardedFor) {
+  const headers = {};
+  if (forwardedFor !== undefined) headers["x-forwarded-for"] = forwardedFor;
+  return { socket: { remoteAddress }, headers };
+}
+
+test("resolveClientIp: no trusted proxies -> always the socket peer, header ignored", () => {
+  assert.equal(resolveClientIp(fakeReq("203.0.113.5", "1.2.3.4"), []), "203.0.113.5");
+});
+
+test("resolveClientIp: peer NOT in the trusted list -> header ignored (negative test)", () => {
+  assert.equal(resolveClientIp(fakeReq("203.0.113.5", "1.2.3.4"), ["10.0.0.1"]), "203.0.113.5");
+});
+
+test("resolveClientIp: trusted appending proxy -> the RIGHTMOST entry, never the client-controlled leftmost", () => {
+  // nginx's proxy_add_x_forwarded_for turns a spoofed leftmost into
+  // "evil, <realpeer>": trusting [0] would key the limiter on the attacker's
+  // chosen value (bypass) or a victim's IP (lockout). The rightmost is the one
+  // the trusted proxy itself appended.
+  assert.equal(resolveClientIp(fakeReq("10.0.0.1", "1.1.1.1, 203.0.113.9"), ["10.0.0.1"]), "203.0.113.9");
+});
+
+test("resolveClientIp: trusted proxy, single forwarded entry -> that entry", () => {
+  assert.equal(resolveClientIp(fakeReq("10.0.0.1", "203.0.113.9"), ["10.0.0.1"]), "203.0.113.9");
+});
+
+test("resolveClientIp: trusted proxy, no forwarded header -> falls back to the socket peer", () => {
+  assert.equal(resolveClientIp(fakeReq("10.0.0.1", undefined), ["10.0.0.1"]), "10.0.0.1");
 });
 
 test("api key rate limiter grants exactly the configured number of requests", () => {
