@@ -92,6 +92,15 @@ test("full enrollment: password login -> enroll -> TOTP login, with replay rejec
     const enrollCsrf = body1.csrfToken;
     assert.ok(enrollCookie && enrollCsrf);
 
+    // 1b. /api/auth/state tells a reloaded page this is an enrollment session,
+    //     not a signed-in one (review finding: the client rendered a console of
+    //     403s otherwise).
+    const state1 = await api(port, "/api/auth/state", { method: "GET", cookie: enrollCookie });
+    assert.equal(state1.status, 200);
+    const stateBody = await state1.json();
+    assert.equal(stateBody.authenticated, true);
+    assert.equal(stateBody.scope, "enroll", "/api/auth/state must expose the enrollment scope");
+
     // 2. The enrollment session is restricted -- a normal API is denied.
     const blocked = await api(port, "/api/auth/characters", { method: "GET", cookie: enrollCookie });
     assert.equal(blocked.status, 403);

@@ -121,11 +121,19 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
   return data as T;
 }
 
+// The two enrollment routes answer a REJECTED CODE with 401 ("That code was
+// not accepted..."), not a lost session -- their session loss is a 403 with a
+// "sign in again" message. Treating that 401 as expiry tore the setup screen
+// down on the first mistyped code, regenerated the secret on the next login,
+// and made the 3-strike clock-skew hint unreachable.
+const ENROLLMENT_ROUTES = new Set(["/api/auth/2fa/setup", "/api/auth/2fa/confirm"]);
+
 function isSessionAuthFailure(status: number, message: string, path = "") {
   // A rejected login is not an expired session. Preserve the API's specific
   // error so the sign-in form reports an incorrect password accurately.
   if (path === "/api/auth/login") return false;
-  return status === 401 || (status === 403 && /authentication required|csrf token|session expired|login session/i.test(message));
+  if (status === 401) return !ENROLLMENT_ROUTES.has(path);
+  return status === 403 && /authentication required|csrf token|session expired|login session|sign in to begin/i.test(message);
 }
 
 function announceSessionExpired() {
