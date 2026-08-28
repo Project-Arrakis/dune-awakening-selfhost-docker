@@ -6,7 +6,7 @@ import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, read
 import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig, publicConfig, parseAllowedIps, resolvePorts } from "./config.js";
 import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders } from "./auth.js";
-import { createLoginRateLimiter, createMutationRateLimiter, createApiKeyRateLimiter } from "./rateLimit.js";
+import { createLoginRateLimiter, createMutationRateLimiter, resolveClientIp, createApiKeyRateLimiter } from "./rateLimit.js";
 import { createApiKeyStore, GLOBAL_RATE_LIMIT_PER_MINUTE } from "./apiKeys.js";
 import { scopeCatalog } from "./apiKeyScopes.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
@@ -16,6 +16,8 @@ import { buildDuneArgs, isDynamicServerService, isReadOnlySql, parseVehicleList,
 import { createDb, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
+import { createSecondFactorStore } from "./auth/secondFactorStore.js";
+import { generateTotpSecret, provisioningUri, provisioningQrDataUri, verifyTotpMatch } from "./auth/totp.js";
 import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
@@ -38,7 +40,7 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { actionForRoute, ROUTE_ACTIONS } from "./actions.js";
-import { evaluate, loadPolicies, getAllPolicies, setPolicies } from "./policy.js";
+import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions } from "./policy.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
@@ -92,8 +94,152 @@ try {
 }
 loadPolicies(config.repoRoot);
 const auth = createAuth(config);
+// One second-factor store instance for the process (the store enforces this;
+// constructing a second one for the same file would defeat serialization).
+const secondFactor = createSecondFactorStore({ filePath: config.secondFactorFile });
+const nowSeconds = () => Math.floor(Date.now() / 1000);
+// Restricted second-factor setup scopes (RFC §4 enrollment, §2.3 recovery
+// re-setup). They differ only in how /2fa/confirm persists (enroll = if-absent,
+// resetup = overwrite an existing factor whose device was lost).
+const SETUP_SCOPES = new Set(["enroll", "resetup"]);
+// Routes a restricted setup-scope session may reach (allowlist guard below).
+//
+// DO NOT add a route here just because it is under /api/auth/2fa/. Not
+// every 2fa route is an enrollment route: /2fa/recovery-codes/regenerate is
+// deliberately absent, because a re-setup session must not be able to mint a
+// fresh code set and stop there without completing re-enrollment. Adding an
+// entry here EXEMPTS that path from the setup-scope 403 below -- it never
+// tightens anything.
+const ENROLL_ALLOWED = new Set([
+  "/api/auth/2fa/setup",
+  "/api/auth/2fa/confirm",
+  "/api/auth/logout",
+  "/api/auth/me",
+]);
+
+// Fail-closed responder for a second-factor store error on the login path.
+// Distinguishes a NEWER-version file (deploy rollback: the state is GOOD -- the
+// operator must upgrade, NOT delete) from genuine corruption, so the 503 text
+// can never instruct an operator to destroy valid 2FA state (store 's
+// SecondFactorVersionError exists precisely for this).
+export function secondFactorFailureReason(err) {
+  return err?.name === "SecondFactorVersionError" ? "second_factor_version" : "second_factor_unavailable";
+}
+
+// `action` is parameterised: this was hardcoded to "auth.login", which
+// is why both credential routes hand-rolled their own copy of the ternary AND
+// dropped the version-specific guidance below -- sending an operator whose
+// state is GOOD off to "the sign-in page's error" to find the do-not-delete
+// warning.
+function secondFactorUnavailable(res, loginUrl, req, err, action = "auth.login", detail = {}) {
+  audit(config, loginUrl, action, { ok: false, ...detail, reason: secondFactorFailureReason(err) });
+  if (err?.name === "SecondFactorVersionError") {
+    return json(res, 503, { error: "This console's two-factor state was written by a NEWER console version. Do not delete runtime/generated/console-second-factor.json -- upgrade the console instead, then sign in again." });
+  }
+  return json(res, 503, { error: "Two-factor state on this console is unreadable, so sign-in is blocked. An operator with server access must inspect runtime/generated/console-second-factor.json -- restore it from backup, or remove it to re-enroll a fresh authenticator on the next password sign-in." });
+}
+// Fresh proof of the Tier 3 credential from an ALREADY AUTHENTICATED session.
+//
+// This preamble -- limiter key, throttle check, password compare, second-factor
+// probe, TOTP verify, metered failure on every refusal and recordSuccess
+// exactly once -- was written three times: the login route (its origin),
+// adminPasswordRoute, and recoveryCodesRegenerateRoute. Each copy
+// independently repeated the metering discipline, so a future fix to it had to
+// land in three places or one route would silently stop throttling. The
+// operator-facing strings travelled with it and could drift apart on a surface
+// where the same person hits both controls from one page.
+//
+// `requireEnrolled` is the one genuine difference between the two callers and
+// is therefore a parameter rather than something smoothed over: password
+// rotation skips TOTP entirely when no factor exists (there is nothing to
+// prove yet), while recovery-code regeneration has nothing to regenerate and
+// must refuse.
+//
+// Returns { ok: true } when the caller may proceed. On refusal it has ALREADY
+// audited and responded -- the caller must return immediately.
+async function requireFreshTier3Proof(req, res, body, { auditUrl, action, actor = {}, requireEnrolled }) {
+  const deny = (status, payload, reason, headers) => {
+    audit(config, auditUrl, action, { ok: false, ...actor, reason });
+    json(res, status, payload, headers || {});
+    return { ok: false };
+  };
+  const rateKey = loginRateLimitKey(req);
+  const rate = credentialProofRateLimiter.check(rateKey);
+  if (!rate.allowed) {
+    return deny(429, { error: "Too many attempts. Please wait a few minutes, then try again." }, "rate_limited", { "retry-after": String(rate.retryAfterSeconds) });
+  }
+  if (!auth.passwordMatches(body.currentPassword)) {
+    credentialProofRateLimiter.recordFailure(rateKey);
+    return deny(400, { error: "Current password is incorrect." }, "bad_password");
+  }
+  if (!config.consoleTotpEnabled) {
+    credentialProofRateLimiter.recordSuccess(rateKey);
+    return { ok: true, rateKey };
+  }
+  let configured;
+  try {
+    configured = await secondFactor.isConfigured();
+  } catch (err) {
+    credentialProofRateLimiter.recordFailure(rateKey);
+    secondFactorUnavailable(res, auditUrl, req, err, action, actor);
+    return { ok: false };
+  }
+  if (!configured) {
+    // Metered like its siblings: this branch sits downstream of a VERIFIED
+    // password, so leaving it unmetered and unlogged made it a silent oracle.
+    credentialProofRateLimiter.recordSuccess(rateKey);
+    if (!requireEnrolled) return { ok: true, rateKey };
+    return deny(400, { error: "No second factor is set up on this console yet, so there are no recovery codes to regenerate." }, "not_configured");
+  }
+  const totpCode = String(body.totpCode ?? "").trim();
+  if (!totpCode) {
+    credentialProofRateLimiter.recordFailure(rateKey);
+    return deny(400, { totpRequired: true, error: "Enter your current authenticator code to continue." }, "totp_missing");
+  }
+  let verify;
+  try {
+    verify = await secondFactor.verifyTotpToken(totpCode, nowSeconds());
+  } catch (err) {
+    credentialProofRateLimiter.recordFailure(rateKey);
+    secondFactorUnavailable(res, auditUrl, req, err, action, actor);
+    return { ok: false };
+  }
+  if (!verify.ok) {
+    credentialProofRateLimiter.recordFailure(rateKey);
+    // A replay is the code you just signed in with -- the default first attempt
+    // from the settings form. "Check your clock" sent operators hunting a
+    // problem they did not have.
+    const replay = verify.reason === "replay";
+    return deny(400, {
+      totpRequired: true,
+      error: replay
+        ? "That code was already used. Wait for your authenticator to show the next one, then try again."
+        : "That authenticator code was not accepted. Check your device's clock and enter the current code.",
+    }, `totp_${verify.reason || "invalid"}`);
+  }
+  credentialProofRateLimiter.recordSuccess(rateKey);
+  return { ok: true, rateKey };
+}
 const qaUpdates = createQaUpdates(config);
 const loginRateLimiter = createLoginRateLimiter();
+// Separate bucket for re-proving the Tier 3 credential from an ALREADY
+// AUTHENTICATED session (password rotation, recovery-code regeneration).
+//
+// These used to share the login limiter, which was documented as deliberate but
+// is a real denial-of-service path: the sharing let anyone holding a
+// stolen session cookie exhaust the login bucket -- and, at 32 failures, the
+// process-wide `__global__` bucket that recordSuccess never clears -- locking
+// every operator out of /api/auth/login, the only route back in. It also newly
+// exposed ADMIN_PASSWORD-managed installs, where adminPasswordRoute short-
+// circuits before the limiter and no authenticated route could previously burn
+// login budget at all.
+//
+// Same thresholds, independent accounting. The trade-off, stated plainly: an
+// attacker now gets a separate allowance here instead of one shared pool. That
+// is the right side to err on, because these routes are reachable only WITH a
+// valid session and CSRF token, while /api/auth/login is reachable by anyone --
+// two very different exposures should not share one lockout.
+const credentialProofRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const apiKeyRateLimiter = createApiKeyRateLimiter({ globalMaxRequests: GLOBAL_RATE_LIMIT_PER_MINUTE });
 // Failed bearer attempts are bucketed by client address under this cap, on a
@@ -234,6 +380,15 @@ createServer(async (req, res) => {
   if (!config.authDisabled) {
     console.log("Initial admin password is stored in runtime/secrets/admin-web-password.txt");
   }
+  // informational only -- never blocks boot, and TOTP login is
+  // unaffected by a detected rollback (verifyTotpToken self-heals). Only
+  // recovery-code login enforces anything, at the moment it's actually used.
+  secondFactor.checkForRollback().then(({ detected }) => {
+    if (detected) {
+      console.warn("Warning: the console's second-factor state file appears older than a previously observed version (possibly a restored backup).");
+      console.warn("Recovery codes will be invalidated automatically the next time one is used. Consider regenerating them now from Settings.");
+    }
+  }).catch(() => {});
   scheduleBootAutoStart();
   recoverRestartQueue();
   publicDirectory.start();
@@ -534,28 +689,255 @@ async function handleApi(req, res) {
     return json(res, 200, { authenticated: Boolean(session), csrfToken: session?.csrf || null, config: publicConfig(config) });
   }
   if (path === "/api/auth/login" && req.method === "POST") {
+    const loginUrl = sanitizedUrl(req, "/api/auth/login");
     const rateKey = loginRateLimitKey(req);
     const rate = loginRateLimiter.check(rateKey);
     if (!rate.allowed) {
       return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
     }
-    const body = await readJson(req);
+    const body = (await readJson(req)) || {}; // guard: readJson returns null for a literal `null` body
     if (!config.authDisabled && !auth.passwordMatches(body.password)) {
       loginRateLimiter.recordFailure(rateKey);
       return json(res, 401, { error: "Incorrect password. Please try again!" });
     }
+    // Password OK. Tier 3 (RFC §2.3/§4): the password tier requires a mandatory
+    // TOTP second factor -- but only when enabled (see config.consoleTotpEnabled;
+    // gated off during incremental rollout until the console UI can drive
+    // enrollment). authDisabled (dev) also keeps the old single-factor path.
+    if (config.authDisabled || !config.consoleTotpEnabled) {
+      loginRateLimiter.recordSuccess(rateKey);
+      const session = auth.makeSession();
+      setSessionCookie(res, session, config);
+      audit(config, loginUrl, "auth.login", { ok: true });
+      return json(res, 200, { authenticated: true, csrfToken: session.csrf });
+    }
+    let configured;
+    try {
+      configured = await secondFactor.isConfigured();
+    } catch (err) {
+      // Corrupt or newer-version second-factor state -> fail closed, grant
+      // nothing (a corrupt file must never let the password through without the
+      // factor; a newer-version file must never be "fixed" by deletion).
+      loginRateLimiter.recordFailure(rateKey);
+      return secondFactorUnavailable(res, loginUrl, req, err);
+    }
+    if (!configured) {
+      // §4: first post-upgrade login with no TOTP state -> mandatory enrollment.
+      // Issue a short-lived, non-renewable enrollment-only session. tier "enroll"
+      // is not a valid policy tier (evaluate() default-denies it), so even if the
+      // scope allowlist guard were ever bypassed the session grants nothing --
+      // containment is defense-in-depth, not solely the guard.
+      loginRateLimiter.recordSuccess(rateKey);
+      const session = auth.makeSession({ tier: "enroll", scope: "enroll", ttlMs: config.enrollmentSessionTtlMs, renewable: false });
+      setSessionCookie(res, session, config, { maxAgeSeconds: Math.floor(config.enrollmentSessionTtlMs / 1000) });
+      audit(config, loginUrl, "auth.login", { ok: true, enrollment: true });
+      return json(res, 200, { enrollmentRequired: true, csrfToken: session.csrf });
+    }
+    // Enrolled: a TOTP code OR a recovery code must accompany the password.
+    const totpCode = String(body.totpCode || "").trim();
+    const recoveryCode = String(body.recoveryCode || "").trim();
+    if (!totpCode && !recoveryCode) {
+      // Prompt for the second factor. This branch is METERED (recordFailure):
+      // without it, a password-holder could probe/write audit lines unbounded.
+      // The normal two-step UI flow is unaffected -- completing the login calls
+      // recordSuccess, which clears the bucket; only 8 abandoned password-only
+      // posts inside 15 minutes (never finishing a login) would trip the limit.
+      loginRateLimiter.recordFailure(rateKey);
+      audit(config, loginUrl, "auth.login", { ok: false, reason: "totp_missing" });
+      return json(res, 401, { totpRequired: true, recoveryAvailable: true, error: "Enter your authenticator code, or use a recovery code if you have lost your device." });
+    }
+    if (recoveryCode && !totpCode) {
+      // Recovery login (RFC §2.3): password + one unused recovery code. The code
+      // substitutes for the TOTP factor ONLY, never the password. Because the
+      // operator's authenticator is presumed lost, a successful recovery login
+      // does NOT grant a normal session -- it issues a restricted re-setup
+      // session that forces enrolling a fresh TOTP secret (and regenerates the
+      // recovery-code set), per §2.3.
+      let consumed;
+      try {
+        consumed = await secondFactor.consumeRecoveryCode(recoveryCode);
+      } catch (err) {
+        loginRateLimiter.recordFailure(rateKey);
+        return secondFactorUnavailable(res, loginUrl, req, err);
+      }
+      if (!consumed.ok) {
+        loginRateLimiter.recordFailure(rateKey);
+        if (consumed.reason === "reset_detected") {
+          // the store detected its own file had moved backward in time
+          // (a restored older backup) and wiped the entire recovery-code set
+          // rather than risk honoring a resurrected, previously-spent code.
+          // Named separately from the generic auth.login audit line below --
+          // this is a security-relevant event on its own, not a login failure.
+          audit(config, loginUrl, "auth.second-factor-reset-detected", { via: "recovery-code-consumption" });
+          return json(res, 401, {
+            recoveryFailed: true,
+            error: "The recovery-code state on this console appears to have been restored from an older backup, so all existing recovery codes have been invalidated for safety. Sign in with your authenticator app instead, then regenerate recovery codes from Settings.",
+          });
+        }
+        audit(config, loginUrl, "auth.login", { ok: false, reason: `recovery_${consumed.reason}` });
+        return json(res, 401, { recoveryFailed: true, error: "That recovery code was not accepted. Check for typos, or use a different unused code." });
+      }
+      loginRateLimiter.recordSuccess(rateKey);
+      const session = auth.makeSession({ tier: "enroll", scope: "resetup", ttlMs: config.enrollmentSessionTtlMs, renewable: false });
+      setSessionCookie(res, session, config, { maxAgeSeconds: Math.floor(config.enrollmentSessionTtlMs / 1000) });
+      audit(config, loginUrl, "auth.recovery-code-consumed", { ok: true });
+      return json(res, 200, { resetupRequired: true, csrfToken: session.csrf });
+    }
+    let verify;
+    try {
+      verify = await secondFactor.verifyTotpToken(totpCode, nowSeconds());
+    } catch (err) {
+      loginRateLimiter.recordFailure(rateKey);
+      return secondFactorUnavailable(res, loginUrl, req, err);
+    }
+    if (!verify.ok) {
+      loginRateLimiter.recordFailure(rateKey);
+      audit(config, loginUrl, "auth.login", { ok: false, reason: `totp_${verify.reason}` });
+      return json(res, 401, { totpRequired: true, recoveryAvailable: true, error: "That authenticator code was not accepted. Check your device's clock and enter the current code." });
+    }
     loginRateLimiter.recordSuccess(rateKey);
     const session = auth.makeSession();
     setSessionCookie(res, session, config);
-    audit(config, req, "auth.login");
+    audit(config, loginUrl, "auth.login", { ok: true });
     return json(res, 200, { authenticated: true, csrfToken: session.csrf });
+  }
+  // Enrollment-only sessions (RFC §4) may reach ONLY the enrollment endpoints
+  // plus /me and /logout. This single allowlist guard sits above every
+  // authenticated route -- including the pre-gate /api/auth/* data routes (e.g.
+  // /characters) that only call requireAuth -- so a restricted session can never
+  // escape its scope through a route handled before the central policy gate.
+  // (/health, /state, /login are public and sit above this.) Skipped entirely
+  // when the flag is off -- no enroll session can exist, so the readSession is
+  // pure overhead.
+  if (config.consoleTotpEnabled) {
+    const enrollSession = auth.readSession(req);
+    if (enrollSession && SETUP_SCOPES.has(enrollSession.scope)) {
+      if (!ENROLL_ALLOWED.has(path)) {
+        return json(res, 403, { enrollmentRequired: true, error: "Finish setting up two-factor authentication before using the console." });
+      }
+    }
   }
   if (path === "/api/auth/logout" && req.method === "POST") {
     const session = auth.requireAuth(req, res);
     if (!session) return;
+    auth.invalidateSession(session.id); // destroy server-side, not just the cookie
     clearSessionCookie(res, config);
     audit(config, req, "auth.logout");
     return json(res, 200, { ok: true });
+  }
+  // ---- Tier 3 mandatory-TOTP enrollment (RFC §4) ----
+  // Reachable only with the short-lived enrollment-only session issued by /login
+  // when no second factor is configured. Two steps: setup (generate + show the
+  // secret/QR) then confirm (verify a code, commit the factor, show recovery
+  // codes once, end the enrollment session and force a fresh password+TOTP login).
+  if (path === "/api/auth/2fa/setup" && req.method === "POST") {
+    const session = requireEnrollmentSession(req, res);
+    if (!session) return;
+    const { secretBytes, base32 } = generateTotpSecret();
+    session.pendingTotpSecret = secretBytes; // held server-side on the in-memory session only
+    const otpauthUri = provisioningUri({ secretBase32: base32, accountName: "console-admin", issuer: config.totpIssuer });
+    const qrCodeDataUri = await provisioningQrDataUri(otpauthUri);
+    audit(config, sanitizedUrl(req, "/api/auth/2fa/setup"), "auth.2fa.setup", { ok: true });
+    return json(res, 200, { secret: base32, otpauthUri, qrCodeDataUri }, { "cache-control": "no-cache, no-store, must-revalidate", pragma: "no-cache", expires: "0" });
+  }
+  if (path === "/api/auth/2fa/confirm" && req.method === "POST") {
+    const session = requireEnrollmentSession(req, res);
+    if (!session) return;
+    if (!session.pendingTotpSecret) {
+      return json(res, 400, { error: "Start two-factor setup first, then enter a code from your authenticator." });
+    }
+    const body = (await readJson(req)) || {}; // guard: readJson returns null for a literal `null` body
+    const code = String(body.code || "").trim();
+    const confirmMatch = verifyTotpMatch(session.pendingTotpSecret, code, nowSeconds());
+    if (!confirmMatch.valid) {
+      audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: "invalid_code" });
+      return json(res, 401, { error: "That code was not accepted. Check your device's clock and enter the current code." });
+    }
+    // First-time enrollment uses enroll() (create-if-absent, so a concurrent
+    // enrollment can't be clobbered); recovery re-setup uses commit() (the factor
+    // already exists but its device is lost, so overwrite the secret and issue a
+    // fresh recovery-code set, invalidating any remaining old codes -- §2.3).
+    const isResetup = session.scope === "resetup";
+    // Seed lastUsedCounter with the confirm code's matched step: the RFC (§4)
+    // forbids reusing the confirm-time code at the forced first login, and the
+    // seed makes the store reject it as a replay (UI copy: wait for the next
+    // code).
+    let result;
+    try {
+      result = isResetup
+        ? await secondFactor.commit(session.pendingTotpSecret, { initialCounter: confirmMatch.counter })
+        : await secondFactor.enroll(session.pendingTotpSecret, { initialCounter: confirmMatch.counter });
+    } catch (err) {
+      // A corrupt or newer-than-supported store surfacing here must fail closed
+      // (never "healed" by overwriting), exactly as the login path does -- not
+      // fall through to a generic 500. commit() re-throws these now; enroll()
+      // always did.
+      audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: "store_unavailable" });
+      return secondFactorUnavailable(res, sanitizedUrl(req, "/api/auth/2fa/confirm"), req, err);
+    }
+    if (!result.ok) {
+      // enroll() only: already_configured -- another session enrolled first. End
+      // this one; the operator logs in with the factor that won.
+      auth.invalidateSession(session.id);
+      clearSessionCookie(res, config);
+      audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: result.reason });
+      return json(res, 409, { error: "Two-factor was already set up on this console. Sign in again with your authenticator." });
+    }
+    // Succeeded: show the recovery codes ONCE, end the setup session, and require
+    // a fresh password+TOTP login.
+    auth.invalidateSession(session.id);
+    clearSessionCookie(res, config);
+    audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: true, resetup: isResetup });
+    audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), isResetup ? "settings.totp-regenerated" : "settings.totp-setup", { ok: true });
+    return json(res, 200, { [isResetup ? "reconfigured" : "enrolled"]: true, recoveryCodes: result.codes }, { "cache-control": "no-cache, no-store, must-revalidate", pragma: "no-cache", expires: "0" });
+  }
+  // Authenticated second-factor state for the settings UI. The client needs
+  // this BEFORE it submits a credential action -- inferring enrollment
+  // from a failed request is what left the password form unable to satisfy the
+  // server. False whenever the flag is off (or auth is disabled), so the UI
+  // never asks for a code the server would ignore.
+  //
+  // `unavailable` is reported separately rather than collapsing an
+  // unreadable store into `false`. secondFactorStore's contract says callers
+  // must not treat a throw as "not configured" -- doing so hides the
+  // authenticator field AND the whole Two-Factor section at exactly the moment
+  // 2FA state is broken, which for a SecondFactorVersionError (a deploy
+  // rollback, where the state is GOOD) is precisely when the operator needs the
+  // recovery controls. This route still does not throw -- an unreadable store
+  // must not take the console down -- but it says "unknown", not "no".
+  if (path === "/api/auth/me") {
+    const session = auth.requireAuth(req, res);
+    if (!session) return;
+    let secondFactorEnrolled = false;
+    // NOT named `secondFactorUnavailable`: that is the module-level 503
+    // helper, and a local binding of the same name shadows it for this whole
+    // block. Nothing here calls it today, but the credential routes established
+    // the pattern `catch (err) { secondFactorUnavailable(res, ...) }`, so a
+    // maintainer later hardening this route from "silently unknown" to
+    // "audit + 503" would reach for that name and get a TypeError on an auth
+    // surface.
+    let factorStoreUnavailable = false;
+    if (config.consoleTotpEnabled && !config.authDisabled) {
+      try {
+        secondFactorEnrolled = await secondFactor.isConfigured();
+      } catch {
+        factorStoreUnavailable = true;
+      }
+    }
+    return json(res, 200, {
+      user: {
+        id: session.userId || "local-owner",
+        username: session.username || "Admin",
+        tier: session.tier || "owner",
+        guildId: session.guildId || ""
+      },
+      scope: session.scope || null,
+      secondFactorEnrolled,
+      secondFactorUnavailable: factorStoreUnavailable,
+      // What the policy engine will allow this session, so the UI can hide what
+      // a 403 would refuse anyway. Enrollment-scope sessions get nothing.
+      allowedActions: SETUP_SCOPES.has(session.scope) ? [] : resolveAllowedActions(session.tier || "owner")
+    });
   }
   if (isDiscordAdapterRoute(path)) {
     return handleDiscordAdapterRoute({ req, res, path, config, readJson, json, db });
@@ -780,6 +1162,12 @@ async function handleApi(req, res) {
   if (path === "/api/database/export" && req.method === "POST") return databaseExport(req, res);
   if (path === "/api/database/password" && req.method === "POST") return databasePasswordRoute(req, res);
   if (path === "/api/settings/admin-password" && req.method === "POST") return adminPasswordRoute(req, res);
+  // Sits BELOW the central policy gate so the settings:regenerate-recovery-codes
+  // action is enforced, and below the enrollment-scope allowlist guard so a
+  // restricted setup session cannot mint a fresh code set and stop there without
+  // completing re-enrollment. The handler also calls requireAuth itself,
+  // so this placement is defence in depth rather than the only guard.
+  if (path === "/api/auth/2fa/recovery-codes/regenerate" && req.method === "POST") return recoveryCodesRegenerateRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
   if (path === "/api/settings/iam/policies" && req.method === "GET") {
     return json(res, 200, { policies: getAllPolicies() });
@@ -1925,6 +2313,20 @@ async function databaseQuery(req, res) {
   const body = await readJson(req);
   const query = String(body.query || "");
   const readOnly = isReadOnlySql(query);
+  // The route gate only requires database:query (admin holds it). Destructive
+  // SQL, however, is a direct DB write -- gate it on database:mutate, which is
+  // owner-only, so an admin can run read-only queries but cannot DROP/DELETE/
+  // UPDATE the live game DB through this endpoint.
+  //
+  // NOTE (key principals): a key session is synthesized as tier "owner", so this
+  // evaluate() would PASS for a key. It is safe here only because `database` is
+  // in KEY_DENIED_NAMESPACES -- a key is refused at the central gate before
+  // reaching this handler. Any future in-handler evaluate()-based sub-gate on a
+  // NON-key-denied namespace would be a no-op for keys; use apiKeys.allows()
+  // (or reject key principals) for those instead.
+  if (!readOnly && !evaluate(req.authSession, "database:mutate")) {
+    return json(res, 403, { error: "Destructive SQL requires owner-level access. Admins may run read-only queries; sign in as owner for writes." });
+  }
   if (!readOnly && !applyMutationRateLimit(req, res, "database.query.write")) return;
   if (!config.mockMode && !readOnly) {
     await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "destructive-sql" } });
@@ -1990,10 +2392,38 @@ function validateDatabasePassword(value) {
 }
 
 async function adminPasswordRoute(req, res) {
+  const session = req.authSession;
+  const auditUrl = sanitizedUrl(req, "/api/settings/admin-password");
+  const ACTION = "settings.change-admin-password";
+  const actor = { tier: session?.tier || "owner", userId: session?.userId || "local-owner" };
+  // Same deny() shape as the sibling regenerate route.  extracted the
+  // shared preamble so the two routes would behave identically and then stopped
+  // at this caller's edges: these three pre-proof refusals audited nothing,
+  // while the sibling routed the equivalent cases through its own deny().
+  const deny = (status, payload, reason) => {
+    audit(config, auditUrl, ACTION, { ok: false, ...actor, reason });
+    return json(res, status, payload);
+  };
   const body = await readJson(req);
-  if (config.authDisabled) return json(res, 400, { error: "Login password changes are unavailable while admin authentication is disabled." });
-  if (config.adminPasswordEnvManaged) return json(res, 400, { error: "The login password is managed by ADMIN_PASSWORD. Update the environment value instead." });
-  if (!auth.passwordMatches(body.currentPassword)) return json(res, 400, { error: "Current password is incorrect." });
+  // readJson returns raw JSON.parse output, so a literal `null` body used to
+  // throw a TypeError and surface as a 500 with an internal JS message.
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return deny(400, { error: "Request body must be a JSON object." }, "malformed_body");
+  }
+  if (config.authDisabled) {
+    return deny(400, { error: "Login password changes are unavailable while admin authentication is disabled." }, "auth_disabled");
+  }
+  if (config.adminPasswordEnvManaged) {
+    return deny(400, { error: "The login password is managed by ADMIN_PASSWORD. Update the environment value instead." }, "env_managed");
+  }
+  // RFC §2.3/§5 ( phase 6): rotation requires fresh proof of the CURRENT
+  // Tier 3 credential from the acting session, not just the existing cookie.
+  // requireEnrolled:false -- with no factor yet there is nothing to prove, so
+  // the password alone is the whole credential.
+  const proof = await requireFreshTier3Proof(req, res, body, {
+    auditUrl, action: ACTION, actor, requireEnrolled: false,
+  });
+  if (!proof.ok) return;
   const password = validateAdminPassword(body.newPassword);
   writeFileSync(config.adminPasswordFile, `${password}\n`, { mode: 0o600 });
   try {
@@ -2002,8 +2432,88 @@ async function adminPasswordRoute(req, res) {
     // Best effort on non-POSIX development hosts.
   }
   config.adminPassword = password;
-  audit(config, req, "settings.change-admin-password", { password: "<redacted>" });
-  return json(res, 200, { ok: true });
+  audit(config, auditUrl, ACTION, { ok: true, ...actor, password: "<redacted>" });
+  // Scoped invalidation (RFC §2.3/§5): every OTHER password/TOTP-authenticated
+  // session is revoked; the acting session (already fresh-proven above) and
+  // any Discord/passkey session are untouched.
+  const sessionsRevoked = auth.invalidatePasswordSessions(req.authSession?.id);
+  audit(config, auditUrl, "auth.password-changed.sessions-revoked", { ...actor, count: sessionsRevoked });
+  return json(res, 200, { ok: true, sessionsRevoked });
+}
+
+async function recoveryCodesRegenerateRoute(req, res) {
+  // Fail closed on session/CSRF regardless of where this route is registered
+  //. Its only authentication used to be its physical position below the
+  // central gate: moving the registration line up beside the other
+  // /api/auth/2fa/* routes made it answer unauthenticated POSTs with 10 live
+  // recovery codes, with the whole suite still green.
+  const session = auth.requireAuth(req, res);
+  if (!session) return;
+  // Sanitized URL, never the raw req: audit() writes req.url verbatim
+  // including any query string, and redactValue only inspects `detail`.
+  const auditUrl = sanitizedUrl(req, "/api/auth/2fa/recovery-codes/regenerate");
+  const ACTION = "settings.recovery-codes-regenerated";
+  // Identify WHO acted: two structurally different principals reach this
+  // route -- the local password/TOTP owner (empty userId) and a Discord-OAuth
+  // owner -- and without this a compromised Discord owner rotating the local
+  // sheet is indistinguishable from the real operator.
+  const actor = { tier: session.tier || "owner", userId: session.userId || "local-owner" };
+  const deny = (status, payload, detail, headers) => {
+    audit(config, auditUrl, ACTION, { ok: false, ...actor, ...detail });
+    return json(res, status, payload, headers || {});
+  };
+
+  // Config guards first: they reject without reading the body at all, and on
+  // the default configuration (flag off) that is the only reachable outcome.
+  if (config.authDisabled) {
+    return deny(400, { error: "Recovery codes are unavailable while admin authentication is disabled." }, { reason: "auth_disabled" });
+  }
+  if (!config.consoleTotpEnabled) {
+    // Deliberately does NOT claim "there are no recovery codes": a sheet
+    // enrolled before the flag was turned off is still on disk and valid again
+    // the moment it returns.
+    return deny(400, { error: "Two-factor authentication is not enabled on this console, so recovery codes cannot be regenerated. If codes were issued before it was disabled, they remain on disk and become valid again if it is re-enabled." }, { reason: "totp_disabled" });
+  }
+
+  const body = await readJson(req);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return deny(400, { error: "Request body must be a JSON object." }, { reason: "malformed_body" });
+  }
+
+  // requireEnrolled:true -- unlike rotation, there is nothing to regenerate
+  // without a factor, so "not configured" is a refusal rather than a skip.
+  const proof = await requireFreshTier3Proof(req, res, body, {
+    auditUrl, action: ACTION, actor, requireEnrolled: true,
+  });
+  if (!proof.ok) return;
+
+  try {
+    const result = await secondFactor.regenerateRecoveryCodes();
+    if (!result.ok) {
+      // not_configured: the factor was cleared between isConfigured() and here.
+      return deny(409, { error: "Two-factor setup changed while regenerating. Sign in again, then retry." }, { reason: result.reason });
+    }
+    // healedRollback records whether THIS regeneration was the remedy for a
+    // detected restore-rollback. Without it the audit log cannot
+    // distinguish the fix the startup banner told the operator to perform from
+    // a routine rotation -- which is exactly the question asked after a restore.
+    audit(config, auditUrl, "settings.recovery-codes-regenerated", {
+      ok: true, ...actor, count: result.codes.length, healedRollback: Boolean(result.healedRollback),
+    });
+    // Returned once, for the frontend's existing "I have saved these codes"
+    // acknowledgment gate. Never retrievable again -- only the digests
+    // are persisted -- so tell every cache and proxy in the path not to keep it.
+    return json(res, 200, { ok: true, recoveryCodes: result.codes }, {
+      "cache-control": "no-cache, no-store, must-revalidate",
+      pragma: "no-cache",
+      expires: "0",
+    });
+  } catch (err) {
+    if (err?.name === "SecondFactorCorruptError" || err?.name === "SecondFactorVersionError") {
+      return secondFactorUnavailable(res, auditUrl, req, err, ACTION, actor);
+    }
+    throw err;
+  }
 }
 
 async function apiKeyCreateRoute(req, res) {
@@ -5687,7 +6197,29 @@ function remoteIpOf(req) {
 }
 
 function loginRateLimitKey(req) {
-  return req.socket?.remoteAddress || "unknown";
+  return resolveClientIp(req, config.trustedProxyIps);
+}
+
+function sanitizedUrl(req, path) {
+  return { ...req, url: path };
+}
+
+// Gate for the Tier 3 enrollment endpoints: requires a valid, enroll-scoped
+// session (the short-lived one issued by /login when no factor is configured),
+// and enforces CSRF on the POST the same way requireAuth does for normal
+// sessions. Returns the live session (so callers can stash the pending secret on
+// it) or null after writing the response.
+function requireEnrollmentSession(req, res) {
+  const session = auth.readSession(req);
+  if (!session || !SETUP_SCOPES.has(session.scope)) {
+    json(res, 403, { error: "Sign in to begin two-factor setup." });
+    return null;
+  }
+  if (!config.authDisabled && req.headers["x-csrf-token"] !== session.csrf) {
+    json(res, 403, { error: "Your setup session expired. Sign in again to restart two-factor setup." });
+    return null;
+  }
+  return session;
 }
 
 function applyMutationRateLimit(req, res, scope) {
