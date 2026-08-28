@@ -384,6 +384,11 @@ export function App() {
   // Settings tab from Discord tiers a 403 would refuse anyway; enforcement
   // stays server-side, and an empty answer (read failed) hides nothing.
   const [allowedActions, setAllowedActions] = useState<string[]>([]);
+  // True once /api/auth/me has answered (success or failure). The first-run
+  // setup gate below must not run before it: a tier without setup:read gets a
+  // 403 from /api/setup/state, and treating that as "setup incomplete" traps
+  // the session in a wizard it cannot use and cannot leave.
+  const [meLoaded, setMeLoaded] = useState(false);
   const [userInfo, setUserInfo] = useState<{ username: string; displayName: string; tier: string } | null>(null);
   const [tab, setTab] = useActiveTab();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -433,11 +438,11 @@ export function App() {
   useStaleBuildWatcher();
 
   useEffect(() => {
-    if (!auth) { setAllowedActions([]); setUserInfo(null); return; }
+    if (!auth) { setAllowedActions([]); setUserInfo(null); setMeLoaded(false); return; }
     let cancelled = false;
     api<{ user: { id: string; username: string; displayName: string; tier: string; guildId: string }; allowedActions: string[] }>("/api/auth/me")
-      .then((res) => { if (!cancelled) { setAllowedActions(res.allowedActions || []); setUserInfo({ username: res.user.username, displayName: res.user.displayName || res.user.username, tier: res.user.tier }); } })
-      .catch(() => { /* a failed read leaves the UI ungated; the server still enforces */ });
+      .then((res) => { if (!cancelled) { setAllowedActions(res.allowedActions || []); setUserInfo({ username: res.user.username, displayName: res.user.displayName || res.user.username, tier: res.user.tier }); setMeLoaded(true); } })
+      .catch(() => { if (!cancelled) setMeLoaded(true); /* a failed read leaves the UI ungated; the server still enforces */ });
     return () => { cancelled = true; };
   }, [auth]);
 
@@ -494,6 +499,16 @@ export function App() {
       setPublicDirectoryStatus(null);
       return;
     }
+    if (!meLoaded) return;
+    if (allowedActions.length > 0 && !allowedActions.includes("setup:read")) {
+      // This tier can neither read nor run first-run setup (every /api/setup/*
+      // route would 403), so there is nothing to gate on: treat setup as done
+      // and render the console. The owner still sees the wizard on a fresh
+      // install because owner holds setup:read.
+      setSetupState({ files: { complete: true }, config: {} });
+      setSetupStateLoaded(true);
+      return;
+    }
     let cancelled = false;
     setSetupStateLoaded(false);
     setupApi.state().then((state) => {
@@ -506,7 +521,7 @@ export function App() {
       setSetupStateLoaded(true);
     });
     return () => { cancelled = true; };
-  }, [auth]);
+  }, [auth, meLoaded, allowedActions]);
 
   useEffect(() => {
     if (!auth) return;

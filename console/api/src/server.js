@@ -233,7 +233,20 @@ const loginRateLimiter = createLoginRateLimiter();
 // unauthenticated third parties (junk state, not-a-member), and must never be
 // able to spend the password-login limiter's shared __global__ budget and lock
 // operators out of the password fallback. Same limits, independent bucket.
-const oauthCallbackRateLimiter = createLoginRateLimiter();
+// No shared __global__ bucket here (globalMaxAttempts: Infinity). That bucket
+// exists to slow a DISTRIBUTED password brute-force; the OAuth callback has no
+// guessable secret (a 128-bit random state that must also match a cookie), so
+// the only thing a global bucket would achieve is letting any anonymous party
+// -- or a public community's own non-member players hitting "not authorized"
+// -- lock every user out of Discord sign-in for 15 minutes at a time. The
+// per-client bucket stays, which is the real protection.
+const oauthCallbackRateLimiter = createLoginRateLimiter({ globalMaxAttempts: Infinity });
+// GET /api/auth/discord/start is unauthenticated and creates server-side
+// state, so it is metered per client on its own (the login limiter only ever
+// counts FAILURES, which /start never records). Generous for a human, tight
+// for a loop that tries to flood the pending-state table.
+const OAUTH_START_PER_MINUTE = 20;
+const oauthStartRateLimiter = createMutationRateLimiter({ maxRequests: OAUTH_START_PER_MINUTE, globalMaxRequests: Infinity, windowMs: 60 * 1000 });
 // Separate bucket for re-proving the Tier 3 credential from an ALREADY
 // AUTHENTICATED session (password rotation, recovery-code regeneration).
 //
@@ -1023,7 +1036,7 @@ async function handleApi(req, res) {
       if (!config.discordOAuthAppConfigured) {
         return json(res, 400, { error: "This console has no Discord application yet. Set DISCORD_OAUTH_CLIENT_ID, DISCORD_OAUTH_CLIENT_SECRET and DISCORD_OAUTH_REDIRECT_URI in .env (like a bot's), or enter them on the setup screen." });
       }
-      const pending = oauthPendingStates.issue(undefined, { purpose: "setup", sessionId: ownerSession.id });
+      const pending = oauthPendingStates.issue(undefined, { purpose: "setup", sessionId: ownerSession.id, owner: loginRateLimitKey(req) });
       if (!pending) return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
       res.setHeader("Set-Cookie", oauthStateCookie(pending.state));
       res.writeHead(302, { Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: pending.state, codeChallenge: pending.challenge, prompt: "none" }) });
@@ -1044,11 +1057,20 @@ async function handleApi(req, res) {
       audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: false, reason: "role_mapping_unsound" });
       return html(res, 403, roleMappingUnsoundPage());
     }
-    const rate = oauthCallbackRateLimiter.check(loginRateLimitKey(req));
+    const startKey = loginRateLimitKey(req);
+    const rate = oauthCallbackRateLimiter.check(startKey);
     if (!rate.allowed) {
       return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
     }
-    const pending = oauthPendingStates.issue();
+    const startRate = oauthStartRateLimiter.check(startKey);
+    if (!startRate.allowed) {
+      audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: false, reason: "rate_limited" });
+      return json(res, 429, { error: "Too many Discord sign-in attempts from this address. Wait a minute, then try again." }, { "retry-after": String(startRate.retryAfterSeconds) });
+    }
+    oauthStartRateLimiter.record(startKey);
+    // Keyed by client so a flood from one address can only ever evict its own
+    // pending states, never another user's in-flight sign-in (oauth.js).
+    const pending = oauthPendingStates.issue(undefined, { owner: startKey });
     if (!pending) {
       return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
     }

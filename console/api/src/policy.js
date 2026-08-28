@@ -39,10 +39,38 @@ export function matchAction(pattern, action) {
   // Exact match or wildcard segment
   if (pattern === action) return true;
   if (pattern.includes("*")) {
-    const regex = new RegExp("^" + pattern.replace(/\*/g, ".*") + "$");
+    // Only `*` is special. Every other character is matched literally -- a
+    // pattern like "players:(*" must never reach RegExp unescaped, where it
+    // throws SyntaxError on every evaluate() for that tier (a persisted policy
+    // would turn every request by that tier into a 500 until hand-edited).
+    // validPolicyStore() refuses such patterns at save time; this is the
+    // second line of defence for a hand-edited iam-policies.json.
+    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+    const regex = new RegExp("^" + escaped + "$");
     return regex.test(action);
   }
   return false;
+}
+
+// The IAM action vocabulary: lowercase letters, digits, ':' namespace
+// separators, '-' inside a segment, and '*' as the only wildcard. Anything
+// else is refused at save time -- see matchAction() for why.
+export const ACTION_PATTERN = /^[a-z0-9:*-]+$/;
+
+// First action pattern in the store that is not a valid IAM action pattern,
+// or null. Reported by name so the operator is told which string to fix
+// instead of a generic "invalid policies".
+export function invalidActionPattern(value) {
+  if (!value || typeof value !== "object") return null;
+  for (const document of Object.values(value)) {
+    for (const statement of document?.statements || []) {
+      const actions = Array.isArray(statement?.Action) ? statement.Action : [statement?.Action];
+      for (const action of actions) {
+        if (typeof action === "string" && action.trim().length > 0 && !ACTION_PATTERN.test(action)) return action;
+      }
+    }
+  }
+  return null;
 }
 
 export function evaluate(session, action, policies = null) {
@@ -149,6 +177,10 @@ export function getAllPolicies(policies = null) {
 }
 
 export function setPolicies(docs, repoRoot = null) {
+  const badPattern = invalidActionPattern(docs);
+  if (badPattern !== null) {
+    return { ok: false, error: `Action pattern "${badPattern}" is not valid: use lowercase letters, digits, ':' and '-', with '*' as the only wildcard.` };
+  }
   if (!validPolicyStore(docs)) {
     return { ok: false, error: "Policies must contain valid tier documents and Allow/Deny statements." };
   }
@@ -171,7 +203,7 @@ function validPolicyStore(value) {
     return document.statements.every((statement) => {
       if (!statement || !["Allow", "Deny"].includes(statement.Effect)) return false;
       const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
-      return actions.length > 0 && actions.every((action) => typeof action === "string" && action.trim().length > 0);
+      return actions.length > 0 && actions.every((action) => typeof action === "string" && ACTION_PATTERN.test(action));
     });
   });
 }

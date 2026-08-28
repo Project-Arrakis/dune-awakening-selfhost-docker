@@ -136,6 +136,14 @@ whole-deployment-destructive operations that must never be reachable by an exter
 These are enforced like the namespace denials — before the scope lookup in `keyAllows()`, and
 excluded from the grantable catalog — so a hand-edited `api-keys.json` cannot reach them.
 
+**Upgrading from a build before these denials:** an existing key stored with `server: write`
+could previously call `POST /api/server/funcom-token` and `POST /api/server/ip-change-restart`
+(then `server:write-config`), and a key with `backups: write` could call restore, import and
+delete. After this change those calls return `403 This API key is not permitted to use this
+endpoint.` with no change to the stored key. If an integration depends on one of them, it needs
+an owner session instead — the tightening is deliberate (they rewrite the deployment's
+credentials or its whole database) and there is no scope that re-grants them to a key.
+
 **Data-sensitivity note on `maps: read`.** A `maps: read` grant exposes the live-map endpoints
 (`GET /api/map/players`, `/bases`, `/storage`), which return real-time player character names,
 **Funcom/FLS platform IDs**, online status, and **exact world coordinates**. Grant `maps: read`

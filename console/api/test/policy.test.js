@@ -317,3 +317,33 @@ test("policy updates validate documents and preserve owner recovery access", () 
   assert.equal(setPolicies({ owner: { tier: "owner", statements: [{ Effect: "Maybe", Action: "*" }] } }).ok, false);
   assert.equal(setPolicies({ owner: { tier: "owner", statements: [{ Effect: "Deny", Action: "settings:write" }] } }).ok, false);
 });
+
+// ---- action-pattern hardening (review finding: a persisted pattern with a regex
+// metacharacter made matchAction() throw on every evaluate() for that tier) ----
+test("matchAction treats every character except '*' literally and never throws on metacharacters", () => {
+  assert.equal(matchAction("players:(*", "players:(x"), true);   // used to throw SyntaxError
+  assert.equal(matchAction("players.*", "playersX"), false);      // '.' is literal, not any-char
+  assert.equal(matchAction("players.*", "players.read"), true);
+  assert.equal(matchAction("server:*", "server:read"), true);
+  assert.doesNotThrow(() => evaluate({ tier: "admin" }, "players:read", {
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["players:(*"] }] }
+  }));
+});
+
+test("setPolicies refuses an action pattern outside the IAM vocabulary and names it", () => {
+  const docs = {
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["*", "players:(*"] }] }
+  };
+  const result = setPolicies(docs);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /players:\(\*/);
+  for (const bad of ["Players:read", "server: read", "server:read\n", "vehicles:.*"]) {
+    const attempt = setPolicies({ ...docs, admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: [bad] }] } });
+    assert.equal(attempt.ok, false, `accepted ${JSON.stringify(bad)}`);
+  }
+  // The whole real vocabulary still saves.
+  const ok = setPolicies({ ...docs, admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["server:*", "admin:transfer-settings:read", "players:kick-all"] }] } });
+  assert.equal(ok.ok, true);
+});

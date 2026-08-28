@@ -43,7 +43,7 @@ Policy documents use this shape:
 }
 ```
 
-`Action` may be one string or an array. Exact actions, namespace wildcards such as `players:*`, and `*` are supported. Explicit Deny statements override Allow statements for every tier, including owner.
+`Action` may be one string or an array. Exact actions, namespace wildcards such as `players:*`, and `*` are supported. Explicit Deny statements override Allow statements for every tier, including owner. An action pattern may contain only lowercase letters, digits, `:`, `-` and `*` (the only wildcard); a save containing anything else is refused and names the offending pattern, so a typo can never be persisted and break every request for that tier.
 
 The policy API is owner-only under the default policy:
 
