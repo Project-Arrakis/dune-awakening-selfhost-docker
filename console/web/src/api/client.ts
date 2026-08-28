@@ -56,7 +56,7 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
     }
   }
   const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
-  if (isSessionAuthFailure(response.status, String(record.error || ""))) {
+  if (isSessionAuthFailure(response.status, String(record.error || ""), path)) {
     if (response.status === 403 && !csrfRetried && await refreshCsrfToken()) {
       return apiRequest<T>(path, options, true);
     }
@@ -68,8 +68,16 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
   return data as T;
 }
 
-function isSessionAuthFailure(status: number, message: string) {
-  return status === 401 || (status === 403 && /authentication required|csrf token|session expired|login session/i.test(message));
+// The two enrollment routes answer a REJECTED CODE with 401 ("That code was
+// not accepted..."), not a lost session -- their session loss is a 403 with a
+// "sign in again" message. Treating that 401 as expiry tore the setup screen
+// down on the first mistyped code, regenerated the secret on the next login,
+// and made the 3-strike clock-skew hint unreachable.
+const ENROLLMENT_ROUTES = new Set(["/api/auth/2fa/setup", "/api/auth/2fa/confirm"]);
+
+function isSessionAuthFailure(status: number, message: string, path = "") {
+  if (status === 401) return !ENROLLMENT_ROUTES.has(path);
+  return status === 403 && /authentication required|csrf token|session expired|login session|sign in to begin/i.test(message);
 }
 
 function announceSessionExpired() {

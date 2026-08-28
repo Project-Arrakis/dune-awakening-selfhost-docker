@@ -686,7 +686,10 @@ async function handleApi(req, res) {
   if (path === "/api/health") return json(res, 200, { ok: true, app: config.appName });
   if (path === "/api/auth/state") {
     const session = auth.readSession(req);
-    return json(res, 200, { authenticated: Boolean(session), csrfToken: session?.csrf || null, config: publicConfig(config) });
+    // `scope` lets a reloaded page tell an enrollment/re-setup session apart
+    // from a normal one: without it the client treated the restricted session
+    // as signed in and rendered a console where every route is 403.
+    return json(res, 200, { authenticated: Boolean(session), csrfToken: session?.csrf || null, scope: session?.scope || null, config: publicConfig(config) });
   }
   if (path === "/api/auth/login" && req.method === "POST") {
     const loginUrl = sanitizedUrl(req, "/api/auth/login");
