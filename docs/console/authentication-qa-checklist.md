@@ -20,7 +20,7 @@ finding even when the flow still works — record the exact text you saw.
 | Item | Value |
 |---|---|
 | Console URL used in the browser | `https://________________` (must be the URL you normally sign in with; if the install sets `ADMIN_SECURE_COOKIES=1` — recommended behind HTTPS — a plain `http://host:port` URL will never keep you signed in, because the session cookie is `Secure`) |
-| Build under test | commit `________` (from the PR head, e.g. `git rev-parse --short HEAD` on the host) |
+| Build under test | commit `________` (e.g. `git rev-parse --short HEAD` on the host) |
 | Admin password | held by tester, **not** written here |
 | Phone with an authenticator app | app name: `________` |
 | Second browser or private window | for "other sessions" checks |
@@ -52,8 +52,8 @@ mkdir -p ~/qa-2fa-backup && cp -p .env runtime/generated/console-second-factor.j
 ## How to record results
 
 For each case: **Pass / Fail / Blocked**, plus evidence — a screenshot of the
-decisive screen, and the exact on-screen text for any message. Paste the
-results table at the end into the tracking issue for the release.
+decisive screen, and the exact on-screen text for any message. Keep the
+completed results table at the end with your test records for the build.
 
 ---
 
