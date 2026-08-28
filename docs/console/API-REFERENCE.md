@@ -40,7 +40,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | GET | `/api/auth/state` | Get authentication state and CSRF token | None |
 | POST | `/api/auth/login` | Login with password; also carries the second factor when one is enrolled | `password` (string), optionally `totpCode` or `recoveryCode` |
 | POST | `/api/auth/logout` | Logout current session | None |
-| GET | `/api/auth/me` | Second-factor enrollment state for the signed-in session | None |
+| GET | `/api/auth/me` | The signed-in principal — `user{id,username,tier,guildId}`, `scope`, `allowedActions` (what the policy engine will allow this session) — plus second-factor state (`secondFactorEnrolled`, `secondFactorUnavailable`) | None |
 | POST | `/api/auth/2fa/setup` | Begin TOTP enrollment; returns secret, otpauth URI and QR | None (enrollment-scope session) |
 | POST | `/api/auth/2fa/confirm` | Confirm enrollment; returns the one-time recovery codes | `code` (string) |
 | POST | `/api/auth/2fa/recovery-codes/regenerate` | Issue a fresh recovery-code set, invalidating the old one | `currentPassword`, `totpCode` |
@@ -968,9 +968,13 @@ Poll status with `GET /api/setup/tasks/{id}` or stream with `GET /api/setup/task
 
 ### Authentication
 - `/api/auth/2fa/setup` and `/api/auth/2fa/confirm` are reachable only with the
-  short-lived enrollment-scope session issued by `/api/auth/login` when a second
-  factor is required but not yet enrolled. That session can reach nothing else.
-- All endpoints except `/api/health`, `/api/auth/login`, and `/api/auth/state` require:
+  short-lived enrollment-scope session issued by `/api/auth/login` — when a
+  second factor is required but not yet enrolled, or after a recovery-code
+  sign-in (re-setup). Besides those two routes that session can reach only
+  `/api/auth/me` and `/api/auth/logout`.
+- All endpoints except `/api/health`, `/api/auth/login`, and `/api/auth/state`
+  require either a bearer API key (`Authorization: Bearer …`, no cookie and no
+  CSRF token — see [api-keys.md](api-keys.md)) or:
   - Session cookie: `asc_session`
   - CSRF token header: `x-csrf-token`
 - Obtain CSRF token from `GET /api/auth/state`

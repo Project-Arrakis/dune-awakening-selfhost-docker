@@ -78,8 +78,9 @@ Enter your password as normal. Instead of the console, you will land on a
 setup screen. This is expected. You have **10 minutes**; if it expires, just
 sign in again to start over.
 
-**Scan the QR code** with your authenticator app. If you cannot scan, click
-*Can't scan? Enter this code manually* and type the code shown into the app.
+**Scan the QR code** with your authenticator app. If you cannot scan, the
+same secret is printed beneath the QR under *Can't scan? Enter this code
+manually:* — type it into the app instead.
 
 **Enter the 6-digit code** the app now shows, to prove the pairing worked.
 
@@ -146,8 +147,9 @@ existing app and recovery codes just start working again.
 **I lost my phone but I have my recovery codes.** On the sign-in page, click
 *Lost access to your authenticator?*, enter your password and one recovery
 code. You will be taken straight back to the setup screen to pair a new phone
-and receive ten new codes — the old ones are retired. This is the normal path
-and needs nothing from the server.
+and receive ten new codes. The old authenticator and the remaining old codes
+stop working **when you finish that setup** — until then they are still valid,
+so finish it. This is the normal path and needs nothing from the server.
 
 **I still have my phone but lost the codes.** Sign in normally and use
 *Regenerate Recovery Codes* in Settings.
