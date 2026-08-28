@@ -27,7 +27,7 @@ Session tier and identity stay in the in-memory session store; they are not plac
 
 ## Policies
 
-The default policies preserve full owner access and provide conservative defaults for future admin, moderator, player, and observer sessions. Password logins and `ADMIN_AUTH_DISABLED=1` create owner sessions, so existing Console installations keep their current behavior.
+The default policies preserve full owner access and apply a deliberately **over-restrictive** default to the lower tiers (see *Tier model* below). Password logins and `ADMIN_AUTH_DISABLED=1` create owner sessions, so existing Console installations keep their current behavior.
 
 Policy documents use this shape:
 
@@ -52,6 +52,57 @@ The policy API is owner-only under the default policy:
 - `POST /api/settings/iam/policy/test` evaluates an action for a tier without changing policy.
 
 Updates that remove the owner's `settings:write` access are rejected so the local-password recovery path remains available.
+
+## Tier model (default policy)
+
+The shipped defaults follow a **governance vs. operation** split, biased
+over-restrictive by design: anything that could compromise, re-deploy, or
+destroy the deployment is owner-only, and a capability added to the catalog
+later defaults to owner-only until an operator grants it. Operators loosen the
+lower tiers per-deployment via the Access Control editor.
+
+- **owner** — everything (`Allow: "*"`). The single root of trust: the only
+  tier that can edit IAM policies, rotate credentials (the Funcom game-server
+  token, the DB/admin passwords), change the server IP, deploy code
+  (updates/addons), run destructive SQL, restore/import backups, and set the
+  economy. Password / `ADMIN_AUTH_DISABLED` sessions are owner.
+- **admin** — *operate the live server and moderate players; change nothing
+  persistent.* Explicit allow-list: server lifecycle (start/stop/restart, map
+  shards), player moderation (kick/ban/teleport + mass kick), communications
+  (broadcast/MOTD/announcements), read-only visibility, read-only SQL, taking
+  (not restoring) backups. A Deny block keeps the crown jewels
+  (`server:write-credentials`, `settings:*`, `database:mutate`/`write-config`,
+  `updates:apply/fix/repair`, `backups:restore/import`, `addons:install/update`,
+  `setup:write`, `players:mutate`, and the economy actions) unreachable even if
+  a future edit widens the allow-list.
+- **moderator** — live moderation only: read everything, broadcast/map-chat,
+  and act on individual griefers (kick/ban/teleport). No config, no economy, no
+  server lifecycle, nothing destructive.
+- **player** — a tight read-only self-service view: Home health, Players, Guilds, and the Live Map only (not the broad game-world reads). Own-player/guild scoping is tracked separately (ownership-based access).
+- **observer** — minimal server-status viewer (`server:read`) — "is the server
+  up?" A richer read-only ops/audit definition is tracked for revision.
+
+Two catalog details make the admin/moderator line enforceable rather than
+all-or-nothing:
+
+- **`players:kick` / `players:ban` / `players:teleport`** are split out of the
+  `players:mutate` economy bucket (`REGEX_ACTIONS_BY_METHOD_PATTERN`), so a
+  moderator/admin can act on an individual player without gaining give-item /
+  add-currency / reset-progression.
+- **`server:write-credentials`** carries the Funcom token and the server IP
+  change (and the setup-time `save-token`), split from the operational
+  `server:write-config`, so those trust-anchor writes are owner-only on every
+  path.
+- **API keys run as a synthesized `owner` tier**, so the policy engine is a no-op for them
+  and their per-namespace scope map (plus three deny sets) is the sole control. Beyond the
+  denied namespaces (`settings`/`database`/`setup`) and write-denied namespaces
+  (`updates`/`addons`), specific **actions** are denied to keys regardless of scope:
+  `server:write-credentials` (Funcom token + IP) and `backups:restore`/`import`/`delete`
+  (whole-DB overwrite / identity adoption / recovery destruction). See
+  [console/api-keys.md](console/api-keys.md).
+- **Destructive SQL via `POST /api/database/query`** is gated in-handler on
+  `database:mutate` (owner-only): admin holds `database:query` for read-only
+  SQL, but a non-read-only statement is refused unless the session is owner.
 
 ## Route maintenance
 

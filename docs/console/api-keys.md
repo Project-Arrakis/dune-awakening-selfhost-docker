@@ -48,7 +48,7 @@ release is covered by an existing Read grant without every key needing to be re-
 
 | Namespace | Read grants | Read+write additionally grants |
 |---|---|---|
-| `players` | `players:read` | `kick-all`, `mutate` |
+| `players` | `players:read` | `ban`, `kick`, `kick-all`, `mutate`, `teleport` |
 | `bases` | `bases:read` | `add-item`, `bulk-delete-items`, `delete`, `delete-item`, `fill-item`, `give-item`, `mutate` |
 | `vehicles` | `vehicles:read` | `bulk-delete-items`, `delete`, `delete-item`, `mutate` |
 | `guilds` | `guilds:read` | `mutate` |
@@ -61,7 +61,7 @@ release is covered by an existing Read grant without every key needing to be re-
 | `landsraad` | `landsraad:read` | `write` |
 | `server` | `server:read` | `network-fix`, `restart`, `restart-service`, `start`, `stop`, `storage-cleanup`, `write-config` |
 | `logs` | `logs:read` | *nothing — no write action exists* |
-| `backups` | `backups:read` | `create`, `delete`, `import`, `restore`, `write-config` |
+| `backups` | `backups:read` | `create`, `write-config` |
 | `updates` | `updates:check`, `updates:read` | *nothing — write actions are denied to keys* |
 | `carepackage` | `carepackage:read` | `clear-history`, `grant`, `scan`, `write-config` |
 | `addons` | `addons:read` | *nothing — write actions are denied to keys* |
@@ -119,6 +119,29 @@ grantable, their writes are unreachable at any level:
 
 A stored `"write"` level on a write-denied namespace degrades to read rather than being
 honoured, both when saving and when authorizing, so a hand-edited store cannot promote it.
+
+Finally, a few **individual actions are denied at the action level** — reachable in principle
+by their namespace's `write` scope, but blocked because they are credential, identity, or
+whole-deployment-destructive operations that must never be reachable by an external key
+(mirroring their owner-only status for signed-in sessions):
+
+- **`server:write-credentials`** — rotating the Funcom game-server token and changing the
+  server IP. A key with `server: write` keeps the operational server writes (restart schedule,
+  shutdown protection, title, restart queue) but cannot touch the credential or identity.
+- **`backups:restore`, `backups:import`, `backups:delete`** — restore overwrites the entire
+  live database (and adopts the backup's battlegroup identity), import stages an untrusted file
+  for that overwrite, and delete/delete-all destroys the recovery path. A key with
+  `backups: write` keeps `backups:create` and `backups:write-config` for backup automation.
+
+These are enforced like the namespace denials — before the scope lookup in `keyAllows()`, and
+excluded from the grantable catalog — so a hand-edited `api-keys.json` cannot reach them.
+
+**Data-sensitivity note on `maps: read`.** A `maps: read` grant exposes the live-map endpoints
+(`GET /api/map/players`, `/bases`, `/storage`), which return real-time player character names,
+**Funcom/FLS platform IDs**, online status, and **exact world coordinates**. Grant `maps: read`
+only to integrations you would trust with live player-location and cross-platform-identity data;
+it is not "public map tiles". (The public server-listing/player-portal upload path is separately
+anonymized; this console endpoint is not.)
 
 ## Transport
 

@@ -6,7 +6,8 @@ deployed build. Automated tests cover the API; this covers what a human sees
 and whether they can get through it without getting stuck.
 
 **Who.** One QA engineer (any operator can run it). Budget about 90 minutes
-for Parts 1–7 (the core cases T01–T16 take about 45).
+for Parts 1–7 (the core cases T01–T16 take about 45) and another 45 for
+Part 8 (Discord), which needs a Discord server and test accounts.
 
 **Result rule.** A case passes only if *every* expected line is observed. If a
 screen, message, or button differs from what is written here, that is a
@@ -368,6 +369,117 @@ stat -c %a runtime/generated/console-second-factor.json runtime/generated/web-ad
 
 ---
 
+## Part 8 — Sign in with Discord (role-based access)
+
+Needs: a Discord server you control with at least three test accounts (or one
+account whose roles you can change), a Discord application with this console's
+callback registered, Developer Mode on to copy IDs. One of the accounts must
+have Discord 2FA **off** for T31.
+
+### T26 · Guided setup, as an operator would
+*Host precondition:* the Discord application is in `.env` (`DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_CLIENT_SECRET` or the secret file, `DISCORD_OAUTH_REDIRECT_URI`), console restarted. (If it is not, the setup screen shows the `.env` keys to set and restart — there is **no** client-ID/secret form in the browser; worth a pass too.)
+1. On the sign-in page click **Set up Discord sign-in**.
+
+**Expected**
+- The password field remains, with *Enter the admin password first — only the console owner can connect Discord.* Nothing goes to Discord yet.
+2. Enter the admin password.
+
+**Expected**
+- The setup screen with a single **Continue with Discord** button (no application step).
+3. Click it.
+
+**Expected**
+- Discord's authorization screen names the application and asks for: who you are, your servers, your roles in a server. After **Authorize** you land back on the setup screen **not** signed in to the console as Discord; it shows *Signed in to Discord as <you>*, your server preselected and marked *you own this server*, and *You own <server>, so you are the console Owner.*
+4. Fill **Admin Role** only. Leave the two-factor box ticked (it is about each person's *Discord account* 2FA, not the console password). **Turn on Discord sign-in** — no password prompt.
+
+**Expected**
+- *Done. <server> is connected and <you> is the Owner…* with a **Restart the console now** button (and `dune console restart` offered as the manual alternative).
+5. Click **Restart the console now**.
+
+**Expected**
+- The page shows it is restarting, reconnects on its own in ~10–20s, and reloads to a sign-in page that now leads with **Sign in with Discord**, the admin password moved to a secondary **Use the admin password instead** link.
+
+### T27 · Role → tier, highest wins
+1. Give account A the Admin role, account B the Player role (map Player Role in Settings first), account C both.
+2. Each signs in with Discord.
+
+**Expected**
+- Discord shows an authorization screen naming the application and the permissions "know who you are / your servers / your roles in a server". After **Authorize**, each lands in the console.
+- A: Admin — sees Server Control, Players, Bases…; **no Settings tab**; typing the Settings URL directly does not open it. B: Player — read-only tabs only. C: Admin (highest of the two).
+
+### T28 · Not authorized
+1. An account that is a member but holds no mapped role signs in.
+
+**Expected**
+- A plain page: *Discord sign-in succeeded, but this account is not authorized…* with a link back to the console. No session (reloading the console shows the sign-in page).
+2. An account that is **not** a member of the server signs in. Same expectation.
+
+### T29 · Owner is the server's owner — nobody else
+1. As a Discord-signed-in **admin** (account A), open Settings.
+
+**Expected**
+- Cannot: the tab is hidden and the API refuses. (Settings is owner-only.)
+2. As the **server owner** (your account), sign in with Discord.
+
+**Expected**
+- Owner: Settings visible; `/api/auth/me` says `tier: owner`. This holds even if your account also has the admin role.
+3. Settings → Discord OAuth.
+
+**Expected**
+- No owner field of any kind — the section says *Owner is the Discord server's owner — automatic, not a role.* Only Admin / Moderator / Player role fields and the two-factor field.
+
+### T30 · Demotion takes effect at next sign-in
+1. While A is signed in, remove A's Admin role in Discord. A keeps clicking around.
+
+**Expected**
+- A's current session keeps working. After A signs out and signs in again: refused (T28) or downgraded to whatever mapped role remains.
+
+### T31 · Discord 2FA requirement (opt-in)
+1. With **Require Discord 2FA for** blank, an admin-role account **without** Discord 2FA signs in.
+
+**Expected**: admitted as Admin.
+2. Set the field to `owner,admin` (click *use recommended*), save, restart. Same account signs in.
+
+**Expected**: refused with *…requires two-factor authentication on your Discord account before granting admin access…* and the Discord setting named. A **player**-role account without 2FA is still admitted.
+3. That account enables 2FA in Discord and signs in again.
+
+**Expected**: admitted as Admin.
+
+### T32 · Server chosen, no roles mapped
+1. Settings → Discord OAuth: clear all three role fields, save, restart. Account A (admin role) signs in with Discord.
+
+**Expected**
+- Refused: *…not authorized to sign in…* (no mapped role). The server owner still signs in as Owner. Restore the mapping afterwards.
+
+### T33 · Password path untouched, mixed sessions
+1. With Discord configured, sign in with the password (via *Sign in with password instead*) in one browser and with Discord as a Player in another.
+
+**Expected**
+- Both work at once. The password session is Owner. Changing the admin password (T14) signs out other **password** sessions and leaves the Discord session alone.
+
+### T34 · Re-authorization on upgrade (only if the install had Discord sign-in before this release)
+1. An account that authorized the application under the previous build signs in.
+
+**Expected**
+- Discord shows the authorization screen again (one extra permission: roles in a server). After Authorize, sign-in proceeds. Existing owner list / bootstrap behaviour unchanged.
+
+### T35 · Separation of duties — one role, one tier
+1. Settings → Discord OAuth: put the **same** role ID in *Admin Role* and *Moderator Role*.
+
+**Expected**
+- An inline message: *Each Discord role can map to only one access level — role <id> is mapped to admin and moderator. Owner is never a role…*; **Save Discord OAuth** is disabled.
+2. *Host:* edit `.env` by hand so `DISCORD_CONSOLE_MODERATOR_ROLE_IDS` equals `DISCORD_CONSOLE_ADMIN_ROLE_IDS`; `dune console restart`. Click **Sign in with Discord**.
+
+**Expected**
+- Refused immediately (no Discord round-trip) with *…gives one Discord role two different access levels (role <id> is mapped to admin and moderator)…* naming Settings. Password sign-in still works.
+3. *Host:* restore the mapping; restart.
+
+### T36 · Ownership follows Discord
+1. In Discord, transfer ownership of a **test** server you own to account A (or use a second test server). Run the guided setup against that server, then sign in with Discord as A and as yourself.
+
+**Expected**
+- A is Owner (Settings visible). You get only what your roles map to — Admin if you hold the admin role, otherwise refused. Transfer ownership back; at the next sign-in the roles swap accordingly.
+
 ## Results
 
 | Case | Result | Evidence / exact text seen | Notes |
@@ -397,6 +509,17 @@ stat -c %a runtime/generated/console-second-factor.json runtime/generated/web-ad
 | T23 | | | |
 | T24 | | | |
 | T25 | | | |
+| T26 | | | |
+| T27 | | | |
+| T28 | | | |
+| T29 | | | |
+| T30 | | | |
+| T31 | | | |
+| T32 | | | |
+| T33 | | | |
+| T34 | | | |
+| T35 | | | |
+| T36 | | | |
 
 **Tester:** ______  **Date:** ______  **Build:** ______
 **Verdict:** ☐ all pass  ☐ pass with findings filed: ______  ☐ blocked
