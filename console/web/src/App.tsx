@@ -445,7 +445,18 @@ export function App() {
   }, [pinnedAddons]);
 
   useEffect(() => {
-    api<{ authenticated: boolean; csrfToken: string | null; config?: { ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
+    api<{ authenticated: boolean; csrfToken: string | null; scope?: string | null; config?: { ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
+      // A reload or second tab during two-factor setup: the enrollment-scope
+      // session is "authenticated" but can reach nothing except the setup
+      // routes, so resume the setup screen instead of rendering a console
+      // where every call is refused.
+      if (state.authenticated && (state.scope === "enroll" || state.scope === "resetup")) {
+        setCsrfToken(state.csrfToken);
+        setSetupMode(state.scope);
+        setServerPorts(state.config?.ports);
+        setAdminPort(state.config?.port);
+        return;
+      }
       setAuth(state.authenticated);
       setCsrfToken(state.csrfToken);
       setServerPorts(state.config?.ports);

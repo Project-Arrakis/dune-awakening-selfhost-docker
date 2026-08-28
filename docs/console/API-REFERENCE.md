@@ -37,7 +37,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/auth/state` | Get authentication state and CSRF token | None |
+| GET | `/api/auth/state` | Authentication state, CSRF token and — for a two-factor enrollment or re-setup session — `scope` (`enroll`/`resetup`), so a reloaded page resumes the setup screen instead of the console | None |
 | POST | `/api/auth/login` | Login with password; also carries the second factor when one is enrolled | `password` (string), optionally `totpCode` or `recoveryCode` |
 | POST | `/api/auth/logout` | Logout current session | None |
 | GET | `/api/auth/me` | The signed-in principal — `user{id,username,tier,guildId}`, `scope`, `allowedActions` (what the policy engine will allow this session) — plus second-factor state (`secondFactorEnrolled`, `secondFactorUnavailable`) | None |
