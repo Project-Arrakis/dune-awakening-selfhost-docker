@@ -110,6 +110,37 @@ export function post<T>(path: string, body: unknown = {}) {
   return api<T>(path, { method: "POST", body: JSON.stringify(body) });
 }
 
+export interface LoginResponse {
+  status: number;
+  body: Record<string, unknown>;
+}
+
+// Dedicated entry point for /api/auth/login. Every status code this route
+// returns (200 authenticated/enrollmentRequired/resetupRequired, 401 wrong
+// password/totpRequired/recoveryFailed, 429 rate-limited, 503 second-factor
+// store unavailable) carries a real body the caller must branch on -- there
+// is no session yet at login time, so api()/apiRequest()'s blanket "401 =
+// session expired" interception (correct for every OTHER authenticated
+// route) would misrepresent all of those as a stale-session error instead.
+export async function loginRequest(body: unknown): Promise<LoginResponse> {
+  const response = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(body)
+  });
+  const text = await response.text();
+  let data: Record<string, unknown> = {};
+  if (text) {
+    try {
+      data = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      data = { error: INVALID_RESPONSE_MESSAGE };
+    }
+  }
+  return { status: response.status, body: data };
+}
+
 export function friendlyApiError(value: unknown) {
   const text = value instanceof Error ? value.message : String(value || "");
   // Note: the generic "connect ECONNREFUSED"/"Postgres is not running"
