@@ -20,7 +20,20 @@ export const KEY_DENIED_NAMESPACES = new Set(["settings", "database", "setup"]);
 // and the server IP -- credential/identity writes that are owner-only for
 // tiered sessions and must not be reachable through an external API key either
 // (a key granting `server: write` still cannot rotate the game credential).
-export const KEY_DENIED_ACTIONS = new Set(["server:write-credentials"]);
+export const KEY_DENIED_ACTIONS = new Set([
+  // Funcom game-server token + server IP -- credential/identity writes.
+  "server:write-credentials",
+  // Destructive/whole-DB backup operations. `backups: write` is granted for
+  // backup CREATION automation, but the namespace-coarse scope would otherwise
+  // also grant: restore (overwrite the entire live DB with an attacker-supplied
+  // import, and adopt the backup's battlegroup identity), import (stage that
+  // untrusted file), and delete/delete-all (destroy the recovery path). These
+  // are owner-only for tiered sessions and must not be key-reachable either;
+  // backups:create / backups:read / backups:write-config stay reachable.
+  "backups:restore",
+  "backups:import",
+  "backups:delete",
+]);
 
 // Offered at None/Read only. `updates` because apply/fix/repair/write-config
 // self-update the console. `addons` because POST /api/addons/installed/{id}/bridge

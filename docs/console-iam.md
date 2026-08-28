@@ -93,6 +93,13 @@ all-or-nothing:
   change (and the setup-time `save-token`), split from the operational
   `server:write-config`, so those trust-anchor writes are owner-only on every
   path.
+- **API keys run as a synthesized `owner` tier**, so the policy engine is a no-op for them
+  and their per-namespace scope map (plus three deny sets) is the sole control. Beyond the
+  denied namespaces (`settings`/`database`/`setup`) and write-denied namespaces
+  (`updates`/`addons`), specific **actions** are denied to keys regardless of scope:
+  `server:write-credentials` (Funcom token + IP) and `backups:restore`/`import`/`delete`
+  (whole-DB overwrite / identity adoption / recovery destruction). See
+  [console/api-keys.md](console/api-keys.md).
 - **Destructive SQL via `POST /api/database/query`** is gated in-handler on
   `database:mutate` (owner-only): admin holds `database:query` for read-only
   SQL, but a non-read-only statement is refused unless the session is owner.

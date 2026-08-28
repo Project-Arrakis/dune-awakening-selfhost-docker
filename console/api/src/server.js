@@ -2465,6 +2465,13 @@ async function databaseQuery(req, res) {
   // SQL, however, is a direct DB write -- gate it on database:mutate, which is
   // owner-only, so an admin can run read-only queries but cannot DROP/DELETE/
   // UPDATE the live game DB through this endpoint.
+  //
+  // NOTE (key principals): a key session is synthesized as tier "owner", so this
+  // evaluate() would PASS for a key. It is safe here only because `database` is
+  // in KEY_DENIED_NAMESPACES -- a key is refused at the central gate before
+  // reaching this handler. Any future in-handler evaluate()-based sub-gate on a
+  // NON-key-denied namespace would be a no-op for keys; use apiKeys.allows()
+  // (or reject key principals) for those instead.
   if (!readOnly && !evaluate(req.authSession, "database:mutate")) {
     return json(res, 403, { error: "Destructive SQL requires owner-level access. Admins may run read-only queries; sign in as owner for writes." });
   }

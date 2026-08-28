@@ -18,6 +18,7 @@ import {
   namespaceOf,
   normalizeScopes,
   scopeCatalog,
+  KEY_DENIED_ACTIONS,
   selectableNamespaces
 } from "../src/apiKeyScopes.js";
 import { keyAllows } from "../src/apiKeys.js";
@@ -257,4 +258,48 @@ test("the uncached self-update check is out of reach of every key", () => {
   }
   // The cached game check stays reachable -- that is the point of the grant.
   assert.equal(keyAllows({ scopes: { updates: "read" } }, "updates:check"), true);
+});
+
+// Regression coverage for the action-level key deny (eight-hats audit of the
+// v1.4.4 merge). Because a key session is synthesized as tier "owner", the
+// policy engine is a no-op for keys and KEY_DENIED_ACTIONS is the SOLE barrier
+// on these actions -- an empty set or a dropped keyAllows() line ships green
+// otherwise. Both halves matter: keyAllows() (enforcement) AND scopeCatalog()
+// (the UI would otherwise offer the grant).
+
+const CREDENTIAL_AND_DESTRUCTIVE = [
+  "server:write-credentials", // Funcom token + server IP
+  "backups:restore",          // overwrite the whole live DB + adopt its identity
+  "backups:import",           // stage an untrusted backup for that overwrite
+  "backups:delete",           // destroy the recovery path
+];
+
+test("credential/identity/whole-DB actions are action-denied to every key, even with the namespace write scope", () => {
+  for (const action of CREDENTIAL_AND_DESTRUCTIVE) {
+    const ns = action.split(":")[0];
+    for (const level of ["read", "write"]) {
+      assert.equal(keyAllows({ scopes: { [ns]: level } }, action), false,
+        `a key with ${ns}: ${level} reached ${action}`);
+    }
+  }
+  // ...but the namespace stays usable for its safe operations.
+  assert.equal(keyAllows({ scopes: { server: "write" } }, "server:write-config"), true);
+  assert.equal(keyAllows({ scopes: { backups: "write" } }, "backups:create"), true);
+  assert.equal(keyAllows({ scopes: { backups: "write" } }, "backups:write-config"), true);
+});
+
+test("action-denied capabilities are absent from the grantable scope catalog", () => {
+  const byNs = new Map(scopeCatalog().map((e) => [e.namespace, e]));
+  for (const action of CREDENTIAL_AND_DESTRUCTIVE) {
+    const ns = action.split(":")[0];
+    const entry = byNs.get(ns);
+    assert.ok(entry && !entry.writeActions.includes(action) && !entry.readActions.includes(action),
+      `${action} is offered as a grantable ${ns} scope`);
+  }
+});
+
+test("KEY_DENIED_ACTIONS is not silently empty", () => {
+  for (const action of CREDENTIAL_AND_DESTRUCTIVE) {
+    assert.ok(KEY_DENIED_ACTIONS.has(action), `${action} missing from KEY_DENIED_ACTIONS`);
+  }
 });

@@ -219,7 +219,7 @@ const DEFAULT_POLICIES = {
         "bases:read", "blueprints:read", "deepdesert:read", "exchange:read",
         "guilds:read", "landsraad:read", "sietches:read", "storage:read", "vehicles:read",
         "database:read", "database:query",   // query is read-only-enforced in the handler
-        "updates:check", "updates:read",
+        "updates:check", "updates:read", "updates:self-check",
         "backups:create", "backups:read",
         "setup:read",
         "addons:read",

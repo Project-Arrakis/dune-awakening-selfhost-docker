@@ -35,7 +35,7 @@ const ADMIN_ALLOWED = [
   "maps:spawn", "maps:despawn", "maps:teleport", "maps:restart", "maps:reconcile",
   "admin:broadcast", "admin:map-chat",
   "backups:create", "backups:read", "database:read", "database:query",
-  "logs:read", "updates:check", "updates:read", "setup:read", "addons:read",
+  "logs:read", "updates:check", "updates:read", "updates:self-check", "setup:read", "addons:read",
 ];
 for (const action of ADMIN_ALLOWED) {
   test(`admin CAN ${action}`, () => assert.equal(can("admin", action), true));
