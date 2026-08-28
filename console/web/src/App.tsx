@@ -1,5 +1,5 @@
 import { Fragment, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Archive, Bug, Building2, Car, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
+import { Archive, Bug, Building2, Car, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, LogOut, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, UserRound, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, loginRequest, post, setCsrfToken } from "./api/client";
 import { TotpSetupScreen } from "./features/auth/TotpSetupScreen";
 import { DiscordSetupWizard } from "./features/auth/DiscordSetupWizard";
@@ -384,6 +384,7 @@ export function App() {
   // Settings tab from Discord tiers a 403 would refuse anyway; enforcement
   // stays server-side, and an empty answer (read failed) hides nothing.
   const [allowedActions, setAllowedActions] = useState<string[]>([]);
+  const [userInfo, setUserInfo] = useState<{ username: string; tier: string } | null>(null);
   const [tab, setTab] = useActiveTab();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
@@ -432,10 +433,10 @@ export function App() {
   useStaleBuildWatcher();
 
   useEffect(() => {
-    if (!auth) { setAllowedActions([]); return; }
+    if (!auth) { setAllowedActions([]); setUserInfo(null); return; }
     let cancelled = false;
     api<{ user: { id: string; username: string; tier: string; guildId: string }; allowedActions: string[] }>("/api/auth/me")
-      .then((res) => { if (!cancelled) setAllowedActions(res.allowedActions || []); })
+      .then((res) => { if (!cancelled) { setAllowedActions(res.allowedActions || []); setUserInfo({ username: res.user.username, tier: res.user.tier }); } })
       .catch(() => { /* a failed read leaves the UI ungated; the server still enforces */ });
     return () => { cancelled = true; };
   }, [auth]);
@@ -628,6 +629,20 @@ export function App() {
     setTotpRequired(false);
     setUseRecoveryCode(false);
     setCsrfToken(null);
+  }
+
+  async function doLogout() {
+    try {
+      await post("/api/auth/logout");
+    } catch {
+      // Return to the sign-in screen even if server-side session cleanup fails.
+    }
+    setCsrfToken(null);
+    setAuth(false);
+    setUserInfo(null);
+    setPassword("");
+    setTab("Home");
+    setMobileNavOpen(false);
   }
 
   async function logoutAfterPasswordChange() {
@@ -923,6 +938,18 @@ export function App() {
             onClick={() => setMobileNavOpen((open) => !open)}
           >{mobileNavOpen ? <X size={20} /> : <Menu size={20} />}</button>
         </div>
+        {userInfo && (
+          <div className="sidebar-user">
+            <span className="sidebar-user-identity">
+              <UserRound size={15} aria-hidden="true" />
+              <span className="sidebar-user-name" title={userInfo.username}>{userInfo.username}</span>
+              <span className={`sidebar-user-tier tier-${userInfo.tier}`}>{userInfo.tier}</span>
+            </span>
+            <button className="sidebar-logout" type="button" onClick={() => { void doLogout(); }} title="Sign out">
+              <LogOut size={14} aria-hidden="true" /><span>Sign out</span>
+            </button>
+          </div>
+        )}
         <nav id="console-navigation" className={`sidebar-nav ${mobileNavOpen ? "mobile-open" : ""}`}>
           {navGroups.map((group) => (
             <section className="sidebar-nav-group" key={group.title} aria-label={group.title}>

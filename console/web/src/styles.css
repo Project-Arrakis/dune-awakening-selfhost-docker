@@ -6777,3 +6777,12 @@ button.login-discord-button { border: none; cursor: pointer; font: inherit; font
 .iam-perm-row.perm-locked { opacity: .82; }
 .iam-perm-row.perm-locked input[type="checkbox"] { accent-color: var(--muted); }
 .iam-perm-lock { flex: 0 0 auto; font-size: 11px; opacity: .7; }
+
+/* Signed-in user chip + logout, in the sidebar under the title */
+.sidebar-user { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; margin-bottom: 4px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.sidebar-user-identity { display: flex; align-items: center; gap: 7px; min-width: 0; color: var(--text); }
+.sidebar-user-identity > svg { flex: 0 0 auto; color: var(--muted); }
+.sidebar-user-name { flex: 1 1 auto; min-width: 0; font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-user-tier { flex: 0 0 auto; text-transform: capitalize; font-size: 10px; font-weight: 700; letter-spacing: .04em; color: var(--title); border: 1px solid var(--border-strong); border-radius: 999px; padding: 1px 8px; }
+.sidebar-user-tier.tier-owner { color: var(--title); border-color: var(--accent); }
+.sidebar-logout { width: 100%; justify-content: center; gap: 7px; padding: 7px 10px; font-size: 13px; }
