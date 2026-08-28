@@ -38,8 +38,14 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | GET | `/api/auth/state` | Get authentication state and CSRF token | None |
-| POST | `/api/auth/login` | Login with password | `password` (string) |
+| POST | `/api/auth/login` | Login with password; also carries the second factor when one is enrolled | `password` (string), optionally `totpCode` or `recoveryCode` |
 | POST | `/api/auth/logout` | Logout current session | None |
+| GET | `/api/auth/me` | Second-factor enrollment state for the signed-in session | None |
+| POST | `/api/auth/2fa/setup` | Begin TOTP enrollment; returns secret, otpauth URI and QR | None (enrollment-scope session) |
+| POST | `/api/auth/2fa/confirm` | Confirm enrollment; returns the one-time recovery codes | `code` (string) |
+| POST | `/api/auth/2fa/recovery-codes/regenerate` | Issue a fresh recovery-code set, invalidating the old one | `currentPassword`, `totpCode` |
+| GET | `/api/auth/discord/start` | Begin Discord sign-in (302 to Discord; sets the PKCE state cookie). With `?setup=1` (owner session required — the admin password comes first) the round-trip is *setup mode*: the callback captures identity + guild list for the wizard and mints no session | `setup` (query, optional) |
+| GET | `/api/auth/discord/callback` | Discord redirects here; resolves the tier from roles / owner list / bot handoff and sets the session cookie | `code`, `state` (query) |
 | GET | `/api/health` | Health check | None |
 | GET | `/api/setup/state` | Get setup completion state | None |
 | POST | `/api/setup/preflight` | Run preflight checks | None |
@@ -809,7 +815,12 @@ Layers legend's default-settings mechanism.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| POST | `/api/settings/admin-password` | Change admin password | `currentPassword`, `newPassword` |
+| POST | `/api/settings/admin-password` | Change admin password | `currentPassword`, `newPassword`, plus `totpCode` when a second factor is enrolled |
+| POST | `/api/setup/write-oauth-config` | Save Discord OAuth settings incl. role→tier mapping and the 2FA-required tiers | `DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_REDIRECT_URI`, `DISCORD_HOME_GUILD_ID`, `DISCORD_OAUTH_OWNER_ALLOWLIST`, `DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP`, `DISCORD_CONSOLE_{ADMIN,MODERATOR,PLAYER}_ROLE_IDS`, `DISCORD_OAUTH_REQUIRE_MFA_TIERS` |
+| POST | `/api/setup/discord-finalize` | Complete the guided setup from an owner session (owner session is the authorization; no password): a server the captured identity **owns**, and the role mapping; writes the config and reports `restartRequired` | `guildId`, `adminRoleIds`, `moderatorRoleIds`, `playerRoleIds`, `requireMfa` |
+| POST | `/api/setup/discord-restart` | Owner-only: rebuild and restart the console container (via the docker socket) so a just-saved Discord config takes effect; returns 202 | None |
+| GET | `/api/setup/discord-identity` | The identity and guild list (with owner flags) captured by this owner session's setup-mode round-trip; 404 until one has happened | None |
+| POST | `/api/setup/save-oauth-secret` | Store the Discord client secret at `runtime/secrets/discord-oauth-client-secret.txt` (0600) | `secret`, `overwrite` |
 | POST | `/api/settings/web-port` | Change web console port | `port` (number 1-65535) |
 | POST | `/api/settings` | Write config | Config object |
 | GET | `/api/settings` | Get setup state | None |
@@ -963,6 +974,10 @@ Poll status with `GET /api/setup/tasks/{id}` or stream with `GET /api/setup/task
 - Write operations do not create automatic backups; responses always report `backupCreated: false`. Take a manual backup first if you want a rollback point before a destructive query.
 
 ### Authentication
+- `/api/auth/2fa/setup` and `/api/auth/2fa/confirm` are reachable only with the
+  short-lived enrollment-scope session issued by `/api/auth/login` when a second
+  factor is required but not yet enrolled. That session can reach nothing else.
+- `/api/auth/discord/start` and `/api/auth/discord/callback` are public (they *create* the session) and sit behind the login rate limiter.
 - All endpoints except `/api/health`, `/api/auth/login`, and `/api/auth/state` require:
   - Session cookie: `asc_session`
   - CSRF token header: `x-csrf-token`

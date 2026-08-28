@@ -1,6 +1,8 @@
 import { Fragment, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Archive, Bug, Building2, Car, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
-import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, post, setCsrfToken } from "./api/client";
+import { Archive, Bug, Building2, Car, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, LogOut, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, ShieldCheck, Sparkles, Store, UserRound, Users, X } from "lucide-react";
+import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, loginRequest, post, setCsrfToken } from "./api/client";
+import { TotpSetupScreen } from "./features/auth/TotpSetupScreen";
+import { DiscordSetupWizard } from "./features/auth/DiscordSetupWizard";
 import { setServerPorts, setAdminPort, type ServerPorts } from "./api/serverPorts";
 import { serverApi, type RestartQueueTarget } from "./api/server";
 import { updatesApi } from "./api/updates";
@@ -39,7 +41,7 @@ import { useStaleBuildWatcher } from "./lib/staleBuildWatcher";
 // The array is the source of truth (not just a type-level union) so restoring
 // a persisted tab (see loadPersistedTab below) can validate against the real,
 // current list at runtime instead of a hand-duplicated copy that could drift.
-export const ALL_TABS = ["Home", "Server Control", "Services", "Players", "Guilds", "Bases", "Vehicles", "Exchange", "Landsraad", "Admin Tools", "Live Map", "Maps", "Care Package", "Addons", "Database", "Storage", "Backups", "Logs", "Updates", "Settings"] as const;
+export const ALL_TABS = ["Home", "Server Control", "Services", "Players", "Guilds", "Bases", "Vehicles", "Exchange", "Landsraad", "Admin Tools", "Live Map", "Maps", "Care Package", "Addons", "Database", "Storage", "Backups", "Logs", "Updates", "Settings", "Access Control"] as const;
 type Tab = typeof ALL_TABS[number];
 const ACTIVE_TAB_STORAGE_KEY = "dune-console:active-tab";
 
@@ -94,6 +96,7 @@ let openConfirmDialog: ((request: ConfirmDialogRequest) => void) | null = null;
 
 const AddonsPanel = lazy(() => import("./features/addons/AddonsPanel").then((module) => ({ default: module.AddonsPanel })));
 const AdminToolsPanel = lazy(() => import("./features/adminTools/AdminToolsPanel").then((module) => ({ default: module.AdminToolsPanel })));
+const IamPolicyEditor = lazy(() => import("./features/settings/IamPolicyEditor").then((module) => ({ default: module.IamPolicyEditor })));
 const BasesPanel = lazy(() => import("./features/bases/BasesPanel").then((module) => ({ default: module.BasesPanel })));
 const BackupsPanel = lazy(() => import("./features/backups/BackupsPanel").then((module) => ({ default: module.BackupsPanel })));
 const CarePackagePanel = lazy(() => import("./features/carePackage/CarePackagePanel").then((module) => ({ default: module.CarePackagePanel })));
@@ -276,7 +279,8 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode }[] }
       { tab: "Database", icon: <Database size={18} /> },
       { tab: "Updates", icon: <RefreshCw size={18} /> },
       { tab: "Logs", icon: <FileText size={18} /> },
-      { tab: "Settings", icon: <Settings size={18} /> }
+      { tab: "Settings", icon: <Settings size={18} /> },
+      { tab: "Access Control", icon: <Shield size={18} /> }
     ]
   },
   {
@@ -358,6 +362,29 @@ function AppFooter() {
 export function App() {
   const [auth, setAuth] = useState(false);
   const [password, setPassword] = useState("");
+  // Tier 3 second factor (RFC §2.3/§4). All inert unless the server actually
+  // asks for a code, so a console with CONSOLE_TOTP_ENABLED unset renders the
+  // same single password field it always has.
+  const [totpCode, setTotpCode] = useState("");
+  const [recoveryCode, setRecoveryCode] = useState("");
+  const [totpRequired, setTotpRequired] = useState(false);
+  const [recoveryAvailable, setRecoveryAvailable] = useState(false);
+  const [useRecoveryCode, setUseRecoveryCode] = useState(false);
+  const [setupMode, setSetupMode] = useState<"enroll" | "resetup" | null>(null);
+  // Tier 1 (Discord sign-in). Available only when the server reports the
+  // OAuth application is fully configured; the button is otherwise absent.
+  const [discordSignInAvailable, setDiscordSignInAvailable] = useState(false);
+  const [discordPendingRestart, setDiscordPendingRestart] = useState(false);
+  // Guided first-run setup: opened from the sign-in page (after the password),
+  // or automatically when returning from the setup-mode Discord round-trip.
+  const [discordSetupOpen, setDiscordSetupOpen] = useState(() => new URLSearchParams(window.location.search).has("discordSetup"));
+  const [wantDiscordSetup, setWantDiscordSetup] = useState(() => new URLSearchParams(window.location.search).has("discordSetup"));
+  const [showPasswordLogin, setShowPasswordLogin] = useState(false);
+  // What the policy engine will allow this session. Used only to hide the
+  // Settings tab from Discord tiers a 403 would refuse anyway; enforcement
+  // stays server-side, and an empty answer (read failed) hides nothing.
+  const [allowedActions, setAllowedActions] = useState<string[]>([]);
+  const [userInfo, setUserInfo] = useState<{ username: string; displayName: string; tier: string } | null>(null);
   const [tab, setTab] = useActiveTab();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
@@ -406,6 +433,15 @@ export function App() {
   useStaleBuildWatcher();
 
   useEffect(() => {
+    if (!auth) { setAllowedActions([]); setUserInfo(null); return; }
+    let cancelled = false;
+    api<{ user: { id: string; username: string; displayName: string; tier: string; guildId: string }; allowedActions: string[] }>("/api/auth/me")
+      .then((res) => { if (!cancelled) { setAllowedActions(res.allowedActions || []); setUserInfo({ username: res.user.username, displayName: res.user.displayName || res.user.username, tier: res.user.tier }); } })
+      .catch(() => { /* a failed read leaves the UI ungated; the server still enforces */ });
+    return () => { cancelled = true; };
+  }, [auth]);
+
+  useEffect(() => {
     const handleSessionExpired = () => {
       setCsrfToken(null);
       setAuth(false);
@@ -415,6 +451,16 @@ export function App() {
       setRedeploySetupOpen(false);
       setConfirmRequest(null);
       setError(AUTH_SESSION_EXPIRED_MESSAGE);
+      // Without this, an expiry landing while totpRequired/setupMode is set
+      // leaves the login screen stuck -- no password field (totpRequired keeps
+      // rendering the code/recovery field), or a dead-end setup screen with no
+      // way back to plain login.
+      setTotpRequired(false);
+      setTotpCode("");
+      setRecoveryCode("");
+      setUseRecoveryCode(false);
+      setRecoveryAvailable(false);
+      setSetupMode(null);
     };
     window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, handleSessionExpired);
     return () => window.removeEventListener(AUTH_SESSION_EXPIRED_EVENT, handleSessionExpired);
@@ -425,8 +471,10 @@ export function App() {
   }, [pinnedAddons]);
 
   useEffect(() => {
-    api<{ authenticated: boolean; csrfToken: string | null; config?: { ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
+    api<{ authenticated: boolean; csrfToken: string | null; config?: { discordOAuthConfigured?: boolean; discordSetupPendingRestart?: boolean; ports?: Partial<ServerPorts>; port?: number } }>("/api/auth/state").then((state) => {
       setAuth(state.authenticated);
+      setDiscordSignInAvailable(Boolean(state.config?.discordOAuthConfigured));
+      setDiscordPendingRestart(Boolean(state.config?.discordSetupPendingRestart));
       setCsrfToken(state.csrfToken);
       setServerPorts(state.config?.ports);
       setAdminPort(state.config?.port);
@@ -532,10 +580,69 @@ export function App() {
     request?.resolve(outcome);
   }
 
+  // Uses loginRequest, not post(), because every status this route returns
+  // (200 authenticated/enrollmentRequired/resetupRequired, 401 wrong-password/
+  // totpRequired/recoveryFailed, 429 rate-limited) is a real outcome to branch
+  // on -- there is no session yet at login time, so the shared
+  // session-expiry-on-401 handling used elsewhere would misrepresent all of them.
   async function login() {
-    const result = await post<{ authenticated: boolean; csrfToken: string }>("/api/auth/login", { password });
-    setCsrfToken(result.csrfToken);
-    setAuth(result.authenticated);
+    const body: Record<string, string> = { password };
+    if (useRecoveryCode && recoveryCode) body.recoveryCode = recoveryCode;
+    else if (totpRequired && totpCode) body.totpCode = totpCode;
+    const { status, body: result } = await loginRequest(body);
+
+    if (status === 200 && result.authenticated) {
+      setCsrfToken(String(result.csrfToken || ""));
+      setAuth(true);
+      if (wantDiscordSetup) { setWantDiscordSetup(false); setDiscordSetupOpen(true); }
+      setTotpRequired(false);
+      setTotpCode("");
+      setRecoveryCode("");
+      setUseRecoveryCode(false);
+      setRecoveryAvailable(false);
+      return;
+    }
+    if (status === 200 && (result.enrollmentRequired || result.resetupRequired)) {
+      setCsrfToken(String(result.csrfToken || ""));
+      setSetupMode(result.enrollmentRequired ? "enroll" : "resetup");
+      return;
+    }
+    if (status === 401 && result.totpRequired) {
+      setTotpRequired(true);
+      setRecoveryAvailable(Boolean(result.recoveryAvailable));
+      throw new Error(String(result.error || "Enter your authenticator code."));
+    }
+    if (status === 401 && result.recoveryFailed) {
+      throw new Error(String(result.error || "That recovery code was not accepted."));
+    }
+    throw new Error(String(result.error || "Sign-in failed."));
+  }
+
+  // After enrollment/re-setup the server invalidates that session and requires a
+  // fresh, normal password+TOTP login (RFC §4) -- return to the plain login form
+  // rather than assuming success.
+  function afterTotpSetup() {
+    setSetupMode(null);
+    setPassword("");
+    setTotpCode("");
+    setRecoveryCode("");
+    setTotpRequired(false);
+    setUseRecoveryCode(false);
+    setCsrfToken(null);
+  }
+
+  async function doLogout() {
+    try {
+      await post("/api/auth/logout");
+    } catch {
+      // Return to the sign-in screen even if server-side session cleanup fails.
+    }
+    setCsrfToken(null);
+    setAuth(false);
+    setUserInfo(null);
+    setPassword("");
+    setTab("Home");
+    setMobileNavOpen(false);
   }
 
   async function logoutAfterPasswordChange() {
@@ -665,15 +772,98 @@ export function App() {
     return () => { cancelled = true; };
   }, [auth, setupComplete]);
 
+  if (setupMode) {
+    return <TotpSetupScreen mode={setupMode} onComplete={afterTotpSetup} onCancel={afterTotpSetup} />;
+  }
+
+  if (auth && discordSetupOpen) {
+    return <DiscordSetupWizard onDone={() => { setDiscordSetupOpen(false); setWantDiscordSetup(false); setShowPasswordLogin(false); void post("/api/auth/logout").catch(() => {}); setCsrfToken(null); setAuth(false); setPassword(""); }} onCancel={() => { setDiscordSetupOpen(false); setWantDiscordSetup(false); setShowPasswordLogin(false); }} />;
+  }
+
   if (!auth) {
+    const passwordFields = totpRequired ? (
+      <div className="login-password-fields">
+        {useRecoveryCode ? (
+          <input
+            type="text"
+            id="login-recovery-code"
+            name="login-recovery-code"
+            aria-label="Recovery code"
+            autoComplete="one-time-code"
+            value={recoveryCode}
+            onChange={(event) => setRecoveryCode(event.target.value)}
+            placeholder="Recovery code"
+            autoFocus
+          />
+        ) : (
+          <input
+            type="text"
+            id="login-totp-code"
+            name="login-totp-code"
+            aria-label="Authenticator code"
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            value={totpCode}
+            onChange={(event) => setTotpCode(event.target.value)}
+            placeholder="Authenticator code"
+            autoFocus
+          />
+        )}
+        <button type="submit" className="login-primary-button">Sign In</button>
+        {recoveryAvailable && (
+          <button
+            type="button"
+            className="login-password-toggle"
+            onClick={() => { setUseRecoveryCode(!useRecoveryCode); setTotpCode(""); setRecoveryCode(""); }}
+          >
+            {useRecoveryCode ? "Use your authenticator instead" : "Lost access to your authenticator?"}
+          </button>
+        )}
+      </div>
+    ) : (
+      <div className="login-password-fields">
+        <input type="password" id="login-admin-password" name="login-admin-password" aria-label="Admin password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
+        <button type="submit" className="login-primary-button">Sign In</button>
+      </div>
+    );
     return (
       <main className="login-screen">
         <form className="login-panel" onSubmit={(event) => { event.preventDefault(); void safe(login); }}>
           <h1>Dune Docker Console</h1>
           <img className="login-logo" src="/dune-docker-logo.png" alt="Dune Docker Console logo" />
           <p>Beyond the Dunes, Every Choice Shapes the Future</p>
-          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
-          <button type="submit">Sign In</button>
+          {/* Predominance flips by state. While Discord is opt-in and not yet
+              configured, the password leads and Discord is a secondary "set it
+              up" option. Once configured, Discord is the primary sign-in (most
+              people have only Discord) and the password becomes the secondary,
+              break-glass path -- revealed on demand, never a second factor on
+              top of Discord. */}
+          {discordSignInAvailable && !totpRequired ? (
+            <>
+              <a className="login-discord-button login-discord-button-primary" href="/api/auth/discord/start">
+                <DiscordLogo size={19} aria-hidden="true" /> Sign in with Discord
+              </a>
+              <button type="button" className="login-password-toggle" onClick={() => setShowPasswordLogin(!showPasswordLogin)}>
+                {showPasswordLogin ? "Hide the admin password" : "Use the admin password instead"}
+              </button>
+              {showPasswordLogin && passwordFields}
+            </>
+          ) : (
+            <>
+              {passwordFields}
+              {!totpRequired && (
+                discordPendingRestart ? (
+                  <p className="muted">Discord sign-in is set up — restart the console to switch it on.</p>
+                ) : wantDiscordSetup ? (
+                  <p className="muted">Enter the admin password above to set up Discord sign-in. <button type="button" className="login-password-toggle" onClick={() => setWantDiscordSetup(false)}>cancel</button></p>
+                ) : (
+                  <button type="button" className="login-discord-button login-discord-button-secondary" onClick={() => setWantDiscordSetup(true)}>
+                    <DiscordLogo size={17} aria-hidden="true" /> Set up Discord sign-in
+                  </button>
+                )
+              )}
+            </>
+          )}
           {error && <p className="error">{error === AUTH_SESSION_EXPIRED_MESSAGE
             ? <>Your browser login session expired.<br />Sign in again to continue.</>
             : error}</p>}
@@ -748,11 +938,25 @@ export function App() {
             onClick={() => setMobileNavOpen((open) => !open)}
           >{mobileNavOpen ? <X size={20} /> : <Menu size={20} />}</button>
         </div>
+        {userInfo && (
+          <div className="sidebar-user">
+            <span className="sidebar-user-identity">
+              <ShieldCheck size={16} aria-hidden="true" />
+              <span className="sidebar-user-name" title={userInfo.username}>{userInfo.displayName}</span>
+            </span>
+            <div className="sidebar-user-meta">
+              <span className={`sidebar-user-tier tier-${userInfo.tier}`} title={`Console access tier: ${userInfo.tier}`}>{userInfo.tier}</span>
+              <button className="sidebar-logout" type="button" onClick={() => { void doLogout(); }} title="Log out">
+                <LogOut size={14} aria-hidden="true" /><span>Logout</span>
+              </button>
+            </div>
+          </div>
+        )}
         <nav id="console-navigation" className={`sidebar-nav ${mobileNavOpen ? "mobile-open" : ""}`}>
           {navGroups.map((group) => (
             <section className="sidebar-nav-group" key={group.title} aria-label={group.title}>
               <p className="sidebar-nav-heading">{group.title}</p>
-              {group.items.map((item) => (
+              {group.items.filter((item) => (item.tab !== "Settings" && item.tab !== "Access Control") || allowedActions.length === 0 || allowedActions.some((a) => a.startsWith("settings:"))).map((item) => (
                 <Fragment key={item.tab}>
                   <button className={tab === item.tab && (!selectedPinnedAddonId || item.tab !== "Addons") ? "active" : ""} onClick={() => {
                     setRedeploySetupOpen(false);
@@ -856,6 +1060,7 @@ export function App() {
             formatResultTitle={formatResultTitle}
             formatResultMessage={formatResultMessage}
           /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Access Control" && <LazyTabBoundary label="Loading Access Control"><IamPolicyEditor /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Settings" && <LazyTabBoundary label="Loading Settings"><SettingsPanel
           onPasswordChanged={logoutAfterPasswordChange}
           publicListingUrl={publicDirectoryStatus?.serverId ? publicServerListingUrl(publicDirectoryStatus.serverId) : undefined}

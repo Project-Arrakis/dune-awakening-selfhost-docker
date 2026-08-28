@@ -38,6 +38,26 @@ services:
       ADMIN_AUTH_DISABLED: "${ADMIN_AUTH_DISABLED:-0}"
       ADMIN_SECURE_COOKIES: "${ADMIN_SECURE_COOKIES:-0}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      # Tier 3 second factor (docs/rfc-console-auth.md §2.3/§4). Off unless the
+      # operator sets it in .env. Must be passed through here explicitly: the
+      # console reads process.env inside the container, so a value that only
+      # exists in .env on the host is invisible to it.
+      CONSOLE_TOTP_ENABLED: "${CONSOLE_TOTP_ENABLED:-0}"
+      CONSOLE_TRUSTED_PROXY_IPS: "${CONSOLE_TRUSTED_PROXY_IPS:-}"
+      # Discord OAuth sign-in (docs/rfc-console-auth.md §2.1 / §2.1.1). All optional;
+      # unset keeps password-only sign-in. The client secret and the optional bot
+      # handoff secret are read from runtime/secrets/ files by default, so they
+      # are not listed here.
+      DISCORD_OAUTH_CLIENT_ID: "${DISCORD_OAUTH_CLIENT_ID:-}"
+      DISCORD_OAUTH_REDIRECT_URI: "${DISCORD_OAUTH_REDIRECT_URI:-}"
+      DISCORD_HOME_GUILD_ID: "${DISCORD_HOME_GUILD_ID:-}"
+      DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "${DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP:-0}"
+      DISCORD_OAUTH_OWNER_ALLOWLIST: "${DISCORD_OAUTH_OWNER_ALLOWLIST:-}"
+      DISCORD_CONSOLE_ADMIN_ROLE_IDS: "${DISCORD_CONSOLE_ADMIN_ROLE_IDS:-}"
+      DISCORD_CONSOLE_MODERATOR_ROLE_IDS: "${DISCORD_CONSOLE_MODERATOR_ROLE_IDS:-}"
+      DISCORD_CONSOLE_PLAYER_ROLE_IDS: "${DISCORD_CONSOLE_PLAYER_ROLE_IDS:-}"
+      DISCORD_OAUTH_REQUIRE_MFA_TIERS: "${DISCORD_OAUTH_REQUIRE_MFA_TIERS:-}"
+      DISCORD_BOT_HANDOFF_URL: "${DISCORD_BOT_HANDOFF_URL:-}"
       ADMIN_TASK_RETENTION: "${ADMIN_TASK_RETENTION:-200}"
       ADMIN_MARKET_HISTORY_RETENTION_DAYS: "${ADMIN_MARKET_HISTORY_RETENTION_DAYS:-0}"
       ADMIN_COMMAND_TIMEOUT_MS: "${ADMIN_COMMAND_TIMEOUT_MS:-1800000}"
