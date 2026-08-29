@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { resolvedAllowedActions, nsFromAction, iamActionAllowed, type PolicyStatement } from "./iamPolicy";
+import { resolvedAllowedActions, nsFromAction, iamActionAllowed, actionGrantedByStatements, type PolicyStatement } from "./iamPolicy";
 
 // Pins the two rules the IAM editor must mirror from console/api/src/policy.js
 //: explicit Deny beats Allow, and grouping follows the IAM action's
@@ -75,5 +75,38 @@ describe("iamActionAllowed mirrors the server matchAction wildcard forms", () =>
     expect(iamActionAllowed("anything:here", ["*"])).toBe(true);
     expect(iamActionAllowed("players:read", ["players:read"])).toBe(true);
     expect(iamActionAllowed("players:read", ["bases:read"])).toBe(false);
+  });
+});
+
+// toggleAction's branch decision (grant vs. revoke) must be computed from the
+// SAME statement list its text mutation operates on -- not a memo from the
+// last completed render (review finding: after the first fix moved the text
+// mutation itself to a functional setJsonText updater, the branch decision
+// still read the outer, potentially-stale `allowedActions` memo. Two toggles
+// of the same action fired before React re-renders between them -- e.g. a
+// future bulk/"select all" loop -- would both branch on the same stale
+// grant/deny state and could re-grant an action just revoked, or vice versa,
+// instead of netting out correctly). actionGrantedByStatements is the single
+// function both the grid's `allowedActions` memo and toggleAction's branch
+// decision now share.
+describe("actionGrantedByStatements reflects a specific statement list, not stale outer state", () => {
+  it("is false, then true, as the SAME action is granted across two statement lists in sequence -- simulating chained toggles", () => {
+    const before: PolicyStatement[] = [{ Effect: "Allow", Action: ["server:read"] }];
+    expect(actionGrantedByStatements(before, "players:kick")).toBe(false);
+    // A first toggle's mutation result: players:kick added to the Allow list.
+    const afterFirstToggle: PolicyStatement[] = [{ Effect: "Allow", Action: ["server:read", "players:kick"] }];
+    // A second toggle chained onto the first's result must see it as GRANTED
+    // now (so it takes the revoke branch), not stale-false (which would
+    // re-take the grant branch and leave it stuck granted).
+    expect(actionGrantedByStatements(afterFirstToggle, "players:kick")).toBe(true);
+  });
+
+  it("an explicit Deny wins over an Allow in the same statement list", () => {
+    const stmts: PolicyStatement[] = [
+      { Effect: "Allow", Action: ["settings:*"] },
+      { Effect: "Deny", Action: ["settings:write"] },
+    ];
+    expect(actionGrantedByStatements(stmts, "settings:write")).toBe(false);
+    expect(actionGrantedByStatements(stmts, "settings:read")).toBe(true);
   });
 });
