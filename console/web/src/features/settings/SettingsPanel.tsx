@@ -16,12 +16,20 @@ function stripCodeWhitespace(value: string) {
   return value.replace(/\s/g, "");
 }
 
+// Discord snowflake IDs are 17-19 decimal digits. The server (roleTiers.js's
+// parseRoleIdList) always filters role-ID text through this shape before
+// comparing for conflicts; mirroring that here too (review finding) avoids a
+// false-positive "role conflict" -- and a disabled Save button -- for a
+// malformed/non-snowflake token (a typo or paste artifact) that the server
+// would simply drop and save without complaint.
+const DISCORD_SNOWFLAKE_RE = /^\d{17,19}$/;
+
 // Separation of duties for Discord sign-in: one Discord role, one console tier.
 // Mirrors the server's check so the operator is told before the round-trip.
 function discordRoleConflicts(fields: Record<string, string>) {
   const seen = new Map<string, string[]>();
   for (const [tier, value] of Object.entries(fields)) {
-    for (const id of value.split(",").map((v) => v.trim()).filter(Boolean)) {
+    for (const id of value.split(",").map((v) => v.trim()).filter((v) => DISCORD_SNOWFLAKE_RE.test(v))) {
       const tiers = seen.get(id) || [];
       if (!tiers.includes(tier)) tiers.push(tier);
       seen.set(id, tiers);
