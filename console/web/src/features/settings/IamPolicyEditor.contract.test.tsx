@@ -53,6 +53,11 @@ describe("IamPolicyEditor server contracts", () => {
   it("renders a checkbox for a parameterized-route action present only in allActions (players:kick)", async () => {
     mockLoad();
     render(<IamPolicyEditor />);
+    // #634: namespace groups are collapsed by default -- expand "Players",
+    // then its one access-level sub-group (no accessLevels field in this
+    // fixture, so every action falls back to "Read" -- see levelForAction).
+    fireEvent.click(await screen.findByLabelText("Expand Players"));
+    fireEvent.click(await screen.findByLabelText("Expand Read"));
     // players:kick has no actionMap route key; before the fix the grid iterated
     // only actionMap values and this action never appeared (raw-JSON only).
     expect(await screen.findByText("players:kick")).toBeTruthy();
@@ -97,9 +102,14 @@ describe("IamPolicyEditor server contracts", () => {
 
     // The grid renders (owner sees everything allowed via "*") without throwing;
     // before the fix, toggleAction's s.Action.filter on the string "*" threw.
-    const checkboxes = await screen.findAllByRole("checkbox");
-    expect(checkboxes.length).toBeGreaterThan(0);
-    fireEvent.click(checkboxes[0]); // wildcard-granted: cannot be toggled off by checkbox
+    // #634: expand a namespace + its access-level sub-group to reach an
+    // individual action's checkbox (the header tri-state checkboxes visible
+    // before expanding are select-all controls, not this one).
+    fireEvent.click(await screen.findByLabelText("Expand Server"));
+    fireEvent.click(await screen.findByLabelText("Expand Read"));
+    const row = (await screen.findByText("server:read")).closest("label")!;
+    const checkbox = row.querySelector('input[type="checkbox"]')!;
+    fireEvent.click(checkbox); // wildcard-granted: cannot be toggled off by checkbox
     expect(await screen.findByText(/granted by a wildcard rule/i)).toBeTruthy();
   });
 
@@ -122,13 +132,20 @@ describe("IamPolicyEditor server contracts", () => {
     });
     render(<IamPolicyEditor />);
     fireEvent.click(await screen.findByText("Moderator")); // moderator allows exactly server:read (exact literal, toggleable)
+    // #634: expand "Server", then its one access-level sub-group (no
+    // accessLevels field in this fixture -- every action falls back to "Read").
+    fireEvent.click(await screen.findByLabelText("Expand Server"));
+    fireEvent.click(await screen.findByLabelText("Expand Read"));
 
-    // 3 read routes collapse to ONE "Read" checkbox; one "Restart" too.
-    await waitFor(() => expect(screen.getAllByText("Read").length).toBe(1));
-    expect(screen.getAllByText("Restart").length).toBe(1);
+    // 3 read routes collapse to ONE action-row "Read" checkbox (the
+    // ".iam-perm-label" selector excludes the "Read" access-level sub-header
+    // introduced by #634, which also renders the literal text "Read");
+    // one "Restart" too.
+    await waitFor(() => expect(screen.getAllByText("Read", { selector: ".iam-perm-label" }).length).toBe(1));
+    expect(screen.getAllByText("Restart", { selector: ".iam-perm-label" }).length).toBe(1);
 
     // Unchecking Read removes only server:read; save PUTs moderator without it.
-    const readRow = screen.getByText("Read").closest("label")!;
+    const readRow = screen.getByText("Read", { selector: ".iam-perm-label" }).closest("label")!;
     fireEvent.click(readRow.querySelector('input[type="checkbox"]')!);
     fireEvent.click(screen.getByText("Save moderator policy"));
     await waitFor(() => expect(mockApi).toHaveBeenCalledWith("/api/settings/iam/policy", expect.objectContaining({ method: "PUT" })));
@@ -177,6 +194,11 @@ describe("IamPolicyEditor: ambiguous action labels get a plain-language explanat
     });
     render(<IamPolicyEditor />);
     fireEvent.click(await screen.findByText("Admin"));
+    // #634: namespace groups are collapsed by default -- expand "Players",
+    // then its one access-level sub-group (no accessLevels field in this
+    // fixture, so every action falls back to "Read").
+    fireEvent.click(await screen.findByLabelText("Expand Players"));
+    fireEvent.click(await screen.findByLabelText("Expand Read"));
 
     // The bare mechanical label ("Mutate") is overridden entirely -- an
     // operator shouldn't have to hover to learn what an action does.
@@ -200,6 +222,10 @@ describe("IamPolicyEditor: ambiguous action labels get a plain-language explanat
     });
     render(<IamPolicyEditor />);
     fireEvent.click(await screen.findByText("Admin"));
+    // #634: expand "Admin Tools", then its one access-level sub-group (no
+    // accessLevels field in this fixture -- every action falls back to "Read").
+    fireEvent.click(await screen.findByLabelText("Expand Admin Tools"));
+    fireEvent.click(await screen.findByLabelText("Expand Read"));
 
     expect(await screen.findByText("Vehicle Catalog")).toBeTruthy();
     expect(screen.queryByText("Vehicles Read")).toBeNull();
@@ -229,5 +255,111 @@ describe("IamPolicyEditor: the Permissions grid is read-only while the JSON tab 
     const after = document.querySelector("textarea.iam-json-textarea") as HTMLTextAreaElement;
     expect(after.value).toBe(broken); // the operator's draft -- Deny block included -- is untouched
     expect(mockApi).not.toHaveBeenCalledWith("/api/settings/iam/policy", expect.objectContaining({ method: "PUT" }));
+  });
+});
+
+// #634 (AWS-IAM-Visual-Editor-style Access Control UI). Integration coverage
+// for the accordion/select-all wiring on top of the pure functions already
+// unit-tested in iamPolicyGroups.test.ts.
+const GROUP_CATALOG = {
+  policies: {
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["players:read"] }] },
+  },
+  actions: [],
+  actionMap: {},
+  allActions: ["players:read", "players:kick", "players:mutate"],
+  accessLevels: { "players:read": "read", "players:kick": "write", "players:mutate": "permissions" },
+  crownJewelActions: ["players:mutate"],
+  namespaces: {},
+};
+
+function mockGroupCatalog() {
+  mockApi.mockImplementation((path: string, opts?: RequestInit) => {
+    if (path === "/api/settings/iam/policies" && (!opts || opts.method === undefined)) return Promise.resolve(structuredClone(GROUP_CATALOG) as never);
+    if (path === "/api/settings/iam/policy" && opts?.method === "PUT") return Promise.resolve({ ok: true, policies: JSON.parse(String(opts.body)) } as never);
+    return Promise.reject(new Error(`unexpected api call: ${opts?.method || "GET"} ${path}`));
+  });
+}
+
+describe("IamPolicyEditor: namespace select-all excludes crown-jewel actions for a non-owner tier", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("shows the owner-only count in the collapsed header, and select-all grants everything else without granting the crown jewel", async () => {
+    mockGroupCatalog();
+    render(<IamPolicyEditor />);
+    fireEvent.click(await screen.findByText("Admin"));
+
+    // Visible without expanding -- an operator who selects-all from a
+    // collapsed header and moves on must still see this (Eight Hats UI/UX
+    // finding H2).
+    expect(await screen.findByText(/1\/3 allowed — 1 owner-only/)).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Select all Players permissions"));
+    fireEvent.click(await screen.findByLabelText("Expand Players"));
+    fireEvent.click(await screen.findByLabelText("Expand Write"));
+    // players:kick (write) is now granted by select-all.
+    const kickRow = (await screen.findByText("players:kick")).closest("label")!;
+    expect(kickRow.querySelector('input[type="checkbox"]')).toBeChecked();
+
+    fireEvent.click(await screen.findByLabelText("Expand Permissions Management"));
+    // players:mutate (the crown jewel) was NOT granted by select-all.
+    const mutateRow = (await screen.findByText("players:mutate")).closest("label")!;
+    expect(mutateRow.querySelector('input[type="checkbox"]')).not.toBeChecked();
+  });
+
+  it("owner's select-all DOES include the crown-jewel action -- the exclusion only applies to non-owner tiers", async () => {
+    mockGroupCatalog();
+    render(<IamPolicyEditor />);
+    fireEvent.click(await screen.findByText("Owner")); // default-selected tier is admin; switch explicitly
+
+    fireEvent.click(await screen.findByLabelText("Select all Players permissions"));
+    fireEvent.click(await screen.findByLabelText("Expand Players"));
+    fireEvent.click(await screen.findByLabelText("Expand Permissions Management"));
+    const mutateRow = (await screen.findByText("players:mutate")).closest("label")!;
+    // Owner already grants everything via "*" -- select-all is a no-op here,
+    // but the row must show granted (it already was), not excluded/locked.
+    expect(mutateRow.querySelector('input[type="checkbox"]')).toBeChecked();
+  });
+
+  it("unchecking a fully-granted namespace header revokes every exact-literal grant in it", async () => {
+    mockGroupCatalog();
+    render(<IamPolicyEditor />);
+    fireEvent.click(await screen.findByText("Admin"));
+    fireEvent.click(await screen.findByLabelText("Expand Players"));
+    fireEvent.click(await screen.findByLabelText("Expand Read"));
+    // players:read is admin's only current grant -- the namespace header
+    // covers 1/3 (players:mutate is excluded from the denominator too), so
+    // clicking it again after it reaches "checked" for the grantable subset
+    // must revoke, not re-grant. Grant players:kick first via select-all so
+    // the grantable subset (read+write) is fully checked, then verify
+    // unchecking clears both literals.
+    fireEvent.click(screen.getByLabelText("Select all Players permissions"));
+    await waitFor(() => expect(screen.getByLabelText("Select all Players permissions")).toBeChecked());
+    fireEvent.click(screen.getByLabelText("Select all Players permissions"));
+    const readRow = (await screen.findByText("players:read")).closest("label")!;
+    expect(readRow.querySelector('input[type="checkbox"]')).not.toBeChecked();
+  });
+});
+
+describe("IamPolicyEditor: search auto-expands a matching group without discarding a manual toggle made during the search", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("auto-expands a namespace containing a search match, and preserves an unrelated namespace manually expanded during the same search after the search is cleared", async () => {
+    mockGroupCatalog();
+    render(<IamPolicyEditor />);
+    fireEvent.click(await screen.findByText("Admin"));
+
+    // "Players" starts collapsed -- confirm the collapsed state before searching.
+    expect(screen.queryByText("players:read")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Search permissions"), { target: { value: "kick" } });
+    // Auto-expanded by the search match, with no manual click.
+    expect(await screen.findByText("players:kick")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Search permissions"), { target: { value: "" } });
+    // Reverts to collapsed -- the auto-expand was never written into the
+    // manual expand state.
+    expect(screen.queryByText("players:kick")).toBeNull();
   });
 });

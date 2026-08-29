@@ -6761,15 +6761,40 @@ button.login-discord-button { border: none; cursor: pointer; font: inherit; font
 }
 .iam-ns-header {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
 }
 .iam-ns-name { color: var(--title); font-weight: 700; font-size: 14px; }
-.iam-ns-count { flex: 0 0 auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.iam-ns-count { flex: 0 0 auto; margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .iam-ns-actions { display: grid; gap: 3px; }
+
+/* #634: namespace accordion chevron -- a bare, borderless toggle button so it
+   reads as part of the header row, not a separate control. */
+.iam-ns-chevron {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.iam-ns-chevron:hover { color: var(--text-strong); }
+
+/* Access-level sub-group (Read / Write / Permissions Management), nested
+   inside an expanded namespace card -- indented one step, its own header
+   mirrors the namespace header's chevron+checkbox+name+count layout. */
+.iam-level-group { margin-left: 20px; display: grid; gap: 6px; }
+.iam-level-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+.iam-level-name { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
 
 /* Permission row — override base `label { display:grid }` and `input{width:100%}` */
 .iam-perm-row {
