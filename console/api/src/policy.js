@@ -184,8 +184,12 @@ export function setPolicies(docs, repoRoot = null) {
   if (!validPolicyStore(docs)) {
     return { ok: false, error: "Policies must contain valid tier documents and Allow/Deny statements." };
   }
-  if (!evaluate({ tier: "owner" }, "settings:write", docs)) {
-    return { ok: false, error: "The owner policy must retain settings:write access." };
+  // settings:read gates GET /api/settings and GET /api/settings/iam/policies --
+  // an owner document that kept settings:write but lost settings:read would
+  // pass the check above yet be unable to load the IAM editor or Settings
+  // panel at all to fix its own mistake (found by review).
+  if (!evaluate({ tier: "owner" }, "settings:write", docs) || !evaluate({ tier: "owner" }, "settings:read", docs)) {
+    return { ok: false, error: "The owner policy must retain settings:read and settings:write access." };
   }
   _policies = docs;
   _allowedActions = {};

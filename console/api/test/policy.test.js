@@ -347,3 +347,19 @@ test("setPolicies refuses an action pattern outside the IAM vocabulary and names
   const ok = setPolicies({ ...docs, admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["server:*", "admin:transfer-settings:read", "players:kick-all"] }] } });
   assert.equal(ok.ok, true);
 });
+
+// Review finding: the owner-lockout guard checked only settings:write, so an
+// owner policy that kept write but lost read passed setPolicies() yet could
+// never load /api/settings or /api/settings/iam/policies to undo the mistake.
+test("setPolicies refuses an owner document that has settings:write but not settings:read", () => {
+  const docs = {
+    owner: { version: 1, tier: "owner", statements: [
+      { Effect: "Allow", Action: ["settings:write", "server:*"] },
+      { Effect: "Deny", Action: ["settings:read"] },
+    ] },
+    admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["server:read"] }] },
+  };
+  const result = setPolicies(docs);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /settings:read/);
+});

@@ -549,10 +549,11 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // panel shipped without any way to destroy items, so an operator whose
   // hand-authored policy grants vehicles:mutate (roster edits, refuel, repair)
   // cannot have agreed to item destruction -- folding this in would silently
-  // widen every existing narrow policy. Under this fork's default policy owner
+  // widen every existing narrow policy. Under the default policy owner
   // ("*") still matches; admin/moderator/player/observer hold only vehicles:read,
-  // so the delete-item action is owner-only by default (this fork tightened
-  // admin from upstream's vehicles:* to vehicles:read).
+  // so the delete-item action is owner-only by default (admin's default was
+  // narrowed from vehicles:* to vehicles:read -- see the tier-model notes in
+  // console-iam.md).
   //
   // The bulk action is "vehicles:bulk-delete-items", NOT "vehicles:delete-items"
   // (issue #351's lesson, mirrored from bases): policy.js's `-*` wildcard means

@@ -1,9 +1,9 @@
-// Console RBAC Phase 3 — signed tier handoff between bot and console.
+// Signed tier handoff between a companion bot and the console.
 //
-// Mechanism B (operator-approved 2026-08-06): the ACP bot resolves a
-// Discord user's effective console tier for the configured home guild
-// and returns a signed handoff payload. The console verifies the HMAC
-// before trusting any tier claim — fail-closed. No unsigned claim may
+// A companion bot resolves a Discord user's effective console tier for
+// the configured home guild and returns a signed handoff payload. The
+// console verifies the HMAC before trusting any tier claim — fail-closed.
+// No unsigned claim may
 // ever produce a tiered session.
 //
 // Payload (the bot signs this shape):

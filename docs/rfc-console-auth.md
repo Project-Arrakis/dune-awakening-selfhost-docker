@@ -4,7 +4,7 @@
 **Status:** Accepted — merged via PR #170 (2026-08-18); this revision closes findings from a post-merge validation review (see §8).
 **Audit:** Three Layer 1 Eight-Hat passes (two full, one targeted), upstream identity/recovery-code/upgrade-path corrections at merge review, and a 2026-08-20 four-lens post-merge validation (Technical Writer, Security Architect, UI/UX, GRC); findings summary in §8.
 
-**Dependency note, checked directly against `upstream/main` before submitting this RFC:** §2.1 (Tier 1) and part of §2.2 (Tier 2) reference `console/api/src/integrations/discord/oauth.js` and `handoff.js` — the Discord OAuth sign-in + signed-handoff tier-resolution system. This code does **not exist on `upstream/main` today**. It was previously proposed as its own PR (#130, "Tranche 2: Discord OAuth sign-in with PKCE + tiered sessions", self-closed by the submitter, never merged) and currently exists only in this fork. The RBAC/session foundation it builds on (opaque sessions, `resolveSessionTier`, the policy engine) **did** land upstream via PR #134 and is present today — §2.3 (Tier 3) builds directly on that already-merged foundation and has no dependency gap. Sequencing is left to the maintainer's judgment: Tier 3 could be reviewed/merged independently of Tiers 1/2, or Tiers 1/2 could be resubmitted (individually or together with this RFC) if there's still interest in the Discord OAuth feature itself landing upstream. Flagging this now rather than presenting the whole design as if every piece it touches already exists on `main`.
+**Dependency note (updated for the split submission):** §2.1 (Tier 1) and part of §2.2 (Tier 2) reference `console/api/src/integrations/discord/oauth.js` and `handoff.js` — the Discord OAuth sign-in + signed-handoff tier-resolution system. That code is submitted alongside this RFC as its own stacked draft PR (base: this Tier 3 PR); §2.3 (Tier 3), the mandatory-TOTP change this RFC section otherwise documents, has no dependency on it and can be reviewed and merged independently. Sequencing is left to the maintainer's judgment.
 
 ---
 
@@ -42,7 +42,7 @@ Rather than replacing the password path with a single new "primary" mechanism (t
 
 ### 2.1 Tier 1 — Discord OAuth (fixed)
 
-**Depends on the not-yet-upstreamed Discord OAuth system** (see the dependency note at the top of this document — this section describes "what exists today" in the *fork*, not on `upstream/main`). No new requirement over what exists in the fork today. The only change is closing the fail-open bug from §1.1:
+**Depends on the Discord OAuth system submitted in the stacked companion PR** (see the dependency note at the top of this document). No new requirement over what that PR implements. The only change is closing the fail-open bug from §1.1:
 
 ```js
 // Current (condensed for readability -- the real code at oauth.js:166-183
@@ -86,6 +86,8 @@ This is the entire authorization fix — no cache, no grace window, no new persi
 **Trade-off, stated explicitly:** once an operator configures the bot handoff, a bot outage now means "no *new* Discord-tiered logins until the bot is back," instead of "the allowlist quietly grants owner regardless of the person's real current role." Already-active sessions are unaffected (session cookies validate against the in-memory session store, never re-checked against the handoff) — only *new* logins during an outage window are affected.
 
 #### 2.1.1 Amendment — console-native role→tier resolution (so Tier 1 works without a companion bot)
+
+*As implemented* in the companion Tier 1 PR — this whole subsection describes shipped behavior, not a proposal.
 
 **Why this amendment exists.** §2.1 as accepted resolves a Discord user's tier through a signed handoff to the operator's own bot, with a static owner allowlist as the only alternative. §1.2 of this same document names the operator with no bot as a first-class case — and for that operator, §2.1 gives "sign in with Discord as owner, if allowlisted" and nothing else. That is Discord *authentication* without Discord *authorization*, and it is not what an operator means by role-based access. This amendment adds a third tier source that the console evaluates itself, from the Discord roles the signed-in member actually holds.
 
