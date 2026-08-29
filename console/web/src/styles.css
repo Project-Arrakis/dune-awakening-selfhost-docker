@@ -6774,15 +6774,38 @@ button.login-discord-button { border: none; cursor: pointer; font: inherit; font
    reads as part of the header row, not a separate control. */
 .iam-ns-chevron {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
   background: none;
   border: none;
-  padding: 0 2px;
+  padding: 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 16px;
   line-height: 1;
   cursor: pointer;
 }
 .iam-ns-chevron:hover { color: var(--text-strong); }
+
+/* The global `input { width:100%; border:1px solid...; padding:10px 12px }`
+   reset applies to every <input>, including these two header checkboxes --
+   without this override they render as full-width bordered/padded boxes,
+   not checkboxes (the actual cause of "looks horrible": no explicit reset
+   was ever added for these when TriStateCheckbox was introduced, unlike
+   .iam-perm-row's row-level checkboxes, which already had one). */
+.iam-ns-header input[type="checkbox"],
+.iam-level-header input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  border: none;
+  accent-color: var(--accent-strong);
+  cursor: pointer;
+}
 
 /* Access-level sub-group (Read / Write / Permissions Management), nested
    inside an expanded namespace card -- indented one step, its own header
