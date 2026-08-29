@@ -648,6 +648,12 @@ export function App() {
   // fresh, normal password+TOTP login (RFC §4) -- return to the plain login form
   // rather than assuming success.
   function afterTotpSetup() {
+    // Also used as onCancel ("Back to sign in"): every OTHER terminal branch
+    // of this flow (a confirmed enrollment, a 409 already-configured) ends the
+    // server-side enrollment session; leaving via Cancel used to skip that,
+    // so the session (and any pending secret on it) stayed live for the rest
+    // of its TTL (review finding).
+    void post("/api/auth/logout").catch(() => { /* best effort -- proceed to login either way */ });
     setSetupMode(null);
     setPassword("");
     setTotpCode("");
