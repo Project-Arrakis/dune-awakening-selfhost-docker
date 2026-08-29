@@ -23,7 +23,7 @@ function distinctActions(catalog?: PolicyCatalog | null): string[] {
   return [...new Set(Object.values(catalog?.actionMap || {}))].filter((a): a is string => typeof a === "string");
 }
 
-const TIERS = ["owner", "admin", "moderator", "player"] as const;
+const TIERS = ["owner", "admin", "moderator", "player", "observer"] as const;
 
 function parseStatements(text: string): PolicyStatement[] | null {
   try {
@@ -184,51 +184,59 @@ export function IamPolicyEditor() {
     return result;
   }, [groupedActions, search]);
 
+  // Reads the live jsonText via a functional setJsonText update rather than
+  // the value captured in this closure (review finding): two toggles fired
+  // before React re-renders between them (e.g. a future bulk/"select all"
+  // action calling this in a loop) would otherwise both compute `updated`
+  // from the same stale text, and the second setJsonText call would silently
+  // overwrite the first toggle's change.
   const toggleAction = (iamAction: string) => {
-    const stmts = parseStatements(jsonText);
-    if (!stmts) {
-      setToggleHint("The JSON tab contains invalid JSON, so permissions cannot be changed here until it is fixed.");
-      return;
-    }
-    setToggleHint("");
-    let updated: PolicyStatement[];
+    setJsonText((currentJsonText) => {
+      const stmts = parseStatements(currentJsonText);
+      if (!stmts) {
+        setToggleHint("The JSON tab contains invalid JSON, so permissions cannot be changed here until it is fixed.");
+        return currentJsonText;
+      }
+      setToggleHint("");
+      let updated: PolicyStatement[];
 
-    if (allowedActions.has(iamAction)) {
-      // Revoke. A checkbox can only remove an exact Allow literal; a grant that
-      // comes from a wildcard ("server:*" or "*") cannot be narrowed here
-      // without rewriting the wildcard. Filtering by !== would leave the
-      // wildcard in place and the box would snap back -- tell the operator to
-      // use the JSON tab instead of silently doing nothing.
-      const hasExactLiteral = stmts.some(st => st.Effect === "Allow" && st.Action.includes(iamAction));
-      if (!hasExactLiteral) {
-        setToggleHint(`${iamAction} is granted by a wildcard rule, not a single permission. Edit the JSON tab to change wildcard grants.`);
-        return;
+      if (allowedActions.has(iamAction)) {
+        // Revoke. A checkbox can only remove an exact Allow literal; a grant that
+        // comes from a wildcard ("server:*" or "*") cannot be narrowed here
+        // without rewriting the wildcard. Filtering by !== would leave the
+        // wildcard in place and the box would snap back -- tell the operator to
+        // use the JSON tab instead of silently doing nothing.
+        const hasExactLiteral = stmts.some(st => st.Effect === "Allow" && st.Action.includes(iamAction));
+        if (!hasExactLiteral) {
+          setToggleHint(`${iamAction} is granted by a wildcard rule, not a single permission. Edit the JSON tab to change wildcard grants.`);
+          return currentJsonText;
+        }
+        updated = stmts.map(st => {
+          if (st.Effect !== "Allow") return st;
+          return { ...st, Action: st.Action.filter(a => a !== iamAction) };
+        }).filter(st => st.Action.length > 0);
+      } else {
+        // Grant. A standing Deny (e.g. admin's "Deny settings:*") overrides any
+        // Allow, so adding the literal would change nothing -- say so rather than
+        // let the box appear to do nothing.
+        const denyBlocked = stmts.some(st => st.Effect === "Deny" && iamActionAllowed(iamAction, st.Action));
+        if (denyBlocked) {
+          setToggleHint(`${iamAction} is blocked by a Deny rule. Remove that Deny in the JSON tab first.`);
+          return currentJsonText;
+        }
+        updated = [...stmts];
+        let allowStmt = updated.filter(st => st.Effect === "Allow").pop();
+        if (!allowStmt) {
+          allowStmt = { Effect: "Allow" as const, Action: [] };
+          updated.push(allowStmt);
+        }
+        if (!allowStmt.Action.includes(iamAction)) {
+          allowStmt.Action = [...allowStmt.Action, iamAction];
+        }
       }
-      updated = stmts.map(st => {
-        if (st.Effect !== "Allow") return st;
-        return { ...st, Action: st.Action.filter(a => a !== iamAction) };
-      }).filter(st => st.Action.length > 0);
-    } else {
-      // Grant. A standing Deny (e.g. admin's "Deny settings:*") overrides any
-      // Allow, so adding the literal would change nothing -- say so rather than
-      // let the box appear to do nothing.
-      const denyBlocked = stmts.some(st => st.Effect === "Deny" && iamActionAllowed(iamAction, st.Action));
-      if (denyBlocked) {
-        setToggleHint(`${iamAction} is blocked by a Deny rule. Remove that Deny in the JSON tab first.`);
-        return;
-      }
-      updated = [...stmts];
-      let allowStmt = updated.filter(st => st.Effect === "Allow").pop();
-      if (!allowStmt) {
-        allowStmt = { Effect: "Allow" as const, Action: [] };
-        updated.push(allowStmt);
-      }
-      if (!allowStmt.Action.includes(iamAction)) {
-        allowStmt.Action = [...allowStmt.Action, iamAction];
-      }
-    }
-    setJsonText(JSON.stringify(updated, null, 2));
-    setSaved(false);
+      setSaved(false);
+      return JSON.stringify(updated, null, 2);
+    });
   };
 
   const validateJson = (text: string): PolicyStatement[] | null => {

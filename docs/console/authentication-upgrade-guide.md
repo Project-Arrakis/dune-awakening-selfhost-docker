@@ -438,6 +438,28 @@ has no two-factor enabled (and names the Discord setting to fix it).
   kick/ban/teleport. Open **Access Control** (sidebar, owner only), pick the
   tier, and tick those three (or add them to the tier's `Allow` in the JSON
   tab).
+- **Never customized the Admin policy? Its *default* just got much narrower.**
+  Before this release, Admin's shipped default granted broad namespace
+  wildcards — `server:*`, `backups:*`, `updates:*`, `players:*`, `guilds:*`,
+  `bases:*`, `storage:*`, `blueprints:*`, `vehicles:*`, `exchange:*`, `maps:*`,
+  `sietches:*`, `deepdesert:*`, `admin:*`, `landsraad:*`, `addons:*`,
+  `carepackage:*`, `setup:*`, `logs:*`. As of this release the shipped Admin
+  default is deliberately narrowed to an explicit allow list (day-to-day
+  server operation and moderation) plus a Deny block on economy/credential/
+  destructive actions — see `console/api/src/policy.js`'s `DEFAULT_POLICIES`
+  comment for the exact reasoning. **If you never opened Access Control and
+  never saved a custom policy, this narrowing applies to you on upgrade**: any
+  admin-tier account (session or role-mapped) loses namespace-wide access to
+  everything not on the new explicit list — most notably `updates:*`
+  (deploying updates from the console), `backups:restore`/`backups:import`
+  (data-loss-risk restore/import operations were always owner-only in
+  practice, but are now also *unreachable*, not just discouraged, for admin),
+  and the economy namespaces (`carepackage:*`, `exchange:market-write`). If
+  your admin accounts need any of these, open **Access Control** (sidebar,
+  owner only), pick **admin**, and add back exactly what you need — do not
+  restore the old wildcard grants wholesale, since several of the actions
+  they covered are now intentionally owner-only "crown jewels" the Deny block
+  keeps unreachable by design.
 
 ## Questions operators ask
 
