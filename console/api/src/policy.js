@@ -215,9 +215,26 @@ export function setPolicies(docs, repoRoot = null) {
   // can save policies at all (settings:write is itself a crown jewel), so
   // this is specifically a backstop against an owner *accidentally* granting
   // one to a lower tier while hand-editing the JSON tab.
+  //
+  // CROWN_JEWEL_DENY_ACTIONS entries are PATTERNS (one of them, "settings:*",
+  // is a wildcard), not necessarily real, concrete actions -- evaluate()
+  // expects a concrete action to test against a tier's own patterns, so
+  // calling evaluate({tier}, "settings:*", docs) directly checks whether the
+  // tier's OWN statements contain a pattern matching the literal string
+  // "settings:*" (they never do), not whether the tier can reach any real
+  // settings:* action. That silently let a tier through if it was granted a
+  // specific concrete action under a wildcard crown-jewel entry (e.g. a bare
+  // "settings:write" Allow, with no wildcard anywhere in sight) -- found by
+  // Eight Hats Layer 1 review of #634's design doc, empirically confirmed.
+  // Fix: expand every crown-jewel PATTERN against the real action catalog
+  // first, then evaluate() each matched CONCRETE action -- mirroring the
+  // same expand-then-evaluate shape resolveAllowedActions() already uses.
+  const crownJewelActions = [...allKnownActions()].filter((action) =>
+    CROWN_JEWEL_DENY_ACTIONS.some((pattern) => matchAction(pattern, action))
+  );
   for (const tier of ["admin", "moderator", "player", "observer"]) {
     if (!docs[tier]) continue;
-    const leaked = CROWN_JEWEL_DENY_ACTIONS.find((action) => evaluate({ tier }, action, docs));
+    const leaked = crownJewelActions.find((action) => evaluate({ tier }, action, docs));
     if (leaked) {
       return { ok: false, error: `The ${tier} policy would grant "${leaked}", a crown-jewel action reserved for owner. Add an explicit Deny for it, or remove the Allow that reaches it.` };
     }

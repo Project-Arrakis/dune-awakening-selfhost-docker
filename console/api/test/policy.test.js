@@ -417,6 +417,26 @@ test("setPolicies still saves a non-owner tier whose Deny keeps every crown-jewe
   assert.equal(setPolicies(docs).ok, true);
 });
 
+// Eight Hats Layer 1 review of #634's design doc (Security Architect hat)
+// found and empirically confirmed a bypass: CROWN_JEWEL_DENY_ACTIONS
+// contains one wildcard entry ("settings:*"); the guard was calling
+// evaluate({tier}, "settings:*", docs), which checks whether the tier's OWN
+// patterns match the literal string "settings:*" (never true for a tier
+// whose Allow is a concrete action) -- not whether the tier can reach any
+// real settings:* action. A tier granted a bare, non-wildcard "settings:write"
+// slipped through with no Deny needed at all.
+test("setPolicies refuses a crown-jewel action granted via its own concrete literal, not just via a matching wildcard", () => {
+  const docs = {
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["server:read", "settings:write"] }] },
+  };
+  const result = setPolicies(docs);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /admin/);
+  assert.match(result.error, /settings:write/);
+  assert.equal(evaluate({ tier: "admin" }, "settings:write", docs), true, "sanity: the grant really would resolve allowed if saved");
+});
+
 test("setPolicies imposes no crown-jewel restriction on the owner tier itself", () => {
   // Owner's own Allow "*" necessarily reaches every crown-jewel action too --
   // the guard must only ever apply to tiers OTHER than owner.
