@@ -162,7 +162,7 @@ describe("IamPolicyEditor server contracts", () => {
 describe("IamPolicyEditor: ambiguous action labels get a plain-language explanation (live-testing finding)", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("explains a Deny-locked, jargon-labeled action (players:mutate) instead of just showing the bare word 'Mutate'", async () => {
+  it("relabels the Deny-locked, jargon action players:mutate to something meaningful, with a description tooltip too", async () => {
     const dup = structuredClone(CATALOG) as { policies: typeof CATALOG.policies; actions: string[]; actionMap: Record<string, string>; allActions: string[]; namespaces: Record<string, unknown> };
     dup.policies.admin = {
       version: 1, tier: "admin",
@@ -178,9 +178,10 @@ describe("IamPolicyEditor: ambiguous action labels get a plain-language explanat
     render(<IamPolicyEditor />);
     fireEvent.click(await screen.findByText("Admin"));
 
-    const label = await screen.findByText("Mutate");
-    // The bare mechanical label alone doesn't say what the action does --
-    // that has to live in a title/tooltip an operator can actually find.
+    // The bare mechanical label ("Mutate") is overridden entirely -- an
+    // operator shouldn't have to hover to learn what an action does.
+    expect(screen.queryByText("Mutate")).toBeNull();
+    const label = await screen.findByText("Give Items / Currency");
     expect(label.getAttribute("title")).toMatch(/give items, add currency/i);
     const row = label.closest("label")!;
     expect(row.getAttribute("title")).toMatch(/give items, add currency/i);
