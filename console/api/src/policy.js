@@ -158,9 +158,26 @@ export function loadPolicies(repoRoot = null) {
         return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed) };
       }
       _policies = DEFAULT_POLICIES;
+      // A stored file that fails validation (e.g. an action pattern that
+      // predates the ACTION_PATTERN tightening) used to fall through to the
+      // defaults with no trace of it happening -- an operator's hand-authored
+      // policy could be silently discarded on upgrade, replaced by whatever
+      // this version's defaults are, and nothing would say so (review
+      // finding). Fail loud, not silent.
+      console.warn(
+        `Stored IAM policy at ${filePath} failed validation and was NOT loaded -- ` +
+        "falling back to the default policies. This usually means an action pattern " +
+        "in the file predates a schema change (only lowercase letters, digits, ':', " +
+        "'-' and '*' are valid). Check Access Control after this restart."
+      );
       return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [] };
-    } catch {
+    } catch (err) {
       _policies = DEFAULT_POLICIES;
+      const reason = err instanceof Error ? err.message : "unreadable or malformed";
+      console.warn(
+        `Stored IAM policy at ${filePath} could not be read (${reason}) -- ` +
+        "falling back to the default policies. Check Access Control after this restart."
+      );
       return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [] };
     }
   }
