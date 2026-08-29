@@ -849,13 +849,27 @@ async function handleApi(req, res) {
     if (!session.pendingTotpSecret) {
       return json(res, 400, { error: "Start two-factor setup first, then enter a code from your authenticator." });
     }
+    // A wrong code here used to cost nothing: verifyTotpMatch runs entirely
+    // in-memory against session.pendingTotpSecret with no lockout, so an
+    // attacker holding the enrollment cookie (review finding) could try the
+    // full 6-digit space against a live secret for the whole session TTL.
+    // Keyed by session id, not client address: the secret being guessed is
+    // scoped to this one session, so a shared-IP false lockout would gain
+    // nothing an address-keyed bucket would avoid.
+    const confirmRateKey = `2fa-confirm:${session.id}`;
+    const confirmRate = credentialProofRateLimiter.check(confirmRateKey);
+    if (!confirmRate.allowed) {
+      return json(res, 429, { error: "Too many attempts. Wait a few minutes, then try again." }, { "retry-after": String(confirmRate.retryAfterSeconds) });
+    }
     const body = (await readJson(req)) || {}; // guard: readJson returns null for a literal `null` body
     const code = String(body.code || "").trim();
     const confirmMatch = verifyTotpMatch(session.pendingTotpSecret, code, nowSeconds());
     if (!confirmMatch.valid) {
+      credentialProofRateLimiter.recordFailure(confirmRateKey);
       audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: "invalid_code" });
       return json(res, 401, { error: "That code was not accepted. Check your device's clock and enter the current code." });
     }
+    credentialProofRateLimiter.recordSuccess(confirmRateKey);
     // First-time enrollment uses enroll() (create-if-absent, so a concurrent
     // enrollment can't be clobbered); recovery re-setup uses commit() (the factor
     // already exists but its device is lost, so overwrite the secret and issue a
