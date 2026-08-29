@@ -43,6 +43,21 @@ export function iamActionAllowed(iamAction: string, patterns: string[]): boolean
   return false;
 }
 
+// Whether a single IAM action is granted (Allow minus Deny) under a given
+// statement list. Shared by the grid's `allowedActions` memo and
+// toggleAction's branch decision (review finding) -- toggleAction used to
+// branch on the memo's value even when computing over a JUST-mutated,
+// freshly-parsed statement list (e.g. two toggles of the same action fired
+// before React re-renders between them), reading stale grant/deny state and
+// taking the wrong branch.
+export function actionGrantedByStatements(statements: PolicyStatement[], action: string): boolean {
+  const allow: string[] = [];
+  const deny: string[] = [];
+  for (const st of statements) for (const a of st.Action) (st.Effect === "Deny" ? deny : allow).push(a);
+  if (iamActionAllowed(action, deny)) return false;
+  return iamActionAllowed(action, allow);
+}
+
 // Which catalog routes a tier may actually reach under `statements`.
 //
 // This used to read Allow only, so a tier carrying `Deny settings:*` --
