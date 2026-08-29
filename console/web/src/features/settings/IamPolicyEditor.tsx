@@ -48,6 +48,51 @@ function actionLabel(action: string): string {
   return rest.split(/[:-]/).map(w => (w ? w.charAt(0).toUpperCase() + w.slice(1) : w)).join(" ");
 }
 
+// Plain-language explanation for actions whose label alone ("Mutate",
+// "Write Config") doesn't say what the action actually does. Kept in sync
+// with the inline comments in policy.js's admin Deny block -- these are the
+// same "crown jewel" actions an operator is most likely to click and wonder
+// why they can't grant. Not exhaustive: only actions where the bare label is
+// genuinely ambiguous get an entry.
+const ACTION_DESCRIPTIONS: Record<string, string> = {
+  "players:mutate": "Give items, add currency, or reset a player's progression (economy).",
+  "settings:*": "IAM policies, the admin password, the console port, and 2FA recovery codes.",
+  "server:write-credentials": "The Funcom game-server token and the server's public IP.",
+  "database:write-config": "The database password.",
+  "database:mutate": "Direct edits to database tables.",
+  "database:export": "A full database dump (whole-database exfiltration risk).",
+  "admin:transfer-settings:write": "Character/server-transfer policy (identity + economy impact).",
+  "updates:apply": "Deploys new code to the running server.",
+  "updates:fix": "Alters the running code to repair a failed update.",
+  "updates:repair": "Alters the running code to repair a failed update.",
+  "backups:restore": "Overwrites the live database from a backup (irreversible).",
+  "backups:import": "Loads an untrusted backup file into the live database.",
+  "addons:install": "Installs third-party code into the console process.",
+  "addons:update": "Updates third-party code running in the console process.",
+  "setup:write": "First-run provisioning of the console itself.",
+  "carepackage:grant": "Mints an in-game care package (creates value from nothing).",
+  "carepackage:write-config": "Changes care package economy configuration.",
+  "exchange:market": "Seeds or alters the player-market economy.",
+  "exchange:market-write": "Seeds or alters the player-market economy.",
+  "admin:items:read": "Reference item-type catalog used by Character Admin's give-item tool -- not a live inventory.",
+  "admin:vehicles:read": "Reference vehicle-type catalog used by Character Admin -- not the same as the separate \"Vehicles: Read\" permission, which covers the live in-game Vehicles panel.",
+  "admin:skills:read": "Reference skill-module catalog used by Character Admin's skill editor.",
+};
+
+// A few admin:* actions are reference-catalog lookups whose mechanical label
+// ("Items Read", "Vehicles Read") reads as a live-data permission and, for
+// vehicles specifically, collides in name with the unrelated top-level
+// "Vehicles" namespace (the live in-game Vehicles panel). Override just these.
+const ACTION_LABEL_OVERRIDES: Record<string, string> = {
+  "admin:items:read": "Item Catalog",
+  "admin:vehicles:read": "Vehicle Catalog",
+  "admin:skills:read": "Skill Catalog",
+};
+
+function actionDescription(action: string): string {
+  return ACTION_DESCRIPTIONS[action] || "";
+}
+
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
@@ -133,8 +178,10 @@ export function IamPolicyEditor() {
   }, [statements]);
 
   const lockReason = (iamAction: string): string => {
-    if (iamActionAllowed(iamAction, denyPatterns)) return "Blocked by a Deny rule — edit in the JSON tab.";
-    if (allowedActions.has(iamAction) && !allowLiterals.has(iamAction)) return "Granted by a wildcard rule — edit in the JSON tab.";
+    const desc = actionDescription(iamAction);
+    const prefix = desc ? `${desc} ` : "";
+    if (iamActionAllowed(iamAction, denyPatterns)) return `${prefix}Blocked by a Deny rule — edit in the JSON tab.`;
+    if (allowedActions.has(iamAction) && !allowLiterals.has(iamAction)) return `${prefix}Granted by a wildcard rule — edit in the JSON tab.`;
     return "";
   };
 
@@ -359,7 +406,9 @@ export function IamPolicyEditor() {
                             disabled={draftInvalid}
                             onChange={() => toggleAction(action)}
                           />
-                          <span className="iam-perm-label">{actionLabel(action)}</span>
+                          <span className="iam-perm-label" title={actionDescription(action) || undefined}>
+                            {ACTION_LABEL_OVERRIDES[action] || actionLabel(action)}
+                          </span>
                           {lock && <span className="iam-perm-lock" aria-hidden="true">🔒</span>}
                           <span className="iam-perm-action" title={action}>{action}</span>
                         </label>

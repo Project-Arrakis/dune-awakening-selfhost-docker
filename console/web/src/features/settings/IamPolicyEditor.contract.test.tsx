@@ -159,6 +159,52 @@ describe("IamPolicyEditor server contracts", () => {
   });
 });
 
+describe("IamPolicyEditor: ambiguous action labels get a plain-language explanation (live-testing finding)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("explains a Deny-locked, jargon-labeled action (players:mutate) instead of just showing the bare word 'Mutate'", async () => {
+    const dup = structuredClone(CATALOG) as { policies: typeof CATALOG.policies; actions: string[]; actionMap: Record<string, string>; allActions: string[]; namespaces: Record<string, unknown> };
+    dup.policies.admin = {
+      version: 1, tier: "admin",
+      statements: [{ Effect: "Allow", Action: ["players:*"] }, { Effect: "Deny", Action: ["players:mutate"] }],
+    };
+    dup.actions = ["POST /api/players/give-item"];
+    dup.actionMap = { "POST /api/players/give-item": "players:mutate" };
+    dup.allActions = ["players:mutate"];
+    mockApi.mockImplementation((path: string, opts?: RequestInit) => {
+      if (path === "/api/settings/iam/policies" && (!opts || opts.method === undefined)) return Promise.resolve(dup as never);
+      return Promise.reject(new Error("unexpected"));
+    });
+    render(<IamPolicyEditor />);
+    fireEvent.click(await screen.findByText("Admin"));
+
+    const label = await screen.findByText("Mutate");
+    // The bare mechanical label alone doesn't say what the action does --
+    // that has to live in a title/tooltip an operator can actually find.
+    expect(label.getAttribute("title")).toMatch(/give items, add currency/i);
+    const row = label.closest("label")!;
+    expect(row.getAttribute("title")).toMatch(/give items, add currency/i);
+    expect(row.getAttribute("title")).toMatch(/blocked by a deny rule/i);
+  });
+
+  it("relabels admin:vehicles:read so it doesn't read as the unrelated live-Vehicles-panel permission", async () => {
+    const dup = structuredClone(CATALOG) as { policies: typeof CATALOG.policies; actions: string[]; actionMap: Record<string, string>; allActions: string[]; namespaces: Record<string, unknown> };
+    dup.policies.admin = { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["admin:vehicles:read"] }] };
+    dup.actions = ["GET /api/admin/vehicles/structured"];
+    dup.actionMap = { "GET /api/admin/vehicles/structured": "admin:vehicles:read" };
+    dup.allActions = ["admin:vehicles:read"];
+    mockApi.mockImplementation((path: string, opts?: RequestInit) => {
+      if (path === "/api/settings/iam/policies" && (!opts || opts.method === undefined)) return Promise.resolve(dup as never);
+      return Promise.reject(new Error("unexpected"));
+    });
+    render(<IamPolicyEditor />);
+    fireEvent.click(await screen.findByText("Admin"));
+
+    expect(await screen.findByText("Vehicle Catalog")).toBeTruthy();
+    expect(screen.queryByText("Vehicles Read")).toBeNull();
+  });
+});
+
 describe("IamPolicyEditor: the Permissions grid is read-only while the JSON tab holds invalid JSON", () => {
   beforeEach(() => vi.clearAllMocks());
 
