@@ -636,6 +636,7 @@ backup_local_state() {
     runtime/generated/director-character-transfer.ini \
     runtime/generated/director-capacity.ini \
     runtime/generated/director-deepdesert-dual.ini \
+    runtime/generated/iam-policies.json \
     runtime/generated/ip-change-restart.env \
     runtime/generated/landsraad-milestones.json \
     runtime/generated/map-runtime-modes.json \
@@ -775,6 +776,7 @@ restore_local_state_after_install() {
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/director-character-transfer.ini
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/director-capacity.ini
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/director-deepdesert-dual.ini
+  restore_local_state_file_if_needed "$backup_dir" runtime/generated/iam-policies.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/ip-change-restart.env
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/landsraad-milestones.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/map-runtime-modes.json
@@ -925,6 +927,7 @@ restore_local_state_ownership() {
     runtime/generated/director-character-transfer.ini \
     runtime/generated/director-capacity.ini \
     runtime/generated/director-deepdesert-dual.ini \
+    runtime/generated/iam-policies.json \
     runtime/generated/ip-change-restart.env \
     runtime/generated/landsraad-milestones.json \
     runtime/generated/map-runtime-modes.json \
