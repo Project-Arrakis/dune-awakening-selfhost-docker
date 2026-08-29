@@ -408,3 +408,33 @@ test("one-time secret responses carry Cache-Control: no-store", async () => {
     assert.match(confirm.headers.get("cache-control") || "", /no-store/, "the one-time recovery codes must not be cached");
   } finally { await stopProcess(console.child); rmSync(tempDir, { recursive: true, force: true }); }
 });
+
+test("POST /api/auth/2fa/confirm is rate-limited per session (review finding: unlimited TOTP guessing)", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "confirm-ratelimit-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const login = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+    const loginBody = await login.json();
+    assert.equal(loginBody.enrollmentRequired, true);
+    const cookie = cookieFrom(login);
+    const csrf = loginBody.csrfToken;
+    assert.ok(cookie && csrf);
+
+    const setup = await api(port, "/api/auth/2fa/setup", { cookie, csrf });
+    assert.equal(setup.status, 200);
+
+    let limited = null;
+    for (let i = 0; i < 12; i += 1) {
+      const attempt = await api(port, "/api/auth/2fa/confirm", { cookie, csrf, body: { code: "000000" } });
+      if (attempt.status === 429) { limited = { at: i, retryAfter: attempt.headers.get("retry-after") }; break; }
+      assert.equal(attempt.status, 401, `attempt ${i} should be a plain rejection, not ${attempt.status}`);
+    }
+    assert.ok(limited, "a 12-attempt burst of wrong codes against one enrollment session must be rate-limited");
+    assert.ok(Number(limited.retryAfter) > 0, "429 must carry retry-after");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
