@@ -37,6 +37,11 @@ const ADMIN_ALLOWED = [
   "admin:broadcast", "admin:map-chat",
   "backups:create", "backups:read", "database:read", "database:query",
   "logs:read", "updates:check", "updates:read", "updates:self-check", "setup:read", "addons:read",
+  // carepackage:read is read-only visibility, same as every other namespace
+  // -- only the economy-write actions above are denied (review finding: this
+  // was missing from admin's explicit Allow list entirely, an accidental
+  // regression from the old carepackage:* wildcard, not an intended narrowing).
+  "carepackage:read",
 ];
 for (const action of ADMIN_ALLOWED) {
   test(`admin CAN ${action}`, () => assert.equal(can("admin", action), true));

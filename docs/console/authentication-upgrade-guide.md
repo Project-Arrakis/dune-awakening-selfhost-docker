@@ -454,12 +454,22 @@ has no two-factor enabled (and names the Discord setting to fix it).
   (deploying updates from the console), `backups:restore`/`backups:import`
   (data-loss-risk restore/import operations were always owner-only in
   practice, but are now also *unreachable*, not just discouraged, for admin),
-  and the economy namespaces (`carepackage:*`, `exchange:market-write`). If
+  and the economy-write actions (`carepackage:grant`, `carepackage:write-config`,
+  `exchange:market`, `exchange:market-write`) — `carepackage:read` itself is
+  still granted, same as every other namespace's read-only visibility. If
   your admin accounts need any of these, open **Access Control** (sidebar,
   owner only), pick **admin**, and add back exactly what you need — do not
   restore the old wildcard grants wholesale, since several of the actions
   they covered are now intentionally owner-only "crown jewels" the Deny block
   keeps unreachable by design.
+- **Deny-side consequence of the `players:mutate` split above:** if you wrote
+  a custom policy with an explicit `Deny` on `players:mutate` specifically to
+  block kick/ban/teleport for some tier, that Deny no longer covers them after
+  this upgrade — it now only blocks the economy actions (give-item /
+  add-currency / reset-progression) `players:mutate` still means. A tier that
+  relied on that Deny to block moderation actions gains the ability to
+  kick/ban/teleport unless you also add an explicit `Deny` on `players:kick`,
+  `players:ban`, and `players:teleport` to that tier.
 
 ## Questions operators ask
 
