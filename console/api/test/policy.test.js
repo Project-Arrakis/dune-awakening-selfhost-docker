@@ -429,6 +429,26 @@ test("loadPolicies() loads a valid stored file silently (no warning)", () => {
   } finally {
     console.warn = originalWarn;
     rmSync(repoRoot, { recursive: true, force: true });
+    // Restore the real default policies (review finding): this test pins
+    // policy.js's module-level _policies singleton to a 2-tier fixture with
+    // no repoRoot pointing at a real stored file left to load it back --
+    // a later test in this process relying on the real defaults without
+    // passing an explicit `policies` argument would otherwise silently see
+    // moderator/player/observer denied everything. loadPolicies() against a
+    // path with no iam-policies.json falls back to the real defaults with no
+    // warning, same as a fresh boot.
+    loadPolicies(join(tmpdir(), "policy-reset-no-such-dir"));
   }
   assert.equal(warnings.length, 0);
+});
+
+// Guards the teardown above: without it, this test (appended AFTER the
+// silent-load test in the same process) would see a moderator denied
+// everything, because _policies would still be pinned to that test's 2-tier
+// (owner/admin only) fixture with no `policies` argument passed here to
+// override it.
+test("real default policies are intact for tiers not exercised by loadPolicies() fixture tests", () => {
+  assert.equal(evaluate({ tier: "moderator" }, "players:read"), true);
+  assert.equal(evaluate({ tier: "player" }, "server:read"), true);
+  assert.equal(evaluate({ tier: "observer" }, "server:read"), true);
 });
