@@ -79,14 +79,19 @@ const ACTION_DESCRIPTIONS: Record<string, string> = {
   "admin:skills:read": "Reference skill-module catalog used by Character Admin's skill editor.",
 };
 
-// A few admin:* actions are reference-catalog lookups whose mechanical label
-// ("Items Read", "Vehicles Read") reads as a live-data permission and, for
-// vehicles specifically, collides in name with the unrelated top-level
-// "Vehicles" namespace (the live in-game Vehicles panel). Override just these.
+// A few actions' mechanical label (the bare last path segment, title-cased --
+// "Mutate", "Items Read", "Vehicles Read") is meaningless or misleading on
+// its own, and a hover tooltip alone doesn't fix that: an operator scanning
+// the grid shouldn't have to hover every row to find the ones that matter.
+// Override the VISIBLE label for exactly these -- the admin:*:read catalog
+// lookups (which also collide in name with unrelated live-data namespaces,
+// vehicles especially) and players:mutate (the economy-mutation bucket,
+// which "Mutate" alone gives no hint of).
 const ACTION_LABEL_OVERRIDES: Record<string, string> = {
   "admin:items:read": "Item Catalog",
   "admin:vehicles:read": "Vehicle Catalog",
   "admin:skills:read": "Skill Catalog",
+  "players:mutate": "Give Items / Currency",
 };
 
 function actionDescription(action: string): string {

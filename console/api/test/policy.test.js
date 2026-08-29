@@ -346,8 +346,11 @@ test("setPolicies refuses an action pattern outside the IAM vocabulary and names
     const attempt = setPolicies({ ...docs, admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: [bad] }] } });
     assert.equal(attempt.ok, false, `accepted ${JSON.stringify(bad)}`);
   }
-  // The whole real vocabulary still saves.
-  const ok = setPolicies({ ...docs, admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["server:*", "admin:transfer-settings:read", "players:kick-all"] }] } });
+  // The whole real vocabulary still saves. (Not "server:*" here -- that
+  // wildcard also reaches the crown-jewel server:write-credentials with no
+  // Deny to stop it, which the crown-jewel guard below now correctly refuses;
+  // that guard has its own dedicated tests.)
+  const ok = setPolicies({ ...docs, admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["server:read", "admin:transfer-settings:read", "players:kick-all"] }] } });
   assert.equal(ok.ok, true);
 });
 
@@ -365,6 +368,60 @@ test("setPolicies refuses an owner document that has settings:write but not sett
   const result = setPolicies(docs);
   assert.equal(result.ok, false);
   assert.match(result.error, /settings:read/);
+});
+
+// Live-testing finding: only owner should ever be able to reach a crown-jewel
+// action (settings:*, database mutation/export, updates:apply, backups:restore/
+// import, addons:install/update, players:mutate, the economy actions, etc.).
+// Non-owner tiers already can't call this endpoint at all (settings:write is
+// itself a crown jewel, denied to every non-owner default policy) -- this is
+// the backstop for the one path still open: an owner accidentally handing one
+// to a lower tier while hand-editing the JSON tab, either by widening that
+// tier's Allow to reach it or by deleting the Deny that was blocking it.
+test("setPolicies refuses to save a crown-jewel action reaching a non-owner tier via a widened Allow", () => {
+  const docs = {
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    admin: { version: 1, tier: "admin", statements: [
+      { Effect: "Allow", Action: ["server:read", "players:mutate"] }, // accidental crown-jewel grant
+      { Effect: "Deny", Action: ["settings:*"] },
+    ] },
+  };
+  const result = setPolicies(docs);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /admin/);
+  assert.match(result.error, /players:mutate/);
+});
+
+test("setPolicies refuses to save a crown-jewel action reaching a non-owner tier via a removed Deny", () => {
+  const docs = {
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    // moderator's own Allow uses a namespace wildcard that reaches players:mutate,
+    // with no Deny at all to stop it (the mistake: assuming "players:*" is safe
+    // because the default moderator policy never included the economy action).
+    moderator: { version: 1, tier: "moderator", statements: [{ Effect: "Allow", Action: ["players:*"] }] },
+  };
+  const result = setPolicies(docs);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /moderator/);
+  assert.match(result.error, /players:mutate/);
+});
+
+test("setPolicies still saves a non-owner tier whose Deny keeps every crown-jewel action blocked", () => {
+  const docs = {
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    admin: { version: 1, tier: "admin", statements: [
+      { Effect: "Allow", Action: ["*"] },
+      { Effect: "Deny", Action: ["settings:*", "players:mutate", "database:mutate", "database:export", "database:write-config", "server:write-credentials", "admin:transfer-settings:write", "updates:apply", "updates:fix", "updates:repair", "backups:restore", "backups:import", "addons:install", "addons:update", "setup:write", "carepackage:grant", "carepackage:write-config", "exchange:market", "exchange:market-write"] },
+    ] },
+  };
+  assert.equal(setPolicies(docs).ok, true);
+});
+
+test("setPolicies imposes no crown-jewel restriction on the owner tier itself", () => {
+  // Owner's own Allow "*" necessarily reaches every crown-jewel action too --
+  // the guard must only ever apply to tiers OTHER than owner.
+  const docs = { owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] } };
+  assert.equal(setPolicies(docs).ok, true);
 });
 
 // ---- review finding: a stored iam-policies.json that fails validation (or
