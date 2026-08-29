@@ -389,6 +389,14 @@ export function App() {
   // 403 from /api/setup/state, and treating that as "setup incomplete" traps
   // the session in a wizard it cannot use and cannot leave.
   const [meLoaded, setMeLoaded] = useState(false);
+  // True when /api/auth/me itself failed (transient network blip, 500) rather
+  // than answered with zero actions (review finding). allowedActions.length is
+  // 0 in BOTH cases, so the setup-gate effect below cannot tell "we know this
+  // tier can reach nothing" from "we don't know anything" without this flag --
+  // conflating them fell through to calling setupApi.state() blindly on a
+  // read failure, 403'ing for exactly the moderator/player/observer tiers the
+  // known-empty-actions branch exists to protect from that same trap.
+  const [meFetchFailed, setMeFetchFailed] = useState(false);
   const [userInfo, setUserInfo] = useState<{ username: string; displayName: string; tier: string } | null>(null);
   const [tab, setTab] = useActiveTab();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -438,11 +446,12 @@ export function App() {
   useStaleBuildWatcher();
 
   useEffect(() => {
-    if (!auth) { setAllowedActions([]); setUserInfo(null); setMeLoaded(false); return; }
+    if (!auth) { setAllowedActions([]); setUserInfo(null); setMeLoaded(false); setMeFetchFailed(false); return; }
     let cancelled = false;
+    setMeFetchFailed(false);
     api<{ user: { id: string; username: string; displayName: string; tier: string; guildId: string }; allowedActions: string[] }>("/api/auth/me")
       .then((res) => { if (!cancelled) { setAllowedActions(res.allowedActions || []); setUserInfo({ username: res.user.username, displayName: res.user.displayName || res.user.username, tier: res.user.tier }); setMeLoaded(true); } })
-      .catch(() => { if (!cancelled) setMeLoaded(true); /* a failed read leaves the UI ungated; the server still enforces */ });
+      .catch(() => { if (!cancelled) { setMeFetchFailed(true); setMeLoaded(true); } /* a failed read leaves the UI ungated; the server still enforces */ });
     return () => { cancelled = true; };
   }, [auth]);
 
@@ -511,7 +520,13 @@ export function App() {
       return;
     }
     if (!meLoaded) return;
-    if (allowedActions.length > 0 && !allowedActions.includes("setup:read")) {
+    // meFetchFailed means /api/auth/me itself failed, so allowedActions is [] as
+    // "we don't know", not as "this tier really has zero actions" (review
+    // finding) -- calling setupApi.state() on that unknown state 403'd for
+    // exactly the moderator/player/observer tiers the branch below exists to
+    // protect from this trap. Treat a failed read the same as a tier with no
+    // setup access: render the console rather than risk a 403 dead end.
+    if (meFetchFailed || (allowedActions.length > 0 && !allowedActions.includes("setup:read"))) {
       // This tier can neither read nor run first-run setup (every /api/setup/*
       // route would 403), so there is nothing to gate on: treat setup as done
       // and render the console. The owner still sees the wizard on a fresh
@@ -532,7 +547,7 @@ export function App() {
       setSetupStateLoaded(true);
     });
     return () => { cancelled = true; };
-  }, [auth, meLoaded, allowedActions]);
+  }, [auth, meLoaded, meFetchFailed, allowedActions]);
 
   useEffect(() => {
     if (!auth) return;
