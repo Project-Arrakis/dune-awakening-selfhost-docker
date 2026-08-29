@@ -744,3 +744,78 @@ test("GET /api/auth/discord/start is rate-limited per client after a burst", asy
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+// ---- review finding: the setup-mode callback was blocked by the exact
+// misconfigurations (a half-configured handoff, an unsound role mapping)
+// that the guided setup wizard exists to let an owner fix. The /start route
+// already exempted setup mode from these checks (its setup branch returns
+// before reaching them); the callback did not. ----
+
+test("guided setup: an unsound role mapping does not block the setup-mode callback (only login mode)", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-setup-roleconflict-"));
+  // Same role mapped to two tiers -- roleMappingUnsound() is true for the
+  // whole process, exactly the state an owner opens the wizard to repair.
+  const console = startConsole(consolePort, discordPort, tempDir, {
+    DISCORD_CONSOLE_ADMIN_ROLE_IDS: ADMIN_ROLE,
+    DISCORD_CONSOLE_MODERATOR_ROLE_IDS: ADMIN_ROLE,
+  });
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    // Login mode is still refused loudly -- the fix must not weaken this path.
+    const loginStart = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" });
+    assert.equal(loginStart.status, 403, "login-mode start still refuses an unsound role mapping");
+
+    const owner = await passwordOwnerSession(consolePort);
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start?setup=1`, { redirect: "manual", headers: { cookie: owner.cookie } });
+    assert.equal(start.status, 302, "setup-mode start is unaffected");
+    const state = sessionCookieValue(start.headers.getSetCookie(), "discord_oauth_state");
+    const cb = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=guildowner&state=${encodeURIComponent(state)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${state}` } });
+    assert.equal(cb.status, 200, "the wizard must be able to complete its round-trip to let the owner fix the conflict");
+    assert.match(await cb.text(), /discordSetup=done/);
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+test("guided setup: a half-configured bot handoff does not block the setup-mode callback (only login mode)", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-setup-handoff-"));
+  // Handoff secret set, URL missing -- half-configured, handoff.misconfigured
+  // is true for the whole process.
+  const console = startConsole(consolePort, discordPort, tempDir, {
+    DISCORD_BOT_HANDOFF_SECRET: "a".repeat(32),
+    DISCORD_BOT_HANDOFF_URL: "",
+  });
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const loginStart = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" });
+    assert.equal(loginStart.status, 403, "login-mode start still refuses a half-configured handoff");
+
+    const owner = await passwordOwnerSession(consolePort);
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start?setup=1`, { redirect: "manual", headers: { cookie: owner.cookie } });
+    assert.equal(start.status, 302, "setup-mode start is unaffected");
+    const state = sessionCookieValue(start.headers.getSetCookie(), "discord_oauth_state");
+    const cb = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=guildowner&state=${encodeURIComponent(state)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${state}` } });
+    assert.equal(cb.status, 200, "the wizard must be able to complete its round-trip even with a half-configured handoff");
+    assert.match(await cb.text(), /discordSetup=done/);
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+// ---- review finding: the silent-auth interactive retry issued a pending
+// state with no `owner`, unlike every other issue() call site, pooling the
+// most common real-world path (every /start attempt tries prompt=none
+// first) into a shared, unattributed bucket and defeating the per-owner
+// eviction guarantee oauth.js's pending-state store otherwise provides. A
+// full behavioral proof needs 256+ real requests to force eviction; pinning
+// the exact wiring in the source is the precedent this codebase already
+// uses for gate-composition correctness (see rbacParity.test.js's ENROLL_ALLOWED
+// text scan) and is what mutation-tests here. ----
+test("the silent-auth interactive retry attributes its pending state to an owner, like every other issue() call site", () => {
+  const source = readFileSync(join(apiRoot, "server.js"), "utf8");
+  const retryLine = source.split("\n").find((line) => line.includes("purpose: consumed.purpose, sessionId: consumed.sessionId"));
+  assert.ok(retryLine, "the silent-auth retry's issue() call was not found where expected");
+  assert.match(retryLine, /owner:\s*\w/, "the retry must pass an owner key, or a flood of retries pools into one shared, unattributed bucket");
+});
