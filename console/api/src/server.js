@@ -6644,7 +6644,14 @@ async function handleOAuthCallback(req, res) {
   const oauthError = url.searchParams.get("error") || "";
   if (oauthError && consumed.ok) {
     if (["login_required", "consent_required", "interaction_required"].includes(oauthError)) {
-      const retry = oauthPendingStates.issue(undefined, { purpose: consumed.purpose, sessionId: consumed.sessionId });
+      // owner must be threaded through the retry too (review finding): every
+      // other issue() call site attributes its state to a client key so a
+      // flood can only ever evict its OWN pending states; omitting it here
+      // pooled every silent-auth retry -- the common path, since /start
+      // always tries prompt=none first -- into a shared, unattributed
+      // bucket, defeating that per-owner eviction guarantee for the one
+      // call site nearly every real sign-in passes through.
+      const retry = oauthPendingStates.issue(undefined, { purpose: consumed.purpose, sessionId: consumed.sessionId, owner: rateKey });
       if (!retry) return html(res, 429, oauthErrorPage("Too many Discord sign-in sessions in progress. Try again in a moment."));
       res.setHeader("Set-Cookie", oauthStateCookie(retry.state));
       audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: `silent_${oauthError}`, retry: "interactive", purpose: consumed.purpose });
@@ -6664,7 +6671,17 @@ async function handleOAuthCallback(req, res) {
   // degrading to the static bootstrap allowlist would reopen the exact
   // stale-allowlist fail-open this change removes (L2 audit, Architect
   // finding 2 on ). Password sign-in is unaffected.
-  if (handoff.misconfigured) {
+  //
+  // Both checks are skipped for a setup-purpose callback (review finding):
+  // the wizard's whole point is to let an owner FIX a misconfigured handoff
+  // or an unsound role mapping, and the setup branch below never resolves a
+  // tier from either -- it only captures identity for the owner session.
+  // Gating it behind these checks locked the operator out of the one UI
+  // built to repair exactly this state, forcing a hand-edit of .env instead.
+  // The /start route already gets this right (its setup-mode branch returns
+  // before these checks); this makes the callback consistent with it.
+  const isSetupCallback = consumed.ok && consumed.purpose === "setup";
+  if (!isSetupCallback && handoff.misconfigured) {
     oauthCallbackRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "handoff_misconfigured" });
     return html(res, 403, oauthErrorPage("Discord sign-in is disabled because this console's bot handoff is only partially configured. If you administer this install, check the console logs for the missing value, then either complete or remove the handoff configuration. Sign in with the admin password in the meantime."));
@@ -6672,7 +6689,7 @@ async function handleOAuthCallback(req, res) {
   // With a configured handoff, the bot is the tier source and owner
   // bootstrap is not required. Without one, bootstrap is the only
   // possible tier source, so its being disabled is an early deny.
-  if (roleMappingUnsound()) {
+  if (!isSetupCallback && roleMappingUnsound()) {
     oauthCallbackRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "role_mapping_unsound" });
     return html(res, 403, roleMappingUnsoundPage());

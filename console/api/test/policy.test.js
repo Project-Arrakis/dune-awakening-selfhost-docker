@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { actionForRoute } from "../src/actions.js";
-import { evaluate, matchAction, resolveAllowedActions, setPolicies } from "../src/policy.js";
+import { evaluate, loadPolicies, getAllPolicies, matchAction, resolveAllowedActions, setPolicies } from "../src/policy.js";
 
 test("policy matching supports exact and namespace wildcards", () => {
   assert.equal(matchAction("players:read", "players:read"), true);
@@ -362,4 +365,70 @@ test("setPolicies refuses an owner document that has settings:write but not sett
   const result = setPolicies(docs);
   assert.equal(result.ok, false);
   assert.match(result.error, /settings:read/);
+});
+
+// ---- review finding: a stored iam-policies.json that fails validation (or
+// can't be parsed) fell through to the default policies with zero logging --
+// an operator's hand-authored policy could be silently discarded on upgrade.
+test("loadPolicies() warns and falls back when the stored file fails validation", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "policy-load-invalid-"));
+  const dir = join(repoRoot, "runtime", "generated");
+  mkdirSync(dir, { recursive: true });
+  // An action pattern with an underscore predates the ACTION_PATTERN tightening.
+  writeFileSync(join(dir, "iam-policies.json"), JSON.stringify({
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "invalid_pattern" }] },
+  }));
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (msg) => warnings.push(msg);
+  try {
+    loadPolicies(repoRoot);
+  } finally {
+    console.warn = originalWarn;
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+  assert.equal(warnings.length, 1, "a discarded stored policy must warn exactly once");
+  assert.match(warnings[0], /failed validation and was NOT loaded/);
+  assert.match(warnings[0], /iam-policies\.json/);
+  // Must actually have fallen back to the real defaults, not left _policies stale.
+  assert.equal(evaluate({ tier: "owner" }, "settings:write"), true);
+});
+
+test("loadPolicies() warns and falls back when the stored file is not valid JSON", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "policy-load-corrupt-"));
+  const dir = join(repoRoot, "runtime", "generated");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "iam-policies.json"), "{ not json");
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (msg) => warnings.push(msg);
+  try {
+    loadPolicies(repoRoot);
+  } finally {
+    console.warn = originalWarn;
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /could not be read/);
+});
+
+test("loadPolicies() loads a valid stored file silently (no warning)", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "policy-load-valid-"));
+  const dir = join(repoRoot, "runtime", "generated");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "iam-policies.json"), JSON.stringify({
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["server:read"] }] },
+  }));
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (msg) => warnings.push(msg);
+  try {
+    loadPolicies(repoRoot);
+    assert.deepEqual(Object.keys(getAllPolicies()).sort(), ["admin", "owner"]);
+  } finally {
+    console.warn = originalWarn;
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+  assert.equal(warnings.length, 0);
 });
