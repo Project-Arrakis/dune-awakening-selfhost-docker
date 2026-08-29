@@ -261,7 +261,7 @@ export function loadConfig() {
     // enrollment is owner-initiated via POST /api/auth/2fa/enable (Settings ->
     // Two-Factor Authentication), never forced on login (issue #665).
     consoleTotpEnabled: process.env.CONSOLE_TOTP_ENABLED === "1",
-    // Real-client-IP rate-limit key (, gate  prerequisite 3). Empty by
+    // Real-client-IP rate-limit key. Empty by
     // default -- every operator who never sets this sees byte-identical
     // behavior (the raw socket address). Only exact IPs, not CIDRs: an
     // operator's reverse proxy/tunnel daemon has one fixed address (loopback,
@@ -310,7 +310,7 @@ export function loadConfig() {
     discordConsoleRoleTierConflicts: roleTierConflicts(discordConsoleRoleTiers),
     // Tiers that require the Discord ACCOUNT to have 2FA enabled (§2.1.1 item 4).
     // Unset or empty -> gate off (opt-in). A value like "owner,admin" enables it.
-    // Opt-in (Requirement 0): an existing operator whose Discord account has no
+    // Opt-in: an existing operator whose Discord account has no
     // 2FA must not lose sign-in on upgrade. The settings form suggests
     // "owner,admin"; nothing is enforced until the operator saves a value.
     discordOAuthRequireMfaTiers: parseTierList(process.env.DISCORD_OAUTH_REQUIRE_MFA_TIERS),
