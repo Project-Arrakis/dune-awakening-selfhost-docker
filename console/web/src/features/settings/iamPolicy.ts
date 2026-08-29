@@ -89,6 +89,74 @@ export function resolvedAllowedActions(
 // Landsraad, Care Package and Map entries diverge too. Deriving it from the
 // path put an owner-only credential permission in the catch-all bucket, under a
 // card header reading "Care-package".
+// #634 (AWS-IAM-Visual-Editor-style Access Control UI). Pure functions behind
+// the namespace/access-level accordion's group-header tri-state checkbox and
+// its "select all"/"unselect all" behavior. `crownJewelActions` is the
+// concrete, already-expanded action list the catalog endpoint sends (never a
+// pattern the client would need to match itself -- see console/api/src/
+// policy.js's crownJewelActions(), which mirrors the setPolicies() fix for
+// the same CRITICAL bug this design's own logic would otherwise repeat).
+
+export type TriState = "checked" | "indeterminate" | "unchecked";
+
+// The crown-jewel actions a non-owner tier can never be granted -- excluded
+// from the "grantable" set a group's tri-state and select-all are computed
+// over, so a group can reach "checked"/fully-select without them (Eight Hats
+// UI/UX finding: the denominator must exclude these, or a group containing
+// one can never show "checked" no matter how completely it's granted).
+function grantableActions(groupActions: string[], crownJewelActions: string[], isOwnerTier: boolean): string[] {
+  if (isOwnerTier) return groupActions;
+  return groupActions.filter((a) => !crownJewelActions.includes(a));
+}
+
+export function groupTriState(
+  groupActions: string[],
+  allowedActions: Set<string>,
+  crownJewelActions: string[],
+  isOwnerTier: boolean
+): TriState {
+  const grantable = grantableActions(groupActions, crownJewelActions, isOwnerTier);
+  if (grantable.length === 0) return "unchecked";
+  const grantedCount = grantable.filter((a) => allowedActions.has(a)).length;
+  if (grantedCount === 0) return "unchecked";
+  if (grantedCount === grantable.length) return "checked";
+  return "indeterminate";
+}
+
+// The crown-jewel actions present in a group that select-all will silently
+// exclude for a non-owner tier -- drives the collapsed-header note (Eight
+// Hats UI/UX finding: this must render in the collapsed header itself, not
+// only after expanding, or an operator who selects-all from a collapsed
+// header and moves on would never see it).
+export function excludedCrownJewelActions(groupActions: string[], crownJewelActions: string[], isOwnerTier: boolean): string[] {
+  if (isOwnerTier) return [];
+  return groupActions.filter((a) => crownJewelActions.includes(a));
+}
+
+// "Select all": every ungranted, grantable action in the group, to be added
+// as individual literal Allow entries (not a wildcard -- keeps every row
+// individually toggleable afterward, per the design's §4.1 decision).
+export function selectAllGrantTargets(
+  groupActions: string[],
+  allowedActions: Set<string>,
+  crownJewelActions: string[],
+  isOwnerTier: boolean
+): string[] {
+  const grantable = grantableActions(groupActions, crownJewelActions, isOwnerTier);
+  return grantable.filter((a) => !allowedActions.has(a));
+}
+
+// "Unselect all": only actions that are an exact-literal Allow grant today
+// (`allowLiterals`) are revoked -- a wildcard-granted or Deny-locked action is
+// left untouched, exactly matching what a single checkbox can already do.
+export function selectAllRevokeTargets(
+  groupActions: string[],
+  allowedActions: Set<string>,
+  allowLiterals: Set<string>
+): string[] {
+  return groupActions.filter((a) => allowedActions.has(a) && allowLiterals.has(a));
+}
+
 export function nsFromAction(routeKey: string, actionMap: Record<string, string> = {}): string {
   const iamAction = actionMap[routeKey];
   if (iamAction && iamAction.includes(":")) return iamAction.split(":")[0].toLowerCase();

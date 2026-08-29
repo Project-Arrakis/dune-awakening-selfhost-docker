@@ -1,5 +1,9 @@
-import { useEffect, useState, useMemo } from "react";
-import { actionGrantedByStatements, iamActionAllowed } from "./iamPolicy";
+import { useEffect, useState, useMemo, useRef } from "react";
+import {
+  actionGrantedByStatements, iamActionAllowed,
+  groupTriState, excludedCrownJewelActions, selectAllGrantTargets, selectAllRevokeTargets,
+  type TriState,
+} from "./iamPolicy";
 import { api } from "../../api/client";
 
 interface PolicyStatement {
@@ -12,7 +16,23 @@ interface PolicyCatalog {
   actions: string[];
   actionMap: Record<string, string>;
   allActions?: string[];
+  // #634: pre-computed server-side (never re-derived client-side -- see
+  // console/api/src/policy.js's accessLevelForAction/crownJewelActions).
+  // Both optional for backward compatibility with an older backend/fixture:
+  // an action with no entry falls back to "read" (levelForAction below), and
+  // a missing crownJewelActions list falls back to excluding nothing.
+  accessLevels?: Record<string, string>;
+  crownJewelActions?: string[];
   namespaces: Record<string, string>;
+}
+
+const ACCESS_LEVEL_ORDER = ["read", "write", "permissions"] as const;
+type AccessLevel = (typeof ACCESS_LEVEL_ORDER)[number];
+const ACCESS_LEVEL_LABEL: Record<AccessLevel, string> = { read: "Read", write: "Write", permissions: "Permissions Management" };
+
+function levelForAction(catalog: PolicyCatalog | null | undefined, action: string): AccessLevel {
+  const level = catalog?.accessLevels?.[action];
+  return level === "write" || level === "permissions" ? level : "read";
 }
 
 // The complete distinct IAM-action list the grid renders. Prefer the catalog's
@@ -114,6 +134,17 @@ function namespaceLabel(ns: string): string {
   return readable[ns] || capitalize(ns);
 }
 
+// Native <input type="checkbox"> has no "indeterminate" HTML attribute -- it
+// must be set as a DOM property. Wrapping this in one place instead of a
+// useEffect at every call site.
+function TriStateCheckbox({ state, onChange, ariaLabel, disabled }: { state: TriState; onChange: () => void; ariaLabel: string; disabled?: boolean }) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = state === "indeterminate";
+  }, [state]);
+  return <input ref={ref} type="checkbox" aria-label={ariaLabel} checked={state === "checked"} disabled={disabled} onChange={onChange} />;
+}
+
 export function IamPolicyEditor() {
   const [catalog, setCatalog] = useState<PolicyCatalog | null>(null);
   const [loadError, setLoadError] = useState(false);
@@ -197,40 +228,121 @@ export function IamPolicyEditor() {
     "backups", "logs", "settings", "updates", "setup", "public-directory",
   ];
 
+  // Namespace -> access level -> actions. A namespace card only renders the
+  // access-level sub-sections it actually has actions for (up to 3).
   const groupedActions = useMemo(() => {
-    if (!catalog) return {};
-    const groups: Record<string, string[]> = {};
-    for (const ns of namespaceOrder) groups[ns] = [];
-    const other: string[] = [];
+    if (!catalog) return {} as Record<string, Record<AccessLevel, string[]>>;
+    const groups: Record<string, Record<AccessLevel, string[]>> = {};
+    const nsForAction = (action: string) => (action.includes(":") ? action.split(":")[0].toLowerCase() : "other");
+    const allNamespaces = [...namespaceOrder];
     for (const action of distinctActions(catalog)) {
       if (typeof action !== "string") continue;
-      const ns = action.includes(":") ? action.split(":")[0].toLowerCase() : "other";
-      if (groups[ns]) {
-        groups[ns].push(action as string);
-      } else {
-        other.push(action as string);
-      }
+      const ns = nsForAction(action);
+      if (!allNamespaces.includes(ns)) allNamespaces.push(ns);
     }
-    for (const ns of Object.keys(groups)) groups[ns].sort();
-    if (other.length) groups["other"] = other.sort();
+    for (const ns of allNamespaces) groups[ns] = { read: [], write: [], permissions: [] };
+    for (const action of distinctActions(catalog)) {
+      if (typeof action !== "string") continue;
+      const ns = nsForAction(action);
+      groups[ns][levelForAction(catalog, action)].push(action);
+    }
     for (const ns of Object.keys(groups)) {
-      if (groups[ns].length === 0) delete groups[ns];
+      for (const level of ACCESS_LEVEL_ORDER) groups[ns][level].sort();
+      const isEmpty = ACCESS_LEVEL_ORDER.every((level) => groups[ns][level].length === 0);
+      if (isEmpty) delete groups[ns];
     }
     return groups;
   }, [catalog]);
 
+  // Every action in a namespace, across all three access levels -- what the
+  // namespace-level header checkbox and select-all operate over.
+  const allActionsInNamespace = (ns: string): string[] =>
+    ACCESS_LEVEL_ORDER.flatMap((level) => groupedActions[ns]?.[level] || []);
+
   const filteredGroups = useMemo(() => {
     if (!search.trim()) return groupedActions;
     const q = search.toLowerCase();
-    const result: Record<string, string[]> = {};
-    for (const [ns, actions] of Object.entries(groupedActions)) {
-      const matching = actions.filter(a =>
-        a.toLowerCase().includes(q) || actionLabel(a).toLowerCase().includes(q)
-      );
-      if (matching.length) result[ns] = matching;
+    const result: Record<string, Record<AccessLevel, string[]>> = {};
+    for (const [ns, levels] of Object.entries(groupedActions)) {
+      const filteredLevels = {} as Record<AccessLevel, string[]>;
+      let any = false;
+      for (const level of ACCESS_LEVEL_ORDER) {
+        const matching = (levels[level] || []).filter((a) => a.toLowerCase().includes(q) || actionLabel(a).toLowerCase().includes(q));
+        filteredLevels[level] = matching;
+        if (matching.length) any = true;
+      }
+      if (any) result[ns] = filteredLevels;
     }
     return result;
   }, [groupedActions, search]);
+
+  // Which namespace/access-level groups are expanded, keyed by "ns" for a
+  // namespace header and "ns::level" for an access-level sub-header. Default
+  // collapsed (empty set) -- an operator drills in only where needed, per
+  // #634. A search match auto-expands its group WITHOUT writing into this
+  // set (isExpanded below simply ORs in a search match at render time), so
+  // clearing the search reverts exactly to whatever was manually toggled --
+  // including a manual toggle made while a search was active, which a
+  // snapshot-and-restore approach would have discarded.
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
+  const toggleExpanded = (key: string) => {
+    setExpandedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+  const matchesSearch = (actions: string[]): boolean => {
+    if (!search.trim()) return false;
+    const q = search.toLowerCase();
+    return actions.some((a) => a.toLowerCase().includes(q) || actionLabel(a).toLowerCase().includes(q));
+  };
+  const isExpanded = (key: string, groupActionsForSearch: string[]): boolean =>
+    expandedKeys.has(key) || matchesSearch(groupActionsForSearch);
+
+  const isOwnerTier = selectedTier === "owner";
+  const crownJewels = catalog?.crownJewelActions || [];
+
+  // Apply a group-level select-all/unselect-all to the draft, via the same
+  // functional setJsonText update toggleAction uses (so a select-all and a
+  // subsequent single-checkbox click in the same tick never race each
+  // other over stale text).
+  const applyGroupSelection = (groupActions: string[], select: boolean) => {
+    setJsonText((currentJsonText) => {
+      const stmts = parseStatements(currentJsonText);
+      if (!stmts) {
+        setToggleHint("The JSON tab contains invalid JSON, so permissions cannot be changed here until it is fixed.");
+        return currentJsonText;
+      }
+      setToggleHint("");
+      const currentAllowed = new Set(groupActions.filter((a) => actionGrantedByStatements(stmts, a)));
+      const literals = new Set<string>();
+      for (const st of stmts) if (st.Effect === "Allow") for (const a of st.Action) literals.add(a);
+
+      const targets = select
+        ? selectAllGrantTargets(groupActions, currentAllowed, crownJewels, isOwnerTier)
+        : selectAllRevokeTargets(groupActions, currentAllowed, literals);
+      if (targets.length === 0) return currentJsonText;
+
+      let updated: PolicyStatement[];
+      if (select) {
+        updated = [...stmts];
+        let allowStmt = updated.filter((st) => st.Effect === "Allow").pop();
+        if (!allowStmt) {
+          allowStmt = { Effect: "Allow" as const, Action: [] };
+          updated.push(allowStmt);
+        }
+        const toAdd = targets.filter((a) => !allowStmt!.Action.includes(a));
+        if (toAdd.length) allowStmt.Action = [...allowStmt.Action, ...toAdd];
+      } else {
+        const toRemove = new Set(targets);
+        updated = stmts.map((st) => (st.Effect === "Allow" ? { ...st, Action: st.Action.filter((a) => !toRemove.has(a)) } : st))
+          .filter((st) => st.Action.length > 0);
+      }
+      setSaved(false);
+      return JSON.stringify(updated, null, 2);
+    });
+  };
 
   // Reads the live jsonText via a functional setJsonText update rather than
   // the value captured in this closure (review finding): two toggles fired
@@ -392,36 +504,79 @@ export function IamPolicyEditor() {
               {Object.keys(filteredGroups).length === 0 && (
                 <p className="iam-empty-hint">No permissions match your search.</p>
               )}
-              {Object.entries(filteredGroups).map(([ns, actions]) => (
-                <div key={ns} className="iam-ns-card">
-                  <div className="iam-ns-header">
-                    <span className="iam-ns-name">{namespaceLabel(ns)}</span>
-                    <span className="iam-ns-count">
-                      {actions.filter(a => allowedActions.has(a)).length}/{actions.length} allowed
-                    </span>
-                  </div>
-                  <div className="iam-ns-actions">
-                    {actions.map((action) => {
-                      const lock = lockReason(action);
+              {Object.entries(filteredGroups).map(([ns, levels]) => {
+                const nsActions = allActionsInNamespace(ns);
+                const nsExpanded = isExpanded(ns, nsActions);
+                const nsExcluded = excludedCrownJewelActions(nsActions, crownJewels, isOwnerTier);
+                const nsState = groupTriState(nsActions, allowedActions, crownJewels, isOwnerTier);
+                const nsAllowedCount = nsActions.filter((a) => allowedActions.has(a)).length;
+                return (
+                  <div key={ns} className="iam-ns-card">
+                    <div className="iam-ns-header">
+                      <button type="button" className="iam-ns-chevron" aria-label={nsExpanded ? `Collapse ${namespaceLabel(ns)}` : `Expand ${namespaceLabel(ns)}`} aria-expanded={nsExpanded} onClick={() => toggleExpanded(ns)}>
+                        {nsExpanded ? "▾" : "▸"}
+                      </button>
+                      <TriStateCheckbox
+                        state={nsState}
+                        ariaLabel={`Select all ${namespaceLabel(ns)} permissions`}
+                        disabled={draftInvalid}
+                        onChange={() => applyGroupSelection(nsActions, nsState !== "checked")}
+                      />
+                      <span className="iam-ns-name">{namespaceLabel(ns)}</span>
+                      <span className="iam-ns-count">
+                        {nsAllowedCount}/{nsActions.length} allowed
+                        {nsExcluded.length > 0 && ` — ${nsExcluded.length} owner-only`}
+                      </span>
+                    </div>
+                    {nsExpanded && ACCESS_LEVEL_ORDER.filter((level) => (levels[level] || []).length > 0).map((level) => {
+                      const levelActions = levels[level];
+                      const levelKey = `${ns}::${level}`;
+                      const levelExpanded = isExpanded(levelKey, levelActions);
+                      const levelState = groupTriState(levelActions, allowedActions, crownJewels, isOwnerTier);
+                      const levelAllowedCount = levelActions.filter((a) => allowedActions.has(a)).length;
                       return (
-                        <label key={action} className={`iam-perm-row ${allowedActions.has(action) ? "perm-on" : "perm-off"}${lock ? " perm-locked" : ""}`} title={lock || undefined}>
-                          <input
-                            type="checkbox"
-                            checked={allowedActions.has(action)}
-                            disabled={draftInvalid}
-                            onChange={() => toggleAction(action)}
-                          />
-                          <span className="iam-perm-label" title={actionDescription(action) || undefined}>
-                            {ACTION_LABEL_OVERRIDES[action] || actionLabel(action)}
-                          </span>
-                          {lock && <span className="iam-perm-lock" aria-hidden="true">🔒</span>}
-                          <span className="iam-perm-action" title={action}>{action}</span>
-                        </label>
+                        <div key={level} className="iam-level-group">
+                          <div className="iam-level-header">
+                            <button type="button" className="iam-ns-chevron" aria-label={levelExpanded ? `Collapse ${ACCESS_LEVEL_LABEL[level]}` : `Expand ${ACCESS_LEVEL_LABEL[level]}`} aria-expanded={levelExpanded} onClick={() => toggleExpanded(levelKey)}>
+                              {levelExpanded ? "▾" : "▸"}
+                            </button>
+                            <TriStateCheckbox
+                              state={levelState}
+                              ariaLabel={`Select all ${ACCESS_LEVEL_LABEL[level]} permissions in ${namespaceLabel(ns)}`}
+                              disabled={draftInvalid}
+                              onChange={() => applyGroupSelection(levelActions, levelState !== "checked")}
+                            />
+                            <span className="iam-level-name">{ACCESS_LEVEL_LABEL[level]}</span>
+                            <span className="iam-ns-count">{levelAllowedCount}/{levelActions.length} allowed</span>
+                          </div>
+                          {levelExpanded && (
+                            <div className="iam-ns-actions">
+                              {levelActions.map((action) => {
+                                const lock = lockReason(action);
+                                return (
+                                  <label key={action} className={`iam-perm-row ${allowedActions.has(action) ? "perm-on" : "perm-off"}${lock ? " perm-locked" : ""}`} title={lock || undefined}>
+                                    <input
+                                      type="checkbox"
+                                      checked={allowedActions.has(action)}
+                                      disabled={draftInvalid}
+                                      onChange={() => toggleAction(action)}
+                                    />
+                                    <span className="iam-perm-label" title={actionDescription(action) || undefined}>
+                                      {ACTION_LABEL_OVERRIDES[action] || actionLabel(action)}
+                                    </span>
+                                    {lock && <span className="iam-perm-lock" aria-hidden="true">🔒</span>}
+                                    <span className="iam-perm-action" title={action}>{action}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
