@@ -307,6 +307,22 @@ export function setPolicies(docs, repoRoot = null) {
       unknownActions: dead
     };
   }
+
+  // Crown-jewel actions (settings:*, database mutation/export, updates:apply,
+  // backups:restore/import, addons:install/update, players:mutate, the
+  // economy actions, etc. -- see CROWN_JEWEL_DENY_ACTIONS) must never resolve
+  // to allowed for any tier but owner, no matter how the JSON got there --
+  // an Allow that reaches one, a removed Deny, or both at once. Only owner
+  // can save policies at all (settings:write is itself a crown jewel), so
+  // this is specifically a backstop against an owner *accidentally* granting
+  // one to a lower tier while hand-editing the JSON tab.
+  for (const tier of ["admin", "moderator", "player", "observer"]) {
+    if (!docs[tier]) continue;
+    const leaked = CROWN_JEWEL_DENY_ACTIONS.find((action) => evaluate({ tier }, action, docs));
+    if (leaked) {
+      return { ok: false, error: `The ${tier} policy would grant "${leaked}", a crown-jewel action reserved for owner. Add an explicit Deny for it, or remove the Allow that reaches it.` };
+    }
+  }
   _policies = docs;
   _allowedActions = {};
   if (repoRoot) writeJsonAtomic(resolve(repoRoot, "runtime/generated/iam-policies.json"), docs, 0o600);
@@ -329,6 +345,40 @@ function validPolicyStore(value) {
 }
 
 // ---- Default policies (mirror the CAPABILITY_BY_TIER ladder) ----
+
+// "Crown jewel" actions that must stay unreachable by every tier below Owner,
+// even if that tier's own Allow list is edited/widened later via the Access
+// Control UI. Originally only Admin carried this Deny block (Admin's own Allow
+// list is broad enough that a future widening edit is plausible); Moderator/
+// Player/Observer's Allow lists don't touch any of these today either, but
+// nothing stops an operator from widening THEIR Allow list too -- and unlike
+// Admin, they had no backstop if that happened. Every non-owner tier now
+// carries the identical Deny, purely as defense-in-depth: a no-op today
+// against each tier's current Allow list, protective if one is ever widened.
+const CROWN_JEWEL_DENY_ACTIONS = [
+  "settings:*",                                     // IAM policies, admin password, port, recovery codes
+  "server:write-credentials",                       // Funcom game-server token + server IP change
+  "database:write-config", "database:mutate",       // DB password + direct table edits
+  // The write half of POST /api/database/query, without which the two
+  // denials above are decorative: database:query is granted just above
+  // and that route takes UPDATE/DELETE/DROP as readily as SELECT.
+  //
+  // Redundant today -- the Allow list names database:read/query/export
+  // individually, so default-deny already refuses this. It is here for
+  // the plausible tidy-up that widens the Allow to database:*, which
+  // would otherwise hand the write half back. Pinned by "the deny
+  // survives a widened allow list" in databaseQueryAuthz.test.js.
+  "database:execute",
+  "database:export",                                // full DB dump = whole-database exfiltration
+  "admin:transfer-settings:write",                  // character/server-transfer policy (identity + economy)
+  "updates:apply", "updates:fix", "updates:repair", // deploying / altering the running code
+  "backups:restore", "backups:import",              // irreversible DB overwrite / untrusted import
+  "addons:install", "addons:update",                // third-party code into the console process
+  "setup:write",                                    // first-run provisioning
+  "players:mutate",                                 // give-item / add-currency / reset-progression (economy)
+  "carepackage:grant", "carepackage:write-config",  // minting in-game value
+  "exchange:market", "exchange:market-write",       // seeding the market economy
+];
 
 const DEFAULT_POLICIES = {
   owner: {
@@ -376,31 +426,7 @@ const DEFAULT_POLICIES = {
         "setup:read",
         "addons:read",
       ]},
-      { Effect: "Deny", Action: [
-        // Crown jewels -- never reachable by admin, even via a future widened Allow.
-        "settings:*",                                     // IAM policies, admin password, port, recovery codes
-        "server:write-credentials",                       // Funcom game-server token + server IP change
-        "database:write-config", "database:mutate",       // DB password + direct table edits
-        // The write half of POST /api/database/query, without which the two
-        // denials above are decorative: database:query is granted just above
-        // and that route takes UPDATE/DELETE/DROP as readily as SELECT.
-        //
-        // Redundant today -- the Allow list names database:read/query/export
-        // individually, so default-deny already refuses this. It is here for
-        // the plausible tidy-up that widens the Allow to database:*, which
-        // would otherwise hand the write half back. Pinned by "the deny
-        // survives a widened allow list" in databaseQueryAuthz.test.js.
-        "database:execute",
-        "database:export",                                // full DB dump = whole-database exfiltration
-        "admin:transfer-settings:write",                  // character/server-transfer policy (identity + economy)
-        "updates:apply", "updates:fix", "updates:repair", // deploying / altering the running code
-        "backups:restore", "backups:import",              // irreversible DB overwrite / untrusted import
-        "addons:install", "addons:update",                // third-party code into the console process
-        "setup:write",                                    // first-run provisioning
-        "players:mutate",                                 // give-item / add-currency / reset-progression (economy)
-        "carepackage:grant", "carepackage:write-config",  // minting in-game value
-        "exchange:market", "exchange:market-write",       // seeding the market economy
-      ]}
+      { Effect: "Deny", Action: CROWN_JEWEL_DENY_ACTIONS }
     ]
   },
 
@@ -418,6 +444,7 @@ const DEFAULT_POLICIES = {
         "vehicles:read", "exchange:read", "logs:read", "landsraad:read",
         "admin:broadcast", "admin:map-chat",
       ]},
+      { Effect: "Deny", Action: CROWN_JEWEL_DENY_ACTIONS }
     ]
   },
 
@@ -438,6 +465,7 @@ const DEFAULT_POLICIES = {
         "guilds:read",   // Guilds (own-only scoping is a follow-up)
         "maps:read",     // Live Map
       ]},
+      { Effect: "Deny", Action: CROWN_JEWEL_DENY_ACTIONS }
     ]
   },
 
@@ -451,6 +479,7 @@ const DEFAULT_POLICIES = {
       { Effect: "Allow", Action: [
         "server:read",
       ]},
+      { Effect: "Deny", Action: CROWN_JEWEL_DENY_ACTIONS }
     ]
   },
 };
