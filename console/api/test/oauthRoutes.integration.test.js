@@ -337,6 +337,75 @@ test("handoff configured with bootstrap disabled completes sign-in via the bot (
 });
 
 
+test("a working bot handoff is not blocked by a stale, unsound DISCORD_CONSOLE_*_ROLE_IDS mapping (review finding)", async () => {
+  // .env.example documents role-mapping env vars as "ignored entirely when a
+  // bot handoff is configured" -- but roleMappingUnsound() used to be checked
+  // unconditionally in both /start and the callback, so leftover conflicting
+  // role-ID env vars from before switching to handoff mode disabled Discord
+  // sign-in entirely, even though the handoff path never reads them.
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const botPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-e2e-handoff-staleroles-"));
+  const console = startConsole(consolePort, discordPort, tempDir, {
+    DISCORD_BOT_HANDOFF_SECRET: HANDOFF_SECRET,
+    DISCORD_BOT_HANDOFF_URL: `http://127.0.0.1:${botPort}`,
+    DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "",
+    DISCORD_OAUTH_OWNER_ALLOWLIST: "",
+    DISCORD_CONSOLE_ADMIN_ROLE_IDS: ADMIN_ROLE,
+    DISCORD_CONSOLE_MODERATOR_ROLE_IDS: ADMIN_ROLE,
+  });
+  const discordServer = await startFakeDiscord(discordPort);
+  const botServer = await startFakeBot(botPort, { tier: "admin" });
+  try {
+    await waitForHealth(consolePort);
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" });
+    assert.equal(start.status, 302, "a working handoff must not be blocked by a stale role-mapping conflict it never reads");
+    const pendingStateValue = sessionCookieValue(start.headers.getSetCookie() || [], "discord_oauth_state");
+
+    const callback = await fetch(
+      `http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=validcode&state=${encodeURIComponent(pendingStateValue)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${pendingStateValue}` } }
+    );
+    assert.equal(callback.status, 200, "handoff-backed sign-in must complete despite the stale role-mapping conflict");
+    const sessionValue = sessionCookieValue(callback.headers.getSetCookie(), "asc_session");
+    assert.ok(sessionValue, "callback must set the session cookie");
+    const me = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, {
+      headers: { cookie: `asc_session=${sessionValue}` }
+    })).json();
+    assert.equal(me.user.tier, "admin", "tier must come from the bot handoff, not the (ignored) role mapping");
+  } finally {
+    await stopProcess(console.child);
+    await closeDiscordServer(discordServer);
+    await closeDiscordServer(botServer);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("an anonymous callback request with no valid pending state gets the generic invalid/expired page, never internal misconfiguration detail (review finding)", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-cb-anon-noleak-"));
+  // Half-configured handoff: handoff.misconfigured is true for the whole
+  // process. Before the fix, an anonymous request with no state/cookie at all
+  // (never started an OAuth flow) still received this specific
+  // "bot handoff is only partially configured" page instead of the generic
+  // "invalid or expired" message, because the misconfiguration check ran
+  // before the consumed.ok check.
+  const console = startConsole(consolePort, discordPort, tempDir, {
+    DISCORD_BOT_HANDOFF_SECRET: "a".repeat(32),
+    DISCORD_BOT_HANDOFF_URL: "",
+  });
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const callback = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/callback`, { redirect: "manual" });
+    assert.equal(callback.status, 400, "an anonymous request with no pending state must get the generic invalid/expired response");
+    const body = await callback.text();
+    assert.match(body, /invalid or expired/i);
+    assert.doesNotMatch(body, /bot handoff is only partially configured/i, "must not disclose internal misconfiguration state to a request with no valid pending state");
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
 // ---- §2.1.1: console-native role -> tier, enforcement, and the opt-in 2FA gate ----
 
 async function signInWithCode(consolePort, code) {
@@ -684,6 +753,33 @@ test("guided setup: an owner WHOSE Discord account has 2FA may require it -- fin
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
 
+test("guided setup: finalize does not clobber an already-configured owner-bootstrap allowlist (review finding)", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-setup-nobootstrap-clobber-"));
+  const { writeFileSync } = await import("node:fs");
+  // Pre-seed .env exactly as an operator who already configured a second-owner
+  // bootstrap allowlist (the documented DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP=1 +
+  // DISCORD_OAUTH_OWNER_ALLOWLIST path) would have on disk before ever running
+  // the guided wizard.
+  writeFileSync(join(tempDir, ".env"), 'DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP="1"\nDISCORD_OAUTH_OWNER_ALLOWLIST="999999999999999999"\n');
+  const console = startConsole(consolePort, discordPort, tempDir, { DISCORD_HOME_GUILD_ID: "", DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "1", DISCORD_OAUTH_OWNER_ALLOWLIST: "999999999999999999" });
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const owner = await passwordOwnerSession(consolePort);
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start?setup=1`, { redirect: "manual", headers: { cookie: owner.cookie } });
+    const state = sessionCookieValue(start.headers.getSetCookie(), "discord_oauth_state");
+    const cb = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=guildowner&state=${encodeURIComponent(state)}`, { redirect: "manual", headers: { cookie: `discord_oauth_state=${state}` } });
+    assert.equal(cb.status, 200);
+    const H = { cookie: owner.cookie, "x-csrf-token": owner.csrfToken, "content-type": "application/json" };
+    const r = await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-finalize`, { method: "POST", headers: H, body: JSON.stringify({ guildId: HOME_GUILD, adminRoleIds: ADMIN_ROLE, requireMfa: false }) });
+    assert.equal(r.status, 200, await r.text());
+    const env = readFileSync(join(tempDir, ".env"), "utf8");
+    assert.match(env, /DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP="?1"?/, "finalize must not clobber an existing owner-bootstrap allowlist setting");
+    assert.match(env, /DISCORD_OAUTH_OWNER_ALLOWLIST="?999999999999999999"?/, "finalize must not touch the owner allowlist it has no field for");
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
 test("Discord sign-in attempts silently (prompt=none) and, when interaction is needed, retries LOUDLY interactively; a decline fails loudly", async () => {
   const consolePort = await getFreePort(); const discordPort = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "oauth-silent-"));
@@ -737,6 +833,30 @@ test("GET /api/auth/discord/start is rate-limited per client after a burst", asy
     }
     assert.ok(limited, "a 40-request burst from one client must hit the per-client /start limit");
     assert.ok(limited.at >= 10, `the limit must be generous enough for a human (tripped at ${limited.at})`);
+    assert.ok(Number(limited.retryAfter) > 0, "429 must carry retry-after");
+  } finally {
+    await stopProcess(console.child);
+    await closeDiscordServer(discordServer);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("GET /api/auth/discord/start?setup=1 is rate-limited per client after a burst, same as the login-mode branch (review finding)", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-setup-start-rate-"));
+  const console = startConsole(consolePort, discordPort, tempDir);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const owner = await passwordOwnerSession(consolePort);
+    let limited = null;
+    for (let i = 0; i < 40; i += 1) {
+      const response = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start?setup=1`, { redirect: "manual", headers: { cookie: owner.cookie } });
+      if (response.status === 429) { limited = { at: i, retryAfter: response.headers.get("retry-after") }; break; }
+      assert.equal(response.status, 302, `request ${i} should still redirect`);
+    }
+    assert.ok(limited, "a 40-request burst against setup-mode start (an authenticated-but-possibly-replayed owner cookie) must also hit a per-client limit");
     assert.ok(Number(limited.retryAfter) > 0, "429 must carry retry-after");
   } finally {
     await stopProcess(console.child);

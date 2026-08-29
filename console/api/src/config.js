@@ -280,15 +280,19 @@ export function loadConfig() {
     // ---- Discord OAuth sign-in (Tier 1, rfc-console-auth.md §2.1 / §2.1.1) ----
     // "App configured" = the console can start an OAuth round-trip (setup mode
     // uses this); "configured" additionally has a home guild, i.e. sign-in can
-    // actually decide a tier.
+    // actually decide a tier. Checked by the actual trimmed secret VALUE, not
+    // existsSync -- an empty or whitespace-only secret file (a botched write,
+    // a stray `touch`) used to still read as "configured" here while every
+    // real token exchange with Discord sent client_secret="" and silently
+    // failed (review finding).
     discordOAuthAppConfigured: Boolean(
       process.env.DISCORD_OAUTH_CLIENT_ID &&
-      (process.env.DISCORD_OAUTH_CLIENT_SECRET || existsSync(resolve(secretsDir, "discord-oauth-client-secret.txt"))) &&
+      readInlineOrFile(process.env.DISCORD_OAUTH_CLIENT_SECRET, resolve(secretsDir, "discord-oauth-client-secret.txt")) &&
       process.env.DISCORD_OAUTH_REDIRECT_URI
     ),
     discordOAuthConfigured: Boolean(
       process.env.DISCORD_OAUTH_CLIENT_ID &&
-      (process.env.DISCORD_OAUTH_CLIENT_SECRET || existsSync(resolve(secretsDir, "discord-oauth-client-secret.txt"))) &&
+      readInlineOrFile(process.env.DISCORD_OAUTH_CLIENT_SECRET, resolve(secretsDir, "discord-oauth-client-secret.txt")) &&
       process.env.DISCORD_OAUTH_REDIRECT_URI &&
       oauthHomeGuildId
     ),

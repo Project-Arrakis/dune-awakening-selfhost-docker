@@ -1053,7 +1053,18 @@ async function handleApi(req, res) {
       if (!config.discordOAuthAppConfigured) {
         return json(res, 400, { error: "This console has no Discord application yet. Set DISCORD_OAUTH_CLIENT_ID, DISCORD_OAUTH_CLIENT_SECRET and DISCORD_OAUTH_REDIRECT_URI in .env (like a bot's), or enter them on the setup screen." });
       }
-      const pending = oauthPendingStates.issue(undefined, { purpose: "setup", sessionId: ownerSession.id, owner: loginRateLimitKey(req) });
+      // Setup mode requires an authenticated owner session, but that owner
+      // cookie could be stolen/replayed -- it must not get an unrated
+      // exemption the normal login branch below does not have (review
+      // finding: this branch issued pending states with no rate check at all).
+      const setupKey = loginRateLimitKey(req);
+      const setupStartRate = oauthStartRateLimiter.check(setupKey);
+      if (!setupStartRate.allowed) {
+        audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: false, purpose: "setup", reason: "rate_limited" });
+        return json(res, 429, { error: "Too many Discord sign-in attempts from this address. Wait a minute, then try again." }, { "retry-after": String(setupStartRate.retryAfterSeconds) });
+      }
+      oauthStartRateLimiter.record(setupKey);
+      const pending = oauthPendingStates.issue(undefined, { purpose: "setup", sessionId: ownerSession.id, owner: setupKey });
       if (!pending) return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
       res.setHeader("Set-Cookie", oauthStateCookie(pending.state));
       res.writeHead(302, { Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: pending.state, codeChallenge: pending.challenge, prompt: "none" }) });
@@ -1070,7 +1081,11 @@ async function handleApi(req, res) {
       audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: false, reason: "handoff_misconfigured" });
       return html(res, 403, oauthErrorPage("Discord sign-in is disabled because this console's bot handoff is only partially configured. If you administer this install, check the console logs for the missing value, then either complete or remove the handoff configuration. Sign in with the admin password in the meantime."));
     }
-    if (roleMappingUnsound()) {
+    // With a configured handoff, the bot is the sole tier source and the role
+    // mapping env vars are documented as ignored entirely (.env.example) --
+    // stale DISCORD_CONSOLE_*_ROLE_IDS left over from before switching to
+    // handoff mode must not disable a working handoff (review finding).
+    if (!handoff.enabled && roleMappingUnsound()) {
       audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: false, reason: "role_mapping_unsound" });
       return html(res, 403, roleMappingUnsoundPage());
     }
@@ -6073,13 +6088,20 @@ async function discordSetupFinalize(req, res, session) {
       error: "Your Discord account does not have two-factor authentication enabled, but you asked to require it for Owner and Admin. Enable 2FA on your Discord account and try again, or clear the two-factor requirement -- otherwise you would lock yourself out of Discord sign-in.",
     }, "operator_mfa_missing");
   }
+  // DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP is deliberately NOT written here (review
+  // finding): this wizard has no field for it, so unconditionally forcing it to
+  // "0" on every run silently clobbered an operator's already-configured
+  // bootstrap allowlist (DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP=1 +
+  // DISCORD_OAUTH_OWNER_ALLOWLIST, the documented way to grant Owner to a
+  // second Discord account) the moment they re-ran setup just to add a role
+  // mapping. The sibling manual path (writeOAuthConfig) already gets this
+  // right by only writing keys the request body actually includes -- match it.
   const fields = {
     DISCORD_HOME_GUILD_ID: guildId,
     DISCORD_CONSOLE_ADMIN_ROLE_IDS: String(body.adminRoleIds || "").trim(),
     DISCORD_CONSOLE_MODERATOR_ROLE_IDS: String(body.moderatorRoleIds || "").trim(),
     DISCORD_CONSOLE_PLAYER_ROLE_IDS: String(body.playerRoleIds || "").trim(),
     DISCORD_OAUTH_REQUIRE_MFA_TIERS: wantMfaRequirement ? "owner,admin" : "",
-    DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "0",
   };
   for (const [key, value] of Object.entries(fields)) {
     const error = validateOAuthWriteConfigKey(key, value);
@@ -6221,7 +6243,15 @@ function readSetupConfigValues() {
       values[parsed.key] = parsed.value;
     }
   }
-  if (existsSync(resolve(config.secretsDir, "discord-oauth-client-secret.txt"))) values._discordOAuthSecretSaved = "1";
+  // Checked by actual trimmed content, not existsSync -- an empty or
+  // whitespace-only secret file (a botched write, a stray `touch`) used to
+  // still report as "saved" here, so the setup screen and Settings UI both
+  // showed the secret as already configured while every real token exchange
+  // silently sent client_secret="" (review finding; mirrors config.js's
+  // discordOAuthConfigured/discordOAuthAppConfigured fix).
+  try {
+    if (readFileSync(resolve(config.secretsDir, "discord-oauth-client-secret.txt"), "utf8").trim()) values._discordOAuthSecretSaved = "1";
+  } catch { /* file missing or unreadable -- not saved */ }
   return values;
 }
 
@@ -6680,7 +6710,20 @@ async function handleOAuthCallback(req, res) {
   // built to repair exactly this state, forcing a hand-edit of .env instead.
   // The /start route already gets this right (its setup-mode branch returns
   // before these checks); this makes the callback consistent with it.
-  const isSetupCallback = consumed.ok && consumed.purpose === "setup";
+  //
+  // !consumed.ok is checked FIRST, before the handoff/role-mapping checks
+  // below (review finding): those checks used to run even for a request that
+  // never started a real OAuth flow at all (no/invalid state, no cookie), so
+  // an anonymous caller received the specific "bot handoff is only partially
+  // configured" or "role mapping is unsound" page instead of the generic
+  // invalid/expired message -- disclosing this console's misconfiguration
+  // state to a caller with no valid pending state to act on.
+  if (!consumed.ok) {
+    oauthCallbackRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: consumed.reason });
+    return html(res, 400, oauthErrorPage("Discord sign-in could not be completed. The request was invalid or expired — return to the console and start again."));
+  }
+  const isSetupCallback = consumed.purpose === "setup";
   if (!isSetupCallback && handoff.misconfigured) {
     oauthCallbackRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "handoff_misconfigured" });
@@ -6688,18 +6731,16 @@ async function handleOAuthCallback(req, res) {
   }
   // With a configured handoff, the bot is the tier source and owner
   // bootstrap is not required. Without one, bootstrap is the only
-  // possible tier source, so its being disabled is an early deny.
-  if (!isSetupCallback && roleMappingUnsound()) {
+  // possible tier source, so its being disabled is an early deny. A working
+  // handoff's own role mapping (if any legacy env vars remain) is ignored
+  // entirely per .env.example, so it must not be gated by this check either
+  // (review finding, mirrors the /start route's identical fix).
+  if (!isSetupCallback && !handoff.enabled && roleMappingUnsound()) {
     oauthCallbackRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "role_mapping_unsound" });
     return html(res, 403, roleMappingUnsoundPage());
   }
-  if (!consumed.ok) {
-    oauthCallbackRateLimiter.recordFailure(rateKey);
-    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: consumed.reason });
-    return html(res, 400, oauthErrorPage("Discord sign-in could not be completed. The request was invalid or expired — return to the console and start again."));
-  }
-  if (consumed.ok && consumed.purpose !== "setup" && !discordTierSourceConfigured()) {
+  if (consumed.purpose !== "setup" && !discordTierSourceConfigured()) {
     oauthCallbackRateLimiter.recordFailure(rateKey);
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "no_tier_source" });
     return html(res, 403, oauthErrorPage("Discord sign-in is not finished being set up: no Discord server has been chosen, so the console cannot decide what a Discord user may do. If you administer this install, sign in with the admin password and finish Discord setup (choose the server and map an Admin role)."));
