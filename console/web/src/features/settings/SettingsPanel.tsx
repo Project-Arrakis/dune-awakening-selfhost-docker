@@ -554,7 +554,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
           {discordRoleConflictList.length > 0 && <p className="attention-text">Each Discord role can map to only one access level &mdash; {discordRoleConflictList.join("; ")}. Owner is never a role: it is the server&apos;s owner.</p>}
           <p className="muted">With &ldquo;Require Discord 2FA for&rdquo; set, sign-ins for those tiers are refused unless the Discord account itself has two-factor enabled (recommended for owner and admin). If you also run a companion bot with a signed tier handoff, the bot decides tiers and the role fields above are ignored. Additional owners beyond the server owner can be set with <code>DISCORD_OAUTH_OWNER_ALLOWLIST</code> in <code>.env</code> (advanced).</p>
           <div className="action-row" style={{ marginTop: "12px" }}>
-            <button disabled={discordOAuthSaving || discordRoleConflictList.length > 0 || (!discordClientId && !discordRedirectUri && !discordClientSecret && !discordHomeGuildId && !discordAdminRoleIds)} onClick={() => { void saveDiscordOAuth(); }}>
+            <button disabled={discordOAuthSaving || discordRoleConflictList.length > 0 || (!discordClientId && !discordRedirectUri && !discordClientSecret && !discordHomeGuildId && !discordAdminRoleIds && !discordModeratorRoleIds && !discordPlayerRoleIds && !discordRequireMfaTiers)} onClick={() => { void saveDiscordOAuth(); }}>
               {discordOAuthSaving ? "Saving..." : "Save Discord OAuth"}
             </button>
             <a className="login-password-toggle" href="/?discordSetup=start">Run the guided setup again</a>

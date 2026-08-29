@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { iamActionAllowed } from "./iamPolicy";
+import { actionGrantedByStatements, iamActionAllowed } from "./iamPolicy";
 import { api } from "../../api/client";
 
 interface PolicyStatement {
@@ -110,14 +110,10 @@ export function IamPolicyEditor() {
   // Which IAM ACTIONS the draft grants (Allow minus Deny), computed over the
   // distinct actions in the catalog -- not routes, so one action = one checkbox.
   const allowedActions = useMemo(() => {
-    const allow: string[] = [];
-    const deny: string[] = [];
-    for (const st of statements) for (const a of st.Action) (st.Effect === "Deny" ? deny : allow).push(a);
     const granted = new Set<string>();
     for (const action of distinctActions(catalog)) {
       if (typeof action !== "string") continue;
-      if (iamActionAllowed(action, deny)) continue;
-      if (iamActionAllowed(action, allow)) granted.add(action);
+      if (actionGrantedByStatements(statements, action)) granted.add(action);
     }
     return granted;
   }, [statements, catalog]);
@@ -145,8 +141,8 @@ export function IamPolicyEditor() {
   const namespaceOrder = [
     "server", "players", "guilds", "bases", "storage", "maps",
     "sietches", "deepdesert", "admin", "landsraad", "addons",
-    "carepackage", "blueprints", "database", "backups", "logs",
-    "settings", "updates", "setup", "public-directory",
+    "carepackage", "blueprints", "vehicles", "exchange", "database",
+    "backups", "logs", "settings", "updates", "setup", "public-directory",
   ];
 
   const groupedActions = useMemo(() => {
@@ -189,7 +185,12 @@ export function IamPolicyEditor() {
   // before React re-renders between them (e.g. a future bulk/"select all"
   // action calling this in a loop) would otherwise both compute `updated`
   // from the same stale text, and the second setJsonText call would silently
-  // overwrite the first toggle's change.
+  // overwrite the first toggle's change. The branch decision below must read
+  // the same freshly-parsed `stmts`, not the outer `allowedActions` memo
+  // (second review finding, still live after the first fix): that memo is
+  // only current for the last completed render, so a second toggle in the
+  // same tick would branch on stale state and could re-grant an action it
+  // just revoked (or vice versa) instead of no-op'ing or reverting.
   const toggleAction = (iamAction: string) => {
     setJsonText((currentJsonText) => {
       const stmts = parseStatements(currentJsonText);
@@ -200,7 +201,7 @@ export function IamPolicyEditor() {
       setToggleHint("");
       let updated: PolicyStatement[];
 
-      if (allowedActions.has(iamAction)) {
+      if (actionGrantedByStatements(stmts, iamAction)) {
         // Revoke. A checkbox can only remove an exact Allow literal; a grant that
         // comes from a wildcard ("server:*" or "*") cannot be narrowed here
         // without rewriting the wildcard. Filtering by !== would leave the

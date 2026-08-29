@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { api } from "../../api/client";
 import { IamPolicyEditor } from "./IamPolicyEditor";
+// Vite raw-import suffix (no ambient module declared in this project -- no
+// vite-env.d.ts -- but the suffix is resolved by Vite's transform pipeline at
+// build/test time regardless of TS's own module resolution).
+// @ts-expect-error -- see comment above
+import iamPolicyEditorSource from "./IamPolicyEditor.tsx?raw";
 
 // Regression tests for three IAM-editor contract bugs found in review:
 //   (a) save issued POST {tier,statements} but the route is PUT {whole store}
@@ -131,6 +136,26 @@ describe("IamPolicyEditor server contracts", () => {
     const body = JSON.parse(String((put[1] as RequestInit).body));
     const modActions = body.moderator.statements.flatMap((st: { Action: string[] }) => st.Action);
     expect(modActions).not.toContain("server:read");
+  });
+
+  it("#10 toggleAction's grant/revoke branch decision reads the freshly-parsed statements, not the outer allowedActions memo (review finding, source pin)", () => {
+    // A DOM-event-timing reproduction of "two toggles fired before React
+    // re-renders between them" is not reliably reproducible under jsdom/RTL
+    // (each dispatched event is independently flushed by React's per-event
+    // batching in this environment, even nested inside one act() call) --
+    // actionGrantedByStatements' own behavior across chained statement lists
+    // is covered directly in IamPolicyEditor.grouping.test.ts. This pins the
+    // actual regression: toggleAction's branch decision must call
+    // actionGrantedByStatements(stmts, ...) -- the freshly-parsed, in-flight
+    // statement list -- never allowedActions.has(...), the memoized value
+    // from the last completed render, which the first fix (c3b416d4) left in
+    // place when it moved only the text mutation to a functional update.
+    const src = iamPolicyEditorSource as string;
+    const toggleActionStart = src.indexOf("const toggleAction = (iamAction: string) => {");
+    expect(toggleActionStart).toBeGreaterThan(-1);
+    const toggleActionBody = src.slice(toggleActionStart, toggleActionStart + 1200);
+    expect(toggleActionBody).toMatch(/actionGrantedByStatements\(stmts,\s*iamAction\)/);
+    expect(toggleActionBody).not.toMatch(/allowedActions\.has\(iamAction\)/);
   });
 });
 
