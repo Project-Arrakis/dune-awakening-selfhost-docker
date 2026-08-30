@@ -46,6 +46,25 @@ test("updateEnvFileValue: sequential calls (the guided setup wizard's per-key lo
   rmSync(dir, { recursive: true, force: true });
 });
 
+// #641 (guided Discord app-creation flow) design's §4.3: the connect step's
+// sequential write of exactly the 2 keys it manages is the coldest possible
+// .env state this loop shape will ever see -- a brand-new install, before
+// ANY Discord config (or .env file at all) exists. Distinct from the test
+// above, which starts from a file that already has one key.
+test("updateEnvFileValue: the guided setup wizard's connect step (write DISCORD_OAUTH_CLIENT_ID then DISCORD_OAUTH_REDIRECT_URI) against a .env that doesn't exist yet inserts no blank lines", () => {
+  const dir = mkdtempSync(join(tmpdir(), "envfile-"));
+  // No writeFileSync at all -- .env genuinely does not exist yet.
+  updateEnvFileValue(dir, "DISCORD_OAUTH_CLIENT_ID", "123456789012345678");
+  updateEnvFileValue(dir, "DISCORD_OAUTH_REDIRECT_URI", "example-redirect-uri");
+  const lines = readEnvLines(join(dir, ".env"));
+  assert.deepEqual(lines, [
+    "DISCORD_OAUTH_CLIENT_ID=123456789012345678",
+    "DISCORD_OAUTH_REDIRECT_URI=example-redirect-uri",
+    "",
+  ]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("updateEnvFileValue: updating an EXISTING key in place still adds no stray blank line", () => {
   const dir = mkdtempSync(join(tmpdir(), "envfile-"));
   writeFileSync(join(dir, ".env"), "A=1\nB=2\n");
