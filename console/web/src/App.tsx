@@ -628,8 +628,9 @@ export function App() {
   // session-expiry-on-401 handling used elsewhere would misrepresent all of them.
   async function login() {
     const body: Record<string, string> = { password };
-    if (useRecoveryCode && recoveryCode) body.recoveryCode = recoveryCode;
-    else if (totpRequired && totpCode) body.totpCode = totpCode;
+    let codeAttempted = false;
+    if (useRecoveryCode && recoveryCode) { body.recoveryCode = recoveryCode; codeAttempted = true; }
+    else if (totpRequired && totpCode) { body.totpCode = totpCode; codeAttempted = true; }
     const { status, body: result } = await loginRequest(body);
 
     if (status === 200 && result.authenticated) {
@@ -651,7 +652,19 @@ export function App() {
     if (status === 401 && result.totpRequired) {
       setTotpRequired(true);
       setRecoveryAvailable(Boolean(result.recoveryAvailable));
-      throw new Error(String(result.error || "Enter your authenticator code."));
+      // The server returns this identical shape both right after a correct
+      // password (no code submitted yet -- not a failure, just one more
+      // step) and after a WRONG code is submitted (a real failure) -- the
+      // only way to tell them apart is whether THIS request actually
+      // included a code. Throwing unconditionally rendered both through the
+      // same shared, red-styled .error paragraph used for genuine failures,
+      // which at a glance looked identical to the password having been
+      // rejected (live-testing finding). Only throw for the real failure;
+      // the neutral first-time prompt is shown by the login-totp-hint
+      // paragraph below instead.
+      if (codeAttempted) throw new Error(String(result.error || "That code was not accepted."));
+      setError("");
+      return;
     }
     if (status === 401 && result.recoveryFailed) {
       throw new Error(String(result.error || "That recovery code was not accepted."));
@@ -830,6 +843,11 @@ export function App() {
   if (!auth) {
     const passwordFields = totpRequired ? (
       <div className="login-password-fields">
+        {!error && (
+          <p className="login-totp-hint muted">
+            {useRecoveryCode ? "Enter one of your saved recovery codes." : "Password accepted — enter your authenticator code."}
+          </p>
+        )}
         {useRecoveryCode ? (
           <input
             type="text"
