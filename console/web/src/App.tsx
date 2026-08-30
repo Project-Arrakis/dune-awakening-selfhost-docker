@@ -1003,7 +1003,21 @@ export function App() {
           {navGroups.map((group) => (
             <section className="sidebar-nav-group" key={group.title} aria-label={group.title}>
               <p className="sidebar-nav-heading">{group.title}</p>
-              {group.items.filter((item) => (item.tab !== "Settings" && item.tab !== "Access Control") || allowedActions.length === 0 || allowedActions.some((a) => a.startsWith("settings:"))).map((item) => (
+              {group.items.filter((item) => {
+                if (item.tab !== "Settings" && item.tab !== "Access Control") return true;
+                const hasSettingsAccess = allowedActions.length === 0 || allowedActions.some((a) => a.startsWith("settings:"));
+                if (!hasSettingsAccess) return false;
+                // Access Control configures what admin/moderator/player tiers
+                // (reachable only via Discord role mapping) can do. With no
+                // Discord OAuth configured at all, a password/TOTP session is
+                // always owner (no role concept in that tier), owner already
+                // has every permission, and no other tier is reachable by
+                // anyone -- the editor would be real UI with nothing real to
+                // configure (live-testing finding). Settings itself must stay
+                // visible regardless -- it's where Discord OAuth gets set up.
+                if (item.tab === "Access Control" && !discordSignInAvailable) return false;
+                return true;
+              }).map((item) => (
                 <Fragment key={item.tab}>
                   <button className={tab === item.tab && (!selectedPinnedAddonId || item.tab !== "Addons") ? "active" : ""} onClick={() => {
                     setRedeploySetupOpen(false);
