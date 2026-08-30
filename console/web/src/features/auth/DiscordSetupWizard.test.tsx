@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { api, post } from "../../api/client";
 import { DiscordSetupWizard } from "./DiscordSetupWizard";
 
@@ -175,5 +175,82 @@ describe("DiscordSetupWizard: saving the connect-step form", () => {
 
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/setup/write-oauth-config", expect.anything()));
     expect(mockPost).not.toHaveBeenCalledWith("/api/setup/save-oauth-secret", expect.anything());
+  });
+});
+
+// Live-testing finding: "entered both values, clicked save and the secret
+// input went away and nothing else [happened]". Root cause (confirmed against
+// real server code, not guessed): writeOAuthConfig/saveOAuthClientSecret only
+// write .env / the secret file -- config.discordOAuthAppConfigured is computed
+// once from process.env at loadConfig() (server.js:81) and is never hot-reloaded,
+// so a successful save is real but invisible until the console restarts. This
+// exact "wrote config the running process hasn't loaded" problem already has a
+// solved pattern in this same component for the later finalize step (the "done"
+// step's restartNow() + poll-until-config-flips) -- the connect step's save
+// never wired into it. publicConfig() already exposes discordOAuthAppConfigured
+// (config.js:527), so /api/auth/state carries exactly the field needed to poll;
+// this is a frontend-only fix.
+describe("DiscordSetupWizard: a restart is required after saving (the process only reads .env at boot)", () => {
+  beforeEach(() => { vi.clearAllMocks(); stubHttps(true); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function stubLocationReplace() {
+    const replace = vi.fn();
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, protocol: "https:", origin: "https://console.example.org", search: "", replace },
+      writable: true,
+    });
+    return replace;
+  }
+
+  it("shows a 'restart required' prompt instead of silently doing nothing once the save succeeds", async () => {
+    stubNotYetConfigured();
+    mockPost.mockImplementation((path: string) => {
+      if (path === "/api/setup/write-oauth-config") return Promise.resolve({ ok: true } as never);
+      if (path === "/api/setup/save-oauth-secret") return Promise.resolve({ ok: true } as never);
+      return Promise.reject(new Error(`unexpected post: ${path}`));
+    });
+    render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.click(await screen.findByText("I already have a Discord application"));
+    fireEvent.change(await screen.findByLabelText(/client id/i), { target: { value: "123456789012345678" } });
+    fireEvent.change(screen.getByLabelText(/client secret/i), { target: { value: "shh-its-a-secret" } });
+    fireEvent.click(screen.getByText(/save/i));
+
+    expect(await screen.findByText("Restart the console now")).toBeTruthy();
+    // The stale, now-emptied form must not still be the only thing on screen --
+    // that is exactly what read as "went away and nothing else".
+    expect(screen.queryByLabelText(/client secret/i)).toBeNull();
+  });
+
+  it("clicking 'Restart the console now' restarts and polls for discordOAuthAppConfigured -- not discordOAuthConfigured, which also needs a home guild not set yet at this step -- before reloading", async () => {
+    stubNotYetConfigured();
+    mockPost.mockImplementation((path: string) => {
+      if (path === "/api/setup/write-oauth-config") return Promise.resolve({ ok: true } as never);
+      if (path === "/api/setup/discord-restart") return Promise.resolve({ ok: true } as never);
+      return Promise.reject(new Error(`unexpected post: ${path}`));
+    });
+    const replace = stubLocationReplace();
+
+    render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.click(await screen.findByText("I already have a Discord application"));
+    fireEvent.change(await screen.findByLabelText(/client id/i), { target: { value: "123456789012345678" } });
+    fireEvent.click(screen.getByText(/save/i));
+    const restartButton = await screen.findByText("Restart the console now");
+
+    // Fake timers only go on now -- findBy above relies on real-timer polling,
+    // same precedent as features/players/PlayerSummary.test.tsx's 30s-refresh test.
+    let pollCount = 0;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => {
+      pollCount++;
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ config: { discordOAuthAppConfigured: pollCount > 1, discordOAuthConfigured: false } }) });
+    }));
+    vi.useFakeTimers();
+
+    fireEvent.click(restartButton);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+
+    expect(mockPost).toHaveBeenCalledWith("/api/setup/discord-restart", {});
+    expect(replace).toHaveBeenCalledWith("/");
   });
 });
