@@ -56,11 +56,20 @@ export function createAuth(config) {
   // second-factor enrollment session (RFC §4) that the route gate restricts to
   // the enrollment endpoints only. renewable:false keeps the enrollment window
   // fixed so it can't be extended by activity.
-  function makeSession({ tier = "owner", userId = "", username = "", displayName = "", guildId = "", scope = null, ttlMs = DEFAULT_TTL_MS, renewable = true } = {}) {
+  // pendingDiscordSetup: the same shape the setup-mode OAuth round-trip
+  // captures (userId, username, mfaEnabled, guilds, capturedAt) -- letting a
+  // normal Discord login that resolved to owner carry this in from the start
+  // reuses the guild-ownership proof it already fetched (resolveOAuthTier()
+  // derives "owner" from that exact identity.guilds[].owner flag) instead of
+  // discarding it and asking the operator to prove it again via a second
+  // round-trip the moment they open Settings (live-testing finding, #643
+  // follow-up). A password-tier owner session passes null here -- it has
+  // never proven Discord ownership this session, so its round-trip stays real.
+  function makeSession({ tier = "owner", userId = "", username = "", displayName = "", guildId = "", scope = null, ttlMs = DEFAULT_TTL_MS, renewable = true, pendingDiscordSetup = null } = {}) {
     const id = randomBytes(32).toString("base64url");
     const csrf = randomBytes(24).toString("base64url");
     const expiresAt = now() + ttlMs;
-    const session = { id, csrf, expiresAt, tier, userId, username, displayName, guildId, scope, renewable };
+    const session = { id, csrf, expiresAt, tier, userId, username, displayName, guildId, scope, renewable, pendingDiscordSetup };
     sessions.set(id, session);
     return { ...session, cookie: `${id}.${sign(id)}` };
   }
