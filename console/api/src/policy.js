@@ -103,7 +103,7 @@ export function evaluate(session, action, policies = null) {
 export function resolveSessionTier(session) {
   if (!session) return "";
   const tier = typeof session.tier === "string" ? session.tier : "";
-  const VALID_TIERS = new Set(["owner", "admin", "moderator", "player", "observer"]);
+  const VALID_TIERS = new Set(["owner", "admin", "moderator", "player"]);
   return VALID_TIERS.has(tier) ? tier : "";
 }
 
@@ -294,7 +294,7 @@ export function setPolicies(docs, repoRoot = null) {
   // Fix: expand every crown-jewel PATTERN against the real action catalog
   // first, then evaluate() each matched CONCRETE action -- mirroring the
   // same expand-then-evaluate shape resolveAllowedActions() already uses.
-  for (const tier of ["admin", "moderator", "player", "observer"]) {
+  for (const tier of ["admin", "moderator", "player"]) {
     if (!docs[tier]) continue;
     const leaked = crownJewelActions().find((action) => evaluate({ tier }, action, docs));
     if (leaked) {
@@ -310,7 +310,7 @@ export function setPolicies(docs, repoRoot = null) {
 function validPolicyStore(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const tiers = Object.keys(value);
-  if (!tiers.length || tiers.some((tier) => !["owner", "admin", "moderator", "player", "observer"].includes(tier))) return false;
+  if (!tiers.length || tiers.some((tier) => !["owner", "admin", "moderator", "player"].includes(tier))) return false;
   return tiers.every((tier) => {
     const document = value[tier];
     if (!document || document.tier !== tier || !Array.isArray(document.statements)) return false;
@@ -328,7 +328,7 @@ function validPolicyStore(value) {
 // even if that tier's own Allow list is edited/widened later via the Access
 // Control UI. Originally only Admin carried this Deny block (Admin's own Allow
 // list is broad enough that a future widening edit is plausible); Moderator/
-// Player/Observer's Allow lists don't touch any of these today either, but
+// Player's Allow lists don't touch any of these today either, but
 // nothing stops an operator from widening THEIR Allow list too -- and unlike
 // Admin, they had no backstop if that happened. Every non-owner tier now
 // carries the identical Deny, purely as defense-in-depth: a no-op today
@@ -432,20 +432,6 @@ const DEFAULT_POLICIES = {
         "players:read",  // Players (own-only scoping is a follow-up)
         "guilds:read",   // Guilds (own-only scoping is a follow-up)
         "maps:read",     // Live Map
-      ]},
-      { Effect: "Deny", Action: CROWN_JEWEL_DENY_ACTIONS }
-    ]
-  },
-
-  // OBSERVER -- minimal server-status viewer ("is the server up?"). Deliberately
-  // the tightest tier; a richer read-only ops/audit definition (logs + backup +
-  // update health) is tracked as a follow-up revision.
-  observer: {
-    version: 1,
-    tier: "observer",
-    statements: [
-      { Effect: "Allow", Action: [
-        "server:read",
       ]},
       { Effect: "Deny", Action: CROWN_JEWEL_DENY_ACTIONS }
     ]

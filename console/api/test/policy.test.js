@@ -192,14 +192,14 @@ test("the vehicle cargo actions share no prefix a -* wildcard could bridge", () 
 
 test("a vehicles:read-only policy denies vehicles:mutate", () => {
   const policies = {
-    observer: {
+    player: {
       version: 1,
-      tier: "observer",
+      tier: "player",
       statements: [{ Effect: "Allow", Action: ["vehicles:read"] }]
     }
   };
-  assert.equal(evaluate({ tier: "observer" }, "vehicles:read", policies), true);
-  assert.equal(evaluate({ tier: "observer" }, "vehicles:mutate", policies), false);
+  assert.equal(evaluate({ tier: "player" }, "vehicles:read", policies), true);
+  assert.equal(evaluate({ tier: "player" }, "vehicles:mutate", policies), false);
 });
 
 test("persisting a refreshed buyback log requires market write permission", () => {
@@ -527,5 +527,18 @@ test("loadPolicies() loads a valid stored file silently (no warning)", () => {
 test("real default policies are intact for tiers not exercised by loadPolicies() fixture tests", () => {
   assert.equal(evaluate({ tier: "moderator" }, "players:read"), true);
   assert.equal(evaluate({ tier: "player" }, "server:read"), true);
-  assert.equal(evaluate({ tier: "observer" }, "server:read"), true);
+});
+
+// Observer was folded into Player (live-testing decision): Observer was a
+// strict subset of Player (server:read only, vs. Player's server:read +
+// players:read + guilds:read + maps:read) and unreachable via Discord role
+// mapping (ROLE_MAPPABLE_TIERS never included it, and no
+// DISCORD_CONSOLE_OBSERVER_ROLE_IDS env var ever existed) -- Player already
+// covered everything Observer could reach, and Observer added a tier with no
+// real, distinct purpose. "observer" is no longer a recognized tier at all --
+// resolveSessionTier() fails closed (returns "", the same as any other
+// invalid/unrecognized tier string) rather than resolving to a live policy.
+test("observer is no longer a recognized tier -- folded into player, evaluate() fails closed for it", () => {
+  assert.equal(evaluate({ tier: "observer" }, "server:read"), false);
+  assert.equal(evaluate({ tier: "observer" }, "*"), false);
 });

@@ -222,7 +222,6 @@ export function loadConfig() {
     admin: parseRoleIdList(process.env.DISCORD_CONSOLE_ADMIN_ROLE_IDS),
     moderator: parseRoleIdList(process.env.DISCORD_CONSOLE_MODERATOR_ROLE_IDS),
     player: parseRoleIdList(process.env.DISCORD_CONSOLE_PLAYER_ROLE_IDS),
-    observer: [],
   };
   return {
     appName: APP_NAME,

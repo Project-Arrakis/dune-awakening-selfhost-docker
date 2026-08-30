@@ -6182,8 +6182,8 @@ function validateOAuthWriteConfigKey(key, value) {
       break;
     }
     case "DISCORD_OAUTH_REQUIRE_MFA_TIERS": {
-      const bad = v.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean).filter((t) => !["owner","admin","moderator","player","observer"].includes(t));
-      if (bad.length) return `${key} may only list tiers (owner, admin, moderator, player, observer)`;
+      const bad = v.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean).filter((t) => !["owner","admin","moderator","player"].includes(t));
+      if (bad.length) return `${key} may only list tiers (owner, admin, moderator, player)`;
       break;
     }
   }
