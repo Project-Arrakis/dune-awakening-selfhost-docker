@@ -6,7 +6,7 @@
 // tier. Pure functions, no I/O, so the precedence and parsing rules are
 // testable in isolation and the resolver in oauth.js stays small.
 
-export const TIER_ORDER = ["owner", "admin", "moderator", "player", "observer"];
+export const TIER_ORDER = ["owner", "admin", "moderator", "player"];
 // Tiers a Discord ROLE may map to. Owner is deliberately absent: it is derived
 // from Discord guild ownership (rfc-console-auth.md §2.1.1), never from a role,
 // so no mapping can ever make an admin an owner.

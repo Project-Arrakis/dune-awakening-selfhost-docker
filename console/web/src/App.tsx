@@ -394,7 +394,7 @@ export function App() {
   // 0 in BOTH cases, so the setup-gate effect below cannot tell "we know this
   // tier can reach nothing" from "we don't know anything" without this flag --
   // conflating them fell through to calling setupApi.state() blindly on a
-  // read failure, 403'ing for exactly the moderator/player/observer tiers the
+  // read failure, 403'ing for exactly the moderator/player tiers the
   // known-empty-actions branch exists to protect from that same trap.
   const [meFetchFailed, setMeFetchFailed] = useState(false);
   const [userInfo, setUserInfo] = useState<{ username: string; displayName: string; tier: string } | null>(null);
@@ -523,7 +523,7 @@ export function App() {
     // meFetchFailed means /api/auth/me itself failed, so allowedActions is [] as
     // "we don't know", not as "this tier really has zero actions" (review
     // finding) -- calling setupApi.state() on that unknown state 403'd for
-    // exactly the moderator/player/observer tiers the branch below exists to
+    // exactly the moderator/player tiers the branch below exists to
     // protect from this trap. Treat a failed read the same as a tier with no
     // setup access: render the console rather than risk a 403 dead end.
     if (meFetchFailed || (allowedActions.length > 0 && !allowedActions.includes("setup:read"))) {
