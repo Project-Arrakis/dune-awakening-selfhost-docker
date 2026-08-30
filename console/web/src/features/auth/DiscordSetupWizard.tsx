@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, post } from "../../api/client";
+import { getAdminPort } from "../../api/serverPorts";
+import { SecretInput } from "../../components/SecretInput";
 
 // Guided Discord sign-in setup (docs/rfc-console-auth.md §2.1.1). Reached only
 // by the console owner (the admin password was entered to start it), so from
@@ -30,6 +32,16 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
   const [error, setError] = useState("");
   const [done, setDone] = useState<{ guild: string; owner: string } | null>(null);
   const [restarting, setRestarting] = useState(false);
+  // #641: which path the connect step's guided flow is on. Deliberately NOT
+  // derived from server state, unlike everything else in this component --
+  // a same-session refresh resets this to "unset", costing one redundant
+  // click (both paths converge on the identical form) -- see the design's
+  // §4.1 note on why this is an accepted, bounded exception.
+  const [appPath, setAppPath] = useState<"unset" | "have-app" | "need-app">("unset");
+  const [formClientId, setFormClientId] = useState("");
+  const [formClientSecret, setFormClientSecret] = useState("");
+  const [savingApp, setSavingApp] = useState(false);
+  const [returnedFromDiscord, setReturnedFromDiscord] = useState(false);
 
   // Learn the host's state on mount, and every time it might have changed. Both
   // probes are unconditional -- NOT gated on a URL param -- so a refresh at any
@@ -63,6 +75,50 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
 
   useEffect(() => { void probe(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Pre-fill from whatever the host already has (e.g. a Client ID set by a
+  // previous, incomplete attempt) once probed -- only if the operator hasn't
+  // typed anything yet, so a background re-probe never clobbers live input.
+  useEffect(() => {
+    if (app?.clientId && !formClientId) setFormClientId(app.clientId);
+  }, [app, formClientId]);
+
+  // #641: soft, non-blocking "welcome back" signal for the "need-app" path --
+  // same-origin window focus, not the child tab's .closed (cross-origin means
+  // that's the only readable signal from that side, and it only ever says
+  // "closed", never "finished"). This is cosmetic only: the form is fully
+  // usable in both paths regardless of whether this listener ever fires
+  // (popup blocked, opened in the same tab, a second-device workflow).
+  useEffect(() => {
+    if (appPath !== "need-app") return;
+    const onFocus = () => setReturnedFromDiscord(true);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [appPath]);
+
+  // #641: the connect step's save -- sends ONLY the two keys this step
+  // manages, never as blank strings for any other write-oauth-config field.
+  // Sending the rest as "" (rather than omitting them) would recreate the
+  // exact bug discordSetupFinalize's own comment already documents fixing
+  // once (silently clobbering an operator's owner-bootstrap allowlist) --
+  // writeOAuthConfig's partial-update safety only holds if untouched keys
+  // are genuinely absent from the body, not blank.
+  async function saveApp() {
+    setSavingApp(true); setError("");
+    try {
+      const clientId = formClientId.trim();
+      if (!clientId) throw new Error("Enter the application's Client ID.");
+      await post<{ ok: boolean }>("/api/setup/write-oauth-config", {
+        DISCORD_OAUTH_CLIENT_ID: clientId,
+        DISCORD_OAUTH_REDIRECT_URI: redirectUri,
+      });
+      if (formClientSecret) {
+        await post<{ ok: boolean }>("/api/setup/save-oauth-secret", { secret: formClientSecret, overwrite: Boolean(app?.secretSaved) });
+        setFormClientSecret("");
+      }
+      await probe();
+    } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    finally { setSavingApp(false); }
+  }
 
   async function finalize() {
     setBusy(true); setError("");
@@ -115,19 +171,52 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
 
         {step === "loading" && <p className="loading-dots">Checking this console&apos;s Discord configuration</p>}
 
-        {step === "connect" && (
+        {step === "connect" && !isHttps && (
+          <>
+            <p className="attention-text"><strong>Discord sign-in requires HTTPS.</strong> This page is not currently loaded over HTTPS, so the rest of this setup can&apos;t proceed yet. An <code>http://</code> callback is silently dropped by the browser, so this isn&apos;t a security-boundary check &mdash; it&apos;s here to stop a doomed attempt before it starts.</p>
+            <ul className="discord-setup-https-options">
+              <li>
+                <strong>Cloudflare Tunnel</strong> (recommended) &mdash; a &ldquo;quick tunnel&rdquo; needs no account: run <code>cloudflared tunnel --url http://localhost:{getAdminPort()}</code> for an instant <code>*.trycloudflare.com</code> HTTPS address. Fine for finishing this setup, but its address changes every restart &mdash; for day-to-day reliability, move to a named tunnel (needs a Cloudflare account + a domain in their DNS) afterward.
+              </li>
+              <li>
+                <strong>Tailscale HTTPS certificate</strong> &mdash; if the console is already reached over Tailscale, <code>tailscale cert</code> issues a real HTTPS certificate for the tailnet-only address, with no public exposure at all. Tailscale <strong>Funnel</strong> (a different feature, public exposure) is only needed if someone outside your tailnet must sign in too.
+              </li>
+              <li>
+                <strong>ngrok</strong> &mdash; free tier works, but requires creating an ngrok account and configuring a personal authtoken first; the URL changes on restart unless paid.
+              </li>
+            </ul>
+            <p className="muted">These are independent third-party services; this project doesn&apos;t operate, endorse, or provide support for them.</p>
+            <p className="muted">Still not working after trying one of these? Reloading this page re-checks &mdash; there&apos;s nothing more to configure here until it reports HTTPS.</p>
+          </>
+        )}
+        {step === "connect" && isHttps && appPath === "unset" && (
           <>
             <p className="muted">Discord sign-in is not set up on this server yet. Connecting the server to a Discord application is a one-time deployment step done by whoever runs the server &mdash; not something you do here, and not something a person signing in ever sees.</p>
-            <p className="muted">On the host, set these in <code>.env</code> from the <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">Discord Developer Portal</a> (OAuth2 tab), then restart the console:</p>
-            <ul className="discord-setup-envlist">
-              <li><code>DISCORD_OAUTH_CLIENT_ID</code> &mdash; the application&apos;s Client ID</li>
-              <li><code>DISCORD_OAUTH_CLIENT_SECRET</code> &mdash; its Client Secret (or a <code>runtime/secrets/discord-oauth-client-secret.txt</code> file, 0600)</li>
-              <li><code>DISCORD_OAUTH_REDIRECT_URI</code> &mdash; <code>{redirectUri}</code> <button type="button" className="login-password-toggle" onClick={() => { void navigator.clipboard?.writeText(redirectUri); }}>copy</button>, which must also be in the application&apos;s OAuth2 redirect list</li>
-            </ul>
-            {!isHttps && <p className="attention-text"><strong>This page is loaded over HTTP.</strong> Discord sign-in requires <strong>HTTPS</strong>: reach the console through an HTTPS reverse proxy or tunnel and register an <code>https://</code> redirect URI. An <code>http://</code> callback is dropped by the browser, so every sign-in fails with &ldquo;invalid or expired.&rdquo;</p>}
-            <p className="muted"><strong>Discord sign-in requires HTTPS</strong> &mdash; the redirect URI must be <code>https://</code>. See the console sign-in guide for standing up a reverse proxy or tunnel.</p>
+            <button type="button" className="login-primary-button" onClick={() => setAppPath("have-app")}>I already have a Discord application</button>
+            <button type="button" className="login-password-toggle" onClick={() => setAppPath("need-app")}>I need to create one</button>
+          </>
+        )}
+        {step === "connect" && isHttps && appPath !== "unset" && (
+          <>
+            {appPath === "need-app" && (
+              <>
+                <p className="muted">On <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">Discord&apos;s Developer Portal</a>:</p>
+                <ol className="discord-setup-checklist">
+                  <li>Click <strong>New Application</strong>.</li>
+                  <li>Name it for your server or console &mdash; not your bot.</li>
+                  <li>Open the <strong>OAuth2</strong> tab.</li>
+                  <li>Copy the <strong>Client ID</strong> and generate/copy a <strong>Client Secret</strong>.</li>
+                  <li>Add the redirect URI shown below to the Redirects list.</li>
+                </ol>
+                {returnedFromDiscord && <p className="muted">Welcome back &mdash; paste your new application&apos;s Client ID and Secret below.</p>}
+              </>
+            )}
             <p className="muted">Tip: use a <strong>dedicated</strong> Discord application for the console, not your bot&apos;s. The application&apos;s <strong>name and icon are what people see on the Discord sign-in screen</strong>, so name it for your server or console and give it an icon &mdash; reusing the bot&apos;s application makes sign-in look like logging into the bot.</p>
-            <p className="muted">Once that is done, this becomes a single <strong>Continue with Discord</strong> button &mdash; no IDs to type.</p>
+            <label htmlFor="wiz-client-id">Client ID<input id="wiz-client-id" name="wiz-client-id" value={formClientId} onChange={(e) => setFormClientId(e.target.value)} placeholder="Discord application client ID" disabled={savingApp} /></label>
+            <label htmlFor="wiz-client-secret">Client Secret{app?.secretSaved ? <span className="theme-note"> (saved)</span> : null}<SecretInput id="wiz-client-secret" name="wiz-client-secret" value={formClientSecret} onChange={(e) => setFormClientSecret(e.target.value)} placeholder={app?.secretSaved ? "Paste a new one to replace" : "Client secret"} disabled={savingApp} /></label>
+            <p className="muted">Redirect URI: <code>{redirectUri}</code> <button type="button" className="login-password-toggle" onClick={() => { void navigator.clipboard?.writeText(redirectUri); }}>copy</button> &mdash; must also be added to the application&apos;s OAuth2 redirect list.</p>
+            <button type="button" className="login-primary-button" disabled={savingApp || !formClientId.trim()} onClick={() => { void saveApp(); }}>{savingApp ? "Saving..." : "Save"}</button>
+            <button type="button" className="login-password-toggle" onClick={() => setAppPath("unset")}>Back</button>
           </>
         )}
         {step === "authorize" && (
