@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseRoleIdList, resolveRoleTier, higherTier, mfaGateReason, roleTiersConfigured, parseTierList, TIER_ORDER } from "../src/integrations/discord/roleTiers.js";
+import { parseRoleIdList, resolveRoleTier, higherTier, mfaGateReason, roleTiersConfigured, parseTierList, TIER_ORDER, ROLE_MAPPABLE_TIERS } from "../src/integrations/discord/roleTiers.js";
 
 const R = { owner: ["100000000000000001"], admin: ["100000000000000002"], moderator: ["100000000000000003"], player: ["100000000000000004"] };
 
@@ -25,14 +25,22 @@ test("resolveRoleTier denies when no held role is mapped, or no roles at all", (
 test("precedence is explicit, not object-key order", () => {
   const shuffled = { player: R.player, moderator: R.moderator, admin: R.admin, owner: R.owner };
   assert.equal(resolveRoleTier(["100000000000000004", "100000000000000002"], shuffled), "admin");
-  assert.deepEqual(TIER_ORDER, ["owner", "admin", "moderator", "player", "observer"]);
+  assert.deepEqual(TIER_ORDER, ["owner", "admin", "moderator", "player"]);
 });
 
 test("higherTier picks the stronger tier; empty loses to anything", () => {
   assert.equal(higherTier("owner", "player"), "owner");
   assert.equal(higherTier("player", "admin"), "admin");
-  assert.equal(higherTier("", "observer"), "observer");
+  assert.equal(higherTier("", "player"), "player");
   assert.equal(higherTier("", ""), "");
+});
+
+// Observer folded into player (live-testing decision) -- it was unreachable
+// via Discord role mapping (ROLE_MAPPABLE_TIERS never included it) and a
+// strict subset of player, so it added a tier with no real purpose.
+test("observer is not a role-mappable tier, and higherTier treats it like any other unrecognized string", () => {
+  assert.ok(!ROLE_MAPPABLE_TIERS.includes("observer"));
+  assert.equal(higherTier("observer", "player"), "player");
 });
 
 test("mfaGateReason denies a gated tier without Discord 2FA, passes otherwise", () => {

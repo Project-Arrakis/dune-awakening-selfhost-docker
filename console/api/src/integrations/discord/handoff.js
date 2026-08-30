@@ -17,7 +17,7 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-const VALID_TIERS = new Set(["owner", "admin", "moderator", "player", "observer"]);
+const VALID_TIERS = new Set(["owner", "admin", "moderator", "player"]);
 const USER_SNOWFLAKE_RE = /^\d{17,19}$/;
 const MAX_HANDOFF_AGE_MS = 30_000;
 const HTTP_TIMEOUT_MS = 5_000;

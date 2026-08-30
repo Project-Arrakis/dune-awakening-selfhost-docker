@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
-// Review finding: every non-owner Discord tier (moderator/player/observer) was
+// Review finding: every non-owner Discord tier (moderator/player) was
 // trapped in the first-run SetupWizard. App gated on GET /api/setup/state,
 // which needs setup:read; those tiers get 403, the catch left setupState null,
 // "setup incomplete" rendered the wizard, and the wizard has no way out.
@@ -31,7 +31,7 @@ function stubSession(allowedActions: string[], setupStatus: number) {
 
 // Review finding: a failed /api/auth/me read leaves allowedActions at its
 // initial [], indistinguishable from "this tier really has zero actions"
-// (the moderator/player/observer case the first test above covers) unless the
+// (the moderator/player case the first test above covers) unless the
 // fetch failure is tracked separately -- conflating the two reproduced the
 // exact same trap for a transient network blip / 500, regardless of tier.
 function stubSessionMeFails() {

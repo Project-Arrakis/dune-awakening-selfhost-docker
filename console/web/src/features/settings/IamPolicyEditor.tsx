@@ -23,7 +23,7 @@ function distinctActions(catalog?: PolicyCatalog | null): string[] {
   return [...new Set(Object.values(catalog?.actionMap || {}))].filter((a): a is string => typeof a === "string");
 }
 
-const TIERS = ["owner", "admin", "moderator", "player", "observer"] as const;
+const TIERS = ["owner", "admin", "moderator", "player"] as const;
 
 function parseStatements(text: string): PolicyStatement[] | null {
   try {
