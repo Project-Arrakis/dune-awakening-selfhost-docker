@@ -74,6 +74,21 @@ describe("DiscordSetupWizard: guided app-creation branch", () => {
     expect(screen.queryByLabelText(/client id/i)).toBeNull();
   });
 
+  // Live-testing finding: "I need to create one" used the same tiny,
+  // muted-text-link class as "Cancel" -- a real, weighted either/or choice
+  // (arguably the MORE common path for a first-time operator) looked like a
+  // throwaway escape hatch next to the bold primary button. It needs its own
+  // real, visually-distinct secondary-button styling, not .login-password-
+  // toggle (reserved for genuine tertiary/escape actions like Cancel).
+  it("'I need to create one' is a real secondary button, not styled the same as Cancel", async () => {
+    stubNotYetConfigured();
+    render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+    const needAppButton = await screen.findByText("I need to create one");
+    const cancelButton = screen.getByText("Cancel");
+    expect(needAppButton.className).not.toBe(cancelButton.className);
+    expect(needAppButton.className).toContain("login-secondary-button");
+  });
+
   it("'I already have one' reveals the form directly, with the dedicated-app warning co-located", async () => {
     stubNotYetConfigured();
     render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
