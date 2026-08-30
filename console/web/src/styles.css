@@ -6679,6 +6679,12 @@ button.login-discord-button { border: none; cursor: pointer; font: inherit; font
 .login-primary-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 260px; justify-self: center; padding: 12px 18px; border: none; border-radius: 6px; background: #c6a56e; color: #1b1712; font: inherit; font-weight: 600; font-size: 1rem; cursor: pointer; }
 .login-primary-button:hover:not(:disabled) { background: #d4b57e; }
 .login-primary-button:disabled { opacity: .5; cursor: default; }
+/* A real, clearly-clickable secondary choice -- for an either/or pair where
+   neither option is a throwaway escape hatch (unlike .login-password-toggle,
+   reserved for Cancel/toggle actions). Bordered, not just a muted text link,
+   so it doesn't get overlooked next to a bold .login-primary-button sibling. */
+.login-secondary-button { width: auto; padding: 10px 16px; border: 1px solid #4d4032; border-radius: 6px; background: transparent; color: #d4b57e; font: inherit; font-weight: 600; font-size: .92rem; cursor: pointer; justify-self: center; }
+.login-secondary-button:hover { background: rgba(198, 165, 110, .12); border-color: #c6a56e; }
 .discord-setup-panel .auth-step-heading { font-size: 1rem; margin: 14px 0 2px; align-self: flex-start; }
 /* Discord as a secondary, less-prominent option beneath the password (opt-in). */
 .login-discord-button-secondary { width: auto; margin-top: 10px; padding: 8px 14px; font-size: .85rem; font-weight: 500; background: transparent; color: #8ea1f0; border: 1px solid #3b4270; box-shadow: none; }
