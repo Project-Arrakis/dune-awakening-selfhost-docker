@@ -55,10 +55,11 @@ test("moderator cannot mutate economy, restart the server, take backups, or edit
   for (const a of ["players:mutate", "server:restart", "backups:create", "maps:write-config"]) assert.equal(can("moderator", a), false, a);
 });
 
-// --- Observer is a minimal status viewer, distinct from player ---
-test("observer sees only server status; not players/bases/logs/db", () => {
-  assert.equal(can("observer", "server:read"), true);
-  for (const a of ["players:read", "bases:read", "logs:read", "database:read"]) assert.equal(can("observer", a), false, a);
+// --- Observer folded into player (live-testing decision): it was a strict
+// subset of player with no real distinct purpose, and unreachable via
+// Discord role mapping. "observer" is no longer a recognized tier at all. ---
+test("observer is no longer a recognized tier -- fails closed like any other unrecognized string", () => {
+  for (const a of ["server:read", "players:read", "bases:read", "logs:read", "database:read"]) assert.equal(can("observer", a), false, a);
 });
 
 // --- Player is a tight read-only self-service set (server/players/guilds/maps) ---
