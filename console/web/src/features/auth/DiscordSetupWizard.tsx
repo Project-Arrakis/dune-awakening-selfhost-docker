@@ -12,12 +12,46 @@ import { SecretInput } from "../../components/SecretInput";
 
 type Guild = { id: string; name: string; owner: boolean };
 type Identity = { user: { id: string; username: string; mfaEnabled: boolean }; guilds: Guild[] };
-type HostApp = { clientId: string; redirectUri: string; secretSaved: boolean; configured: boolean };
-type Props = { onDone: () => void; onCancel: () => void };
+type HostApp = {
+  clientId: string; redirectUri: string; secretSaved: boolean; configured: boolean;
+  // #643: what a PRIOR run of setup/finalize already saved, so reopening
+  // this component (from Settings, post-configuration) can pre-fill instead
+  // of forcing every role ID to be retyped from memory and silently
+  // defaulting "Require Discord 2FA" back to on for an install that turned
+  // it off (GRC finding, discord-settings-embed-l1-design-2026-08-30.md §4.3).
+  adminRoleIds: string; moderatorRoleIds: string; playerRoleIds: string; requireMfaTiers: string;
+};
+type Props = { onDone: () => void; onCancel: () => void; embedded?: boolean };
 
 const SNOWFLAKE = /^\d{17,19}$/;
 
-export function DiscordSetupWizard({ onDone, onCancel }: Props) {
+// Separation of duties for Discord sign-in: one Discord role, one console
+// tier. Mirrors the server's check (roleTiers.js's roleTierConflicts) so the
+// operator is told before the round-trip, not only after a 400 -- restored
+// here (#643) after the old SettingsPanel manual form (which had this same
+// check) was replaced by this component; losing it would have been a real,
+// if minor, regression from instant feedback to round-trip-only feedback.
+function discordRoleConflicts(fields: Record<string, string>) {
+  const seen = new Map<string, string[]>();
+  for (const [tier, value] of Object.entries(fields)) {
+    for (const id of value.split(",").map((v) => v.trim()).filter((v) => SNOWFLAKE.test(v))) {
+      const tiers = seen.get(id) || [];
+      if (!tiers.includes(tier)) tiers.push(tier);
+      seen.set(id, tiers);
+    }
+  }
+  return [...seen.entries()].filter(([, tiers]) => tiers.length > 1).map(([id, tiers]) => `${id} is mapped to ${tiers.join(" and ")}`);
+}
+
+// Set on the "Continue with Discord" link just before the full-page OAuth
+// redirect, only when embedded -- App.tsx reads and consumes this on the
+// return trip (`?discordSetup=done`) to route back into Settings instead of
+// the pre-login standalone takeover, and to skip that takeover's onDone,
+// which unconditionally logs the session out (correct for finishing FIRST-run
+// setup, wrong for an already-authenticated operator just reconfiguring).
+export const DISCORD_SETUP_RETURN_KEY = "dune-console:discord-setup-return";
+
+export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props) {
   const redirectUri = `${window.location.origin}/api/auth/discord/callback`;
   const isHttps = typeof window !== "undefined" && window.location.protocol === "https:";
   const [app, setApp] = useState<HostApp | null>(null);       // what the host already has
@@ -46,6 +80,16 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
   // "restart required" prompt is tracked independently of server state.
   const [appSaved, setAppSaved] = useState(false);
   const [returnedFromDiscord, setReturnedFromDiscord] = useState(false);
+  // #643: lets an operator reopen the credential-entry form even once the
+  // application is already configured -- otherwise, once past the connect
+  // step, there is no UI path left to rotate the Client Secret (Cloud
+  // Security finding).
+  const [forceReconfigure, setForceReconfigure] = useState(false);
+  // Guards the role/MFA pre-fill effect below so it applies existing saved
+  // config exactly once per mount, not every time `probe()` re-runs (e.g.
+  // after saveApp()) -- a background re-probe must never clobber input the
+  // operator has already started editing.
+  const [rolesPrefilled, setRolesPrefilled] = useState(false);
 
   // Learn the host's state on mount, and every time it might have changed. Both
   // probes are unconditional -- NOT gated on a URL param -- so a refresh at any
@@ -62,9 +106,13 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
         redirectUri: c["DISCORD_OAUTH_REDIRECT_URI"] || "",
         secretSaved: Boolean(c["_discordOAuthSecretSaved"]),
         configured: Boolean(settings.value.config?.discordOAuthAppConfigured),
+        adminRoleIds: c["DISCORD_CONSOLE_ADMIN_ROLE_IDS"] || "",
+        moderatorRoleIds: c["DISCORD_CONSOLE_MODERATOR_ROLE_IDS"] || "",
+        playerRoleIds: c["DISCORD_CONSOLE_PLAYER_ROLE_IDS"] || "",
+        requireMfaTiers: c["DISCORD_OAUTH_REQUIRE_MFA_TIERS"] || "",
       });
     } else {
-      setApp({ clientId: "", redirectUri: "", secretSaved: false, configured: false });
+      setApp({ clientId: "", redirectUri: "", secretSaved: false, configured: false, adminRoleIds: "", moderatorRoleIds: "", playerRoleIds: "", requireMfaTiers: "" });
     }
     if (id.status === "fulfilled") {
       setIdentity(id.value);
@@ -85,6 +133,23 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
   useEffect(() => {
     if (app?.clientId && !formClientId) setFormClientId(app.clientId);
   }, [app, formClientId]);
+
+  // #643: pre-fill role mappings and the MFA-requirement toggle from whatever
+  // a prior finalize() already saved, once, on first probe -- reopening this
+  // component from Settings must not force retyping every role ID from
+  // memory, nor silently reset "Require Discord 2FA" to its own default
+  // (GRC finding). Guarded to run exactly once (not on every re-probe) since,
+  // unlike formClientId, an empty role field is itself a valid "no role
+  // mapped" state that a background re-probe must not re-overwrite after the
+  // operator has started clearing it.
+  useEffect(() => {
+    if (!app || rolesPrefilled) return;
+    setAdminRoleIds(app.adminRoleIds);
+    setModeratorRoleIds(app.moderatorRoleIds);
+    setPlayerRoleIds(app.playerRoleIds);
+    setRequireMfa(Boolean(app.requireMfaTiers));
+    setRolesPrefilled(true);
+  }, [app, rolesPrefilled]);
 
   // #641: soft, non-blocking "welcome back" signal for the "need-app" path --
   // same-origin window focus, not the child tab's .closed (cross-origin means
@@ -168,15 +233,23 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
     setError("The console is taking longer than expected to restart. Give it another minute and reload this page, or run `dune console restart` on the host.");
   }
 
-  // Derived step -- the fix for the loop. identity present => map; else app
-  // ready => authorize; else connect the application.
+  // Derived step -- the fix for the loop. forceReconfigure (#643: rotating an
+  // already-saved Client Secret, the only way back to the credential form
+  // once configured) wins over everything except an in-flight completion;
+  // identity present => map; else app ready => authorize; else connect.
   const step: "loading" | "connect" | "authorize" | "map" | "done" =
-    done ? "done" : !probed ? "loading" : identity ? "map" : (app?.configured ? "authorize" : "connect");
+    done ? "done" : !probed ? "loading" : forceReconfigure ? "connect" : identity ? "map" : (app?.configured ? "authorize" : "connect");
   const chosen = identity?.guilds.find((g) => g.id === guildId) || null;
+  const roleConflictList = discordRoleConflicts({ Admin: adminRoleIds, Moderator: moderatorRoleIds, Player: playerRoleIds });
 
-  return (
-    <main className="login-screen">
-      <section className="login-panel discord-setup-panel">
+  function reconfigureCredentials() {
+    setForceReconfigure(true);
+    setAppPath("have-app");
+    setAppSaved(false);
+  }
+
+  const content = (
+    <>
         <h1>Set up Discord sign-in</h1>
 
         {step === "loading" && <p className="loading-dots">Checking this console&apos;s Discord configuration</p>}
@@ -206,6 +279,7 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
               ? <p className="loading-dots">Restarting the console — this page will reconnect shortly</p>
               : <button type="button" className="login-primary-button" onClick={() => { void restartNow("discordOAuthAppConfigured"); }}>Restart the console now</button>}
             <p className="muted">Prefer to do it yourself? Run <code>dune console restart</code> on the host instead.</p>
+            {embedded && <p className="muted">This will end your current session — you&apos;ll need to sign back in after the restart.</p>}
           </>
         )}
         {step === "connect" && isHttps && !appSaved && appPath === "unset" && (
@@ -235,13 +309,25 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
             <label htmlFor="wiz-client-secret">Client Secret{app?.secretSaved ? <span className="theme-note"> (saved)</span> : null}<SecretInput id="wiz-client-secret" name="wiz-client-secret" value={formClientSecret} onChange={(e) => setFormClientSecret(e.target.value)} placeholder={app?.secretSaved ? "Paste a new one to replace" : "Client secret"} disabled={savingApp} /></label>
             <p className="muted">Redirect URI: <code>{redirectUri}</code> <button type="button" className="login-password-toggle" onClick={() => { void navigator.clipboard?.writeText(redirectUri); }}>copy</button> &mdash; must also be added to the application&apos;s OAuth2 redirect list.</p>
             <button type="button" className="login-primary-button" disabled={savingApp || !formClientId.trim()} onClick={() => { void saveApp(); }}>{savingApp ? "Saving..." : "Save"}</button>
-            <button type="button" className="login-password-toggle" onClick={() => setAppPath("unset")}>Back</button>
+            <button type="button" className="login-password-toggle" onClick={() => { if (forceReconfigure) { setForceReconfigure(false); } else { setAppPath("unset"); } }}>Back</button>
           </>
         )}
         {step === "authorize" && (
           <>
             <p className="muted">Sign in with Discord. The console will learn who you are and which servers you are in; the server you own makes you its Owner. Your admin password is not needed again — it stays as the way back in if Discord is ever unavailable.</p>
-            <a className="login-discord-button login-discord-button-primary" href="/api/auth/discord/start?setup=1">Continue with Discord</a>
+            <a
+              className="login-discord-button login-discord-button-primary"
+              href="/api/auth/discord/start?setup=1"
+              onClick={() => {
+                if (!embedded) return;
+                // Read on return by App.tsx (?discordSetup=done) to route back
+                // into Settings instead of the pre-login standalone takeover,
+                // and to skip that takeover's onDone, which unconditionally
+                // logs the session out.
+                try { window.sessionStorage.setItem(DISCORD_SETUP_RETURN_KEY, "settings"); } catch { /* sessionStorage unavailable; falls back to today's standalone-return behavior */ }
+              }}
+            >Continue with Discord</a>
+            {app?.configured && <button type="button" className="login-password-toggle" onClick={reconfigureCredentials}>Change application credentials</button>}
           </>
         )}
 
@@ -271,24 +357,36 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
                 <span className="muted">Requires each person&apos;s <strong>Discord account</strong> to have two-factor enabled &mdash; it reuses Discord&apos;s own 2FA, and does <strong>not</strong> add a separate code the console asks for (that is the password tier&apos;s console 2FA, a different thing). An Owner or Admin whose Discord account has 2FA off is refused.</span>
               </span>
             </label>
+            {roleConflictList.length > 0 && <p className="attention-text">Each Discord role can map to only one access level &mdash; {roleConflictList.join("; ")}. Owner is never a role: it is the server&apos;s owner.</p>}
 
-            <button type="button" className="login-primary-button" disabled={busy || !guildId} onClick={() => { void finalize(); }}>{busy ? "Saving..." : "Turn on Discord sign-in"}</button>
+            <button type="button" className="login-primary-button" disabled={busy || !guildId || roleConflictList.length > 0} onClick={() => { void finalize(); }}>{busy ? "Saving..." : "Turn on Discord sign-in"}</button>
+            {app?.configured && <button type="button" className="login-password-toggle" onClick={reconfigureCredentials}>Change application credentials</button>}
           </>
         )}
 
         {step === "done" && done && (
           <>
-            <p className="attention-text">Done. <strong>{done.guild}</strong> is connected and <strong>{done.owner}</strong> is the Owner. One restart applies it — then the sign-in page shows <strong>Sign in with Discord</strong>, with the admin password beneath it as the way back in.</p>
+            <p className="attention-text">Done. <strong>{done.guild}</strong> is connected and <strong>{done.owner}</strong> is the Owner. {embedded
+              ? "One restart applies it."
+              : <>One restart applies it — then the sign-in page shows <strong>Sign in with Discord</strong>, with the admin password beneath it as the way back in.</>}</p>
             {restarting
               ? <p className="loading-dots">Restarting the console — this page will reconnect shortly</p>
               : <button type="button" className="login-primary-button" onClick={() => { void restartNow(); }}>Restart the console now</button>}
             <p className="muted">Prefer to do it yourself? Run <code>dune console restart</code> on the host instead.</p>
+            {embedded && <p className="muted">This will end your current session — you&apos;ll need to sign back in after the restart.</p>}
           </>
         )}
 
         {error && <p className="error">{error}</p>}
-        {!restarting && <button type="button" className="login-password-toggle" onClick={done ? onDone : onCancel}>{done ? "Back to sign in" : "Cancel"}</button>}
-      </section>
+        {!restarting && <button type="button" className="login-password-toggle" onClick={done ? onDone : onCancel}>{done ? (embedded ? "Back to Settings" : "Back to sign in") : "Cancel"}</button>}
+    </>
+  );
+
+  return embedded ? (
+    <div className="discord-setup-embedded">{content}</div>
+  ) : (
+    <main className="login-screen">
+      <section className="login-panel discord-setup-panel">{content}</section>
     </main>
   );
 }
