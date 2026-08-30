@@ -193,7 +193,7 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
           <>
             <p className="muted">Discord sign-in is not set up on this server yet. Connecting the server to a Discord application is a one-time deployment step done by whoever runs the server &mdash; not something you do here, and not something a person signing in ever sees.</p>
             <button type="button" className="login-primary-button" onClick={() => setAppPath("have-app")}>I already have a Discord application</button>
-            <button type="button" className="login-password-toggle" onClick={() => setAppPath("need-app")}>I need to create one</button>
+            <button type="button" className="login-secondary-button" onClick={() => setAppPath("need-app")}>I need to create one</button>
           </>
         )}
         {step === "connect" && isHttps && appPath !== "unset" && (
