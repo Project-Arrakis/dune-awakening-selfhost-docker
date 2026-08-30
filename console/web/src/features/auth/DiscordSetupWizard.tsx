@@ -41,6 +41,10 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
   const [formClientId, setFormClientId] = useState("");
   const [formClientSecret, setFormClientSecret] = useState("");
   const [savingApp, setSavingApp] = useState(false);
+  // The console only reads .env at boot (see restartNow()) -- a successful
+  // save is real but invisible until a restart, so this step's own
+  // "restart required" prompt is tracked independently of server state.
+  const [appSaved, setAppSaved] = useState(false);
   const [returnedFromDiscord, setReturnedFromDiscord] = useState(false);
 
   // Learn the host's state on mount, and every time it might have changed. Both
@@ -116,6 +120,7 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
         setFormClientSecret("");
       }
       await probe();
+      setAppSaved(true);
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setSavingApp(false); }
   }
@@ -135,23 +140,28 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
     finally { setBusy(false); }
   }
 
-  async function restartNow() {
+  // waitFor picks which live config flag proves the NEW process has loaded
+  // the just-written .env: discordOAuthConfigured (the default, used by the
+  // "done" step below) also requires a home guild, which isn't set yet right
+  // after the connect step's own save -- that step polls discordOAuthAppConfigured
+  // instead, since that's the flag its own "configured" gate depends on.
+  async function restartNow(waitFor: "discordOAuthConfigured" | "discordOAuthAppConfigured" = "discordOAuthConfigured") {
     setRestarting(true); setError("");
     try {
       await post("/api/setup/discord-restart", {});
     } catch { /* the container may drop the connection mid-response; that is expected */ }
-    // Poll /api/auth/state until the NEW process reports Discord configured, then
-    // reload. Keying on discordOAuthConfigured (not on the connection dropping)
-    // is what makes this robust behind a reverse proxy/tunnel: while the
-    // container recreates the proxy returns 502 *responses* (fetch resolves,
-    // never throws), so a "did we see it go down" gate would never fire. The
-    // pre-restart process reports discordOAuthConfigured=false; only the
-    // restarted one reports true, so this cannot reload early.
+    // Poll /api/auth/state until the NEW process reports the flag, then
+    // reload. Keying on it (not on the connection dropping) is what makes
+    // this robust behind a reverse proxy/tunnel: while the container
+    // recreates, the proxy returns 502 *responses* (fetch resolves, never
+    // throws), so a "did we see it go down" gate would never fire. The
+    // pre-restart process reports the flag false; only the restarted one
+    // reports true, so this cannot reload early.
     for (let i = 0; i < 90; i++) {
       await new Promise((r) => setTimeout(r, 2000));
       try {
         const res = await fetch("/api/auth/state", { cache: "no-store" });
-        if (res.ok && (await res.json()).config?.discordOAuthConfigured) { window.location.replace("/"); return; }
+        if (res.ok && (await res.json()).config?.[waitFor]) { window.location.replace("/"); return; }
       } catch { /* container mid-recreate; keep polling */ }
     }
     setRestarting(false);
@@ -189,14 +199,23 @@ export function DiscordSetupWizard({ onDone, onCancel }: Props) {
             <p className="muted">Still not working after trying one of these? Reloading this page re-checks &mdash; there&apos;s nothing more to configure here until it reports HTTPS.</p>
           </>
         )}
-        {step === "connect" && isHttps && appPath === "unset" && (
+        {step === "connect" && isHttps && appSaved && (
+          <>
+            <p className="attention-text">Saved. The console only reads <code>.env</code> at startup, so a restart is needed before Discord sign-in can continue.</p>
+            {restarting
+              ? <p className="loading-dots">Restarting the console — this page will reconnect shortly</p>
+              : <button type="button" className="login-primary-button" onClick={() => { void restartNow("discordOAuthAppConfigured"); }}>Restart the console now</button>}
+            <p className="muted">Prefer to do it yourself? Run <code>dune console restart</code> on the host instead.</p>
+          </>
+        )}
+        {step === "connect" && isHttps && !appSaved && appPath === "unset" && (
           <>
             <p className="muted">Discord sign-in is not set up on this server yet. Connecting the server to a Discord application is a one-time deployment step done by whoever runs the server &mdash; not something you do here, and not something a person signing in ever sees.</p>
             <button type="button" className="login-primary-button" onClick={() => setAppPath("have-app")}>I already have a Discord application</button>
             <button type="button" className="login-secondary-button" onClick={() => setAppPath("need-app")}>I need to create one</button>
           </>
         )}
-        {step === "connect" && isHttps && appPath !== "unset" && (
+        {step === "connect" && isHttps && !appSaved && appPath !== "unset" && (
           <>
             {appPath === "need-app" && (
               <>
