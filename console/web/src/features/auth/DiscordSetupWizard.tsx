@@ -20,6 +20,15 @@ type HostApp = {
   // defaulting "Require Discord 2FA" back to on for an install that turned
   // it off (GRC finding, discord-settings-embed-l1-design-2026-08-30.md §4.3).
   adminRoleIds: string; moderatorRoleIds: string; playerRoleIds: string; requireMfaTiers: string;
+  // Whether Discord sign-in is already fully live (app + home guild + a
+  // finalize() already run) -- distinct from `configured`, which only means
+  // the application (Client ID/Secret/Redirect) is set. Live-testing finding:
+  // reaching the map step to reconfigure roles (now reachable without a
+  // fresh OAuth round-trip -- see the login-identity-reuse fix) still said
+  // "Turn on Discord sign-in" and "Connecting <server>", as if this were a
+  // first-time activation, even when the operator was already signed in via
+  // Discord sign-in at that exact moment.
+  discordOAuthConfigured: boolean;
 };
 type Props = { onDone: () => void; onCancel: () => void; embedded?: boolean };
 
@@ -96,7 +105,7 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
   // point re-derives where we are.
   const probe = useCallback(async () => {
     const [settings, id] = await Promise.allSettled([
-      api<{ serverConfig?: Record<string, string>; config?: { discordOAuthAppConfigured?: boolean } }>("/api/settings"),
+      api<{ serverConfig?: Record<string, string>; config?: { discordOAuthAppConfigured?: boolean; discordOAuthConfigured?: boolean } }>("/api/settings"),
       api<Identity>("/api/setup/discord-identity"),
     ]);
     if (settings.status === "fulfilled") {
@@ -106,13 +115,14 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
         redirectUri: c["DISCORD_OAUTH_REDIRECT_URI"] || "",
         secretSaved: Boolean(c["_discordOAuthSecretSaved"]),
         configured: Boolean(settings.value.config?.discordOAuthAppConfigured),
+        discordOAuthConfigured: Boolean(settings.value.config?.discordOAuthConfigured),
         adminRoleIds: c["DISCORD_CONSOLE_ADMIN_ROLE_IDS"] || "",
         moderatorRoleIds: c["DISCORD_CONSOLE_MODERATOR_ROLE_IDS"] || "",
         playerRoleIds: c["DISCORD_CONSOLE_PLAYER_ROLE_IDS"] || "",
         requireMfaTiers: c["DISCORD_OAUTH_REQUIRE_MFA_TIERS"] || "",
       });
     } else {
-      setApp({ clientId: "", redirectUri: "", secretSaved: false, configured: false, adminRoleIds: "", moderatorRoleIds: "", playerRoleIds: "", requireMfaTiers: "" });
+      setApp({ clientId: "", redirectUri: "", secretSaved: false, configured: false, discordOAuthConfigured: false, adminRoleIds: "", moderatorRoleIds: "", playerRoleIds: "", requireMfaTiers: "" });
     }
     if (id.status === "fulfilled") {
       setIdentity(id.value);
@@ -339,7 +349,7 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
             {identity.guilds.length === 0
               ? <p className="attention-text">You do not own any Discord server. Only a server&apos;s owner can connect it to this console &mdash; ownership is what makes you the console Owner.</p>
               : identity.guilds.length === 1
-                ? <p className="muted">Connecting <strong>{identity.guilds[0].name}</strong>, which you own. That makes you the console <strong>Owner</strong>; everyone else&apos;s access comes from the roles below.</p>
+                ? <p className="muted">{app?.discordOAuthConfigured ? "Reconfiguring" : "Connecting"} <strong>{identity.guilds[0].name}</strong>, which you own. That makes you the console <strong>Owner</strong>; everyone else&apos;s access comes from the roles below.</p>
                 : <label htmlFor="wiz-guild">Which of your servers<select id="wiz-guild" name="wiz-guild" value={guildId} onChange={(e) => setGuildId(e.target.value)} disabled={busy}>
                     <option value="">Choose…</option>
                     {identity.guilds.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
@@ -359,7 +369,7 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
             </label>
             {roleConflictList.length > 0 && <p className="attention-text">Each Discord role can map to only one access level &mdash; {roleConflictList.join("; ")}. Owner is never a role: it is the server&apos;s owner.</p>}
 
-            <button type="button" className="login-primary-button" disabled={busy || !guildId || roleConflictList.length > 0} onClick={() => { void finalize(); }}>{busy ? "Saving..." : "Turn on Discord sign-in"}</button>
+            <button type="button" className="login-primary-button" disabled={busy || !guildId || roleConflictList.length > 0} onClick={() => { void finalize(); }}>{busy ? "Saving..." : app?.discordOAuthConfigured ? "Save role mapping" : "Turn on Discord sign-in"}</button>
             {app?.configured && <button type="button" className="login-password-toggle" onClick={reconfigureCredentials}>Change application credentials</button>}
           </>
         )}

@@ -353,6 +353,36 @@ describe("DiscordSetupWizard: embedded mode (#643)", () => {
     expect(screen.getByRole("checkbox")).toBeChecked();
   });
 
+  it("map step: when Discord sign-in is already fully on (home guild + roles already saved), the button doesn't say 'Turn on Discord sign-in' -- it already is on", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({
+        serverConfig: { DISCORD_OAUTH_CLIENT_ID: "id", DISCORD_OAUTH_REDIRECT_URI: "uri" },
+        config: { discordOAuthAppConfigured: true, discordOAuthConfigured: true },
+      } as never);
+      if (path === "/api/setup/discord-identity") return Promise.resolve({ user: { id: "u1", username: "operator", mfaEnabled: true }, guilds: [{ id: "999999999999999999", name: "My Server", owner: true }] } as never);
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByLabelText(/admin role/i);
+    expect(screen.queryByText("Turn on Discord sign-in")).toBeNull();
+    expect(screen.queryByText(/^Connecting/)).toBeNull();
+  });
+
+  it("map step: a genuine first-time setup (no home guild saved yet) still says 'Turn on Discord sign-in' and 'Connecting' (unchanged)", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({
+        serverConfig: { DISCORD_OAUTH_CLIENT_ID: "id", DISCORD_OAUTH_REDIRECT_URI: "uri" },
+        config: { discordOAuthAppConfigured: true, discordOAuthConfigured: false },
+      } as never);
+      if (path === "/api/setup/discord-identity") return Promise.resolve({ user: { id: "u1", username: "operator", mfaEnabled: true }, guilds: [{ id: "999999999999999999", name: "My Server", owner: true }] } as never);
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByLabelText(/admin role/i);
+    expect(await screen.findByText("Turn on Discord sign-in")).toBeTruthy();
+    expect(screen.getByText(/^Connecting/)).toBeTruthy();
+  });
+
   it("done step: embedded copy says 'Back to Settings', not 'Back to sign in', omits the sign-in-page claim, and warns the restart ends the session", async () => {
     mockApi.mockImplementation((path: string) => {
       if (path === "/api/settings") return Promise.resolve({ serverConfig: { DISCORD_OAUTH_CLIENT_ID: "id", DISCORD_OAUTH_REDIRECT_URI: "uri" }, config: { discordOAuthAppConfigured: true } } as never);
