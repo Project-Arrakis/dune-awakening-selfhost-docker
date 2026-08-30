@@ -4,6 +4,7 @@ import { api, post } from "../../api/client";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill } from "../../components/common/DisplayPrimitives";
 import { RecoveryCodesPanel } from "../auth/RecoveryCodesPanel";
+import { DiscordSetupWizard } from "../auth/DiscordSetupWizard";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
 import { ApiKeysSection } from "./ApiKeysSection";
 
@@ -16,27 +17,6 @@ function stripCodeWhitespace(value: string) {
   return value.replace(/\s/g, "");
 }
 
-// Discord snowflake IDs are 17-19 decimal digits. The server (roleTiers.js's
-// parseRoleIdList) always filters role-ID text through this shape before
-// comparing for conflicts; mirroring that here too (review finding) avoids a
-// false-positive "role conflict" -- and a disabled Save button -- for a
-// malformed/non-snowflake token (a typo or paste artifact) that the server
-// would simply drop and save without complaint.
-const DISCORD_SNOWFLAKE_RE = /^\d{17,19}$/;
-
-// Separation of duties for Discord sign-in: one Discord role, one console tier.
-// Mirrors the server's check so the operator is told before the round-trip.
-function discordRoleConflicts(fields: Record<string, string>) {
-  const seen = new Map<string, string[]>();
-  for (const [tier, value] of Object.entries(fields)) {
-    for (const id of value.split(",").map((v) => v.trim()).filter((v) => DISCORD_SNOWFLAKE_RE.test(v))) {
-      const tiers = seen.get(id) || [];
-      if (!tiers.includes(tier)) tiers.push(tier);
-      seen.set(id, tiers);
-    }
-  }
-  return [...seen.entries()].filter(([, tiers]) => tiers.length > 1).map(([id, tiers]) => `${id} is mapped to ${tiers.join(" and ")}`);
-}
 
 type SettingsTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 type PublicDirectorySettings = {
@@ -60,9 +40,13 @@ type SettingsPanelProps = {
   publicListingUrl?: string;
   // Needed by the API Keys section, which confirms before revoking a key.
   confirmAction: ConfirmAction;
+  // #643: true for the one render right after returning from a Discord
+  // OAuth round-trip started from this panel -- auto-expands the accordion
+  // so the embedded wizard is exactly where the operator left it.
+  autoOpenDiscordSetup?: boolean;
 };
 
-export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmAction }: SettingsPanelProps) {
+export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmAction, autoOpenDiscordSetup }: SettingsPanelProps) {
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   // Tier 3 credential state. secondFactorEnrolled is read from /api/auth/me,
@@ -81,20 +65,9 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   const [regenerateResult, setRegenerateResult] = useState<SettingsTaskResult | null>(null);
   const [regeneratedCodes, setRegeneratedCodes] = useState<string[] | null>(null);
   const [regenerateAcknowledged, setRegenerateAcknowledged] = useState(false);
-  // Discord OAuth (Tier 1). The role fields are the same information the
-  // companion bot's setup form asks for: Discord IDs, typed in, no picker.
-  const [discordOAuthOpen, setDiscordOAuthOpen] = useState(false);
-  const [discordOAuthSaving, setDiscordOAuthSaving] = useState(false);
-  const [discordOAuthResult, setDiscordOAuthResult] = useState<SettingsTaskResult | null>(null);
-  const [discordClientId, setDiscordClientId] = useState("");
-  const [discordRedirectUri, setDiscordRedirectUri] = useState("");
-  const [discordClientSecret, setDiscordClientSecret] = useState("");
-  const [discordSecretSaved, setDiscordSecretSaved] = useState(false);
-  const [discordHomeGuildId, setDiscordHomeGuildId] = useState("");
-  const [discordAdminRoleIds, setDiscordAdminRoleIds] = useState("");
-  const [discordModeratorRoleIds, setDiscordModeratorRoleIds] = useState("");
-  const [discordPlayerRoleIds, setDiscordPlayerRoleIds] = useState("");
-  const [discordRequireMfaTiers, setDiscordRequireMfaTiers] = useState("");
+  // #643: Discord OAuth setup lives in the same guided wizard used pre-login
+  // (DiscordSetupWizard, embedded) -- no separate manual-form state here.
+  const [discordOAuthOpen, setDiscordOAuthOpen] = useState(() => Boolean(autoOpenDiscordSetup));
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordResult, setPasswordResult] = useState<SettingsTaskResult | null>(null);
@@ -140,16 +113,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
     setSettings(nextSettings);
     const config = (nextSettings.config as Record<string, unknown> | undefined) || {};
     const directory = (nextSettings.publicDirectory as PublicDirectorySettings | undefined) || {};
-    const serverConfig = (nextSettings.serverConfig as Record<string, string> | undefined) || {};
     setWebPort(String(config.port || "8088"));
-    setDiscordClientId(serverConfig["DISCORD_OAUTH_CLIENT_ID"] || "");
-    setDiscordRedirectUri(serverConfig["DISCORD_OAUTH_REDIRECT_URI"] || "");
-    setDiscordHomeGuildId(serverConfig["DISCORD_HOME_GUILD_ID"] || "");
-    setDiscordSecretSaved(Boolean(serverConfig["_discordOAuthSecretSaved"]));
-    setDiscordAdminRoleIds(serverConfig["DISCORD_CONSOLE_ADMIN_ROLE_IDS"] || "");
-    setDiscordModeratorRoleIds(serverConfig["DISCORD_CONSOLE_MODERATOR_ROLE_IDS"] || "");
-    setDiscordPlayerRoleIds(serverConfig["DISCORD_CONSOLE_PLAYER_ROLE_IDS"] || "");
-    setDiscordRequireMfaTiers(serverConfig["DISCORD_OAUTH_REQUIRE_MFA_TIERS"] || "");
   }
   useEffect(() => {
     refresh().catch(() => undefined);
@@ -183,7 +147,6 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   const passwordStarted = newPassword.length > 0;
   const confirmStarted = confirmPassword.length > 0;
   const passwordsMatch = newPassword === confirmPassword;
-  const discordRoleConflictList = discordRoleConflicts({ Admin: discordAdminRoleIds, Moderator: discordModeratorRoleIds, Player: discordPlayerRoleIds });
   async function changeLoginPassword() {
     if (!currentPassword) {
       setPasswordResult({ status: "failed", title: "Password Change Failed", message: "Enter your current login password." });
@@ -255,31 +218,6 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       setRegenerateResult({ status: "failed", title: "Regeneration Failed", message: error instanceof Error ? error.message : String(error) });
     } finally {
       setRegenerateSaving(false);
-    }
-  }
-  async function saveDiscordOAuth() {
-    setDiscordOAuthSaving(true);
-    setDiscordOAuthResult({ status: "running", title: "Saving Discord OAuth config..." });
-    try {
-      await post<{ ok: boolean }>("/api/setup/write-oauth-config", {
-        DISCORD_OAUTH_CLIENT_ID: discordClientId,
-        DISCORD_OAUTH_REDIRECT_URI: discordRedirectUri,
-        DISCORD_HOME_GUILD_ID: discordHomeGuildId,
-        DISCORD_CONSOLE_ADMIN_ROLE_IDS: discordAdminRoleIds,
-        DISCORD_CONSOLE_MODERATOR_ROLE_IDS: discordModeratorRoleIds,
-        DISCORD_CONSOLE_PLAYER_ROLE_IDS: discordPlayerRoleIds,
-        DISCORD_OAUTH_REQUIRE_MFA_TIERS: discordRequireMfaTiers
-      });
-      if (discordClientSecret) {
-        await post<{ ok: boolean }>("/api/setup/save-oauth-secret", { secret: discordClientSecret, overwrite: discordSecretSaved });
-        setDiscordClientSecret("");
-        setDiscordSecretSaved(true);
-      }
-      setDiscordOAuthResult({ status: "succeeded", title: "Discord OAuth config saved. Restart the console for changes to take effect." });
-    } catch (error) {
-      setDiscordOAuthResult({ status: "failed", title: "Save failed", message: error instanceof Error ? error.message : String(error) });
-    } finally {
-      setDiscordOAuthSaving(false);
     }
   }
   async function changeWebPort() {
@@ -535,34 +473,11 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       <div className={`playerAdmin_toggle ${discordOAuthOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={discordOAuthOpen ? "Collapse Discord OAuth" : "Expand Discord OAuth"} onClick={() => setDiscordOAuthOpen(!discordOAuthOpen)}>{discordOAuthOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Discord OAuth</span></button>
         {discordOAuthOpen && <div className="playerAdmin_toggleBody">
-          <p className="muted">Let people sign in with Discord and get console access from their roles in your server. Needs a Discord application (Developer Portal) with this console&apos;s callback URL as a redirect. Leave blank for password-only sign-in.</p>
-          <div className="settings-password-grid">
-            <label htmlFor="settings-discord-client-id">Client ID<input id="settings-discord-client-id" name="settings-discord-client-id" disabled={discordOAuthSaving} value={discordClientId} onChange={(event) => setDiscordClientId(event.target.value)} placeholder="Discord application client ID" /></label>
-            <label htmlFor="settings-discord-redirect">Redirect URI<input id="settings-discord-redirect" name="settings-discord-redirect" disabled={discordOAuthSaving} value={discordRedirectUri} onChange={(event) => setDiscordRedirectUri(event.target.value)} placeholder="https://your-console-host/api/auth/discord/callback" /></label>
-            <label htmlFor="settings-discord-secret">Client Secret{discordSecretSaved ? <span className="theme-note"> (saved)</span> : null}<SecretInput id="settings-discord-secret" name="settings-discord-secret" disabled={discordOAuthSaving} value={discordClientSecret} onChange={(event) => setDiscordClientSecret(event.target.value)} placeholder={discordSecretSaved ? "Paste a new one to replace" : "Client secret"} /></label>
-            <label htmlFor="settings-discord-guild">Discord Server ID<input id="settings-discord-guild" name="settings-discord-guild" disabled={discordOAuthSaving} value={discordHomeGuildId} onChange={(event) => setDiscordHomeGuildId(event.target.value)} placeholder="Server (guild) ID" /></label>
-          </div>
-          <p className="muted" style={{ marginTop: "12px" }}>
-            <strong>Owner is the Discord server&apos;s owner</strong> &mdash; automatic, not a role. Copy role IDs from Discord with Developer Mode on (User Settings &rarr; Advanced), then right-click a role &rarr; Copy Role ID. Each field takes one or more IDs, comma-separated. A member gets the <em>highest</em> tier of any mapped role they hold. Map at least an Admin role, or only the server owner can use the console through Discord.
-          </p>
-          <div className="settings-password-grid">
-            <label htmlFor="settings-discord-admin-role">Admin Role <em>(required)</em><input id="settings-discord-admin-role" name="settings-discord-admin-role" disabled={discordOAuthSaving} value={discordAdminRoleIds} onChange={(event) => setDiscordAdminRoleIds(event.target.value)} placeholder="Discord role ID" /></label>
-            <label htmlFor="settings-discord-moderator-role">Moderator Role <em>(optional)</em><input id="settings-discord-moderator-role" name="settings-discord-moderator-role" disabled={discordOAuthSaving} value={discordModeratorRoleIds} onChange={(event) => setDiscordModeratorRoleIds(event.target.value)} placeholder="Discord role ID" /></label>
-            <label htmlFor="settings-discord-player-role">Player Role <em>(recommended)</em><input id="settings-discord-player-role" name="settings-discord-player-role" disabled={discordOAuthSaving} value={discordPlayerRoleIds} onChange={(event) => setDiscordPlayerRoleIds(event.target.value)} placeholder="Discord role ID" /></label>
-            <label htmlFor="settings-discord-mfa">Require Discord 2FA for <em>(optional)</em>{!discordRequireMfaTiers ? <button type="button" className="login-password-toggle" onClick={() => setDiscordRequireMfaTiers("owner,admin")}>use recommended</button> : null}<input id="settings-discord-mfa" name="settings-discord-mfa" disabled={discordOAuthSaving} value={discordRequireMfaTiers} onChange={(event) => setDiscordRequireMfaTiers(event.target.value)} placeholder="blank = off; recommended: owner,admin" /></label>
-          </div>
-          {discordRoleConflictList.length > 0 && <p className="attention-text">Each Discord role can map to only one access level &mdash; {discordRoleConflictList.join("; ")}. Owner is never a role: it is the server&apos;s owner.</p>}
-          <p className="muted">With &ldquo;Require Discord 2FA for&rdquo; set, sign-ins for those tiers are refused unless the Discord account itself has two-factor enabled (recommended for owner and admin). If you also run a companion bot with a signed tier handoff, the bot decides tiers and the role fields above are ignored. Additional owners beyond the server owner can be set with <code>DISCORD_OAUTH_OWNER_ALLOWLIST</code> in <code>.env</code> (advanced).</p>
-          <div className="action-row" style={{ marginTop: "12px" }}>
-            <button disabled={discordOAuthSaving || discordRoleConflictList.length > 0 || (!discordClientId && !discordRedirectUri && !discordClientSecret && !discordHomeGuildId && !discordAdminRoleIds && !discordModeratorRoleIds && !discordPlayerRoleIds && !discordRequireMfaTiers)} onClick={() => { void saveDiscordOAuth(); }}>
-              {discordOAuthSaving ? "Saving..." : "Save Discord OAuth"}
-            </button>
-            <a className="login-password-toggle" href="/?discordSetup=start">Run the guided setup again</a>
-            {discordOAuthResult && <span className={`inline-task-result result-${discordOAuthResult.status === "succeeded" ? "ok" : discordOAuthResult.status === "failed" ? "fail" : "running"}`}>
-              <strong className={discordOAuthResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(discordOAuthResult.title, discordOAuthResult.status === "running")}</strong>
-              {discordOAuthResult.message && <span className="inline-task-message">{formatResultMessage(discordOAuthResult.message)}</span>}
-            </span>}
-          </div>
+          <DiscordSetupWizard
+            embedded
+            onCancel={() => setDiscordOAuthOpen(false)}
+            onDone={() => { setDiscordOAuthOpen(false); void refresh(); }}
+          />
         </div>}
       </div>
       <div className={`playerAdmin_toggle settings-api-keys-toggle ${apiKeysOpen ? "open" : ""}`}>

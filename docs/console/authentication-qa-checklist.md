@@ -426,10 +426,10 @@ have Discord 2FA **off** for T31.
 
 **Expected**
 - Owner: Settings visible; `/api/auth/me` says `tier: owner`. This holds even if your account also has the admin role.
-3. Settings → Discord OAuth.
+3. Settings → Discord OAuth (opens the same guided wizard used pre-login; re-authorize with **Continue with Discord** to reach the role-mapping step).
 
 **Expected**
-- No owner field of any kind — the section says *Owner is the Discord server's owner — automatic, not a role.* The fields are the application settings (Client ID, Redirect URI, Client Secret, Discord Server ID) and the Admin / Moderator / Player role fields plus *Require Discord 2FA for*; nothing names an owner.
+- No owner field of any kind — the section says *Owner is not a role — it is you, the server's owner.* The fields are Admin Role (required) / Moderator Role (optional) / Player Role (recommended) plus the **Require Discord two-factor for Owner and Admin** checkbox; nothing names an owner. A **Change application credentials** link is also present, for editing Client ID/Secret.
 
 ### T30 · Demotion takes effect at next sign-in
 1. While A is signed in, remove A's Admin role in Discord. A keeps clicking around.
@@ -438,10 +438,10 @@ have Discord 2FA **off** for T31.
 - A's current session keeps working. After A signs out and signs in again: refused (T28) or downgraded to whatever mapped role remains.
 
 ### T31 · Discord 2FA requirement (opt-in)
-1. With **Require Discord 2FA for** blank, an admin-role account **without** Discord 2FA signs in.
+1. With **Require Discord two-factor for Owner and Admin** unchecked, an admin-role account **without** Discord 2FA signs in.
 
 **Expected**: admitted as Admin.
-2. Set the field to `owner,admin` (click *use recommended*), save, restart. Same account signs in.
+2. Settings → Discord OAuth → **Continue with Discord** (re-authorize) → tick the checkbox → **Turn on Discord sign-in** → restart. Same account signs in.
 
 **Expected**: refused with *…requires two-factor authentication on your Discord account before granting admin access…* and the Discord setting named. A **player**-role account without 2FA is still admitted.
 3. That account enables 2FA in Discord and signs in again.
@@ -449,10 +449,10 @@ have Discord 2FA **off** for T31.
 **Expected**: admitted as Admin.
 
 ### T32 · Server chosen, no roles mapped
-1. Settings → Discord OAuth: clear all three role fields, save, restart. Account A (admin role) signs in with Discord.
+1. Settings → Discord OAuth → **Continue with Discord** (re-authorize) → clear all three role fields → **Turn on Discord sign-in** → restart. Account A (admin role) signs in with Discord.
 
 **Expected**
-- Refused: *…not authorized to sign in…* (no mapped role). The server owner still signs in as Owner. Restore the mapping afterwards.
+- Refused: *…not authorized to sign in…* (no mapped role). The server owner still signs in as Owner. Restore the mapping afterwards (same re-authorize path).
 
 ### T33 · Password path untouched, mixed sessions
 1. With Discord configured, sign in with the password (via **Use the admin password instead**) in one browser and with Discord as a Player in another.
@@ -467,10 +467,10 @@ have Discord 2FA **off** for T31.
 - Discord shows the authorization screen again (one extra permission: roles in a server). After Authorize, sign-in proceeds. Existing owner list / bootstrap behaviour unchanged.
 
 ### T35 · Separation of duties — one role, one tier
-1. Settings → Discord OAuth: put the **same** role ID in *Admin Role* and *Moderator Role*.
+1. Settings → Discord OAuth → **Continue with Discord** (re-authorize) → put the **same** role ID in *Admin Role* and *Moderator Role*.
 
 **Expected**
-- An inline message: *Each Discord role can map to only one access level — role <id> is mapped to admin and moderator. Owner is never a role…*; **Save Discord OAuth** is disabled.
+- An inline message: *Each Discord role can map to only one access level — role <id> is mapped to admin and moderator. Owner is never a role…*; **Turn on Discord sign-in** is disabled (still requires the redundant guild-owner re-authorization step below to reach — a server-side check, not just this client-side one).
 2. *Host:* edit `.env` by hand so `DISCORD_CONSOLE_MODERATOR_ROLE_IDS` equals `DISCORD_CONSOLE_ADMIN_ROLE_IDS`; `dune console restart`. Click **Sign in with Discord**.
 
 **Expected**
