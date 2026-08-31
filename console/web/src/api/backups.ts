@@ -15,6 +15,7 @@ export const backupsApi = {
   restore: (backup: string, identityMode: BackupIdentityMode) => post<{ task: Task }>("/api/backups/restore", { backup, identityMode }),
   delete: (backup: string) => api<{ task: Task }>(`/api/backups/${encodeURIComponent(backup)}`, { method: "DELETE" }),
   deleteAll: () => post<{ task: Task }>("/api/backups/delete-all"),
+  deleteSelected: (backups: string[]) => post<{ task: Task }>("/api/backups/delete-selected", { backups }),
   downloadUrl: (backup: string) => `/api/backups/${encodeURIComponent(backup)}/download`,
   importExternal: (form: FormData) => api<{ ok: boolean; row?: Record<string, unknown>; rows?: Record<string, unknown>[] }>("/api/backups/import-external", { method: "POST", body: form }),
   autoStatus: () => api<{ stdout: string; stderr?: string; exitCode?: number; status?: Record<string, unknown> }>("/api/backups/auto"),

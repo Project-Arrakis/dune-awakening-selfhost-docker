@@ -722,9 +722,14 @@ test("iam/policies returns the action catalog (policies + actions + actionMap + 
     assert.ok(Array.isArray(body.actions) && body.actions.length > 0, "actions[] present (the editor reads catalog.actions)");
     assert.ok(body.actionMap && typeof body.actionMap === "object", "actionMap present (route -> IAM action)");
     assert.ok(body.namespaces && typeof body.namespaces === "object", "namespaces present");
-    // The editor does nsFromAction(action, actionMap) — a route key must resolve.
-    const anyRoute = body.actions[0];
-    assert.ok(body.actionMap[anyRoute], "every actions[] key exists in actionMap");
+    // Merge-conflict finding (upstream-main-base sync): `actions` is now the
+    // action-name vocabulary (upstream's own contract, see
+    // policyActionValidation.test.js's "the policies endpoint hands back the
+    // vocabulary"), not route keys -- it no longer indexes into actionMap.
+    // The editor itself reads allActions/actionMap, never actions (see
+    // IamPolicyEditor.tsx), so this just pins that every entry is a real,
+    // known action.
+    for (const action of body.actions) assert.ok(body.allActions.includes(action), `${action} is a known action`);
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
 

@@ -8,7 +8,7 @@ import { evaluate, loadPolicies, getAllPolicies, matchAction, resolveAllowedActi
 
 test("policy matching supports exact and namespace wildcards", () => {
   assert.equal(matchAction("players:read", "players:read"), true);
-  assert.equal(matchAction("players:*", "players:kick"), true);
+  assert.equal(matchAction("players:*", "players:moderate"), true);
   assert.equal(matchAction("players:*", "server:read"), false);
 });
 
@@ -378,32 +378,40 @@ test("setPolicies refuses an owner document that has settings:write but not sett
 // the backstop for the one path still open: an owner accidentally handing one
 // to a lower tier while hand-editing the JSON tab, either by widening that
 // tier's Allow to reach it or by deleting the Deny that was blocking it.
+// Merge-conflict finding (upstream-main-base sync): players:mutate is no
+// longer a real, known action (retired and split, see actionSplits.test.js)
+// -- it survives only as a deprecated PATTERN a stored policy may still
+// name, kept meaningful via REMOVED_ACTION_ALIASES. These three tests still
+// exercise that exact path (a policy naming the deprecated pattern), but the
+// refusal's reported "leaked" action is necessarily one of its concrete
+// successors now, not the retired name itself.
 test("setPolicies refuses to save a crown-jewel action reaching a non-owner tier via a widened Allow", () => {
   const docs = {
     owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
     admin: { version: 1, tier: "admin", statements: [
-      { Effect: "Allow", Action: ["server:read", "players:mutate"] }, // accidental crown-jewel grant
+      { Effect: "Allow", Action: ["server:read", "players:mutate"] }, // accidental crown-jewel grant, via the deprecated pattern's alias
       { Effect: "Deny", Action: ["settings:*"] },
     ] },
   };
   const result = setPolicies(docs);
   assert.equal(result.ok, false);
   assert.match(result.error, /admin/);
-  assert.match(result.error, /players:mutate/);
+  assert.match(result.error, /players:unclassified/);
 });
 
 test("setPolicies refuses to save a crown-jewel action reaching a non-owner tier via a removed Deny", () => {
   const docs = {
     owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
-    // moderator's own Allow uses a namespace wildcard that reaches players:mutate,
-    // with no Deny at all to stop it (the mistake: assuming "players:*" is safe
-    // because the default moderator policy never included the economy action).
+    // moderator's own Allow uses a namespace wildcard that reaches the
+    // players:mutate successors, with no Deny at all to stop it (the
+    // mistake: assuming "players:*" is safe because the default moderator
+    // policy never included the economy/unclassified actions).
     moderator: { version: 1, tier: "moderator", statements: [{ Effect: "Allow", Action: ["players:*"] }] },
   };
   const result = setPolicies(docs);
   assert.equal(result.ok, false);
   assert.match(result.error, /moderator/);
-  assert.match(result.error, /players:mutate/);
+  assert.match(result.error, /players:unclassified/);
 });
 
 test("setPolicies still saves a non-owner tier whose Deny keeps every crown-jewel action blocked", () => {
@@ -411,7 +419,7 @@ test("setPolicies still saves a non-owner tier whose Deny keeps every crown-jewe
     owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
     admin: { version: 1, tier: "admin", statements: [
       { Effect: "Allow", Action: ["*"] },
-      { Effect: "Deny", Action: ["settings:*", "players:mutate", "database:mutate", "database:export", "database:write-config", "server:write-credentials", "admin:transfer-settings:write", "updates:apply", "updates:fix", "updates:repair", "backups:restore", "backups:import", "addons:install", "addons:update", "setup:write", "carepackage:grant", "carepackage:write-config", "exchange:market", "exchange:market-write"] },
+      { Effect: "Deny", Action: ["settings:*", "players:give-item", "players:grant", "players:reset", "players:delete-item", "players:edit-item", "players:repair", "players:recover", "players:unclassified", "database:mutate", "database:execute", "database:export", "database:write-config", "server:write-credentials", "admin:transfer-settings:write", "updates:apply", "updates:fix", "updates:repair", "backups:restore", "backups:import", "addons:install", "addons:update", "setup:write", "carepackage:grant", "carepackage:write-config", "exchange:market", "exchange:market-write"] },
     ] },
   };
   assert.equal(setPolicies(docs).ok, true);

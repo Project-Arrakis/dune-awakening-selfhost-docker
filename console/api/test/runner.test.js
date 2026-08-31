@@ -73,7 +73,10 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("backupRestore", { backup: "dune-db-test.backup", identityMode: "keep-current" }), ["db", "restore", "dune-db-test.backup", "--no-safety-backup", "--keep-current-battlegroup"]);
   assert.throws(() => buildDuneArgs("backupRestore", { backup: "dune-db-test.backup", identityMode: "automatic" }), /Unsupported backup Battlegroup identity choice/);
   assert.deepEqual(buildDuneArgs("backupDelete", { backup: "dune-db-test.backup" }), ["db", "delete", "dune-db-test.backup"]);
+  assert.deepEqual(buildDuneArgs("backupDeleteSelected", { backups: ["one.backup", "two.backup", "one.backup"] }), ["db", "delete", "one.backup", "two.backup"]);
+  assert.throws(() => buildDuneArgs("backupDeleteSelected", { backups: [] }), /Select between 1 and 100 backups/);
   assert.deepEqual(buildDuneArgs("backupDeleteAll"), ["db", "delete", "--all"]);
+  assert.deepEqual(buildDuneArgs("stopGameServersForDbWrites"), ["stop-game-servers-for-db-writes"]);
   assert.deepEqual(buildDuneArgs("adminAddXp", { playerId: "FLS_TEST", amount: 1000 }), ["admin", "award-xp", "FLS_TEST", "1000"]);
   assert.deepEqual(buildDuneArgs("updateApply"), ["update", "--yes"]);
   assert.deepEqual(buildDuneArgs("updateAutoStatus"), ["update", "auto", "status"]);

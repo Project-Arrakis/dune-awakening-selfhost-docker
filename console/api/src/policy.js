@@ -8,9 +8,15 @@
 // Policy document format (per tier):
 //   { "version": 1, "tier": "moderator",
 //     "statements": [
-//       { "Effect": "Deny",  "Action": ["players:reset-progression"] },
-//       { "Effect": "Allow", "Action": ["players:*", "server:read"] }
+//       { "Effect": "Deny",  "Action": ["bases:delete"] },
+//       { "Effect": "Allow", "Action": ["bases:*", "server:read"] }
 //     ]}
+//
+// Every Action must be a REAL action, or a wildcard matching at least one; a
+// name matching nothing denies nothing while reading like a restriction.
+// setPolicies refuses those (unknownActions). A name the catalog USED to have
+// is a separate case: REMOVED_ACTION_ALIASES keeps its old meaning at
+// evaluation time, and setPolicies refuses it on save so the operator migrates.
 //
 // Evaluation: for each statement in order,
 //   if action matches statement AND Effect=Deny  → DENY immediately
@@ -19,7 +25,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { ROUTE_ACTIONS, REGEX_ACTIONS, REGEX_ACTIONS_BY_METHOD, REGEX_ACTIONS_BY_METHOD_PATTERN } from "./actions.js";
+import { ROUTE_ACTIONS, REGEX_ACTIONS, REGEX_ACTIONS_BY_METHOD, REGEX_ACTIONS_BY_METHOD_PATTERN, CONTENT_CONDITIONAL_ACTIONS, REMOVED_ACTION_ALIASES } from "./actions.js";
 import { writeJsonAtomic } from "./jsonStore.js";
 
 // ---- Policy evaluation ----
@@ -49,6 +55,11 @@ export function matchAction(pattern, action) {
     const regex = new RegExp("^" + escaped + "$");
     return regex.test(action);
   }
+  // A name this catalog used to have. Checked LAST so it can never shadow a
+  // live action. See REMOVED_ACTION_ALIASES in actions.js for why a split
+  // cannot simply delete the old name.
+  const successors = REMOVED_ACTION_ALIASES[pattern];
+  if (successors) return successors.includes(action);
   return false;
 }
 
@@ -71,6 +82,22 @@ export function invalidActionPattern(value) {
     }
   }
   return null;
+}
+
+// Patterns naming an action the catalog used to have. Unlike unknownActions
+// these still mean something, but a save should name the successors explicitly.
+export function deprecatedActions(docs) {
+  const found = [];
+  for (const [tier, document] of Object.entries(docs || {})) {
+    for (const statement of document?.statements || []) {
+      const patterns = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+      for (const pattern of patterns) {
+        if (typeof pattern !== "string") continue;
+        if (REMOVED_ACTION_ALIASES[pattern]) found.push({ tier, pattern, successors: [...REMOVED_ACTION_ALIASES[pattern]] });
+      }
+    }
+  }
+  return found;
 }
 
 export function evaluate(session, action, policies = null) {
@@ -116,13 +143,19 @@ export function loadPolicies(repoRoot = null) {
     ? resolve(repoRoot, "runtime/generated/iam-policies.json")
     : resolve(process.cwd(), "../..", "runtime/generated/iam-policies.json");
 
+  _allowedActions = {};
+
   if (existsSync(filePath)) {
     try {
       const raw = readFileSync(filePath, "utf8");
       const parsed = JSON.parse(raw);
       if (validPolicyStore(parsed)) {
         _policies = parsed;
-        return;
+        // Reported, not rejected: discarding the document would silently
+        // revert the operator's whole policy to defaults, a bigger surprise
+        // than the dead pattern. setPolicies refuses these on save, so a stored
+        // file can only acquire one by hand-editing. The caller logs this.
+        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed) };
       }
       // A stored file that fails validation (e.g. an action pattern that
       // predates the ACTION_PATTERN tightening) used to fall through to the
@@ -136,17 +169,22 @@ export function loadPolicies(repoRoot = null) {
         "in the file predates a schema change (only lowercase letters, digits, ':', " +
         "'-' and '*' are valid). Check Access Control after this restart."
       );
+      _policies = DEFAULT_POLICIES;
+      return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [] };
     } catch (err) {
       const reason = err instanceof Error ? err.message : "unreadable or malformed";
       console.warn(
         `Stored IAM policy at ${filePath} could not be read (${reason}) -- ` +
         "falling back to the default policies. Check Access Control after this restart."
       );
+      _policies = DEFAULT_POLICIES;
+      return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [] };
     }
   }
 
   // Hardcoded fallback defaults
   _policies = DEFAULT_POLICIES;
+  return { source: "defaults", unknownActions: [], deprecatedActions: [] };
 }
 
 let _allowedActions = {};
@@ -156,11 +194,16 @@ let _allowedActions = {};
 // other tiers instead (see actions.js). bases:delete is the reason this
 // enumerates all four: it exists only in REGEX_ACTIONS_BY_METHOD_PATTERN, so
 // a version of this that only read ROUTE_ACTIONS would never surface it.
+//
+// CONTENT_CONDITIONAL_ACTIONS is the fifth source and the only one no route
+// resolves to: those actions are decided from the request body inside the
+// handler, so nothing in the four route tables above mentions them.
 export function allKnownActions() {
   const actions = new Set(Object.values(ROUTE_ACTIONS));
   for (const [, action] of REGEX_ACTIONS) actions.add(action);
   for (const action of Object.values(REGEX_ACTIONS_BY_METHOD)) actions.add(action);
   for (const { action } of REGEX_ACTIONS_BY_METHOD_PATTERN) actions.add(action);
+  for (const action of CONTENT_CONDITIONAL_ACTIONS) actions.add(action);
   return actions;
 }
 
@@ -192,6 +235,33 @@ export function getAllPolicies(policies = null) {
   return { ...store };
 }
 
+// Every Action pattern that matches NO action in the catalog, as
+// [{ tier, pattern }]. Dead weight in an Allow; a silent lie in a Deny.
+// "Deny players:reset-progression" is the shape -- no route resolves to it
+// (players:reset does), so it withholds nothing while the policy reads as safe.
+//
+// Removed names are NOT reported here: matchAction still honours them, so they
+// are not dead. deprecatedActions() reports those, since the fix is migration
+// rather than a typo.
+//
+// The test is "does this pattern match at least one real action", not "is this
+// string in the catalog", so wildcards stay legal -- and it runs through the
+// same matchAction the engine uses, so validation and runtime cannot disagree.
+export function unknownActions(docs) {
+  const known = [...allKnownActions()];
+  const dead = [];
+  for (const [tier, document] of Object.entries(docs || {})) {
+    for (const statement of document?.statements || []) {
+      const patterns = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+      for (const pattern of patterns) {
+        if (typeof pattern !== "string") continue;
+        if (!known.some((action) => matchAction(pattern, action))) dead.push({ tier, pattern });
+      }
+    }
+  }
+  return dead;
+}
+
 export function setPolicies(docs, repoRoot = null) {
   const badPattern = invalidActionPattern(docs);
   if (badPattern !== null) {
@@ -207,14 +277,52 @@ export function setPolicies(docs, repoRoot = null) {
   if (!evaluate({ tier: "owner" }, "settings:write", docs) || !evaluate({ tier: "owner" }, "settings:read", docs)) {
     return { ok: false, error: "The owner policy must retain settings:read and settings:write access." };
   }
+  // Both checks REFUSE rather than warn. A save that "succeeded with warnings"
+  // is how an operator ends up believing a restriction is in force when it is
+  // not.
+  //
+  // Deprecated names are refused on save even though matchAction still honours
+  // them at evaluation time. That asymmetry is deliberate: a stored document
+  // keeps its meaning through an upgrade, and the operator migrates on their
+  // next edit instead of the console refusing to start. The message names the
+  // successors so the edit is mechanical.
+  //
+  // Merge-conflict finding (upstream-main-base sync): these two structural
+  // checks must run BEFORE the crown-jewel content check below -- a policy
+  // naming an invalid/removed action should be told so, not shown a
+  // crown-jewel leak that action's own alias resolution happens to produce.
+  // Pinned by policyActionValidation.test.js's "the exact documented example
+  // is now refused" and "setPolicies refuses a removed action and names its
+  // successors" (both new in this merge, from upstream's own ordering).
+  const deprecated = deprecatedActions(docs);
+  if (deprecated.length) {
+    const listed = deprecated
+      .map(({ tier, pattern, successors }) => `${tier}: ${pattern} (now ${successors.join(", ")})`)
+      .join("; ");
+    return {
+      ok: false,
+      error: `These actions were split and no longer exist. Name the actions you actually want instead: ${listed}.`,
+      deprecatedActions: deprecated
+    };
+  }
+
+  const dead = unknownActions(docs);
+  if (dead.length) {
+    const listed = dead.map(({ tier, pattern }) => `${tier}: ${pattern}`).join(", ");
+    return {
+      ok: false,
+      error: `These actions do not exist and would have no effect: ${listed}. Check GET /api/settings/iam/policies for the full list of valid actions.`,
+      unknownActions: dead
+    };
+  }
   // Crown-jewel actions (settings:*, database mutation/export, updates:apply,
-  // backups:restore/import, addons:install/update, players:mutate, the
-  // economy actions, etc. -- see CROWN_JEWEL_DENY_ACTIONS) must never resolve
-  // to allowed for any tier but owner, no matter how the JSON got there --
-  // an Allow that reaches one, a removed Deny, or both at once. Only owner
-  // can save policies at all (settings:write is itself a crown jewel), so
-  // this is specifically a backstop against an owner *accidentally* granting
-  // one to a lower tier while hand-editing the JSON tab.
+  // backups:restore/import, addons:install/update, the players economy/
+  // unclassified successors, etc. -- see CROWN_JEWEL_DENY_ACTIONS) must never
+  // resolve to allowed for any tier but owner, no matter how the JSON got
+  // there -- an Allow that reaches one, a removed Deny, or both at once. Only
+  // owner can save policies at all (settings:write is itself a crown jewel),
+  // so this is specifically a backstop against an owner *accidentally*
+  // granting one to a lower tier while hand-editing the JSON tab.
   //
   // CROWN_JEWEL_DENY_ACTIONS entries are PATTERNS (one of them, "settings:*",
   // is a wildcard), not necessarily real, concrete actions -- evaluate()
@@ -275,13 +383,30 @@ const CROWN_JEWEL_DENY_ACTIONS = [
   "settings:*",                                     // IAM policies, admin password, port, recovery codes
   "server:write-credentials",                       // Funcom game-server token + server IP change
   "database:write-config", "database:mutate",       // DB password + direct table edits
+  // The write half of POST /api/database/query, without which the two
+  // database denials above are decorative: database:query is granted to
+  // admin and that route takes UPDATE/DELETE/DROP as readily as SELECT.
+  // Merge-conflict finding (upstream-main-base sync): Red-Blink's own main
+  // independently added this as an admin-only deny; folded into this shared
+  // constant instead so every non-owner tier using it gets the same
+  // protection, not just admin.
+  "database:execute",
   "database:export",                                // full DB dump = whole-database exfiltration
   "admin:transfer-settings:write",                  // character/server-transfer policy (identity + economy)
   "updates:apply", "updates:fix", "updates:repair", // deploying / altering the running code
   "backups:restore", "backups:import",              // irreversible DB overwrite / untrusted import
   "addons:install", "addons:update",                // third-party code into the console process
   "setup:write",                                    // first-run provisioning
-  "players:mutate",                                 // give-item / add-currency / reset-progression (economy)
+  // The economy/unknown-mutation successors of the retired players:mutate --
+  // NOT players:moderate or players:teleport, which admin's own Allow list
+  // grants deliberately (moderation is admin's whole job here). Naming
+  // "players:mutate" itself would have caught those two as well: the alias
+  // system makes ANY pattern naming a removed action match every one of its
+  // successors, moderate/teleport included, which silently revoked admin's
+  // explicit kick/ban/teleport grant the moment the alias system merged in --
+  // caught by tierHardening.test.js's "admin CAN players:moderate/teleport".
+  "players:give-item", "players:grant", "players:reset", "players:delete-item",
+  "players:edit-item", "players:repair", "players:recover", "players:unclassified",
   "carepackage:grant", "carepackage:write-config",  // minting in-game value
   "exchange:market", "exchange:market-write",       // seeding the market economy
 ];
@@ -312,7 +437,7 @@ const DEFAULT_POLICIES = {
         "server:read", "server:start", "server:stop", "server:restart",
         "server:restart-service", "server:network-fix", "server:storage-cleanup",
         // Player moderation -- act on an individual griefer + mass kick
-        "players:read", "players:kick-all", "players:kick", "players:ban", "players:teleport",
+        "players:read", "players:kick-all", "players:moderate", "players:teleport",
         // Live-ops -- bring a map shard up/down + in-world moderation movement
         "maps:read", "maps:spawn", "maps:despawn", "maps:teleport", "maps:restart", "maps:reconcile",
         // Communications / moderation tooling
@@ -345,7 +470,7 @@ const DEFAULT_POLICIES = {
     statements: [
       { Effect: "Allow", Action: [
         "server:read", "maps:read", "sietches:read", "deepdesert:read",
-        "players:read", "players:kick-all", "players:kick", "players:ban", "players:teleport",
+        "players:read", "players:kick-all", "players:moderate", "players:teleport",
         "guilds:read", "bases:read", "storage:read", "blueprints:read",
         "vehicles:read", "exchange:read", "logs:read", "landsraad:read",
         "admin:broadcast", "admin:map-chat",

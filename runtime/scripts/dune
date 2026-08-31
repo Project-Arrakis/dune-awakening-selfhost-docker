@@ -382,6 +382,10 @@ EOF
     esac
     ;;
 
+  stop-game-servers-for-db-writes)
+    runtime/scripts/stop-game-servers-for-db-writes.sh
+    ;;
+
   console|web)
     shift || true
     runtime/scripts/console.sh "$@"
@@ -527,7 +531,7 @@ Usage:
   dune db restore <backup-file>
   dune db restore <backup-file> --adopt-backup-battlegroup
   dune db restore <backup-file> --keep-current-battlegroup
-  dune db delete <backup-file>
+  dune db delete <backup-file> [more-backups...]
   dune db delete --all
   dune db auto enable <HH:MM> [retention-days]
   dune db auto disable

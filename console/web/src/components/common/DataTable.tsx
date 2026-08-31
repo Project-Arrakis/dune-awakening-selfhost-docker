@@ -80,7 +80,7 @@ type DataTableProps = {
   action?: (row: Record<string, unknown>) => ReactNode;
   actionClassName?: string;
   secondaryAction?: (row: Record<string, unknown>) => ReactNode;
-  secondaryActionLabel?: string;
+  secondaryActionLabel?: ReactNode;
   secondaryActionClassName?: string;
   secondaryActionPosition?: "start" | "end";
   tableClassName?: string;
