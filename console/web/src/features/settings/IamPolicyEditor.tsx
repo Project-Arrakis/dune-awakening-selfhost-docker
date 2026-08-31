@@ -291,10 +291,21 @@ export function IamPolicyEditor() {
   // including a manual toggle made while a search was active, which a
   // snapshot-and-restore approach would have discarded.
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
-  const toggleExpanded = (key: string) => {
+  // `currentlyExpanded` is the caller's already-computed isExpanded() value
+  // (which ORs in a search match), not re-derived from expandedKeys.has(key)
+  // -- code-review finding: a group expanded ONLY via a search match is not
+  // IN expandedKeys at all, so the old has(key)-based toggle always took the
+  // "add" branch for it. That add was invisible immediately (isExpanded was
+  // already true via the search match), but persisted after the search was
+  // cleared, leaving the group expanded -- the opposite of what the click
+  // intended. Deciding the direction from the real current state makes a
+  // collapse-click on a search-matched group a no-op on expandedKeys instead
+  // (it stays visible for as long as the search match holds, same as any
+  // other search-matched group, and reverts correctly once the search clears).
+  const toggleExpanded = (key: string, currentlyExpanded: boolean) => {
     setExpandedKeys((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
+      if (currentlyExpanded) next.delete(key); else next.add(key);
       return next;
     });
   };
@@ -340,8 +351,19 @@ export function IamPolicyEditor() {
 
       const targets = select
         ? selectAllGrantTargets(groupActions, currentAllowed, crownJewels, isOwnerTier)
-        : selectAllRevokeTargets(groupActions, currentAllowed, literals);
-      if (targets.length === 0) return currentJsonText;
+        : selectAllRevokeTargets(groupActions, currentAllowed, literals, crownJewels, isOwnerTier);
+      if (targets.length === 0) {
+        // code-review finding: this used to no-op with zero explanation --
+        // toggleAction's single-checkbox equivalent already explains a
+        // blocked state (a wildcard grant that can't be narrowed here) via
+        // setToggleHint; select-all silently doing nothing left an operator
+        // unsure why a click had no effect (e.g. unselecting a namespace
+        // granted only via "players:*", with no exact literal to remove).
+        setToggleHint(select
+          ? "Nothing to grant here -- everything in this group is already allowed, or reserved for owner."
+          : "Nothing to revoke here as exact permissions -- this group is granted by a wildcard rule, not individual literals. Edit the JSON tab to change wildcard grants.");
+        return currentJsonText;
+      }
 
       let updated: PolicyStatement[];
       if (select) {
@@ -532,7 +554,7 @@ export function IamPolicyEditor() {
                 return (
                   <div key={ns} className="iam-ns-card">
                     <div className="iam-ns-header">
-                      <button type="button" className="iam-ns-chevron" aria-label={nsExpanded ? `Collapse ${namespaceLabel(ns)}` : `Expand ${namespaceLabel(ns)}`} aria-expanded={nsExpanded} onClick={() => toggleExpanded(ns)}>
+                      <button type="button" className="iam-ns-chevron" aria-label={nsExpanded ? `Collapse ${namespaceLabel(ns)}` : `Expand ${namespaceLabel(ns)}`} aria-expanded={nsExpanded} onClick={() => toggleExpanded(ns, nsExpanded)}>
                         {nsExpanded ? "▾" : "▸"}
                       </button>
                       <TriStateCheckbox
@@ -553,10 +575,17 @@ export function IamPolicyEditor() {
                       const levelExpanded = isExpanded(levelKey, levelActions);
                       const levelState = groupTriState(levelActions, allowedActions, crownJewels, isOwnerTier);
                       const levelAllowedCount = levelActions.filter((a) => allowedActions.has(a)).length;
+                      const levelExcluded = excludedCrownJewelActions(levelActions, crownJewels, isOwnerTier);
                       return (
                         <div key={level} className="iam-level-group">
                           <div className="iam-level-header">
-                            <button type="button" className="iam-ns-chevron" aria-label={levelExpanded ? `Collapse ${ACCESS_LEVEL_LABEL[level]}` : `Expand ${ACCESS_LEVEL_LABEL[level]}`} aria-expanded={levelExpanded} onClick={() => toggleExpanded(levelKey)}>
+                            {/* code-review finding: was not scoped by namespace, unlike the
+                                checkbox two lines below -- two expanded namespaces that both
+                                have a "Read" bucket (the common case) rendered two chevrons
+                                with the identical aria-label "Expand Read"/"Collapse Read",
+                                indistinguishable to a screen reader and ambiguous to
+                                getByLabelText("Expand Read") the moment more than one is open. */}
+                            <button type="button" className="iam-ns-chevron" aria-label={levelExpanded ? `Collapse ${ACCESS_LEVEL_LABEL[level]} in ${namespaceLabel(ns)}` : `Expand ${ACCESS_LEVEL_LABEL[level]} in ${namespaceLabel(ns)}`} aria-expanded={levelExpanded} onClick={() => toggleExpanded(levelKey, levelExpanded)}>
                               {levelExpanded ? "▾" : "▸"}
                             </button>
                             <TriStateCheckbox
@@ -566,7 +595,16 @@ export function IamPolicyEditor() {
                               onChange={() => applyGroupSelection(levelActions)}
                             />
                             <span className="iam-level-name">{ACCESS_LEVEL_LABEL[level]}</span>
-                            <span className="iam-ns-count">{levelAllowedCount}/{levelActions.length} allowed</span>
+                            <span className="iam-ns-count">
+                              {levelAllowedCount}/{levelActions.length} allowed
+                              {/* code-review finding: the namespace header shows this same
+                                  note (line ~547) but the level sub-header didn't, even
+                                  though crown-jewel actions live specifically inside the
+                                  "Permissions Management" level -- an operator clicking
+                                  select-all directly at this sub-header for a non-owner
+                                  tier saw actions silently excluded with zero indication. */}
+                              {levelExcluded.length > 0 && ` — ${levelExcluded.length} owner-only`}
+                            </span>
                           </div>
                           {levelExpanded && (
                             <div className="iam-ns-actions">
