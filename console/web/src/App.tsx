@@ -427,6 +427,20 @@ export function App() {
   useEffect(() => {
     if (discordSetupRouting.returnToSettings) setTab("Settings");
   }, [discordSetupRouting.returnToSettings, setTab]);
+  // One-shot "auto-open the Discord accordion" signal, tracked separately
+  // from discordSetupRouting (which itself never changes for the rest of
+  // the page's life). SettingsPanel is a plain `tab === "Settings" && ...`
+  // conditional render -- React fully unmounts it on every tab switch -- so
+  // passing discordSetupRouting.returnToSettings straight through as the
+  // prop would re-open the accordion on every later Settings visit, not
+  // just the one right after the OAuth return trip (code-review finding,
+  // confirmed against the actual render logic). Reset via SettingsPanel's
+  // own onAutoOpenDiscordSetupConsumed callback (fired from ITS OWN mount
+  // effect) rather than off `tab` becoming "Settings" -- SettingsPanel is
+  // lazy-loaded, so it actually mounts well after `tab` changes, and a
+  // tab-based reset fired before the lazy chunk resolved, clearing the flag
+  // before SettingsPanel ever read it (caught by mutation-testing this fix).
+  const [pendingAutoOpenDiscordSetup, setPendingAutoOpenDiscordSetup] = useState(discordSetupRouting.returnToSettings);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
   const [selectedPinnedAddonId, setSelectedPinnedAddonId] = useState("");
@@ -1172,7 +1186,8 @@ export function App() {
           onPasswordChanged={logoutAfterPasswordChange}
           publicListingUrl={publicDirectoryStatus?.serverId ? publicServerListingUrl(publicDirectoryStatus.serverId) : undefined}
           confirmAction={confirmDialog}
-          autoOpenDiscordSetup={discordSetupRouting.returnToSettings}
+          autoOpenDiscordSetup={pendingAutoOpenDiscordSetup}
+          onAutoOpenDiscordSetupConsumed={() => setPendingAutoOpenDiscordSetup(false)}
         /></LazyTabBoundary>}
         {!redeploySetupOpen && tab !== "Maps" && <TaskProgress task={task} onDismiss={() => setTask(null)} />}
         <AppFooter />
