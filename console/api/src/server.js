@@ -21,6 +21,7 @@ import { generateTotpSecret, provisioningUri, provisioningQrDataUri, verifyTotpM
 import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { roleTiersConfigured, roleTierConflicts, describeRoleTierConflicts, parseRoleIdList } from "./integrations/discord/roleTiers.js";
+import { deriveLoginPendingDiscordSetup } from "./integrations/discord/oauthLoginCapture.js";
 import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
@@ -43,7 +44,7 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
-import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions } from "./policy.js";
+import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions, allAccessLevels, crownJewelActions } from "./policy.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
@@ -1383,6 +1384,13 @@ async function handleApi(req, res) {
       // ROUTE_ACTIONS key. The action-centric editor iterates this so those
       // actions get a real checkbox instead of being editable only via raw JSON.
       allActions: [...allKnownActions()].sort(),
+      // #634: pre-computed access level (read/write/permissions) per action,
+      // for the Visual Editor's access-level grouping -- classification is
+      // computed once here and sent as data; the client never re-derives it.
+      accessLevels: allAccessLevels(),
+      // #634: the concrete, already-expanded crown-jewel action list -- the
+      // client's "select all" checks plain array membership, no matching.
+      crownJewelActions: crownJewelActions(),
       namespaces: NAMESPACES
     });
   }
@@ -6810,7 +6818,10 @@ async function handleOAuthCallback(req, res) {
   // bucket (symmetric with the password-login route), so transient denials
   // during the flow do not linger against a user who ultimately succeeds.
   oauthCallbackRateLimiter.recordSuccess(rateKey);
-  const session = auth.makeSession({ tier: resolved.tier, userId: identity.userId, username: identity.username, displayName: identity.displayName, guildId: config.discordHomeGuildId });
+  const session = auth.makeSession({
+    tier: resolved.tier, userId: identity.userId, username: identity.username, displayName: identity.displayName, guildId: config.discordHomeGuildId,
+    pendingDiscordSetup: deriveLoginPendingDiscordSetup(resolved.tier, identity),
+  });
   res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie()]);
   audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: resolved.tier });
   return html(res, 200, oauthReturnPage());

@@ -164,6 +164,103 @@ export function allKnownActions() {
   return actions;
 }
 
+// The HTTP methods that reach a given action, from the three tables that
+// record a method at all -- REGEX_ACTIONS is genuinely method-agnostic by
+// construction (a [prefix, action] pair with no method field), so it never
+// contributes here. Memoized per-action since actions.js's tables are static
+// for the lifetime of the process.
+let _actionMethods = null;
+function actionMethods(action) {
+  if (!_actionMethods) {
+    _actionMethods = new Map();
+    const add = (key, act) => {
+      const method = key.split(" ")[0];
+      if (!_actionMethods.has(act)) _actionMethods.set(act, new Set());
+      _actionMethods.get(act).add(method);
+    };
+    for (const [key, act] of Object.entries(ROUTE_ACTIONS)) add(key, act);
+    for (const [key, act] of Object.entries(REGEX_ACTIONS_BY_METHOD)) add(key, act);
+    for (const { method, action: act } of REGEX_ACTIONS_BY_METHOD_PATTERN) {
+      if (!_actionMethods.has(act)) _actionMethods.set(act, new Set());
+      _actionMethods.get(act).add(method);
+    }
+  }
+  return _actionMethods.get(action) || new Set();
+}
+
+// #634 (AWS-IAM-Visual-Editor-style Access Control UI). Classification lives
+// entirely server-side and is sent to the client pre-computed -- the client
+// never re-derives it, avoiding a second, competing implementation that could
+// drift (Eight Hats QA finding on the original design). "Permissions
+// management" = a crown-jewel action (matched via matchAction, not literal
+// membership -- see the CRITICAL fix in setPolicies() this mirrors) or the
+// settings/setup namespace. "Write" = reachable by a mutating HTTP method.
+// "Read" = everything else, including a method-agnostic REGEX_ACTIONS action
+// (no method recorded at all), which falls back to its own naming convention.
+const WRITE_NAME_SUFFIXES = ["-write", ":write", "-mutate", "-delete", "-ban", "-kick", "-teleport", "-restart", "-spawn", "-despawn"];
+// Actions whose HTTP method is a mutating verb for a reason unrelated to
+// mutating anything (a request body is required, so the route is POST) but
+// whose real semantics are read-only, enforced in the handler itself, not by
+// the HTTP method -- the method-based heuristic below cannot see that.
+// database:query is exactly this (see its own "read-only-enforced in the
+// handler" comment further down this file, in DEFAULT_POLICIES) --
+// code-review finding, confirmed against both this file and actions.js's
+// literal "POST /api/database/query" registration.
+const READ_ONLY_DESPITE_METHOD = new Set(["database:query"]);
+export function accessLevelForAction(action) {
+  const ns = action.includes(":") ? action.split(":")[0] : action;
+  if (ns === "settings" || ns === "setup") return "permissions";
+  if (crownJewelActions().includes(action)) return "permissions";
+  if (READ_ONLY_DESPITE_METHOD.has(action)) return "read";
+  const methods = actionMethods(action);
+  const mutatingMethods = ["POST", "PUT", "PATCH", "DELETE"];
+  if (mutatingMethods.some((m) => methods.has(m))) return "write";
+  if (methods.size === 0 && WRITE_NAME_SUFFIXES.some((suffix) => action.endsWith(suffix))) return "write";
+  return "read";
+}
+
+// The real, concrete actions covered by CROWN_JEWEL_DENY_ACTIONS's patterns
+// (one of which, "settings:*", is a wildcard -- expanding it here means every
+// caller works with concrete actions only, never a pattern that needs its own
+// matching logic). Shared by setPolicies()'s save-time guard and the #634
+// catalog endpoint (so the client's "select all" can exclude these for a
+// non-owner tier without needing its own copy of the pattern list or
+// matchAction). Distinct from accessLevelForAction()'s "permissions" bucket,
+// which also covers non-crown-jewel actions like setup:read for UI-grouping
+// purposes only -- conflating the two would wrongly treat a legitimately
+// grantable action as owner-only.
+let _crownJewelActions = null;
+export function crownJewelActions() {
+  if (!_crownJewelActions) {
+    _crownJewelActions = [...allKnownActions()].filter((action) =>
+      CROWN_JEWEL_DENY_ACTIONS.some((pattern) => matchAction(pattern, action))
+    );
+  }
+  // Always a fresh copy, matching allKnownActions()'s own "always spread"
+  // convention (code-review finding): the memoized array itself must never
+  // be handed out by direct reference, or a caller calling .sort()/.push()/
+  // similar on what it reasonably assumes is a fresh array -- exactly how
+  // every other caller of allKnownActions() already treats it -- would
+  // permanently corrupt this shared, security-critical cache for the rest
+  // of the process.
+  return [..._crownJewelActions];
+}
+
+// Every known action's pre-computed access level, memoized the same way
+// crownJewelActions() is -- code-review finding: this was previously
+// rebuilt in full on every single request to /api/settings/iam/policies
+// (~90+ actions worth of crown-jewel pattern-matching and method-set
+// lookups) despite being over a static, process-lifetime-constant action
+// catalog, an inconsistent caching discipline right next to the already-
+// memoized crownJewelActions() one line away in that same handler.
+let _allAccessLevels = null;
+export function allAccessLevels() {
+  if (!_allAccessLevels) {
+    _allAccessLevels = Object.fromEntries([...allKnownActions()].map((action) => [action, accessLevelForAction(action)]));
+  }
+  return { ..._allAccessLevels };
+}
+
 export function resolveAllowedActions(tier) {
   if (!tier) return [];
   if (_allowedActions[tier]) return _allowedActions[tier];
@@ -229,12 +326,9 @@ export function setPolicies(docs, repoRoot = null) {
   // Fix: expand every crown-jewel PATTERN against the real action catalog
   // first, then evaluate() each matched CONCRETE action -- mirroring the
   // same expand-then-evaluate shape resolveAllowedActions() already uses.
-  const crownJewelActions = [...allKnownActions()].filter((action) =>
-    CROWN_JEWEL_DENY_ACTIONS.some((pattern) => matchAction(pattern, action))
-  );
   for (const tier of ["admin", "moderator", "player"]) {
     if (!docs[tier]) continue;
-    const leaked = crownJewelActions.find((action) => evaluate({ tier }, action, docs));
+    const leaked = crownJewelActions().find((action) => evaluate({ tier }, action, docs));
     if (leaked) {
       return { ok: false, error: `The ${tier} policy would grant "${leaked}", a crown-jewel action reserved for owner. Add an explicit Deny for it, or remove the Allow that reaches it.` };
     }
@@ -271,7 +365,7 @@ function validPolicyStore(value) {
 // Admin, they had no backstop if that happened. Every non-owner tier now
 // carries the identical Deny, purely as defense-in-depth: a no-op today
 // against each tier's current Allow list, protective if one is ever widened.
-const CROWN_JEWEL_DENY_ACTIONS = [
+export const CROWN_JEWEL_DENY_ACTIONS = [
   "settings:*",                                     // IAM policies, admin password, port, recovery codes
   "server:write-credentials",                       // Funcom game-server token + server IP change
   "database:write-config", "database:mutate",       // DB password + direct table edits

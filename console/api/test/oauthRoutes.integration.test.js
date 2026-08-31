@@ -9,6 +9,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { signPayload } from "../src/integrations/discord/handoff.js";
+import { deriveLoginPendingDiscordSetup } from "../src/integrations/discord/oauthLoginCapture.js";
 
 const apiRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 const repoRoot = dirname(dirname(apiRoot));
@@ -578,6 +579,70 @@ test("owner derivation: the server's owner is Owner even with only a player role
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
 
+// Live-testing finding (#643 follow-up): an operator who signs in via
+// Discord (not the admin password) already proved guild ownership at that
+// moment -- resolveOAuthTier() derives "owner" from exactly the same
+// identity.guilds[].owner flag the setup-mode round-trip captures. Before
+// this fix, that proof was discarded once the session was minted, so
+// opening Settings' embedded wizard asked the operator to "Continue with
+// Discord" all over again to reach the role-mapping step, even though
+// nothing new was being proven. Only an owner session gets this treatment
+// (a password-tier owner has never proven Discord ownership this session,
+// so their round-trip is still real and necessary, unchanged).
+test("owner login via Discord (not setup mode) already satisfies /api/setup/discord-identity -- no separate round-trip needed to reach role-mapping", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-ownerreuse-"));
+  const console = startConsole(consolePort, discordPort, tempDir, ROLE_ENV);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const r = await signInWithCode(consolePort, "guildowner");
+    assert.equal(r.status, 200, r.body.slice(0, 200));
+
+    const identity = await (await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-identity`, { headers: { cookie: `asc_session=${r.sessionValue}` } })).json();
+    assert.equal(identity.user.id, USER_ID);
+    assert.deepEqual(identity.guilds.map((g) => [g.name, g.owner]), [["Fleetyard", true]], "the login's own guild-ownership proof is reused, not re-fetched");
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+// Security-review finding: this only proves the pre-existing, unrelated
+// settings:read route gate still denies admin -- it runs BEFORE the handler
+// ever reads pendingDiscordSetup, so it would still pass even if a future
+// change widened deriveLoginPendingDiscordSetup() to populate it for admin
+// too. Kept as a real, valid end-to-end check of the route gate; the actual
+// per-tier decision this fix makes is unit-tested directly below.
+test("admin login via Discord is still refused by the pre-existing settings:read route gate (unaffected by this change)", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-adminreuse-"));
+  const console = startConsole(consolePort, discordPort, tempDir, ROLE_ENV);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const r = await signInWithCode(consolePort, "admin");
+    assert.equal(r.status, 200, r.body.slice(0, 200));
+
+    const res = await fetch(`http://127.0.0.1:${consolePort}/api/setup/discord-identity`, { headers: { cookie: `asc_session=${r.sessionValue}` } });
+    assert.equal(res.status, 403, "settings:read is crown-jewel-denied to admin regardless of this fix");
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+// Direct, white-box coverage of the actual per-tier decision (security-review
+// finding: the integration test above cannot distinguish this logic being
+// correct from the unrelated route gate merely doing its job).
+test("deriveLoginPendingDiscordSetup: only owner tier gets a capture; every other tier gets null", () => {
+  const identity = { userId: USER_ID, username: "fleetyard-operator", mfaEnabled: true, guilds: [{ id: HOME_GUILD, name: "Fleetyard", owner: true }, { id: "999", name: "Elsewhere", owner: false }] };
+
+  const owner = deriveLoginPendingDiscordSetup("owner", identity);
+  assert.deepEqual(owner.guilds, [{ id: HOME_GUILD, name: "Fleetyard", owner: true }], "only owned guilds are retained, matching the setup-mode capture's own filter");
+  assert.equal(owner.userId, USER_ID);
+  assert.equal(owner.mfaEnabled, true);
+  assert.ok(owner.capturedAt > 0);
+
+  for (const tier of ["admin", "moderator", "player", "", undefined, null]) {
+    assert.equal(deriveLoginPendingDiscordSetup(tier, identity), null, `tier ${JSON.stringify(tier)} must not get a capture`);
+  }
+});
+
 async function passwordOwnerSession(consolePort) {
   const login = await fetch(`http://127.0.0.1:${consolePort}/api/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "correct-password" }) });
   const { csrfToken } = await login.json();
@@ -725,6 +790,20 @@ test("iam/policies returns the action catalog (policies + actions + actionMap + 
     // The editor does nsFromAction(action, actionMap) — a route key must resolve.
     const anyRoute = body.actions[0];
     assert.ok(body.actionMap[anyRoute], "every actions[] key exists in actionMap");
+    // #634: the Visual Editor groups by access level (read/write/permissions),
+    // computed server-side and sent pre-classified -- the client never
+    // re-derives it (avoids a second, drift-prone implementation).
+    assert.ok(body.accessLevels && typeof body.accessLevels === "object", "accessLevels present");
+    for (const action of body.allActions) {
+      assert.ok(["read", "write", "permissions"].includes(body.accessLevels[action]), `${action} has a valid accessLevel`);
+    }
+    assert.equal(body.accessLevels["players:mutate"], "permissions", "a crown-jewel action is classified permissions");
+    assert.equal(body.accessLevels["settings:read"], "permissions", "a concrete action reached only via the settings:* wildcard is still classified permissions");
+    // #634: the concrete, already-expanded crown-jewel action list, so the
+    // client's "select all" exclusion needs zero pattern-matching of its own.
+    assert.ok(Array.isArray(body.crownJewelActions));
+    assert.ok(body.crownJewelActions.includes("settings:write"), "the settings:* wildcard is expanded into its real concrete actions");
+    assert.ok(!body.crownJewelActions.includes("setup:read"), "a non-crown-jewel action isn't included just because it shares the 'permissions' UI grouping");
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
 
