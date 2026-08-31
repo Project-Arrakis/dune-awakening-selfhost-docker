@@ -90,7 +90,7 @@ Restore with `cp ~/qa-iam-backup.json runtime/generated/iam-policies.json && dun
 **Expected:** The crown-jewel action's own row checkbox stays unchecked and stays disabled/visually distinguished (not silently grantable) even though the header selected everything else in the group.
 
 ### T09 · The server refuses a crown-jewel grant even if the UI is bypassed
-1. Using the browser's dev tools or a raw API client with a valid Owner session and CSRF token, `POST /api/settings/iam/policies` with a policy document that grants `admin` the literal action `settings:write` directly (no wildcard).
+1. Using the browser's dev tools or a raw API client with a valid Owner session and CSRF token, `PUT /api/settings/iam/policy` with a **full** policy document (all tiers, not a partial patch — `setPolicies()` replaces the whole store) where `admin` is granted the literal action `settings:write` directly (no wildcard). Fetch the current document from `GET /api/settings/iam/policies` first and edit it in place, rather than hand-writing one from scratch.
 
 **Expected:** `400` with an error naming `settings:write` as a crown-jewel action reserved for owner. The save does **not** silently succeed (this exact bypass — a bare literal action slipping past a guard that only checked wildcard patterns — was a real, live CRITICAL finding, fixed and mutation-tested; this step re-verifies it holds on the actual deployed build, not just in the test suite).
 
