@@ -204,7 +204,17 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
     setBusy(true); setError("");
     try {
       if (!SNOWFLAKE.test(guildId)) throw new Error("Choose your Discord server.");
-      if (!adminRoleIds.trim()) throw new Error("Map an Admin role, or only you (the server owner) will be able to use the console through Discord.");
+      // Only a first-time activation needs this guardrail (don't let an
+      // operator accidentally turn on Discord sign-in with nobody mapped to
+      // Admin, locking themselves into owner-only without realizing it).
+      // Reconfiguring an ALREADY-live setup is a deliberate edit -- the old
+      // manual Settings form (write-oauth-config, no such requirement) let
+      // an operator intentionally save "no roles mapped" (owner-only Discord
+      // access), and discordSetupFinalize itself has no server-side
+      // requirement either; this was an unintended regression from reusing
+      // finalize() for both contexts (/code-review ultra finding, confirmed
+      // by hand against both this file and server.js).
+      if (!app?.discordOAuthConfigured && !adminRoleIds.trim()) throw new Error("Map an Admin role, or only you (the server owner) will be able to use the console through Discord.");
       const bad = [adminRoleIds, moderatorRoleIds, playerRoleIds].flatMap((v) => v.split(",").map((x) => x.trim()).filter(Boolean)).filter((x) => !SNOWFLAKE.test(x));
       if (bad.length) throw new Error(`Not a Discord role ID: ${bad.join(", ")}`);
       const res = await post<{ ok: boolean; guild: { name: string }; owner: { username: string } }>("/api/setup/discord-finalize", {
