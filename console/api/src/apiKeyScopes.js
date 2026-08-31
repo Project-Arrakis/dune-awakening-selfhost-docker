@@ -127,22 +127,64 @@ export function scopeCatalog() {
 // misspelled level ("readonly") all become None rather than falling back to
 // read. There is no default level and no merge with a previous value; the
 // caller passes the complete desired map, so removing a namespace revokes it.
+// Every action a namespace can be granted, read and write buckets together.
+// Write-denied namespaces contribute no write actions, because
+// actionsByNamespace() already omits them from the catalog -- so membership in
+// this set is the only check an explicit action list needs.
+export function grantableActions(namespace) {
+  const entry = actionsByNamespace().get(namespace);
+  if (!entry) return [];
+  return [...entry.read, ...entry.write];
+}
+
 export function normalizeScopes(input) {
   const scopes = {};
   if (!input || typeof input !== "object" || Array.isArray(input)) return scopes;
   const allowed = new Set(selectableNamespaces());
-  for (const [namespace, level] of Object.entries(input)) {
+  for (const [namespace, value] of Object.entries(input)) {
     if (!allowed.has(namespace)) continue;
-    if (!SCOPE_LEVELS.includes(level)) continue;
-    if (level === "write" && !namespaceHasWriteActions(namespace)) {
+
+    // An explicit action list -- the precise form. `players: "write"` hands
+    // over all twelve player actions at once, which is what the splits exist to
+    // avoid; a list can grant exactly players:read and players:moderate.
+    //
+    // The trade: a level auto-covers actions added in a later release (see the
+    // file header), a list does not. A list therefore needs revisiting when the
+    // catalog grows, and levels stay the right default for broad, trusted keys.
+    if (Array.isArray(value)) {
+      const grantable = new Set(grantableActions(namespace));
+      const actions = [...new Set(value.filter((action) => grantable.has(action)))].sort();
+      // Nothing recognised means None, never a fallback to a level -- same
+      // drop-rather-than-coerce rule the level branch below follows.
+      if (actions.length) scopes[namespace] = actions;
+      continue;
+    }
+
+    if (!SCOPE_LEVELS.includes(value)) continue;
+    if (value === "write" && !namespaceHasWriteActions(namespace)) {
       // logs has no write action, and updates' writes are denied. In both
       // cases store read rather than a level that resolves to the same thing.
       scopes[namespace] = "read";
       continue;
     }
-    scopes[namespace] = level;
+    scopes[namespace] = value;
   }
   return scopes;
+}
+
+// Does this stored scope value reach this action? The single place the two
+// scope forms are interpreted, so keyAllows() and any UI preview cannot drift.
+export function scopeAllowsAction(namespace, value, action) {
+  if (Array.isArray(value)) {
+    if (!value.includes(action)) return false;
+    // Defensive, for a hand-edited api-keys.json that lists a write action in
+    // a write-denied namespace: normalizeScopes drops those on save, and this
+    // is the check that also covers a file edited behind its back.
+    return !KEY_WRITE_DENIED_NAMESPACES.has(namespace) || isReadAction(action);
+  }
+  if (value !== "read" && value !== "write") return false;
+  if (value === "write" && !KEY_WRITE_DENIED_NAMESPACES.has(namespace)) return true;
+  return isReadAction(action);
 }
 
 export function scopesGrantAnything(scopes) {

@@ -74,6 +74,7 @@ services:
       # Forward the operator's Market Bot retention override to the console;
       # its backup subprocess inherits this environment value.
       DUNE_MARKET_BOT_BACKUP_KEEP: "${DUNE_MARKET_BOT_BACKUP_KEEP:-5}"
+      DUNE_VEHICLE_DELETE_BACKUP_KEEP: "${DUNE_VEHICLE_DELETE_BACKUP_KEEP:-10}"
       DUNE_DISCORD_ADAPTER_ENABLED: "${DUNE_DISCORD_ADAPTER_ENABLED:-false}"
       DUNE_DISCORD_ADAPTER_TOKEN: "${DUNE_DISCORD_ADAPTER_TOKEN:-}"
       DUNE_BOT_API_TOKEN_FILE: "${DUNE_BOT_API_TOKEN_FILE:-}"

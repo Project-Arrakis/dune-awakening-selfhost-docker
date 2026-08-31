@@ -89,6 +89,8 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["stop-service", validateServiceName(payload.service)];
     case "restartServiceStart":
       return ["restart", validateServiceName(payload.service)];
+    case "stopGameServersForDbWrites":
+      return ["stop-game-servers-for-db-writes"];
     case "serverTitle":
       return ["config", "title", validateServerTitle(payload.title), "--yes"];
     case "serverConfig":
@@ -122,6 +124,8 @@ export function buildDuneArgs(operation, payload = {}) {
       }
     case "backupDelete":
       return ["db", "delete", validateBackupName(payload.backup)];
+    case "backupDeleteSelected":
+      return ["db", "delete", ...validateBackupNames(payload.backups)];
     case "backupAutoEnable":
       {
         const args = ["db", "auto", "enable", validateUpdateTime(payload.time || "05:00")];
@@ -718,6 +722,11 @@ function validateBackupName(value) {
   const raw = String(value || "");
   if (/^[A-Za-z0-9._-]+$/.test(raw) && !raw.includes("..")) return raw;
   throw new Error("Invalid backup name");
+}
+
+function validateBackupNames(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 100) throw new Error("Select between 1 and 100 backups");
+  return [...new Set(value.map(validateBackupName))];
 }
 
 export function isReadOnlySql(query) {
