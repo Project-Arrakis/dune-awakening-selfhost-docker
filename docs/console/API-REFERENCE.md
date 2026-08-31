@@ -714,10 +714,31 @@ Layers legend's default-settings mechanism.
 | GET | `/api/database/tables/{schema}/{table}/count` | Get row count | `schema`, `table`, `filter?` |
 | PATCH | `/api/database/tables/{schema}/{table}/row` | Update table row | `rowId`, `values` (object) |
 | GET | `/api/database/search` | Search database | `q` or `term` (query param) |
-| POST | `/api/database/query` | Execute SQL query | `query` (read or write) |
+| POST | `/api/database/query` | Execute SQL query | `query` (read or write) — see note below |
 | POST | `/api/database/export` | Export query results | `query` (read-only SELECT/WITH/SHOW/EXPLAIN) |
 | POST | `/api/database/password` | Change database password | `password` |
 | GET | `/api/database/table/{table}` | Preview table | `table`, `limit?`, `offset?` |
+
+**`/api/database/query` authorizes on the SQL, not just the route.** The route
+resolves to `database:query`, which covers read-only SQL (`SELECT`, `WITH`,
+`SHOW`, `EXPLAIN`). SQL the classifier reads as a write additionally requires
+`database:execute`, checked inside the handler once the body is parsed; a caller
+without it gets `403` before the rate-limit tick and before the pre-write backup.
+
+**The permission is not the enforcement.** `database:execute` is selected by a
+classifier that a mutating `select dune.<fn>(...)` passes — so a write can be
+routed down the read path. That path executes inside a `set transaction read
+only` transaction, and Postgres refuses the write whatever the classifier
+concluded. The transaction is the guarantee; the action decides which path is
+taken and whether a backup is made.
+
+The default `admin` policy grants `database:query` and denies `database:execute`;
+`owner` holds both. Use `/api/database/export` for read-only result export.
+
+A body with nothing to execute — empty, whitespace, `;`, or entirely
+commented-out SQL — returns `400` first. Such input does not start with a read
+keyword, so without that check it classifies as a write and triggers a full
+pre-write backup before the query is rejected.
 
 ---
 
@@ -846,6 +867,36 @@ Layers legend's default-settings mechanism.
 | POST | `/api/settings/discord-bot/oauth-config` | Configure the hosted-bot connection's own, independent Discord Application (Client ID + Redirect URI) -- deliberately separate from Settings -> Discord OAuth's console-sign-in credentials; neither requires the other. Restart the console for changes to take effect. | `clientId?` (Discord snowflake), `redirectUri?` (URL) |
 | POST | `/api/settings/discord-bot/oauth-secret` | Save the hosted-bot connection's Discord Application client secret. File-only, written to its own secrets file, never echoed back. | `secret` (at least 20 characters) |
 | POST | `/api/settings/discord-bot/choice` | Persist the hosted/self-hosted deployment choice immediately, ahead of role config or enabling the adapter. Does not restart the console -- nothing about the live adapter's runtime behavior depends on this value. | `deploymentChoice` (`"hosted"` or `"self-hosted"`) |
+
+---
+
+## IAM Policies
+
+Per-tier Allow/Deny documents for the action catalog. Architecture and evaluation order: [../console-iam.md](../console-iam.md).
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/settings/iam/policies` | Active policy store, plus `actions`: the full sorted catalog of valid action names | None |
+| PUT | `/api/settings/iam/policy` | Validate and atomically save the complete policy store | Policy store object (every tier) |
+| POST | `/api/settings/iam/policy/test` | Evaluate one action for one tier without changing policy | `action`, `tier` |
+
+`PUT` refuses two kinds of bad action name, each with its own `400` payload:
+
+- **`unknownActions`** — the name matches nothing in the catalog. The test is
+  whether a pattern matches at least one catalogued action, so wildcards remain
+  legal (`players:*`, `bases:delete-*`) while near-misses that match nothing
+  (`player:*`, `players:reset-*`) are rejected. This matters because the failure
+  is asymmetric: a misspelled action in an `Allow` grants nothing, but in a
+  `Deny` it withholds nothing while reading exactly like a restriction.
+- **`deprecatedActions`** — the name is one the catalog used to have
+  (`players:mutate`, `guilds:mutate`, `blueprints:mutate`, `addons:mutate`). Each
+  entry carries `successors`, so the edit is mechanical. These still evaluate
+  with their original meaning, so a stored policy keeps working; only saving is
+  refused. See [../console-iam.md](../console-iam.md#upgrading-a-policy-that-names-a-removed-action).
+
+`POST .../test` returns `known` alongside `allowed`. A misspelled action answers
+`allowed: false`, which reads as a working `Deny`; `known: false` is what separates a
+real denial from a typo.
 
 ---
 
