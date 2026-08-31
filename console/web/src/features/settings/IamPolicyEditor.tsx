@@ -254,11 +254,6 @@ export function IamPolicyEditor() {
     return groups;
   }, [catalog]);
 
-  // Every action in a namespace, across all three access levels -- what the
-  // namespace-level header checkbox and select-all operate over.
-  const allActionsInNamespace = (ns: string): string[] =>
-    ACCESS_LEVEL_ORDER.flatMap((level) => groupedActions[ns]?.[level] || []);
-
   const filteredGroups = useMemo(() => {
     if (!search.trim()) return groupedActions;
     const q = search.toLowerCase();
@@ -275,6 +270,17 @@ export function IamPolicyEditor() {
     }
     return result;
   }, [groupedActions, search]);
+
+  // Every action in a namespace, across all three access levels -- what the
+  // namespace-level header checkbox, count, tri-state, and select-all operate
+  // over. Reads `filteredGroups`, not the unfiltered `groupedActions` --
+  // code-review finding: select-all previously acted on the FULL namespace
+  // even while a search narrowed what was actually visible, silently
+  // granting/revoking actions the operator never saw or reviewed.
+  // `filteredGroups` already equals `groupedActions` when no search is
+  // active, so this is a no-op change for that case.
+  const allActionsInNamespace = (ns: string): string[] =>
+    ACCESS_LEVEL_ORDER.flatMap((level) => filteredGroups[ns]?.[level] || []);
 
   // Which namespace/access-level groups are expanded, keyed by "ns" for a
   // namespace header and "ns::level" for an access-level sub-header. Default
@@ -306,8 +312,20 @@ export function IamPolicyEditor() {
   // Apply a group-level select-all/unselect-all to the draft, via the same
   // functional setJsonText update toggleAction uses (so a select-all and a
   // subsequent single-checkbox click in the same tick never race each
-  // other over stale text).
-  const applyGroupSelection = (groupActions: string[], select: boolean) => {
+  // other over stale text). `select` is deliberately NOT a parameter --
+  // code-review finding: it used to be computed by the caller from the
+  // outer `allowedActions` memo/render-time tri-state (nsState/levelState),
+  // which is only current as of the last completed render. Two clicks on
+  // the same header landing before a re-render both captured the SAME
+  // stale direction, so a grant-then-revoke pair silently became
+  // grant-then-grant (the second call's freshly-recomputed currentAllowed
+  // already showed everything granted, so its own no-op guard below fired
+  // and the checkbox looked permanently stuck checked). Re-deriving the
+  // tri-state fresh from `stmts` inside this same functional update -- the
+  // exact fix toggleAction's own comment above already documents for the
+  // single-checkbox case -- makes each call see the CURRENT state, not the
+  // state at the moment the click fired.
+  const applyGroupSelection = (groupActions: string[]) => {
     setJsonText((currentJsonText) => {
       const stmts = parseStatements(currentJsonText);
       if (!stmts) {
@@ -316,6 +334,7 @@ export function IamPolicyEditor() {
       }
       setToggleHint("");
       const currentAllowed = new Set(groupActions.filter((a) => actionGrantedByStatements(stmts, a)));
+      const select = groupTriState(groupActions, currentAllowed, crownJewels, isOwnerTier) !== "checked";
       const literals = new Set<string>();
       for (const st of stmts) if (st.Effect === "Allow") for (const a of st.Action) literals.add(a);
 
@@ -520,7 +539,7 @@ export function IamPolicyEditor() {
                         state={nsState}
                         ariaLabel={`Select all ${namespaceLabel(ns)} permissions`}
                         disabled={draftInvalid}
-                        onChange={() => applyGroupSelection(nsActions, nsState !== "checked")}
+                        onChange={() => applyGroupSelection(nsActions)}
                       />
                       <span className="iam-ns-name">{namespaceLabel(ns)}</span>
                       <span className="iam-ns-count">
@@ -544,7 +563,7 @@ export function IamPolicyEditor() {
                               state={levelState}
                               ariaLabel={`Select all ${ACCESS_LEVEL_LABEL[level]} permissions in ${namespaceLabel(ns)}`}
                               disabled={draftInvalid}
-                              onChange={() => applyGroupSelection(levelActions, levelState !== "checked")}
+                              onChange={() => applyGroupSelection(levelActions)}
                             />
                             <span className="iam-level-name">{ACCESS_LEVEL_LABEL[level]}</span>
                             <span className="iam-ns-count">{levelAllowedCount}/{levelActions.length} allowed</span>
