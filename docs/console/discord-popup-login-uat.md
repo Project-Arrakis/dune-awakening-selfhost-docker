@@ -25,6 +25,14 @@ If the popup's size, the busy label's text, or an error message differs
 from what is written here, that is a finding even when sign-in still
 basically works.
 
+**Getting this build onto your instance.** No git checkout is needed or
+expected. On your console: **Updates → QA Tester Login** (Discord sign-in),
+then confirm the build shown under *Latest GitHub Pre-Release* is the one
+you were told to test (ask whoever assigned this UAT for the expected short
+SHA if it isn't obvious), then **Apply Pre-Release**. This rebuilds and
+restarts the console for you — wait for it to come back healthy before
+starting T01.
+
 ---
 
 ## Environment (fill in before starting)
@@ -34,9 +42,9 @@ basically works.
 | Console URL used in the browser | `https://________________` (must be a real HTTPS origin — the state cookie is `Secure`, so a plain `http://` URL cannot complete this flow at all, popup or not) |
 | Browser + version (first pass) | `________` |
 | Browser + version (second pass, different engine) | `________` |
-| Build under test | commit `________` |
+| Build under test | short SHA shown in **Updates → Latest GitHub Pre-Release** after applying it: `________` |
 | Discord account for sign-in | account: `________` |
-| Browser DevTools access | needed for T08 (`window.opener` check) |
+| Browser DevTools access | needed for T08 (`window.opener` check) — no host/SSH access to your instance is needed anywhere in this plan |
 | Popup blocking | test once with popups **allowed** for this site (T01–T07), once with popups **blocked** (T05) |
 
 ---
@@ -88,7 +96,14 @@ end with your test records for the build.
 ### T04 · A denied/failed sign-in shows the SAME specific error as the full-page flow, inside the popup, and does not auto-close
 *Setup:* trigger a real denial (e.g., decline Discord's consent prompt, or
 use an account this console denies for some documented reason — not
-authorized, 2FA required, etc., if you can arrange one).
+authorized, 2FA required, etc., if you can arrange one). **Important:** the
+console always attempts a *silent* sign-in first — if the same Discord
+account already authorized this application earlier in this same test pass
+(e.g., during T01–T03), Discord will skip the consent screen entirely and
+there will be no "Cancel"/"Deny" button to click. Before this case, either
+use a Discord account that has never authorized this application, or revoke
+the existing authorization first (Discord → User Settings → Authorized Apps
+→ remove this console's application).
 1. Start Discord sign-in again from the main page.
 2. In the popup, cause the denial (e.g., click "Cancel"/"Deny" on
    Discord's own prompt).
@@ -165,12 +180,17 @@ block a popup opened from certain contexts even with a direct click).
 *This is the single most important case in this document — it is the one
 piece of this feature no automated test can verify, and it is a real
 security property, not a cosmetic one.*
-1. Open DevTools on the **main console tab** before clicking sign-in.
-2. Click **Sign in with Discord**. While the popup is showing Discord's
-   page (after T02's navigation), switch DevTools to inspect the
-   **popup window** specifically (open a DevTools console attached to
-   the popup, or use the browser's window/frame picker).
-3. In the popup's own DevTools console, evaluate: `window.opener`
+1. Click **Sign in with Discord** and let the popup open and navigate to
+   Discord's page (T02).
+2. Click into the **popup window itself** to give it focus, then open a
+   *fresh* DevTools instance for that window specifically — right-click
+   anywhere inside the popup and choose **Inspect**, or press the
+   DevTools shortcut (F12, or Cmd+Opt+I on macOS) while the popup is the
+   focused window. (A popup is a separate top-level window, not a frame/
+   iframe of the main tab — there is no "frame picker" that switches into
+   it from the main tab's own DevTools; you open DevTools on it directly,
+   the same way you would on any other window.)
+3. In the DevTools console attached to the **popup**, evaluate: `window.opener`
 
 **Expected**
 - `window.opener` is `null` (or inaccessible/undefined) once the popup

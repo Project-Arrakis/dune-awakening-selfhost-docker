@@ -185,6 +185,36 @@ test("Discord OAuth sign-in flow works end-to-end through the real server", asyn
 
 // ---- popup+poll presentation (F4, #574) ----
 
+// Independent doc-accuracy review found this gap: withSecurityHeaders() (and
+// therefore Cross-Origin-Opener-Policy) is applied to json()/html()/
+// serveStatic() responses, but the actual cross-origin hop -- the raw 302
+// redirect to Discord -- was constructed as a bare `{ Location }` header
+// object at three call sites, bypassing it entirely. Whether a redirect
+// response's own headers matter to COOP browsing-context-group isolation is
+// a genuine browser-spec subtlety (documented as needing real-browser
+// verification in the L1 design), but the fix costs nothing and removes the
+// ambiguity, so all three now carry it -- this pins that they do.
+test("every Discord-redirect response (login start, setup start, silent-auth retry) carries Cross-Origin-Opener-Policy, not just html()/json() responses", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-coop-"));
+  const console = startConsole(consolePort, discordPort, tempDir);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" });
+    assert.equal(start.status, 302);
+    assert.equal(start.headers.get("cross-origin-opener-policy"), "same-origin", "the main login redirect must carry COOP");
+
+    const state = sessionCookieValue(start.headers.getSetCookie(), "discord_oauth_state");
+    const retry = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/callback?error=login_required&state=${encodeURIComponent(state)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${state}` } });
+    assert.equal(retry.status, 302);
+    assert.equal(retry.headers.get("cross-origin-opener-policy"), "same-origin", "the silent-auth interactive retry redirect must carry COOP too");
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
 test("presentation=popup: a successful login gets the self-closing popup page, not the full-page redirect; state cookie attributes are unchanged", async () => {
   const consolePort = await getFreePort();
   const discordPort = await getFreePort();

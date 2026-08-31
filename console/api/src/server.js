@@ -1067,7 +1067,7 @@ async function handleApi(req, res) {
       const pending = oauthPendingStates.issue(undefined, { purpose: "setup", sessionId: ownerSession.id, owner: setupKey });
       if (!pending) return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
       res.setHeader("Set-Cookie", oauthStateCookie(pending.state));
-      res.writeHead(302, { Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: pending.state, codeChallenge: pending.challenge, prompt: "none" }) });
+      res.writeHead(302, withSecurityHeaders({ Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: pending.state, codeChallenge: pending.challenge, prompt: "none" }) }));
       res.end();
       audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true, purpose: "setup" });
       return;
@@ -1114,7 +1114,7 @@ async function handleApi(req, res) {
     const { state, challenge } = pending;
     res.setHeader("Set-Cookie", oauthStateCookie(state));
     const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state, codeChallenge: challenge, prompt: "none" });
-    res.writeHead(302, { Location: authorizeUrl });
+    res.writeHead(302, withSecurityHeaders({ Location: authorizeUrl }));
     res.end();
     audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true });
     return;
@@ -6705,7 +6705,7 @@ async function handleOAuthCallback(req, res) {
       if (!retry) return html(res, 429, oauthErrorPage("Too many Discord sign-in sessions in progress. Try again in a moment."));
       res.setHeader("Set-Cookie", oauthStateCookie(retry.state));
       audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: `silent_${oauthError}`, retry: "interactive", purpose: consumed.purpose });
-      res.writeHead(302, { Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: retry.state, codeChallenge: retry.challenge }) });
+      res.writeHead(302, withSecurityHeaders({ Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: retry.state, codeChallenge: retry.challenge }) }));
       res.end();
       return;
     }
