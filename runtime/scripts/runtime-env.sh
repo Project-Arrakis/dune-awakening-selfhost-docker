@@ -431,8 +431,39 @@ resolve_igw_addr_ip() {
   resolve_game_listen_ip
 }
 
+tcp_endpoint_reachable() {
+  local host="$1"
+  local port="$2"
+
+  value_is_known "$host" || return 1
+  printf '%s' "$port" | grep -Eq '^[0-9]+$' || return 1
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import socket
+import sys
+
+try:
+    connection = socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=0.5)
+except OSError:
+    raise SystemExit(1)
+else:
+    connection.close()
+' "$host" "$port" >/dev/null 2>&1
+    return $?
+  fi
+
+  if command -v timeout >/dev/null 2>&1; then
+    # shellcheck disable=SC2016 # $1/$2 are intentionally expanded by the child bash.
+    timeout 1 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$port" >/dev/null 2>&1
+    return $?
+  fi
+
+  return 1
+}
+
 resolve_rmq_game_host() {
-  local configured
+  local configured resolved_bind_ip game_port
 
   configured="$(first_known_value "${DUNE_RMQ_GAME_HOST:-}" "$(config_value .env DUNE_RMQ_GAME_HOST 2>/dev/null || true)" || true)"
   if value_is_known "$configured"; then
@@ -443,6 +474,22 @@ resolve_rmq_game_host() {
   if command -v docker >/dev/null 2>&1 \
     && docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop'; then
     resolve_advertised_ip
+    return 0
+  fi
+
+  game_port="$(resolve_rmq_game_port)"
+  if tcp_endpoint_reachable "127.0.0.1" "$game_port"; then
+    printf '%s' "127.0.0.1"
+    return 0
+  fi
+
+  # Some native-Linux Docker hosts publish 0.0.0.0 ports on their assigned
+  # interface but do not make the same port reachable through loopback. Game
+  # containers use host networking, so the resolved bind address is the
+  # stable local route to that published broker endpoint on those systems.
+  resolved_bind_ip="$(resolve_game_listen_ip 2>/dev/null || true)"
+  if value_is_known "$resolved_bind_ip" && [ "$resolved_bind_ip" != "127.0.0.1" ]; then
+    printf '%s' "$resolved_bind_ip"
     return 0
   fi
 
@@ -458,7 +505,15 @@ resolve_rmq_admin_host() {
     return 0
   fi
 
-  resolve_rmq_game_host
+  if command -v docker >/dev/null 2>&1 \
+    && docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop'; then
+    resolve_rmq_game_host
+    return 0
+  fi
+
+  # The admin broker is intentionally published on loopback only. Keep it
+  # independent from the game broker, which may need the host bind address.
+  printf '%s' "127.0.0.1"
 }
 
 ensure_host_latency_tuned() {

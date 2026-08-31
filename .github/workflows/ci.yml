@@ -135,6 +135,7 @@ jobs:
         run: |
           runtime/tests/test-command-auth-token.sh
           runtime/tests/test-bind-ip-resolution.sh
+          runtime/tests/test-rmq-host-resolution.sh
           runtime/tests/test-deepdesert-dual-startup-reconcile.sh
           runtime/tests/test-deepdesert-dual-selector-cleanup.sh
           runtime/tests/test-deepdesert-layout-apply-safety.sh
