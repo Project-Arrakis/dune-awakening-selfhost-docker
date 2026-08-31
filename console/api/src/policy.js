@@ -198,10 +198,20 @@ function actionMethods(action) {
 // "Read" = everything else, including a method-agnostic REGEX_ACTIONS action
 // (no method recorded at all), which falls back to its own naming convention.
 const WRITE_NAME_SUFFIXES = ["-write", ":write", "-mutate", "-delete", "-ban", "-kick", "-teleport", "-restart", "-spawn", "-despawn"];
+// Actions whose HTTP method is a mutating verb for a reason unrelated to
+// mutating anything (a request body is required, so the route is POST) but
+// whose real semantics are read-only, enforced in the handler itself, not by
+// the HTTP method -- the method-based heuristic below cannot see that.
+// database:query is exactly this (see its own "read-only-enforced in the
+// handler" comment further down this file, in DEFAULT_POLICIES) --
+// code-review finding, confirmed against both this file and actions.js's
+// literal "POST /api/database/query" registration.
+const READ_ONLY_DESPITE_METHOD = new Set(["database:query"]);
 export function accessLevelForAction(action) {
   const ns = action.includes(":") ? action.split(":")[0] : action;
   if (ns === "settings" || ns === "setup") return "permissions";
-  if (CROWN_JEWEL_DENY_ACTIONS.some((pattern) => matchAction(pattern, action))) return "permissions";
+  if (crownJewelActions().includes(action)) return "permissions";
+  if (READ_ONLY_DESPITE_METHOD.has(action)) return "read";
   const methods = actionMethods(action);
   const mutatingMethods = ["POST", "PUT", "PATCH", "DELETE"];
   if (mutatingMethods.some((m) => methods.has(m))) return "write";
@@ -226,7 +236,29 @@ export function crownJewelActions() {
       CROWN_JEWEL_DENY_ACTIONS.some((pattern) => matchAction(pattern, action))
     );
   }
-  return _crownJewelActions;
+  // Always a fresh copy, matching allKnownActions()'s own "always spread"
+  // convention (code-review finding): the memoized array itself must never
+  // be handed out by direct reference, or a caller calling .sort()/.push()/
+  // similar on what it reasonably assumes is a fresh array -- exactly how
+  // every other caller of allKnownActions() already treats it -- would
+  // permanently corrupt this shared, security-critical cache for the rest
+  // of the process.
+  return [..._crownJewelActions];
+}
+
+// Every known action's pre-computed access level, memoized the same way
+// crownJewelActions() is -- code-review finding: this was previously
+// rebuilt in full on every single request to /api/settings/iam/policies
+// (~90+ actions worth of crown-jewel pattern-matching and method-set
+// lookups) despite being over a static, process-lifetime-constant action
+// catalog, an inconsistent caching discipline right next to the already-
+// memoized crownJewelActions() one line away in that same handler.
+let _allAccessLevels = null;
+export function allAccessLevels() {
+  if (!_allAccessLevels) {
+    _allAccessLevels = Object.fromEntries([...allKnownActions()].map((action) => [action, accessLevelForAction(action)]));
+  }
+  return { ..._allAccessLevels };
 }
 
 export function resolveAllowedActions(tier) {

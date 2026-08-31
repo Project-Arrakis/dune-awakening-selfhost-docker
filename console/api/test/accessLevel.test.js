@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { accessLevelForAction } from "../src/policy.js";
+import { accessLevelForAction, allAccessLevels, crownJewelActions } from "../src/policy.js";
 import { allKnownActions } from "../src/policy.js";
 
 // #634 (AWS-IAM-Visual-Editor-style Access Control UI). Real classification
@@ -32,12 +32,26 @@ test("accessLevelForAction: a GET-only action is 'read'", () => {
   assert.equal(accessLevelForAction("server:read"), "read");
 });
 
-test("accessLevelForAction: a method-agnostic action (REGEX_ACTIONS, no method recorded at all) falls back to the naming convention", () => {
-  // storage:read comes from REGEX_ACTIONS ("/api/storage/" -> "storage:read"),
-  // which records no HTTP method at all -- confirmed real edge case from the
-  // design doc's §4.2. Its name ends in ":read", so the naming-convention
-  // fallback must classify it "read", not silently default somewhere else.
+// /code-review ultra finding: this test's own claim was false. storage:read
+// is ALSO registered in ROUTE_ACTIONS ("GET /api/storage"), so it resolves
+// via the ordinary GET-is-not-mutating path, never touching the
+// method-agnostic fallback below -- confirmed by grepping every
+// REGEX_ACTIONS entry against the other three tables: as of this writing,
+// EVERY one has a shadow entry supplying a real method, so the fallback is
+// genuinely unreachable by any current real action. Kept as a real
+// classification-correctness check (it's still a valid assertion), but no
+// longer claims to exercise the fallback branch.
+test("accessLevelForAction: storage:read resolves via its registered GET method (not the method-agnostic fallback -- see the synthetic test below for that)", () => {
   assert.equal(accessLevelForAction("storage:read"), "read");
+});
+
+// The method-agnostic fallback itself, tested honestly with a synthetic
+// action name no real table registers -- proves the naming-convention logic
+// is correct for the day a genuinely method-agnostic action IS added,
+// without relying on a real action that (today) never actually reaches it.
+test("accessLevelForAction: a genuinely method-agnostic action (no method in any table) falls back to the naming convention", () => {
+  assert.equal(accessLevelForAction("synthetic-test-only:write"), "write");
+  assert.equal(accessLevelForAction("synthetic-test-only:read"), "read");
 });
 
 test("accessLevelForAction: setup:read is 'permissions' via the namespace override, not the method heuristic", () => {
@@ -95,6 +109,13 @@ test("accessLevelForAction: curated correctness table for the highest-stakes and
     "addons:read": "read",
     "logs:read": "read",
     "setup:read": "permissions",
+    // /code-review ultra finding on PR #647: the HTTP method (POST, since a
+    // SQL-like query needs a request body) does not match the real,
+    // server-enforced semantics -- see DEFAULT_POLICIES' own
+    // "query is read-only-enforced in the handler" comment. Previously
+    // absent from this table entirely, so the misclassification (the
+    // mutating-method heuristic alone would call it "write") went uncaught.
+    "database:query": "read",
   };
   for (const [action, level] of Object.entries(expected)) {
     assert.equal(accessLevelForAction(action), level, `${action} should be "${level}"`);
@@ -105,4 +126,38 @@ test("accessLevelForAction: every real action in the catalog resolves to one of 
   for (const action of allKnownActions()) {
     assert.ok(["read", "write", "permissions"].includes(accessLevelForAction(action)), `${action} did not resolve to a known level`);
   }
+});
+
+// /code-review ultra finding on PR #647: crownJewelActions() used to hand
+// out the live memoized array by direct reference on every call after the
+// first, unlike allKnownActions() (and every one of its own callers), which
+// is always freshly spread. A caller mutating what it reasonably assumes is
+// a fresh array would permanently corrupt this shared, security-critical
+// cache for the rest of the process.
+test("crownJewelActions: returns a fresh array each call -- mutating one call's result does not corrupt the shared cache", () => {
+  const first = crownJewelActions();
+  const originalLength = first.length;
+  first.push("not-a-real-action");
+  first.sort(() => 0); // also exercise in-place mutation, not just push
+  const second = crownJewelActions();
+  assert.equal(second.length, originalLength, "a later call must not see the earlier call's mutation");
+  assert.ok(!second.includes("not-a-real-action"));
+});
+
+// /code-review ultra finding on PR #647: this was previously rebuilt in full
+// (crown-jewel pattern-matching + method-set lookups for ~90+ actions) on
+// every single request to /api/settings/iam/policies, despite being over a
+// static, process-lifetime-constant action catalog -- an inconsistent
+// caching discipline right next to the already-memoized crownJewelActions()
+// one line away in that same handler. Mirrors the defensive-copy test above:
+// verifies both that repeated calls agree, and that the returned object is a
+// fresh copy each time, not a shared mutable reference.
+test("allAccessLevels: memoized (repeated calls agree) and returns a fresh object each call", () => {
+  const first = allAccessLevels();
+  assert.equal(first["database:query"], "read");
+  assert.equal(first["settings:write"], "permissions");
+  first["settings:write"] = "read"; // mutate the returned object directly
+  const second = allAccessLevels();
+  assert.equal(second["settings:write"], "permissions", "a later call must not see the earlier call's mutation");
+  assert.deepEqual(Object.keys(second).sort(), [...allKnownActions()].sort(), "covers every known action, same as the old inline computation");
 });
