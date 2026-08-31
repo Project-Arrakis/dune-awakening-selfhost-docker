@@ -2842,6 +2842,7 @@ async function liveMapMarkersRoute(res, url) {
       // storm.
       sandstormActive: sandstorm.active || false,
       sandstormLastStartAt: sandstorm.lastStartAt || "",
+      coriolisSeedStaleSince: spice.seedStaleSince || "",
       partitions: partitions.rows || []
     };
   });
