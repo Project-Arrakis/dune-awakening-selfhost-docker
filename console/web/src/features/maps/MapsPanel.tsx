@@ -88,7 +88,7 @@ const CORIOLIS_CYCLE_START_DAY_FIELD_ID = "coriolis_cycle_start_day";
 // coriolis_cycle_start_hour/_day descriptions in runtime/scripts/usersettings.py.
 const CORIOLIS_REGION_HOURS: Record<string, number> = {
   "Europe": 5,
-  "North America": 11,
+  "North America": 10,
   "South America": 8,
   "Asia": 9,
   "Oceania": 19
