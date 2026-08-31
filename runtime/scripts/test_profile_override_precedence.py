@@ -412,9 +412,9 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         self.assertEqual(values["coriolis_cycle_start_day"], usersettings.MAP_FIELDS["coriolis_cycle_start_day"][2])
 
     def test_migrate_coriolis_region_fields_migrates_both_fields_once(self):
-        self.assertEqual(usersettings.migrate_coriolis_region_fields("North America"), "migrated:coriolis_cycle_start_hour=11,coriolis_cycle_start_day=3")
+        self.assertEqual(usersettings.migrate_coriolis_region_fields("North America"), "migrated:coriolis_cycle_start_hour=10,coriolis_cycle_start_day=3")
         values = usersettings.profile_global_values(usersettings.read_profile())
-        self.assertEqual(values["coriolis_cycle_start_hour"], "11")
+        self.assertEqual(values["coriolis_cycle_start_hour"], "10")
         self.assertEqual(values["coriolis_cycle_start_day"], "3")
         # Idempotent by presence, not value -- a second call must be a true
         # no-op regardless of what either field now holds.
@@ -446,12 +446,15 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         # field should be written, and in the same profile pass as the presence
         # check, not a second read-modify-write cycle that could race it.
         profile = usersettings.empty_profile()
-        usersettings.set_profile_field(profile, "global", "", "", "coriolis_cycle_start_hour", "22")
+        # 11 was the former North America preset. Its presence must still be
+        # respected after the regional default changes to 10; an upgrade must
+        # never silently rewrite a value already saved by an administrator.
+        usersettings.set_profile_field(profile, "global", "", "", "coriolis_cycle_start_hour", "11")
         usersettings.write_profile(profile)
-        self.assertEqual(usersettings.migrate_coriolis_region_fields("Asia"), "migrated:coriolis_cycle_start_day=2")
+        self.assertEqual(usersettings.migrate_coriolis_region_fields("North America"), "migrated:coriolis_cycle_start_day=3")
         values = usersettings.profile_global_values(usersettings.read_profile())
-        self.assertEqual(values["coriolis_cycle_start_hour"], "22")
-        self.assertEqual(values["coriolis_cycle_start_day"], "2")
+        self.assertEqual(values["coriolis_cycle_start_hour"], "11")
+        self.assertEqual(values["coriolis_cycle_start_day"], "3")
 
 
 class ClientGameIniAllowlistTests(ProfilePathTestCase):
