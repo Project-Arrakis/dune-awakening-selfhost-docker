@@ -45,7 +45,11 @@ export async function runDiscordPopupLogin(deps: DiscordPopupLoginDeps): Promise
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     await sleep(intervalMs);
-    if (!isMounted()) return { outcome: "unmounted" };
+    // Every OTHER terminal outcome (success, timeout) closes the popup --
+    // unmounted must too, or a component unmount mid-poll (an outer
+    // remount, an error-boundary reset) orphans an open popup with nothing
+    // left to close it (code review finding).
+    if (!isMounted()) { popup.close(); return { outcome: "unmounted" }; }
     // Checked before polling: a popup closed by the operator (accidentally
     // or not) before completing is the only failure signal this flow has --
     // the specific reason, if any, was already shown inside the popup itself.
@@ -57,7 +61,7 @@ export async function runDiscordPopupLogin(deps: DiscordPopupLoginDeps): Promise
     } catch {
       continue; // a transient network hiccup -- keep polling, don't give up
     }
-    if (!isMounted()) return { outcome: "unmounted" };
+    if (!isMounted()) { popup.close(); return { outcome: "unmounted" }; }
     if (state?.authenticated) {
       onSuccess(state);
       popup.close();

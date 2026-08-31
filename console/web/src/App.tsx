@@ -666,6 +666,14 @@ export function App() {
           ? "Discord sign-in was closed before it completed. Try again."
           : "Discord sign-in did not complete in time. Try again, or use the regular sign-in link."
       );
+    }).catch(() => {
+      // Code review finding: with no catch here, an unexpected throw (e.g. a
+      // browser where window.open() itself throws instead of returning null)
+      // left the button stuck on "Waiting for Discord..." forever, with no
+      // way to retry short of a full page reload.
+      if (!discordPopupMountedRef.current) return;
+      setDiscordPopupBusy(false);
+      setDiscordPopupMessage("Discord sign-in could not be started. Try again, or use the regular sign-in link.");
     });
   }
 

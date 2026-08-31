@@ -46,6 +46,18 @@ describe("Discord popup login button", () => {
     expect(await screen.findByText("Waiting for Discord...")).toBeInTheDocument();
   });
 
+  it("recovers the button (not stuck on 'Waiting for Discord...') if window.open itself throws instead of returning null (code review finding)", async () => {
+    stubLoginScreen();
+    vi.stubGlobal("open", vi.fn().mockImplementation(() => { throw new Error("SecurityError: popup blocked by policy"); }));
+
+    render(<App />);
+    const button = await screen.findByText("Sign in with Discord");
+    button.click();
+
+    await waitFor(() => expect(screen.queryByText("Waiting for Discord...")).not.toBeInTheDocument());
+    expect(await screen.findByText("Discord sign-in could not be started. Try again, or use the regular sign-in link.")).toBeInTheDocument();
+  });
+
   it("falls back to the full-page redirect, without ever showing the busy label, when the popup is blocked", async () => {
     stubLoginScreen();
     vi.stubGlobal("open", vi.fn().mockReturnValue(null));

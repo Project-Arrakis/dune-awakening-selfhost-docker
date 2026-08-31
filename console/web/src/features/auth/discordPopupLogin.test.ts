@@ -93,7 +93,7 @@ describe("runDiscordPopupLogin", () => {
     expect(result).toEqual({ outcome: "timeout" });
   });
 
-  it("stops immediately once unmounted -- no further fetch or onSuccess call, even mid-poll", async () => {
+  it("stops immediately once unmounted -- no further fetch or onSuccess call, even mid-poll -- and still closes the popup (code review finding: every other terminal outcome does)", async () => {
     const popup = fakePopup();
     let mounted = true;
     let calls = 0;
@@ -110,6 +110,7 @@ describe("runDiscordPopupLogin", () => {
     expect(calls, "must not keep polling after unmount").toBe(1);
     expect(onSuccess).not.toHaveBeenCalled();
     expect(result).toEqual({ outcome: "unmounted" });
+    expect(popup.close, "an unmounted-mid-poll popup must not be left orphaned and open").toHaveBeenCalled();
   });
 
   it("checks isMounted immediately after sleep, before even consulting popup.closed -- an unmount there stops the loop before any fetch", async () => {
@@ -122,5 +123,6 @@ describe("runDiscordPopupLogin", () => {
     });
     expect(fetchAuthState).not.toHaveBeenCalled();
     expect(result).toEqual({ outcome: "unmounted" });
+    expect(popup.close).toHaveBeenCalled();
   });
 });
