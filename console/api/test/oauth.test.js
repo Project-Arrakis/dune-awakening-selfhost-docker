@@ -284,8 +284,26 @@ test("pending state carries its purpose: a setup state is consumed as setup, a l
   const store = createPendingStateStore();
   const setup = store.issue(undefined, { purpose: "setup", sessionId: "sess-1" });
   const login = store.issue();
-  assert.deepEqual({ ...store.consume(setup.state, setup.state), verifier: "x" }, { ok: true, verifier: "x", purpose: "setup", sessionId: "sess-1" });
+  assert.deepEqual({ ...store.consume(setup.state, setup.state), verifier: "x" }, { ok: true, verifier: "x", purpose: "setup", sessionId: "sess-1", presentation: "page" });
   assert.equal(store.consume(login.state, login.state).purpose, "login");
+});
+
+// ---- presentation (F4, #574): popup vs full-page, carried the same way purpose already is ----
+
+test("pending state carries its presentation: defaults to 'page', a popup-flagged start is consumed as 'popup'", () => {
+  const store = createPendingStateStore();
+  const page = store.issue();
+  const popup = store.issue(undefined, { presentation: "popup" });
+  assert.equal(store.consume(page.state, page.state).presentation, "page");
+  assert.equal(store.consume(popup.state, popup.state).presentation, "popup");
+});
+
+test("presentation and purpose are independent fields -- a popup-flagged SETUP state still consumes as both", () => {
+  const store = createPendingStateStore();
+  const setupPopup = store.issue(undefined, { purpose: "setup", sessionId: "sess-1", presentation: "popup" });
+  const result = store.consume(setupPopup.state, setupPopup.state);
+  assert.equal(result.purpose, "setup");
+  assert.equal(result.presentation, "popup");
 });
 
 test("fetchDiscordIdentity marks owned guilds and keeps guild names for the setup picker", async () => {

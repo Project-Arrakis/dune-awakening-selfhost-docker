@@ -183,6 +183,108 @@ test("Discord OAuth sign-in flow works end-to-end through the real server", asyn
   }
 });
 
+// ---- popup+poll presentation (F4, #574) ----
+
+test("presentation=popup: a successful login gets the self-closing popup page, not the full-page redirect; state cookie attributes are unchanged", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-popup-"));
+  const console = startConsole(consolePort, discordPort, tempDir);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const startResponse = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start?presentation=popup`, { redirect: "manual" });
+    assert.equal(startResponse.status, 302);
+    const setCookie = startResponse.headers.getSetCookie().find((c) => c.startsWith("discord_oauth_state="));
+    assert.match(setCookie, /SameSite=None/); assert.match(setCookie, /Secure/); assert.match(setCookie, /HttpOnly/);
+    const pendingStateValue = sessionCookieValue(startResponse.headers.getSetCookie(), "discord_oauth_state");
+
+    const callback = await fetch(
+      `http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=validcode&state=${encodeURIComponent(pendingStateValue)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${pendingStateValue}` } }
+    );
+    assert.equal(callback.status, 200);
+    const body = await callback.text();
+    assert.match(body, /window\.close\(\)/, "the popup path must close itself, not redirect the small popup window to the full console");
+    assert.doesNotMatch(body, /window\.location\.replace\("\/"\)/, "the popup path must never load the full console UI inside itself");
+    assert.ok(sessionCookieValue(callback.headers.getSetCookie(), "asc_session"), "the session cookie is still set exactly as the full-page path");
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+test("presentation omitted: unaffected, still gets today's full-page return page (direct regression guard, alongside the baseline e2e test above)", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-page-"));
+  const console = startConsole(consolePort, discordPort, tempDir);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const r = await signInWithCode(consolePort, "validcode");
+    assert.equal(r.status, 200);
+    assert.match(r.body, /window\.location\.replace\("\/"\)/);
+    assert.doesNotMatch(r.body, /window\.close\(\)/);
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+test("presentation=popup: a denied login still serves the existing, unchanged error page (no popup-specific auto-close script)", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-popup-denied-"));
+  const console = startConsole(consolePort, discordPort, tempDir);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const startResponse = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start?presentation=popup`, { redirect: "manual" });
+    const pendingStateValue = sessionCookieValue(startResponse.headers.getSetCookie(), "discord_oauth_state");
+    const denied = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/callback?error=access_denied&state=${encodeURIComponent(pendingStateValue)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${pendingStateValue}` } });
+    assert.equal(denied.status, 403);
+    const body = await denied.text();
+    assert.match(body.toLowerCase(), /cancel|admin password/, "the specific, readable error message is unchanged");
+    assert.doesNotMatch(body, /window\.close\(\)/, "no auto-close on failure -- the operator must be able to read the specific reason (L1 design, UI/UX HIGH finding)");
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+test("presentation=popup: the FULL silent-retry chain preserves presentation through to the final response (not just the retry's own 302 shape)", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-popup-retry-"));
+  const console = startConsole(consolePort, discordPort, tempDir);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+
+    // 1. Popup-flagged start attempts silently (prompt=none).
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start?presentation=popup`, { redirect: "manual" });
+    assert.equal(start.status, 302);
+    const state = sessionCookieValue(start.headers.getSetCookie(), "discord_oauth_state");
+
+    // 2. Discord can't complete silently -> login_required -> the console
+    // retries interactively with a FRESH state cookie. This is the exact
+    // call site the source-pin test above also checks; here we drive it
+    // for real and follow through to the end, which a source-pin alone
+    // cannot prove (QA hat: a shallow test stopping here would be a
+    // tautology relative to the bug this design found).
+    const retry = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/callback?error=login_required&state=${encodeURIComponent(state)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${state}` } });
+    assert.equal(retry.status, 302);
+    const retryState = sessionCookieValue(retry.headers.getSetCookie(), "discord_oauth_state");
+    assert.ok(retryState, "the retry must set its own fresh state cookie");
+    assert.notEqual(retryState, state, "the retry's state must be a NEW value, not a reuse of the consumed one");
+
+    // 3. Complete the RETRY's round trip with a real code -- the FINAL
+    // response, after the retry, must still be the popup variant.
+    const final = await fetch(
+      `http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=validcode&state=${encodeURIComponent(retryState)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${retryState}` } }
+    );
+    assert.equal(final.status, 200);
+    const body = await final.text();
+    assert.match(body, /window\.close\(\)/, "presentation must have survived the interactive retry -- the final page is still the self-closing popup variant");
+    assert.doesNotMatch(body, /window\.location\.replace\("\/"\)/);
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
 test("Discord OAuth callback denies a user outside the home guild", async () => {
   const consolePort = await getFreePort();
   const discordPort = await getFreePort();
@@ -938,4 +1040,11 @@ test("the silent-auth interactive retry attributes its pending state to an owner
   const retryLine = source.split("\n").find((line) => line.includes("purpose: consumed.purpose, sessionId: consumed.sessionId"));
   assert.ok(retryLine, "the silent-auth retry's issue() call was not found where expected");
   assert.match(retryLine, /owner:\s*\w/, "the retry must pass an owner key, or a flood of retries pools into one shared, unattributed bucket");
+  // F4, #574: the retry must ALSO carry `presentation` forward, or a popup
+  // login needing this interactive retry silently reverts to the full-page
+  // response on its eventual completion (loading the whole console UI
+  // inside a 480x760 popup). See the dedicated full-chain behavioral test
+  // below for end-to-end proof; this pins the wiring the same way the
+  // owner-key regression above already does for this exact call site.
+  assert.match(retryLine, /presentation:\s*consumed\.presentation/, "the retry must pass presentation forward, or a popup login loses it on the interactive retry path");
 });

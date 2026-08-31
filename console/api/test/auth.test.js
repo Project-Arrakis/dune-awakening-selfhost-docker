@@ -66,6 +66,18 @@ test("json responses include defensive browser headers", () => {
   assert.match(res.headers["permissions-policy"], /camera=\(\)/);
 });
 
+// F4, #574: severs window.opener the moment a popup we opened (e.g. the
+// Discord sign-in popup) navigates to a cross-origin page -- rel="noopener"
+// can't be used instead, since it would make window.open() itself return
+// null, breaking the popup.closed/close()/location.replace() control the
+// popup+poll flow needs. Applied globally (every response), matching how
+// the QA Tester Login popup shares this same, previously-unmitigated gap.
+test("every response carries Cross-Origin-Opener-Policy: same-origin (reverse-tabnabbing mitigation)", () => {
+  const res = fakeResponse();
+  json(res, 200, { ok: true });
+  assert.equal(res.headers["cross-origin-opener-policy"], "same-origin");
+});
+
 test("json response serialization preserves ordinary public payloads", () => {
   const output = serializeJsonResponse({ ok: true, result: { status: "ready" } });
   assert.deepEqual(JSON.parse(output), { ok: true, result: { status: "ready" } });

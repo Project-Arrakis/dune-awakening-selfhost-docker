@@ -6,7 +6,14 @@ export const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
   "referrer-policy": "no-referrer",
-  "permissions-policy": "geolocation=(), microphone=(), camera=()"
+  "permissions-policy": "geolocation=(), microphone=(), camera=()",
+  // Severs window.opener the moment a popup we opened (e.g. the Discord
+  // sign-in popup, #574) navigates to a cross-origin page -- reverse-
+  // tabnabbing mitigation. rel="noopener" can't be used at the window.open()
+  // call site instead: it would make window.open() itself return null,
+  // breaking the popup.closed/close()/location.replace() control the
+  // popup+poll flow depends on.
+  "cross-origin-opener-policy": "same-origin"
 };
 
 export function withSecurityHeaders(headers = {}) {
