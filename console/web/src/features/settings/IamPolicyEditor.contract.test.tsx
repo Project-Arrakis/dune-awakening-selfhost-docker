@@ -63,6 +63,78 @@ describe("IamPolicyEditor server contracts", () => {
     expect(await screen.findByText("players:kick")).toBeTruthy();
   });
 
+  // /code-review ultra finding on PR #647, directly verified by hand: the
+  // namespace header's select-all read the UNFILTERED groupedActions instead
+  // of the search-filtered set the visible rows actually render from,
+  // silently granting/revoking actions the operator never saw. Moderator
+  // starts with server:read granted (exact literal) and server:restart not
+  // -- searching "restart" should narrow what select-all can touch to just
+  // server:restart.
+  it("code-review finding: namespace select-all (revoke direction) only touches the search-filtered actions, not every action in the namespace", async () => {
+    mockLoad();
+    const { container } = render(<IamPolicyEditor />);
+    fireEvent.click(await screen.findByText("Moderator"));
+    fireEvent.click(await screen.findByLabelText("Expand Server"));
+
+    // Grant server:restart too (no search active yet), so both server:read
+    // and server:restart are now granted as exact literals.
+    fireEvent.click(await screen.findByLabelText("Select all Server permissions"));
+    fireEvent.click(screen.getByText("JSON"));
+    const textareaEl = container.querySelector(".iam-json-textarea") as HTMLTextAreaElement;
+    let stmts = JSON.parse(textareaEl.value) as Array<{ Effect: string; Action: string[] }>;
+    let allowed = new Set(stmts.filter((s) => s.Effect === "Allow").flatMap((s) => s.Action));
+    expect(allowed.has("server:read")).toBe(true);
+    expect(allowed.has("server:restart")).toBe(true);
+
+    // Now narrow to just server:restart and revoke -- the header's fresh
+    // tri-state (scoped to the search) is "checked" (the one filtered action
+    // is granted), so this click reverses direction to revoke. Only
+    // server:restart is in scope; server:read must survive untouched.
+    fireEvent.click(screen.getByText("Permissions"));
+    fireEvent.change(await screen.findByLabelText("Search permissions"), { target: { value: "restart" } });
+    fireEvent.click(await screen.findByLabelText("Select all Server permissions"));
+
+    fireEvent.click(screen.getByText("JSON"));
+    stmts = JSON.parse((container.querySelector(".iam-json-textarea") as HTMLTextAreaElement).value);
+    allowed = new Set(stmts.filter((s) => s.Effect === "Allow").flatMap((s) => s.Action));
+    expect(allowed.has("server:restart")).toBe(false);
+    // The bug: scoping to the full unfiltered namespace would revoke BOTH
+    // exact literals, wrongly removing an action outside the search filter
+    // the operator never saw or intended to touch.
+    expect(allowed.has("server:read")).toBe(true);
+  });
+
+  // /code-review ultra finding on PR #647: applyGroupSelection's grant-vs-
+  // revoke direction used to be captured from the render-time tri-state
+  // (nsState/levelState, itself derived from the `allowedActions` memo --
+  // only current as of the last completed render), not re-derived fresh
+  // inside the functional setJsonText update the way toggleAction already
+  // does for the single-checkbox case (see the #10 test above). Two clicks
+  // landing before a re-render both saw the same stale direction, so the
+  // second click silently no-op'd instead of reverting -- the checkbox
+  // looked permanently stuck checked. A DOM-event-timing reproduction is
+  // not reliably reproducible under jsdom/RTL for the same reason #10's own
+  // comment gives (each dispatched event is independently flushed by
+  // React's per-event batching in this environment) -- pinning the actual
+  // regression via source inspection instead, matching #10's own approach.
+  it("code-review finding: applyGroupSelection's direction is re-derived from the freshly-parsed statements, not a caller-supplied `select` parameter (source pin)", () => {
+    const src = iamPolicyEditorSource as string;
+    const fnStart = src.indexOf("const applyGroupSelection = (groupActions: string[]) => {");
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnBody = src.slice(fnStart, fnStart + 1200);
+    // The direction must be computed from `groupTriState(groupActions,
+    // currentAllowed, ...)` -- currentAllowed itself derived from the
+    // freshly-parsed `stmts` a few lines above -- never from a `select`
+    // function parameter (the pre-fix shape) or the outer nsState/levelState.
+    expect(fnBody).toMatch(/const select = groupTriState\(groupActions, currentAllowed,/);
+    expect(fnBody).not.toMatch(/nsState|levelState/);
+    // And the two call sites must no longer pass a second argument at all.
+    expect(src).toMatch(/applyGroupSelection\(nsActions\)/);
+    expect(src).not.toMatch(/applyGroupSelection\(nsActions,/);
+    expect(src).toMatch(/applyGroupSelection\(levelActions\)/);
+    expect(src).not.toMatch(/applyGroupSelection\(levelActions,/);
+  });
+
   it("#5 save PUTs the whole tier-keyed store, not POST {tier, statements}", async () => {
     mockLoad();
     render(<IamPolicyEditor />);
