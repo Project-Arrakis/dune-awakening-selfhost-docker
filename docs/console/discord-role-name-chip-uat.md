@@ -9,17 +9,26 @@ signed-in chip. Automated tests cover the resolver/session/API logic
 — this covers what a human operator actually sees, end to end, against a real
 deployed build with real Discord sign-in.
 
-**Who.** One QA engineer or operator, with a Discord server already
-configured for console sign-in (`DISCORD_CONSOLE_ADMIN_ROLE_IDS` etc. already
-set — see `docs/console/authentication-qa-checklist.md` Part 8 for setting
-that up first if it isn't already). Budget about 40 minutes for T01–T10, plus
-15 more for the optional T11–T12 if a companion bot with signed handoff is
-also available.
+**Who.** A QA tester running their own self-hosted console instance, with a
+Discord server already configured for console sign-in
+(`DISCORD_CONSOLE_ADMIN_ROLE_IDS` etc. already set — see
+`docs/console/authentication-qa-checklist.md` Part 8 for setting that up
+first if it isn't already). Budget about 40 minutes for T01–T10, plus 15
+more for the optional T11–T12 if a companion bot with signed handoff is also
+available.
 
 **Result rule.** A case passes only if *every* expected line is observed. If
 the chip's text, a Settings field's label/placeholder, or an error message
 differs from what is written here, that is a finding even when the feature
 still basically works — record the exact text you saw.
+
+**Getting this build onto your instance.** No git checkout is needed or
+expected. On your console: **Updates → QA Tester Login** (Discord sign-in),
+then confirm the build shown under *Latest GitHub Pre-Release* is the one
+you were told to test (ask whoever assigned this UAT for the expected short
+SHA if it isn't obvious), then **Apply Pre-Release**. This rebuilds and
+restarts the console for you — wait for it to come back healthy before
+starting T01.
 
 ---
 
@@ -28,16 +37,17 @@ still basically works — record the exact text you saw.
 | Item | Value |
 |---|---|
 | Console URL used in the browser | `https://________________` |
-| Build under test | commit `________` (`git rev-parse --short HEAD` on the host) |
+| Build under test | short SHA shown in **Updates → Latest GitHub Pre-Release** after applying it: `________` |
 | Discord account with the console's mapped **Admin** role | account: `________` |
 | Discord account with the console's mapped **Moderator** role | account: `________` (only needed for T07) |
 | Discord account that is this guild's **owner** | account: `________` (only needed for T08) |
 | Companion bot with signed tier handoff configured | yes / no — if no, skip T11–T12 |
-| Host access (SSH) for T09–T10 | tester: `________` |
+| Host/SSH access to your own instance, for T09–T10 | yes / no — if no, skip T09–T10 (they exercise an internal failsafe the console UI has no control for; they're operator-only, not required to complete the rest of this plan) |
 | Starting state | `DISCORD_CONSOLE_ROLE_NAMES` unset (no role names configured yet) — this is what every operator upgrading from the previous release has |
 
-**Host paths referenced below** (relative to the repository root):
-`.env`. Restart with `dune console restart`.
+**Host paths referenced below** (only for T09–T10, relative to the
+repository root on your own instance): `.env`. Restart with
+`dune console restart`.
 
 **Before starting, take a backup** on the host:
 ```bash
@@ -89,8 +99,9 @@ completed results table at the end with your test records for the build.
   the access level.
 
 ### T04 · Multiple role IDs in one field each get their own input
-*Host:* temporarily add a second, made-up snowflake ID to the Admin Role
-field (comma-separated), e.g. `<existing-id>,199999999999999999`, and save.
+*In Settings → Discord OAuth* (no host access needed): temporarily add a
+second, made-up snowflake ID to the Admin Role field (comma-separated), e.g.
+`<existing-id>,199999999999999999`, and save.
 1. Reopen Settings → Discord OAuth (or just look again without navigating away).
 
 **Expected**
@@ -111,8 +122,11 @@ field (comma-separated), e.g. `<existing-id>,199999999999999999`, and save.
 **Expected**
 - The label input still shows `Heavy Bats` — the saved value round-trips
   correctly through storage and back into the form.
-4. Restart the console (`dune console restart` on the host, or via the
-   Settings restart control if one is visible).
+4. Restart the console on your own instance (`dune console restart`) —
+   confirmed directly: Discord OAuth config changes have no in-UI restart
+   button today (unlike the separate web-port change flow, which does), so
+   this step needs your own instance's host access, same as any other
+   `.env`-driven config change on this console.
 5. Sign out and sign back in as the Admin-role Discord account.
 
 **Expected**
@@ -154,7 +168,12 @@ happens to hold the mapped Admin role (`Heavy Bats`).
 
 ---
 
-## Part 4 — Resilience (host-level)
+## Part 4 — Resilience (operator/host access required — optional if you don't have it)
+
+These two cases deliberately create a corrupted config value the Settings UI
+would never let you save through normal use, so they need direct host access
+to your own instance's `.env` file. If you don't have that, skip to Part 5 —
+T09/T10 are not required to complete this UAT plan.
 
 ### T09 · A hand-edited, malformed `DISCORD_CONSOLE_ROLE_NAMES` degrades gracefully, never crashes the console
 *Host:*
