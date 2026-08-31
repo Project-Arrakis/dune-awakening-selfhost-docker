@@ -725,6 +725,20 @@ test("iam/policies returns the action catalog (policies + actions + actionMap + 
     // The editor does nsFromAction(action, actionMap) — a route key must resolve.
     const anyRoute = body.actions[0];
     assert.ok(body.actionMap[anyRoute], "every actions[] key exists in actionMap");
+    // #634: the Visual Editor groups by access level (read/write/permissions),
+    // computed server-side and sent pre-classified -- the client never
+    // re-derives it (avoids a second, drift-prone implementation).
+    assert.ok(body.accessLevels && typeof body.accessLevels === "object", "accessLevels present");
+    for (const action of body.allActions) {
+      assert.ok(["read", "write", "permissions"].includes(body.accessLevels[action]), `${action} has a valid accessLevel`);
+    }
+    assert.equal(body.accessLevels["players:mutate"], "permissions", "a crown-jewel action is classified permissions");
+    assert.equal(body.accessLevels["settings:read"], "permissions", "a concrete action reached only via the settings:* wildcard is still classified permissions");
+    // #634: the concrete, already-expanded crown-jewel action list, so the
+    // client's "select all" exclusion needs zero pattern-matching of its own.
+    assert.ok(Array.isArray(body.crownJewelActions));
+    assert.ok(body.crownJewelActions.includes("settings:write"), "the settings:* wildcard is expanded into its real concrete actions");
+    assert.ok(!body.crownJewelActions.includes("setup:read"), "a non-crown-jewel action isn't included just because it shares the 'permissions' UI grouping");
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
 
