@@ -368,6 +368,54 @@ describe("DiscordSetupWizard: embedded mode (#643)", () => {
     expect(screen.queryByText(/^Connecting/)).toBeNull();
   });
 
+  // /code-review ultra finding (unverified pipeline output, confirmed by hand): the old manual
+  // SettingsPanel form (write-oauth-config, no admin-role requirement) let an operator
+  // deliberately save "no roles mapped" (owner-only Discord access). finalize()'s client-side
+  // "Map an Admin role..." guard makes sense for FIRST-TIME setup (don't accidentally lock
+  // yourself out of admin access without realizing it) but blocks that same deliberate choice
+  // when RECONFIGURING an already-live setup -- confirmed discordSetupFinalize itself has no
+  // such server-side requirement (server.js just writes whatever adminRoleIds is given), so this
+  // was purely an unintended client-side regression from reusing finalize() for both contexts.
+  it("map step: reconfiguring an already-live setup allows clearing all role fields (no admin-role requirement, unlike first-time setup)", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({
+        serverConfig: { DISCORD_OAUTH_CLIENT_ID: "id", DISCORD_OAUTH_REDIRECT_URI: "uri", DISCORD_CONSOLE_ADMIN_ROLE_IDS: "111111111111111111" },
+        config: { discordOAuthAppConfigured: true, discordOAuthConfigured: true },
+      } as never);
+      if (path === "/api/setup/discord-identity") return Promise.resolve({ user: { id: "u1", username: "operator", mfaEnabled: true }, guilds: [{ id: "999999999999999999", name: "My Server", owner: true }] } as never);
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    mockPost.mockImplementation((path: string) => {
+      if (path === "/api/setup/discord-finalize") return Promise.resolve({ ok: true, guild: { name: "My Server" }, owner: { username: "operator" } } as never);
+      return Promise.reject(new Error(`unexpected post: ${path}`));
+    });
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByLabelText(/admin role/i);
+    await waitFor(() => expect(screen.getByLabelText(/admin role/i)).toHaveValue("111111111111111111"));
+    const adminField = screen.getByLabelText(/admin role/i);
+    fireEvent.change(adminField, { target: { value: "" } });
+
+    expect(screen.getByText("Save role mapping")).not.toBeDisabled();
+    fireEvent.click(screen.getByText("Save role mapping"));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/setup/discord-finalize", expect.objectContaining({ adminRoleIds: "" })));
+  });
+
+  it("map step: first-time setup (no home guild saved yet) still requires an admin role before saving", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({
+        serverConfig: { DISCORD_OAUTH_CLIENT_ID: "id", DISCORD_OAUTH_REDIRECT_URI: "uri" },
+        config: { discordOAuthAppConfigured: true, discordOAuthConfigured: false },
+      } as never);
+      if (path === "/api/setup/discord-identity") return Promise.resolve({ user: { id: "u1", username: "operator", mfaEnabled: true }, guilds: [{ id: "999999999999999999", name: "My Server", owner: true }] } as never);
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByLabelText(/admin role/i);
+    fireEvent.click(screen.getByText("Turn on Discord sign-in"));
+    expect(await screen.findByText(/Map an Admin role/)).toBeTruthy();
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
   it("map step: a genuine first-time setup (no home guild saved yet) still says 'Turn on Discord sign-in' and 'Connecting' (unchanged)", async () => {
     mockApi.mockImplementation((path: string) => {
       if (path === "/api/settings") return Promise.resolve({
