@@ -91,4 +91,24 @@ describe("selectAllRevokeTargets", () => {
   it("returns an empty list when nothing in the group is currently an exact-literal grant", () => {
     expect(selectAllRevokeTargets(["players:read"], new Set(["players:read"]), new Set())).toEqual([]);
   });
+
+  // code-review finding: structural symmetry with selectAllGrantTargets's own
+  // crown-jewel exclusion -- currently a no-op in practice (a non-owner tier
+  // can never have an exact crown-jewel literal to begin with, setPolicies()
+  // refuses it at save time), but without this parameter nothing in either
+  // function's signature signals crown-jewel status was ever supposed to
+  // matter to a revoke.
+  it("excludes a crown-jewel action from revoke targets for a non-owner tier, even if (hypothetically) exact-literal-granted", () => {
+    const group = ["players:mutate", "players:read"];
+    const allowed = new Set(["players:mutate", "players:read"]);
+    const allowLiterals = new Set(["players:mutate", "players:read"]);
+    expect(selectAllRevokeTargets(group, allowed, allowLiterals, ["players:mutate"], false)).toEqual(["players:read"]);
+  });
+
+  it("owner tier still revokes a crown-jewel action -- the exclusion only applies to non-owner tiers", () => {
+    const group = ["players:mutate", "players:read"];
+    const allowed = new Set(["players:mutate", "players:read"]);
+    const allowLiterals = new Set(["players:mutate", "players:read"]);
+    expect(selectAllRevokeTargets(group, allowed, allowLiterals, ["players:mutate"], true).sort()).toEqual(["players:mutate", "players:read"]);
+  });
 });

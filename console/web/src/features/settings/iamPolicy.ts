@@ -149,12 +149,26 @@ export function selectAllGrantTargets(
 // "Unselect all": only actions that are an exact-literal Allow grant today
 // (`allowLiterals`) are revoked -- a wildcard-granted or Deny-locked action is
 // left untouched, exactly matching what a single checkbox can already do.
+//
+// Takes the same crownJewelActions/isOwnerTier parameters selectAllGrantTargets
+// does, for structural symmetry (code-review finding) -- currently a no-op in
+// practice, not a behavior change: a non-owner tier can never have an exact
+// crown-jewel literal to begin with (setPolicies()'s save-time guard refuses
+// it), and owner already bypasses the exclusion exactly as the grant side
+// does. The point is defense-in-depth: without this parameter, nothing in
+// either function's signature signals that crown-jewel status was ever
+// supposed to matter to a revoke, so a future change to the draft-mutation
+// flow (e.g. a revoke-time side effect) would have no structural cue to
+// preserve the owner-only invariant the grant side already encodes.
 export function selectAllRevokeTargets(
   groupActions: string[],
   allowedActions: Set<string>,
-  allowLiterals: Set<string>
+  allowLiterals: Set<string>,
+  crownJewelActions: string[] = [],
+  isOwnerTier = true
 ): string[] {
-  return groupActions.filter((a) => allowedActions.has(a) && allowLiterals.has(a));
+  const revokable = isOwnerTier ? groupActions : groupActions.filter((a) => !crownJewelActions.includes(a));
+  return revokable.filter((a) => allowedActions.has(a) && allowLiterals.has(a));
 }
 
 export function nsFromAction(routeKey: string, actionMap: Record<string, string> = {}): string {
