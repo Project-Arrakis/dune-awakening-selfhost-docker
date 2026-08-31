@@ -280,6 +280,55 @@ test("no role can confer owner: an 'owner' key in the mapping is ignored", async
   assert.equal(r.tier, "player");
 });
 
+// ---- roleName (F3, #573): display-only, threaded from either the role map or the handoff ----
+
+const ROLE_NAMES = { "400000000000000002": "Heavy Bats", "400000000000000003": "Silencers" };
+
+test("roleName: a role-derived tier looks up the deciding role's name from the configured map", async () => {
+  const resolve = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: ROLES, roleNames: ROLE_NAMES });
+  const r = await resolve(identity({ roleIds: ["400000000000000002"] }));
+  assert.deepEqual(r, { tier: "admin", source: "roles", reason: "", roleName: "Heavy Bats" });
+});
+
+test("roleName: an unmapped-name role resolves the tier with no roleName key at all", async () => {
+  const resolve = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: ROLES, roleNames: {} });
+  const r = await resolve(identity({ roleIds: ["400000000000000002"] }));
+  assert.equal(r.tier, "admin");
+  assert.equal("roleName" in r, false);
+});
+
+test("roleName: never attached on the guild-owner or bootstrap-allowlist path, even if the map happens to match an incidentally-held role", async () => {
+  const resolveOwner = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: ROLES, roleNames: ROLE_NAMES });
+  const owner = await resolveOwner(identity({ ownedGuildIds: [HOME], roleIds: ["400000000000000002"] }));
+  assert.equal(owner.tier, "owner"); assert.equal(owner.source, "guild-owner");
+  assert.equal("roleName" in owner, false, "owner is guild-derived, not role-derived -- the incidentally-held admin role's name must not leak onto it");
+
+  const resolveBootstrap = createOAuthTierResolver({
+    bootstrap: { homeGuildId: HOME, allowOwnerBootstrap: true, ownerAllowlist: ["200000000000000001"] },
+    roleTiers: ROLES,
+    roleNames: ROLE_NAMES
+  });
+  const bootstrapped = await resolveBootstrap(identity({ roleIds: ["400000000000000004"] })); // player-mapped role, but bootstrap (owner) wins
+  assert.equal(bootstrapped.tier, "owner"); assert.equal(bootstrapped.source, "bootstrap");
+  assert.equal("roleName" in bootstrapped, false, "bootstrap-derived owner must not show the unrelated player role's name");
+});
+
+test("roleName: on the handoff path, roleName comes ONLY from the bot's response -- the local roleNames map is never consulted", async () => {
+  const handoff = { enabled: true, async resolveTier() { return { tier: "admin", reason: "", roleName: "Bot-Provided Label" }; } };
+  const resolve = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: ROLES, roleNames: ROLE_NAMES, handoff });
+  const r = await resolve(identity({ roleIds: ["400000000000000002"] })); // holds a role the LOCAL map would call "Heavy Bats"
+  assert.equal(r.tier, "admin"); assert.equal(r.source, "handoff");
+  assert.equal(r.roleName, "Bot-Provided Label", "handoff is authoritative -- the bot's own name, never the local map's");
+});
+
+test("roleName: on the handoff path, a bot that sends no roleName resolves with no roleName key -- proves the local map genuinely isn't consulted as a fallback", async () => {
+  const handoff = { enabled: true, async resolveTier() { return { tier: "admin", reason: "" }; } };
+  const resolve = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: ROLES, roleNames: ROLE_NAMES, handoff });
+  const r = await resolve(identity({ roleIds: ["400000000000000002"] }));
+  assert.equal(r.tier, "admin");
+  assert.equal("roleName" in r, false, "the local map has a name for this role ID, but the handoff path must never fall back to it");
+});
+
 test("pending state carries its purpose: a setup state is consumed as setup, a login state as login", () => {
   const store = createPendingStateStore();
   const setup = store.issue(undefined, { purpose: "setup", sessionId: "sess-1" });

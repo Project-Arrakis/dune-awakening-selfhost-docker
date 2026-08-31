@@ -107,6 +107,54 @@ test("resolveTier: invalid tier / malformed body / non-2xx / unreachable all den
   assert.equal((await hThrow.resolveTier({ userId: USER })).reason, "unreachable");
 });
 
+// ---- roleName (F3, #573): an UNSIGNED sibling field, deliberately outside the
+// HMAC-covered payload. It has zero authorization weight -- only `tier` (still
+// fully signed/verified above) decides session privilege. Sent unsigned so a
+// malformed/oversized roleName from a buggy bot, or a bot/console version
+// mismatch, can never deny a login purely cosmetic-display code has no business
+// blocking (see the L1 design doc's Network/Security-Architect findings, #573).
+
+test("resolveTier: a valid unsigned roleName sibling field travels through alongside the signed tier", async () => {
+  const h = handoff(() => ({ ...signedBody(goodPayload({ tier: "admin" })), roleName: "Heavy Bats" }));
+  assert.deepEqual(await h.resolveTier({ userId: USER }), { tier: "admin", reason: "", roleName: "Heavy Bats" });
+});
+
+test("resolveTier: no roleName sent -> the resolved value has no roleName key at all (not undefined)", async () => {
+  const h = handoff(() => signedBody(goodPayload({ tier: "admin" })));
+  const resolved = await h.resolveTier({ userId: USER });
+  assert.deepEqual(resolved, { tier: "admin", reason: "" });
+  assert.equal("roleName" in resolved, false, "an old bot's response must not gain a phantom roleName key");
+});
+
+test("resolveTier: a malformed roleName (wrong type or too long) is dropped WITHOUT affecting the signed tier claim", async () => {
+  const hType = handoff(() => ({ ...signedBody(goodPayload({ tier: "admin" })), roleName: 12345 }));
+  const rType = await hType.resolveTier({ userId: USER });
+  assert.equal(rType.tier, "admin", "a non-string roleName must not deny the login");
+  assert.equal("roleName" in rType, false);
+
+  const hLong = handoff(() => ({ ...signedBody(goodPayload({ tier: "admin" })), roleName: "x".repeat(101) }));
+  const rLong = await hLong.resolveTier({ userId: USER });
+  assert.equal(rLong.tier, "admin", "an oversized roleName must not deny the login");
+  assert.equal("roleName" in rLong, false);
+
+  const hMax = handoff(() => ({ ...signedBody(goodPayload({ tier: "admin" })), roleName: "x".repeat(100) }));
+  assert.equal((await hMax.resolveTier({ userId: USER })).roleName, "x".repeat(100), "exactly 100 chars is accepted");
+});
+
+test("resolveTier: MUTATION GUARD -- roleName is never part of the signed bytes, so tampering with it alone never triggers bad_signature", async () => {
+  // If an implementation accidentally folded roleName into the payload that
+  // gets HMAC-verified, changing roleName after signing (without re-signing)
+  // would flip this from a granted tier to bad_signature. It must not.
+  const h = handoff(() => {
+    const body = signedBody(goodPayload({ tier: "admin" })); // signed with NO roleName present
+    return { ...body, roleName: "Whatever I Want" }; // attacker/bug adds it post-signing, unsigned
+  });
+  const resolved = await h.resolveTier({ userId: USER });
+  assert.equal(resolved.tier, "admin", "roleName is unsigned -- it must never be able to invalidate the signature");
+  assert.equal(resolved.reason, "");
+  assert.equal(resolved.roleName, "Whatever I Want", "unsigned roleName is still read -- it just can't affect authorization");
+});
+
 test("resolveTier: every denial returns tier:'' (never falls through to a tier)", async () => {
   for (const bodyFor of [
     () => signedBody(goodPayload(), "wrong"),

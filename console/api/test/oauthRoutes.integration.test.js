@@ -9,6 +9,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { signPayload } from "../src/integrations/discord/handoff.js";
+import { encodeRoleNames } from "../src/integrations/discord/roleTiers.js";
 
 const apiRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 const repoRoot = dirname(dirname(apiRoot));
@@ -457,6 +458,39 @@ test("roles: the highest mapped role wins (admin + player -> admin)", async () =
     assert.equal(r.status, 200, r.body.slice(0, 200));
     const me = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, { headers: { cookie: `asc_session=${r.sessionValue}` } })).json();
     assert.equal(me.user.tier, "admin");
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+test("roleName (F3, #573): a role-derived sign-in exposes the configured display name end-to-end through /api/auth/me", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-rolenames-"));
+  const console = startConsole(consolePort, discordPort, tempDir, {
+    ...ROLE_ENV,
+    DISCORD_CONSOLE_ROLE_NAMES: encodeRoleNames({ [MOD_ROLE]: "Silencers" })
+  });
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const r = await signInWithCode(consolePort, "moderator");
+    assert.equal(r.status, 200, r.body.slice(0, 200));
+    const me = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, { headers: { cookie: `asc_session=${r.sessionValue}` } })).json();
+    assert.equal(me.user.tier, "moderator");
+    assert.equal(me.user.roleName, "Silencers");
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+test("roleName (F3, #573): with no name configured for the deciding role, /api/auth/me reports an empty roleName -- the frontend, not the API, falls back to the tier", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-rolenames-"));
+  const console = startConsole(consolePort, discordPort, tempDir, ROLE_ENV); // no DISCORD_CONSOLE_ROLE_NAMES at all
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const r = await signInWithCode(consolePort, "moderator");
+    assert.equal(r.status, 200, r.body.slice(0, 200));
+    const me = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, { headers: { cookie: `asc_session=${r.sessionValue}` } })).json();
+    assert.equal(me.user.tier, "moderator");
+    assert.equal(me.user.roleName, "");
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
 

@@ -6,6 +6,7 @@ import { InfoTooltip, KeyValueGrid, StatusPill } from "../../components/common/D
 import { RecoveryCodesPanel } from "../auth/RecoveryCodesPanel";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
 import { ApiKeysSection } from "./ApiKeysSection";
+import { decodeRoleNamesFromWire } from "./discordRoleNames";
 
 // Authenticator apps display codes as "123 456" and the server strips whitespace
 // (auth/totp.js) precisely so a paste of that form validates. Do not add
@@ -36,6 +37,22 @@ function discordRoleConflicts(fields: Record<string, string>) {
     }
   }
   return [...seen.entries()].filter(([, tiers]) => tiers.length > 1).map(([id, tiers]) => `${id} is mapped to ${tiers.join(" and ")}`);
+}
+
+// F3, #573: names are keyed by role ID, not by tier field -- a single field
+// (Admin, say) can hold several comma-separated role IDs (see the field's own
+// help text below), and each needs its own label. Order matches the fields'
+// own display order; de-duplicated across fields since the same role ID
+// should not get two separate label inputs if a mapping is accidentally
+// duplicated across two tiers (already flagged separately as a conflict).
+function discordRoleIdsAcrossFields(...fields: string[]): string[] {
+  const ids: string[] = [];
+  for (const value of fields) {
+    for (const id of value.split(",").map((v) => v.trim()).filter((v) => DISCORD_SNOWFLAKE_RE.test(v))) {
+      if (!ids.includes(id)) ids.push(id);
+    }
+  }
+  return ids;
 }
 
 type SettingsTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
@@ -95,6 +112,9 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   const [discordModeratorRoleIds, setDiscordModeratorRoleIds] = useState("");
   const [discordPlayerRoleIds, setDiscordPlayerRoleIds] = useState("");
   const [discordRequireMfaTiers, setDiscordRequireMfaTiers] = useState("");
+  // F3, #573: operator-typed display labels, keyed by role ID -- shown next
+  // to the tier in the signed-in chip instead of the bare tier name.
+  const [discordRoleNames, setDiscordRoleNames] = useState<Record<string, string>>({});
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordResult, setPasswordResult] = useState<SettingsTaskResult | null>(null);
@@ -150,6 +170,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
     setDiscordModeratorRoleIds(serverConfig["DISCORD_CONSOLE_MODERATOR_ROLE_IDS"] || "");
     setDiscordPlayerRoleIds(serverConfig["DISCORD_CONSOLE_PLAYER_ROLE_IDS"] || "");
     setDiscordRequireMfaTiers(serverConfig["DISCORD_OAUTH_REQUIRE_MFA_TIERS"] || "");
+    setDiscordRoleNames(decodeRoleNamesFromWire(serverConfig["DISCORD_CONSOLE_ROLE_NAMES"] || ""));
   }
   useEffect(() => {
     refresh().catch(() => undefined);
@@ -184,6 +205,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   const confirmStarted = confirmPassword.length > 0;
   const passwordsMatch = newPassword === confirmPassword;
   const discordRoleConflictList = discordRoleConflicts({ Admin: discordAdminRoleIds, Moderator: discordModeratorRoleIds, Player: discordPlayerRoleIds });
+  const discordRoleIdsForNaming = discordRoleIdsAcrossFields(discordAdminRoleIds, discordModeratorRoleIds, discordPlayerRoleIds);
   async function changeLoginPassword() {
     if (!currentPassword) {
       setPasswordResult({ status: "failed", title: "Password Change Failed", message: "Enter your current login password." });
@@ -261,6 +283,12 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
     setDiscordOAuthSaving(true);
     setDiscordOAuthResult({ status: "running", title: "Saving Discord OAuth config..." });
     try {
+      // Pruned to only role IDs still present in one of the three fields above --
+      // removing a role ID also cleans up whatever label it had, rather than
+      // leaving an orphaned entry in the saved map forever.
+      const prunedRoleNames = Object.fromEntries(
+        discordRoleIdsForNaming.filter((id) => discordRoleNames[id]).map((id) => [id, discordRoleNames[id]])
+      );
       await post<{ ok: boolean }>("/api/setup/write-oauth-config", {
         DISCORD_OAUTH_CLIENT_ID: discordClientId,
         DISCORD_OAUTH_REDIRECT_URI: discordRedirectUri,
@@ -268,6 +296,10 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
         DISCORD_CONSOLE_ADMIN_ROLE_IDS: discordAdminRoleIds,
         DISCORD_CONSOLE_MODERATOR_ROLE_IDS: discordModeratorRoleIds,
         DISCORD_CONSOLE_PLAYER_ROLE_IDS: discordPlayerRoleIds,
+        // Sent as a plain object, NOT pre-encoded here -- the server is the
+        // single place that base64url-encodes this value before writing it to
+        // .env (see writeOAuthConfig/validateOAuthWriteConfigKey in server.js).
+        DISCORD_CONSOLE_ROLE_NAMES: prunedRoleNames,
         DISCORD_OAUTH_REQUIRE_MFA_TIERS: discordRequireMfaTiers
       });
       if (discordClientSecret) {
@@ -552,6 +584,27 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
             <label htmlFor="settings-discord-mfa">Require Discord 2FA for <em>(optional)</em>{!discordRequireMfaTiers ? <button type="button" className="login-password-toggle" onClick={() => setDiscordRequireMfaTiers("owner,admin")}>use recommended</button> : null}<input id="settings-discord-mfa" name="settings-discord-mfa" disabled={discordOAuthSaving} value={discordRequireMfaTiers} onChange={(event) => setDiscordRequireMfaTiers(event.target.value)} placeholder="blank = off; recommended: owner,admin" /></label>
           </div>
           {discordRoleConflictList.length > 0 && <p className="attention-text">Each Discord role can map to only one access level &mdash; {discordRoleConflictList.join("; ")}. Owner is never a role: it is the server&apos;s owner.</p>}
+          {discordRoleIdsForNaming.length > 0 && <div className="settings-discord-role-names">
+            <p className="muted" style={{ marginTop: "12px" }}>
+              Name your Discord roles <em>(optional)</em> &mdash; shown in the signed-in chip instead of the plain access level. Leave a role blank to just show its access level.
+            </p>
+            <div className="settings-password-grid">
+              {discordRoleIdsForNaming.map((roleId) => (
+                <label key={roleId} htmlFor={`settings-discord-role-name-${roleId}`}>
+                  {roleId}
+                  <input
+                    id={`settings-discord-role-name-${roleId}`}
+                    name={`settings-discord-role-name-${roleId}`}
+                    disabled={discordOAuthSaving}
+                    value={discordRoleNames[roleId] || ""}
+                    onChange={(event) => setDiscordRoleNames((prev) => ({ ...prev, [roleId]: event.target.value }))}
+                    placeholder="e.g. Heavy Bats"
+                    maxLength={100}
+                  />
+                </label>
+              ))}
+            </div>
+          </div>}
           <p className="muted">With &ldquo;Require Discord 2FA for&rdquo; set, sign-ins for those tiers are refused unless the Discord account itself has two-factor enabled (recommended for owner and admin). If you also run a companion bot with a signed tier handoff, the bot decides tiers and the role fields above are ignored. Additional owners beyond the server owner can be set with <code>DISCORD_OAUTH_OWNER_ALLOWLIST</code> in <code>.env</code> (advanced).</p>
           <div className="action-row" style={{ marginTop: "12px" }}>
             <button disabled={discordOAuthSaving || discordRoleConflictList.length > 0 || (!discordClientId && !discordRedirectUri && !discordClientSecret && !discordHomeGuildId && !discordAdminRoleIds && !discordModeratorRoleIds && !discordPlayerRoleIds && !discordRequireMfaTiers)} onClick={() => { void saveDiscordOAuth(); }}>

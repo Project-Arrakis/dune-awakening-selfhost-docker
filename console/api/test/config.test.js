@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, publicConfig, readConsoleBuildId, resolvePorts } from "../src/config.js";
+import { encodeRoleNames } from "../src/integrations/discord/roleTiers.js";
 
 test("frontend build ID changes when the built entry file changes", () => {
   const staticDir = mkdtempSync(join(tmpdir(), "arrakis-build-id-"));
@@ -40,6 +41,29 @@ test("web config exposes safe deployment flags and JSON body limit", () => {
 
     process.env.ADMIN_SECURE_COOKIES = "0";
     assert.equal(loadConfig().secureCookies, false);
+  } finally {
+    process.env = previous;
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// F3, #573: DISCORD_CONSOLE_ROLE_NAMES must never be able to crash console
+// boot -- it's a purely cosmetic label map, and a malformed/hand-edited value
+// must degrade to "no names configured" (empty map), never take the whole
+// console down.
+test("config: discordConsoleRoleNames decodes a well-formed value and fails safe to {} on a malformed one", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-rolenames-"));
+  const previous = { ...process.env };
+  try {
+    process.env.DUNE_DOCKER_DIR = repoRoot;
+    process.env.DISCORD_CONSOLE_ROLE_NAMES = encodeRoleNames({ "100000000000000002": "Heavy Bats" });
+    assert.deepEqual(loadConfig().discordConsoleRoleNames, { "100000000000000002": "Heavy Bats" });
+
+    process.env.DISCORD_CONSOLE_ROLE_NAMES = "not-valid-base64url-json!!!";
+    assert.deepEqual(loadConfig().discordConsoleRoleNames, {}, "a malformed value must fail safe, never throw");
+
+    delete process.env.DISCORD_CONSOLE_ROLE_NAMES;
+    assert.deepEqual(loadConfig().discordConsoleRoleNames, {}, "absent is an empty map");
   } finally {
     process.env = previous;
     rmSync(repoRoot, { recursive: true, force: true });

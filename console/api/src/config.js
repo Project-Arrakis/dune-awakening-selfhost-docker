@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, statSync, chownSync } from "node:fs";
-import { parseRoleIdList, parseTierList, roleTierConflicts } from "./integrations/discord/roleTiers.js";
+import { parseRoleIdList, parseTierList, roleTierConflicts, decodeRoleNamesSafe } from "./integrations/discord/roleTiers.js";
 import { dirname, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
@@ -223,6 +223,11 @@ export function loadConfig() {
     moderator: parseRoleIdList(process.env.DISCORD_CONSOLE_MODERATOR_ROLE_IDS),
     player: parseRoleIdList(process.env.DISCORD_CONSOLE_PLAYER_ROLE_IDS),
   };
+  // Operator-typed { roleId: name } display labels (F3, #573) -- purely
+  // cosmetic, never an authorization input. decodeRoleNamesSafe fails safe to
+  // {} on any malformed value (corrupted .env, hand-edit) rather than crashing
+  // console boot -- this must never be riskier than the tier string it labels.
+  const discordConsoleRoleNames = decodeRoleNamesSafe(process.env.DISCORD_CONSOLE_ROLE_NAMES);
   return {
     appName: APP_NAME,
     version: readConsoleVersion(repoRoot),
@@ -303,6 +308,7 @@ export function loadConfig() {
     discordOAuthOwnerAllowlist: String(process.env.DISCORD_OAUTH_OWNER_ALLOWLIST || "").split(",").map((item) => item.trim()).filter((item) => /^\d{17,19}$/.test(item)),
     discordHomeGuildId: oauthHomeGuildId,
     discordConsoleRoleTiers,
+    discordConsoleRoleNames,
     // Separation of duties (rfc-console-auth.md §2.1.1): non-empty means the
     // mapping is unsound and Discord sign-in is refused until it is fixed.
     discordConsoleRoleTierConflicts: roleTierConflicts(discordConsoleRoleTiers),

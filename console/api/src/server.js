@@ -20,7 +20,7 @@ import { createSecondFactorStore } from "./auth/secondFactorStore.js";
 import { generateTotpSecret, provisioningUri, provisioningQrDataUri, verifyTotpMatch } from "./auth/totp.js";
 import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
-import { roleTiersConfigured, roleTierConflicts, describeRoleTierConflicts, parseRoleIdList } from "./integrations/discord/roleTiers.js";
+import { roleTiersConfigured, roleTierConflicts, describeRoleTierConflicts, parseRoleIdList, validateRoleNamesMap, encodeRoleNames } from "./integrations/discord/roleTiers.js";
 import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
@@ -304,6 +304,7 @@ const resolveOAuthTier = createOAuthTierResolver({
   },
   handoff: handoff.enabled ? handoff : null,
   roleTiers: config.discordConsoleRoleTiers,
+  roleNames: config.discordConsoleRoleNames,
   requireMfaTiers: config.discordOAuthRequireMfaTiers
 });
 // True when Discord sign-in can produce ANY tier: a handoff, a role mapping, or
@@ -1023,7 +1024,11 @@ async function handleApi(req, res) {
         username: session.username || "Admin",
         displayName: session.displayName || session.username || "Admin",
         tier: session.tier || "owner",
-        guildId: session.guildId || ""
+        guildId: session.guildId || "",
+        // F3, #573: a pure display label for the role that decided this
+        // session's tier -- "" (matching every other optional string field on
+        // this object, e.g. guildId above) when none is configured/available.
+        roleName: session.roleName || ""
       },
       scope: session.scope || null,
       secondFactorEnrolled,
@@ -6148,6 +6153,14 @@ async function saveOAuthClientSecret(req, res) {
 const DISCORD_SNOWFLAKE_RE = /^\d{17,19}$/;
 
 function validateOAuthWriteConfigKey(key, value) {
+  // DISCORD_CONSOLE_ROLE_NAMES (F3, #573) is submitted as a JSON object
+  // ({ roleId: name }), not a string like every other key here -- validated
+  // on the raw value, ahead of the generic String() coercion below, which
+  // would otherwise collapse it to the useless literal "[object Object]".
+  if (key === "DISCORD_CONSOLE_ROLE_NAMES") {
+    const result = validateRoleNamesMap(value);
+    return result.ok ? null : `${key}: ${result.reason}`;
+  }
   const v = String(value || "").trim();
   if (!v) return null;
   switch (key) {
@@ -6194,6 +6207,7 @@ async function writeOAuthConfig(req, res) {
     "DISCORD_CONSOLE_ADMIN_ROLE_IDS",
     "DISCORD_CONSOLE_MODERATOR_ROLE_IDS",
     "DISCORD_CONSOLE_PLAYER_ROLE_IDS",
+    "DISCORD_CONSOLE_ROLE_NAMES",
     "DISCORD_OAUTH_REQUIRE_MFA_TIERS"
   ];
   // Validate every submitted key first, then the mapping as a whole -- the
@@ -6223,7 +6237,12 @@ async function writeOAuthConfig(req, res) {
   const changes = [];
   for (const key of allowed) {
     if (body[key] === undefined) continue;
-    updateEnvFileValue(key, body[key] == null ? "" : String(body[key]));
+    // Encoded here, not by the client -- see validateOAuthWriteConfigKey's own
+    // comment on why this key alone is validated on its raw object value.
+    const valueToWrite = key === "DISCORD_CONSOLE_ROLE_NAMES"
+      ? encodeRoleNames(validateRoleNamesMap(body[key]).value)
+      : (body[key] == null ? "" : String(body[key]));
+    updateEnvFileValue(key, valueToWrite);
     changes.push(key);
   }
   audit(config, req, "setup.write-oauth-config", { keys: changes });
@@ -6233,7 +6252,7 @@ async function writeOAuthConfig(req, res) {
 function readSetupConfigValues() {
   const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID",
     "DISCORD_HOME_GUILD_ID", "DISCORD_OAUTH_CLIENT_ID", "DISCORD_OAUTH_REDIRECT_URI", "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP", "DISCORD_OAUTH_OWNER_ALLOWLIST",
-    "DISCORD_CONSOLE_ADMIN_ROLE_IDS", "DISCORD_CONSOLE_MODERATOR_ROLE_IDS", "DISCORD_CONSOLE_PLAYER_ROLE_IDS", "DISCORD_OAUTH_REQUIRE_MFA_TIERS"];
+    "DISCORD_CONSOLE_ADMIN_ROLE_IDS", "DISCORD_CONSOLE_MODERATOR_ROLE_IDS", "DISCORD_CONSOLE_PLAYER_ROLE_IDS", "DISCORD_CONSOLE_ROLE_NAMES", "DISCORD_OAUTH_REQUIRE_MFA_TIERS"];
   const values = {};
   for (const file of [resolve(config.repoRoot, ".env"), resolve(config.generatedDir, "battlegroup.env")]) {
     if (!existsSync(file)) continue;
@@ -6810,7 +6829,7 @@ async function handleOAuthCallback(req, res) {
   // bucket (symmetric with the password-login route), so transient denials
   // during the flow do not linger against a user who ultimately succeeds.
   oauthCallbackRateLimiter.recordSuccess(rateKey);
-  const session = auth.makeSession({ tier: resolved.tier, userId: identity.userId, username: identity.username, displayName: identity.displayName, guildId: config.discordHomeGuildId });
+  const session = auth.makeSession({ tier: resolved.tier, userId: identity.userId, username: identity.username, displayName: identity.displayName, guildId: config.discordHomeGuildId, roleName: resolved.roleName });
   res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie()]);
   audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: resolved.tier });
   return html(res, 200, oauthReturnPage());

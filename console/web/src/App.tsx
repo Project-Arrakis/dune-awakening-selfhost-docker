@@ -397,7 +397,7 @@ export function App() {
   // read failure, 403'ing for exactly the moderator/player tiers the
   // known-empty-actions branch exists to protect from that same trap.
   const [meFetchFailed, setMeFetchFailed] = useState(false);
-  const [userInfo, setUserInfo] = useState<{ username: string; displayName: string; tier: string } | null>(null);
+  const [userInfo, setUserInfo] = useState<{ username: string; displayName: string; tier: string; roleName: string } | null>(null);
   const [tab, setTab] = useActiveTab();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
@@ -449,8 +449,8 @@ export function App() {
     if (!auth) { setAllowedActions([]); setUserInfo(null); setMeLoaded(false); setMeFetchFailed(false); return; }
     let cancelled = false;
     setMeFetchFailed(false);
-    api<{ user: { id: string; username: string; displayName: string; tier: string; guildId: string }; allowedActions: string[] }>("/api/auth/me")
-      .then((res) => { if (!cancelled) { setAllowedActions(res.allowedActions || []); setUserInfo({ username: res.user.username, displayName: res.user.displayName || res.user.username, tier: res.user.tier }); setMeLoaded(true); } })
+    api<{ user: { id: string; username: string; displayName: string; tier: string; guildId: string; roleName?: string }; allowedActions: string[] }>("/api/auth/me")
+      .then((res) => { if (!cancelled) { setAllowedActions(res.allowedActions || []); setUserInfo({ username: res.user.username, displayName: res.user.displayName || res.user.username, tier: res.user.tier, roleName: res.user.roleName || "" }); setMeLoaded(true); } })
       .catch(() => { if (!cancelled) { setMeFetchFailed(true); setMeLoaded(true); } /* a failed read leaves the UI ungated; the server still enforces */ });
     return () => { cancelled = true; };
   }, [auth]);
@@ -1010,7 +1010,7 @@ export function App() {
               <span className="sidebar-user-name" title={userInfo.username}>{userInfo.displayName}</span>
             </span>
             <div className="sidebar-user-meta">
-              <span className={`sidebar-user-tier tier-${userInfo.tier}`} title={`Console access tier: ${userInfo.tier}`}>{userInfo.tier}</span>
+              <span className={`sidebar-user-tier tier-${userInfo.tier}`} title={`Console access tier: ${userInfo.tier}`}>{userInfo.roleName || userInfo.tier}</span>
               <button className="sidebar-logout" type="button" onClick={() => { void doLogout(); }} title="Log out">
                 <LogOut size={14} aria-hidden="true" /><span>Logout</span>
               </button>
