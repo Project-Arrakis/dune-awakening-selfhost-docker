@@ -44,7 +44,7 @@ import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
-import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions, accessLevelForAction, crownJewelActions } from "./policy.js";
+import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions, allAccessLevels, crownJewelActions } from "./policy.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
@@ -1387,7 +1387,7 @@ async function handleApi(req, res) {
       // #634: pre-computed access level (read/write/permissions) per action,
       // for the Visual Editor's access-level grouping -- classification is
       // computed once here and sent as data; the client never re-derives it.
-      accessLevels: Object.fromEntries([...allKnownActions()].map((action) => [action, accessLevelForAction(action)])),
+      accessLevels: allAccessLevels(),
       // #634: the concrete, already-expanded crown-jewel action list -- the
       // client's "select all" checks plain array membership, no matching.
       crownJewelActions: crownJewelActions(),
