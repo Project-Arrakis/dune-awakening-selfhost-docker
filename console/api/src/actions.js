@@ -219,8 +219,17 @@ export const ROUTE_ACTIONS = {
   // --- Storage (read) ---
   "GET /api/storage":                          "storage:read",
 
-  // --- Blueprints (read) ---
+  // --- Blueprints ---
   "GET /api/blueprints":                       "blueprints:read",
+  // POST-shaped but read-only in effect: blueprintBulkExportRoute only calls
+  // exportBlueprint() per id and zips the results, and GET
+  // /api/blueprints/{id}/export already resolves to blueprints:read. It is
+  // still NOT folded into blueprints:read, deliberately -- one call can pull
+  // 500 blueprints, so an operator who granted read-only access to the
+  // blueprint list did not thereby agree to bulk extraction. Its own action
+  // lets them grant that separately, and nobody's existing read grant widens.
+  "POST /api/blueprints/export":               "blueprints:export",
+  "POST /api/blueprints/import":               "blueprints:import",
 
   // --- Admin Tools ---
   "GET /api/admin/items/catalog":              "admin:items:read",
@@ -398,12 +407,24 @@ export const REGEX_ACTIONS_BY_METHOD = {
   "PUT /api/settings/api-keys/":    "settings:write",
   "DELETE /api/settings/api-keys/": "settings:write",
 
-  "POST /api/players/":    "players:mutate",
-  "DELETE /api/players/":  "players:mutate",
-  "PATCH /api/players/":   "players:mutate",
+  // ---- *:unclassified sentinels ----
+  //
+  // DO NOT DELETE THESE, even though every route that exists today is named in
+  // REGEX_ACTIONS_BY_METHOD_PATTERN and rbacParity.test.js proves it. They are
+  // the fail-closed floor: REGEX_ACTIONS underneath this tier is
+  // method-agnostic and maps "/api/<ns>/" to <ns>:read, so an unnamed POST or
+  // DELETE with no sentinel here resolves to a READ action and runs under a
+  // read-only grant. Same trap the vehicles:system-custodian entry documents.
+  //
+  // Coverage is per method and currently uneven: players has POST/DELETE/PATCH,
+  // guilds/addons/blueprints have POST/DELETE, and no namespace has PUT.
+  "POST /api/players/":    "players:unclassified",
+  "DELETE /api/players/":  "players:unclassified",
+  "PATCH /api/players/":   "players:unclassified",
 
-  "POST /api/guilds/":     "guilds:mutate",
-  "DELETE /api/guilds/":   "guilds:mutate",
+  // Sentinel; see *:unclassified above.
+  "POST /api/guilds/":     "guilds:unclassified",
+  "DELETE /api/guilds/":   "guilds:unclassified",
 
   "POST /api/bases/":      "bases:mutate",
   "DELETE /api/bases/":    "bases:mutate",
@@ -413,15 +434,17 @@ export const REGEX_ACTIONS_BY_METHOD = {
 
   "POST /api/storage/":    "storage:mutate",
 
-  "POST /api/addons/":     "addons:mutate",
-  "DELETE /api/addons/":   "addons:mutate",
+  // Sentinel; see *:unclassified above.
+  "POST /api/addons/":     "addons:unclassified",
+  "DELETE /api/addons/":   "addons:unclassified",
 
   "PATCH /api/maps/spicefields/": "maps:write-config",
 
   "DELETE /api/backups/":  "backups:delete",
 
-  "POST /api/blueprints/": "blueprints:mutate",
-  "DELETE /api/blueprints/":"blueprints:mutate",
+  // Sentinel; see *:unclassified above.
+  "POST /api/blueprints/": "blueprints:unclassified",
+  "DELETE /api/blueprints/":"blueprints:unclassified",
 
   "PATCH /api/database/tables/": "database:mutate",
 };
@@ -539,8 +562,206 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // can bridge.
   { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/storage\/items\/[^/]+$/, action: "vehicles:delete-item" },
   { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/storage\/items$/, action: "vehicles:bulk-delete-items" },
-  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/storage\/all-items$/, action: "vehicles:bulk-delete-items" }
+  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/storage\/all-items$/, action: "vehicles:bulk-delete-items" },
+
+  // ---- Players ----
+  //
+  // 41 method+path pairs, split by consequence -- that is the unit an operator
+  // delegates on. Previously all one players:mutate, which made kicking
+  // inseparable from wiping a character.
+  //
+  //   players:moderate    session/account control. No economy or progression
+  //                       effect. The natural moderator grant.
+  //   players:teleport    moving someone. Disruptive; creates and destroys
+  //                       nothing.
+  //   players:give-item   items and vehicles into the world. The
+  //                       economy-inflation surface.
+  //   players:grant       currency, XP, reputation, unlocks, specializations,
+  //                       skill points, faction, journey/tutorial completion.
+  //                       Progression handed out rather than earned.
+  //   players:reset       progression destroyed: full reset, journey, tutorials,
+  //                       specializations, keystones, clean-inventory.
+  //                       Irreversible from the player's side.
+  //   players:delete-item destroying one inventory row. Separate for the same
+  //                       reason bases:delete-item is.
+  //   players:edit-item   editing one inventory row in place (quantity, etc),
+  //                       separate from deletion so neither implies the other.
+  //   players:repair      gear durability, decayed vehicles, a stuck login
+  //                       queue, water/fuel top-ups. Low blast radius, high
+  //                       day-to-day utility.
+  //   players:recover     character recovery -- restores/rewrites a character,
+  //                       so it stands apart from both grant and repair.
+  //
+  // Issue #351 rule: no action may be a string prefix of another, or an "X*"
+  // wildcard bridges the two. delete-item/edit-item share no prefix, and there
+  // is no players:delete-items for "players:delete-item*" to catch.
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/kick$/, action: "players:moderate" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/ban$/, action: "players:moderate" },
+  // The one path that multiplexes on method: GET reads ban state (and falls
+  // through to the players:read prefix rule), POST bans, DELETE unbans. Both
+  // mutating methods need naming here or DELETE would land on the
+  // players:unclassified catch-all instead of the moderation grant.
+  { method: "DELETE", pattern: /^\/api\/players\/[^/]+\/ban$/, action: "players:moderate" },
+
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/teleport$/, action: "players:teleport" },
+
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/give-item$/, action: "players:give-item" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/give-item-id$/, action: "players:give-item" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/give-items$/, action: "players:give-item" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/augment-item$/, action: "players:give-item" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/spawn-vehicle$/, action: "players:give-item" },
+
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/add-currency$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/add-xp$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/add-intel$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/add-faction-reputation$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/faction$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/set-skill-points$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/set-skill-module$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/building-unlocks\/grant$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/customizations\/grant$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/crafting-recipes\/unlock$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/research-items\/unlock$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/specializations\/add-xp$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/specializations\/grant-max$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/specializations\/keystones\/grant-all$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/journey\/complete$/, action: "players:grant" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/tutorials\/complete$/, action: "players:grant" },
+
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/reset-progression$/, action: "players:reset" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/clean-inventory$/, action: "players:reset" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/journey\/reset$/, action: "players:reset" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/tutorials\/reset$/, action: "players:reset" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/specializations\/reset$/, action: "players:reset" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/specializations\/keystones\/reset-all$/, action: "players:reset" },
+
+  { method: "DELETE", pattern: /^\/api\/players\/[^/]+\/inventory\/[^/]+$/, action: "players:delete-item" },
+  { method: "PATCH",  pattern: /^\/api\/players\/[^/]+\/inventory\/[^/]+$/, action: "players:edit-item" },
+
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/repair-gear$/, action: "players:repair" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/repair-faction-reputation$/, action: "players:repair" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/repair-landsraad-quests$/, action: "players:repair" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/repair-login-queue$/, action: "players:repair" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/repair-vehicle-decay$/, action: "players:repair" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/refuel-vehicle$/, action: "players:repair" },
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/refill-water$/, action: "players:repair" },
+
+  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/character-recovery$/, action: "players:recover" },
+
+  // ---- Guilds ----
+  //
+  // DELETE /api/guilds/{guildId} is DISBAND. It shared guilds:mutate with
+  // promoting a member, so fixing a roster and destroying the guild were one
+  // grant -- the reversible-vs-irreversible split bases and vehicles already
+  // had.
+  //
+  //   guilds:disband     destroys the guild. Irreversible.
+  //   guilds:membership  add and remove. Removal costs a player their
+  //                      guild-derived access, so it sits above rank and below
+  //                      disband. Add/remove stay one action: two directions of
+  //                      the same roster knob. Split if a one-way case appears.
+  //   guilds:rank        promote/demote. Rank only; nobody joins or leaves.
+  //
+  // Both DELETE patterns are anchored so "/api/guilds/{id}" and
+  // "/api/guilds/{id}/members/{playerId}" cannot be confused -- the variable
+  // segment comes before the distinguishing part, so a startsWith prefix (as
+  // bases:delete also found) is not enough.
+  { method: "DELETE", pattern: /^\/api\/guilds\/[^/]+\/members\/[^/]+$/, action: "guilds:membership" },
+  { method: "POST",   pattern: /^\/api\/guilds\/[^/]+\/members$/, action: "guilds:membership" },
+  { method: "POST",   pattern: /^\/api\/guilds\/[^/]+\/members\/[^/]+\/promote$/, action: "guilds:rank" },
+  { method: "POST",   pattern: /^\/api\/guilds\/[^/]+\/members\/[^/]+\/demote$/, action: "guilds:rank" },
+  { method: "DELETE", pattern: /^\/api\/guilds\/[^/]+$/, action: "guilds:disband" },
+
+  // ---- Blueprints ----
+  //
+  // blueprints:mutate covered bulk export (a read), import (creation) and
+  // delete (destruction) with one grant. Anchored so it cannot swallow
+  // /api/blueprints/{id}/export, which stays blueprints:read.
+  { method: "DELETE", pattern: /^\/api\/blueprints\/[^/]+$/, action: "blueprints:delete" },
+
+  // ---- Addons ----
+  //
+  // addons:mutate covered lifecycle AND the bridge -- the route that executes
+  // whatever the addon's manifest declares, including SQL. Lifecycle control
+  // and "run the addon's code" are not the same privilege.
+  //
+  //   addons:remove  uninstall an installed addon
+  //   addons:toggle  enable/disable, the reversible lifecycle switch
+  //   addons:bridge  the manifest-authorized action channel. Authorizes
+  //                  against the INSTALLED ADDON's declared permission, not the
+  //                  caller (server.js addonBridgeRoute) -- which is why it is
+  //                  withheld separately.
+  //
+  // API keys cannot reach any of these regardless: `addons` is in
+  // KEY_WRITE_DENIED_NAMESPACES, and the bridge additionally refuses key
+  // principals outright.
+  { method: "DELETE", pattern: /^\/api\/addons\/installed\/[^/]+$/, action: "addons:remove" },
+  { method: "POST",   pattern: /^\/api\/addons\/installed\/[^/]+\/bridge$/, action: "addons:bridge" },
+  { method: "POST",   pattern: /^\/api\/addons\/installed\/[^/]+\/enable$/, action: "addons:toggle" },
+  { method: "POST",   pattern: /^\/api\/addons\/installed\/[^/]+\/disable$/, action: "addons:toggle" }
 ];
+
+// ---- Content-conditional actions ----
+//
+// Actions that no entry above resolves to, because the action depends on the
+// request BODY rather than on its method and path. actionForRoute runs in the
+// gate, before any body is read, so these cannot be resolved there; they are
+// enforced by a second check inside the handler (server.js requireAction) once
+// the body is parsed.
+//
+// Listed here so allKnownActions() sees them: that set feeds the API-key scope
+// catalog and any policy-authoring tool, so an action missing from it is
+// invisible to every tool an operator has.
+//
+//   database:execute -- the write half of POST /api/database/query, which
+//     resolves to the read-shaped database:query at the route level. Admin is
+//     granted database:query while denied database:mutate (the narrow
+//     single-cell edit) and database:write-config, so without this the raw-SQL
+//     path defeated the Deny on the structured one. Denied to admin by default.
+//     Selection is best-effort (see duneDb.runSql); the read path is enforced
+//     by Postgres, not by this action.
+export const CONTENT_CONDITIONAL_ACTIONS = [
+  "database:execute",
+];
+
+// ---- Removed actions, and what they became ----
+//
+// Deleting a split action ESCALATES an existing policy rather than narrowing
+// it. policy.js's header teaches the idiom
+//
+//     { "Effect": "Deny",  "Action": ["players:mutate"] },
+//     { "Effect": "Allow", "Action": ["players:*"] }
+//
+// With the name gone the Deny matches nothing and the wildcard matches all ten
+// successors, turning "no player mutations" into "every player mutation" -- 22
+// actions gained on upgrade, including addons:bridge and guilds:disband.
+//
+// So the old names keep their MEANING in matchAction (a Deny still denies what
+// it denied, an Allow still grants what it granted) while setPolicies refuses
+// them on save, naming the successors. Aliases are NOT in the catalog and
+// cannot be granted to an API key.
+//
+// Each list is exactly what the old name's routes resolve to now, no more.
+// players:kick-all is ABSENT: it was already its own ROUTE_ACTIONS entry
+// (POST /api/players/kick-all-online), so it was never part of players:mutate.
+// The *:unclassified sentinels ARE included -- the old *:mutate names were
+// themselves the catch-all for unmapped mutating routes.
+export const REMOVED_ACTION_ALIASES = Object.freeze({
+  "players:mutate": Object.freeze([
+    "players:moderate", "players:teleport", "players:give-item", "players:grant",
+    "players:reset", "players:delete-item", "players:edit-item", "players:repair",
+    "players:recover", "players:unclassified"
+  ]),
+  "guilds:mutate": Object.freeze([
+    "guilds:disband", "guilds:membership", "guilds:rank", "guilds:unclassified"
+  ]),
+  "blueprints:mutate": Object.freeze([
+    "blueprints:export", "blueprints:import", "blueprints:delete", "blueprints:unclassified"
+  ]),
+  "addons:mutate": Object.freeze([
+    "addons:remove", "addons:toggle", "addons:bridge", "addons:unclassified"
+  ])
+});
 
 // ---- Action resolution ----
 //

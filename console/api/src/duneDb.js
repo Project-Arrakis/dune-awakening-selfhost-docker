@@ -828,11 +828,40 @@ export async function searchDatabase(db, q) {
   return result.rows;
 }
 
-export async function runSql(db, query, allowDestructive = false) {
+// enforceReadOnly is for CALLER-SUPPLIED SQL only -- the console's Run Query
+// route and the addon bridge. Internal callers build their own SQL and pass it
+// with enforceReadOnly off, both because their statements are not attacker
+// controlled and because their mocked `db` objects in tests have no usable
+// transaction().
+export async function runSql(db, query, allowDestructive = false, { enforceReadOnly = false } = {}) {
   const sql = String(query || "").trim();
   if (!sql) throw new Error("SQL query is required");
   const readOnly = isReadOnlySql(sql);
   if (!allowDestructive && !readOnly) throw new Error("Only read-only SQL is allowed without destructive confirmation");
+
+  // POSTGRES refuses the write; isReadOnlySql is not trusted to have spotted it.
+  //
+  // The classifier only asks "starts with a read keyword and avoids a
+  // blacklist". Every privileged mutation here is shaped `select dune.<fn>(...)`
+  // -- disband_guild, delete_actors, adjust_player_virtual_currency_balance --
+  // so the entire mutation surface passes, and the blacklist cannot be repaired
+  // to catch it (\bdelete\b does not match delete_actors, across hundreds of
+  // shipped functions). `SELECT ... INTO` and `select 1; select fn()` pass too.
+  //
+  // So every guard built on the classifier -- the database:execute permission,
+  // the pre-write backup, the mutation rate limiter -- is decorative for
+  // exactly the statements that matter most. Asking the database is the only
+  // check that cannot be talked around.
+  if (enforceReadOnly && !allowDestructive) {
+    const result = await db.transaction(async (tx) => {
+      // Must be first in the transaction. Covers every statement in `sql`,
+      // including later ones in a multi-statement string.
+      await tx.query("set transaction read only");
+      return tx.query(sql);
+    });
+    return rowsResult(result);
+  }
+
   const result = readOnly
     ? await db.query(sql)
     : await withKnownLiveRefresh(db, () => db.query(sql), { features: liveRefreshFeaturesForSql(sql) });
