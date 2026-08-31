@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { DISCORD_SETUP_RETURN_KEY } from "./features/auth/DiscordSetupWizard";
@@ -67,5 +67,30 @@ describe("App: returning from the Discord OAuth round-trip (#643)", () => {
 
     expect(await screen.findByText("Set up Discord sign-in")).toBeInTheDocument();
     expect(document.querySelector("main.login-screen")).not.toBeNull();
+  });
+
+  // /code-review ultra finding (unverified pipeline output, confirmed by hand against the actual
+  // render logic): SettingsPanel is a plain `tab === "Settings" && <SettingsPanel/>` conditional
+  // render, which fully unmounts it on every tab switch -- so passing
+  // discordSetupRouting.returnToSettings straight through as the "auto-open the Discord accordion"
+  // signal (a value that, by its own comment, "never changes" for the rest of the page's life)
+  // re-opens the accordion on every future Settings visit, not just the one right after the OAuth
+  // return trip.
+  it("auto-opens the Discord accordion only once -- not on every later visit to Settings", async () => {
+    window.sessionStorage.setItem(DISCORD_SETUP_RETURN_KEY, "settings");
+    window.history.replaceState({}, "", "/?discordSetup=done");
+    stubAuthenticatedOwnerSession();
+
+    render(<App />);
+
+    await waitFor(() => expect(document.getElementById("console-navigation")).toBeInTheDocument());
+    expect(await screen.findByLabelText("Collapse Discord OAuth")).toBeInTheDocument();
+
+    // Leave Settings, then come back -- SettingsPanel fully remounts.
+    fireEvent.click(screen.getByText("Home"));
+    fireEvent.click(screen.getAllByText("Settings")[0]);
+
+    expect(await screen.findByLabelText("Expand Discord OAuth")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Collapse Discord OAuth")).not.toBeInTheDocument();
   });
 });

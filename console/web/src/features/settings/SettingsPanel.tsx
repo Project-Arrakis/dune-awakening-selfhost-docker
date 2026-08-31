@@ -44,9 +44,15 @@ type SettingsPanelProps = {
   // OAuth round-trip started from this panel -- auto-expands the accordion
   // so the embedded wizard is exactly where the operator left it.
   autoOpenDiscordSetup?: boolean;
+  // Fired once, right after mount, so App.tsx can clear the one-shot signal
+  // above -- this panel is lazy-loaded and conditionally rendered (unmounts
+  // on every tab switch), so App.tsx cannot safely reset it off `tab`
+  // becoming "Settings" alone (that fires before this lazy chunk resolves
+  // and would clear the flag before this component ever reads it).
+  onAutoOpenDiscordSetupConsumed?: () => void;
 };
 
-export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmAction, autoOpenDiscordSetup }: SettingsPanelProps) {
+export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmAction, autoOpenDiscordSetup, onAutoOpenDiscordSetupConsumed }: SettingsPanelProps) {
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   // Tier 3 credential state. secondFactorEnrolled is read from /api/auth/me,
@@ -118,6 +124,8 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   useEffect(() => {
     refresh().catch(() => undefined);
   }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { onAutoOpenDiscordSetupConsumed?.(); }, []);
   useEffect(() => {
     if (!passwordResult || passwordResult.status === "running") return;
     const id = window.setTimeout(() => setPasswordResult(null), 5400);
