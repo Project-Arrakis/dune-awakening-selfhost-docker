@@ -32,7 +32,7 @@ for (const action of ADMIN_FORBIDDEN) {
 const ADMIN_ALLOWED = [
   "server:read", "server:start", "server:stop", "server:restart",
   "server:restart-service", "server:network-fix", "server:storage-cleanup",
-  "players:read", "players:kick-all", "players:kick", "players:ban", "players:teleport",
+  "players:read", "players:kick-all", "players:moderate", "players:teleport",
   "maps:spawn", "maps:despawn", "maps:teleport", "maps:restart", "maps:reconcile",
   "admin:broadcast", "admin:map-chat",
   "backups:create", "backups:read", "database:read", "database:query",
@@ -49,7 +49,7 @@ for (const action of ADMIN_ALLOWED) {
 
 // --- Moderator gains individual moderation, no economy/config/lifecycle ---
 test("moderator can act on individual griefers (kick/ban/teleport) + mass kick", () => {
-  for (const a of ["players:kick", "players:ban", "players:teleport", "players:kick-all"]) assert.equal(can("moderator", a), true, a);
+  for (const a of ["players:moderate", "players:teleport", "players:kick-all"]) assert.equal(can("moderator", a), true, a);
 });
 test("moderator cannot mutate economy, restart the server, take backups, or edit config", () => {
   for (const a of ["players:mutate", "server:restart", "backups:create", "maps:write-config"]) assert.equal(can("moderator", a), false, a);
@@ -68,7 +68,7 @@ test("player reads only server health, players, guilds, and the live map", () =>
 });
 test("player cannot read the broad game world or write anything", () => {
   for (const a of ["bases:read", "storage:read", "blueprints:read", "vehicles:read", "exchange:read", "landsraad:read", "sietches:read", "deepdesert:read", "backups:read", "database:read"]) assert.equal(can("player", a), false, `read ${a}`);
-  for (const a of ["players:mutate", "players:kick", "server:restart", "maps:write-config"]) assert.equal(can("player", a), false, `write ${a}`);
+  for (const a of ["players:moderate", "server:restart", "maps:write-config"]) assert.equal(can("player", a), false, `write ${a}`);
 });
 
 // --- Owner keeps the crown jewels ---
@@ -77,14 +77,22 @@ test("owner retains every owner-only action", () => {
 });
 
 // --- The moderation catalog split routes correctly ---
-test("player moderation routes resolve to the split actions; economy stays players:mutate", () => {
-  assert.equal(actionForRoute("/api/players/abc/kick", "POST"), "players:kick");
-  assert.equal(actionForRoute("/api/players/abc/ban", "POST"), "players:ban");
-  assert.equal(actionForRoute("/api/players/abc/ban", "DELETE"), "players:ban");
+// Merge-conflict finding (upstream-main-base sync): players:mutate no longer
+// exists as a route-resolvable action at all -- upstream's real main had
+// independently gone further than this repo's own kick/ban split and
+// classified every mutating player route into its own narrow action
+// (actionSplits.test.js's EXPECTED table is the authoritative, exhaustive
+// spec). kick/ban/unban also renamed here from the two separate
+// players:kick/players:ban this repo used to have to the single
+// players:moderate name upstream's main already uses for all three.
+test("player moderation routes resolve to their own narrow actions, never the retired players:mutate", () => {
+  assert.equal(actionForRoute("/api/players/abc/kick", "POST"), "players:moderate");
+  assert.equal(actionForRoute("/api/players/abc/ban", "POST"), "players:moderate");
+  assert.equal(actionForRoute("/api/players/abc/ban", "DELETE"), "players:moderate");
   assert.equal(actionForRoute("/api/players/abc/teleport", "POST"), "players:teleport");
-  assert.equal(actionForRoute("/api/players/abc/give-item", "POST"), "players:mutate");
-  assert.equal(actionForRoute("/api/players/abc/add-currency", "POST"), "players:mutate");
-  assert.equal(actionForRoute("/api/players/abc/reset-progression", "POST"), "players:mutate");
+  assert.equal(actionForRoute("/api/players/abc/give-item", "POST"), "players:give-item");
+  assert.equal(actionForRoute("/api/players/abc/add-currency", "POST"), "players:grant");
+  assert.equal(actionForRoute("/api/players/abc/reset-progression", "POST"), "players:reset");
 });
 
 // --- Funcom token + IP change resolve to the owner-only credential action ---

@@ -8,6 +8,7 @@ import { redact } from "./redact.js";
 import { itemImagePath } from "./adminCatalog.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
 import { isFiefClaimPlaceable } from "./blueprintSafety.js";
+import { renderPlayerMessageTemplate } from "./services/messageTemplate.js";
 import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA, MESSAGE_OF_THE_DAY_PERSONA } from "./systemPersonas.js";
 import {
   craftingRecipeCatalogRows,
@@ -827,11 +828,40 @@ export async function searchDatabase(db, q) {
   return result.rows;
 }
 
-export async function runSql(db, query, allowDestructive = false) {
+// enforceReadOnly is for CALLER-SUPPLIED SQL only -- the console's Run Query
+// route and the addon bridge. Internal callers build their own SQL and pass it
+// with enforceReadOnly off, both because their statements are not attacker
+// controlled and because their mocked `db` objects in tests have no usable
+// transaction().
+export async function runSql(db, query, allowDestructive = false, { enforceReadOnly = false } = {}) {
   const sql = String(query || "").trim();
   if (!sql) throw new Error("SQL query is required");
   const readOnly = isReadOnlySql(sql);
   if (!allowDestructive && !readOnly) throw new Error("Only read-only SQL is allowed without destructive confirmation");
+
+  // POSTGRES refuses the write; isReadOnlySql is not trusted to have spotted it.
+  //
+  // The classifier only asks "starts with a read keyword and avoids a
+  // blacklist". Every privileged mutation here is shaped `select dune.<fn>(...)`
+  // -- disband_guild, delete_actors, adjust_player_virtual_currency_balance --
+  // so the entire mutation surface passes, and the blacklist cannot be repaired
+  // to catch it (\bdelete\b does not match delete_actors, across hundreds of
+  // shipped functions). `SELECT ... INTO` and `select 1; select fn()` pass too.
+  //
+  // So every guard built on the classifier -- the database:execute permission,
+  // the pre-write backup, the mutation rate limiter -- is decorative for
+  // exactly the statements that matter most. Asking the database is the only
+  // check that cannot be talked around.
+  if (enforceReadOnly && !allowDestructive) {
+    const result = await db.transaction(async (tx) => {
+      // Must be first in the transaction. Covers every statement in `sql`,
+      // including later ones in a multi-statement string.
+      await tx.query("set transaction read only");
+      return tx.query(sql);
+    });
+    return rowsResult(result);
+  }
+
   const result = readOnly
     ? await db.query(sql)
     : await withKnownLiveRefresh(db, () => db.query(sql), { features: liveRefreshFeaturesForSql(sql) });
@@ -4875,7 +4905,7 @@ async function vehicleBlockedDeleteState(db, actorId) {
 // (unlike setVehiclePermissions' path) never joins through permission_actor,
 // so an unclaimed junk vehicle resolves and deletes exactly like a claimed
 // one -- arguably the primary use case for this feature.
-export async function deleteVehicleCompletely(db, vehicleId) {
+export async function deleteVehicleCompletely(db, vehicleId, { allowBlockedState = false } = {}) {
   await requireCapability(await supportsVehicleDelete(db),
     "Vehicle deletion requires dune.vehicles, dune.vehicle_modules, dune.actors, and the dune.permission_actor_destroy(bigint)/delete_actors(bigint[]) functions.");
   const target = intParam(vehicleId, "vehicle id", 1);
@@ -4888,7 +4918,7 @@ export async function deleteVehicleCompletely(db, vehicleId) {
     const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
     if (!locked.rowCount) throw new Error("That vehicle was not found.");
     const blockedState = await vehicleBlockedDeleteState(tx, actor.actorId);
-    if (blockedState) {
+    if (blockedState && !allowBlockedState) {
       throw new Error(`This vehicle is currently ${blockedState} and cannot be deleted until that clears. Try again once the vehicle is no longer mid-transit or pending recovery.`);
     }
     const modules = await tx.query(
@@ -7189,7 +7219,7 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
         storage,
         guild,
         landsraad,
-        serverInfo: portalContext.serverInfo || null,
+        serverInfo: portalServerInfo(portalContext.serverInfo, identity.character_name),
         carePackages: {
           enabled: portalContext.carePackages?.enabled === true,
           history: (portalContext.carePackages?.history || [])
@@ -7216,6 +7246,19 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
   const found = new Set(snapshots.map((entry) => entry.accountHash));
   for (const accountHash of requested) if (!found.has(accountHash)) snapshots.push({ accountHash, found: false });
   return snapshots;
+}
+
+function portalServerInfo(serverInfo, playerName) {
+  if (!serverInfo || typeof serverInfo !== "object") return null;
+  const messageOfTheDay = serverInfo.messageOfTheDay;
+  if (!messageOfTheDay || typeof messageOfTheDay !== "object") return serverInfo;
+  return {
+    ...serverInfo,
+    messageOfTheDay: {
+      ...messageOfTheDay,
+      message: renderPlayerMessageTemplate(messageOfTheDay.message, playerName)
+    }
+  };
 }
 
 function portalJourneyRow(row) {
@@ -10941,7 +10984,7 @@ function vehicleDeleteAlreadyGone(message) {
 // Mirrors flushBaseDeletes. Same onBeforeApply-runs-at-most-once-per-pass
 // semantics, for the same reason: a full database backup is not cheap, and
 // several vehicles can flush in the same pass.
-export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBeforeApply } = {}) {
+export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBeforeApply, allowBlockedStates = false } = {}) {
   const pending = listQueuedVehicleDeletes(repoRoot);
   if (!pending.length) return { flushed: [], pending: 0 };
   const observed = await observeRefillPartitions(db, { now });
@@ -10970,7 +11013,7 @@ export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBefo
       }
     }
     try {
-      const result = await deleteVehicleCompletely(db, entry.vehicleId);
+      const result = await deleteVehicleCompletely(db, entry.vehicleId, { allowBlockedState: allowBlockedStates });
       outcomes.set(entry.vehicleId, { queuedAt: entry.queuedAt, keep: false });
       flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: true, ...result });
     } catch (error) {
@@ -10980,7 +11023,12 @@ export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBefo
         flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: true, alreadyGone: true });
         continue;
       }
-      const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
+      // Travel/backup/recovery states can persist legitimately until a map is
+      // positively stopped. They are not permanent failures and must never
+      // burn through the retry limit merely because the background poller saw
+      // the same state several times while a restart was in progress.
+      const blockedState = /currently (Travel|VehicleBackup|VehicleRecovery) and cannot be deleted/i.test(message);
+      const attempts = (blockedState || isTransientFlushError(message)) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_DELETE_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingVehicleDeleteRetryDelayMs();
       outcomes.set(entry.vehicleId, { queuedAt: entry.queuedAt, keep: !dropped, attempts, nextRetryAt, lastError: message });

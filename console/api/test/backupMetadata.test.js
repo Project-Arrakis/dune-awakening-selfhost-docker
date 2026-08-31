@@ -58,6 +58,7 @@ test("backup rows distinguish every console safety-backup origin", () => {
   const origins = [
     ["land-claim-editor", "Restore Safety Backup"],
     ["restore-safety", "Restore Safety Backup"],
+    ["vehicle-delete", "Vehicle Delete Safety Backup"],
     ["base-delete", "SQL Safety Backup"],
     ["destructive-sql", "SQL Safety Backup"],
     ["admin-tools", "SQL Safety Backup"],

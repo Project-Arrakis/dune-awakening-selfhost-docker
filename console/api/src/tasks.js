@@ -13,7 +13,7 @@ import { initializeSelfUpdateStatus } from "./services/selfUpdateStatus.js";
 // sietchesRestartStop (not their Start halves) cover survival/Sietch
 // restarts -- see taskOperations, which splits those into separate stop and
 // start operations so the flush lands between them instead of after both.
-const MAP_DOWN_OPERATIONS = new Set(["mapsDespawn", "restartService", "restartServiceStop", "sietchesRestartStop"]);
+const MAP_DOWN_OPERATIONS = new Set(["mapsDespawn", "restartService", "restartServiceStop", "sietchesRestartStop", "stopGameServersForDbWrites"]);
 
 export class TaskManager {
   constructor(config, options = {}) {
@@ -113,7 +113,7 @@ export class TaskManager {
         const grantWarning = itemGrantTaskWarning(operation, result);
         if (grantWarning) throw Object.assign(new Error(grantWarning), { code: 1, stdout: result.stdout, stderr: result.stderr });
         lastCode = result.code;
-        if (MAP_DOWN_OPERATIONS.has(operation)) await this.flushPendingMapWrites(task, operation);
+        if (MAP_DOWN_OPERATIONS.has(operation)) await this.flushPendingMapWrites(task, operation, payload);
       }
       if (["updateApply", "updateFixSteamcmd"].includes(task.operation)) {
         this.updateCheckCache.invalidate();
@@ -180,10 +180,10 @@ export class TaskManager {
   // immediately by mapsSpawn -- so flush here rather than hope a tick lands in
   // between. Never fails the restart: an unreachable database just means the
   // entries stay queued for the next window.
-  async flushPendingMapWrites(task, operation) {
+  async flushPendingMapWrites(task, operation, payload = {}) {
     if (!this.onMapDown) return;
     try {
-      const result = await this.onMapDown(operation);
+      const result = await this.onMapDown(operation, payload);
       const applied = (result?.flushed || []).filter((entry) => entry.ok);
       const cleared = applied.filter((entry) => entry.noLongerApplicable);
       const generators = applied.filter((entry) => entry.refillType !== "water" && !entry.noLongerApplicable).length;
@@ -349,14 +349,14 @@ function shellQuote(value) {
 }
 
 export function taskTimeoutMs(config, operation) {
-  if (["start", "stop", "restartAll", "restartService", "restartServiceStop", "restartServiceStart", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "mapsRespawn", "sietchesSetActive", "sietchesRestart", "sietchesRestartStop", "sietchesRestartStart", "sietchesReconcile", "deepdesertAction"].includes(operation)) {
+  if (["start", "stop", "restartAll", "stopGameServersForDbWrites", "restartService", "restartServiceStop", "restartServiceStart", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "mapsRespawn", "sietchesSetActive", "sietchesRestart", "sietchesRestartStop", "sietchesRestartStart", "sietchesReconcile", "deepdesertAction"].includes(operation)) {
     return Math.max(config.commandTimeoutMs, 30 * 60 * 1000);
   }
   return config.commandTimeoutMs;
 }
 
 export function taskOperations(operation, payload = {}) {
-  if (operation === "restartAll") return ["stop", "start"];
+  if (operation === "restartAll") return ["stopGameServersForDbWrites", "stop", "start"];
   if (operation === "restartService") return restartServiceOperations(payload);
   // Every Sietch partition is a Survival_1 sub-partition, so this always
   // splits -- the shell layer resolves primary vs. secondary internally.
