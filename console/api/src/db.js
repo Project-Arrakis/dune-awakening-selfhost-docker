@@ -131,13 +131,33 @@ export function bigintParam(value, label, min = 1n, max = 9223372036854775807n) 
   return n.toString();
 }
 
-export function isReadOnlySql(query) {
-  const stripped = String(query || "")
+export function stripSqlComments(query) {
+  return String(query || "")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(/--[^\n]*/g, " ")
     .trim();
+}
+
+export function isReadOnlySql(query) {
+  const stripped = stripSqlComments(query);
   return /^(select|with|show|explain)\b/i.test(stripped) &&
     !/\b(insert|update|delete|drop|alter|truncate|create|grant|revoke|copy\s+.*\s+from)\b/i.test(stripped);
+}
+
+// True when there is something here Postgres would actually run.
+//
+// isReadOnlySql answers "does this START with a read keyword", so "", "   ",
+// ";" and a fully commented-out block all answer NO and classify as WRITES --
+// down the write path, which takes a full pre-write backup. Callers check this
+// first so obviously-empty input is a 400 rather than a pg_dump.
+//
+// The comment stripping is naive about string literals, and it can remove real
+// SQL: `SELECT '/*' as a, '*/' as b` strips to `select ' ' as b`. That is safe
+// here only because this decides whether ANYTHING remains, and every such case
+// still leaves a non-empty string. Do not reuse it where the stripped text
+// itself matters. The corpus in databaseQueryAuthz.test.js pins the cases tried.
+export function hasExecutableStatement(query) {
+  return stripSqlComments(query).replace(/;/g, "").trim().length > 0;
 }
 
 function normalizeQueryResult(result) {

@@ -426,18 +426,30 @@ has no two-factor enabled (and names the Discord setting to fix it).
 - **Running a companion bot with a signed tier handoff?** The bot stays the
   single source of truth; the role fields are ignored while the handoff is
   configured.
-- **Upgrading a *hand-authored* IAM policy?** Player moderation was split into
-  its own permissions: `players:kick`, `players:ban`, and `players:teleport`
-  are now separate from `players:mutate` (give-item / add-currency /
-  reset-progression), so a moderator can police a griefer without touching the
-  economy. The default Admin and Moderator policies already grant all of these,
-  so a normal upgrade needs no action. **But if you wrote a custom policy that
-  granted `players:mutate` to a tier expecting it to cover kick/ban/teleport,
-  add `players:kick`, `players:ban`, and `players:teleport` to that tier after
-  upgrading** — otherwise that tier keeps the economy actions but loses
-  kick/ban/teleport. Open **Access Control** (sidebar, owner only), pick the
-  tier, and tick those three (or add them to the tier's `Allow` in the JSON
-  tab).
+- **Upgrading a *hand-authored* IAM policy?** `players:mutate` (previously one
+  action covering every mutating `/api/players/` route: kick, ban, teleport,
+  give-item, add-currency, reset-progression, and more) has been retired and
+  replaced with narrow, per-consequence actions — `players:moderate` (kick,
+  ban, unban), `players:teleport`, `players:give-item`, `players:grant`,
+  `players:reset`, `players:delete-item`, `players:edit-item`,
+  `players:repair`, `players:recover` — so a moderator can police a griefer
+  without touching the economy. **If your policy — the shipped defaults or a
+  custom one — already names `players:mutate` (in an `Allow` or a `Deny`), it
+  keeps working with its exact original meaning after this upgrade: no
+  silent behavior change, nothing to do on upgrade day.** The console
+  recognizes `players:mutate` as a retired name and evaluates it against
+  every one of its successor actions, exactly as before. You'll see one
+  migration notice in the console log at startup naming the tier and the
+  successors — this is informational, not an error.
+  The only time this matters is the *next time* you go to **edit** that
+  policy (Settings → Access Control, or `PUT /api/settings/iam/policy`
+  directly): saving a policy that still names `players:mutate` is refused,
+  with an error naming the specific successor actions to write instead — this
+  is deliberate, so a future edit can't accidentally end up "meaning" fewer
+  or more actions than the retired name used to. See
+  [console-iam.md](../console-iam.md#upgrading-a-policy-that-names-a-removed-action)
+  for the full successor mapping and the same treatment for
+  `guilds:mutate`/`blueprints:mutate`/`addons:mutate`.
 - **Never customized the Admin policy? Its *default* just got much narrower.**
   Before this release, Admin's shipped default granted broad namespace
   wildcards — `server:*`, `backups:*`, `updates:*`, `players:*`, `guilds:*`,
@@ -462,14 +474,11 @@ has no two-factor enabled (and names the Discord setting to fix it).
   restore the old wildcard grants wholesale, since several of the actions
   they covered are now intentionally owner-only "crown jewels" the Deny block
   keeps unreachable by design.
-- **Deny-side consequence of the `players:mutate` split above:** if you wrote
-  a custom policy with an explicit `Deny` on `players:mutate` specifically to
-  block kick/ban/teleport for some tier, that Deny no longer covers them after
-  this upgrade — it now only blocks the economy actions (give-item /
-  add-currency / reset-progression) `players:mutate` still means. A tier that
-  relied on that Deny to block moderation actions gains the ability to
-  kick/ban/teleport unless you also add an explicit `Deny` on `players:kick`,
-  `players:ban`, and `players:teleport` to that tier.
+- **A `Deny` on `players:mutate` is not weakened by the split above.** Because
+  the retired name is evaluated against *every* one of its successor actions
+  (see the point above), a `Deny` on `players:mutate` still blocks
+  kick/ban/teleport/give-item/grant/reset/delete-item/edit-item/repair/recover
+  for that tier after this upgrade, exactly as it did before — nothing to add.
 
 ## Questions operators ask
 
