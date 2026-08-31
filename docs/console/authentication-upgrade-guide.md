@@ -327,20 +327,22 @@ DISCORD_OAUTH_CLIENT_SECRET=<its Client Secret>   # or put it in runtime/secrets
 DISCORD_OAUTH_REDIRECT_URI=https://<your-console-host>/api/auth/discord/callback
 ```
 
-The setup screen shows you the exact redirect URI to register (with a copy
-button) if you have not done it yet. The first-run sign-in flow never asks for
-the client ID or secret — the application is deployment config. (Once set up,
-**Settings → Discord OAuth** does expose a Client ID and Client Secret field,
+The setup screen walks you through this instead of asking you to hand-edit
+`.env`: it asks whether you already have a Discord application, links to the
+Developer Portal with a numbered checklist if you don't, and shows you the
+exact redirect URI to register (with a copy button). It requires HTTPS and
+will not proceed over plain HTTP. (Once set up, **Settings → Discord OAuth**
+opens the same guided wizard, with a **Change application credentials** link
 for rotation; see below.)
 
 **Rotating the Discord client secret.** If the secret ever leaks (in `.env`, a
-screenshot, a paste), reset it in the Discord Developer Portal, then put the new
-value on the console — either replace `runtime/secrets/discord-oauth-client-secret.txt`
-(mode 0600) on the host, or paste it into **Settings → Discord OAuth → Client
-Secret**. **A restart is required**: the console reads the secret only at
-startup, so run `dune console restart` (or the in-app restart) after replacing
-it, or token exchanges keep using the old secret and you will believe the
-rotation took effect when it has not.
+screenshot, a paste), reset it in the Discord Developer Portal, then open
+**Settings → Discord OAuth → Change application credentials** and paste the
+new one in. **A restart is required**: the console reads the secret only at
+startup, so use the wizard's own **Restart the console now** button (or run
+`dune console restart` on the host) after saving it, or token exchanges keep
+using the old secret and you will believe the rotation took effect when it
+has not.
 
 **Then, the guided part** (the console owner, in a browser):
 
@@ -376,14 +378,22 @@ Signing in with Discord never asks for the console password; the two are
 independent methods, not a password-plus-Discord combination.
 
 You can change the role mapping or the two-factor option later under
-**Settings → Discord OAuth**, or run the guided setup again from there.
+**Settings → Discord OAuth**, which opens the same guided wizard — reconnecting
+naturally lands you back on the role-mapping step, pre-filled with whatever is
+already saved.
 
 ### Managing access afterwards
 
-- **Settings → Discord OAuth** — change which Discord role maps to Admin,
-  Moderator or Player, or the two-factor requirement, after setup. (There is no
-  owner field: the owner is always the Discord server's owner.) Changes take a
-  `dune console restart` to load.
+- **Settings → Discord OAuth** — the same guided wizard used during first-run
+  setup, opened from an already-signed-in session instead of the sign-in page.
+  Change which Discord role maps to Admin, Moderator or Player, the two-factor
+  requirement, or (via **Change application credentials**) the application's
+  Client ID/Secret itself. (There is no owner field: the owner is always the
+  Discord server's owner.) The wizard's own **Restart the console now** button
+  applies changes — no separate manual restart step needed. Note: saving from
+  here does **not** log you out (finishing *first-run* setup from the sign-in
+  page does, to load your newly-resolved tier from a clean session — that
+  distinction is automatic, not something you need to manage).
 - **Access Control** (sidebar, owner only) — edit what each tier is actually
   allowed to do. The defaults are deliberately **strict**: Admin can operate and
   moderate but cannot change config, apply updates, install addons, restore

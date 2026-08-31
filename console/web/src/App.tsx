@@ -2,7 +2,7 @@ import { Fragment, lazy, useCallback, useEffect, useRef, useState } from "react"
 import { Archive, Bug, Building2, Car, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, LogOut, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, ShieldCheck, Sparkles, Store, UserRound, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, loginRequest, post, setCsrfToken } from "./api/client";
 import { TotpSetupScreen } from "./features/auth/TotpSetupScreen";
-import { DiscordSetupWizard } from "./features/auth/DiscordSetupWizard";
+import { DiscordSetupWizard, DISCORD_SETUP_RETURN_KEY } from "./features/auth/DiscordSetupWizard";
 import { setServerPorts, setAdminPort, type ServerPorts } from "./api/serverPorts";
 import { serverApi, type RestartQueueTarget } from "./api/server";
 import { updatesApi } from "./api/updates";
@@ -377,8 +377,30 @@ export function App() {
   const [discordPendingRestart, setDiscordPendingRestart] = useState(false);
   // Guided first-run setup: opened from the sign-in page (after the password),
   // or automatically when returning from the setup-mode Discord round-trip.
-  const [discordSetupOpen, setDiscordSetupOpen] = useState(() => new URLSearchParams(window.location.search).has("discordSetup"));
-  const [wantDiscordSetup, setWantDiscordSetup] = useState(() => new URLSearchParams(window.location.search).has("discordSetup"));
+  // #643: that round-trip is a full page navigation, so it also fires for an
+  // ALREADY-authenticated operator who started it from the Settings-embedded
+  // copy of this same component -- DiscordSetupWizard sets a sessionStorage
+  // marker (consumed, once, right here) before navigating in that case, so
+  // this can tell "returning to finish first-run setup" (marker absent,
+  // behavior below unchanged) from "returning to an existing session that
+  // was just reconfiguring Discord from Settings" (marker present -- route
+  // back into Settings instead of the standalone takeover below, and skip
+  // its onDone, which unconditionally logs the session out).
+  const [discordSetupRouting] = useState(() => {
+    const hasParam = new URLSearchParams(window.location.search).has("discordSetup");
+    let returnToSettings = false;
+    if (hasParam) {
+      try {
+        if (window.sessionStorage.getItem(DISCORD_SETUP_RETURN_KEY) === "settings") {
+          window.sessionStorage.removeItem(DISCORD_SETUP_RETURN_KEY);
+          returnToSettings = true;
+        }
+      } catch { /* sessionStorage unavailable -- fall back to today's standalone takeover, unchanged */ }
+    }
+    return { open: hasParam && !returnToSettings, returnToSettings };
+  });
+  const [discordSetupOpen, setDiscordSetupOpen] = useState(discordSetupRouting.open);
+  const [wantDiscordSetup, setWantDiscordSetup] = useState(discordSetupRouting.open);
   const [showPasswordLogin, setShowPasswordLogin] = useState(false);
   // What the policy engine will allow this session. Used only to hide the
   // Settings tab from Discord tiers a 403 would refuse anyway; enforcement
@@ -399,6 +421,26 @@ export function App() {
   const [meFetchFailed, setMeFetchFailed] = useState(false);
   const [userInfo, setUserInfo] = useState<{ username: string; displayName: string; tier: string } | null>(null);
   const [tab, setTab] = useActiveTab();
+  // #643: the other half of discordSetupRouting above -- route to Settings,
+  // with its Discord accordion auto-expanded, for the reconfiguration return
+  // trip. Runs once on mount; discordSetupRouting itself never changes.
+  useEffect(() => {
+    if (discordSetupRouting.returnToSettings) setTab("Settings");
+  }, [discordSetupRouting.returnToSettings, setTab]);
+  // One-shot "auto-open the Discord accordion" signal, tracked separately
+  // from discordSetupRouting (which itself never changes for the rest of
+  // the page's life). SettingsPanel is a plain `tab === "Settings" && ...`
+  // conditional render -- React fully unmounts it on every tab switch -- so
+  // passing discordSetupRouting.returnToSettings straight through as the
+  // prop would re-open the accordion on every later Settings visit, not
+  // just the one right after the OAuth return trip (code-review finding,
+  // confirmed against the actual render logic). Reset via SettingsPanel's
+  // own onAutoOpenDiscordSetupConsumed callback (fired from ITS OWN mount
+  // effect) rather than off `tab` becoming "Settings" -- SettingsPanel is
+  // lazy-loaded, so it actually mounts well after `tab` changes, and a
+  // tab-based reset fired before the lazy chunk resolved, clearing the flag
+  // before SettingsPanel ever read it (caught by mutation-testing this fix).
+  const [pendingAutoOpenDiscordSetup, setPendingAutoOpenDiscordSetup] = useState(discordSetupRouting.returnToSettings);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
   const [selectedPinnedAddonId, setSelectedPinnedAddonId] = useState("");
@@ -1144,6 +1186,8 @@ export function App() {
           onPasswordChanged={logoutAfterPasswordChange}
           publicListingUrl={publicDirectoryStatus?.serverId ? publicServerListingUrl(publicDirectoryStatus.serverId) : undefined}
           confirmAction={confirmDialog}
+          autoOpenDiscordSetup={pendingAutoOpenDiscordSetup}
+          onAutoOpenDiscordSetupConsumed={() => setPendingAutoOpenDiscordSetup(false)}
         /></LazyTabBoundary>}
         {!redeploySetupOpen && tab !== "Maps" && <TaskProgress task={task} onDismiss={() => setTask(null)} />}
         <AppFooter />

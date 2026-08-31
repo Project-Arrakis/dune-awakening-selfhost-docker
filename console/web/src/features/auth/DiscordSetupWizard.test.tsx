@@ -36,6 +36,17 @@ function stubHttps(value: boolean) {
   });
 }
 
+function stubConfigured(serverConfig: Record<string, string> = {}) {
+  mockApi.mockImplementation((path: string) => {
+    if (path === "/api/settings") return Promise.resolve({
+      serverConfig: { DISCORD_OAUTH_CLIENT_ID: "existing-client-id", DISCORD_OAUTH_REDIRECT_URI: "https://console.example.org/api/auth/discord/callback", ...serverConfig },
+      config: { discordOAuthAppConfigured: true },
+    } as never);
+    if (path === "/api/setup/discord-identity") return Promise.reject(new Error("not signed in with Discord yet"));
+    return Promise.reject(new Error(`unexpected api call: ${path}`));
+  });
+}
+
 describe("DiscordSetupWizard: hard HTTPS gate", () => {
   beforeEach(() => { vi.clearAllMocks(); stubHttps(true); });
   afterEach(() => { stubHttps(true); });
@@ -252,5 +263,222 @@ describe("DiscordSetupWizard: a restart is required after saving (the process on
 
     expect(mockPost).toHaveBeenCalledWith("/api/setup/discord-restart", {});
     expect(replace).toHaveBeenCalledWith("/");
+  });
+});
+
+// #643 (embed the guided wizard into Settings, post-login). Real Eight Hats
+// Layer 1 findings this suite regression-pins directly (design doc
+// docs/design/discord-settings-embed-l1-design-2026-08-30.md):
+//   - Architect/UI/UX CRITICAL: the OAuth round-trip's return must be
+//     distinguishable (via a sessionStorage marker) so App.tsx can route
+//     back into Settings instead of the pre-login standalone takeover, and
+//     skip that takeover's forced logout, for the embedded case only.
+//   - QA HIGH: the `embedded` wrapper swap needs a structural test
+//     (container.querySelector), since text-based queries can't detect it.
+//   - GRC HIGH: role/MFA fields must pre-fill from already-saved config.
+//   - Cloud Security HIGH: a "Change application credentials" affordance
+//     must exist once configured, or there is no UI path left to rotate
+//     the Client Secret.
+//   - UI/UX HIGH: "done" step copy must not claim a sign-in page appears,
+//     or offer "Back to sign in", once already logged in.
+describe("DiscordSetupWizard: embedded mode (#643)", () => {
+  beforeEach(() => { vi.clearAllMocks(); stubHttps(true); window.sessionStorage.clear(); });
+  afterEach(() => { window.sessionStorage.clear(); });
+
+  it("embedded renders without the standalone login-screen wrapper", async () => {
+    stubNotYetConfigured();
+    const { container } = render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByText("I already have a Discord application");
+    expect(container.querySelector("main.login-screen")).toBeNull();
+    expect(container.querySelector(".discord-setup-embedded")).not.toBeNull();
+  });
+
+  it("non-embedded (default) keeps the standalone login-screen wrapper unchanged", async () => {
+    stubNotYetConfigured();
+    const { container } = render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByText("I already have a Discord application");
+    expect(container.querySelector("main.login-screen")).not.toBeNull();
+    expect(container.querySelector(".discord-setup-embedded")).toBeNull();
+  });
+
+  it("sets the discord-setup-return marker before navigating to Discord, only when embedded", async () => {
+    stubConfigured();
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.click(await screen.findByText("Continue with Discord"));
+    expect(window.sessionStorage.getItem("dune-console:discord-setup-return")).toBe("settings");
+  });
+
+  it("does not set the marker when not embedded -- the pre-login flow is unchanged", async () => {
+    stubConfigured();
+    render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.click(await screen.findByText("Continue with Discord"));
+    expect(window.sessionStorage.getItem("dune-console:discord-setup-return")).toBeNull();
+  });
+
+  it("offers 'Change application credentials' once configured, from the authorize step, pre-filling the existing Client ID", async () => {
+    stubConfigured();
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByText("Continue with Discord");
+    fireEvent.click(screen.getByText("Change application credentials"));
+    expect(await screen.findByLabelText(/client id/i)).toHaveValue("existing-client-id");
+  });
+
+  it("pre-fills role mappings and the MFA toggle from already-saved config when reopened (GRC finding)", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({
+        serverConfig: {
+          DISCORD_OAUTH_CLIENT_ID: "existing-client-id",
+          DISCORD_OAUTH_REDIRECT_URI: "https://console.example.org/api/auth/discord/callback",
+          DISCORD_CONSOLE_ADMIN_ROLE_IDS: "111111111111111111",
+          DISCORD_CONSOLE_MODERATOR_ROLE_IDS: "222222222222222222",
+          DISCORD_CONSOLE_PLAYER_ROLE_IDS: "333333333333333333",
+          DISCORD_OAUTH_REQUIRE_MFA_TIERS: "owner,admin",
+        },
+        config: { discordOAuthAppConfigured: true },
+      } as never);
+      if (path === "/api/setup/discord-identity") return Promise.resolve({
+        user: { id: "u1", username: "operator", mfaEnabled: true },
+        guilds: [{ id: "999999999999999999", name: "My Server", owner: true }],
+      } as never);
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByLabelText(/admin role/i);
+    // The map step renders as soon as `identity` resolves; the role/MFA
+    // pre-fill is a separate effect that can settle a tick later -- wait for
+    // the value, don't assume it's already there the instant the field exists.
+    await waitFor(() => expect(screen.getByLabelText(/admin role/i)).toHaveValue("111111111111111111"));
+    expect(screen.getByLabelText(/moderator role/i)).toHaveValue("222222222222222222");
+    expect(screen.getByLabelText(/player role/i)).toHaveValue("333333333333333333");
+    expect(screen.getByRole("checkbox")).toBeChecked();
+  });
+
+  it("map step: when Discord sign-in is already fully on (home guild + roles already saved), the button doesn't say 'Turn on Discord sign-in' -- it already is on", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({
+        serverConfig: { DISCORD_OAUTH_CLIENT_ID: "id", DISCORD_OAUTH_REDIRECT_URI: "uri" },
+        config: { discordOAuthAppConfigured: true, discordOAuthConfigured: true },
+      } as never);
+      if (path === "/api/setup/discord-identity") return Promise.resolve({ user: { id: "u1", username: "operator", mfaEnabled: true }, guilds: [{ id: "999999999999999999", name: "My Server", owner: true }] } as never);
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByLabelText(/admin role/i);
+    expect(screen.queryByText("Turn on Discord sign-in")).toBeNull();
+    expect(screen.queryByText(/^Connecting/)).toBeNull();
+  });
+
+  // /code-review ultra finding (unverified pipeline output, confirmed by hand): the old manual
+  // SettingsPanel form (write-oauth-config, no admin-role requirement) let an operator
+  // deliberately save "no roles mapped" (owner-only Discord access). finalize()'s client-side
+  // "Map an Admin role..." guard makes sense for FIRST-TIME setup (don't accidentally lock
+  // yourself out of admin access without realizing it) but blocks that same deliberate choice
+  // when RECONFIGURING an already-live setup -- confirmed discordSetupFinalize itself has no
+  // such server-side requirement (server.js just writes whatever adminRoleIds is given), so this
+  // was purely an unintended client-side regression from reusing finalize() for both contexts.
+  it("map step: reconfiguring an already-live setup allows clearing all role fields (no admin-role requirement, unlike first-time setup)", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({
+        serverConfig: { DISCORD_OAUTH_CLIENT_ID: "id", DISCORD_OAUTH_REDIRECT_URI: "uri", DISCORD_CONSOLE_ADMIN_ROLE_IDS: "111111111111111111" },
+        config: { discordOAuthAppConfigured: true, discordOAuthConfigured: true },
+      } as never);
+      if (path === "/api/setup/discord-identity") return Promise.resolve({ user: { id: "u1", username: "operator", mfaEnabled: true }, guilds: [{ id: "999999999999999999", name: "My Server", owner: true }] } as never);
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    mockPost.mockImplementation((path: string) => {
+      if (path === "/api/setup/discord-finalize") return Promise.resolve({ ok: true, guild: { name: "My Server" }, owner: { username: "operator" } } as never);
+      return Promise.reject(new Error(`unexpected post: ${path}`));
+    });
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByLabelText(/admin role/i);
+    await waitFor(() => expect(screen.getByLabelText(/admin role/i)).toHaveValue("111111111111111111"));
+    const adminField = screen.getByLabelText(/admin role/i);
+    fireEvent.change(adminField, { target: { value: "" } });
+
+    expect(screen.getByText("Save role mapping")).not.toBeDisabled();
+    fireEvent.click(screen.getByText("Save role mapping"));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/setup/discord-finalize", expect.objectContaining({ adminRoleIds: "" })));
+  });
+
+  it("map step: first-time setup (no home guild saved yet) still requires an admin role before saving", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({
+        serverConfig: { DISCORD_OAUTH_CLIENT_ID: "id", DISCORD_OAUTH_REDIRECT_URI: "uri" },
+        config: { discordOAuthAppConfigured: true, discordOAuthConfigured: false },
+      } as never);
+      if (path === "/api/setup/discord-identity") return Promise.resolve({ user: { id: "u1", username: "operator", mfaEnabled: true }, guilds: [{ id: "999999999999999999", name: "My Server", owner: true }] } as never);
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByLabelText(/admin role/i);
+    fireEvent.click(screen.getByText("Turn on Discord sign-in"));
+    expect(await screen.findByText(/Map an Admin role/)).toBeTruthy();
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  it("map step: a genuine first-time setup (no home guild saved yet) still says 'Turn on Discord sign-in' and 'Connecting' (unchanged)", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({
+        serverConfig: { DISCORD_OAUTH_CLIENT_ID: "id", DISCORD_OAUTH_REDIRECT_URI: "uri" },
+        config: { discordOAuthAppConfigured: true, discordOAuthConfigured: false },
+      } as never);
+      if (path === "/api/setup/discord-identity") return Promise.resolve({ user: { id: "u1", username: "operator", mfaEnabled: true }, guilds: [{ id: "999999999999999999", name: "My Server", owner: true }] } as never);
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByLabelText(/admin role/i);
+    expect(await screen.findByText("Turn on Discord sign-in")).toBeTruthy();
+    expect(screen.getByText(/^Connecting/)).toBeTruthy();
+  });
+
+  it("done step: embedded copy says 'Back to Settings', not 'Back to sign in', omits the sign-in-page claim, and warns the restart ends the session", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({ serverConfig: { DISCORD_OAUTH_CLIENT_ID: "id", DISCORD_OAUTH_REDIRECT_URI: "uri" }, config: { discordOAuthAppConfigured: true } } as never);
+      if (path === "/api/setup/discord-identity") return Promise.resolve({ user: { id: "u1", username: "operator", mfaEnabled: true }, guilds: [{ id: "999999999999999999", name: "My Server", owner: true }] } as never);
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    mockPost.mockImplementation((path: string) => {
+      if (path === "/api/setup/discord-finalize") return Promise.resolve({ ok: true, guild: { name: "My Server" }, owner: { username: "operator" } } as never);
+      return Promise.reject(new Error(`unexpected post: ${path}`));
+    });
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.change(await screen.findByLabelText(/admin role/i), { target: { value: "111111111111111111" } });
+    fireEvent.click(screen.getByText("Turn on Discord sign-in"));
+    expect(await screen.findByText("Back to Settings")).toBeTruthy();
+    expect(screen.queryByText(/sign-in page shows/i)).toBeNull();
+    expect(screen.getByText(/end your current session/i)).toBeTruthy();
+  });
+
+  it("map step: mapping the same role ID to two access levels shows an inline conflict message and disables 'Turn on Discord sign-in' before any round-trip (parity with the removed manual form)", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({ serverConfig: { DISCORD_OAUTH_CLIENT_ID: "id", DISCORD_OAUTH_REDIRECT_URI: "uri" }, config: { discordOAuthAppConfigured: true } } as never);
+      if (path === "/api/setup/discord-identity") return Promise.resolve({ user: { id: "u1", username: "operator", mfaEnabled: true }, guilds: [{ id: "999999999999999999", name: "My Server", owner: true }] } as never);
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.change(await screen.findByLabelText(/admin role/i), { target: { value: "111111111111111111" } });
+    fireEvent.change(screen.getByLabelText(/moderator role/i), { target: { value: "111111111111111111" } });
+
+    expect(await screen.findByText(/mapped to admin and moderator/i)).toBeTruthy();
+    expect(screen.getByText("Turn on Discord sign-in")).toBeDisabled();
+    expect(mockPost).not.toHaveBeenCalledWith("/api/setup/discord-finalize", expect.anything());
+  });
+
+  it("done step: non-embedded (pre-login) copy is unchanged -- 'Back to sign in' and the sign-in-page claim still appear", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({ serverConfig: { DISCORD_OAUTH_CLIENT_ID: "id", DISCORD_OAUTH_REDIRECT_URI: "uri" }, config: { discordOAuthAppConfigured: true } } as never);
+      if (path === "/api/setup/discord-identity") return Promise.resolve({ user: { id: "u1", username: "operator", mfaEnabled: true }, guilds: [{ id: "999999999999999999", name: "My Server", owner: true }] } as never);
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    mockPost.mockImplementation((path: string) => {
+      if (path === "/api/setup/discord-finalize") return Promise.resolve({ ok: true, guild: { name: "My Server" }, owner: { username: "operator" } } as never);
+      return Promise.reject(new Error(`unexpected post: ${path}`));
+    });
+    render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.change(await screen.findByLabelText(/admin role/i), { target: { value: "111111111111111111" } });
+    fireEvent.click(screen.getByText("Turn on Discord sign-in"));
+    expect(await screen.findByText("Back to sign in")).toBeTruthy();
+    expect(screen.getByText(/sign-in page shows/i)).toBeTruthy();
+    expect(screen.queryByText(/end your current session/i)).toBeNull();
   });
 });

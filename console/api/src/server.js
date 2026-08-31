@@ -28,6 +28,7 @@ import { generateTotpSecret, provisioningUri, provisioningQrDataUri, verifyTotpM
 import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { roleTiersConfigured, roleTierConflicts, describeRoleTierConflicts, parseRoleIdList } from "./integrations/discord/roleTiers.js";
+import { deriveLoginPendingDiscordSetup } from "./integrations/discord/oauthLoginCapture.js";
 import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
@@ -6914,7 +6915,10 @@ async function handleOAuthCallback(req, res) {
   // bucket (symmetric with the password-login route), so transient denials
   // during the flow do not linger against a user who ultimately succeeds.
   oauthCallbackRateLimiter.recordSuccess(rateKey);
-  const session = auth.makeSession({ tier: resolved.tier, userId: identity.userId, username: identity.username, displayName: identity.displayName, guildId: config.discordHomeGuildId });
+  const session = auth.makeSession({
+    tier: resolved.tier, userId: identity.userId, username: identity.username, displayName: identity.displayName, guildId: config.discordHomeGuildId,
+    pendingDiscordSetup: deriveLoginPendingDiscordSetup(resolved.tier, identity),
+  });
   res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie()]);
   audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: resolved.tier });
   return html(res, 200, oauthReturnPage());
