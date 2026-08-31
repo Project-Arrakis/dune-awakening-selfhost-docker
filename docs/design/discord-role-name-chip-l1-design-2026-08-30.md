@@ -115,11 +115,20 @@ least one role ID has been entered (nothing to name otherwise). Precedent: this
 already matches this panel's own "renders once upstream state exists" pattern used
 elsewhere for role-conflict warnings.
 
-**Bot-auto-fill precedence signal (UI/UX hat MEDIUM finding, addressed narrowly
-rather than deferred, since it's cheap):** when handoff is enabled (bot supplies
-`roleName`, see §3(b)), the per-role label inputs are rendered **disabled** with
-helper text "Provided automatically by the bot" — so an operator on that path is
-never left wondering why their typed label had no visible effect. When handoff is
+**Bot-auto-fill precedence signal (UI/UX hat MEDIUM finding).** **Correction
+(post-implementation code review, PR #651): this was NOT actually implemented,
+despite this section's original text below claiming it was "addressed" —
+found by an independent `/code-review high` pass, not caught before merge.
+Deferred, tracked as issue #653**, with the justification that it needs a new
+backend `handoffEnabled` config flag the frontend doesn't currently have
+access to, not just a frontend tweak — real but non-blocking for this PR,
+since it's a UX-clarity gap (a typed label silently has no effect) for a
+narrow operator population, not a correctness or security issue. The
+original (unshipped) intent, preserved here for #653 to implement: when
+handoff is enabled (bot supplies `roleName`, see §3(b)), the per-role label
+inputs would be rendered **disabled** with helper text "Provided
+automatically by the bot" — so an operator on that path is never left
+wondering why their typed label had no visible effect. When handoff is
 not enabled, inputs are editable as normal.
 
 ### (b) Auto-fill from the bot on the handoff path — `roleName` sent UNSIGNED
@@ -278,7 +287,7 @@ revision 1 and revision 2; the STRIDE table follows.
 | 14 | GRC | MEDIUM | `docs/console/API-REFERENCE.md` and `docs/rfc-console-auth.md` need updates for the new `roleName` field/env var | **Deferred, tracked**: same-PR doc update required before merge (Requirement 14/19c) — not a design blocker, added to implementation checklist |
 | 15 | GRC | MEDIUM | Fork `CHANGELOG.md` follow-up pattern not mentioned | **Deferred, tracked**: same pattern as prior features (`c4b248ad`), added to implementation checklist |
 | 16 | UI/UX | MEDIUM | New field's placeholder/help/error copy unspecified | Fixed in revision 2 UI description (§3a) |
-| 17 | UI/UX | MEDIUM | "Bot wins" precedence had no operator-facing signal | Fixed in revision 2: disabled inputs + helper text when handoff enabled (§3a) |
+| 17 | UI/UX | MEDIUM | "Bot wins" precedence had no operator-facing signal | **Corrected post-merge (code review, PR #651): NOT actually fixed as originally claimed here** — deferred, tracked as issue #653 (§3a) |
 | 18 | Network | LOW | Unbounded `roleName` field size | Fixed: 100-char cap enforced at the independent validation boundary (§3b) |
 | 19 | Security Architect | LOW | Forward guardrail: if `roleName` is ever logged, apply existing `redactSecrets()`-style control-char sanitization | **Deferred, no current logging path exists** — noted for any future PR that adds logging |
 | 20 | Architect | LOW | Tie-break determinism for two same-tier role IDs should be documented | Documented in §3 (first-configured-wins) |

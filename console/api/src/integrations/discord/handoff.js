@@ -22,6 +22,7 @@
 // replays within the window.
 
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { MAX_ROLE_NAME_LENGTH } from "./roleTiers.js";
 
 const VALID_TIERS = new Set(["owner", "admin", "moderator", "player"]);
 const USER_SNOWFLAKE_RE = /^\d{17,19}$/;
@@ -32,7 +33,9 @@ const HTTP_TIMEOUT_MS = 5_000;
 // zero authorization weight (only `tier`, still fully HMAC-verified, decides
 // session privilege), so it is validated independently and a malformed value
 // is silently dropped rather than denying an otherwise-valid tier claim.
-const MAX_ROLE_NAME_LENGTH = 100;
+// MAX_ROLE_NAME_LENGTH is imported from roleTiers.js (not redefined here) so
+// the operator-typed cap and the bot-supplied cap can never silently diverge
+// (code review finding, PR #651).
 function readOptionalRoleName(value) {
   return typeof value === "string" && value.length > 0 && value.length <= MAX_ROLE_NAME_LENGTH ? value : undefined;
 }

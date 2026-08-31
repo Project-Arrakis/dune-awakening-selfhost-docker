@@ -25,12 +25,20 @@ function stripCodeWhitespace(value: string) {
 // would simply drop and save without complaint.
 const DISCORD_SNOWFLAKE_RE = /^\d{17,19}$/;
 
+// Shared by discordRoleConflicts and discordRoleIdsAcrossFields below -- one
+// parser for "comma-separated role IDs" so a future change to the accepted
+// format (whitespace variants, a different snowflake length range) can't
+// silently apply to one and not the other (code review finding, PR #651).
+function parseDiscordRoleIdField(value: string): string[] {
+  return value.split(",").map((v) => v.trim()).filter((v) => DISCORD_SNOWFLAKE_RE.test(v));
+}
+
 // Separation of duties for Discord sign-in: one Discord role, one console tier.
 // Mirrors the server's check so the operator is told before the round-trip.
 function discordRoleConflicts(fields: Record<string, string>) {
   const seen = new Map<string, string[]>();
   for (const [tier, value] of Object.entries(fields)) {
-    for (const id of value.split(",").map((v) => v.trim()).filter((v) => DISCORD_SNOWFLAKE_RE.test(v))) {
+    for (const id of parseDiscordRoleIdField(value)) {
       const tiers = seen.get(id) || [];
       if (!tiers.includes(tier)) tiers.push(tier);
       seen.set(id, tiers);
@@ -48,7 +56,7 @@ function discordRoleConflicts(fields: Record<string, string>) {
 function discordRoleIdsAcrossFields(...fields: string[]): string[] {
   const ids: string[] = [];
   for (const value of fields) {
-    for (const id of value.split(",").map((v) => v.trim()).filter((v) => DISCORD_SNOWFLAKE_RE.test(v))) {
+    for (const id of parseDiscordRoleIdField(value)) {
       if (!ids.includes(id)) ids.push(id);
     }
   }
