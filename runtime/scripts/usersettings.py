@@ -365,7 +365,7 @@ FIELD_DESCRIPTIONS = {
     "coriolis_cycle_start_year": "Base year shipped in the Coriolis configuration. Normally leave this unchanged when matching a regional schedule.",
     "coriolis_cycle_start_month": "Base month (1-12) shipped in the Coriolis configuration. Normally leave this unchanged when matching a regional schedule.",
     "coriolis_cycle_start_day": "UTC calendar day of the month (1-31). Regional master schedule anchor dates: Europe, North America, and South America use day 3; Asia and Oceania use day 2.",
-    "coriolis_cycle_start_hour": "UTC hour (0-23). Regional master schedules: Europe 05, North America 11, South America 08, Asia 09, and Oceania 19.",
+    "coriolis_cycle_start_hour": "UTC hour (0-23). Regional master schedules: Europe 05, North America 10, South America 08, Asia 09, and Oceania 19.",
     "coriolis_cycle_start_minute": "UTC minute (0-59) for the Coriolis cycle start.",
     "coriolis_cycle_start_seed_index": "Funcom's seed index for the base Coriolis cycle. Leave at 0 unless intentionally coordinating a different cycle seed.",
 }
@@ -732,7 +732,7 @@ LEGACY_FIELD_ALIASES = {
 # scope-mutating write happens here, from migrate_coriolis_region_fields.
 CORIOLIS_REGION_HOURS = {
     "Europe": 5,
-    "North America": 11,
+    "North America": 10,
     "South America": 8,
     "Asia": 9,
     "Oceania": 19,
