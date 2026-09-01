@@ -7398,6 +7398,29 @@ test("research listing exposes purchased entries whose build recipe needs repair
   assert.equal(result.rows[1].needsRecipeRepair, false);
 });
 
+test("research listing verifies building research against building progression", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    researchListRows: [
+      { item_key: "BLD_LargeOreRefinery_Patent", unlocked_state: "Purchased", is_new: false },
+      { item_key: "BLD_LargeSpiceRefinery_Patent", unlocked_state: "Purchased", is_new: false }
+    ],
+    craftingListRows: [],
+    buildingProgressionRows: [{
+      learned_building_sets: ["LargeOreRefinery_Patent"],
+      new_buildable_pieces: []
+    }]
+  });
+  const result = await playerResearchItems(db, 123);
+  assert.equal(result.rows[0].unlockKind, "building");
+  assert.equal(result.rows[0].unlockId, "LargeOreRefinery_Patent");
+  assert.equal(result.rows[0].unlocked, true);
+  assert.equal(result.rows[0].needsUnlockRepair, false);
+  assert.equal(result.rows[1].unlocked, false);
+  assert.equal(result.rows[1].unlockId, "LargeSpiceRefinery_Patent");
+  assert.equal(result.rows[1].needsUnlockRepair, true);
+});
+
 test("building unlock state reads owned progression and pending patent tokens without changing either", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
@@ -7447,24 +7470,27 @@ test("research unlock updates TechKnowledge and materializes verified recipe", a
   assert.equal(JSON.parse(recipeUpdate.values[1])[0].BaseRecipeId.Name, "HealthPackRecipe");
 });
 
-test("research unlock appends missing verified key without duplicating existing entries", async () => {
+test("research unlock appends building research to authoritative building progression", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     researchExists: true,
     currentResearchItems: [{ ItemKey: "DA_GRP_SandbikePack", bIsNewEntry: true, UnlockedState: "NotPurchased" }],
-    currentCraftingRecipes: []
+    buildingProgressionRows: [{ learned_building_sets: [], new_buildable_pieces: [] }]
   });
-  const result = await unlockResearchItem(db, 123, { itemKey: "BLD_WaterCistern_Patent" });
-  assert.equal(result.recipeId, "WaterCistern_Patent");
-  assert.equal(result.recipeMaterialized, true);
+  const result = await unlockResearchItem(db, 123, { itemKey: "BLD_LargeOreRefinery_Patent" });
+  assert.equal(result.unlockKind, "building");
+  assert.equal(result.buildingUnlockId, "LargeOreRefinery_Patent");
+  assert.equal(result.buildingPieceId, "LargeOreRefinery_Placeable");
+  assert.equal(result.buildingProgressionUpdated, true);
   const researchUpdate = calls.find((call) => call.text.includes("TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData") && call.text.includes("update dune.actors"));
   assert.ok(researchUpdate);
   const items = JSON.parse(researchUpdate.values[1]);
   assert.equal(items.length, 2);
-  assert.deepEqual(items[1], { ItemKey: "BLD_WaterCistern_Patent", bIsNewEntry: false, UnlockedState: "Purchased" });
-  const recipeUpdate = calls.find((call) => call.text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && call.text.includes("update dune.actors"));
-  assert.ok(recipeUpdate);
-  assert.equal(JSON.parse(recipeUpdate.values[1])[0].BaseRecipeId.Name, "WaterCistern_Patent");
+  assert.deepEqual(items[1], { ItemKey: "BLD_LargeOreRefinery_Patent", bIsNewEntry: false, UnlockedState: "Purchased" });
+  const progressionUpdate = calls.find((call) => call.text.includes("update dune.building_progression"));
+  assert.ok(progressionUpdate);
+  assert.deepEqual(progressionUpdate.values, [5, ["LargeOreRefinery_Patent"], ["LargeOreRefinery_Placeable"]]);
+  assert.equal(calls.some((call) => call.text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && call.text.includes("update dune.actors")), false);
 });
 
 test("research unlock repairs an already-purchased entry with a missing recipe", async () => {
@@ -7488,13 +7514,13 @@ test("research unlock uses exact catalog building IDs when the research key is n
   const db = fakeMutationDb(calls, {
     researchExists: true,
     currentResearchItems: [],
-    currentCraftingRecipes: []
+    buildingProgressionRows: [{ learned_building_sets: [], new_buildable_pieces: [] }]
   });
   const result = await unlockResearchItem(db, 123, { itemKey: "BLD_SmallSpiceRefinery" });
-  assert.equal(result.recipeId, "SmallSpiceRefinery");
-  assert.equal(result.recipeMaterialized, true);
-  const recipeUpdate = calls.find((call) => call.text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && call.text.includes("update dune.actors"));
-  assert.equal(JSON.parse(recipeUpdate.values[1])[0].BaseRecipeId.Name, "SmallSpiceRefinery");
+  assert.equal(result.unlockKind, "building");
+  assert.equal(result.buildingUnlockId, "SmallSpiceRefinery");
+  const progressionUpdate = calls.find((call) => call.text.includes("update dune.building_progression"));
+  assert.deepEqual(progressionUpdate.values, [5, ["SmallSpiceRefinery"], ["SmallSpiceRefinery_Placeable"]]);
 });
 
 test("research unlock does not change research when the recipe component is unavailable", async () => {
@@ -7507,6 +7533,20 @@ test("research unlock does not change research when the recipe component is unav
   await assert.rejects(
     () => unlockResearchItem(db, 123, { itemKey: "RCP_HealthPackRecipe" }),
     /research was not changed/
+  );
+  assert.equal(calls.some((call) => call.text.includes("TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData") && call.text.includes("update dune.actors")), false);
+});
+
+test("building research does not change research when building progression is unavailable", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    researchExists: true,
+    currentResearchItems: [{ ItemKey: "BLD_LargeSpiceRefinery_Patent", bIsNewEntry: true, UnlockedState: "NotPurchased" }],
+    buildingProgressionRows: []
+  });
+  await assert.rejects(
+    () => unlockResearchItem(db, 123, { itemKey: "BLD_LargeSpiceRefinery_Patent" }),
+    /Building progression was not found/
   );
   assert.equal(calls.some((call) => call.text.includes("TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData") && call.text.includes("update dune.actors")), false);
 });

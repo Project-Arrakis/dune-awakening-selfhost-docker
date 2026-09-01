@@ -6668,13 +6668,26 @@ export async function playerResearchItems(db, id) {
     )
     select recipe_id from player_recipes`, [player.actorId]);
   const unlockedRecipes = new Set(playerRecipes.rows.map((row) => String(row.recipe_id || "")).filter(Boolean));
+  const progressionColumns = await tableExists(db, "building_progression") ? await columnsFor(db, "building_progression") : new Set();
+  const buildingProgressionSupported = ["character_id", "learned_building_sets"].every((column) => progressionColumns.has(column));
+  const progression = buildingProgressionSupported && player.playerStateId ? await db.query(`
+    select coalesce(learned_building_sets, '{}'::text[]) as learned_building_sets
+    from dune.building_progression
+    where character_id = $1
+    limit 1`, [player.playerStateId]) : { rows: [] };
+  const learnedBuildingSets = new Set((progression.rows[0]?.learned_building_sets || []).map(String).filter(Boolean));
   return {
     capabilities: { researchItems: true },
     player,
     rows: result.rows.map((row) => {
-      const recipeId = linkedResearchRecipeId(row.item_key);
+      const unlock = linkedResearchUnlock(row.item_key);
+      const recipeId = unlock.kind === "recipe" ? unlock.id : "";
       const researchPurchased = row.unlocked_state === "Purchased";
-      const recipeUnlocked = !recipeId || unlockedRecipes.has(recipeId);
+      const unlockMaterialized = unlock.kind === "building"
+        ? buildingProgressionSupported && learnedBuildingSets.has(unlock.id)
+        : unlock.kind === "recipe"
+          ? unlockedRecipes.has(unlock.id)
+          : true;
       return {
         itemKey: row.item_key,
         displayName: researchDisplayName(row.item_key),
@@ -6684,11 +6697,15 @@ export async function playerResearchItems(db, id) {
         unlockedState: row.unlocked_state || "Unknown",
         isNew: Boolean(row.is_new),
         recipeId,
-        recipeUnlocked,
+        recipeUnlocked: unlock.kind !== "recipe" || unlockMaterialized,
+        unlockKind: unlock.kind,
+        unlockId: unlock.id,
+        unlockMaterialized,
         researchPurchased,
-        actionable: Boolean(recipeId),
-        needsRecipeRepair: Boolean(recipeId && researchPurchased && !recipeUnlocked),
-        unlocked: researchPurchased && recipeUnlocked
+        actionable: Boolean(unlock.id) && (unlock.kind !== "building" || buildingProgressionSupported),
+        needsRecipeRepair: Boolean(unlock.id && researchPurchased && !unlockMaterialized),
+        needsUnlockRepair: Boolean(unlock.id && researchPurchased && !unlockMaterialized),
+        unlocked: researchPurchased && unlockMaterialized
       };
     })
   };
@@ -6797,11 +6814,13 @@ export async function unlockResearchItem(db, id, { itemKey }) {
     if (!found) {
       nextItems.push({ ItemKey: safeItemKey, bIsNewEntry: false, UnlockedState: "Purchased" });
     }
-    const recipeId = linkedResearchRecipeId(safeItemKey);
-    if (!recipeId) {
-      throw new Error(`Research group ${safeItemKey} cannot be unlocked directly because it does not identify one build recipe. Unlock its individual Recipe or Building entries instead.`);
+    const unlock = linkedResearchUnlock(safeItemKey);
+    if (!unlock.id) {
+      throw new Error(`Research group ${safeItemKey} cannot be unlocked directly because it does not identify one buildable unlock. Unlock its individual Recipe or Building entries instead.`);
     }
-    const recipe = await materializeResearchCraftingRecipe(tx, player.actorId, recipeId);
+    const materialized = unlock.kind === "building"
+      ? await materializeResearchBuildingUnlock(tx, player.playerStateId, unlock.id, unlock.pieceId)
+      : await materializeResearchCraftingRecipe(tx, player.actorId, unlock.id);
     await tx.query(`
       update dune.actors
       set properties = jsonb_set(properties, '{TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData}', $2::jsonb, true)
@@ -6811,10 +6830,17 @@ export async function unlockResearchItem(db, id, { itemKey }) {
       player,
       itemKey: safeItemKey,
       alreadyUnlocked,
-      recipeId,
-      recipeMaterialized: recipe.recipeUnlocked,
-      recipeAdded: recipe.recipeAdded,
-      repairedRecipe: Boolean(alreadyUnlocked && recipe.recipeAdded)
+      unlockKind: unlock.kind,
+      unlockId: unlock.id,
+      unlockMaterialized: true,
+      recipeId: unlock.kind === "recipe" ? unlock.id : "",
+      recipeMaterialized: unlock.kind === "recipe" ? materialized.recipeUnlocked : false,
+      recipeAdded: unlock.kind === "recipe" ? materialized.recipeAdded : false,
+      buildingUnlockId: unlock.kind === "building" ? unlock.id : "",
+      buildingPieceId: unlock.kind === "building" ? unlock.pieceId : "",
+      buildingProgressionUpdated: unlock.kind === "building" ? materialized.progressionUpdated : false,
+      repairedRecipe: Boolean(unlock.kind === "recipe" && alreadyUnlocked && materialized.recipeAdded),
+      repairedUnlock: Boolean(alreadyUnlocked && materialized.added)
     };
   });
 }
@@ -13510,14 +13536,58 @@ async function clearDanglingTrackedContract(db, actorId) {
   return Number(result.rowCount || 0) > 0;
 }
 
-function linkedResearchRecipeId(itemKey) {
+function linkedResearchUnlock(itemKey) {
   const value = String(itemKey || "");
-  if (value.startsWith("BLD_") && !value.endsWith("_Patent")) {
+  if (value.startsWith("BLD_")) {
     const buildingId = value.slice(4);
-    const metadata = adminItemMetadata().get(buildingId);
-    if (String(metadata?.category || "").toLowerCase() === "buildings") return buildingId;
+    let unlockId = buildingId;
+    if (!value.endsWith("_Patent")) {
+      const metadata = adminItemMetadata().get(buildingId);
+      if (String(metadata?.category || "").toLowerCase() !== "buildings") unlockId = `${buildingId}_Patent`;
+    }
+    return {
+      kind: "building",
+      id: unlockId,
+      pieceId: `${unlockId.replace(/_Patent$/i, "")}_Placeable`
+    };
   }
-  return researchRecipeId(value);
+  const recipeId = researchRecipeId(value);
+  return recipeId
+    ? { kind: "recipe", id: recipeId, pieceId: "" }
+    : { kind: "group", id: "", pieceId: "" };
+}
+
+async function materializeResearchBuildingUnlock(db, characterId, unlockId, pieceId) {
+  if (!characterId) throw new UnsupportedCapabilityError("Player building progression was not found; research was not changed.");
+  const columns = await tableExists(db, "building_progression") ? await columnsFor(db, "building_progression") : new Set();
+  if (!["character_id", "learned_building_sets", "new_buildable_pieces"].every((column) => columns.has(column))) {
+    throw new UnsupportedCapabilityError("Building progression is unavailable in this game database; research was not changed.");
+  }
+  const current = await db.query(`
+    select coalesce(learned_building_sets, '{}'::text[]) as learned_building_sets,
+           coalesce(new_buildable_pieces, '{}'::text[]) as new_buildable_pieces
+    from dune.building_progression
+    where character_id = $1
+    for update`, [characterId]);
+  if (!current.rows.length) {
+    throw new UnsupportedCapabilityError(`Building progression was not found for player state ${characterId}; research was not changed.`);
+  }
+  const learned = Array.isArray(current.rows[0]?.learned_building_sets) ? current.rows[0].learned_building_sets.map(String) : [];
+  const pieces = Array.isArray(current.rows[0]?.new_buildable_pieces) ? current.rows[0].new_buildable_pieces.map(String) : [];
+  const addUnlock = !learned.includes(unlockId);
+  const addPiece = Boolean(pieceId) && !pieces.includes(pieceId);
+  if (addUnlock || addPiece) {
+    await db.query(`
+      update dune.building_progression
+      set learned_building_sets = $2::text[],
+          new_buildable_pieces = $3::text[]
+      where character_id = $1`, [
+      characterId,
+      addUnlock ? [...learned, unlockId] : learned,
+      addPiece ? [...pieces, pieceId] : pieces
+    ]);
+  }
+  return { progressionUpdated: addUnlock || addPiece, added: addUnlock || addPiece };
 }
 
 async function materializeResearchCraftingRecipe(db, actorId, recipeId) {
