@@ -1895,6 +1895,63 @@ export async function addonLeadershipPlayers(db) {
   };
 }
 
+// Addons that correlate external player activity (for example chat events)
+// need stable game and platform identities, but not the broader player REST
+// API. Keep this response deliberately narrow and permission it through the
+// addon bridge's existing players:read grant.
+export async function addonPlayerIdentities(db) {
+  const result = await listAllPlayers(db, {});
+  if (!result?.capabilities?.players) return result;
+  const rows = result.rows || [];
+  const accountIds = [...new Set(rows
+    .map((row) => String(row.account_id || ""))
+    .filter((value) => /^[1-9][0-9]*$/.test(value)))];
+  const platforms = new Map();
+
+  if (accountIds.length && await tableExists(db, "accounts")) {
+    const accountColumns = await columnsFor(db, "accounts");
+    const platformIdSelect = accountColumns.has("platform_id")
+      ? "coalesce(platform_id::text, '')"
+      : "''";
+    const platformNameSelect = accountColumns.has("platform_name")
+      ? "coalesce(platform_name::text, '')"
+      : "''";
+    const platformResult = await db.query(`
+      select id::text as account_id,
+             ${platformIdSelect} as platform_id,
+             ${platformNameSelect} as platform_name
+      from dune.accounts
+      where id = any($1::bigint[])`, [accountIds]);
+    for (const row of platformResult.rows) {
+      platforms.set(String(row.account_id), {
+        platformId: String(row.platform_id || ""),
+        platformName: String(row.platform_name || "")
+      });
+    }
+  }
+
+  return {
+    capabilities: { players: true, identities: true },
+    rows: rows.map((row) => {
+      const actorId = String(row.actor_id || "");
+      const accountId = String(row.account_id || "");
+      const platform = platforms.get(accountId) || { platformId: "", platformName: "" };
+      return {
+        actorId,
+        controllerId: String(row.player_controller_id || ""),
+        accountId,
+        name: row.character_name || `Player ${actorId}`,
+        funcomId: String(row.funcom_id || ""),
+        flsId: String(row.fls_id || ""),
+        platformId: platform.platformId,
+        platformName: platform.platformName,
+        status: row.online_status || "Offline",
+        map: row.map || ""
+      };
+    })
+  };
+}
+
 async function leadershipLevels(db) {
   const levels = new Map();
   if (await tableExists(db, "player_state") && await tableExists(db, "actor_fgl_entities") && await tableExists(db, "fgl_entities")) {
