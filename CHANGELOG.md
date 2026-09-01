@@ -11,6 +11,8 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ### Changed
 
+- **Companion-bot naming references updated: Sentinel/ACP/Arrakis Control Panel → Mentat**, matching the bot repository's own completed rebrand (`sentinel#234`). Docs, code comments, and the Discord player-link verification-code prefix (`"ACP-"` → `"MENTAT-"`) updated across `docs/rw-architecture.md`, `docs/bot/output-architecture.md`, `docs/runtime/METRICS-ALERTMANAGER-DISCORD-RELAY.md`, `docs/security/secrets-management.md`, `docs/security/console-rbac-implementation-and-testing.md`, `console/api/src/integrations/discord/{commandCatalog,handoff,linkProvider,multiAccountLinkProvider}.js`, `console/api/src/duneDb.js`, `.env.example`, and the corresponding tests. The in-game "Mentat" player specialization (`CharacterAdminUI.tsx` and friends) is unrelated and untouched — see `docs/bot/mentat-naming-disambiguation.md` for the full disambiguation. Dated, commit-SHA-pinned historical citations (e.g. "verified against arrakis-control-panel @ 8f3d3ed") and the entirely separate `docs/security/discord-player-link-hardening.md` investigation write-up were deliberately left as-is — they're accurate history, not current-state claims.
+
 - **Tier 1 upstream candidate hardened against an independent review** (issue
   #575, PR #578 / Red-Blink #202, commit `174f515f`). A `/code-review max`
   pass on the split diff confirmed 15 findings; the six HIGH ones are fixed

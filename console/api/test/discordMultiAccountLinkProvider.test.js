@@ -271,7 +271,7 @@ test("linking an additional character does not touch the legacy single-link tabl
   });
   assert.equal(result.ok, true);
   assert.equal(result.pending, true);
-  assert.match(whisper.message, /account-link verification code is: ACP-[A-Z0-9]+/);
+  assert.match(whisper.message, /account-link verification code is: MENTAT-[A-Z0-9]+/);
 });
 
 test("first linked account becomes default automatically", async () => {
@@ -481,10 +481,10 @@ test("multi-account verification rate limiting is independent from the single-li
     publishWhisper: async () => {}
   });
 
-  await verifyAccountLinkProvider(db, { discordUserId: "discord-1", code: "ACP-WRONG" });
-  await verifyAccountLinkProvider(db, { discordUserId: "discord-1", code: "ACP-WRONG" });
+  await verifyAccountLinkProvider(db, { discordUserId: "discord-1", code: "MENTAT-WRONG" });
+  await verifyAccountLinkProvider(db, { discordUserId: "discord-1", code: "MENTAT-WRONG" });
   await assert.rejects(
-    () => verifyAccountLinkProvider(db, { discordUserId: "discord-1", code: "ACP-WRONG" }),
+    () => verifyAccountLinkProvider(db, { discordUserId: "discord-1", code: "MENTAT-WRONG" }),
     (error) => error.code === "verify_rate_limited" && error.statusCode === 429
   );
 

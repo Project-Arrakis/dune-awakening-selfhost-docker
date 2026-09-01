@@ -165,8 +165,8 @@ test("link challenge is delivered only in game and is not exposed by the API", a
   assert.equal(result.ok, true);
   assert.equal(result.pending, true);
   assert.equal("code" in result, false);
-  assert.doesNotMatch(result.message, /ACP-[A-Z0-9]+/);
-  assert.match(whisper.message, /Discord verification code is: ACP-[A-Z0-9]+/);
+  assert.doesNotMatch(result.message, /MENTAT-[A-Z0-9]+/);
+  assert.match(whisper.message, /Discord verification code is: MENTAT-[A-Z0-9]+/);
   assert.equal(whisper.recipientFuncomId, "Chani#1234");
 });
 
@@ -209,7 +209,7 @@ test("repeated wrong-code verification attempts for one discordUserId are rate l
 
   // Three wrong guesses consume the allowance...
   for (let i = 0; i < 3; i += 1) {
-    const attempt = await verifyPlayerLinkProvider(db, { discordUserId: "discord-1", code: "ACP-WRONG" });
+    const attempt = await verifyPlayerLinkProvider(db, { discordUserId: "discord-1", code: "MENTAT-WRONG" });
     assert.equal(attempt.ok, false);
   }
 
@@ -244,17 +244,17 @@ test("rate limiting is scoped per discordUserId — one user's lockout does not 
     publishWhisper: async () => {}
   });
 
-  await verifyPlayerLinkProvider(db, { discordUserId: "discord-1", code: "ACP-WRONG" });
-  await verifyPlayerLinkProvider(db, { discordUserId: "discord-1", code: "ACP-WRONG" });
+  await verifyPlayerLinkProvider(db, { discordUserId: "discord-1", code: "MENTAT-WRONG" });
+  await verifyPlayerLinkProvider(db, { discordUserId: "discord-1", code: "MENTAT-WRONG" });
   await assert.rejects(
-    () => verifyPlayerLinkProvider(db, { discordUserId: "discord-1", code: "ACP-WRONG" }),
+    () => verifyPlayerLinkProvider(db, { discordUserId: "discord-1", code: "MENTAT-WRONG" }),
     (error) => error.code === "verify_rate_limited"
   );
 
   // A different discordUserId with no pending link of their own is still
   // allowed to attempt verification (and correctly gets a normal
   // "invalid or expired" business result, not a 429).
-  const other = await verifyPlayerLinkProvider(db, { discordUserId: "discord-2", code: "ACP-WRONG" });
+  const other = await verifyPlayerLinkProvider(db, { discordUserId: "discord-2", code: "MENTAT-WRONG" });
   assert.equal(other.ok, false);
   assert.match(other.error, /Invalid or expired/i);
 });
@@ -274,7 +274,7 @@ test("a successful verification clears the rate-limit lockout for that discordUs
   });
   const code = db.state.pending.code;
 
-  await verifyPlayerLinkProvider(db, { discordUserId: "discord-1", code: "ACP-WRONG" });
+  await verifyPlayerLinkProvider(db, { discordUserId: "discord-1", code: "MENTAT-WRONG" });
   const accepted = await verifyPlayerLinkProvider(db, { discordUserId: "discord-1", code });
   assert.equal(accepted.ok, true);
 

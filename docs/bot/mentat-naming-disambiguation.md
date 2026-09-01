@@ -1,8 +1,8 @@
 # "Mentat" Naming Disambiguation (Discord Bot vs. In-Game Specialization)
 
-**Date:** 2026-08-31
+**Date:** 2026-08-31 (implementation completed 2026-09-01)
 **Status:** Current
-**Companion repository:** [Project-Arrakis/mentat](https://github.com/Project-Arrakis/sentinel) *(rename pending — see Project-Arrakis/meta#56)*
+**Companion repository:** [Project-Arrakis/sentinel](https://github.com/Project-Arrakis/sentinel) *(GitHub repo rename to `mentat` still pending — see Project-Arrakis/meta#56; the bot's own product branding is already "Mentat" as of `sentinel#234`)*
 **Tracking issue:** [Project-Arrakis/meta#56](https://github.com/Project-Arrakis/meta/issues/56)
 
 ## Summary
@@ -16,21 +16,26 @@ This is a naming homonym, not a naming conflict. Neither meaning is being rename
 | | The Discord bot | The in-game specialization |
 |---|---|---|
 | What it is | A companion application, external to this repository, that calls this console's API | A real player specialization/skill-track category, part of the actual game data this console administers |
-| Canonical name | **Mentat** (product), **Mentat Web** (its web app) | **Mentat** (unchanged, always has been) |
-| Owned by | `Project-Arrakis/mentat` (pending rename from `sentinel`) | This repository — confirmed identical in the pristine Red-Blink upstream, i.e. canon game content, not fork-specific |
+| Canonical name | **Mentat** (product/bot), **Mentat Mnemonic** (its companion web app — corrected from an earlier "Mentat Web" working name) | **Mentat** (unchanged, always has been) |
+| Owned by | `Project-Arrakis/sentinel` (GitHub repo rename to `mentat` still pending) | This repository — confirmed identical in the pristine Red-Blink upstream, i.e. canon game content, not fork-specific |
 | Where it shows up here | Comments/docs describing the bot integration; a small number of API-consumed identifiers (see below) | `console/web/src/features/players/CharacterAdminUI.tsx`, `PlayerCategoryIconRail.tsx`, `SpecializationTab.test.tsx`, `runtime/data/admin-skill-modules.json` |
 
-## What changes in this repository
+## What changed in this repository (implemented 2026-09-01)
 
-Nothing has changed yet — this document and Project-Arrakis/meta#56 only scope the work. When it is implemented, only code/comments/docs that reference **the bot** by an outgoing old name should change, and only to say "Mentat" as the bot's name:
+Every item originally scoped here is done, plus several more found by a repo-wide sweep once implementation started. Only code/comments/docs that referenced **the bot** by an outgoing old name were changed, and only to say "Mentat" as the bot's name (or, for docs describing this site's own separate product, "Mentat Mnemonic" — this repo's own doc references are all about the bot, not the web app, so that distinction rarely came up here):
 
-- `docs/rw-architecture.md:214` — `### Bot (arrakis-control-panel)`
-- `docs/bot/output-architecture.md` — companion-repo prose/links
-- `console/api/src/integrations/discord/commandCatalog.js` — comments naming the companion bot repo
-- `console/api/src/integrations/discord/roleTiers.js:65` — illustrative comment ("Sentinel's own data...")
-- `console/api/src/integrations/discord/handoff.js:3` — comment ("the ACP bot resolves...")
-- `.env.example:234` — comment describing the integration
-- `console/api/src/integrations/discord/linkProvider.js:20` + `console/api/test/discordLinkProvider.test.js:95-96` — the generated verification-code prefix `"ACP-"`. This one is a cross-system contract (the code is relayed by a human from the bot into the console), not a cosmetic string — any change here needs coordinated rollout with the bot side, not a blind find-and-replace.
+- `docs/rw-architecture.md:214` — `### Bot (arrakis-control-panel)` → `### Bot (Mentat)`
+- `docs/bot/output-architecture.md` — companion-repo name/link corrected to the bot's current real location (`Project-Arrakis/sentinel`) and current product name (Mentat); issue links repointed from the retired `yacketrj` org
+- `console/api/src/integrations/discord/commandCatalog.js` — the one present-tense "(arrakis-control-panel)" naming reference updated; several *undated* "confirmed/verified against arrakis-control-panel" comments normalized to "the bot repo" (repo-name-agnostic, since they don't cite a specific commit); the comments that DO cite a specific commit SHA (`@ 8f3d3ed`, 2026-08-18) were deliberately left as-is — they're accurate historical fact about what was verified at that commit, when the repo's name at the time was, in fact, still "arrakis-control-panel"
+- `console/api/src/integrations/discord/roleTiers.js:65` — **not touched**: this file does not exist on `main` (it's part of unmerged work on the `tier4-totp-upstream` branch). Whoever eventually merges that branch will need its own naming pass; out of scope here
+- `console/api/src/integrations/discord/handoff.js:3`, `.env.example:187`, `console/api/src/integrations/discord/multiAccountLinkProvider.js`, `console/api/test/discordCommandCatalog.test.js` — generic present-tense "the ACP bot"/"arrakis-control-panel" references updated
+- `console/api/src/integrations/discord/linkProvider.js`, `multiAccountLinkProvider.js` — the generated verification-code prefix changed from `"ACP-"` to `"MENTAT-"`, plus the test fixtures/regex assertions in `discordLinkProvider.test.js`, `discordMultiAccountLinkProvider.test.js`, and `discordAdapter.test.js`. **This turned out not to need coordinated bot-side rollout** despite this document's own earlier caution — verified directly, not just asserted: `consumePendingLink` (`console/api/src/duneDb.js:14113`) and `consumePendingAccountLink` (`console/api/src/duneDb.js:13894`) both do a plain `delete ... where code = $1 and discord_user_id = $2` exact-match lookup against a `text primary key` column with no format/regex/length check anywhere in either function or in `verifyPlayerLinkProvider`/`verifyAccountLinkProvider` (`linkProvider.js:212`, `multiAccountLinkProvider.js:206`) — confirmed by direct code reading and by a repo-wide grep for any `code.slice(`/`code.startsWith(`/prefix-regex pattern (zero hits). The bot only ever relays the code as an opaque string typed back in by the player; it has no copy of this logic to desync from. A pre-existing pending code (`ACP-XXXXXX`) already whispered to a player mid-flight at deploy time also still verifies correctly, since verification is a stored-value lookup, not a format check.
+- `docs/security/player-linking-security-architecture.md` — one Mermaid sequence-diagram example (`/dune data verify ACP-XXXX` → `MENTAT-XXXX`) updated to match the new prefix.
+- Also found and fixed during the same sweep (beyond the original scope of this document): `console/api/src/duneDb.js` (a `yacketrj/arrakis-control-panel` doc-path citation), `docs/runtime/METRICS-ALERTMANAGER-DISCORD-RELAY.md` (a live, "Status: Current" doc — bot references and a stale `yacketrj` issue link), `docs/security/secrets-management.md` and `docs/security/console-rbac-implementation-and-testing.md` (generic "ACP bot"/"arrakis-control-panel" prose; literal file paths and the still-live `ACP_SECRETS_KEY` env var name were deliberately left untouched, since those describe real, not-yet-renamed infrastructure — see the bot repo's own credential-vars deferral in `docs/env-var-compatibility.md`)
+
+**Deliberately left untouched, with reasons:** `CHANGELOG.md`'s historical entries (accurate at the time they were written); `docs/security/discord-player-link-hardening.md` (an extensive, deeply commit-SHA-dated security investigation write-up — rewriting its citations to current branding would misrepresent what was actually true at each cited commit); every generic-programming "sentinel value" occurrence across the codebase (`duneDb.js`, `addonJobs.js`, `secondFactorStore.js`, the `console/web` test files, etc.) — unrelated to the bot brand, verified by reading context, not just string-matched.
+
+**Known follow-ups (deferred, tracked separately):** the Layer 2 audit on the implementation PR found that `linkProvider.js`'s and `multiAccountLinkProvider.js`'s `generateVerificationCode()` are duplicated with no shared constant (pre-existing, not introduced here, but worth closing so the two never silently desync), and that this repo has no markdown link-checker to mechanically verify the GitHub links corrected above stay valid. Both tracked in [issue #662](https://github.com/Project-Arrakis/dune-awakening-selfhost-docker/issues/662) rather than fixed inline, since neither is a naming question.
 
 ## What must never change because of this rename
 
@@ -38,5 +43,5 @@ Every in-game "Mentat" reference above is real player-facing game data this cons
 
 ## References
 
-- [Mentat Rename Ledger](https://claude.ai/code/artifact/d93949d3-673e-4e92-911b-36030c320fa0) — Phase 1 discovery and Phase 2 canonical naming for the full org-wide rename
+- [Mentat Rename Ledger](https://claude.ai/code/artifact/fe568f39-ac04-4641-a222-c3bea37d228c) — running record of the full org-wide rename (discovery, naming, compatibility design, and each phase's implementation)
 - [Project-Arrakis/meta#56](https://github.com/Project-Arrakis/meta/issues/56) — tracking issue for the implementation work scoped above

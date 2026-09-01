@@ -164,7 +164,7 @@ test("route entries with routeEnforcesCapability: false are exactly the known, d
 
 // Issue #342: an independent re-audit of #337/PR #341 found 3 catalog
 // entries describing Core routes that are genuinely live but have no
-// current bot-side caller in arrakis-control-panel, one of which
+// current bot-side caller in the bot repo, one of which
 // (PLAYERS_ACCOUNTS_SET_DEFAULT) had a description verbatim-borrowed from
 // the bot's real, but entirely different and separately-routed, "/dune
 // player default" command. This test locks the routeHasNoCurrentBotCaller
@@ -199,7 +199,7 @@ test("no two catalog route entries share a verbatim-identical description (would
 // fix -- 3 shared with the upstream PR #171 branch (storage/find/inventory,
 // genuine live fan-outs) plus 3 specific to this fork's multi-account
 // routes (link/verify/unlink). Of those 3, only "unlink" is a genuine live
-// fan-out (verified against arrakis-control-panel's real commands.js:
+// fan-out (verified against the bot repo's real commands.js:
 // "/dune player unlink <character>" calls PLAYERS_ACCOUNTS_UNLINK when a
 // playerControllerId is given, else PLAYERS_UNLINK) -- "link"/"verify"
 // collided with PLAYERS_ACCOUNTS_LINK/LINK_VERIFY, which have NO live bot

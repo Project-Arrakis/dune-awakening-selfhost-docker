@@ -51,7 +51,7 @@ sequenceDiagram
         Game-->>API: delivery confirmed
         API-->>Bot: {ok: true, pending: true}
         Bot->>Bot: Tell user: "Check your in-game whispers"
-        User->>Bot: /dune data verify ACP-XXXX
+        User->>Bot: /dune data verify MENTAT-XXXX
         Bot->>API: POST /players/link/verify {code}
         API->>DB: consumePendingLink(code, discord_user_id)
         DB-->>API: code valid, not expired

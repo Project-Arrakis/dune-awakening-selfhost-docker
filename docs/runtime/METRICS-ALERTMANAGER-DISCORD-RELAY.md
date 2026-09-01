@@ -4,18 +4,18 @@
 
 This document covers `dune-alertmanager`'s `discord-relay` receiver
 (`runtime/metrics/alertmanager/alertmanager.yml`), which forwards firing/
-resolved Prometheus alerts to a Discord channel via the external ACP
-(Arrakis Control Panel) bot's `POST /api/alerts/relay` endpoint.
+resolved Prometheus alerts to a Discord channel via the external Mentat
+(formerly Sentinel/Arrakis Control Panel) bot's `POST /api/alerts/relay` endpoint.
 
 ## Background
 
 `POST /api/alerts/relay` previously had zero authentication --
-`yacketrj/arrakis-control-panel#167` found that anyone who discovered its
+[`Project-Arrakis/sentinel#167`](https://github.com/Project-Arrakis/sentinel/issues/167) found that anyone who discovered its
 URL could inject arbitrary-looking alert payloads and have them relayed
 to the real, configured Discord channel as if genuine. The fix spans two
 repositories:
 
-- **arrakis-control-panel** (the bot): validates a shared secret sent as
+- **The bot (Mentat)**: validates a shared secret sent as
   `Authorization: Bearer <token>`, via `DUNE_ALERT_RELAY_TOKEN`/
   `DUNE_ALERT_RELAY_TOKEN_FILE`. Deliberately opt-in/backward compatible
   -- if unset, the bot still accepts requests (logging a warning) rather
@@ -102,12 +102,12 @@ inconsistency:
   generation and its only consumer (Alertmanager itself) -- there's no
   reason to ever run this receiver without a real credential once this
   fix has shipped.
-- **The bot (arrakis-control-panel) is opt-in/fails open with a warning**:
+- **The bot (Mentat) is opt-in/fails open with a warning**:
   the bot is a separate, independently-deployed component that many
   operators run without this specific fork's Alertmanager setup at all
   (or with a different metrics stack entirely). Requiring the token
   immediately would break every existing bot deployment's alerting the
   moment the bot-side fix ships, before any operator has had a chance to
-  configure the matching value. See `arrakis-control-panel`'s own
+  configure the matching value. See the bot repo's own
   `CHANGELOG.md` entry for `DUNE_ALERT_RELAY_TOKEN` for the full
   reasoning.

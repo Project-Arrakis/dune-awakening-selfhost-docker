@@ -13496,7 +13496,7 @@ export async function characterHasSteamId(db, playerControllerId) {
 
 // matchSteamIdForCharacter: read-only check used by the Discord bot's
 // Steam-connections-based linking flow (see
-// yacketrj/arrakis-control-panel:docs/steam-link-architecture.md). Given
+// Project-Arrakis/sentinel:docs/steam-link-architecture.md). Given
 // ONE specific playerControllerId (already resolved and named by the
 // player -- this is never a bulk/candidate-list lookup) and the array of
 // SteamID64 strings Discord's own GET /users/@me/connections returned for
