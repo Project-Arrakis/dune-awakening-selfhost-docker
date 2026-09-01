@@ -64,6 +64,61 @@ test("self-update check prefers the official upstream release repo in fork check
   }
 });
 
+test("self-update check falls back to the public release redirect when the GitHub API is rate-limited", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-self-update-rate-limit-"));
+  mkdirSync(join(dir, "runtime", "scripts"), { recursive: true });
+  copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(dir, "runtime", "scripts", "self-update.sh"));
+  copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(dir, "runtime", "scripts", "compose-project.sh"));
+  chmodSync(join(dir, "runtime", "scripts", "self-update.sh"), 0o700);
+  writeFileSync(join(dir, "VERSION"), "v1.3.97\n");
+
+  const requests = [];
+  const server = createServer((req, res) => {
+    requests.push(req.url || "");
+    if (req.url?.startsWith("/repos/")) {
+      res.writeHead(403, { "content-type": "application/json", "x-ratelimit-remaining": "0" });
+      res.end(JSON.stringify({ message: "API rate limit exceeded" }));
+      return;
+    }
+    if (req.url === "/Red-Blink/dune-awakening-selfhost-docker/releases/latest") {
+      res.writeHead(302, { location: "/Red-Blink/dune-awakening-selfhost-docker/releases/tag/v1.3.98" });
+      res.end();
+      return;
+    }
+    if (req.url === "/Red-Blink/dune-awakening-selfhost-docker/releases/tag/v1.3.98") {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("release");
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+
+  try {
+    const address = server.address();
+    const base = `http://127.0.0.1:${address.port}`;
+    const result = await runProcess("bash", ["runtime/scripts/self-update.sh", "check"], {
+      cwd: dir,
+      timeout: 15000,
+      env: {
+        ...process.env,
+        DUNE_SELF_UPDATE_API_BASE: base,
+        DUNE_SELF_UPDATE_WEB_BASE: base,
+        NO_PROXY: "127.0.0.1,localhost",
+        no_proxy: "127.0.0.1,localhost"
+      }
+    });
+
+    assert.equal(result.status, 100, result.stderr || result.stdout);
+    assert.match(result.stdout, /Latest release:\s+v1\.3\.98/);
+    assert(requests.includes("/Red-Blink/dune-awakening-selfhost-docker/releases/latest"));
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolveClose) => server.close(resolveClose));
+  }
+});
+
 test("archive self-update replaces project files and preserves local state", async () => {
   const root = mkdtempSync(join(tmpdir(), "arrakis-self-update-install-"));
   const stagingDir = join(root, "staging");

@@ -1,19 +1,41 @@
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const RUN_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
 const STATES = new Set(["running", "succeeded", "failed"]);
+const HELPER_START_TIMEOUT_MS = 2 * 60 * 1000;
 
-export function readSelfUpdateStatus(repoRoot, runId) {
-  const cleanRunId = String(runId || "").trim();
-  if (!RUN_ID_PATTERN.test(cleanRunId)) throw Object.assign(new Error("Invalid console update run ID."), { code: "INVALID_RUN_ID" });
+export function initializeSelfUpdateStatus(repoRoot, runId, now = Date.now()) {
+  const cleanRunId = validateRunId(runId);
+  const directory = join(repoRoot, "runtime", "generated", "self-update-status");
+  const statusPath = join(directory, `${cleanRunId}.env`);
+  const temporaryPath = `${statusPath}.tmp.${process.pid}`;
+  const timestamp = new Date(now).toISOString();
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(temporaryPath, [
+    `run_id=${cleanRunId}`,
+    "state=running",
+    "stage=launching",
+    "percent=1",
+    "message=Starting the update helper.",
+    `started_at=${timestamp}`,
+    `updated_at=${timestamp}`,
+    "finished_at="
+  ].join("\n") + "\n", { mode: 0o600 });
+  chmodSync(temporaryPath, 0o600);
+  renameSync(temporaryPath, statusPath);
+  return statusPath;
+}
+
+export function readSelfUpdateStatus(repoRoot, runId, options = {}) {
+  const cleanRunId = validateRunId(runId);
 
   const statusPath = join(repoRoot, "runtime", "generated", "self-update-status", `${cleanRunId}.env`);
   let source;
   try {
     source = readFileSync(statusPath, "utf8");
   } catch (error) {
-    if (error?.code === "ENOENT") return { runId: cleanRunId, state: "pending", stage: "launching", percent: 1, message: "Waiting for the update helper to start." };
+    if (error?.code === "ENOENT") return missingStatusResult(cleanRunId, options);
     throw error;
   }
   if (Buffer.byteLength(source, "utf8") > 16 * 1024) throw new Error("Console update status file is unexpectedly large.");
@@ -22,7 +44,7 @@ export function readSelfUpdateStatus(repoRoot, runId) {
   if (fields.run_id !== cleanRunId) throw new Error("Console update status does not match the requested run.");
   if (!STATES.has(fields.state)) throw new Error("Console update status has an invalid state.");
 
-  return {
+  const result = {
     runId: cleanRunId,
     state: fields.state,
     stage: safeText(fields.stage, 64) || "unknown",
@@ -32,6 +54,70 @@ export function readSelfUpdateStatus(repoRoot, runId) {
     updatedAt: safeTimestamp(fields.updated_at),
     finishedAt: safeTimestamp(fields.finished_at)
   };
+  const now = Number.isFinite(options.now) ? options.now : Date.now();
+  const updatedAt = Date.parse(result.updatedAt || result.startedAt || "");
+  const consoleStartedAt = Number(options.consoleStartedAt);
+  const helperStartedAt = Date.parse(result.startedAt || "");
+  if (result.state === "running" && result.stage === "launching" && Number.isFinite(consoleStartedAt) && Number.isFinite(helperStartedAt) && consoleStartedAt > helperStartedAt + 1000) {
+    return {
+      ...result,
+      state: "succeeded",
+      stage: "complete",
+      percent: 100,
+      message: "The updated Console is running. The previous helper did not finish its progress record.",
+      updatedAt: new Date(consoleStartedAt).toISOString(),
+      finishedAt: new Date(consoleStartedAt).toISOString(),
+      recovered: true
+    };
+  }
+  if (result.state === "running" && result.stage === "launching" && Number.isFinite(updatedAt) && now - updatedAt >= HELPER_START_TIMEOUT_MS) {
+    return {
+      ...result,
+      state: "failed",
+      stage: "launching",
+      message: "The update helper did not begin within two minutes. Review runtime/generated/web-self-update.log for details.",
+      finishedAt: new Date(now).toISOString()
+    };
+  }
+  return result;
+}
+
+function validateRunId(runId) {
+  const cleanRunId = String(runId || "").trim();
+  if (!RUN_ID_PATTERN.test(cleanRunId)) throw Object.assign(new Error("Invalid console update run ID."), { code: "INVALID_RUN_ID" });
+  return cleanRunId;
+}
+
+function missingStatusResult(runId, options) {
+  const now = Number.isFinite(options.now) ? options.now : Date.now();
+  const taskStartedAt = Date.parse(String(options.taskStartedAt || ""));
+  const consoleStartedAt = Number(options.consoleStartedAt);
+  if (Number.isFinite(taskStartedAt) && Number.isFinite(consoleStartedAt) && consoleStartedAt > taskStartedAt + 1000) {
+    return {
+      runId,
+      state: "succeeded",
+      stage: "complete",
+      percent: 100,
+      message: "The updated Console is running. The previous helper did not leave a progress record.",
+      startedAt: new Date(taskStartedAt).toISOString(),
+      updatedAt: new Date(consoleStartedAt).toISOString(),
+      finishedAt: new Date(consoleStartedAt).toISOString(),
+      recovered: true
+    };
+  }
+  if (Number.isFinite(taskStartedAt) && now - taskStartedAt >= HELPER_START_TIMEOUT_MS) {
+    return {
+      runId,
+      state: "failed",
+      stage: "launching",
+      percent: 1,
+      message: "The update helper did not report progress within two minutes. Review runtime/generated/web-self-update.log for details.",
+      startedAt: new Date(taskStartedAt).toISOString(),
+      updatedAt: null,
+      finishedAt: new Date(now).toISOString()
+    };
+  }
+  return { runId, state: "pending", stage: "launching", percent: 1, message: "Waiting for the update helper to start." };
 }
 
 function parseStatusFields(source) {

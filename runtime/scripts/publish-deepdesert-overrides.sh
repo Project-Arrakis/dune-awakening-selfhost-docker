@@ -19,11 +19,19 @@ STOP_RESTORE_TIMEOUT_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_STOP_RESTORE_TIMEOUT_SE
 ROUTE_REFRESH_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_ROUTE_REFRESH_SECONDS:-300}"
 SNAPSHOT_REFRESH_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_SNAPSHOT_REFRESH_SECONDS:-10}"
 POLL_SECONDS="${DUNE_DEEPDESERT_OVERRIDE_POLL_SECONDS:-1}"
+LAYOUT_OVERRIDE_FILE="${DUNE_DEEPDESERT_OVERRIDE_FILE:-runtime/generated/director-deepdesert-dual.ini}"
 
 SOURCE_EXCHANGE="completions"
 SOURCE_ROUTING_KEY="server_state.DeepDesert_1"
 SINK_QUEUE="serverStateSink_DeepDesert_1"
 FILTER_EXCHANGE="deepdesertOverrideFilteredState"
+
+managed_multi_instance_layout() {
+  [ -f "$LAYOUT_OVERRIDE_FILE" ] || return 1
+  local count
+  count="$(sed -n 's/^; ManagedInstanceCount=\([0-9][0-9]*\)$/\1/p' "$LAYOUT_OVERRIDE_FILE" | tail -n1)"
+  [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -ge 2 ]
+}
 
 loop_pids() {
   ps -eo pid=,args= 2>/dev/null \
@@ -414,6 +422,13 @@ start_loop() {
 
 case "${1:-start}" in
   once)
+    if managed_multi_instance_layout; then
+      # Mixed layouts must use the game servers' native state. The synthetic
+      # warm-up payload has no field for a partition-specific PvP role and
+      # would make every Kanly entry appear PvE.
+      restore_route
+      exit 0
+    fi
     ensure_route
     rows="$(publish_snapshot_once || true)"
     while IFS= read -r payload; do
@@ -422,6 +437,11 @@ case "${1:-start}" in
     done <<< "$rows"
     ;;
   start)
+    if managed_multi_instance_layout; then
+      stop_loop_processes
+      restore_route
+      exit 0
+    fi
     clear_stale_pidfile
     if loop_running; then
       loop_pids | head -n 1 >"$PID_FILE"

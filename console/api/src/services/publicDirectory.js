@@ -11,6 +11,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import * as duneDb from "../duneDb.js";
 import { playerPortalMarketSnapshot } from "../addonJobs.js";
+import { liveMapPoi } from "./liveMapPoi.js";
+import { liveMapSpice } from "./liveMapSpice.js";
 import { carePackageConfig, carePackageHistory } from "../carePackage.js";
 import { readCharacterTransferSettings, incomingCharacterTransferPolicies } from "./characterTransferSettings.js";
 import { readMessageOfTheDay } from "./messageOfTheDay.js";
@@ -59,6 +61,10 @@ export function collectPlayerPortalContext(config, directorySnapshot = {}) {
   const transfer = readCharacterTransferSettings(config).settings;
   const incoming = incomingCharacterTransferPolicies.find((entry) => entry.value === transfer.IncomingCharacterTransfers);
   const care = carePackageConfig(config);
+  const instanceNames = readPublicInstanceNames(config.repoRoot);
+  const sietchNames = Object.fromEntries([...instanceNames.byPartition]
+    .filter(([key, value]) => key.startsWith("Survival_1\0") && value?.name)
+    .map(([key, value]) => [key.slice("Survival_1\0".length), value.name]));
   return {
     serverInfo: {
       status: {
@@ -87,7 +93,8 @@ export function collectPlayerPortalContext(config, directorySnapshot = {}) {
     carePackages: {
       enabled: care.enabled === true,
       history: carePackageHistory(config, 500).rows || []
-    }
+    },
+    sietchNames
   };
 }
 
@@ -221,11 +228,93 @@ const PUBLIC_MODIFIER_SETTINGS = new Map([
   publicModifier("/Script/DuneSandbox.CharacterRecustomizerSubsystem", "m_CostAmount", "Character Recustomization Cost", "5000", "number"),
   publicModifier("/Script/DuneSandbox.LootSettings", "GlobalLootRightsBehaviour", "Loot Rights", "PerPlayerChestAndNpcDrop", "text"),
   publicModifier("/Script/DuneSandbox.GuildSettings", "m_MaxPendingGuildInvitesAllowed", "Pending Guild Invites", "10", "number"),
-  publicModifier("/Script/DuneSandbox.AugmentSettings", "m_JackpotRollPercentage", "Augment Jackpot Chance", "0.950000", "ratioPercent"),
+  publicModifier("/Script/DuneSandbox.AugmentSettings", "m_JackpotRollPercentage", "Augment Jackpot Chance", "0.950000", "inverseRatioPercent"),
   publicModifier("/Script/DuneSandbox.AugmentSettings", "m_MaxRangedWeaponAugments", "Ranged Weapon Augments", "3", "number"),
   publicModifier("/Script/DuneSandbox.AugmentSettings", "m_MaxMeleeWeaponAugments", "Melee Weapon Augments", "3", "number"),
   publicModifier("/Script/DuneSandbox.AugmentSettings", "m_MaxArmorAugments", "Armor Augments", "2", "number")
 ]);
+
+const PLAYER_PORTAL_MAP_MARKER_TYPES = new Set([
+  "spice", "spice_active", "flour_sand", "ore", "scrap", "flora",
+  "poi", "house_representative", "trainer", "fortress", "hazard", "enemy"
+]);
+
+// Server-level world layers for the private Player Portal. Player-specific
+// markers deliberately stay in playerPortalSnapshots, where the authenticated
+// Steam-account hash scopes them to one character. This shared snapshot only
+// contains public world resources/POIs, map geometry, and partitions; it can
+// never carry another player's location, base, vehicle, storage, or identity.
+export async function playerPortalMapSnapshot(config, db, options = {}) {
+  const fetchPoi = options.fetchPoi || ((database, map) => liveMapPoi(database, map));
+  const fetchSpice = options.fetchSpice || ((database, map) => liveMapSpice(database, config, map));
+  const fetchPartitions = options.fetchPartitions || duneDb.liveMapPartitions;
+  const mapPayload = duneDb.liveMapConfigPayload();
+  const capabilities = {};
+  const rows = [];
+  const cycles = {};
+
+  for (const mapConfig of Object.values(mapPayload.maps || {})) {
+    const actorMap = String(mapConfig?.actorMap || mapConfig?.key || "");
+    if (!actorMap) continue;
+    const [poi, spice] = await Promise.all([
+      fetchPoi(db, actorMap).catch(() => ({ capabilities: {}, rows: [] })),
+      fetchSpice(db, actorMap).catch(() => ({ capabilities: {}, rows: [] }))
+    ]);
+    Object.assign(capabilities, poi.capabilities || {}, spice.capabilities || {});
+    cycles[String(mapConfig.key)] = {
+      coriolisSeed: String(spice.currentSeed || ""),
+      coriolisNextCycleAt: String(spice.nextCycleAt || "")
+    };
+    for (const marker of [...(poi.rows || []), ...(spice.rows || [])]) {
+      const type = String(marker?.type || "");
+      const x = Number(marker?.x);
+      const y = Number(marker?.y);
+      if (!PLAYER_PORTAL_MAP_MARKER_TYPES.has(type) || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const row = {
+        id: String(marker.id || ""),
+        type,
+        name: String(marker.name || "Map Marker"),
+        map: String(marker.map || actorMap),
+        x,
+        y,
+        z: marker.z == null || !Number.isFinite(Number(marker.z)) ? null : Number(marker.z)
+      };
+      if (marker.subtype) row.subtype = String(marker.subtype);
+      if (marker.confidence) row.confidence = String(marker.confidence);
+      if (marker.partition_id != null && Number.isInteger(Number(marker.partition_id))) {
+        row.partitionId = Number(marker.partition_id);
+      }
+      rows.push(row);
+    }
+  }
+
+  const partitionResult = await fetchPartitions(db).catch(() => ({ rows: [] }));
+  const instanceNames = config?.repoRoot
+    ? readPublicInstanceNames(config.repoRoot)
+    : { byPartition: new Map() };
+  return {
+    maps: mapPayload.maps || {},
+    defaultMap: mapPayload.defaultMap || "HaggaBasin",
+    capabilities,
+    cycles,
+    partitions: (partitionResult.rows || []).map((partition) => {
+      const map = String(partition.map || "");
+      const partitionId = Number(partition.partition_id) || 0;
+      const configuredMap = map === "HaggaBasin"
+        ? "Survival_1"
+        : map === "DeepDesert"
+          ? "DeepDesert_1"
+          : map;
+      const configured = instanceNames.byPartition.get(`${configuredMap}\0${partitionId}`)?.name;
+      return {
+        map,
+        partitionId,
+        name: String(configured || partition.name || `Partition ${partitionId}`)
+      };
+    }),
+    rows
+  };
+}
 
 export function createPublicDirectoryReporter(config, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
@@ -235,8 +324,11 @@ export function createPublicDirectoryReporter(config, options = {}) {
   const getBattlegroupRunning = options.getBattlegroupRunning || isBattlegroupRunning;
   const reconcileProbe = options.reconcileProbe || ((probe) => reconcilePublicProbe(config.repoRoot, probe));
   const collectPlayerPortalSnapshots = options.collectPlayerPortalSnapshots || duneDb.playerPortalSnapshots;
+  const collectPlayerServerMemberships = options.collectPlayerServerMemberships || duneDb.playerServerMemberships;
   const collectPlayerPortalMarketSnapshot = options.collectPlayerPortalMarketSnapshot
     || ((database) => playerPortalMarketSnapshot(config, database));
+  const collectPlayerPortalMapSnapshot = options.collectPlayerPortalMapSnapshot
+    || ((database) => playerPortalMapSnapshot(config, database));
   const buildPlayerPortalContext = options.collectPlayerPortalContext
     || (async (directorySnapshot) => {
       const context = collectPlayerPortalContext(config, directorySnapshot);
@@ -278,6 +370,9 @@ export function createPublicDirectoryReporter(config, options = {}) {
   let state = readStatus(statusPath);
   let lastPlayerPortalUploadAt = 0;
   let lastPlayerPortalRequestSignature = "";
+  let lastPlayerPortalMapUploadAt = 0;
+  let lastMembershipUploadAt = 0;
+  let lastMembershipRequestSignature = "";
 
   function start() {
     if (stopped || timer) return;
@@ -373,7 +468,25 @@ export function createPublicDirectoryReporter(config, options = {}) {
               // Market details are optional; core player snapshots must still
               // upload if the local Market Bot configuration is unavailable.
             }
+            const observedAt = new Date(now()).toISOString();
             const portalContext = await buildPlayerPortalContext(snapshot);
+            if (now() - lastPlayerPortalMapUploadAt >= 60_000) {
+              try {
+                const mapSnapshot = await collectPlayerPortalMapSnapshot(getDb());
+                const result = await requestJson(fetchImpl, `${claimBaseUrl}/${encodeURIComponent(identity.serverId)}/player-portal/map-snapshot`, {
+                  method: "POST",
+                  headers: {
+                    authorization: `Bearer ${identity.secret}`,
+                    "content-type": "application/json"
+                  },
+                  body: JSON.stringify({ observedAt, map: mapSnapshot })
+                });
+                if (result?.stored === true) lastPlayerPortalMapUploadAt = now();
+              } catch {
+                // Compatibility with directory services that do not yet
+                // support the read-only Player Portal map snapshot.
+              }
+            }
             const snapshots = await collectPlayerPortalSnapshots(
               getDb(),
               requested,
@@ -382,7 +495,6 @@ export function createPublicDirectoryReporter(config, options = {}) {
               marketSnapshot,
               portalContext
             );
-            const observedAt = new Date(now()).toISOString();
             let marketOverviewStoredSeparately = false;
             if (marketSnapshot?.overview && typeof marketSnapshot.overview === "object") {
               try {
@@ -425,6 +537,40 @@ export function createPublicDirectoryReporter(config, options = {}) {
         }
       } else {
         lastPlayerPortalRequestSignature = "";
+      }
+      if (playerPortalStatus?.playerPortalEnabled === true
+        && Array.isArray(playerPortalStatus.requestedMembershipHashes)) {
+        const requestedMemberships = playerPortalStatus.requestedMembershipHashes
+          .map((value) => String(value || "").toLowerCase())
+          .filter((value) => /^[0-9a-f]{64}$/.test(value))
+          .slice(0, 250)
+          .sort();
+        const membershipSignature = requestedMemberships.join(",");
+        if (requestedMemberships.length && (
+          membershipSignature !== lastMembershipRequestSignature
+          || now() - lastMembershipUploadAt >= 60_000
+        )) {
+          try {
+            const memberships = await collectPlayerServerMemberships(getDb(), requestedMemberships);
+            await requestJson(fetchImpl, `${claimBaseUrl}/${encodeURIComponent(identity.serverId)}/player-membership/snapshot`, {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${identity.secret}`,
+                "content-type": "application/json"
+              },
+              body: JSON.stringify({
+                observedAt: new Date(now()).toISOString(),
+                memberships
+              })
+            });
+            lastMembershipUploadAt = now();
+            lastMembershipRequestSignature = membershipSignature;
+          } catch {
+            // Membership discovery is optional and must not interrupt the public heartbeat.
+          }
+        }
+      } else {
+        lastMembershipRequestSignature = "";
       }
       const heartbeatSeconds = clampInteger(
         receipt.nextHeartbeatSeconds,
@@ -799,7 +945,7 @@ export function buildHeartbeatPayload(identity, snapshot) {
 }
 
 export async function collectPublicMetadata(repoRoot, db) {
-  const modifiers = readPublicModifiers(resolve(repoRoot, "runtime/generated/gameplay-profile.ini"));
+  const modifierMetadata = readPublicModifierMetadata(resolve(repoRoot, "runtime/generated/gameplay-profile.ini"), { repoRoot });
   let progression = { characters: 0, averageLevel: 0, highestLevel: 0 };
   if (db) {
     try {
@@ -816,24 +962,29 @@ export async function collectPublicMetadata(repoRoot, db) {
       // Public directory reporting must remain healthy if progression is unavailable.
     }
   }
-  return { modifiers, progression };
+  return { ...modifierMetadata, progression };
 }
 
 export function readPublicModifiers(path) {
-  if (!existsSync(path)) return {};
+  return readPublicModifierMetadata(path).modifiers;
+}
+
+export function readPublicModifierMetadata(path, { repoRoot = "" } = {}) {
+  if (!existsSync(path)) return { modifiers: {}, modifierGroups: [] };
   const collected = new Map();
-  let section = "";
+  const grouped = new Map();
+  let scope = publicModifierScope("");
   for (const rawLine of readFileSync(path, "utf8").split(/\r?\n/)) {
     const line = rawLine.trim();
     if (line.startsWith("[") && line.endsWith("]")) {
-      section = publicModifierSection(line.slice(1, -1));
+      scope = publicModifierScope(line.slice(1, -1));
       continue;
     }
     if (!line || line.startsWith(";") || line.startsWith("#")) continue;
     const equals = line.indexOf("=");
     if (equals < 1) continue;
     const key = line.slice(0, equals).trim();
-    const setting = PUBLIC_MODIFIER_SETTINGS.get(publicModifierKey(section, key));
+    const setting = PUBLIC_MODIFIER_SETTINGS.get(publicModifierKey(scope.section, key));
     if (!setting) continue;
     const value = line.slice(equals + 1).trim().replace(/^"|"$/g, "");
     if (!value || publicModifierValuesEqual(value, setting.defaultValue, setting.format)) continue;
@@ -841,13 +992,25 @@ export function readPublicModifiers(path) {
     if (!formatted) continue;
     if (!collected.has(setting.label)) collected.set(setting.label, new Set());
     collected.get(setting.label).add(formatted);
+    const groupKey = `${scope.scope}\0${scope.map}\0${scope.partitionId ?? ""}`;
+    if (!grouped.has(groupKey)) grouped.set(groupKey, { ...scope, readings: new Map() });
+    const readings = grouped.get(groupKey).readings;
+    if (!readings.has(setting.label)) readings.set(setting.label, new Set());
+    readings.get(setting.label).add(formatted);
   }
-  return Object.fromEntries([...collected].map(([label, readings]) => {
-    const values = [...readings];
-    if (values.length === 1) return [label, values[0]];
-    const visible = values.slice(0, 3).join(", ");
-    return [label, `Varies: ${visible}${values.length > 3 ? ` +${values.length - 3}` : ""}`];
-  }));
+  const instanceNames = repoRoot ? readPublicInstanceNames(repoRoot) : { byPartition: new Map(), byDimension: new Map() };
+  const modifiers = formatCollectedModifiers(collected);
+  const modifierGroups = limitPublicModifierGroups([...grouped.values()]
+    .map((group) => ({
+      scope: group.scope,
+      map: group.map,
+      partitionId: group.partitionId,
+      dimension: publicModifierGroupDimension(group, instanceNames),
+      label: publicModifierGroupLabel(group, instanceNames),
+      modifiers: formatCollectedModifiers(group.readings)
+    }))
+    .sort(comparePublicModifierGroups));
+  return { modifiers, modifierGroups };
 }
 
 function publicModifier(section, key, label, defaultValue, format) {
@@ -859,11 +1022,109 @@ function publicModifierKey(section, key) {
 }
 
 function publicModifierSection(header) {
+  return publicModifierScope(header).section;
+}
+
+function publicModifierScope(header) {
   const parts = header.split(":");
-  if (parts[0] === "Engine" || parts[0] === "Global") return parts.slice(1).join(":");
-  if (parts[0] === "Map" || parts[0] === "MapEngine") return parts.slice(2).join(":");
-  if (parts[0] === "Partition" || parts[0] === "PartitionEngine") return parts.slice(3).join(":");
-  return "";
+  if (parts[0] === "Engine" || parts[0] === "Global") return { scope: "global", map: "", partitionId: null, section: parts.slice(1).join(":") };
+  if (parts[0] === "Map" || parts[0] === "MapEngine") return { scope: "map", map: safePublicScopeText(parts[1], 80), partitionId: null, section: parts.slice(2).join(":") };
+  if (parts[0] === "Partition" || parts[0] === "PartitionEngine") {
+    const partitionId = Number(parts[2]);
+    return { scope: "partition", map: safePublicScopeText(parts[1], 80), partitionId: Number.isInteger(partitionId) && partitionId >= 0 && partitionId <= 100000 ? partitionId : null, section: parts.slice(3).join(":") };
+  }
+  return { scope: "global", map: "", partitionId: null, section: "" };
+}
+
+function formatCollectedModifiers(collected) {
+  return Object.fromEntries([...collected].map(([label, readings]) => {
+    const values = [...readings];
+    if (values.length === 1) return [label, values[0]];
+    const visible = values.slice(0, 3).join(", ");
+    return [label, `Varies: ${visible}${values.length > 3 ? ` +${values.length - 3}` : ""}`];
+  }));
+}
+
+function limitPublicModifierGroups(groups, maxGroups = 48, maxModifiers = 240) {
+  const limited = [];
+  let remaining = maxModifiers;
+  for (const group of groups.slice(0, maxGroups)) {
+    const entries = Object.entries(group.modifiers).slice(0, remaining);
+    if (!entries.length) continue;
+    limited.push({ ...group, modifiers: Object.fromEntries(entries) });
+    remaining -= entries.length;
+    if (remaining <= 0) break;
+  }
+  return limited;
+}
+
+function readPublicInstanceNames(repoRoot) {
+  const config = readJsonFile(resolve(repoRoot, "runtime/generated/sietch-config.json"), {});
+  const byPartition = new Map();
+  const byDimension = new Map();
+  for (const [partitionIdValue, partition] of Object.entries(config?.partitions || {})) {
+    const map = safePublicScopeText(partition?.map, 80);
+    const partitionId = Number(partitionIdValue);
+    const dimension = Number(partition?.dimension);
+    const name = safePublicScopeText(partition?.display_name || partition?.label, 80);
+    if (map && Number.isInteger(partitionId) && partitionId >= 0) byPartition.set(`${map}\0${partitionId}`, { name, dimension: Number.isInteger(dimension) && dimension >= 0 ? dimension : null });
+  }
+  for (const [mapValue, mapConfig] of Object.entries(config?.maps || {})) {
+    const map = safePublicScopeText(mapValue, 80);
+    for (const [dimensionValue, dimensionConfig] of Object.entries(mapConfig?.dimensions || {})) {
+      const dimension = Number(dimensionValue);
+      const name = safePublicScopeText(dimensionConfig?.display_name, 80);
+      if (map && Number.isInteger(dimension) && dimension >= 0 && name) byDimension.set(`${map}\0${dimension}`, name);
+    }
+  }
+  return { byPartition, byDimension };
+}
+
+function publicModifierGroupInstance(group, instanceNames) {
+  return instanceNames.byPartition.get(`${group.map}\0${group.partitionId}`) || null;
+}
+
+function publicModifierGroupDimension(group, instanceNames) {
+  return publicModifierGroupInstance(group, instanceNames)?.dimension ?? null;
+}
+
+function publicModifierGroupLabel(group, instanceNames) {
+  if (group.scope === "global") return "Global";
+  if (group.scope === "map") {
+    if (group.map === "Survival_1") return "Hagga Basin — All Sietches";
+    if (group.map === "DeepDesert_1") return "Deep Desert — All Partitions";
+    return `${friendlyPublicMapName(group.map)} — All Partitions`;
+  }
+  const instance = publicModifierGroupInstance(group, instanceNames);
+  const configured = instance?.name || (instance && instance.dimension !== null ? instanceNames.byDimension.get(`${group.map}\0${instance.dimension}`) : "");
+  if (configured) return configured;
+  if (group.map === "Survival_1") return `Sietch Partition ${group.partitionId}`;
+  if (group.map === "DeepDesert_1") return `Deep Desert Partition ${group.partitionId}`;
+  return `${friendlyPublicMapName(group.map)} Partition ${group.partitionId}`;
+}
+
+function comparePublicModifierGroups(left, right) {
+  return publicModifierGroupOrder(left) - publicModifierGroupOrder(right)
+    || String(left.map).localeCompare(String(right.map))
+    || (Number(left.partitionId ?? -1) - Number(right.partitionId ?? -1))
+    || left.label.localeCompare(right.label);
+}
+
+function publicModifierGroupOrder(group) {
+  if (group.scope === "global") return 0;
+  if (group.map === "Survival_1") return group.scope === "map" ? 10 : 11;
+  if (group.map === "DeepDesert_1") return group.scope === "map" ? 20 : 21;
+  return group.scope === "map" ? 30 : 31;
+}
+
+function friendlyPublicMapName(value) {
+  const map = safePublicScopeText(value, 80);
+  const aliases = { Overmap: "Overland", SH_Arrakeen: "Arrakeen", SH_HarkoVillage: "Harko Village" };
+  return aliases[map] || map.replace(/^SH_/, "").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) || "Map";
+}
+
+function safePublicScopeText(value, limit) {
+  return String(value || "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, limit);
 }
 
 function publicModifierValuesEqual(value, defaultValue, format) {
@@ -872,7 +1133,7 @@ function publicModifierValuesEqual(value, defaultValue, format) {
     const right = modifierBoolean(defaultValue);
     return left !== null && right !== null && left === right;
   }
-  if (["multiplier", "number", "ratioPercent", "percent", "duration", "days", "meters"].includes(format)) {
+  if (["multiplier", "number", "ratioPercent", "inverseRatioPercent", "percent", "duration", "days", "meters"].includes(format)) {
     const left = Number(value);
     const right = Number(defaultValue);
     return Number.isFinite(left) && Number.isFinite(right) && left === right;
@@ -891,6 +1152,10 @@ function formatPublicModifierValue(value, format) {
   const readable = number.toLocaleString("en-US", { maximumFractionDigits: 2 });
   if (format === "multiplier") return `${readable}x`;
   if (format === "ratioPercent") return `${(number * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%`;
+  if (format === "inverseRatioPercent") {
+    if (number < 0 || number > 1) return `${readable} (invalid; use 0–1)`;
+    return `${((1 - number) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%`;
+  }
   if (format === "percent") return `${readable}%`;
   if (format === "duration") return formatPublicDuration(number);
   if (format === "days") return `${readable} ${number === 1 ? "day" : "days"}`;

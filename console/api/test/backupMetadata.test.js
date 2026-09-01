@@ -51,6 +51,31 @@ test("backup rows type market-bot backups from the sidecar origin, covering unla
   assert.equal(rows[0].type, "Market Bot Backup");
 });
 
+test("backup rows distinguish every console safety-backup origin", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-backup-safety-types-"));
+  const backupDir = join(repoRoot, "runtime/backups/db");
+  mkdirSync(backupDir, { recursive: true });
+  const origins = [
+    ["land-claim-editor", "Restore Safety Backup"],
+    ["restore-safety", "Restore Safety Backup"],
+    ["vehicle-delete", "Vehicle Delete Safety Backup"],
+    ["base-delete", "SQL Safety Backup"],
+    ["destructive-sql", "SQL Safety Backup"],
+    ["admin-tools", "SQL Safety Backup"],
+    ["addon-example", "SQL Safety Backup"]
+  ];
+  const rows = origins.map(([origin], index) => {
+    const name = `safety-${index}-20260823-010203.backup`;
+    writeFileSync(join(backupDir, name), Buffer.alloc(10));
+    writeFileSync(join(backupDir, `${name}.yaml`), `backup_origin: ${origin}\n`);
+    return { name, backupName: name, type: "Manual Backup" };
+  });
+
+  const enriched = enrichBackupRows({ repoRoot }, rows);
+
+  assert.deepEqual(enriched.map((row) => row.type), origins.map(([, type]) => type));
+});
+
 test("backup rows include human-readable file sizes", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "dune-backup-size-"));
   const backupDir = join(repoRoot, "runtime/backups/db");

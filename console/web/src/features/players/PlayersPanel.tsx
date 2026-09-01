@@ -4,6 +4,7 @@ import { playersApi } from "../../api/players";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
 import { PlayerStatusCell } from "../../components/common/DisplayPrimitives";
 import { formatCell } from "../../lib/display";
+import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames";
 
 export type CharacterAdminRenderProps = {
   detail: Record<string, unknown> | null;
@@ -41,6 +42,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
   const [sortColumn, setSortColumn] = useState("character_name");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const [instanceNames, setInstanceNames] = useState<Map<string, string>>(new Map());
   const [totalCount, setTotalCount] = useState(0);
   const [totalPlayers, setTotalPlayers] = useState(0);
   const [statusFilterSupported, setStatusFilterSupported] = useState(true);
@@ -130,6 +132,24 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [submittedQ, page, pageSize, playerFilter, sortColumn, sortDirection, load]);
+
+  const partitionMapsKey = [...new Set(rows
+    .map((row) => String(row.partitionMap || "").trim())
+    .filter(Boolean))].sort().join(",");
+  useEffect(() => {
+    const maps = partitionMapsKey ? partitionMapsKey.split(",") : [];
+    if (!maps.length) return undefined;
+    const cached = cachedInstanceNames(maps);
+    if (cached) {
+      setInstanceNames(cached);
+      return undefined;
+    }
+    let cancelled = false;
+    void resolveInstanceNames(maps).then((resolved) => {
+      if (!cancelled && resolved) setInstanceNames(resolved);
+    });
+    return () => { cancelled = true; };
+  }, [partitionMapsKey]);
 
   async function open(row: Record<string, unknown>) {
     const id = String(row.actor_id || row.player_pawn_id || row.id || "");
@@ -259,6 +279,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
           if (col === "online_status") return <PlayerStatusCell value={row[col]} />;
           if (col === "last_seen") return formatLastOnline(row);
           if (col === "total_playtime_seconds") return formatTotalPlaytime(row[col]);
+          if (col === "map") return formatPlayerMap(row, instanceNames);
           return formatCell(row[col]);
         }}
       />
@@ -303,6 +324,15 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
       )}
     </section>
   );
+}
+
+export function formatPlayerMap(row: Record<string, unknown>, instanceNames: Map<string, string>) {
+  const map = String(row.map || "").trim();
+  if (!map) return "—";
+  const partitionMap = String(row.partitionMap || "").trim();
+  const partitionId = String(row.partition_id || "").trim();
+  const instanceName = partitionMap && partitionId ? instanceNames.get(`${partitionMap}:${partitionId}`) : "";
+  return instanceName ? `${map} (${instanceName})` : map;
 }
 
 function formatLastOnline(row: Record<string, unknown>) {

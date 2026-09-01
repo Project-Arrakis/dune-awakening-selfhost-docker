@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { setBasePermissions, listBasePermissions, basePermissionSystemCustodian, transferBaseToSystemCustodian } from "../src/duneDb.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setBasePermissions, listBasePermissions, permissionSystemCustodian, transferBaseToSystemCustodian, listBaseChildAccess, setBaseChildAccessLevels, queueBaseChildAccess, listQueuedBaseChildAccess, cancelQueuedBaseChildAccess, flushBaseChildAccess, hasQueuedBaseChildAccess } from "../src/duneDb.js";
 
 const SUPPORTED_TABLES = ["dune.permission_actor_rank", "dune.permission_actor", "dune.actors", "dune.player_state", "dune.encrypted_player_state", "dune.map_names"];
 const SUPPORTED_FUNCTIONS = [
@@ -250,19 +253,19 @@ test("setBasePermissions locks the claim actor row, not the rank rows", async ()
 });
 
 test("system custodian detection prefers the reserved Server identity", async () => {
-  assert.deepEqual(await basePermissionSystemCustodian(createDb()), {
+  assert.deepEqual(await permissionSystemCustodian(createDb()), {
     available: true,
     playerId: "900000201",
     name: "Server"
   });
-  assert.deepEqual(await basePermissionSystemCustodian(createDb({ custodians: [], systemIdentities: [] })), {
+  assert.deepEqual(await permissionSystemCustodian(createDb({ custodians: [], systemIdentities: [] })), {
     available: false,
     canCreate: true,
     playerId: "900000201",
     name: "Server",
     reason: "The reserved Server identity will be created when ownership is transferred."
   });
-  assert.match((await basePermissionSystemCustodian(createDb({
+  assert.match((await permissionSystemCustodian(createDb({
     systemIdentities: [
       { table: "player_state", accountId: "9000002", playerId: "900000201" },
       { table: "player_state", accountId: "9000002", playerId: "900000201" }
@@ -271,7 +274,7 @@ test("system custodian detection prefers the reserved Server identity", async ()
 });
 
 test("system custodian detection falls back to Funcom GM in encrypted_player_state", async () => {
-  const result = await basePermissionSystemCustodian(createDb({
+  const result = await permissionSystemCustodian(createDb({
     canonicalPlayers: ["4", "900000101"],
     custodians: [],
     systemIdentities: [{ table: "encrypted_player_state", accountId: "9000001", playerId: "900000101" }]
@@ -339,4 +342,355 @@ test("listBasePermissions labels ranks and flags rows the game ignores", async (
   assert.equal(result.actorId, ACTOR_ID);
   assert.deepEqual(result.entries.map((entry) => entry.label), ["Owner", "Co-Owner", "Associate"]);
   assert.deepEqual(result.entries.map((entry) => entry.canonical), [true, true, false]);
+});
+
+// One of the three rows already matches Sub-Fief (Associate/3) -- the list
+// covers every child piece on the base, not just the ones that deviate.
+function childAccessDb() {
+  const calls = [];
+  const db = {
+    calls,
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+      if (text.includes("with base_entities")) return { rows: [
+        { actor_id: "44186", actor_name: "##MTX_Neut_DesertMechanic_Prudence_Door_Placeable", access_level: 5, building_type: "MTX_Neut_DesertMechanic_Prudence_Door_Placeable", is_child: true },
+        { actor_id: "44187", actor_name: "##Neut_Desert_Mechanic_Garage_Door_Placeable", access_level: 2, building_type: "Neut_Desert_Mechanic_Garage_Door_Placeable", is_child: true },
+        { actor_id: "44188", actor_name: "##Neut_Desert_Mechanic_Front_Door_Placeable", access_level: 3, building_type: "Neut_Desert_Mechanic_Front_Door_Placeable", is_child: true },
+        { actor_id: "459", actor_name: "Kovalt Main", access_level: 3, building_type: "Totem_Placeable", is_child: false }
+      ] };
+      if (text.includes("select a.id::text as actor_id")) return { rows: [{ actor_id: ACTOR_ID, map: "HaggaBasin", map_name_id: 1, partition_id: 67 }] };
+      if (text.includes("for update")) return { rows: [{ id: ACTOR_ID }], rowCount: 1 };
+      if (text.includes("permission_set_access_level")) return { rows: [{}] };
+      return { rows: [] };
+    },
+    transaction: async (fn) => fn(db)
+  };
+  return db;
+}
+
+test("listBaseChildAccess lists every child piece plus the base's own root object, flagging which ones match Sub-Fief", async () => {
+  const result = await listBaseChildAccess(childAccessDb(), BASE_ID);
+  assert.equal(result.inspected, 4);
+  assert.deepEqual(result.rows, [
+    { actorId: "44186", name: "DesertMechanic Prudence Door", buildingType: "MTX_Neut_DesertMechanic_Prudence_Door_Placeable", group: "door", currentAccess: 5, currentAccessLabel: "Owner", isSubFief: false },
+    { actorId: "44187", name: "Desert Mechanic Garage Door", buildingType: "Neut_Desert_Mechanic_Garage_Door_Placeable", group: "door", currentAccess: 2, currentAccessLabel: "Guild", isSubFief: false },
+    { actorId: "44188", name: "Desert Mechanic Front Door", buildingType: "Neut_Desert_Mechanic_Front_Door_Placeable", group: "door", currentAccess: 3, currentAccessLabel: "Associate", isSubFief: true },
+    // is_child = false: the base's own totem, not a door/device -- grouped
+    // as Sub-Fief regardless of its building_type.
+    { actorId: "459", name: "Kovalt Main", buildingType: "Totem_Placeable", group: "subfief", currentAccess: 3, currentAccessLabel: "Associate", isSubFief: true }
+  ]);
+});
+
+test("listBaseChildAccess categorizes a piece into the right Type filter group", async (t) => {
+  const cases = [
+    ["StorageContainer_Placeable", "storage"],
+    ["SmallOreRefinery_Placeable", "refining"],
+    ["Fabricator_Placeable", "crafting"],
+    // Substring rules, not exact curated keys: anything with "generator" or
+    // "water" in its name, matching how the user asked for these two --
+    // "Generators" and "Water Storage" for anything with water in its name.
+    ["Generator_Placeable", "generators"],
+    // Wind turbines are generators too -- "turbine", not "wind", so a
+    // moisture-collecting Windtrap (below) is not swept in alongside them.
+    ["WindTurbineDirectional_Placeable", "generators"],
+    ["WindTurbineOmnidirectional_Placeable", "generators"],
+    ["WaterCistern_Placeable", "water"],
+    ["MediumWaterCistern_Placeable", "water"],
+    ["BloodWaterExtractionAdvanced_Placeable", "water"],
+    // Moisture collector, not a generator -- no "turbine" substring.
+    ["Windtrap_Placeable", "other"],
+    ["Choam_PentashieldSurfaceHorizontal_Placeable", "pentashield"],
+    ["Choam_PentashieldSurfaceVertical_Placeable", "pentashield"],
+    ["Atreides_DoorTall_Placeable", "door"],
+    ["Choam_Shelter_DoorWide_Placeable", "door"],
+    // Not in the curated map and no other substring rule applies.
+    ["Wall_Placeable", "other"],
+    // is_child = false always wins Sub-Fief, regardless of building_type --
+    // even one that would otherwise match a substring rule.
+    ["Totem_Placeable", "subfief", false],
+    ["Generator_Placeable", "subfief", false]
+  ];
+  for (const [buildingType, expectedGroup, isChild = true] of cases) {
+    await t.test(`${buildingType} (is_child=${isChild}) -> ${expectedGroup}`, async () => {
+      const db = {
+        query: async (text) => {
+          if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+          if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+          if (text.includes("with base_entities")) return { rows: [
+            { actor_id: "44190", actor_name: `##${buildingType}`, access_level: 2, building_type: buildingType, is_child: isChild }
+          ] };
+          return { rows: [] };
+        }
+      };
+      const result = await listBaseChildAccess(db, BASE_ID);
+      assert.equal(result.rows[0].group, expectedGroup);
+    });
+  }
+});
+
+test("setBaseChildAccessLevels writes each requested level, including a piece that already matched Sub-Fief, and refuses an actor that isn't a child of this base", async () => {
+  const db = childAccessDb();
+  const result = await setBaseChildAccessLevels(db, BASE_ID, [
+    { actorId: "44186", accessLevel: 3 },
+    { actorId: "44188", accessLevel: 1 }
+  ]);
+  assert.equal(result.updated, 2);
+  assert.deepEqual(procCalls(db, "permission_set_access_level"), [["44186", 3], ["44188", 1]]);
+  await assert.rejects(
+    () => setBaseChildAccessLevels(childAccessDb(), BASE_ID, [{ actorId: "99999", accessLevel: 3 }]),
+    /no longer children/i);
+});
+
+test("setBaseChildAccessLevels rejects an access level outside the 1-5 scale", async () => {
+  await assert.rejects(
+    () => setBaseChildAccessLevels(childAccessDb(), BASE_ID, [{ actorId: "44186", accessLevel: 0 }]),
+    /access level/i);
+  await assert.rejects(
+    () => setBaseChildAccessLevels(childAccessDb(), BASE_ID, [{ actorId: "44186", accessLevel: 6 }]),
+    /access level/i);
+});
+
+// The queue exists because a running map never picks up an access_level
+// change (see docs/console/base-child-permissions.md), so a save aimed at a
+// live map is recorded and written in the map-down window instead.
+async function withTempRepoRoot(fn) {
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-child-access-queue-"));
+  try {
+    return await fn(repoRoot);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+}
+
+test("queueBaseChildAccess records a base's pending pieces and cancel clears them", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    assert.deepEqual(listQueuedBaseChildAccess(repoRoot), []);
+    const entry = queueBaseChildAccess(repoRoot, {
+      baseId: BASE_ID,
+      map: "DeepDesert",
+      partitionId: 59,
+      updates: [{ actorId: "44186", accessLevel: 3 }, { actorId: "44187", accessLevel: 5 }]
+    });
+    assert.equal(entry.baseId, BASE_ID);
+    assert.equal(entry.partitionId, 59);
+    assert.deepEqual(entry.updates, [{ actorId: "44186", accessLevel: 3 }, { actorId: "44187", accessLevel: 5 }]);
+
+    const queued = listQueuedBaseChildAccess(repoRoot);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].updates.length, 2);
+
+    cancelQueuedBaseChildAccess(repoRoot, BASE_ID);
+    assert.deepEqual(listQueuedBaseChildAccess(repoRoot), []);
+    assert.throws(() => cancelQueuedBaseChildAccess(repoRoot, BASE_ID), /no queued permission changes/i);
+  });
+});
+
+// Unlike the refill/delete queues, whose entries are pure intent and can be
+// replaced wholesale, this entry carries a payload: a second save touching
+// different pieces must not discard the first one's.
+test("queueBaseChildAccess merges a second save into the existing entry, last write winning per piece", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    const first = queueBaseChildAccess(repoRoot, {
+      baseId: BASE_ID,
+      map: "DeepDesert",
+      partitionId: 59,
+      updates: [{ actorId: "44186", accessLevel: 3 }, { actorId: "44187", accessLevel: 5 }]
+    });
+    queueBaseChildAccess(repoRoot, {
+      baseId: BASE_ID,
+      map: "DeepDesert",
+      partitionId: 59,
+      updates: [{ actorId: "44187", accessLevel: 1 }, { actorId: "44188", accessLevel: 2 }]
+    });
+
+    const queued = listQueuedBaseChildAccess(repoRoot);
+    assert.equal(queued.length, 1, "still one entry for the base");
+    assert.deepEqual(queued[0].updates, [
+      { actorId: "44186", accessLevel: 3 },
+      { actorId: "44187", accessLevel: 1 },
+      { actorId: "44188", accessLevel: 2 }
+    ]);
+    // queuedAt is preserved so re-saving cannot reset the entry's age limit.
+    assert.equal(queued[0].queuedAt, first.queuedAt);
+  });
+});
+
+test("queueBaseChildAccess rejects an empty or fully invalid update set", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    // An empty array is caught by the 1-100 length check that mirrors the
+    // immediate path; a non-empty array of unusable entries falls through to
+    // the post-normalize check.
+    assert.throws(() => queueBaseChildAccess(repoRoot, { baseId: BASE_ID, updates: [] }), /between 1 and 100 pieces/i);
+    assert.throws(
+      () => queueBaseChildAccess(repoRoot, { baseId: BASE_ID, updates: [{ actorId: "44186", accessLevel: 9 }] }),
+      /at least one piece/i);
+    assert.deepEqual(listQueuedBaseChildAccess(repoRoot), []);
+  });
+});
+
+// A request-time save must refuse a stale actorId, but an entry drained days
+// later would otherwise be permanently failed by one demolished door.
+test("setBaseChildAccessLevels skips stale pieces only under skipStale, and refuses when none remain", async () => {
+  await assert.rejects(
+    () => setBaseChildAccessLevels(childAccessDb(), BASE_ID, [
+      { actorId: "44186", accessLevel: 3 },
+      { actorId: "999999", accessLevel: 3 }
+    ]),
+    /no longer children of this base/i);
+
+  const result = await setBaseChildAccessLevels(childAccessDb(), BASE_ID, [
+    { actorId: "44186", accessLevel: 3 },
+    { actorId: "999999", accessLevel: 3 }
+  ], { skipStale: true });
+  assert.equal(result.updated, 1);
+  assert.deepEqual(result.skipped, ["999999"]);
+
+  await assert.rejects(
+    () => setBaseChildAccessLevels(childAccessDb(), BASE_ID, [{ actorId: "999999", accessLevel: 3 }], { skipStale: true }),
+    /none of the queued pieces/i);
+});
+
+// A queue-backed db double: world_partition exists, partition 59 is
+// unassigned (so partitionWriteSafe treats it as down), and the child-access
+// query returns the pieces the flush is allowed to touch.
+function flushDb({ childActorIds = ["44186", "44187"], onApply = () => {} } = {}) {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.world_partition")) {
+        return { rows: [{ partition_id: 59, unassigned: true, connected: false }] };
+      }
+      if (text.includes("with base_entities")) {
+        return { rows: childActorIds.map((actorId) => ({
+          actor_id: actorId, actor_name: `##Piece_${actorId}`, access_level: 3,
+          building_type: "Generator_Placeable", is_child: true
+        })) };
+      }
+      if (text.includes("select a.id::text as actor_id")) {
+        return { rows: [{ actor_id: ACTOR_ID, map: "DeepDesert", map_name_id: 7, partition_id: 59 }] };
+      }
+      if (text.includes("for update")) return { rows: [{ id: ACTOR_ID }], rowCount: 1 };
+      if (text.includes("permission_set_access_level")) {
+        await onApply(values);
+        return { rows: [{}] };
+      }
+      return { rows: [] };
+    },
+    transaction: async (fn) => fn(db)
+  };
+  return db;
+}
+
+test("flushBaseChildAccess applies a queued entry and clears it", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    queueBaseChildAccess(repoRoot, {
+      baseId: BASE_ID, map: "DeepDesert", partitionId: 59,
+      updates: [{ actorId: "44186", accessLevel: 5 }]
+    });
+    const result = await flushBaseChildAccess(flushDb(), repoRoot);
+    assert.equal(result.flushed.length, 1);
+    assert.equal(result.flushed[0].ok, true);
+    assert.equal(result.flushed[0].updated, 1);
+    assert.deepEqual(listQueuedBaseChildAccess(repoRoot), []);
+  });
+});
+
+// Regression: queuedAt deliberately survives a merge, so it cannot also be the
+// "is this the payload I flushed?" check. Without the revision guard the save
+// that lands mid-flush is dropped unapplied while the flush reports ok.
+test("flushBaseChildAccess keeps a save that merges in while the entry is being flushed", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    queueBaseChildAccess(repoRoot, {
+      baseId: BASE_ID, map: "DeepDesert", partitionId: 59,
+      updates: [{ actorId: "44186", accessLevel: 5 }]
+    });
+    let injected = false;
+    const db = flushDb({
+      onApply: async () => {
+        if (injected) return;
+        injected = true;
+        // The operator saves a different piece while the flush is mid-apply.
+        queueBaseChildAccess(repoRoot, {
+          baseId: BASE_ID, map: "DeepDesert", partitionId: 59,
+          updates: [{ actorId: "44187", accessLevel: 1 }]
+        });
+      }
+    });
+
+    const result = await flushBaseChildAccess(db, repoRoot);
+    assert.equal(result.flushed[0].ok, true);
+
+    const remaining = listQueuedBaseChildAccess(repoRoot);
+    assert.equal(remaining.length, 1, "the merged-in save must survive the flush");
+    assert.ok(
+      remaining[0].updates.some((update) => update.actorId === "44187" && update.accessLevel === 1),
+      "the piece queued mid-flush must still be pending");
+  });
+});
+
+test("queueBaseChildAccess bumps revision on merge but keeps queuedAt", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    const first = queueBaseChildAccess(repoRoot, {
+      baseId: BASE_ID, updates: [{ actorId: "44186", accessLevel: 3 }]
+    });
+    const second = queueBaseChildAccess(repoRoot, {
+      baseId: BASE_ID, updates: [{ actorId: "44187", accessLevel: 3 }]
+    });
+    assert.equal(second.queuedAt, first.queuedAt, "age limit must not reset on re-save");
+    assert.equal(second.revision, first.revision + 1);
+  });
+});
+
+// The immediate path rejects >100; the queue path must not quietly accept more
+// just because the base's map happened to be up.
+test("queueBaseChildAccess enforces the same 1-100 cap as the immediate path", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    const tooMany = Array.from({ length: 101 }, (_, index) => ({ actorId: String(index + 1), accessLevel: 3 }));
+    assert.throws(() => queueBaseChildAccess(repoRoot, { baseId: BASE_ID, updates: tooMany }),
+      /between 1 and 100 pieces/i);
+    assert.deepEqual(listQueuedBaseChildAccess(repoRoot), []);
+  });
+});
+
+test("flushBaseChildAccess leaves an entry queued while its map is live", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    queueBaseChildAccess(repoRoot, {
+      baseId: BASE_ID, map: "DeepDesert", partitionId: 59,
+      updates: [{ actorId: "44186", accessLevel: 5 }]
+    });
+    const live = flushDb();
+    const base = live.query;
+    live.query = async (text, values) => {
+      if (text.includes("from dune.world_partition")) {
+        return { rows: [{ partition_id: 59, unassigned: false, connected: true }] };
+      }
+      return base(text, values);
+    };
+    const result = await flushBaseChildAccess(live, repoRoot);
+    assert.deepEqual(result.flushed, []);
+    assert.equal(listQueuedBaseChildAccess(repoRoot).length, 1, "must stay queued while the map is up");
+  });
+});
+
+// The 5s flush tick uses this instead of listing, so it must agree with the
+// list on whether anything is waiting -- an over-eager true costs one wasted
+// pass, but a false negative would silently never flush.
+test("hasQueuedBaseChildAccess agrees with the list without parsing the payload", async () => {
+  await withTempRepoRoot((repoRoot) => {
+    assert.equal(hasQueuedBaseChildAccess(repoRoot), false, "no file yet");
+
+    queueBaseChildAccess(repoRoot, {
+      baseId: BASE_ID, map: "DeepDesert", partitionId: 59,
+      updates: [{ actorId: "44186", accessLevel: 5 }]
+    });
+    assert.equal(hasQueuedBaseChildAccess(repoRoot), true);
+    assert.equal(listQueuedBaseChildAccess(repoRoot).length, 1);
+
+    cancelQueuedBaseChildAccess(repoRoot, BASE_ID);
+    assert.equal(hasQueuedBaseChildAccess(repoRoot), false, "an emptied queue must read as empty");
+    assert.deepEqual(listQueuedBaseChildAccess(repoRoot), []);
+  });
 });

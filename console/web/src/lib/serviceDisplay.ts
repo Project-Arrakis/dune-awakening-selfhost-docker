@@ -10,6 +10,7 @@ const SERVICE_LABELS: Record<string, string> = {
   overmap: "Overmap",
   orchestrator: "Orchestrator",
   autoscaler: "Autoscaler",
+  coriolis: "Coriolis Coordinator",
   "dune-postgres": "Postgres",
   "dune-rmq-admin": "RabbitMQ Admin",
   "dune-rmq-game": "RabbitMQ Game",
@@ -19,7 +20,8 @@ const SERVICE_LABELS: Record<string, string> = {
   "dune-server-survival-1": "Survival 1",
   "dune-server-overmap": "Overmap",
   "dune-orchestrator": "Orchestrator",
-  "dune-autoscaler": "Autoscaler"
+  "dune-autoscaler": "Autoscaler",
+  "dune-coriolis-coordinator": "Coriolis Coordinator"
 };
 
 export function friendlyServiceName(name: string) {

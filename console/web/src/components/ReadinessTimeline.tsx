@@ -18,6 +18,7 @@ const CONTAINER_LABELS: Record<string, string> = {
   "dune-server-gateway": "Gateway",
   "dune-server-survival-1": "Survival 1",
   "dune-server-overmap": "Overmap",
+  "dune-coriolis-coordinator": "Coriolis Coordinator",
   "dune-orchestrator": "Orchestrator"
 };
 
@@ -155,6 +156,7 @@ function friendlyReadyName(raw: string) {
     .replace(/dune-server-gateway/gi, "Gateway")
     .replace(/dune-server-survival-1/gi, "Survival 1")
     .replace(/dune-server-overmap/gi, "Overmap")
+    .replace(/dune-coriolis-coordinator/gi, "Coriolis Coordinator")
     .replace(/_/g, " ")
     .replace(/\s+/g, " ")
     .trim();

@@ -1,5 +1,5 @@
 import { Fragment, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Archive, Bug, Building2, Car, CircleArrowUp, CircleHelp, Database, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
+import { Archive, Bug, Building2, Car, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, post, setCsrfToken } from "./api/client";
 import { setServerPorts, setAdminPort, type ServerPorts } from "./api/serverPorts";
 import { serverApi, type RestartQueueTarget } from "./api/server";
@@ -34,8 +34,55 @@ import {
 } from "./features/server/ServerPanels";
 import { parseUpdateTask, stackVersionButtonLabel, stackVersionButtonTitle } from "./features/updates/updateUtils";
 import { formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "./lib/display";
+import { useStaleBuildWatcher } from "./lib/staleBuildWatcher";
 
-type Tab = "Home" | "Server Control" | "Services" | "Players" | "Guilds" | "Bases" | "Vehicles" | "Exchange" | "Landsraad" | "Admin Tools" | "Live Map" | "Maps" | "Care Package" | "Addons" | "Database" | "Storage" | "Backups" | "Logs" | "Updates" | "Settings";
+// The array is the source of truth (not just a type-level union) so restoring
+// a persisted tab (see loadPersistedTab below) can validate against the real,
+// current list at runtime instead of a hand-duplicated copy that could drift.
+export const ALL_TABS = ["Home", "Server Control", "Services", "Players", "Guilds", "Bases", "Vehicles", "Exchange", "Landsraad", "Admin Tools", "Live Map", "Maps", "Care Package", "Addons", "Database", "Storage", "Backups", "Logs", "Updates", "Settings"] as const;
+type Tab = typeof ALL_TABS[number];
+const ACTIVE_TAB_STORAGE_KEY = "dune-console:active-tab";
+
+// Persisted in sessionStorage, not localStorage: it should survive the
+// automatic reload LazyTabBoundary triggers after a stale chunk load (so the
+// user lands back on the tab they were opening, not Home), but should not
+// stick around and surprise someone who opens the console again days later
+// in a fresh tab.
+function isTab(value: string): value is Tab {
+  return (ALL_TABS as readonly string[]).includes(value);
+}
+
+export function loadPersistedTab(): Tab {
+  if (typeof window === "undefined") return "Home";
+  try {
+    const raw = window.sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY) || "";
+    return isTab(raw) ? raw : "Home";
+  } catch {
+    return "Home";
+  }
+}
+
+export function persistActiveTab(tab: Tab) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tab);
+  } catch {
+    // The tab still switches in-memory if sessionStorage is unavailable.
+  }
+}
+
+// Persist before scheduling the render. LazyTabBoundary reloads from
+// componentDidCatch, which runs before passive effects, so writing from a
+// useEffect would still lose the destination tab during the exact recovery
+// path this state exists to support.
+export function useActiveTab() {
+  const [tab, setTabState] = useState<Tab>(() => loadPersistedTab());
+  const setTab = useCallback((nextTab: Tab) => {
+    persistActiveTab(nextTab);
+    setTabState(nextTab);
+  }, []);
+  return [tab, setTab] as const;
+}
 type SetupState = { files: Record<string, boolean>; config: Record<string, unknown> };
 type PublicDirectoryStatus = {
   mode?: string;
@@ -257,6 +304,7 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode }[] }
 
 const COMMUNITY_CONTRIBUTORS_URL = "https://github.com/Red-Blink/dune-awakening-selfhost-docker/graphs/contributors";
 const DUNE_DOCKER_WEBSITE_URL = "https://dunedocker.app/";
+const DUNE_DOCKER_DOCS_URL = "https://docs.dunedocker.app/";
 
 function publicServerListingUrl(serverId: string) {
   return `${DUNE_DOCKER_WEBSITE_URL}server.html?id=${encodeURIComponent(serverId)}`;
@@ -271,7 +319,7 @@ export function SidebarNavIndicators({ item, onlinePlayerCount, addonUpdatesAvai
     return <span className="sidebar-nav-indicators"><span className="sidebar-nav-count sidebar-nav-count-online" title={label} aria-label={label}>{visibleOnlinePlayerCount}</span></span>;
   }
   if (item === "Addons" && addonUpdatesAvailable) {
-    return <span className="sidebar-nav-indicators"><span className="sidebar-nav-update-icon" title="Addon update available" aria-label="Addon update available"><CircleArrowUp size={14} aria-hidden="true" /></span></span>;
+    return <span className="sidebar-nav-indicators"><span className="sidebar-nav-update-icon" title="Addon Update Available" aria-label="Addon Update Available"><Download size={14} strokeWidth={2.4} aria-hidden="true" /></span></span>;
   }
   return null;
 }
@@ -298,10 +346,11 @@ function AppFooter() {
           <a href={COMMUNITY_CONTRIBUTORS_URL} target="_blank" rel="noreferrer">Community Contributors</a>
         </span>
       </div>
-      <a className="app-footer-directory" href={DUNE_DOCKER_WEBSITE_URL} target="_blank" rel="noreferrer">
-        <span>DuneDocker.app · Public Server Directory</span>
-        <ExternalLink size={14} aria-hidden="true" />
-      </a>
+      <div className="app-footer-directory">
+        <a href={DUNE_DOCKER_DOCS_URL} target="_blank" rel="noreferrer">Documentation</a>
+        <span aria-hidden="true">·</span>
+        <a href={DUNE_DOCKER_WEBSITE_URL} target="_blank" rel="noreferrer">Public Server Directory</a>
+      </div>
     </footer>
   );
 }
@@ -309,7 +358,7 @@ function AppFooter() {
 export function App() {
   const [auth, setAuth] = useState(false);
   const [password, setPassword] = useState("");
-  const [tab, setTab] = useState<Tab>("Home");
+  const [tab, setTab] = useActiveTab();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
   const [selectedPinnedAddonId, setSelectedPinnedAddonId] = useState("");
@@ -321,6 +370,8 @@ export function App() {
   const [doctor, setDoctor] = useState("");
   const [services, setServices] = useState("");
   const [selectedLogService, setSelectedLogService] = useState("gateway");
+  const [baseFocusRequest, setBaseFocusRequest] = useState({ baseId: "", nonce: 0 });
+  const [vehicleFocusRequest, setVehicleFocusRequest] = useState({ vehicleId: "", nonce: 0 });
   const [logs, setLogs] = useState("");
   const [task, setTask] = useState<Task | null>(null);
   const [backupRestoreTask, setBackupRestoreTask] = useState<Task | null>(null);
@@ -347,6 +398,12 @@ export function App() {
   useEffect(() => {
     preloadPlayerAdminIconRailAssets();
   }, []);
+
+  // /api/auth/state exposes the public build version without requiring a
+  // session. Keep watching through the logged-out state too: a Console
+  // rebuild clears the in-memory session, and disabling the watcher at that
+  // moment would let the old bundle survive through the next login.
+  useStaleBuildWatcher();
 
   useEffect(() => {
     const handleSessionExpired = () => {
@@ -759,14 +816,14 @@ export function App() {
           setRedeploySetupOpen(true);
         }} />}
         {!redeploySetupOpen && tab === "Services" && <LazyTabBoundary label="Loading Services"><ServicesPanel services={services} setServices={setServices} setTask={setTask} openLogs={(service) => { setRedeploySetupOpen(false); setSelectedLogService(service); setTab("Logs"); }} onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Players" && <LazyTabBoundary label="Loading Players"><PlayersPanel onError={setError} renderCharacterAdmin={(props) => <LazyTabBoundary label="Loading Player Details"><CharacterAdminUI {...props} onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} formatMutationResult={formatMutationResult} /></LazyTabBoundary>} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Players" && <LazyTabBoundary label="Loading Players"><PlayersPanel onError={setError} renderCharacterAdmin={(props) => <LazyTabBoundary label="Loading Player Details"><CharacterAdminUI {...props} onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} formatMutationResult={formatMutationResult} restartGate={restartGateChoice} /></LazyTabBoundary>} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Guilds" && <LazyTabBoundary label="Loading Guilds"><GuildsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Vehicles" && <LazyTabBoundary label="Loading Vehicles"><VehiclesPanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} formatMutationResult={formatMutationResult} focusRequest={baseFocusRequest} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Vehicles" && <LazyTabBoundary label="Loading Vehicles"><VehiclesPanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} focusRequest={vehicleFocusRequest} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Exchange" && <LazyTabBoundary label="Loading Market Board"><ExchangePanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Landsraad" && <LazyTabBoundary label="Loading Landsraad"><LandsraadPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Admin Tools" && <LazyTabBoundary label="Loading Admin Tools"><AdminToolsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Live Map" && <LazyTabBoundary label="Loading Live Map"><LiveMapPanel onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} taskTechnicalDetails={taskTechnicalDetails} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Live Map" && <LazyTabBoundary label="Loading Live Map"><LiveMapPanel onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} taskTechnicalDetails={taskTechnicalDetails} onOpenBase={(baseId) => { setBaseFocusRequest((current) => ({ baseId, nonce: current.nonce + 1 })); setTab("Bases"); }} onOpenVehicle={(vehicleId) => { setVehicleFocusRequest((current) => ({ vehicleId, nonce: current.nonce + 1 })); setTab("Vehicles"); }} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Maps" && <LazyTabBoundary label="Loading Maps"><MapsPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} confirmSettingsRestart={confirmSettingsRestart} waitForTaskWithUpdates={waitForTaskWithUpdates} taskTechnicalDetails={taskTechnicalDetails} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Care Package" && <LazyTabBoundary label="Loading Care Package"><CarePackagePanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Addons" && <LazyTabBoundary label="Loading Addons"><AddonsPanel pinnedAddons={pinnedAddons} setPinnedAddons={setPinnedAddons} selectedAddonId={selectedPinnedAddonId} clearSelectedAddon={() => setSelectedPinnedAddonId("")} setAddonUpdateAvailable={setAddonUpdatesAvailable} confirmAction={confirmDialog} /></LazyTabBoundary>}
@@ -802,6 +859,7 @@ export function App() {
         {!redeploySetupOpen && tab === "Settings" && <LazyTabBoundary label="Loading Settings"><SettingsPanel
           onPasswordChanged={logoutAfterPasswordChange}
           publicListingUrl={publicDirectoryStatus?.serverId ? publicServerListingUrl(publicDirectoryStatus.serverId) : undefined}
+          confirmAction={confirmDialog}
         /></LazyTabBoundary>}
         {!redeploySetupOpen && tab !== "Maps" && <TaskProgress task={task} onDismiss={() => setTask(null)} />}
         <AppFooter />

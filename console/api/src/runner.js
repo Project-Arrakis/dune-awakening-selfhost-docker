@@ -19,7 +19,8 @@ export const serviceAliases = new Map([
   ["survival-1", "survival-1"],
   ["overmap", "overmap"],
   ["orchestrator", "orchestrator"],
-  ["autoscaler", "autoscaler"]
+  ["autoscaler", "autoscaler"],
+  ["coriolis", "coriolis"]
 ]);
 
 const simpleOperations = {
@@ -58,7 +59,7 @@ const simpleOperations = {
   servers: ["servers"],
   mapsList: ["maps", "list"],
   sietchesList: ["sietches", "list"],
-  deepdesertStatus: ["deepdesert", "dual", "status"],
+  deepdesertStatus: ["deepdesert", "layout", "status"],
   players: ["admin", "players", "--show-full-ids"],
   adminHistory: ["admin", "history"],
   adminItemList: ["admin", "item-list"],
@@ -80,12 +81,16 @@ export function buildDuneArgs(operation, payload = {}) {
   if (simpleOperations[operation]) return simpleOperations[operation];
 
   switch (operation) {
+    case "selfUpdateQaApply":
+      return ["self-update", "install-qa", validateCommitSha(payload.sha)];
     case "restartService":
       return ["restart", validateServiceName(payload.service)];
     case "restartServiceStop":
       return ["stop-service", validateServiceName(payload.service)];
     case "restartServiceStart":
       return ["restart", validateServiceName(payload.service)];
+    case "stopGameServersForDbWrites":
+      return ["stop-game-servers-for-db-writes"];
     case "serverTitle":
       return ["config", "title", validateServerTitle(payload.title), "--yes"];
     case "serverConfig":
@@ -119,6 +124,8 @@ export function buildDuneArgs(operation, payload = {}) {
       }
     case "backupDelete":
       return ["db", "delete", validateBackupName(payload.backup)];
+    case "backupDeleteSelected":
+      return ["db", "delete", ...validateBackupNames(payload.backups)];
     case "backupAutoEnable":
       {
         const args = ["db", "auto", "enable", validateUpdateTime(payload.time || "05:00")];
@@ -267,6 +274,12 @@ export function buildDuneArgs(operation, payload = {}) {
     case "sietchesReconcile":
       return ["sietches", "reconcile", validateMapName(payload.map)];
     case "deepdesertAction":
+      if (payload.instances !== undefined) {
+        const instances = validateInteger(payload.instances, 1, 3);
+        const thirdRole = String(payload.thirdRole || "pve").toLowerCase();
+        if (!["pve", "pvp"].includes(thirdRole)) throw new Error("Third Deep Desert role must be pve or pvp");
+        return ["deepdesert", "layout", "set", String(instances), "--third-role", thirdRole, "--yes", "--force"];
+      }
       return ["deepdesert", "dual", validateDeepDesertAction(payload.action), "--yes", ...(payload.action === "disable" ? ["--force"] : [])];
     case "userSettingsEngineValues":
       return ["usersettings", "engine-values"];
@@ -300,6 +313,12 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["usersettings", "partition-values", validateMapName(payload.map), validatePartitionId(payload.partitionId)];
     case "userSettingsSave":
       return ["usersettings", "bulk-save", validateSettingsScope(payload.scope), validateMapName(payload.map || "Survival_1"), payload.partitionId ? validatePartitionId(payload.partitionId) : "", encodeJsonArg(payload.values || {})];
+    case "userSettingsMigrateCoriolisRegionFields":
+      // region comes only from the deployment's own SERVER_REGION (readSetupConfigValues,
+      // an allowlisted .env read), never from a request -- spawn's argv array means there
+      // is no shell to inject into regardless, and an unmapped/garbage value is a no-op
+      // on the Python side (migrate_coriolis_region_fields looks it up in a fixed dict).
+      return ["usersettings", "migrate-coriolis-region-fields", String(payload.region || "")];
     case "userSettingsSaveAndRestart":
       return buildDuneArgs("userSettingsSave", payload);
     case "userSettingsResetEngineGameplay":
@@ -339,6 +358,12 @@ export function buildDuneArgs(operation, payload = {}) {
     default:
       throw new Error(`Unsupported operation: ${operation}`);
   }
+}
+
+function validateCommitSha(value) {
+  const sha = String(value || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("Invalid QA build identifier.");
+  return sha;
 }
 
 function encodeJsonArg(value) {
@@ -501,7 +526,8 @@ export function dockerContainerForLogService(service) {
     ["survival-1", "dune-server-survival-1"],
     ["overmap", "dune-server-overmap"],
     ["orchestrator", "dune-orchestrator"],
-    ["autoscaler", "dune-autoscaler"]
+    ["autoscaler", "dune-autoscaler"],
+    ["coriolis", "dune-coriolis-coordinator"]
   ]);
   if (containers.has(normalized)) return containers.get(normalized);
   if (/^dune-server-[a-z0-9-]+$/i.test(normalized)) return normalized;
@@ -696,6 +722,11 @@ function validateBackupName(value) {
   const raw = String(value || "");
   if (/^[A-Za-z0-9._-]+$/.test(raw) && !raw.includes("..")) return raw;
   throw new Error("Invalid backup name");
+}
+
+function validateBackupNames(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 100) throw new Error("Select between 1 and 100 backups");
+  return [...new Set(value.map(validateBackupName))];
 }
 
 export function isReadOnlySql(query) {

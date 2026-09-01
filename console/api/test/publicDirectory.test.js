@@ -20,11 +20,13 @@ import {
   getOrCreateIdentity,
   isBattlegroupRunning,
   normalizeDiscordInvite,
+  playerPortalMapSnapshot,
   playerPortalSnapshotBatches,
   readConfiguredCapacity,
   recoverRunningDirectorCapacity,
   readDirectoryInstallationKey,
   readPreviousDirectoryInstallationKey,
+  readPublicModifierMetadata,
   readPublicModifiers,
   readDirectorySettings,
   readGameBuild,
@@ -37,11 +39,13 @@ test("player portal context exposes only player-safe server policy and notice fi
     writeFileSync(join(files.generatedDir, "message-of-the-day.json"), JSON.stringify({ enabled: true, title: "Welcome", message: "Mind the sandworms." }));
     writeFileSync(join(files.generatedDir, "restart-schedule.env"), "DUNE_SCHEDULED_RESTART_ENABLED=1\nDUNE_SCHEDULED_RESTART_TIME=05:30\nDUNE_SCHEDULED_RESTART_NOTIFY_MINUTES=20\n");
     writeFileSync(join(files.generatedDir, "care-package.json"), JSON.stringify({ enabled: true, kits: [] }));
+    writeFileSync(join(files.generatedDir, "sietch-config.json"), JSON.stringify({ partitions: { "1": { map: "Survival_1", dimension: 0, display_name: "Sietch New" } } }));
     const context = collectPlayerPortalContext({ repoRoot: files.repoRoot, generatedDir: files.generatedDir }, { running: true, ready: true, playersOnline: 3, capacity: 40, sietches: 2, version: "1.2.3" });
     assert.equal(context.serverInfo.messageOfTheDay.message, "Mind the sandworms.");
     assert.equal(context.serverInfo.restart.localTime, "05:30");
     assert.equal(context.serverInfo.transfers.outgoingAllowed, true);
     assert.equal(context.carePackages.enabled, true);
+    assert.deepEqual(context.sietchNames, { "1": "Sietch New" });
     assert.equal(JSON.stringify(context).includes("path"), false);
   } finally {
     files.cleanup();
@@ -72,6 +76,52 @@ test("large private portal snapshots are split below the website request limit",
   assert.ok(batches.length > 1);
   assert.equal(batches.flat().length, snapshots.length);
   for (const batch of batches) assert.ok(Buffer.byteLength(JSON.stringify({ observedAt, snapshots: batch })) <= 700 || batch.length === 1);
+});
+
+test("player portal map snapshots contain world layers but no private actors", async () => {
+  const result = await playerPortalMapSnapshot({}, {}, {
+    fetchPoi: async (_db, map) => ({
+      capabilities: { ore: true },
+      rows: [
+        { id: "ore-1", type: "ore", name: "TitaniumOre", map, x: 10, y: 20, z: 30 },
+        { id: "player-2", type: "player", name: "Other Player", map, x: 40, y: 50, z: 60, owner_name: "Private" }
+      ]
+    }),
+    fetchSpice: async (_db, map) => ({
+      capabilities: { spice_active: true },
+      currentSeed: "7",
+      nextCycleAt: "2026-08-29T05:00:00.000Z",
+      rows: [{ id: "spice-1", type: "spice_active", name: "Active Large Spice", map, partition_id: 31, x: 70, y: 80 }]
+    }),
+    fetchPartitions: async () => ({ rows: [{ map: "DeepDesert", partition_id: 31, name: "Deep Desert 1", marker_count: 99 }] })
+  });
+
+  assert.ok(result.rows.some((row) => row.type === "ore"));
+  assert.ok(result.rows.some((row) => row.type === "spice_active"));
+  assert.equal(result.rows.some((row) => row.type === "player"), false);
+  assert.equal(JSON.stringify(result).includes("Other Player"), false);
+  assert.equal(JSON.stringify(result).includes("owner_name"), false);
+  assert.deepEqual(result.partitions, [{ map: "DeepDesert", partitionId: 31, name: "Deep Desert 1" }]);
+  assert.equal(result.cycles.DeepDesert.coriolisSeed, "7");
+});
+
+test("player portal map partitions use configured Sietch display names", async () => {
+  const files = fixture();
+  try {
+    writeFileSync(join(files.generatedDir, "sietch-config.json"), JSON.stringify({
+      partitions: {
+        "1": { map: "Survival_1", dimension: 0, label: "Abbir", display_name: "Sietch New" }
+      }
+    }));
+    const result = await playerPortalMapSnapshot({ repoRoot: files.repoRoot }, {}, {
+      fetchPoi: async () => ({ capabilities: {}, rows: [] }),
+      fetchSpice: async () => ({ capabilities: {}, rows: [] }),
+      fetchPartitions: async () => ({ rows: [{ map: "HaggaBasin", partition_id: 1, name: "Abbir" }] })
+    });
+    assert.deepEqual(result.partitions, [{ map: "HaggaBasin", partitionId: 1, name: "Sietch New" }]);
+  } finally {
+    files.cleanup();
+  }
 });
 
 test("public modifier reporting is allowlisted and omits defaults and secrets", () => {
@@ -130,6 +180,44 @@ test("public modifier reporting ignores retired unsupported modifiers", () => {
   }
 });
 
+test("public modifier reporting converts the augment roll threshold to jackpot chance", () => {
+  const files = fixture();
+  const path = join(files.generatedDir, "gameplay-profile.ini");
+  try {
+    writeFileSync(path, [
+      "[Global:/Script/DuneSandbox.AugmentSettings]",
+      "m_JackpotRollPercentage=0.75",
+      "",
+      "[Partition:Survival_1:1:/Script/DuneSandbox.AugmentSettings]",
+      "m_JackpotRollPercentage=0.50"
+    ].join("\n"));
+    assert.deepEqual(readPublicModifiers(path), {
+      "Augment Jackpot Chance": "Varies: 25%, 50%"
+    });
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("public modifier reporting identifies invalid augment roll thresholds", () => {
+  const files = fixture();
+  const path = join(files.generatedDir, "gameplay-profile.ini");
+  try {
+    writeFileSync(path, [
+      "[Global:/Script/DuneSandbox.AugmentSettings]",
+      "m_JackpotRollPercentage=75",
+      "",
+      "[Partition:Survival_1:1:/Script/DuneSandbox.AugmentSettings]",
+      "m_JackpotRollPercentage=100"
+    ].join("\n"));
+    assert.deepEqual(readPublicModifiers(path), {
+      "Augment Jackpot Chance": "Varies: 75 (invalid; use 0–1), 100 (invalid; use 0–1)"
+    });
+  } finally {
+    files.cleanup();
+  }
+});
+
 test("public modifier reporting includes scoped UserEngine overrides", () => {
   const files = fixture();
   const path = join(files.generatedDir, "gameplay-profile.ini");
@@ -149,6 +237,65 @@ test("public modifier reporting includes scoped UserEngine overrides", () => {
       Sandworms: "Disabled",
       "Spice Addiction": "Disabled"
     });
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("public modifier metadata preserves scope and uses public instance names", () => {
+  const files = fixture();
+  const path = join(files.generatedDir, "gameplay-profile.ini");
+  try {
+    writeFileSync(join(files.generatedDir, "sietch-config.json"), JSON.stringify({
+      maps: {
+        Survival_1: {
+          dimensions: {
+            0: { display_name: "Sietch New", password: "must-not-leak" }
+          }
+        }
+      },
+      partitions: {
+        1: {
+          map: "Survival_1",
+          dimension: 0,
+          display_name: "Sietch New",
+          password: "must-not-leak"
+        },
+        8: {
+          map: "DeepDesert_1",
+          dimension: 0,
+          display_name: "Deep Desert PvE",
+          password: "also-must-not-leak"
+        }
+      }
+    }));
+    writeFileSync(path, [
+      "[Engine:ConsoleVariables]",
+      "Dune.GlobalMiningOutputMultiplier=2.5",
+      "",
+      "[Partition:Survival_1:1:/Script/DuneSandbox.DuneGameMode]",
+      "m_WaterConsumptionRate=0.5",
+      "",
+      "[Partition:Survival_1:2:/Script/DuneSandbox.DuneGameMode]",
+      "m_WaterConsumptionRate=0.75",
+      "",
+      "[PartitionEngine:DeepDesert_1:8:ConsoleVariables]",
+      "sandworm.dune.Enabled=0"
+    ].join("\n"));
+
+    const metadata = readPublicModifierMetadata(path, { repoRoot: files.repoRoot });
+    assert.deepEqual(metadata.modifiers, {
+      "Mining Output": "2.5x",
+      "Water Consumption": "Varies: 0.5x, 0.75x",
+      Sandworms: "Disabled"
+    });
+    assert.deepEqual(metadata.modifierGroups, [
+      { scope: "global", map: "", partitionId: null, dimension: null, label: "Global", modifiers: { "Mining Output": "2.5x" } },
+      { scope: "partition", map: "Survival_1", partitionId: 1, dimension: 0, label: "Sietch New", modifiers: { "Water Consumption": "0.5x" } },
+      { scope: "partition", map: "Survival_1", partitionId: 2, dimension: null, label: "Sietch Partition 2", modifiers: { "Water Consumption": "0.75x" } },
+      { scope: "partition", map: "DeepDesert_1", partitionId: 8, dimension: 0, label: "Deep Desert PvE", modifiers: { Sandworms: "Disabled" } }
+    ]);
+    assert.equal(JSON.stringify(metadata).includes("must-not-leak"), false);
   } finally {
     files.cleanup();
   }
@@ -293,6 +440,7 @@ test("directory snapshot uses compact database aggregates and local metadata", a
       discordInvite: "https://discord.gg/Test_Code",
       publicMetadata: {
         modifiers: {},
+        modifierGroups: [],
         progression: { characters: 0, averageLevel: 0, highestLevel: 0 }
       }
     });
@@ -666,6 +814,11 @@ test("reporter uploads only player portal identities requested by the claimed li
         listings: [{ sellerActorId: "123" }],
         overview: { available: true, items: [{ templateId: "MelangeSpice", listingCount: 2 }] }
       }),
+      collectPlayerPortalMapSnapshot: async () => ({
+        maps: { HaggaBasin: { key: "HaggaBasin" } },
+        defaultMap: "HaggaBasin",
+        rows: [{ id: "ore-1", type: "ore", name: "TitaniumOre", map: "HaggaBasin", x: 10, y: 20, z: 30 }]
+      }),
       collectPlayerPortalSnapshots: async (_db, hashes, loadedJourneys, loadedSkills, marketSnapshot) => {
         assert.deepEqual(hashes, [requestedHash]);
         assert.equal(loadedJourneys, journeyData);
@@ -685,6 +838,7 @@ test("reporter uploads only player portal identities requested by the claimed li
         if (url.endsWith("/heartbeat")) return response({ ok: true, nextHeartbeatSeconds: 60, listingClaimed: true });
         if (url.endsWith("/claim-status")) return response({ ok: true, claimed: true, playerPortalEnabled: true, requestedAccountHashes: [requestedHash] });
         if (url.endsWith("/player-portal/market-snapshot")) return response({ ok: true, stored: true });
+        if (url.endsWith("/player-portal/map-snapshot")) return response({ ok: true, stored: true });
         return response({ ok: true, stored: 1 });
       },
       setTimeoutFn: () => ({ unref() {} }),
@@ -697,12 +851,104 @@ test("reporter uploads only player portal identities requested by the claimed li
     assert.ok(upload);
     const marketUpload = requests.find(request => request.url.endsWith("/player-portal/market-snapshot"));
     assert.ok(marketUpload);
+    const mapUpload = requests.find(request => request.url.endsWith("/player-portal/map-snapshot"));
+    assert.ok(mapUpload);
+    assert.equal(JSON.parse(mapUpload.options.body).map.rows[0].type, "ore");
     assert.equal(JSON.parse(marketUpload.options.body).exchangeOverview.items[0].templateId, "MelangeSpice");
     const body = JSON.parse(upload.options.body);
     assert.equal(body.snapshots.length, 1);
     assert.equal(body.snapshots[0].accountHash, requestedHash);
     assert.equal(Object.hasOwn(body.snapshots[0], "platformId"), false);
     assert.equal(Object.hasOwn(body.snapshots[0].data, "exchangeOverview"), false, "server market data must not be duplicated into every private snapshot");
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("reporter never reads or uploads character membership when the Player Portal is disabled", async () => {
+  const files = fixture();
+  const requests = [];
+  const requestedHash = "b".repeat(64);
+  try {
+    const reporter = createPublicDirectoryReporter({
+      repoRoot: files.repoRoot,
+      generatedDir: files.generatedDir,
+      secretsDir: files.secretsDir
+    }, {
+      db: fakeDb(),
+      getBattlegroupRunning: () => true,
+      baseUrl: "https://directory.test/api/v1/servers",
+      collectPlayerServerMemberships: async () => {
+        assert.fail("a disabled Player Portal must prevent the local character lookup");
+      },
+      collectPlayerPortalSnapshots: async () => {
+        assert.fail("membership discovery must not build a full Player Portal snapshot");
+      },
+      fetchImpl: async (url, options) => {
+        requests.push({ url, options });
+        if (url.endsWith("/heartbeat")) return response({ ok: true, nextHeartbeatSeconds: 60, listingClaimed: true });
+        if (url.endsWith("/claim-status")) return response({
+          ok: true,
+          claimed: true,
+          playerPortalEnabled: false,
+          requestedAccountHashes: [],
+          requestedMembershipHashes: [requestedHash]
+        });
+        return response({ ok: true, stored: 1 });
+      },
+      setTimeoutFn: () => ({ unref() {} }),
+      now: () => Date.parse("2026-08-22T12:00:00Z")
+    });
+
+    await reporter.tick();
+    const upload = requests.find((request) => request.url.endsWith("/player-membership/snapshot"));
+    assert.equal(upload,undefined);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("reporter answers lightweight player membership probes when the Player Portal is enabled", async () => {
+  const files = fixture();
+  const requests = [];
+  const requestedHash = "b".repeat(64);
+  try {
+    const reporter = createPublicDirectoryReporter({
+      repoRoot: files.repoRoot,
+      generatedDir: files.generatedDir,
+      secretsDir: files.secretsDir
+    }, {
+      db: fakeDb(),
+      getBattlegroupRunning: () => true,
+      baseUrl: "https://directory.test/api/v1/servers",
+      collectPlayerServerMemberships: async (_db, hashes) => {
+        assert.deepEqual(hashes,[requestedHash]);
+        return [{ accountHash: requestedHash,found: true,level: 87 }];
+      },
+      collectPlayerPortalSnapshots: async () => [],
+      fetchImpl: async (url,options) => {
+        requests.push({ url,options });
+        if (url.endsWith("/heartbeat")) return response({ ok: true,nextHeartbeatSeconds: 60,listingClaimed: true });
+        if (url.endsWith("/claim-status")) return response({
+          ok: true,
+          claimed: true,
+          playerPortalEnabled: true,
+          requestedAccountHashes: [],
+          requestedMembershipHashes: [requestedHash]
+        });
+        return response({ ok: true,stored: 1 });
+      },
+      setTimeoutFn: () => ({ unref() {} }),
+      now: () => Date.parse("2026-08-22T12:00:00Z")
+    });
+
+    await reporter.tick();
+    const upload = requests.find((request) => request.url.endsWith("/player-membership/snapshot"));
+    assert.ok(upload);
+    assert.deepEqual(JSON.parse(upload.options.body), {
+      observedAt: "2026-08-22T12:00:00.000Z",
+      memberships: [{ accountHash: requestedHash, found: true, level: 87 }]
+    });
   } finally {
     files.cleanup();
   }

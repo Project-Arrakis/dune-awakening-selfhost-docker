@@ -303,6 +303,17 @@ EOF
     runtime/scripts/logs.sh "$@"
     ;;
 
+  coriolis)
+    case "$target" in
+      status|"") runtime/scripts/coriolis-coordinator.sh status ;;
+      scan-once) runtime/scripts/coriolis-coordinator.sh scan-once ;;
+      *)
+        echo "Usage: runtime/scripts/dune coriolis [status|scan-once]" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+
   restart)
     case "$target" in
       survival|survival-1)
@@ -357,8 +368,11 @@ EOF
       survival|survival-1)
         runtime/scripts/stop-server-survival-1.sh
         ;;
+      overmap)
+        runtime/scripts/stop-server-overmap.sh
+        ;;
       "")
-        echo "Usage: runtime/scripts/dune stop-service <survival>"
+        echo "Usage: runtime/scripts/dune stop-service <survival|overmap>"
         exit 1
         ;;
       *)
@@ -366,6 +380,10 @@ EOF
         exit 1
         ;;
     esac
+    ;;
+
+  stop-game-servers-for-db-writes)
+    runtime/scripts/stop-game-servers-for-db-writes.sh
     ;;
 
   console|web)
@@ -513,7 +531,7 @@ Usage:
   dune db restore <backup-file>
   dune db restore <backup-file> --adopt-backup-battlegroup
   dune db restore <backup-file> --keep-current-battlegroup
-  dune db delete <backup-file>
+  dune db delete <backup-file> [more-backups...]
   dune db delete --all
   dune db auto enable <HH:MM> [retention-days]
   dune db auto disable
@@ -529,6 +547,7 @@ Usage:
   dune maps set <map> <dynamic|always-on|overmap-active|disabled>
   dune maps reconcile
   dune deepdesert dual [status|enable|disable|bootstrap|repair]
+  dune coriolis [status|scan-once]
   dune admin login-queues [--all]
   dune admin repair-login-queue <player-fls-id|queue-name> [--yes] [--force]
   dune config title ["New Server Name"]

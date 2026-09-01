@@ -103,6 +103,7 @@ test("long-running server tasks get an extended timeout", () => {
   assert.equal(taskTimeoutMs(config, "storageCleanupImages"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "storageCleanupBuildCache"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "sietchesSetActive"), 30 * 60 * 1000);
+  assert.equal(taskTimeoutMs(config, "deepdesertAction"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "sietchesRestart"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "sietchesReconcile"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "restartServiceStop"), 30 * 60 * 1000);
@@ -136,6 +137,7 @@ test("web self-update helper mounts the host repo path", () => {
   assert(args.includes("DUNE_SELF_UPDATE_TOKEN"));
   assert(args.includes("DUNE_SELF_UPDATE_RUN_ID=123e4567-e89b-42d3-a456-426614174000"));
   assert(args.includes("io.github.red-blink.dune-selfhost.role=self-update-helper"));
+  assert.deepEqual(args.slice(args.indexOf("--entrypoint"), args.indexOf("--entrypoint") + 4), ["--entrypoint", "/bin/sh", "redblink-dune-docker-console:dev", "-lc"]);
   assert(!args.includes("/repo:/repo"));
 });
 
@@ -170,8 +172,9 @@ test("detached self-update stays running until durable helper status completes i
   const previousProject = process.env.DUNE_COMPOSE_PROJECT_NAME;
   process.env.DUNE_COMPOSE_PROJECT_NAME = "dune-test";
   const calls = [];
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-self-update-task-"));
   const manager = new TaskManager({
-    repoRoot: "/repo",
+    repoRoot,
     hostRepoRoot: "/host/repo",
     taskRetention: 20,
     commandTimeoutMs: 5000
@@ -196,6 +199,7 @@ test("detached self-update stays running until durable helper status completes i
     assert.equal(calls[0][0], "ps");
     assert(calls[1].includes(`DUNE_SELF_UPDATE_RUN_ID=${created.id}`));
     assert(calls[1].includes("DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS=1800"));
+    assert.match(readFileSync(join(repoRoot, "runtime", "generated", "self-update-status", `${created.id}.env`), "utf8"), /^stage=launching$/m);
   } finally {
     if (previousProject === undefined) delete process.env.DUNE_COMPOSE_PROJECT_NAME;
     else process.env.DUNE_COMPOSE_PROJECT_NAME = previousProject;
@@ -454,6 +458,30 @@ test("a survival restart flushes queued map writes between the stop and start st
   assert.deepEqual(callLog, ["stop-service survival", "flush:restartServiceStop", "restart survival"]);
 });
 
+test("a battlegroup restart stops game maps and flushes queued writes before PostgreSQL is removed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-full-restart-flush-"));
+  const duneScript = join(dir, "dune");
+  const callLogPath = join(dir, "calls.log");
+  writeFileSync(callLogPath, "");
+  writeFileSync(duneScript, `#!/usr/bin/env bash\necho "$*" >> "${callLogPath}"\n`, { mode: 0o700 });
+  chmodSync(duneScript, 0o700);
+
+  const manager = new TaskManager(
+    { duneScript, repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 },
+    { onMapDown: async (operation) => { appendFileSync(callLogPath, `flush:${operation}\n`); return { flushed: [] }; } }
+  );
+
+  const created = manager.create("server", "restartAll", {});
+  const task = await waitForTask(manager, created.id);
+  assert.equal(task.status, "succeeded", task.errorMessage);
+  assert.deepEqual(readFileSync(callLogPath, "utf8").trim().split("\n"), [
+    "stop-game-servers-for-db-writes",
+    "flush:stopGameServersForDbWrites",
+    "stop",
+    "start"
+  ]);
+});
+
 test("a Sietch restart flushes queued map writes between the stop and start steps, not after both", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-task-flush-order-sietch-"));
   const duneScript = join(dir, "dune");
@@ -483,7 +511,9 @@ test("map-down refill results distinguish generator, water, and queue-specific f
       onMapDown: async () => ({
         flushed: [
           { ok: true, refillType: "generator" },
-          { ok: true, refillType: "water" }
+          { ok: true, refillType: "water" },
+          { ok: true, refillType: "generator", noLongerApplicable: true },
+          { ok: true, refillType: "water", noLongerApplicable: true }
         ],
         failures: [{ refillType: "water", error: "database unavailable" }]
       })
@@ -497,6 +527,8 @@ test("map-down refill results distinguish generator, water, and queue-specific f
   assert.deepEqual(lines, [
     "Applied 1 queued generator refill.",
     "Applied 1 queued water refill.",
+    "Cleared 1 obsolete generator refill; the base or its generators no longer exist.",
+    "Cleared 1 obsolete water refill; the base or its water storage no longer exists.",
     "Queued water refills were not applied: database unavailable"
   ]);
 });

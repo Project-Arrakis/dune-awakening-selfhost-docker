@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, statSync, chownSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
 
 export const APP_NAME = "Dune Docker Console";
@@ -234,8 +234,18 @@ export function loadConfig() {
     adminPasswordEnvManaged,
     generatedDir,
     secretsDir,
+    apiKeysFile: resolve(secretsDir, "api-keys.json"),
     auditLog: resolve(generatedDir, "web-admin-audit.jsonl"),
     spicefieldOverridesFile: resolve(generatedDir, "spicefield-overrides.json"),
+    // Committed data, not runtime state: Large-spice coordinates are a
+    // permanent lookup keyed by Coriolis seed (0-11) -- the same seed
+    // number produces the same pool on every Deep Desert server, so this
+    // ships in the repo and grows over time as more seeds get recorded.
+    spiceLocationsFile: resolve(repoRoot, "console/api/data/large-spice-locations.json"),
+    // Runtime companion to the committed archive above -- the console
+    // fills this in itself as it observes fields going active, growing
+    // "Static Spice Spawns" beyond what the committed archive alone has.
+    learnedSpiceLocationsFile: resolve(generatedDir, "learned-spice-locations.json"),
     landsraadMilestonePresetFile: resolve(generatedDir, "landsraad-milestones.json"),
     taskRetention: Number(process.env.ADMIN_TASK_RETENTION || 200),
     maxJsonBytes: Number(process.env.ADMIN_MAX_JSON_BYTES || 2 * 1024 * 1024),
@@ -289,6 +299,7 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/message-of-the-day-state.json"),
     resolve(repoRoot, "runtime/generated/player-announcements.json"),
     resolve(repoRoot, "runtime/generated/player-announcements-state.json"),
+    resolve(repoRoot, "runtime/generated/scheduled-map-messages.json"),
     resolve(repoRoot, "runtime/generated/player-bans.json"),
     resolve(repoRoot, "runtime/generated/public-directory-status.json"),
     resolve(repoRoot, "runtime/generated/restart-queue.json"),
@@ -297,6 +308,7 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/shutdown-protection.env"),
     resolve(repoRoot, "runtime/generated/sietch-config.json"),
     resolve(repoRoot, "runtime/generated/spicefield-overrides.json"),
+    resolve(repoRoot, "runtime/generated/learned-spice-locations.json"),
     resolve(repoRoot, "runtime/generated/update-auto.env"),
     resolve(repoRoot, "runtime/generated/usersettings.json"),
     resolve(repoRoot, "runtime/generated/auto-refill-bases.json"),
@@ -352,6 +364,19 @@ function readConsoleVersion(repoRoot) {
   }
 }
 
+export function readConsoleBuildId(staticDir, fallback = "dev") {
+  try {
+    // Vite's index references every entry asset by its content-hashed
+    // filename, so its digest changes whenever the browser-facing build
+    // changes. Reading it live also detects an in-place rebuild without
+    // requiring VERSION to be bumped or the API process to restart.
+    const index = readFileSync(resolve(staticDir, "index.html"));
+    return createHash("sha256").update(index).digest("hex").slice(0, 16);
+  } catch {
+    return fallback;
+  }
+}
+
 function resolveAdminBindHost(value) {
   const raw = String(value || "0.0.0.0").trim();
   if (raw && raw !== "auto") return raw;
@@ -403,6 +428,7 @@ export function publicConfig(config) {
   return {
     appName: config.appName,
     version: config.version,
+    buildId: readConsoleBuildId(config.staticDir, config.version),
     repoRoot: config.repoRoot,
     host: config.host,
     port: config.port,

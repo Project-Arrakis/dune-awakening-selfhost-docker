@@ -32,7 +32,7 @@ test("skill live-action eligibility requires an explicitly online player", () =>
   assert.equal(playerIsOnlineForLiveAction(findPlayerForLiveAction(players, "missing")), false);
 });
 
-test("the terminal wrapper also requires players to be online for skill grants", () => {
+test("the terminal wrapper requires players to be online for live commands", () => {
   const script = readFileSync(new URL("../../../runtime/scripts/admin-tools.sh", import.meta.url), "utf8");
-  assert.match(script, /AwardXP\|SkillsSetUnspentSkillPoints\|SkillsSetModuleLevel\|UpdateAllWaterFillables\|SpawnVehicleAt\) require_online=1/);
+  assert.match(script, /AwardXP\|SkillsSetUnspentSkillPoints\|SkillsSetModuleLevel\|UpdateAllWaterFillables\|SpawnVehicleAt\|TeleportTo\) require_online=1/);
 });

@@ -34,7 +34,8 @@ const baseProps = {
   onClose: vi.fn(),
   confirmAction: vi.fn().mockResolvedValue(true),
   waitForTask: vi.fn(),
-  formatMutationResult: vi.fn().mockReturnValue("Action completed.")
+  formatMutationResult: vi.fn().mockReturnValue("Action completed."),
+  restartGate: vi.fn().mockResolvedValue("immediate" as const)
 };
 
 beforeEach(() => {

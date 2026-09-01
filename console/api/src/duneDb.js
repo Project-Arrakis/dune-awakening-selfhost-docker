@@ -1,13 +1,14 @@
 import { assertIdentifier, bigintParam, intParam, isReadOnlySql, quoteIdentifier, quoteQualified, rowsResult } from "./db.js";
 import { getBridgeRequestSummary } from "./audit.js";
 import { resolvePorts } from "./config.js";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { redact } from "./redact.js";
 import { itemImagePath } from "./adminCatalog.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
 import { isFiefClaimPlaceable } from "./blueprintSafety.js";
+import { renderPlayerMessageTemplate } from "./services/messageTemplate.js";
 import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA, MESSAGE_OF_THE_DAY_PERSONA } from "./systemPersonas.js";
 import {
   craftingRecipeCatalogRows,
@@ -827,11 +828,40 @@ export async function searchDatabase(db, q) {
   return result.rows;
 }
 
-export async function runSql(db, query, allowDestructive = false) {
+// enforceReadOnly is for CALLER-SUPPLIED SQL only -- the console's Run Query
+// route and the addon bridge. Internal callers build their own SQL and pass it
+// with enforceReadOnly off, both because their statements are not attacker
+// controlled and because their mocked `db` objects in tests have no usable
+// transaction().
+export async function runSql(db, query, allowDestructive = false, { enforceReadOnly = false } = {}) {
   const sql = String(query || "").trim();
   if (!sql) throw new Error("SQL query is required");
   const readOnly = isReadOnlySql(sql);
   if (!allowDestructive && !readOnly) throw new Error("Only read-only SQL is allowed without destructive confirmation");
+
+  // POSTGRES refuses the write; isReadOnlySql is not trusted to have spotted it.
+  //
+  // The classifier only asks "starts with a read keyword and avoids a
+  // blacklist". Every privileged mutation here is shaped `select dune.<fn>(...)`
+  // -- disband_guild, delete_actors, adjust_player_virtual_currency_balance --
+  // so the entire mutation surface passes, and the blacklist cannot be repaired
+  // to catch it (\bdelete\b does not match delete_actors, across hundreds of
+  // shipped functions). `SELECT ... INTO` and `select 1; select fn()` pass too.
+  //
+  // So every guard built on the classifier -- the database:execute permission,
+  // the pre-write backup, the mutation rate limiter -- is decorative for
+  // exactly the statements that matter most. Asking the database is the only
+  // check that cannot be talked around.
+  if (enforceReadOnly && !allowDestructive) {
+    const result = await db.transaction(async (tx) => {
+      // Must be first in the transaction. Covers every statement in `sql`,
+      // including later ones in a multi-statement string.
+      await tx.query("set transaction read only");
+      return tx.query(sql);
+    });
+    return rowsResult(result);
+  }
+
   const result = readOnly
     ? await db.query(sql)
     : await withKnownLiveRefresh(db, () => db.query(sql), { features: liveRefreshFeaturesForSql(sql) });
@@ -1542,9 +1572,21 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const safeSortColumn = Object.hasOwn(PLAYER_SORT_COLUMNS, sortColumn) ? sortColumn : "character_name";
   const safeSortDirection = String(sortDirection).toLowerCase() === "desc" ? "desc" : "asc";
   const sortOrder = PLAYER_SORT_COLUMNS[safeSortColumn].order;
-  const pagedOrder = [...sortOrder, ...(sortOrder.includes("actor_id") ? [] : ["actor_id"])]
-    .map((column) => `${column} ${safeSortDirection}`).join(", ");
+  // An online player is more recent than every stored last-seen timestamp,
+  // even when the game leaves that timestamp at the start of their session.
+  // Keep that presence rank outside the timestamp itself so the returned value
+  // remains the game's real data while Last Online sorting matches the UI's
+  // "Currently Active" state. Ascending uses the inverse rank naturally.
+  const pagedOrder = safeSortColumn === "last_seen"
+    ? [
+        `case when actual_online_status = 'Online' then 0 else 1 end ${safeSortDirection === "desc" ? "asc" : "desc"}`,
+        `last_seen ${safeSortDirection}`,
+        `actor_id ${safeSortDirection}`
+      ].join(", ")
+    : [...sortOrder, ...(sortOrder.includes("actor_id") ? [] : ["actor_id"])]
+        .map((column) => `${column} ${safeSortDirection}`).join(", ");
   const playerStateColumns = await columnsFor(db, "player_state");
+  const hasWorldPartition = await tableExists(db, "world_partition");
   const encryptedAccountColumns = await tableExists(db, "encrypted_accounts")
     ? await columnsFor(db, "encrypted_accounts")
     : new Set();
@@ -1581,6 +1623,12 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const playerPlaytimeJoin = hasPlayerPlaytime
     ? "left join dune.console_player_playtime player_playtime on player_playtime.account_id = a.owner_account_id"
     : "";
+  const worldPartitionJoin = hasWorldPartition
+    ? "left join dune.world_partition wp on wp.partition_id = a.partition_id"
+    : "";
+  const worldPartitionSelect = hasWorldPartition
+    ? "coalesce(wp.map, '') as partition_map, coalesce(wp.dimension_index, 0) as dimension_index,"
+    : "'' as partition_map, 0 as dimension_index,";
   const totalPlaytimeSelect = hasPlayerPlaytime
     ? `greatest(0, coalesce(player_playtime.total_seconds, 0) +
          case when player_playtime.session_started_at is not null
@@ -1659,6 +1707,8 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              end as action_player_id,
              a.class,
              coalesce(a.map, '') as map,
+             coalesce(a.partition_id, 0) as partition_id,
+             ${worldPartitionSelect}
              ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"} as actual_online_status,
              case when ${bannedExpression} then 'Banned'
                   else ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"}
@@ -1679,6 +1729,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
       left join dune.accounts ac on ac.id = a.owner_account_id
       ${playerPlaytimeJoin}
       ${encryptedAccountsJoin}
+      ${worldPartitionJoin}
       where ${where}
     ),
     deduped_players as (
@@ -1693,6 +1744,9 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              action_player_id,
              class,
              map,
+             partition_id,
+             partition_map,
+             dimension_index,
              actual_online_status,
              online_status,
              is_banned,
@@ -1734,7 +1788,12 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     totalPlayers: totalsResult ? (totalsResult.rows[0] ? Number(totalsResult.rows[0].total_players) : 0) : undefined,
     rows: result.rows
       .filter((row) => row.actor_id !== null && row.actor_id !== undefined)
-      .map(({ total_count, ...row }) => row)
+      .map(({ total_count, partition_map, dimension_index, ...row }) => ({
+        ...row,
+        partition_id: Number(row.partition_id || 0),
+        partitionMap: String(partition_map || ""),
+        dimensionIndex: Number(dimension_index || 0)
+      }))
   };
 }
 
@@ -1842,6 +1901,63 @@ export async function addonLeadershipPlayers(db) {
         status: row.online_status || "Offline",
         map: row.map || "",
         lastSeen: row.last_seen || ""
+      };
+    })
+  };
+}
+
+// Addons that correlate external player activity (for example chat events)
+// need stable game and platform identities, but not the broader player REST
+// API. Keep this response deliberately narrow and permission it through the
+// addon bridge's existing players:read grant.
+export async function addonPlayerIdentities(db) {
+  const result = await listAllPlayers(db, {});
+  if (!result?.capabilities?.players) return result;
+  const rows = result.rows || [];
+  const accountIds = [...new Set(rows
+    .map((row) => String(row.account_id || ""))
+    .filter((value) => /^[1-9][0-9]*$/.test(value)))];
+  const platforms = new Map();
+
+  if (accountIds.length && await tableExists(db, "accounts")) {
+    const accountColumns = await columnsFor(db, "accounts");
+    const platformIdSelect = accountColumns.has("platform_id")
+      ? "coalesce(platform_id::text, '')"
+      : "''";
+    const platformNameSelect = accountColumns.has("platform_name")
+      ? "coalesce(platform_name::text, '')"
+      : "''";
+    const platformResult = await db.query(`
+      select id::text as account_id,
+             ${platformIdSelect} as platform_id,
+             ${platformNameSelect} as platform_name
+      from dune.accounts
+      where id = any($1::bigint[])`, [accountIds]);
+    for (const row of platformResult.rows) {
+      platforms.set(String(row.account_id), {
+        platformId: String(row.platform_id || ""),
+        platformName: String(row.platform_name || "")
+      });
+    }
+  }
+
+  return {
+    capabilities: { players: true, identities: true },
+    rows: rows.map((row) => {
+      const actorId = String(row.actor_id || "");
+      const accountId = String(row.account_id || "");
+      const platform = platforms.get(accountId) || { platformId: "", platformName: "" };
+      return {
+        actorId,
+        controllerId: String(row.player_controller_id || ""),
+        accountId,
+        name: row.character_name || `Player ${actorId}`,
+        funcomId: String(row.funcom_id || ""),
+        flsId: String(row.fls_id || ""),
+        platformId: platform.platformId,
+        platformName: platform.platformName,
+        status: row.online_status || "Offline",
+        map: row.map || ""
       };
     })
   };
@@ -3032,21 +3148,52 @@ export function liveMapConfigPayload(selected = "") {
   };
 }
 
+// Driven by world_partition, not actors -- a freshly spun-up partition
+// (e.g. a second Hagga Basin instance nobody has spawned into yet) is a
+// real, selectable partition the instant it's registered, even with zero
+// actors placed in it. The old actors-inner-join version only ever
+// listed a partition once something existed inside it, so a brand-new
+// instance was invisible in the Partition dropdown (confirmed live: a
+// second Hagga Basin partition with 0 actors never appeared at all).
 export async function liveMapPartitions(db) {
-  if (!(await tableExists(db, "actors"))) return { rows: [] };
-  const hasWorldPartition = await tableExists(db, "world_partition");
+  if (!(await tableExists(db, "world_partition"))) {
+    if (!(await tableExists(db, "actors"))) return { rows: [] };
+    const result = await db.query(`
+      select coalesce(a.map, '') as map,
+             coalesce(a.partition_id, 0) as partition_id,
+             'Partition ' || coalesce(a.partition_id, 0)::text as name,
+             count(*)::int as marker_count
+      from dune.actors a
+      where a.transform is not null and coalesce(a.partition_id, 0) > 0
+      group by a.map, a.partition_id
+      order by map, partition_id`);
+    return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0) })) };
+  }
+  const hasActors = await tableExists(db, "actors");
   const result = await db.query(`
-    select coalesce(a.map, '') as map,
-           coalesce(a.partition_id, 0) as partition_id,
-           ${hasWorldPartition ? "coalesce(nullif(wp.label, ''), nullif(wp.map, ''), 'Partition ' || coalesce(a.partition_id, 0)::text)" : "'Partition ' || coalesce(a.partition_id, 0)::text"} as name,
-           count(*)::int as marker_count
-    from dune.actors a
-    ${hasWorldPartition ? "join dune.world_partition wp on wp.partition_id = a.partition_id" : ""}
-    where a.transform is not null
-      and coalesce(a.partition_id, 0) > 0
-      ${hasWorldPartition ? "and nullif(wp.server_id, '') is not null" : ""}
-    group by a.map, a.partition_id${hasWorldPartition ? ", wp.label, wp.map" : ""}
-    order by map, partition_id`);
+    select
+      -- wp.map is the internal instance name ("DeepDesert_1"/"Survival_1"),
+      -- but the frontend's Partition dropdown filters by the friendly game
+      -- map name actors report (see RESOURCE_FIELD_PARTITION_JOIN above for
+      -- the same translation in the other direction) -- without this, a
+      -- partition sourced from world_partition would never match either
+      -- map tab.
+      coalesce(case lower(wp.map) when 'deepdesert_1' then 'DeepDesert' when 'survival_1' then 'HaggaBasin' else wp.map end, '') as map,
+      wp.partition_id,
+      coalesce(nullif(wp.label, ''), nullif(wp.map, ''), 'Partition ' || wp.partition_id::text) as name,
+      ${hasActors ? "count(a.id) filter (where a.transform is not null)::int" : "0"} as marker_count
+    from dune.world_partition wp
+    ${hasActors ? "left join dune.actors a on a.partition_id = wp.partition_id" : ""}
+    -- Confirmed live: dungeon/ecolab/overmap sub-instances (CB_Dungeon_*,
+    -- CB_Ecolab_*, CB_Overland_*, Overmap, ...) carry a real, non-null
+    -- server_id too -- they are genuinely running server processes, just
+    -- not ones the Live Map exposes a tab for. nullif(server_id, '') alone
+    -- does not exclude them; only the two instance names the map-name
+    -- translation above actually understands are real Live Map partitions.
+    where wp.partition_id > 0 and nullif(wp.server_id, '') is not null
+      and lower(wp.map) in ('deepdesert_1', 'survival_1')
+    group by wp.partition_id, wp.map, wp.label
+    order by map, wp.partition_id`);
   return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0) })) };
 }
 
@@ -3117,6 +3264,209 @@ export async function teleportOfflinePlayerToCoords(db, playerId, { x, y, z, par
   };
 }
 
+function finiteTeleportCoordinate(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < -100000000 || number > 100000000) {
+    throw new Error(`${label} must be a finite coordinate between -100000000 and 100000000.`);
+  }
+  return number;
+}
+
+function teleportQuaternionYawDegrees(row) {
+  const x = Number(row.rotation_x || 0);
+  const y = Number(row.rotation_y || 0);
+  const z = Number(row.rotation_z || 0);
+  const w = Number(row.rotation_w || 1);
+  return Math.atan2(2 * ((w * z) + (x * y)), 1 - (2 * ((y * y) + (z * z)))) * (180 / Math.PI);
+}
+
+function safeDestinationFromTransform(row, forwardOffset, heightOffset) {
+  const storedYaw = row.yaw === null || row.yaw === undefined || row.yaw === "" ? Number.NaN : Number(row.yaw);
+  const yaw = Number.isFinite(storedYaw) ? storedYaw : teleportQuaternionYawDegrees(row);
+  const radians = yaw * (Math.PI / 180);
+  return {
+    x: Number(row.x) + (Math.cos(radians) * forwardOffset),
+    y: Number(row.y) + (Math.sin(radians) * forwardOffset),
+    z: Number(row.z) + heightOffset,
+    yaw,
+    map: String(row.map || ""),
+    partitionId: Number(row.partition_id || 0)
+  };
+}
+
+async function playerTeleportIdentity(db, actorId) {
+  const player = await resolvePlayerMutationTarget(db, actorId);
+  const result = await db.query(`
+    select coalesce(ac."user", '') as fls_id,
+           coalesce(ps.character_name, '') as character_name,
+           coalesce(a.map, '') as map,
+           coalesce(a.partition_id, 0)::int as partition_id
+    from dune.accounts ac
+    join dune.player_state ps on ps.account_id = ac.id
+    join dune.actors a on a.id = ps.player_pawn_id
+    where ac.id = $1
+    limit 1`, [player.accountId]);
+  const identity = result.rows[0];
+  if (!identity?.fls_id) throw new Error("This player has no stable FLS account ID and cannot be teleported safely.");
+  return { ...player, flsId: String(identity.fls_id), characterName: String(identity.character_name || "Player"), map: String(identity.map || ""), partitionId: Number(identity.partition_id || 0) };
+}
+
+async function teleportPlayerDestination(db, actorId) {
+  const safeActorId = intParam(actorId, "destination player id", 1);
+  const result = await db.query(`
+    select a.id, coalesce(ps.character_name, 'Unknown') as name,
+           coalesce(a.map, '') as map, coalesce(a.partition_id, 0) as partition_id,
+           ((a.transform).location).x as x, ((a.transform).location).y as y,
+           ((a.transform).location).z as z, ((a.transform).rotation).x as rotation_x,
+           ((a.transform).rotation).y as rotation_y, ((a.transform).rotation).z as rotation_z,
+           ((a.transform).rotation).w as rotation_w
+    from dune.actors a
+    join dune.player_state ps on ps.player_pawn_id = a.id
+    where a.id = $1 and a.transform is not null
+    limit 1`, [safeActorId]);
+  if (!result.rows[0]) throw new Error("The destination player no longer has a saved world position.");
+  return { ...safeDestinationFromTransform(result.rows[0], 250, 100), label: String(result.rows[0].name || "Player") };
+}
+
+async function teleportBaseDestination(db, totemId) {
+  const safeTotemId = intParam(totemId, "destination base id", 1);
+  const result = await db.query(`
+    select t.id, ${BASE_NAME_SQL} as name,
+           coalesce(owner.character_name, '') as owner_name,
+           coalesce(a.map, '') as map, coalesce(a.partition_id, 0) as partition_id,
+           ((a.transform).location).x as x, ((a.transform).location).y as y,
+           ((a.transform).location).z as z, ((a.transform).rotation).x as rotation_x,
+           ((a.transform).rotation).y as rotation_y, ((a.transform).rotation).z as rotation_z,
+           ((a.transform).rotation).w as rotation_w,
+           t.landclaim_original_global_yaw_rotation as yaw
+    from dune.totems t
+    join dune.actors a on a.id = t.id
+    left join dune.permission_actor pa on pa.actor_id = a.id
+    left join lateral (
+      select ps.character_name
+      from dune.permission_actor_rank par
+      join dune.actors player_a on player_a.id = par.player_id
+      join dune.player_state ps on ps.account_id = player_a.owner_account_id
+      where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
+      order by ps.character_name
+      limit 1
+    ) owner on true
+    where t.id = $1 and a.transform is not null
+    limit 1`, [safeTotemId]);
+  if (!result.rows[0]) throw new Error("The selected base console no longer has a saved world position.");
+  const row = result.rows[0];
+  return { ...safeDestinationFromTransform(row, 350, 150), label: String(row.name || "Base"), ownerName: String(row.owner_name || "") };
+}
+
+export async function playerTeleportDestinations(db, id) {
+  const source = await playerTeleportIdentity(db, id);
+  const [players, bases] = await Promise.all([
+    db.query(`
+      select a.id::text as id, coalesce(ps.character_name, 'Unknown') as name,
+             coalesce(ps.online_status::text, 'Offline') as online_status,
+             coalesce(a.map, '') as map, coalesce(a.partition_id, 0)::int as partition_id
+      from dune.actors a
+      join dune.player_state ps on ps.player_pawn_id = a.id
+      where a.id <> $1
+        and a.partition_id = $2
+        and a.id not in (${SYSTEM_PERSONA_PAWN_IDS.map((value) => `${value}::bigint`).join(", ")})
+        and nullif(btrim(coalesce(ps.character_name, '')), '') is not null
+        and a.transform is not null and a.class ilike '%PlayerCharacter%'
+      order by lower(coalesce(ps.character_name, '')), a.id`, [source.actorId, source.partitionId]),
+    db.query(`
+      select t.id::text as id, ${BASE_NAME_SQL} as name,
+             coalesce(owner.character_name, '') as owner_name,
+             coalesce(a.map, '') as map, coalesce(a.partition_id, 0)::int as partition_id,
+             exists (
+               select 1
+               from dune.permission_actor_rank own_rank
+               join dune.actors own_player on own_player.id = own_rank.player_id
+               where own_rank.permission_actor_id = a.id
+                 and own_rank.rank = ${PERMISSION_OWNER_RANK}
+                 and own_player.owner_account_id = $1
+             ) as is_own
+      from dune.totems t
+      join dune.actors a on a.id = t.id
+      left join dune.permission_actor pa on pa.actor_id = a.id
+      left join lateral (
+        select ps.character_name
+        from dune.permission_actor_rank par
+        join dune.actors player_a on player_a.id = par.player_id
+        join dune.player_state ps on ps.account_id = player_a.owner_account_id
+        where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
+        order by ps.character_name
+        limit 1
+      ) owner on true
+      where a.transform is not null and a.partition_id = $2
+      order by is_own desc, lower(coalesce(owner.character_name, '')), lower(${BASE_NAME_SQL}), t.id`, [source.accountId, source.partitionId])
+  ]);
+  return { players: players.rows, bases: bases.rows };
+}
+
+export async function teleportPlayer(db, id, body = {}) {
+  const source = await playerTeleportIdentity(db, id);
+  if (!playerOnline(source)) throw new Error("The player must be online to use live teleport.");
+    const mode = String(body.mode || "coordinates");
+    let destination;
+    if (mode === "player") {
+      destination = await teleportPlayerDestination(db, body.destinationId);
+      if (Number(body.destinationId) === source.actorId) throw new Error("Choose a different destination player.");
+    } else if (mode === "base") {
+      destination = await teleportBaseDestination(db, body.destinationId);
+    } else if (mode === "coordinates") {
+      destination = {
+        x: finiteTeleportCoordinate(body.x, "X"),
+        y: finiteTeleportCoordinate(body.y, "Y"),
+        z: finiteTeleportCoordinate(body.z, "Z"),
+        partitionId: source.partitionId,
+        map: source.map,
+        label: "the selected coordinates"
+      };
+    } else {
+      throw new Error("Unsupported teleport destination type.");
+    }
+    if (mode !== "coordinates" && destination.partitionId !== source.partitionId) {
+      throw new Error("Live teleport can only move a player within their current Sietch or map. Choose a destination on the same map.");
+    }
+    return {
+      playerId: source.flsId,
+      x: destination.x,
+      y: destination.y,
+      z: destination.z,
+      yaw: Number.isFinite(destination.yaw) ? destination.yaw : 0,
+      message: `${source.characterName} will be teleported near ${destination.label}.`
+    };
+}
+
+// dune.actors.class is a raw Unreal blueprint path (e.g.
+// "/Game/.../BP_Sandbike_CHOAM.BP_Sandbike_CHOAM_C"), not a clean type
+// name -- same detection LiveMapPanel.tsx's friendlyMarkerName() already
+// does client-side for the marker's display title, reused here so the
+// Layers legend can expand "Vehicle" into real per-type sub-filters the
+// same way Ores & Metals/Scrap & Wrecks already do. Order matters: the
+// Assault check must run before the generic Ornithopter one so it isn't
+// swallowed by it.
+const VEHICLE_CLASS_SUBTYPE_PATTERNS = [
+  [/sandbike/i, "Sandbike"],
+  [/buggy/i, "Buggy"],
+  [/sandcrawler/i, "SandCrawler"],
+  [/treadwheel/i, "TreadWheel"],
+  [/container/i, "ContainerVehicle"],
+  [/tank/i, "Tank"],
+  [/assault.*ornithopter|ornithopter.*assault/i, "AssaultOrnithopter"],
+  [/light.*ornithopter|ornithopter.*light/i, "LightOrnithopter"],
+  [/medium.*ornithopter|ornithopter.*medium/i, "MediumOrnithopter"],
+  [/transport.*ornithopter|ornithopter.*transport/i, "TransportOrnithopter"],
+  [/ornithopter/i, "Ornithopter"]
+];
+export function vehicleSubtypeFromClass(rawClass) {
+  const cls = String(rawClass || "");
+  for (const [pattern, subtype] of VEHICLE_CLASS_SUBTYPE_PATTERNS) {
+    if (pattern.test(cls)) return subtype;
+  }
+  return "Other";
+}
+
 export async function liveMapVehicles(db, map = "") {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "vehicles"))) return unsupportedMap("vehicles", ["dune.actors", "dune.vehicles"]);
   const hasWorldPartition = await tableExists(db, "world_partition");
@@ -3131,14 +3481,29 @@ export async function liveMapVehicles(db, map = "") {
              coalesce(a.map, '') as map,
              coalesce(a.partition_id, 0) as partition_id,
              coalesce(a.class, '') as class,
+             coalesce(owner.character_name, '') as owner_name,
              ((a.transform).location).x as x,
              ((a.transform).location).y as y,
              ((a.transform).location).z as z
       from dune.vehicles v
       join dune.actors a on a.id = v.id
+      -- A vehicle IS its own permission actor (see vehiclePermissionActor's
+      -- comment above) -- no dune.permission_actor join needed, just rank 1
+      -- off dune.permission_actor_rank directly. An unclaimed vehicle has no
+      -- such row at all, so this stays a left join and owner_name coalesces
+      -- to empty, same as a base with no owner.
+      left join lateral (
+        select ps.character_name
+        from dune.permission_actor_rank par
+        join dune.actors player_a on player_a.id = par.player_id
+        join dune.player_state ps on ps.account_id = player_a.owner_account_id
+        where par.permission_actor_id = a.id and par.rank = ${PERMISSION_OWNER_RANK}
+        order by ps.character_name
+        limit 1
+      ) owner on true
       where a.transform is not null ${partitionWhere} ${where}
       order by a.map, a.partition_id, a.id`, values);
-    return { capabilities: { vehicles: true }, rows: result.rows.map(normalizeMarker) };
+    return { capabilities: { vehicles: true }, rows: result.rows.map((row) => ({ ...normalizeMarker(row), subtype: vehicleSubtypeFromClass(row.class) })) };
   } catch (error) {
     return { capabilities: { vehicles: false }, rows: [], reason: `Vehicle marker transform query is unsupported by this schema: ${error.message}` };
   }
@@ -3216,9 +3581,11 @@ export async function liveMapBases(db, map = "") {
   const partitionWhere = validActorPartitionClause(hasWorldPartition, "a");
   try {
     const result = await db.query(`
-      select b.id,
+      select min(b.id) as id,
              'base' as type,
-             coalesce(pa.actor_name, 'Base ' || b.id::text) as name,
+             ${BASE_NAME_SQL} as name,
+             ${BASE_TYPE_SQL} as base_type,
+             coalesce(owner.character_name, '') as owner_name,
              coalesce(a.map, '') as map,
              coalesce(a.partition_id, 0) as partition_id,
              coalesce(a.class, '') as class,
@@ -3230,9 +3597,18 @@ export async function liveMapBases(db, map = "") {
       join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
       join dune.actors a on a.id = afe.actor_id
       left join dune.permission_actor pa on pa.actor_id = a.id
+      left join lateral (
+        select ps.character_name
+        from dune.permission_actor_rank par
+        join dune.actors player_a on player_a.id = par.player_id
+        join dune.player_state ps on ps.account_id = player_a.owner_account_id
+        where par.permission_actor_id = a.id
+        order by par.rank asc, ps.character_name asc
+        limit 1
+      ) owner on true
       where a.transform is not null ${partitionWhere} ${where} ${storedBaseExclusion}
-      group by b.id, pa.actor_name, a.id, a.map, a.partition_id, a.class, a.transform
-      order by a.map, a.partition_id, b.id`, values);
+      group by pa.actor_name, owner.character_name, a.id, a.map, a.partition_id, a.class, a.transform
+      order by a.map, a.partition_id, min(b.id)`, values);
     return { capabilities: { bases: true }, rows: result.rows.map(normalizeMarker) };
   } catch (error) {
     return { capabilities: { bases: false }, rows: [], reason: `Base marker transform query is unsupported by this schema: ${error.message}` };
@@ -3287,6 +3663,146 @@ export async function mapCombatPartitionRows(db, map) {
     where 1=1 ${where}
     order by wp.dimension_index, wp.partition_id`, values);
   return { capabilities: { combatState: true, farmState: hasFarm }, rows: result.rows };
+}
+
+// dune.resourcefield_state.map ("DeepDesert"/"HaggaBasin") and
+// dune.world_partition.map ("DeepDesert_1"/"Survival_1") are different
+// namespaces -- same mismatch documented at partitionRestartTargets below --
+// so the join has to translate the friendly map name into world_partition's
+// internal instance-name convention rather than comparing them directly.
+const RESOURCE_FIELD_PARTITION_JOIN = `
+    left join dune.world_partition wp
+      on lower(wp.map) = case lower(rfs.map)
+           when 'deepdesert' then 'deepdesert_1'
+           when 'haggabasin' then 'survival_1'
+           else lower(rfs.map)
+         end
+      and wp.dimension_index = rfs.dimension_index`;
+
+// Currently-active spice fields of any size for the live map's "Active
+// Spice Blows" layer. field_kind_id=1 is spice; value_remaining tiers are
+// 5,000/150,000/2,500,000 for Small/Medium/Large -- `size` is computed by
+// threshold (not exact match), so a field mid-harvest still classifies as
+// its spawned tier until it drops below that tier's own floor (a known,
+// accepted imprecision, same class of edge case the original Large-only
+// threshold already had). Left join, not inner, since a dimension can
+// still lack a world_partition row (confirmed live) -- partition_id stays
+// null rather than a sentinel in that case.
+export async function liveMapSpiceFieldRows(db, map = "") {
+  if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
+    return unsupportedMap("spiceActive", ["dune.resourcefield_state", "dune.world_partition"]);
+  }
+  const values = [];
+  const where = mapFilterClause(map, values, "rfs");
+  const result = await db.query(`
+    select rfs.field_id::text as field_id,
+           rfs.map,
+           wp.partition_id,
+           rfs.value_remaining,
+           case
+             when rfs.value_remaining > 150000 then 'Large'
+             when rfs.value_remaining > 5000 then 'Medium'
+             else 'Small'
+           end as size
+    from dune.resourcefield_state rfs
+    ${RESOURCE_FIELD_PARTITION_JOIN}
+    where rfs.field_kind_id = 1 ${where}
+    order by rfs.field_id`, values);
+  return {
+    capabilities: { spiceActive: true },
+    rows: result.rows.map((row) => ({ ...row, partition_id: row.partition_id == null ? null : Number(row.partition_id), value_remaining: Number(row.value_remaining) }))
+  };
+}
+
+// Currently-active flour sand fields (field_kind_id=0) -- a single fixed
+// tier (60,000), not size-classed like spice, so no value threshold needed.
+export async function liveMapFlourSandFieldRows(db, map = "") {
+  if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
+    return unsupportedMap("flourSand", ["dune.resourcefield_state", "dune.world_partition"]);
+  }
+  const values = [];
+  const where = mapFilterClause(map, values, "rfs");
+  const result = await db.query(`
+    select rfs.field_id::text as field_id,
+           rfs.map,
+           wp.partition_id,
+           rfs.value_remaining
+    from dune.resourcefield_state rfs
+    ${RESOURCE_FIELD_PARTITION_JOIN}
+    where rfs.field_kind_id = 0 ${where}
+    order by rfs.field_id`, values);
+  return {
+    capabilities: { flourSand: true },
+    rows: result.rows.map((row) => ({ ...row, partition_id: row.partition_id == null ? null : Number(row.partition_id), value_remaining: Number(row.value_remaining) }))
+  };
+}
+
+// dune.markers is the static-POI atlas (23,413+ entries on a full server --
+// caves, ore veins, scrap wrecks, vendors, hazards, etc). `marker` is a
+// composite type with real named fields (marker_type, x, y, z, payload_type)
+// -- confirmed live, no need for the text-parsing SPLIT_PART approach some
+// third-party docs use. One generic, parameterized query serves every
+// category: add a pattern-table entry for a new category and it works with
+// no new SQL.
+// Suffix-only (no leading %) -- a substring match on "%ore%" was sweeping in
+// HarkoRecustomization (an unrelated NPC/customization POI, confirmed live)
+// because "HarkoRecustomization" contains "kore" -> "ore". All real resource
+// marker_types follow a strict {Material}{Ore|Pickup|Rock} suffix, so
+// matching the suffix instead both fixes that false positive and is what
+// the live map's Ore/Pickup sub-grouping keys off of.
+const POI_CATEGORY_PATTERNS = {
+  ore: ["%Ore", "%Pickup", "%Rock"],
+  scrap: ["%scrap%", "%fuelcell%"],
+  flora: ["%bush%", "%primrose%", "%saguaro%"],
+  hazard: ["%hazard%"],
+  // Split out of "poi" into its own category -- confirmed live these are
+  // the only 3 marker_types that ever matched the old %camp%/%outpost%
+  // patterns, so pulling them out doesn't leave any other POI uncovered.
+  enemy: ["EnemyCamp", "EnemyLaborOutpost", "EnemyOutpost"],
+  // Same split, for the same reason: Fortress/House Representative/Trainer
+  // used to live inside "poi" as sub-grouped subtypes -- promoted to their
+  // own top-level categories so each gets its own legend row/checkbox
+  // instead of only being reachable by first expanding POI's.
+  fortress: ["%fortress%"],
+  house_representative: ["%houserepresentative%"],
+  trainer: ["%trainer%"],
+  poi: [
+    "%cave%", "%ecolab%", "%sietch%",
+    "%dojo%", "%vendor%", "%choam%", "%bank%", "%tradingpost%",
+    "%taxi%", "%imperialconsulate%", "%shipwreck%"
+  ]
+};
+
+export async function liveMapPoiMarkers(db, map, category) {
+  const patterns = POI_CATEGORY_PATTERNS[category];
+  if (!patterns) throw new Error(`Unknown POI category: ${category}`);
+  if (!(await tableExists(db, "markers")) || !(await tableExists(db, "map_names"))) {
+    return unsupportedMap(category, ["dune.markers", "dune.map_names"]);
+  }
+  const values = [patterns];
+  let where = "";
+  if (map) {
+    const safe = validateMapName(map);
+    if (safe) {
+      values.push(safe);
+      where = ` and mn.map_name = $${values.length}`;
+    }
+  }
+  const result = await db.query(`
+    select m.marker_hash_id::text as id,
+           (m.marker).marker_type as marker_type,
+           (m.marker).x as x,
+           (m.marker).y as y,
+           (m.marker).z as z,
+           coalesce(mn.map_name, '') as map
+    from dune.markers m
+    join dune.map_names mn on mn.map_name_id = m.map_name_id
+    where (m.marker).marker_type ilike any($1) and (m.marker).marker_type not ilike 'NoIcon' ${where}
+    order by m.marker_hash_id`, values);
+  return {
+    capabilities: { [category]: true },
+    rows: result.rows.map((row) => ({ ...row, x: Number(row.x), y: Number(row.y), z: Number(row.z) }))
+  };
 }
 
 export async function liveMapMarkers(db, map = "") {
@@ -3551,7 +4067,7 @@ export async function listBasePermissions(db, baseId) {
   // instead of offering controls that end in an FK error.
   const claimed = await permissionActorClaimed(db, actorId);
   const entries = await listPermissionRoster(db, actorId);
-  const systemCustodian = await basePermissionSystemCustodian(db);
+  const systemCustodian = await permissionSystemCustodian(db);
   return {
     baseId: intParam(baseId, "base id", 1),
     actorId,
@@ -3564,13 +4080,408 @@ export async function listBasePermissions(db, baseId) {
   };
 }
 
+function friendlyChildAccessName(row) {
+  const raw = String(row.actor_name || row.building_type || "Base Object")
+    .replace(/^##/, "")
+    .replace(/_Placeable$/i, "")
+    .replace(/^(?:BP_)?MTX_/i, "")
+    .replace(/^Neut_/i, "")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return raw || "Base Object";
+}
+
+async function baseChildAccessSupported(db) {
+  for (const table of ["buildings", "building_instances", "placeables", "permission_actor"]) {
+    if (!(await tableExists(db, table))) return false;
+  }
+  return functionExists(db, "dune.permission_set_access_level(bigint,smallint)");
+}
+
+// permission_actor.access_level is a distinct 5-tier scale from
+// permission_actor_rank.rank (Owner/Co-Owner/Associate, 1-3): every top-level
+// base actor and the overwhelming majority of child pieces carry exactly this
+// value, so it is the game's "matches the base's own Sub-Fief roster" default.
+// A child piece set to any other level was deliberately opened wider (Public,
+// Guild) or narrowed further (Co-Owner, Owner) than that default.
+const SUB_FIEF_ACCESS_LEVEL = 3;
+const ACCESS_LEVEL_LABELS = { 1: "Public", 2: "Guild", 3: "Associate", 4: "Co-Owner", 5: "Owner" };
+
+// Categorizes a child piece for the Base Permissions tab's Type filter.
+// Deliberately its own map, not a reuse of BASE_INVENTORY_TYPES: that one
+// drives baseInventory's SQL join against real dune.inventories rows, and
+// most child pieces here (doors, generators, turbines, the totem) carry no
+// inventory at all -- extending it would risk changing what the Inventory
+// tab actually shows for a reason unrelated to this feature. Storage/
+// Refining/Crafting still borrow that map's own curated building-type keys
+// for consistent naming where the two features genuinely overlap; Generators
+// and Water Storage are their own simple substring rules, matching the
+// same "anything with X in its name" logic for both. Order here is the
+// filter's display order.
+const CHILD_ACCESS_GROUP_ORDER = ["subfief", "storage", "refining", "crafting", "generators", "water", "pentashield", "door", "other"];
+const CHILD_ACCESS_GROUP_LABELS = {
+  subfief: "Sub-Fief",
+  storage: "Storage",
+  refining: "Refining",
+  crafting: "Crafting",
+  generators: "Generators",
+  water: "Water Storage",
+  pentashield: "Pentashield",
+  door: "Door",
+  other: "Other"
+};
+// isChild is permission_actor.is_child straight from the row: the base's own
+// root object (the totem, always exactly one per base -- Totem_Placeable or
+// Totem_Small_Placeable) is the only is_child=false row this query returns,
+// so that flag -- not a name guess -- is what marks it Sub-Fief.
+function childAccessGroupFor(buildingType, isChild) {
+  if (isChild === false) return "subfief";
+  const key = String(buildingType || "").toLowerCase();
+  for (const group of ["storage", "refining", "crafting"]) {
+    if (Object.prototype.hasOwnProperty.call(BASE_INVENTORY_TYPES[group].buildingTypes, key)) return group;
+  }
+  // Wind turbines are generators too (WindTurbineDirectional_Placeable,
+  // WindTurbineOmnidirectional_Placeable) -- "turbine", not "wind", so this
+  // does not also pull in Windtrap_Placeable/LargeWindtrap_Placeable, which
+  // are moisture collectors, not power generation.
+  if (key.includes("generator") || key.includes("turbine")) return "generators";
+  if (key.includes("water")) return "water";
+  if (key.includes("pentashield")) return "pentashield";
+  if (key.includes("door")) return "door";
+  return "other";
+}
+
+// Every object on the base with its own access level: every child piece
+// (doors, devices) plus the base's own root object (the totem, is_child =
+// false -- the "Sub-Fief" group), regardless of current access level, not
+// just the ones that deviate from it. These actors normally match the
+// base's own Sub-Fief access level but retain their own setting; ownership
+// transfers must preserve intentional per-object choices, so this is a
+// read-only list, not part of transferBaseToSystemCustodian.
+export async function listBaseChildAccess(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  if (!(await baseChildAccessSupported(db))) {
+    return { supported: false, inspected: 0, rows: [], reason: "Child access auditing is unsupported by the detected game database." };
+  }
+  const children = await db.query(`
+    with base_entities as (
+      select distinct bi.owner_entity_id
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      where b.id = $1::bigint and bi.owner_entity_id is not null
+    )
+    select pa.actor_id::text as actor_id, coalesce(pa.actor_name, '') as actor_name,
+           pa.access_level::int as access_level, coalesce(p.building_type, '') as building_type,
+           pa.is_child as is_child
+    from base_entities be
+    join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+    join dune.permission_actor pa on pa.actor_id = p.id
+    order by pa.actor_id`, [target]);
+  const rows = children.rows.map((row) => ({
+    actorId: String(row.actor_id),
+    name: friendlyChildAccessName(row),
+    buildingType: String(row.building_type || ""),
+    group: childAccessGroupFor(row.building_type, row.is_child),
+    currentAccess: Number(row.access_level),
+    currentAccessLabel: ACCESS_LEVEL_LABELS[Number(row.access_level)] || String(row.access_level),
+    isSubFief: Number(row.access_level) === SUB_FIEF_ACCESS_LEVEL
+  }));
+  return { supported: true, inspected: rows.length, rows };
+}
+
+// skipStale is for the queue flush path only: a request-time save must reject
+// an actorId that no longer resolves (the operator is acting on a stale list),
+// but an entry drained days later would be permanently failed by one demolished
+// door in an otherwise-valid batch. The flush drops those ids and applies the
+// rest, reporting what it skipped.
+export async function setBaseChildAccessLevels(db, baseId, updates, { skipStale = false } = {}) {
+  const target = intParam(baseId, "base id", 1);
+  if (!Array.isArray(updates) || updates.length < 1 || updates.length > 100) {
+    throw new Error("Choose between 1 and 100 pieces to update.");
+  }
+  const requested = new Map(updates.map((entry) => [
+    String(intParam(entry.actorId, "child actor id", 1)),
+    intParam(entry.accessLevel, "access level", 1, 5)
+  ]));
+  await requireCapability(await baseChildAccessSupported(db),
+    "Setting child access requires the game permission_set_access_level function.");
+  return db.transaction(async (tx) => {
+    await tx.query("set local search_path to dune, public");
+    const actor = await basePermissionActor(tx, target);
+    const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
+    if (!locked.rowCount) throw new Error("That base was not found.");
+    const audit = await listBaseChildAccess(tx, target);
+    const current = new Map(audit.rows.map((row) => [row.actorId, row]));
+    const all = [...requested.entries()].map(([actorId, accessLevel]) => ({ actorId, accessLevel, row: current.get(actorId) }));
+    const skipped = all.filter((entry) => !entry.row).map((entry) => entry.actorId);
+    if (skipped.length && !skipStale) {
+      throw new Error("One or more selected objects are no longer children of this base. Reload and try again.");
+    }
+    const chosen = skipStale ? all.filter((entry) => entry.row) : all;
+    if (!chosen.length) throw new Error("None of the queued pieces are still children of this base.");
+    for (const entry of chosen) {
+      await tx.query("select dune.permission_set_access_level($1::bigint, $2::smallint)", [entry.actorId, entry.accessLevel]);
+    }
+    return {
+      ok: true,
+      baseId: target,
+      updated: chosen.length,
+      skipped,
+      objects: chosen.map((entry) => ({ actorId: entry.actorId, name: entry.row.name, accessLevel: entry.accessLevel })),
+      message: `${chosen.length} piece${chosen.length === 1 ? "" : "s"} updated. The running map applies this at its next restart.`
+    };
+  });
+}
+
+// Pending base child-access queue. Unlike the refill and delete queues, this
+// one does not exist to dodge an autosave race -- a permission_actor write is
+// durable immediately. It exists because the game server never picks up an
+// access_level change on a running map (relogging does not help, and a
+// pg_notify carrying the same "Map" field permission_set_player_rank uses was
+// live-tested and had no effect), so writing while the map is up leaves the
+// console showing a value the game does not honor. Queuing defers the write
+// to the window where the map is down, which is also the only window where it
+// takes effect, so what the console shows and what the game enforces agree.
+//
+// Diverges from the refill/delete queues in one way: those entries are pure
+// intent (which base), while this one carries a payload (which pieces, to
+// which levels), so re-queuing merges per actorId instead of replacing the
+// whole entry -- two saves touching different pieces must both survive.
+const PENDING_BASE_CHILD_ACCESS_PATH = "runtime/generated/pending-base-child-access.json";
+const MAX_PENDING_BASE_CHILD_ACCESS = 200;
+const MAX_CHILD_ACCESS_QUEUED_UPDATES = 500;
+
+function pendingBaseChildAccessFile(repoRoot) {
+  return resolve(repoRoot || "", PENDING_BASE_CHILD_ACCESS_PATH);
+}
+
+function normalizeQueuedChildAccessUpdates(updates) {
+  if (!Array.isArray(updates)) return [];
+  const merged = new Map();
+  for (const update of updates) {
+    const actorId = Math.floor(Number(update?.actorId));
+    const accessLevel = Math.floor(Number(update?.accessLevel));
+    if (!Number.isInteger(actorId) || actorId < 1) continue;
+    if (!Number.isInteger(accessLevel) || accessLevel < 1 || accessLevel > 5) continue;
+    merged.set(String(actorId), accessLevel);
+  }
+  return [...merged.entries()]
+    .slice(0, MAX_CHILD_ACCESS_QUEUED_UPDATES)
+    .map(([actorId, accessLevel]) => ({ actorId, accessLevel }));
+}
+
+function normalizePendingChildAccess(entry) {
+  const baseId = Math.floor(Number(entry?.baseId));
+  if (!Number.isInteger(baseId) || baseId < 1) return null;
+  const updates = normalizeQueuedChildAccessUpdates(entry?.updates);
+  if (!updates.length) return null;
+  const partitionId = Math.floor(Number(entry?.partitionId));
+  return {
+    baseId,
+    map: String(entry?.map ?? "").slice(0, 120),
+    partitionId: Number.isInteger(partitionId) && partitionId > 0 ? partitionId : 0,
+    queuedAt: typeof entry?.queuedAt === "string" ? entry.queuedAt.slice(0, 40) : "",
+    // Bumped every time a save merges into this entry. queuedAt deliberately
+    // survives a merge (so re-saving cannot reset the age limit), which means
+    // it cannot also serve as the "is this still the payload I flushed?"
+    // check -- without a separate revision, a save landing mid-flush is
+    // indistinguishable from the one being flushed and gets dropped
+    // unapplied. The refill/delete queues have no payload, so they need no
+    // equivalent.
+    revision: clampInt(entry?.revision, 0, 0, Number.MAX_SAFE_INTEGER),
+    attempts: clampInt(entry?.attempts, 0, 0, MAX_REFILL_FLUSH_ATTEMPTS),
+    nextRetryAt: Number.isFinite(Number(entry?.nextRetryAt)) ? Number(entry.nextRetryAt) : 0,
+    lastError: String(entry?.lastError ?? "").slice(0, 300),
+    updates
+  };
+}
+
+// A cheap "is anything waiting?" for the 5s flush tick.
+//
+// Unlike the refill and delete queues, whose entries are pure intent and stay
+// tiny, this file carries a payload -- up to 200 bases x 500 pieces. A queue
+// waiting for its map to go down can sit for days, and parsing megabytes on
+// the event loop every 5 seconds just to read `.length` is real idle cost.
+//
+// Correct by construction rather than by a tuned byte count: writeJsonAtomic
+// pretty-prints with a trailing newline, so an empty queue is three bytes
+// and one real entry is hundreds. Anything comfortably above that floor must
+// hold an entry and short-circuits; anything at or below it is parsed, which
+// is trivial at that size and stays exact if the format ever changes.
+const CHILD_ACCESS_QUEUE_NONEMPTY_BYTES = 64;
+
+export function hasQueuedBaseChildAccess(repoRoot) {
+  const file = pendingBaseChildAccessFile(repoRoot);
+  let size = 0;
+  try {
+    size = statSync(file).size;
+  } catch {
+    return false;
+  }
+  if (size > CHILD_ACCESS_QUEUE_NONEMPTY_BYTES) return true;
+  return listQueuedBaseChildAccess(repoRoot).length > 0;
+}
+
+export function listQueuedBaseChildAccess(repoRoot) {
+  const file = pendingBaseChildAccessFile(repoRoot);
+  if (!existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    return parsed.map(normalizePendingChildAccess).filter((entry) => {
+      if (!entry || seen.has(entry.baseId)) return false;
+      seen.add(entry.baseId);
+      return true;
+    });
+  } catch (error) {
+    console.warn(`Ignoring unreadable pending base child access queue: ${redact(error?.message || "Unexpected error.")}`);
+    return [];
+  }
+}
+
+function writeQueuedBaseChildAccess(repoRoot, entries) {
+  writeJsonAtomic(pendingBaseChildAccessFile(repoRoot), entries);
+  return entries;
+}
+
+// Merges into an existing entry for the same base rather than replacing it,
+// keeping the original queuedAt so a base cannot dodge the age limit by being
+// re-saved. A later save wins per piece.
+export function queueBaseChildAccess(repoRoot, { baseId, map = "", partitionId = 0, updates = [], now = () => new Date() } = {}) {
+  const target = intParam(baseId, "base id", 1);
+  // Same 1-100 cap the immediate path enforces. Without it one confirmed
+  // "SET CHILD ACCESS" would accept five times as many pieces purely because
+  // the base's map happened to be up, and the excess would vanish silently.
+  if (!Array.isArray(updates) || updates.length < 1 || updates.length > 100) {
+    throw new Error("Choose between 1 and 100 pieces to update.");
+  }
+  const incoming = normalizeQueuedChildAccessUpdates(updates);
+  if (!incoming.length) throw new Error("Choose at least one piece to update.");
+  const existing = listQueuedBaseChildAccess(repoRoot);
+  const previous = existing.find((row) => row.baseId === target);
+  const others = existing.filter((row) => row.baseId !== target);
+  if (!previous && others.length >= MAX_PENDING_BASE_CHILD_ACCESS) {
+    throw new Error(`The pending base permission queue already holds ${MAX_PENDING_BASE_CHILD_ACCESS} bases. Restart the affected maps to apply them first.`);
+  }
+  // Refuse rather than truncate: silently dropping the newest pieces from a
+  // merge reports success for changes that will never be applied.
+  const mergedCount = new Set([...(previous?.updates || []), ...incoming].map((update) => update.actorId)).size;
+  if (mergedCount > MAX_CHILD_ACCESS_QUEUED_UPDATES) {
+    throw new Error(`This base already has ${previous?.updates.length || 0} queued pieces; the limit is ${MAX_CHILD_ACCESS_QUEUED_UPDATES}. Restart its map to apply them first.`);
+  }
+  const entry = normalizePendingChildAccess({
+    baseId: target,
+    map,
+    partitionId,
+    queuedAt: previous?.queuedAt || now().toISOString(),
+    revision: (previous?.revision || 0) + 1,
+    updates: [...(previous?.updates || []), ...incoming]
+  });
+  if (!entry) throw new Error("Invalid base id");
+  writeQueuedBaseChildAccess(repoRoot, [...others, entry]);
+  return entry;
+}
+
+export function cancelQueuedBaseChildAccess(repoRoot, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  const entries = listQueuedBaseChildAccess(repoRoot);
+  const remaining = entries.filter((entry) => entry.baseId !== target);
+  if (remaining.length === entries.length) throw new Error("That base has no queued permission changes.");
+  writeQueuedBaseChildAccess(repoRoot, remaining);
+  return { ok: true, baseId: target, pending: remaining.length };
+}
+
+function reconcileQueuedBaseChildAccess(repoRoot, outcomes) {
+  const next = [];
+  for (const entry of listQueuedBaseChildAccess(repoRoot)) {
+    const outcome = outcomes.get(entry.baseId);
+    // revision, not just queuedAt: a save that merged into this entry while it
+    // was being flushed keeps the same queuedAt but bumps the revision, so it
+    // must survive rather than be dropped as "already applied".
+    if (!outcome || outcome.queuedAt !== entry.queuedAt || outcome.revision !== entry.revision) {
+      next.push(entry);
+      continue;
+    }
+    if (outcome.keep) next.push({ ...entry, attempts: outcome.attempts, nextRetryAt: outcome.nextRetryAt, lastError: outcome.lastError });
+  }
+  writeQueuedBaseChildAccess(repoRoot, next);
+  return next;
+}
+
+// Applies every queued permission change whose map is currently down and
+// leaves the rest queued. Same driver and reasoning as flushWaterRefills,
+// except each entry's payload is applied in 100-update batches (the cap
+// setBaseChildAccessLevels enforces) and stale pieces are skipped rather than
+// failing the whole entry.
+export async function flushBaseChildAccess(db, repoRoot, { now = Date.now } = {}) {
+  const pending = listQueuedBaseChildAccess(repoRoot);
+  if (!pending.length) return { flushed: [], pending: 0 };
+  const observed = await observeRefillPartitions(db, { now });
+  if (!observed) return { flushed: [], pending: pending.length, unsupported: true };
+
+  const flushed = [];
+  const outcomes = new Map();
+  const timestamp = now();
+  for (const entry of pending) {
+    const stamp = { queuedAt: entry.queuedAt, revision: entry.revision };
+    const queuedMs = Date.parse(entry.queuedAt);
+    if (Number.isFinite(queuedMs) && timestamp - queuedMs >= pendingRefillMaxAgeMs()) {
+      const message = `Queued for longer than the ${Math.round(pendingRefillMaxAgeMs() / 3600000)}h limit without being applied.`;
+      outcomes.set(entry.baseId, { ...stamp, keep: false });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
+      continue;
+    }
+    // Re-observed per entry, not once for the whole pass: applying an entry is
+    // several round-trips, and a map server that reconnects partway through
+    // would otherwise still be treated as down for every remaining entry --
+    // writing access levels to a running map, which is the one thing this
+    // queue exists to avoid, since the game never picks them up.
+    const fresh = await observeRefillPartitions(db, { now });
+    if (!partitionWriteSafe(fresh || observed, entry.partitionId)) continue;
+    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    try {
+      let updated = 0;
+      const skipped = [];
+      for (let i = 0; i < entry.updates.length; i += 100) {
+        const result = await setBaseChildAccessLevels(db, entry.baseId, entry.updates.slice(i, i + 100), { skipStale: true });
+        updated += result.updated;
+        skipped.push(...result.skipped);
+      }
+      outcomes.set(entry.baseId, { ...stamp, keep: false });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: true, updated, skipped });
+    } catch (error) {
+      const message = String(error?.message || "Unexpected error.").slice(0, 300);
+      const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
+      const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
+      const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
+      outcomes.set(entry.baseId, { ...stamp, keep: !dropped, attempts, nextRetryAt, lastError: message });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, attempts, dropped, error: message });
+    }
+  }
+  const remaining = outcomes.size ? reconcileQueuedBaseChildAccess(repoRoot, outcomes) : pending;
+  return { flushed, pending: remaining.length };
+}
+
+// Mirrors supportsBaseDeleteQueue: without dune.world_partition there is no
+// way to tell a running map from a stopped one, so changes stay immediate.
+export async function supportsBaseChildAccessQueue(db, { baseChildAccess } = {}) {
+  const supported = baseChildAccess !== undefined ? baseChildAccess : await baseChildAccessSupported(db);
+  if (!supported) return false;
+  return tableExists(db, "world_partition");
+}
+
 // System identities stay out of ordinary player search. Prefer the RedBlink
 // Server persona when installed, then fall back to Funcom's reserved GM persona.
 // Both are matched by their stable account/controller/state/pawn tuple rather
 // than their display name: encrypted schemas do not expose a plain name, and a
 // normal character can be named "Server". The legacy name lookup is retained
 // last for installations that created Server before the reserved tuple existed.
-export async function basePermissionSystemCustodian(db) {
+// Shared by bases and vehicles: this resolves a server-wide identity, not a
+// base-scoped one -- there is exactly one reserved Server/GM custodian per
+// battlegroup, the same one Care Packages and MOTD use.
+export async function permissionSystemCustodian(db) {
   const personas = [CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA];
   const sources = [];
   for (const table of ["player_state", "encrypted_player_state"]) {
@@ -3861,6 +4772,20 @@ export async function setBasePermissions(db, baseId, entries, maxPermissionsPerA
   return mutateBasePermissions(db, target, safeMax, async () => desired);
 }
 
+// Pure roster transform shared by the base and vehicle transfer paths: demote
+// whoever currently holds rank 1 to Co-Owner, promote/add the custodian at
+// rank 1, and leave every other entry untouched.
+function systemCustodianRoster(existingRows, custodian) {
+  const roster = existingRows.map((row) => ({
+    playerId: String(row.player_id),
+    rank: Number(row.rank) === PERMISSION_OWNER_RANK ? 2 : Number(row.rank)
+  }));
+  const currentCustodian = roster.find((entry) => entry.playerId === custodian.playerId);
+  if (currentCustodian) currentCustodian.rank = PERMISSION_OWNER_RANK;
+  else roster.push({ playerId: custodian.playerId, rank: PERMISSION_OWNER_RANK });
+  return roster;
+}
+
 export async function transferBaseToSystemCustodian(db, baseId, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
   await requireCapability(await supportsBasePermissionEditing(db),
     "Base permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
@@ -3868,16 +4793,9 @@ export async function transferBaseToSystemCustodian(db, baseId, maxPermissionsPe
   const safeMax = intParam(maxPermissionsPerActor, "maximum permissions per base", 1, 2147483647);
   let custodian;
   const result = await mutateBasePermissions(db, target, safeMax, async (existing, tx) => {
-    custodian = await basePermissionSystemCustodian(tx);
+    custodian = await permissionSystemCustodian(tx);
     if (!custodian.available) throw new Error(custodian.reason);
-    const roster = existing.map((row) => ({
-      playerId: String(row.player_id),
-      rank: Number(row.rank) === PERMISSION_OWNER_RANK ? 2 : Number(row.rank)
-    }));
-    const currentCustodian = roster.find((entry) => entry.playerId === custodian.playerId);
-    if (currentCustodian) currentCustodian.rank = PERMISSION_OWNER_RANK;
-    else roster.push({ playerId: custodian.playerId, rank: PERMISSION_OWNER_RANK });
-    return roster;
+    return systemCustodianRoster(existing, custodian);
   });
   return {
     ...result,
@@ -3932,6 +4850,7 @@ export async function listVehiclePermissions(db, vehicleId) {
   // would fail instead of offering controls that end in an FK error.
   const claimed = await permissionActorClaimed(db, actorId);
   const entries = await listPermissionRoster(db, actorId);
+  const systemCustodian = await permissionSystemCustodian(db);
   return {
     vehicleId: intParam(vehicleId, "vehicle id", 1),
     actorId,
@@ -3939,8 +4858,20 @@ export async function listVehiclePermissions(db, vehicleId) {
     mapNameId,
     claimed,
     unclaimedReason: claimed ? "" : VEHICLE_UNCLAIMED_MESSAGE,
+    systemCustodian,
     entries
   };
+}
+
+async function mutateVehiclePermissions(db, target, safeMax, desiredRoster) {
+  return mutatePermissionRoster(db, {
+    resolveActor: (tx) => vehiclePermissionActor(tx, target),
+    unclaimedMessage: VEHICLE_UNCLAIMED_MESSAGE,
+    notFoundMessage: "That vehicle was not found.",
+    subject: "vehicle",
+    idKey: "vehicleId",
+    idValue: target
+  }, safeMax, desiredRoster);
 }
 
 export async function setVehiclePermissions(db, vehicleId, entries, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
@@ -3952,14 +4883,133 @@ export async function setVehiclePermissions(db, vehicleId, entries, maxPermissio
   // without taking a claim lock. It is normalized again after the lock because
   // the shared mutation path also accepts a roster built from current state.
   const desired = normalizeDesiredPermissions(entries, "vehicle");
-  return mutatePermissionRoster(db, {
-    resolveActor: (tx) => vehiclePermissionActor(tx, target),
-    unclaimedMessage: VEHICLE_UNCLAIMED_MESSAGE,
-    notFoundMessage: "That vehicle was not found.",
-    subject: "vehicle",
-    idKey: "vehicleId",
-    idValue: target
-  }, safeMax, async () => desired);
+  return mutateVehiclePermissions(db, target, safeMax, async () => desired);
+}
+
+export async function transferVehicleToSystemCustodian(db, vehicleId, maxPermissionsPerActor = DEFAULT_MAX_PERMISSIONS_PER_ACTOR) {
+  await requireCapability(await vehiclePermissionsSupported(db),
+    "Vehicle permission editing requires dune.permission_actor_rank, dune.map_names, and the dune.permission_set_player_rank/permission_remove_player_rank functions.");
+  const target = intParam(vehicleId, "vehicle id", 1);
+  const safeMax = intParam(maxPermissionsPerActor, "maximum permissions per vehicle", 1, 2147483647);
+  let custodian;
+  const result = await mutateVehiclePermissions(db, target, safeMax, async (existing, tx) => {
+    custodian = await permissionSystemCustodian(tx);
+    if (!custodian.available) throw new Error(custodian.reason);
+    return systemCustodianRoster(existing, custodian);
+  });
+  return {
+    ...result,
+    systemCustodian: custodian,
+    message: result.reranked === 0 && result.added === 0
+      ? `This vehicle is already owned by the ${custodian.name} system custodian.`
+      : `Ownership was transferred to the ${custodian.name} system custodian. The change applies to the running map immediately.`
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Vehicle deletion
+//
+// Mirrors base deletion (see deleteBaseCompletely and the "Base deletion"
+// queue section below) with one structural simplification: a vehicle IS its
+// own actor (dune.vehicles.id = dune.actors.id), so there is no multi-hop
+// actor enumeration the way baseDeletionActorIds needs for buildings and
+// placeables -- just the one id, plus whatever the game's own declared
+// foreign keys cascade from it.
+//
+// Verified against a real production schema dump (.claude/dune_backup.sql)
+// and confirmed live against a restored copy in a rolled-back transaction:
+// vehicles(id)->actors(id), vehicle_modules(vehicle_id)->vehicles(id),
+// inventories(vehicle_module_id)->vehicle_modules(id),
+// backup_vehicles(vehicle_id)->vehicles(id), and
+// recovered_vehicles(vehicle_id)->vehicles(id) are all ON DELETE CASCADE.
+// permission_actor_destroy still has to run first: markers/player_markers
+// are keyed on marker_hash_id, which has no FK to actors at all -- the same
+// reason deleteBaseCompletely calls it before delete_actors.
+// ---------------------------------------------------------------------------
+
+async function supportsVehicleDelete(db) {
+  for (const table of ["vehicles", "vehicle_modules", "actors"]) {
+    if (!(await tableExists(db, table))) return false;
+  }
+  return await functionExists(db, "dune.permission_actor_destroy(bigint)")
+    && await functionExists(db, "dune.delete_actors(bigint[])");
+}
+
+// Mirrors supportsBaseDeleteQueue: without dune.world_partition there is no
+// way to tell a running map from a stopped one, so the panel hides the queue
+// and deletes stay immediate rather than offering a control that silently
+// risks a live server resurrecting the deleted rows.
+export async function supportsVehicleDeleteQueue(db, { vehicleDelete } = {}) {
+  const supported = vehicleDelete !== undefined ? vehicleDelete : await supportsVehicleDelete(db);
+  if (!supported) return false;
+  return tableExists(db, "world_partition");
+}
+
+// The states Funcom's own delete_actors_and_respawns_on_server (the
+// Coriolis-storm cleanup procedure -- see docs/console/base-backups.md)
+// refuses to delete through: a vehicle mid-overmap-transit, or stashed
+// pending recovery. Transcribed, not invented -- an admin delete should
+// honor the same exclusions the game's own cleanup already does. Gated on
+// the table existing at all so an older schema without dune.actor_state
+// simply skips the guard instead of breaking.
+const VEHICLE_DELETE_BLOCKED_STATES = new Set(["Travel", "VehicleBackup", "VehicleRecovery"]);
+
+async function vehicleBlockedDeleteState(db, actorId) {
+  if (!(await tableExists(db, "actor_state"))) return "";
+  const result = await db.query("select state::text as state from dune.actor_state where actor_id = $1::bigint", [actorId]);
+  const state = String(result.rows[0]?.state || "");
+  return VEHICLE_DELETE_BLOCKED_STATES.has(state) ? state : "";
+}
+
+// Permanently deletes a vehicle and everything on it -- modules, their
+// inventories and items, any backup/recovery record, and its permission
+// roster. A destructive, irreversible operation with the same all-or-nothing
+// guarantee as deleteBaseCompletely, for the same reason: a partial failure
+// here cannot be retried against player-recoverable state. The caller
+// (server.js) owns the mandatory pre-delete safety backup -- this function
+// never shells out to the `dune` CLI.
+//
+// Deliberately does not require the vehicle to be claimed: vehiclePermissionActor
+// (unlike setVehiclePermissions' path) never joins through permission_actor,
+// so an unclaimed junk vehicle resolves and deletes exactly like a claimed
+// one -- arguably the primary use case for this feature.
+export async function deleteVehicleCompletely(db, vehicleId, { allowBlockedState = false } = {}) {
+  await requireCapability(await supportsVehicleDelete(db),
+    "Vehicle deletion requires dune.vehicles, dune.vehicle_modules, dune.actors, and the dune.permission_actor_destroy(bigint)/delete_actors(bigint[]) functions.");
+  const target = intParam(vehicleId, "vehicle id", 1);
+  return db.transaction(async (tx) => {
+    await tx.query("set local search_path to dune, public");
+    // Re-resolved inside the transaction, never trusted from a snapshot
+    // taken when the confirm dialog opened or the delete was queued -- same
+    // discipline deleteBaseCompletely applies to its actor enumeration.
+    const actor = await vehiclePermissionActor(tx, target);
+    const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
+    if (!locked.rowCount) throw new Error("That vehicle was not found.");
+    const blockedState = await vehicleBlockedDeleteState(tx, actor.actorId);
+    if (blockedState && !allowBlockedState) {
+      throw new Error(`This vehicle is currently ${blockedState} and cannot be deleted until that clears. Try again once the vehicle is no longer mid-transit or pending recovery.`);
+    }
+    const modules = await tx.query(
+      "select count(*)::int as n from dune.vehicle_modules where vehicle_id = $1::bigint", [target]);
+    // permission_actor_destroy first: it is the only thing that clears
+    // markers/player_markers, which are keyed on the claim actor id but not
+    // FK-cascaded from actors. Its permission_actor/permission_actor_rank
+    // deletes are redundant with the cascade that follows, but a DELETE
+    // matching zero rows is a harmless no-op -- same as base deletion.
+    await tx.query("select dune.permission_actor_destroy($1::bigint)", [actor.actorId]);
+    // Cascades away vehicles, vehicle_modules, inventories, items,
+    // backup_vehicles, and recovered_vehicles via their declared
+    // ON DELETE CASCADE foreign keys, verified above.
+    await tx.query("select dune.delete_actors($1::bigint[])", [[actor.actorId]]);
+    return {
+      ok: true,
+      vehicleId: target,
+      actorId: actor.actorId,
+      map: actor.map,
+      partitionId: actor.partitionId,
+      deletedModuleCount: modules.rows[0].n
+    };
+  });
 }
 
 const BASE_SORT_COLUMNS = {
@@ -3990,8 +5040,175 @@ const BASE_NAME_SQL = `case
   else 'Unnamed Base'
 end`;
 
-export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true } = {}) {
-  const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
+const LAND_CLAIM_MAX_VERTICAL_LEVEL = 5;
+const LAND_CLAIM_MAX_COORDINATE = 128;
+const LAND_CLAIM_MAX_ADDITIONS = 100;
+
+async function supportsLandClaimEditor(db) {
+  for (const table of ["buildings", "building_instances", "actor_fgl_entities", "actors", "totems", "landclaim_segments"]) {
+    if (!(await tableExists(db, table))) return false;
+  }
+  const [totemColumns, segmentColumns] = await Promise.all([
+    columnsFor(db, "totems"),
+    columnsFor(db, "landclaim_segments")
+  ]);
+  return ["id", "landclaim_vertical_level", "landclaim_original_global_yaw_rotation"].every((column) => totemColumns.has(column))
+    && ["totem_id", "grid_location_x", "grid_location_y"].every((column) => segmentColumns.has(column));
+}
+
+async function resolveBaseTotem(db, baseId, { lock = false } = {}) {
+  const target = intParam(baseId, "base id", 1);
+  const result = await db.query(`
+    select t.id::text as totem_id,
+           coalesce(a.map, '') as map,
+           coalesce(a.partition_id, 0)::int as partition_id,
+           coalesce(t.landclaim_vertical_level, 0)::int as vertical_level,
+           coalesce(t.landclaim_original_global_yaw_rotation, 0)::real as yaw
+    from dune.buildings b
+    join dune.building_instances bi on bi.building_id = b.id
+    join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+    join dune.actors a on a.id = afe.actor_id
+    join dune.totems t on t.id = a.id
+    where b.id = $1
+    order by bi.instance_id
+    limit 1${lock ? "\n    for update of t" : ""}`, [target]);
+  if (!result.rowCount) {
+    const exists = await db.query("select 1 from dune.buildings where id = $1", [target]);
+    if (exists.rowCount) throw new Error(`Base ${target} does not have a resolvable Sub-Fief totem.`);
+    throw new Error(`Base ${target} was not found.`);
+  }
+  return { target, ...result.rows[0] };
+}
+
+async function landClaimState(db, baseId, options = {}) {
+  const totem = await resolveBaseTotem(db, baseId, options);
+  const segmentRows = await db.query(`
+    select grid_location_x::int as x, grid_location_y::int as y, count(*)::int as row_count
+    from dune.landclaim_segments
+    where totem_id = $1::bigint
+    group by grid_location_x, grid_location_y
+    order by grid_location_y, grid_location_x`, [totem.totem_id]);
+  const segments = segmentRows.rows.map((row) => ({
+    x: Number(row.x),
+    y: Number(row.y),
+    rowCount: Number(row.row_count)
+  }));
+  return {
+    baseId: totem.target,
+    totemId: totem.totem_id,
+    map: String(totem.map || ""),
+    partitionId: Number(totem.partition_id || 0),
+    yaw: Number(totem.yaw || 0),
+    verticalLevel: Number(totem.vertical_level || 0),
+    maxVerticalLevel: LAND_CLAIM_MAX_VERTICAL_LEVEL,
+    segments,
+    segmentCount: segments.reduce((total, segment) => total + segment.rowCount, 0),
+    duplicateCoordinates: segments.filter((segment) => segment.rowCount > 1).length
+  };
+}
+
+export async function getBaseLandClaim(db, baseId) {
+  await requireCapability(await supportsLandClaimEditor(db),
+    "Land Claim Editor requires dune.buildings, building_instances, actor_fgl_entities, actors, totems, and landclaim_segments.");
+  return landClaimState(db, baseId);
+}
+
+function normalizeLandClaimAdditions(value) {
+  if (!Array.isArray(value)) throw new Error("Land claim segments must be an array.");
+  if (value.length > LAND_CLAIM_MAX_ADDITIONS) throw new Error(`Add no more than ${LAND_CLAIM_MAX_ADDITIONS} land claim segments at once.`);
+  const unique = new Map();
+  for (const entry of value) {
+    const x = Number(entry?.x);
+    const y = Number(entry?.y);
+    if (!Number.isInteger(x) || !Number.isInteger(y)
+      || Math.abs(x) > LAND_CLAIM_MAX_COORDINATE || Math.abs(y) > LAND_CLAIM_MAX_COORDINATE) {
+      throw new Error(`Land claim coordinates must be whole numbers between -${LAND_CLAIM_MAX_COORDINATE} and ${LAND_CLAIM_MAX_COORDINATE}.`);
+    }
+    if (x === 0 && y === 0) throw new Error("The Sub-Fief already occupies grid coordinate 0, 0.");
+    const key = `${x},${y}`;
+    if (unique.has(key)) throw new Error(`Land claim coordinate ${key} was supplied more than once.`);
+    unique.set(key, { x, y });
+  }
+  return [...unique.values()];
+}
+
+function reachableLandClaimCells(cells) {
+  const reachable = new Set(["0,0"]);
+  const queue = [[0, 0]];
+  while (queue.length) {
+    const [x, y] = queue.shift();
+    for (const [nextX, nextY] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) {
+      const key = `${nextX},${nextY}`;
+      if (cells.has(key) && !reachable.has(key)) {
+        reachable.add(key);
+        queue.push([nextX, nextY]);
+      }
+    }
+  }
+  return reachable;
+}
+
+export async function updateBaseLandClaim(db, baseId, { addSegments = [], verticalLevel } = {}) {
+  await requireCapability(await supportsLandClaimEditor(db),
+    "Land Claim Editor requires dune.buildings, building_instances, actor_fgl_entities, actors, totems, and landclaim_segments.");
+  const target = intParam(baseId, "base id", 1);
+  const additions = normalizeLandClaimAdditions(addSegments);
+  const hasVerticalLevel = verticalLevel !== undefined && verticalLevel !== null;
+  const normalizedVerticalLevel = hasVerticalLevel ? Number(verticalLevel) : null;
+  if (hasVerticalLevel && (!Number.isInteger(normalizedVerticalLevel)
+    || normalizedVerticalLevel < 0 || normalizedVerticalLevel > LAND_CLAIM_MAX_VERTICAL_LEVEL)) {
+    throw new Error(`Vertical land claim level must be between 0 and ${LAND_CLAIM_MAX_VERTICAL_LEVEL}.`);
+  }
+  if (!additions.length && !hasVerticalLevel) throw new Error("No land claim changes were requested.");
+
+  return db.transaction(async (tx) => {
+    const current = await landClaimState(tx, target, { lock: true });
+    if (current.duplicateCoordinates) {
+      throw new Error("This land claim contains duplicate database rows. Repair those duplicates before using the editor.");
+    }
+    if (hasVerticalLevel && normalizedVerticalLevel < current.verticalLevel) {
+      throw new Error("Land Claim Editor is expansion-only and cannot lower the existing vertical level.");
+    }
+    if (!additions.length && (!hasVerticalLevel || normalizedVerticalLevel === current.verticalLevel)) {
+      throw new Error("The requested land claim already matches the database. No changes were made.");
+    }
+    const occupied = new Set(["0,0", ...current.segments.map((segment) => `${segment.x},${segment.y}`)]);
+    for (const segment of additions) {
+      const key = `${segment.x},${segment.y}`;
+      if (occupied.has(key)) throw new Error(`Land claim coordinate ${key} is already occupied.`);
+      occupied.add(key);
+    }
+    const reachable = reachableLandClaimCells(occupied);
+    const disconnected = additions.find((segment) => !reachable.has(`${segment.x},${segment.y}`));
+    if (disconnected) {
+      throw new Error(`Land claim coordinate ${disconnected.x},${disconnected.y} is disconnected. New segments must connect edge-to-edge to the Sub-Fief or its existing claim.`);
+    }
+    if (additions.length) {
+      await tx.query(`
+        insert into dune.landclaim_segments (totem_id, grid_location_x, grid_location_y)
+        select $1::bigint, x, y
+        from unnest($2::bigint[], $3::bigint[]) as requested(x, y)`, [
+        current.totemId,
+        additions.map((segment) => segment.x),
+        additions.map((segment) => segment.y)
+      ]);
+    }
+    if (hasVerticalLevel && normalizedVerticalLevel !== current.verticalLevel) {
+      await tx.query("update dune.totems set landclaim_vertical_level = $2 where id = $1::bigint", [current.totemId, normalizedVerticalLevel]);
+    }
+    const updated = await landClaimState(tx, target);
+    return {
+      ok: true,
+      added: additions.length,
+      verticalChanged: hasVerticalLevel && normalizedVerticalLevel !== current.verticalLevel,
+      ...updated
+    };
+  });
+}
+
+export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true, playerId = "" } = {}) {
+  const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors",
+    ...(playerId ? ["permission_actor", "permission_actor_rank", "player_state"] : [])];
   // One round-trip each and none of them depends on another, so probe them
   // together rather than five times in series before any real work starts.
   const [required, hasWorldPartition, hasBaseBackups] = await Promise.all([
@@ -4000,8 +5217,9 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     tableExists(db, "base_backup_linked_actors")
   ]);
   if (required.some((exists) => !exists)) {
-    return { ...unsupported("bases", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0 };
+    return { ...unsupported("bases", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalBases: 0, totalOwned: 0, totalShared: 0, totalPieces: 0, totalPlaceables: 0 };
   }
+  const player = playerId ? await resolvePlayerMutationTarget(db, playerId) : null;
   // The base-backup tool ("pick up base") does not move or delete any of a
   // base's rows -- it only deletes permission_actor/permission_actor_rank
   // (unclaiming it) and registers its actor ids in base_backup_linked_actors
@@ -4015,6 +5233,13 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   // (unconfirmed either way). A base satisfying both is unambiguous.
   const backupExclusion = hasBaseBackups
     ? "and not (pa.actor_id is null and exists (select 1 from dune.base_backup_linked_actors bbla where bbla.actor_id = a.id))"
+    : "";
+  // Player -> Bases uses the permission actor as its source of truth. Rank 1
+  // is ownership; every other assigned rank is shared access. Filtering here
+  // keeps the paged rows and aggregate totals on exactly the same scope and
+  // avoids trusting a character name, which is neither stable nor unique.
+  const playerScope = player
+    ? "and exists (select 1 from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = a.id and viewer_par.player_id = $1)"
     : "";
   // What counts as a base, defined once. The paged query (`matched`) and the
   // totals query (`valid_claims`) run in separate round trips but must agree
@@ -4033,6 +5258,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
         left join dune.permission_actor pa on pa.actor_id = a.id
         ${extraJoin}
         where a.transform is not null
+        ${playerScope}
         ${backupExclusion}`;
   // A base's own a.map is the game's map name ("HaggaBasin"), which cannot tell
   // two instances of it apart. world_partition resolves the partition to the
@@ -4045,7 +5271,11 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const partitionJoin = hasWorldPartition
     ? "left join dune.world_partition wp on wp.partition_id = p.partition_id"
     : "";
-  const safePageSize = intParam(pageSize, "pageSize", 1, 200);
+  // The Player -> Bases tab is intentionally unpaginated: one player's
+  // permission roster is small and splitting it into 50-row pages adds more UI
+  // than value. Keep the normal admin list capped at 200, while allowing the
+  // player-scoped endpoint to fetch its complete practical set in one request.
+  const safePageSize = intParam(pageSize, "pageSize", 1, player ? 5000 : 200);
   const safePage = intParam(page, "page", 0);
   const offset = safePage * safePageSize;
   const safeSortColumn = Object.hasOwn(BASE_SORT_COLUMNS, sortColumn) ? sortColumn : "name";
@@ -4058,11 +5288,19 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   // searching, defer it to the final SELECT so it only runs for the page being displayed.
   const searching = Boolean(q);
   const resolveOwnerBeforePaging = searching || sortSpec.owner;
-  const values = [];
+  const values = player ? [player.controllerId] : [];
   let having = "";
   if (searching) {
-    values.push(`%${q}%`);
-    having = `having (${BASE_NAME_SQL}) ilike $${values.length} or (${BASE_TYPE_SQL}) ilike $${values.length} or coalesce(owner.character_name, '') ilike $${values.length}`;
+    const query = String(q).trim();
+    values.push(`%${query}%`);
+    const fuzzySearchParameter = values.length;
+    const exactBaseId = /^\d+$/.test(query) ? Number(query) : null;
+    let exactIdCondition = "";
+    if (Number.isSafeInteger(exactBaseId) && exactBaseId > 0) {
+      values.push(exactBaseId);
+      exactIdCondition = ` or min(b.id) = $${values.length}`;
+    }
+    having = `having (${BASE_NAME_SQL}) ilike $${fuzzySearchParameter} or (${BASE_TYPE_SQL}) ilike $${fuzzySearchParameter} or coalesce(owner.character_name, '') ilike $${fuzzySearchParameter}${exactIdCondition}`;
   }
   values.push(safePageSize, offset);
   const limitParamIndex = values.length - 1;
@@ -4082,6 +5320,9 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const matchedGroupByOwner = resolveOwnerBeforePaging ? "owner.character_name, " : "";
 
   const finalOwnerSelect = resolveOwnerBeforePaging ? "p.owner_name," : "coalesce(owner.character_name, '') as owner_name,";
+  const viewerRankSelect = player
+    ? `(select min(viewer_par.rank)::int from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = p.actor_id and viewer_par.player_id = $1) as viewer_rank,`
+    : "null::int as viewer_rank,";
   const finalOwnerJoin = resolveOwnerBeforePaging ? "" : `
       left join lateral (
         select ps.character_name
@@ -4135,6 +5376,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
              p.name,
              p.base_type,
              ${finalOwnerSelect}
+             ${viewerRankSelect}
              p.map,
              p.partition_id,
              ${partitionSelect}
@@ -4161,12 +5403,15 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
 
     const totalsResult = await db.query(`
       with valid_claims as (
-        select distinct a.id as actor_id
+        select distinct a.id as actor_id,
+               ${player ? `(select min(viewer_par.rank)::int from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = a.id and viewer_par.player_id = $1) as viewer_rank` : "null::int as viewer_rank"}
         ${baseCandidateSource()}
       )
       select (select count(*) from valid_claims)::int as total_bases,
+             (select count(*) from valid_claims where viewer_rank = 1)::int as total_owned,
+             (select count(*) from valid_claims where viewer_rank is not null and viewer_rank <> 1)::int as total_shared,
              (select count(*) from dune.building_instances bi join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_pieces,
-             (select count(distinct pl.id) from dune.placeables pl join dune.actor_fgl_entities afe on afe.entity_id = pl.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_placeables`);
+             (select count(distinct pl.id) from dune.placeables pl join dune.actor_fgl_entities afe on afe.entity_id = pl.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_placeables`, player ? [player.controllerId] : []);
 
     // Callers that already resolve generator fuel themselves (the Discord
     // player portal) opt out so the CTE does not run twice per request.
@@ -4197,30 +5442,35 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     // columns the generator capability check requires, so reusing that check
     // would wrongly hide Refill Water on a schema that has everything water
     // actually needs.
-    const [generatorRefill, basePermissions, waterRefill, baseDelete] = await Promise.all([
+    const [generatorRefill, basePermissions, waterRefill, baseDelete, baseChildAccess] = await Promise.all([
       supportsGeneratorRefill(db).catch(() => false),
       supportsBasePermissionEditing(db).catch(() => false),
       supportsWaterRefill(db).catch(() => false),
-      supportsBaseDelete(db).catch(() => false)
+      supportsBaseDelete(db).catch(() => false),
+      baseChildAccessSupported(db).catch(() => false)
     ]);
     // Without world_partition the console cannot tell a running map from a
     // stopped one, so the panel hides the queue entirely and refills/deletes
     // stay immediate. Each check reuses the flag just computed above instead
     // of re-deriving it, and all run concurrently for the same reason as above.
-    const [generatorRefillQueue, waterRefillQueue, baseDeleteQueue] = await Promise.all([
+    const [generatorRefillQueue, waterRefillQueue, baseDeleteQueue, baseChildAccessQueue] = await Promise.all([
       generatorRefill ? supportsGeneratorRefillQueue(db, { generatorRefill }).catch(() => false) : Promise.resolve(false),
       waterRefill ? supportsWaterRefillQueue(db, { waterRefill }).catch(() => false) : Promise.resolve(false),
-      baseDelete ? supportsBaseDeleteQueue(db, { baseDelete }).catch(() => false) : Promise.resolve(false)
+      baseDelete ? supportsBaseDeleteQueue(db, { baseDelete }).catch(() => false) : Promise.resolve(false),
+      baseChildAccess ? supportsBaseChildAccessQueue(db, { baseChildAccess }).catch(() => false) : Promise.resolve(false)
     ]);
 
     return {
-      capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions, waterRefill, waterRefillQueue, baseDelete, baseDeleteQueue },
+      capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions, waterRefill, waterRefillQueue, baseDelete, baseDeleteQueue, baseChildAccess, baseChildAccessQueue },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalBases: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_bases) : 0,
+      totalOwned: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_owned || 0) : 0,
+      totalShared: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_shared || 0) : 0,
       totalPieces: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_pieces) : 0,
       totalPlaceables: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_placeables) : 0,
-      rows: result.rows.map(({ total_count, sort_position, ...row }) => ({
+      rows: result.rows.map(({ total_count, sort_position, viewer_rank, ...row }) => ({
         ...row,
+        ...(player ? { relationship: permissionRankLabel(Number(viewer_rank)) } : {}),
         partition_id: Number(row.partition_id || 0),
         partitionMap: String(row.partition_map || ""),
         dimensionIndex: Number(row.dimension_index || 0),
@@ -4247,7 +5497,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       }))
     };
   } catch (error) {
-    return { capabilities: { bases: false, generatorRefill: false }, rows: [], totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0, reason: `Base list query is unsupported by this schema: ${error.message}` };
+    return { capabilities: { bases: false, generatorRefill: false }, rows: [], totalCount: 0, totalBases: 0, totalOwned: 0, totalShared: 0, totalPieces: 0, totalPlaceables: 0, reason: `Base list query is unsupported by this schema: ${error.message}` };
   }
 }
 
@@ -4680,6 +5930,394 @@ export async function repairFactionReputation(db, id, journeyTagsData = {}) {
   });
 }
 
+// Landsraad contracts are recurring journey trees, so a broad "reset all"
+// repair would be destructive: it could erase healthy progress and each tree
+// has its own initial reveal state. Keep repairs as explicit, evidence-backed
+// recipes. New corruption shapes can be added here only after their healthy
+// starting state has been verified against real game data.
+const LANDSRAAD_QUEST_REPAIR_RECIPES = Object.freeze([
+  Object.freeze({
+    id: "syndicate-assassination-completed-available",
+    name: "Assassination",
+    rootId: "DA_LDR_Syndicate_Assassination_1",
+    nodeIds: Object.freeze([
+      "DA_LDR_Syndicate_Assassination_1",
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_1",
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_2",
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_3",
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_4",
+      "DA_LDR_Syndicate_Assassination_1.TravelTo"
+    ]),
+    initiallyRevealedNodeIds: Object.freeze([
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_1",
+      "DA_LDR_Syndicate_Assassination_1.TravelTo"
+    ])
+  })
+]);
+
+function jsonStateIsTrue(value) {
+  return value === true || value === "true";
+}
+
+function landsraadQuestRepairMatches(rows, recipe) {
+  if (rows.length !== recipe.nodeIds.length) return false;
+  const byId = new Map(rows.map((row) => [String(row.story_node_id || ""), row]));
+  if (recipe.nodeIds.some((nodeId) => !byId.has(nodeId))) return false;
+  const root = byId.get(recipe.rootId);
+  const metadata = root?.metadata_state && typeof root.metadata_state === "object" ? root.metadata_state : {};
+  return jsonStateIsTrue(root?.complete_condition_state)
+    && jsonStateIsTrue(root?.reveal_condition_state)
+    && String(metadata.IsAvailable ?? "") === "1"
+    && recipe.nodeIds.every((nodeId) => jsonStateIsTrue(byId.get(nodeId)?.complete_condition_state));
+}
+
+async function requireLandsraadQuestRepairCapability(db) {
+  const hasJourney = await tableExists(db, "journey_story_node");
+  const hasCooldown = await tableExists(db, "journey_story_node_cooldown");
+  const journeyColumns = hasJourney ? await columnsFor(db, "journey_story_node") : new Set();
+  const cooldownColumns = hasCooldown ? await columnsFor(db, "journey_story_node_cooldown") : new Set();
+  const supported = ["character_id", "story_node_id", "complete_condition_state", "reveal_condition_state", "fail_condition_state", "metadata_state", "has_pending_reward"]
+    .every((column) => journeyColumns.has(column))
+    && ["character_id", "story_node_id", "time_to_expire"].every((column) => cooldownColumns.has(column));
+  await requireCapability(supported,
+    "Landsraad quest repair requires dune.journey_story_node and dune.journey_story_node_cooldown.");
+}
+
+async function landsraadQuestRepairRows(db, characterId, { lock = false } = {}) {
+  const nodeIds = LANDSRAAD_QUEST_REPAIR_RECIPES.flatMap((recipe) => recipe.nodeIds);
+  const result = await db.query(`
+    select story_node_id, complete_condition_state, reveal_condition_state,
+           fail_condition_state, metadata_state, has_pending_reward
+    from dune.journey_story_node
+    where character_id = $1 and story_node_id = any($2::text[])
+    ${lock ? "for update" : ""}`, [characterId, nodeIds]);
+  return result.rows || [];
+}
+
+async function landsraadQuestRepairCooldowns(db, characterId, { lock = false } = {}) {
+  const rootIds = LANDSRAAD_QUEST_REPAIR_RECIPES.map((recipe) => recipe.rootId);
+  const result = await db.query(`
+    select story_node_id, time_to_expire
+    from dune.journey_story_node_cooldown
+    where character_id = $1 and story_node_id = any($2::text[])
+    ${lock ? "for update" : ""}`, [characterId, rootIds]);
+  return result.rows || [];
+}
+
+function cooldownIsActive(value, now = Date.now()) {
+  if (value == null || value === "") return false;
+  const expiresAt = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  // An unreadable cooldown is not proof that it expired. Fail closed instead
+  // of turning a legitimate current cooldown into a repeatable contract.
+  return !Number.isFinite(expiresAt) || expiresAt > now;
+}
+
+function matchingLandsraadQuestRepairs(rows, cooldownRows, now = Date.now()) {
+  const cooldownByRoot = new Map(cooldownRows.map((row) => [String(row.story_node_id || ""), row.time_to_expire]));
+  return LANDSRAAD_QUEST_REPAIR_RECIPES
+    .filter((recipe) => landsraadQuestRepairMatches(
+      rows.filter((row) => recipe.nodeIds.includes(String(row.story_node_id || ""))), recipe)
+      && !cooldownIsActive(cooldownByRoot.get(recipe.rootId), now))
+    .map((recipe) => ({ id: recipe.id, name: recipe.name, rootId: recipe.rootId }));
+}
+
+export async function inspectLandsraadQuestRepairs(db, id) {
+  await requireLandsraadQuestRepairCapability(db);
+  const player = await resolvePlayerMutationTarget(db, id);
+  requireOfflinePlayer(player, "Landsraad quest repair");
+  const [rows, cooldowns] = await Promise.all([
+    landsraadQuestRepairRows(db, player.playerStateId),
+    landsraadQuestRepairCooldowns(db, player.playerStateId)
+  ]);
+  const repairs = matchingLandsraadQuestRepairs(rows, cooldowns);
+  return {
+    ok: true,
+    player,
+    repairs,
+    repairCount: repairs.length,
+    message: repairs.length
+      ? `${repairs.length} known Landsraad quest problem${repairs.length === 1 ? " was" : "s were"} detected.`
+      : "No known Landsraad quest problems were found."
+  };
+}
+
+export async function repairLandsraadQuests(db, id) {
+  await requireLandsraadQuestRepairCapability(db);
+  return db.transaction(async (tx) => {
+    const player = await resolvePlayerMutationTarget(tx, id);
+    // Lock the player's authoritative status row and re-check it inside the
+    // same transaction that changes journey data. This closes the gap between
+    // the route's preflight/backup and the actual write if the player begins
+    // logging in while the backup is running.
+    const status = await tx.query(`
+      select online_status::text as online_status
+      from dune.player_state
+      where id = $1
+      for update`, [player.playerStateId]);
+    if (!status.rowCount) throw playerNotFoundError();
+    requireOfflinePlayer({ ...player, onlineStatus: status.rows[0].online_status }, "Landsraad quest repair");
+
+    const rows = await landsraadQuestRepairRows(tx, player.playerStateId, { lock: true });
+    const cooldowns = await landsraadQuestRepairCooldowns(tx, player.playerStateId, { lock: true });
+    const matches = matchingLandsraadQuestRepairs(rows, cooldowns);
+    if (!matches.length) {
+      return { ok: true, player, repairs: [], repairCount: 0, repairedNodes: 0, removedCooldowns: 0,
+        message: "No known Landsraad quest problems were found." };
+    }
+
+    let repairedNodes = 0;
+    let removedCooldowns = 0;
+    const repairs = [];
+    for (const match of matches) {
+      const recipe = LANDSRAAD_QUEST_REPAIR_RECIPES.find((candidate) => candidate.id === match.id);
+      if (!recipe) continue;
+      const updated = await tx.query(`
+        update dune.journey_story_node
+        set complete_condition_state = '{}'::jsonb,
+            reveal_condition_state = case
+              when story_node_id = any($3::text[]) then 'true'::jsonb
+              else '{}'::jsonb
+            end,
+            has_pending_reward = false,
+            fail_condition_state = '{}'::jsonb,
+            metadata_state = case
+              when story_node_id = $2 then metadata_state - 'House'
+              else metadata_state
+            end
+        where character_id = $1 and story_node_id = any($4::text[])`, [
+        player.playerStateId,
+        recipe.rootId,
+        recipe.initiallyRevealedNodeIds,
+        recipe.nodeIds
+      ]);
+      if (Number(updated.rowCount || 0) !== recipe.nodeIds.length) {
+        throw new Error(`${recipe.name} changed while the repair was running. No Landsraad changes were saved.`);
+      }
+      const cooldown = await tx.query(`
+        delete from dune.journey_story_node_cooldown
+        where character_id = $1 and story_node_id = $2`, [player.playerStateId, recipe.rootId]);
+      repairedNodes += Number(updated.rowCount || 0);
+      removedCooldowns += Number(cooldown.rowCount || 0);
+      repairs.push(match);
+    }
+
+    return {
+      ok: true,
+      player,
+      repairs,
+      repairCount: repairs.length,
+      repairedNodes,
+      removedCooldowns,
+      message: `Repaired ${repairs.map((repair) => repair.name).join(", ")} Landsraad quest state. The player can log in now.`
+    };
+  });
+}
+
+async function requireCharacterRecoveryCapability(db) {
+  for (const table of ["encrypted_player_state", "actors", "inventories", "items", "world_partition", "account_removal_log"]) {
+    await requireCapability(await tableExists(db, table), `Deleted-character recovery requires dune.${table}.`);
+  }
+  await requireCapability(
+    await functionExists(db, "dune.decrypt_user_data(bytea)"),
+    "Deleted-character recovery requires dune.decrypt_user_data(bytea)."
+  );
+}
+
+function shapeCharacterRecoveryCandidate(row) {
+  return {
+    characterStateId: String(row.character_state_id),
+    characterName: String(row.character_name || "Unknown Character"),
+    lastAvatarActivity: row.last_avatar_activity || null,
+    lastLoginTime: row.last_login_time || null,
+    deletedAt: row.deleted_at || null,
+    controllerId: String(row.player_controller_id),
+    pawnId: String(row.player_pawn_id),
+    playerStateActorId: String(row.player_state_actor_id),
+    map: String(row.map || ""),
+    partitionId: String(row.partition_id || ""),
+    sietch: String(row.sietch || ""),
+    inventoryCount: Number(row.inventory_count || 0),
+    itemCount: Number(row.item_count || 0),
+    transferCount: Number(row.transfer_count || 0),
+    removalReason: String(row.removal_reason || ""),
+    removalEventTime: row.removal_event_time || null,
+    replacementDetected: row.replacement_detected === true,
+    recoverable: row.recoverable === true
+  };
+}
+
+async function characterRecoveryCandidates(db, accountId, { lock = false } = {}) {
+  const result = await db.query(`
+    select eps.id::text as character_state_id,
+           coalesce(dune.decrypt_user_data(eps.encrypted_character_name), '') as character_name,
+           eps.last_avatar_activity,
+           eps.last_login_time,
+           eps.last_character_state_change as deleted_at,
+           eps.player_controller_id::text,
+           eps.player_pawn_id::text,
+           eps.player_state_id::text as player_state_actor_id,
+           eps.transfer_count,
+           coalesce(pawn.map, '') as map,
+           coalesce(pawn.partition_id, 0)::text as partition_id,
+           coalesce(wp.label, '') as sietch,
+           coalesce(removal.reason, '') as removal_reason,
+           removal.event_time as removal_event_time,
+           (lower(coalesce(removal.reason, '')) = 'new char in fls') as replacement_detected,
+           (select count(*)::int from dune.inventories inv where inv.actor_id = eps.player_pawn_id) as inventory_count,
+           (select count(*)::int
+              from dune.inventories inv
+              join dune.items item on item.inventory_id = inv.id
+             where inv.actor_id = eps.player_pawn_id) as item_count,
+           (controller.id is not null
+             and pawn.id is not null
+             and state_actor.id is not null
+             and wp.partition_id is not null
+             and wp.map = 'Survival_1'
+             and lower(coalesce(removal.reason, '')) = 'new char in fls') as recoverable
+    from dune.encrypted_player_state eps
+    left join dune.actors controller on controller.id = eps.player_controller_id
+    left join dune.actors pawn on pawn.id = eps.player_pawn_id
+    left join dune.actors state_actor on state_actor.id = eps.player_state_id
+    left join dune.world_partition wp on wp.partition_id = pawn.partition_id
+    left join lateral (
+      select log.reason, log.event_time
+      from dune.account_removal_log log
+      where log.account_id = eps.account_id
+        and log.event_time between eps.last_character_state_change - interval '5 seconds'
+                               and eps.last_character_state_change + interval '5 seconds'
+      order by abs(extract(epoch from (log.event_time - eps.last_character_state_change))), log.event_time desc
+      limit 1
+    ) removal on true
+    where eps.account_id = $1::bigint
+      and eps.character_state::text = 'Deleted'
+    order by (lower(coalesce(removal.reason, '')) = 'new char in fls') desc,
+             eps.last_character_state_change desc nulls last, eps.id desc
+    ${lock ? "for update of eps" : ""}`, [accountId]);
+  return result.rows.map(shapeCharacterRecoveryCandidate);
+}
+
+export async function inspectDeletedCharacterRecovery(db, id) {
+  await requireCharacterRecoveryCapability(db);
+  const player = await resolvePlayerMutationTarget(db, id);
+  const activeResult = await db.query(`
+    select eps.id::text as character_state_id,
+           coalesce(dune.decrypt_user_data(eps.encrypted_character_name), '') as character_name,
+           eps.player_pawn_id::text as pawn_id,
+           eps.transfer_count,
+           (select count(*)::int
+              from dune.inventories inv
+              join dune.items item on item.inventory_id = inv.id
+             where inv.actor_id = eps.player_pawn_id) as item_count
+    from dune.encrypted_player_state eps
+    where eps.id = $1::bigint and eps.account_id = $2::bigint
+      and eps.character_state::text = 'Active'`, [player.playerStateId, player.accountId]);
+  if (!activeResult.rowCount) throw playerNotFoundError();
+  const active = activeResult.rows[0];
+  const candidates = await characterRecoveryCandidates(db, player.accountId);
+  const recoverableCandidates = candidates.filter((candidate) => candidate.recoverable);
+  return {
+    ok: true,
+    player,
+    online: playerOnline(player),
+    active: {
+      characterStateId: String(active.character_state_id),
+      characterName: String(active.character_name || "Unknown Character"),
+      pawnId: String(active.pawn_id),
+      itemCount: Number(active.item_count || 0),
+      transferCount: Number(active.transfer_count || 0)
+    },
+    candidates,
+    suggestedCandidateId: recoverableCandidates[0]?.characterStateId || "",
+    canRecover: !playerOnline(player) && recoverableCandidates.length > 0,
+    message: recoverableCandidates.length
+      ? `${recoverableCandidates.length} recoverable deleted character state${recoverableCandidates.length === 1 ? " was" : "s were"} found.`
+      : "No recoverable deleted character states were found."
+  };
+}
+
+export async function recoverDeletedCharacter(db, id, candidateId) {
+  await requireCharacterRecoveryCapability(db);
+  const requestedCandidateId = bigintParam(candidateId, "deleted character state id");
+  return db.transaction(async (tx) => {
+    const player = await resolvePlayerMutationTarget(tx, id);
+    const lockedActive = await tx.query(`
+      select eps.*,
+             dune.decrypt_user_data(eps.encrypted_character_name) as character_name
+      from dune.encrypted_player_state eps
+      where eps.id = $1::bigint and eps.account_id = $2::bigint
+        and eps.character_state::text = 'Active'
+      for update`, [player.playerStateId, player.accountId]);
+    if (!lockedActive.rowCount) throw new Error("The active character changed before recovery began. Reload Player Admin and try again.");
+    const active = lockedActive.rows[0];
+    requireOfflinePlayer({ ...player, onlineStatus: active.online_status }, "Deleted-character recovery");
+
+    const candidates = await characterRecoveryCandidates(tx, player.accountId, { lock: true });
+    const candidate = candidates.find((row) => row.characterStateId === requestedCandidateId);
+    if (!candidate) throw new Error("The selected deleted character state no longer exists. Reload Player Admin and try again.");
+    if (!candidate.recoverable) throw new Error("The selected character cannot be recovered because its replacement event, original actors, or Survival partition could not be verified.");
+
+    const deactivated = await tx.query(`
+      update dune.encrypted_player_state
+         set character_state = 'Deleted',
+             online_status = 'Offline',
+             reconnect_grace_period_end = null,
+             last_character_state_change = now()
+       where id = $1::bigint and account_id = $2::bigint
+         and character_state::text = 'Active' and online_status::text = 'Offline'`, [active.id, player.accountId]);
+    if (deactivated.rowCount !== 1) throw new Error("The player started logging in while recovery was running. No character changes were saved.");
+
+    const restored = await tx.query(`
+      update dune.encrypted_player_state target
+         set encrypted_character_name = current_state.encrypted_character_name,
+             character_state = 'Active',
+             online_status = 'Offline',
+             reconnect_grace_period_end = null,
+             is_coriolis_processed = current_state.is_coriolis_processed,
+             last_login_time = current_state.last_login_time,
+             last_character_state_change = now(),
+             transfer_count = current_state.transfer_count
+        from dune.encrypted_player_state current_state
+       where target.id = $1::bigint and target.account_id = $2::bigint
+         and target.character_state::text = 'Deleted'
+         and current_state.id = $3::bigint and current_state.account_id = target.account_id
+         and current_state.character_state::text = 'Deleted'
+      returning target.id::text as character_state_id,
+                dune.decrypt_user_data(target.encrypted_character_name) as character_name,
+                target.player_controller_id::text,
+                target.player_pawn_id::text,
+                target.player_state_id::text as player_state_actor_id`, [requestedCandidateId, player.accountId, active.id]);
+    if (restored.rowCount !== 1) throw new Error("The selected character changed while recovery was running. No character changes were saved.");
+
+    const verification = await tx.query(`
+      select count(*)::int as active_count,
+             min(id)::text as active_id
+      from dune.encrypted_player_state
+      where account_id = $1::bigint and character_state::text = 'Active'`, [player.accountId]);
+    if (Number(verification.rows[0]?.active_count || 0) !== 1 || String(verification.rows[0]?.active_id || "") !== requestedCandidateId) {
+      throw new Error("Recovery did not produce exactly one active character. No character changes were saved.");
+    }
+
+    const row = restored.rows[0];
+    return {
+      ok: true,
+      accountId: String(player.accountId),
+      activeCharacterStateId: String(row.character_state_id),
+      currentCharacterName: String(row.character_name || active.character_name || "Unknown Character"),
+      recoveredFromName: candidate.characterName,
+      replacedCharacterStateId: String(active.id),
+      controllerId: String(row.player_controller_id),
+      pawnId: String(row.player_pawn_id),
+      playerStateActorId: String(row.player_state_actor_id),
+      itemCount: candidate.itemCount,
+      inventoryCount: candidate.inventoryCount,
+      map: candidate.map,
+      partitionId: candidate.partitionId,
+      sietch: candidate.sietch,
+      message: `${candidate.characterName}'s saved character data was recovered with ${candidate.itemCount} item${candidate.itemCount === 1 ? "" : "s"}. The current Funcom character name remains ${String(row.character_name || active.character_name || "unchanged")}.`
+    };
+  });
+}
+
 const PLAYER_ASSIGNABLE_FACTIONS = Object.freeze({
   1: "Atreides",
   2: "Harkonnen",
@@ -5030,13 +6668,26 @@ export async function playerResearchItems(db, id) {
     )
     select recipe_id from player_recipes`, [player.actorId]);
   const unlockedRecipes = new Set(playerRecipes.rows.map((row) => String(row.recipe_id || "")).filter(Boolean));
+  const progressionColumns = await tableExists(db, "building_progression") ? await columnsFor(db, "building_progression") : new Set();
+  const buildingProgressionSupported = ["character_id", "learned_building_sets"].every((column) => progressionColumns.has(column));
+  const progression = buildingProgressionSupported && player.playerStateId ? await db.query(`
+    select coalesce(learned_building_sets, '{}'::text[]) as learned_building_sets
+    from dune.building_progression
+    where character_id = $1
+    limit 1`, [player.playerStateId]) : { rows: [] };
+  const learnedBuildingSets = new Set((progression.rows[0]?.learned_building_sets || []).map(String).filter(Boolean));
   return {
     capabilities: { researchItems: true },
     player,
     rows: result.rows.map((row) => {
-      const recipeId = linkedResearchRecipeId(row.item_key);
+      const unlock = linkedResearchUnlock(row.item_key);
+      const recipeId = unlock.kind === "recipe" ? unlock.id : "";
       const researchPurchased = row.unlocked_state === "Purchased";
-      const recipeUnlocked = !recipeId || unlockedRecipes.has(recipeId);
+      const unlockMaterialized = unlock.kind === "building"
+        ? buildingProgressionSupported && learnedBuildingSets.has(unlock.id)
+        : unlock.kind === "recipe"
+          ? unlockedRecipes.has(unlock.id)
+          : true;
       return {
         itemKey: row.item_key,
         displayName: researchDisplayName(row.item_key),
@@ -5046,11 +6697,15 @@ export async function playerResearchItems(db, id) {
         unlockedState: row.unlocked_state || "Unknown",
         isNew: Boolean(row.is_new),
         recipeId,
-        recipeUnlocked,
+        recipeUnlocked: unlock.kind !== "recipe" || unlockMaterialized,
+        unlockKind: unlock.kind,
+        unlockId: unlock.id,
+        unlockMaterialized,
         researchPurchased,
-        actionable: Boolean(recipeId),
-        needsRecipeRepair: Boolean(recipeId && researchPurchased && !recipeUnlocked),
-        unlocked: researchPurchased && recipeUnlocked
+        actionable: Boolean(unlock.id) && (unlock.kind !== "building" || buildingProgressionSupported),
+        needsRecipeRepair: Boolean(unlock.id && researchPurchased && !unlockMaterialized),
+        needsUnlockRepair: Boolean(unlock.id && researchPurchased && !unlockMaterialized),
+        unlocked: researchPurchased && unlockMaterialized
       };
     })
   };
@@ -5104,6 +6759,29 @@ export async function playerBuildingUnlockState(db, id) {
   };
 }
 
+export async function playerCustomizationGrantState(db, id) {
+  const player = await resolvePlayerMutationTarget(db, id);
+  const inventoryColumns = await tableExists(db, "inventories") ? await columnsFor(db, "inventories") : new Set();
+  const itemColumns = await tableExists(db, "items") ? await columnsFor(db, "items") : new Set();
+  const pendingSupported = ["id", "actor_id"].every((column) => inventoryColumns.has(column)) &&
+    ["inventory_id", "template_id"].every((column) => itemColumns.has(column));
+  let pending = [];
+  if (pendingSupported) {
+    const result = await db.query(`
+      select distinct i.template_id
+      from dune.inventories inv
+      join dune.items i on i.inventory_id = inv.id
+      where inv.actor_id = $1
+        and i.template_id is not null`, [player.actorId]);
+    pending = result.rows.map((item) => String(item.template_id || "")).filter(Boolean);
+  }
+  return {
+    capabilities: { customizationOwnership: false, customizationPending: pendingSupported },
+    player,
+    pending
+  };
+}
+
 export async function unlockResearchItem(db, id, { itemKey }) {
   await requireCapability(await supportsResearchItems(db), "Research unlocks require dune.actors.properties with TechKnowledgePlayerComponent.");
   const safeItemKey = validateResearchKey(itemKey);
@@ -5136,11 +6814,13 @@ export async function unlockResearchItem(db, id, { itemKey }) {
     if (!found) {
       nextItems.push({ ItemKey: safeItemKey, bIsNewEntry: false, UnlockedState: "Purchased" });
     }
-    const recipeId = linkedResearchRecipeId(safeItemKey);
-    if (!recipeId) {
-      throw new Error(`Research group ${safeItemKey} cannot be unlocked directly because it does not identify one build recipe. Unlock its individual Recipe or Building entries instead.`);
+    const unlock = linkedResearchUnlock(safeItemKey);
+    if (!unlock.id) {
+      throw new Error(`Research group ${safeItemKey} cannot be unlocked directly because it does not identify one buildable unlock. Unlock its individual Recipe or Building entries instead.`);
     }
-    const recipe = await materializeResearchCraftingRecipe(tx, player.actorId, recipeId);
+    const materialized = unlock.kind === "building"
+      ? await materializeResearchBuildingUnlock(tx, player.playerStateId, unlock.id, unlock.pieceId)
+      : await materializeResearchCraftingRecipe(tx, player.actorId, unlock.id);
     await tx.query(`
       update dune.actors
       set properties = jsonb_set(properties, '{TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData}', $2::jsonb, true)
@@ -5150,10 +6830,17 @@ export async function unlockResearchItem(db, id, { itemKey }) {
       player,
       itemKey: safeItemKey,
       alreadyUnlocked,
-      recipeId,
-      recipeMaterialized: recipe.recipeUnlocked,
-      recipeAdded: recipe.recipeAdded,
-      repairedRecipe: Boolean(alreadyUnlocked && recipe.recipeAdded)
+      unlockKind: unlock.kind,
+      unlockId: unlock.id,
+      unlockMaterialized: true,
+      recipeId: unlock.kind === "recipe" ? unlock.id : "",
+      recipeMaterialized: unlock.kind === "recipe" ? materialized.recipeUnlocked : false,
+      recipeAdded: unlock.kind === "recipe" ? materialized.recipeAdded : false,
+      buildingUnlockId: unlock.kind === "building" ? unlock.id : "",
+      buildingPieceId: unlock.kind === "building" ? unlock.pieceId : "",
+      buildingProgressionUpdated: unlock.kind === "building" ? materialized.progressionUpdated : false,
+      repairedRecipe: Boolean(unlock.kind === "recipe" && alreadyUnlocked && materialized.recipeAdded),
+      repairedUnlock: Boolean(alreadyUnlocked && materialized.added)
     };
   });
 }
@@ -5410,19 +7097,56 @@ export async function portalLandsraad(db, playerControllerId) {
   };
 }
 
-function portalHomeSietch(identity) {
+function portalHomeSietch(identity, configuredNames = {}) {
   const dimensionIndex = Number(identity.home_sietch_dimension_index);
   if (!Number.isInteger(dimensionIndex) || dimensionIndex < 0) return null;
   const partitionId = Number(identity.home_sietch_partition_id) || 0;
+  const configuredName = String(configuredNames?.[String(partitionId)] || "").trim();
   const label = String(identity.home_sietch_label || "").trim();
-  const name = label
+  const name = configuredName || (label
     ? (/^sietch\b/i.test(label) ? label : `Sietch ${label}`)
     : dimensionIndex === 0
       ? "Sietch Abbir"
       : dimensionIndex === 1
         ? "Sietch Alraab"
-        : `Sietch ${dimensionIndex + 1}`;
+        : `Sietch ${dimensionIndex + 1}`);
   return { name, partitionId, dimensionIndex };
+}
+
+// Answer directory membership probes without returning character names, actor
+// ids, or any other player data. Steam ids are hashed locally and only hashes
+// explicitly requested by the authenticated directory are compared.
+export async function playerServerMemberships(db, requestedAccountHashes) {
+  const requested = new Set((Array.isArray(requestedAccountHashes) ? requestedAccountHashes : [])
+    .map((value) => String(value || "").toLowerCase())
+    .filter((value) => /^[0-9a-f]{64}$/.test(value))
+    .slice(0, 250));
+  if (!requested.size) return [];
+
+  const identities = await db.query(`
+    select distinct ac.platform_id,
+           ps.player_controller_id::text as player_controller_id,
+           ps.player_pawn_id::text as player_pawn_id
+    from dune.accounts ac
+    join dune.player_state ps on ps.account_id=ac.id
+    join dune.actors pawn on pawn.id=ps.player_pawn_id
+    where lower(coalesce(ac.platform_name,''))='steam'
+      and ac.platform_id ~ '^[0-9]{17}$'`);
+  const levels = await leadershipLevels(db).catch(() => new Map());
+  const found = new Map();
+  for (const row of identities.rows || []) {
+    const accountHash = createHash("sha256").update(String(row.platform_id)).digest("hex");
+    if (!requested.has(accountHash)) continue;
+    const level = Math.min(200, Math.max(0, Number(
+      levels.get(String(row.player_controller_id))
+      || levels.get(String(row.player_pawn_id))
+      || 0
+    ) || 0));
+    found.set(accountHash, Math.max(found.get(accountHash) || 0, level));
+  }
+  return [...requested].map((accountHash) => found.has(accountHash)
+    ? { accountHash, found: true, level: found.get(accountHash) }
+    : { accountHash, found: false, level: null });
 }
 
 // Build private, read-only snapshots only for Steam identities requested by the
@@ -5524,7 +7248,7 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
           guild: leader.guild || "Unavailable",
           online: String(identity.online_status || "").toLowerCase() === "online",
           lastSeen: identity.last_seen || "",
-          homeSietch: portalHomeSietch(identity),
+          homeSietch: portalHomeSietch(identity, portalContext.sietchNames),
           map: identity.player_map || "",
           partitionId: Number(identity.player_partition_id) || 0,
           x: Number(identity.player_x) || 0,
@@ -5589,7 +7313,7 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
         storage,
         guild,
         landsraad,
-        serverInfo: portalContext.serverInfo || null,
+        serverInfo: portalServerInfo(portalContext.serverInfo, identity.character_name),
         carePackages: {
           enabled: portalContext.carePackages?.enabled === true,
           history: (portalContext.carePackages?.history || [])
@@ -5616,6 +7340,19 @@ export async function playerPortalSnapshots(db, requestedAccountHashes, journeyT
   const found = new Set(snapshots.map((entry) => entry.accountHash));
   for (const accountHash of requested) if (!found.has(accountHash)) snapshots.push({ accountHash, found: false });
   return snapshots;
+}
+
+function portalServerInfo(serverInfo, playerName) {
+  if (!serverInfo || typeof serverInfo !== "object") return null;
+  const messageOfTheDay = serverInfo.messageOfTheDay;
+  if (!messageOfTheDay || typeof messageOfTheDay !== "object") return serverInfo;
+  return {
+    ...serverInfo,
+    messageOfTheDay: {
+      ...messageOfTheDay,
+      message: renderPlayerMessageTemplate(messageOfTheDay.message, playerName)
+    }
+  };
 }
 
 function portalJourneyRow(row) {
@@ -5758,7 +7495,7 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
   for (const table of requiredTables) {
     if (!(await tableExists(db, table))) {
       const result = unsupported("vehicles", requiredTables.map((t) => `dune.${t}`));
-      return { ...result, capabilities: { ...result.capabilities, vehiclePermissions: false }, totalCount: 0, totalVehicles: 0 };
+      return { ...result, capabilities: { ...result.capabilities, vehiclePermissions: false, vehicleDelete: false, vehicleDeleteQueue: false }, totalCount: 0, totalVehicles: 0 };
     }
   }
 
@@ -5910,7 +7647,8 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
         })),
         modules: (row.modules || []).map((module) => ({
           ...module,
-          name: portalVehicleModuleName(module.templateId)
+          name: portalVehicleModuleName(module.templateId),
+          isStorage: isVehicleStorageModule(module.templateId)
         }))
       }));
     await attachVehicleRegions(db, rows);
@@ -5921,17 +7659,542 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
     const vehiclePermissions = await permissionEditingSupported(db, {
       knownTables: new Set(["permission_actor_rank", "permission_actor", "actors", "player_state"])
     }).catch(() => false);
+    // Probed the same way and for the same reason as listBases' baseDelete:
+    // without the shipped delete procedures the panel hides the action
+    // rather than offering a control that fails on click.
+    const vehicleDelete = await supportsVehicleDelete(db).catch(() => false);
+    const vehicleDeleteQueue = vehicleDelete
+      ? await supportsVehicleDeleteQueue(db, { vehicleDelete }).catch(() => false)
+      : false;
+    // requiredTables above proved dune.vehicles exists, but not the two
+    // relations vehicleStorage actually reads -- probe them rather than
+    // inferring, so the Components tab hides View Contents instead of
+    // offering a button that comes back unsupported on click.
+    const vehicleStorage = await supportsVehicleStorage(db).catch(() => false);
 
     return {
-      capabilities: { vehicles: true, vehiclePermissions },
+      capabilities: { vehicles: true, vehiclePermissions, vehicleDelete, vehicleDeleteQueue, vehicleStorage },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalVehicles: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_vehicles) : 0,
       rows
     };
   } catch (error) {
     const result = unsupported("vehicles", requiredTables.map((t) => `dune.${t}`));
-    return { ...result, capabilities: { ...result.capabilities, vehiclePermissions: false }, totalCount: 0, totalVehicles: 0, reason: `Vehicles query failed: ${error.message}` };
+    return { ...result, capabilities: { ...result.capabilities, vehiclePermissions: false, vehicleDelete: false, vehicleDeleteQueue: false, vehicleStorage: false }, totalCount: 0, totalVehicles: 0, reason: `Vehicles query failed: ${error.message}` };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Vehicle cargo hold (Vehicles -> Components -> View Contents)
+//
+// A vehicle's cargo inventory hangs off dune.inventories.actor_id -- the
+// vehicle's own actor id, since dune.vehicles.id == dune.actors.id -- with
+// inventory_type = 0, exactly as fillItemToStorage already documents at the
+// top of its own implementation. dune.inventories.vehicle_module_id and
+// dune.vehicle_module_inventories exist in the schema but are empty in
+// production (0 of 535 / 0 rows in a real dump), so contents cannot be
+// attributed to a particular storage module -- and do not need to be: there
+// is exactly one hold per vehicle, and its max_item_count/max_item_volume
+// already track whichever *Inventory_* module is fitted.
+//
+// The inventory_type = 0 filter is load-bearing, not decoration: the same
+// actor also owns inventory_type IS NULL rows (per-component holds) that
+// carry no capacity and are not the cargo hold.
+// ---------------------------------------------------------------------------
+
+// Storage modules are catalogued per vehicle class and tier rather than by a
+// type column, so the fitted-storage test is on the template id: every entry
+// in runtime/data/admin-items.json follows it (BuggyInventory_5,
+// SandbikeInventory_2, OrnithopterMediumInventory_5, TreadwheelInventory_2,
+// BuggyInventory_Unique_Capacity_04, ...).
+export function isVehicleStorageModule(templateId) {
+  return /Inventory(_Unique_Capacity)?_\d+$/i.test(String(templateId || ""));
+}
+
+async function supportsVehicleStorage(db) {
+  for (const table of ["vehicles", "inventories", "items"]) {
+    if (!(await tableExists(db, table))) return false;
+  }
+  return true;
+}
+
+// One vehicle's cargo hold, slot by slot. Modelled on baseContainerSlots --
+// same probe-then-degrade discipline and the same slot shape -- but flat
+// rather than an inventories[] array, because a vehicle has one hold where a
+// base container can have several.
+export async function vehicleStorage(db, vehicleId, { repoRoot } = {}) {
+  const target = intParam(vehicleId, "vehicle id", 1);
+  // Every relation the query below names. A partial probe is the trap here:
+  // dune.vehicles existing says nothing about dune.inventories.
+  const required = ["vehicles", "inventories", "items"];
+  const present = await Promise.all(required.map((table) => tableExists(db, table)));
+  const missing = required.filter((_, index) => !present[index]);
+  if (missing.length) {
+    return {
+      supported: false,
+      reason: `Unsupported by detected schema. Missing required table(s): ${missing.map((table) => `dune.${table}`).join(", ")}`,
+      vehicleId: String(target),
+      slots: []
+    };
+  }
+
+  // Probed rather than assumed, for the reason baseContainerSlots gives: a
+  // missing column is a parse-time error, not a null, so an older schema
+  // would 500 the whole view instead of degrading one field.
+  const itemColumns = await columnsFor(db, "items");
+  const inventoryColumns = await columnsFor(db, "inventories");
+  const hasPositionIndex = itemColumns.has("position_index");
+  const hasStats = itemColumns.has("stats");
+  const hasVolumeOverride = itemColumns.has("volume_override");
+  const hasMaxItemVolume = inventoryColumns.has("max_item_volume");
+  // Without inventory_type there is no way to tell the cargo hold from the
+  // per-component inventories on the same actor. Rather than guess, fall back
+  // to the capacity-carrying row -- the component holds have none.
+  const hasInventoryType = inventoryColumns.has("inventory_type");
+  const holdFilter = hasInventoryType ? "inv.inventory_type = 0" : "inv.max_item_count > 0";
+  const maxItemVolumeSelect = hasMaxItemVolume ? "inv.max_item_volume" : "0::real as max_item_volume";
+  const volumeOverrideSelect = hasVolumeOverride ? "i.volume_override" : "0::real as volume_override";
+  const slotSelect = [
+    hasPositionIndex ? "i.position_index" : "null::bigint as position_index",
+    itemColumns.has("quality_level") ? "i.quality_level" : "0::bigint as quality_level",
+    hasStats
+      ? "coalesce((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null) as current_durability"
+      : "null::text as current_durability",
+    hasStats
+      ? `coalesce(
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+             null
+           ) as max_durability`
+      : "null::numeric as max_durability",
+    hasStats
+      ? "i.stats->'FAugmentedItemStats'->1->'AppliedAugments' as applied_augments"
+      : "null::jsonb as applied_augments",
+    hasStats
+      ? "i.stats->'FAugmentedItemStats'->1->'AppliedAugmentQualities' as applied_augment_qualities"
+      : "null::jsonb as applied_augment_qualities"
+  ].join(",\n           ");
+  const slotOrder = hasPositionIndex ? "i.position_index nulls last, i.id" : "i.id";
+
+  // Joined through dune.vehicles rather than reading dune.inventories by
+  // actor_id directly: that is what makes an id that is some other kind of
+  // actor come back as found:false instead of quietly returning a player's
+  // or a placeable's inventory through a vehicles-scoped route.
+  const result = await db.query(`
+    with hold as (
+      select inv.id, inv.max_item_count, ${maxItemVolumeSelect}
+      from dune.vehicles v
+      join dune.inventories inv on inv.actor_id = v.id and ${holdFilter}
+      where v.id = $1
+      order by inv.id
+      limit 1
+    )
+    select h.id::text as inventory_id, h.max_item_count, h.max_item_volume,
+           i.id::text as item_id, i.template_id, i.stack_size, ${volumeOverrideSelect},
+           ${slotSelect}
+    from hold h
+    left join dune.items i on i.inventory_id = h.id
+    order by ${slotOrder}`, [target]);
+
+  if (!result.rows.length) {
+    return {
+      supported: true,
+      found: false,
+      reason: "That vehicle has no cargo hold.",
+      vehicleId: String(target),
+      slots: []
+    };
+  }
+
+  const itemMetadata = adminItemMetadata();
+  const first = result.rows[0];
+  const slots = [];
+  let currentVolume = 0;
+  let volumeComplete = hasMaxItemVolume && hasVolumeOverride;
+  for (const row of result.rows) {
+    // The left join emits one all-null item row for an empty hold, which is
+    // still needed above so the summary and the empty grid render.
+    const templateId = String(row.template_id || "");
+    if (!templateId) continue;
+    // Parallel arrays written by buildAugmentedItemStats; paired positionally
+    // and simply stopping at the shorter one, so a corrupt row degrades
+    // rather than throwing on a display path.
+    const appliedAugments = Array.isArray(row.applied_augments) ? row.applied_augments : [];
+    const appliedQualities = Array.isArray(row.applied_augment_qualities) ? row.applied_augment_qualities : [];
+    const augments = appliedAugments
+      .map((entry, index) => {
+        const augmentTemplateId = String(entry?.Name || "");
+        if (!augmentTemplateId) return null;
+        return {
+          templateId: augmentTemplateId,
+          name: itemMetadata.get(augmentTemplateId)?.name || augmentTemplateId,
+          qualityLevel: Number(appliedQualities[index]) || 0
+        };
+      })
+      .filter((augment) => augment !== null);
+    const slotQuantity = Number(row.stack_size) || 0;
+    // volume_override is per-unit (see giveItemToStorage's correction note),
+    // so this row contributes unitVolume * quantity.
+    if (hasMaxItemVolume && hasVolumeOverride) {
+      const unitVolume = resolvedItemUnitVolume(templateId, row.volume_override);
+      if (unitVolume === null) volumeComplete = false;
+      else currentVolume += unitVolume * slotQuantity;
+    }
+    slots.push({
+      itemId: String(row.item_id),
+      templateId,
+      name: itemMetadata.get(templateId)?.name || templateId,
+      // Unlike baseContainerSlots, the icon rides on this response: there is
+      // no vehicle equivalent of the base inventory rollup the bases tab
+      // harvests images from.
+      image: itemImagePath(repoRoot, templateId),
+      positionIndex: row.position_index === null || row.position_index === undefined
+        ? null
+        : Number(row.position_index),
+      quantity: slotQuantity,
+      qualityLevel: Number(row.quality_level) || 0,
+      currentDurability: row.current_durability === null || row.current_durability === undefined
+        ? null
+        : Number(row.current_durability),
+      maxDurability: row.max_durability === null || row.max_durability === undefined
+        ? null
+        : Number(row.max_durability),
+      augments
+    });
+  }
+
+  return {
+    supported: true,
+    found: true,
+    vehicleId: String(target),
+    inventoryId: String(first.inventory_id),
+    maxSlots: Math.max(0, Number(first.max_item_count) || 0),
+    usedSlots: slots.length,
+    maxVolume: Math.max(0, Number(first.max_item_volume) || 0),
+    currentVolume,
+    volumeComplete,
+    slots
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Vehicle cargo hold: deletion
+//
+// Mirrors the base container delete family (deleteBaseContainerItem and its
+// two bulk siblings), minus the base-claim CTE chain -- a vehicle's hold is
+// reached from the vehicle's own actor id -- and minus the storage/crafting
+// group check, which has no vehicle analogue.
+//
+// One thing here is deliberately STRICTER than the base version: a vehicle in
+// Travel / VehicleBackup / VehicleRecovery refuses, reusing the same
+// vehicleBlockedDeleteState guard whole-vehicle delete already applies.
+// Measured against a real dump: 35 of 91 vehicles sit in those states and
+// every one of them has an empty hold, so this blocks nothing real -- it just
+// refuses to race the game's own stash/recovery flow.
+//
+// Like the base family, this does NOT require a stopped map. The row is gone
+// immediately; a running map keeps showing it until the next restart, because
+// the engine only claims item rows at startup and nothing (pg_notify, trigger,
+// RMQ command) covers inventory.
+// ---------------------------------------------------------------------------
+
+async function supportsVehicleStorageItemDelete(db) {
+  for (const table of ["vehicles", "inventories", "items"]) {
+    if (!(await tableExists(db, table))) return false;
+  }
+  return functionExists(db, "dune.delete_item(bigint)");
+}
+
+// Read-side companion to the delete functions: what the contents overlay reads
+// to disable and explain its controls before the operator clicks. The
+// authoritative refusal still happens atomically inside
+// resolveVehicleCargoHold -- this is the advance notice, not the guard.
+//
+// Lives here rather than in server.js (where baseContainerDeleteSafety lives)
+// because every fact it reports is a database fact; there is no config or
+// process state to compose in.
+export async function vehicleStorageDeleteSafety(db, vehicleId) {
+  const target = intParam(vehicleId, "vehicle id", 1);
+  if (!(await supportsVehicleStorageItemDelete(db))) {
+    return {
+      safe: false,
+      known: true,
+      state: "",
+      reason: "Cargo deletion requires dune.vehicles, dune.inventories, dune.items, and dune.delete_item(bigint)."
+    };
+  }
+  let state = "";
+  try {
+    state = await vehicleBlockedDeleteState(db, target);
+  } catch {
+    // known:false, not safe:true -- an unverifiable state is a reason to
+    // withhold the control, not to assume the vehicle is idle.
+    return {
+      safe: false,
+      known: false,
+      state: "",
+      reason: "The console could not verify this vehicle's state, so cargo deletion is disabled."
+    };
+  }
+  if (state) return { safe: false, known: true, state, reason: vehicleBlockedCargoReason(state) };
+  return { safe: true, known: true, state: "", reason: "" };
+}
+
+function vehicleBlockedCargoReason(state) {
+  return `This vehicle is currently ${state} and its cargo cannot be changed until that clears. Try again once the vehicle is no longer mid-transit or pending recovery.`;
+}
+
+// The vehicle counterpart of resolveOwnedStorageContainer. Takes `tx`, not
+// `db`, so the FOR UPDATE lock and the deletes that follow are one atomic
+// unit -- verifying in a separate unlocked query and writing later is the
+// TOCTOU gap that had to be closed on the base give/fill paths.
+async function resolveVehicleCargoHold(tx, vehicleId) {
+  // The DISTINCT-in-a-CTE shape is not stylistic. Combining SELECT DISTINCT
+  // with FOR UPDATE OF is rejected outright by Postgres, and the base version
+  // of this shipped that way: every real invocation 500'd, and no mocked test
+  // could catch it because the fake db.query pattern-matches query text and
+  // never parses SQL. Resolve the candidate set in the CTE, then join back to
+  // the real relation to take the lock.
+  const found = await tx.query(`
+    with candidates as (
+      select distinct inv.id as inventory_id
+      from dune.vehicles v
+      join dune.inventories inv on inv.actor_id = v.id and inv.inventory_type = 0
+      where v.id = $1
+    )
+    select c.inventory_id, inv.actor_id,
+           coalesce(inv.max_item_count, 0)::int as max_item_count,
+           coalesce(inv.max_item_volume, 0)::real as max_item_volume
+    from candidates c
+    join dune.inventories inv on inv.id = c.inventory_id
+    order by c.inventory_id
+    for update of inv`, [vehicleId]);
+
+  if (!found.rows.length) throw new Error("That vehicle has no cargo hold.");
+  // Deliberately no rows[0] pick. Every vehicle in a real dump has exactly one
+  // inventory_type = 0 row, so more than one means an assumption this code
+  // rests on has stopped holding -- and a silent "success" that leaves items
+  // behind in a second hold is worse than a loud failure. The read path
+  // (vehicleStorage) still takes the first, because a display degrading is
+  // fine where a destructive path guessing is not.
+  if (found.rows.length > 1) {
+    throw new Error(`This vehicle backs ${found.rows.length} separate cargo holds, which this action does not support yet. Please report this so it can be fixed.`);
+  }
+
+  // Checked after the lock, inside the transaction: the state could otherwise
+  // change between the check and the delete.
+  const blockedState = await vehicleBlockedDeleteState(tx, vehicleId);
+  if (blockedState) throw new Error(vehicleBlockedCargoReason(blockedState));
+
+  return found.rows[0];
+}
+
+const VEHICLE_STORAGE_DELETE_CAPABILITY = "Cargo deletion requires dune.vehicles, dune.inventories, dune.items, and dune.delete_item(bigint).";
+
+// Deletes one stack, or part of one, from a vehicle's cargo hold.
+export async function deleteVehicleStorageItem(db, vehicleId, itemId, { count = null } = {}) {
+  await requireCapability(await supportsVehicleStorageItemDelete(db), VEHICLE_STORAGE_DELETE_CAPABILITY);
+  const target = intParam(vehicleId, "vehicle id", 1);
+  // bigintParam, never Number(): an item id past Number.MAX_SAFE_INTEGER
+  // silently rounds, and a destructive request that retargets a different row
+  // is the worst possible failure mode here.
+  const safeItemId = bigintParam(itemId, "item id");
+  const requestedCount = count === null || count === undefined ? null : intParam(count, "count", 1);
+
+  // Column-probed for the same reason the read path probes: a missing column
+  // is a parse-time error, not a null. These enrich the audit record with what
+  // was actually destroyed -- without quality and durability, a destroyed
+  // pristine legendary logs identically to a broken common of the same
+  // template.
+  const itemColumns = await columnsFor(db, "items");
+  const hasStats = itemColumns.has("stats");
+  const stateSelect = [
+    itemColumns.has("position_index") ? "i.position_index" : "null::bigint as position_index",
+    itemColumns.has("quality_level") ? "i.quality_level" : "0::bigint as quality_level",
+    hasStats
+      ? "coalesce((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null) as current_durability"
+      : "null::text as current_durability",
+    hasStats
+      ? `coalesce(
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability')::numeric, 0),
+             nullif((i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0),
+             null
+           ) as max_durability`
+      : "null::numeric as max_durability"
+  ].join(",\n           ");
+
+  return db.transaction(async (tx) => {
+    // dune.delete_item and dune.delete_inventory_item reference their tables
+    // unqualified and carry no SET search_path of their own, so against any
+    // role but `dune` they raise `relation "items" does not exist` -- which
+    // aborts the transaction before the raw-delete fallback can run.
+    await tx.query("set local search_path to dune, public");
+    const hold = await resolveVehicleCargoHold(tx, target);
+
+    // for update OF i, inv -- not a bare `for update`, which cannot name a
+    // relation through a CTE. Locking inv as well is what serializes this
+    // against a concurrent delete on the same hold.
+    const found = await tx.query(`
+      select i.id::text as item_id, i.template_id, i.stack_size, i.inventory_id,
+             ${stateSelect}
+      from dune.items i
+      join dune.inventories inv on inv.id = i.inventory_id
+      where i.id = $1 and i.inventory_id = $2
+      for update of i, inv`, [safeItemId, hold.inventory_id]);
+
+    const item = found.rows[0];
+    // Scoped on the resolved hold's inventory_id, so an item belonging to
+    // another vehicle -- or to one of this vehicle's own component
+    // inventories -- simply returns zero rows.
+    if (!item) throw new Error("That item was not found in this vehicle's cargo hold.");
+
+    const stackSize = Number(item.stack_size) || 0;
+    const inventoryId = item.inventory_id;
+    const label = item.template_id || "Item";
+    // Captured before the delete: the row, and the state that came with it,
+    // is gone once the delete succeeds.
+    const destroyedState = {
+      positionIndex: item.position_index === null || item.position_index === undefined
+        ? null : Number(item.position_index),
+      qualityLevel: Number(item.quality_level) || 0,
+      currentDurability: item.current_durability === null || item.current_durability === undefined
+        ? null : Number(item.current_durability),
+      maxDurability: item.max_durability === null || item.max_durability === undefined
+        ? null : Number(item.max_durability)
+    };
+
+    // Refused, never rounded down to "delete it all". The two are not the same
+    // request, and the gap between them is a real race: the caller saw 500,
+    // asked for 400, and the stack has since dropped to 300 -- widening that
+    // into destroying all 300 removes more than was ever agreed to. Only an
+    // omitted count means "the whole slot".
+    if (requestedCount !== null && requestedCount > stackSize) {
+      throw new Error(`Cannot remove ${requestedCount}: the stack holds ${stackSize}. It may have changed since this view was loaded.`);
+    }
+    const partial = requestedCount !== null && requestedCount < stackSize;
+
+    if (partial) {
+      // Refused rather than widened: silently deleting the whole stack because
+      // the schema cannot do a partial removal would destroy more than asked.
+      await requireCapability(
+        await supportsPartialStackDelete(db),
+        "Removing part of a stack requires dune.delete_inventory_item(bigint,bigint)."
+      );
+      // The shipped procedure returns NULL instead of raising when the count
+      // exceeds the stack, so a null result is a failure, not a no-op success.
+      // A remaining of 0 is a success, which is why a truthy check is wrong.
+      const applied = await tx.query(
+        "select dune.delete_inventory_item($1::bigint, $2::bigint) as result",
+        [safeItemId, requestedCount]
+      );
+      if (applied.rows[0]?.result === null || applied.rows[0]?.result === undefined) {
+        throw new Error("Partial stack removal was rejected by the database. The requested count may exceed the stack.");
+      }
+      const after = await tx.query("select stack_size from dune.items where id = $1 and inventory_id = $2", [safeItemId, inventoryId]);
+      const remaining = after.rows[0] ? Number(after.rows[0].stack_size) || 0 : 0;
+      if (remaining !== stackSize - requestedCount) {
+        throw new Error("Partial stack removal did not change the stack by the requested amount.");
+      }
+      return {
+        ok: true,
+        vehicleId: String(target),
+        inventoryId: String(inventoryId),
+        partial: true,
+        removed: { itemId: item.item_id, templateId: item.template_id, count: requestedCount, remaining, ...destroyedState },
+        message: `Removed ${requestedCount} of ${label} from the database, leaving ${remaining}.`
+      };
+    }
+
+    // Whole slot. Verify -> raw-delete fallback -> verify: the shipped
+    // procedure is preferred for its item-tracking log, but the row
+    // disappearing is what actually matters. Every fallback statement is
+    // re-scoped on inventory_id so the raw delete cannot escape the verified
+    // hold.
+    await tx.query("select dune.delete_item($1::bigint)", [safeItemId]);
+    const stillExists = await tx.query("select exists(select 1 from dune.items where id = $1 and inventory_id = $2) as exists", [safeItemId, inventoryId]);
+    if (stillExists.rows[0]?.exists) {
+      await tx.query("delete from dune.items where id = $1 and inventory_id = $2", [safeItemId, inventoryId]);
+    }
+    const deleted = await tx.query("select not exists(select 1 from dune.items where id = $1 and inventory_id = $2) as deleted", [safeItemId, inventoryId]);
+    if (!deleted.rows[0]?.deleted) throw new Error("Cargo item delete did not remove the item from the database.");
+
+    return {
+      ok: true,
+      vehicleId: String(target),
+      inventoryId: String(inventoryId),
+      partial: false,
+      removed: { itemId: item.item_id, templateId: item.template_id, count: stackSize, remaining: 0, ...destroyedState },
+      message: `${label} was deleted from the database.`
+    };
+  });
+}
+
+// Deletes a chosen set of whole stacks. No partial-stack support -- the
+// per-stack control is where a partial removal belongs.
+export async function deleteMultipleVehicleStorageItems(db, vehicleId, itemIds) {
+  await requireCapability(await supportsVehicleStorageItemDelete(db), VEHICLE_STORAGE_DELETE_CAPABILITY);
+  const target = intParam(vehicleId, "vehicle id", 1);
+  // Deduped AFTER bigintParam normalization, so "99" and 99 collapse.
+  const safeIds = [...new Set((Array.isArray(itemIds) ? itemIds : []).map((id) => bigintParam(id, "item id")))];
+  if (!safeIds.length) throw new Error("At least one item ID is required");
+  if (safeIds.length > 200) throw new Error("Cannot delete more than 200 items in a single batch");
+
+  return db.transaction(async (tx) => {
+    await tx.query("set local search_path to dune, public");
+    const hold = await resolveVehicleCargoHold(tx, target);
+
+    // One set-based select-for-update resolves every id this batch owns. An id
+    // not found here (already gone, or never in this hold) is silently
+    // excluded -- skipped, not an error.
+    const auditDetail = await auditDetailSelectFragment(tx);
+    const found = await tx.query(`
+      select id::text as item_id, template_id, stack_size, ${auditDetail}
+      from dune.items
+      where id = any($1::bigint[]) and inventory_id = $2
+      for update`, [safeIds, hold.inventory_id]);
+
+    const removed = await finishDeletingLockedItems(tx, hold.inventory_id, found.rows);
+
+    return {
+      ok: true,
+      vehicleId: String(target),
+      inventoryId: String(hold.inventory_id),
+      removed,
+      message: `${removed.length} of ${safeIds.length} requested item(s) were deleted from the database.`
+    };
+  });
+}
+
+// Empties a vehicle's cargo hold. The list is read fresh inside the same
+// transaction that deletes it, so "all" always means everything present at the
+// moment of the lock -- never a possibly-stale list the UI fetched earlier.
+export async function deleteAllVehicleStorageItems(db, vehicleId) {
+  await requireCapability(await supportsVehicleStorageItemDelete(db), VEHICLE_STORAGE_DELETE_CAPABILITY);
+  const target = intParam(vehicleId, "vehicle id", 1);
+
+  return db.transaction(async (tx) => {
+    await tx.query("set local search_path to dune, public");
+    const hold = await resolveVehicleCargoHold(tx, target);
+
+    const auditDetail = await auditDetailSelectFragment(tx);
+    const found = await tx.query(`
+      select id::text as item_id, template_id, stack_size, ${auditDetail}
+      from dune.items
+      where inventory_id = $1
+      for update`, [hold.inventory_id]);
+
+    const removed = await finishDeletingLockedItems(tx, hold.inventory_id, found.rows);
+
+    return {
+      ok: true,
+      vehicleId: String(target),
+      inventoryId: String(hold.inventory_id),
+      removed,
+      message: removed.length > 0
+        ? `${removed.length} item(s) were deleted from the database.`
+        : "This cargo hold was already empty."
+    };
+  });
 }
 
 export async function portalVehicles(db, playerIds) {
@@ -8400,11 +10663,41 @@ export async function baseRefillTarget(db, baseId, { observed } = {}) {
   };
 }
 
+// Same probe as baseRefillTarget, for a vehicle. Simpler than the base
+// version: a vehicle is its own actor, so vehiclePermissionActor already
+// resolves {map, partitionId} directly -- no separate baseMapLocation-style
+// resolver needed, and no "orphaned owner entity" case to distinguish (that
+// case is specific to a base's building_instances->actor_fgl_entities chain,
+// which a vehicle has no equivalent of).
+export async function vehicleWriteTarget(db, vehicleId, { observed } = {}) {
+  const resolvedObserved = observed !== undefined ? observed : await observeRefillPartitions(db);
+  if (!resolvedObserved) return { map: "", partitionId: 0, queueSupported: false, writeSafeNow: true };
+  const actor = await vehiclePermissionActor(db, vehicleId);
+  return {
+    map: actor.map,
+    partitionId: actor.partitionId,
+    queueSupported: true,
+    writeSafeNow: partitionWriteSafe(resolvedObserved, actor.partitionId)
+  };
+}
+
 // A database that is restarting, or a schema mid-migration, will succeed on a
 // later tick. Mirrors the filter runBackgroundTick and the death poller already
 // use for the same "the stack is moving, not broken" states.
 function isTransientFlushError(message) {
   return /connect|ECONNREFUSED|ECONNRESET|terminated|timeout|does not exist|relation|shutting down|starting up|deadlock|too many clients/i.test(message);
+}
+
+// A queued refill can outlive the thing it targets: players may abandon the
+// claim or remove its last compatible storage device before the map next goes
+// down. Retrying cannot make that original request applicable again, and it
+// leaves a permanently misleading queue badge in the Console. Treat the two
+// domain-level "nothing to refill" results as successful reconciliation, not
+// as database failures. Keep this deliberately narrower than generic "not
+// found" matching so a schema/connection problem can never discard a request.
+function refillNoLongerApplicable(message) {
+  return message === "No generators or wind turbines were found at this base"
+    || message === "No water storage was found at this base";
 }
 
 // Applies every queued refill whose map is currently down and leaves the rest
@@ -8455,6 +10748,19 @@ export async function flushGeneratorRefills(db, repoRoot, { now = Date.now } = {
       // strikes at a few seconds apart would otherwise all land inside one
       // migration and silently discard the operator's request.
       const message = String(error?.message || "Unexpected error.").slice(0, 300);
+      if (refillNoLongerApplicable(message)) {
+        outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+        flushed.push({
+          baseId: entry.baseId,
+          map: entry.map,
+          partitionId: entry.partitionId,
+          ok: true,
+          cleared: true,
+          noLongerApplicable: true,
+          reason: message
+        });
+        continue;
+      }
       const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
@@ -8667,6 +10973,177 @@ function reconcileQueuedBaseDeletes(repoRoot, outcomes) {
     if (outcome.keep) next.push({ ...entry, attempts: outcome.attempts, nextRetryAt: outcome.nextRetryAt, lastError: outcome.lastError });
   }
   writeQueuedBaseDeletes(repoRoot, next);
+  return next;
+}
+
+// ---------------------------------------------------------------------------
+// Vehicle delete queue
+//
+// Structural copy of the base-delete queue immediately above, vehicleId in
+// place of baseId. Not merged into a shared engine: this codebase's stated
+// convention (see usePendingRefills.ts on the frontend) is a separate copy
+// per resource rather than a shared abstraction, and refactoring the single
+// most destructive code path in the console to generalize it is a bigger,
+// separately-reviewable change than adding a vehicle delete feature is.
+// Own cap and own env vars deliberately: vehicles are far more numerous than
+// bases, so a "queue is getting full" signal means something different for
+// each and the two knobs should not be coupled.
+// ---------------------------------------------------------------------------
+
+const PENDING_VEHICLE_DELETE_PATH = "runtime/generated/pending-vehicle-deletes.json";
+const MAX_PENDING_VEHICLE_DELETES = 200;
+
+function pendingVehicleDeleteMaxAgeMs() {
+  return clampInt(process.env.ADMIN_VEHICLE_DELETE_MAX_AGE_MS, 7 * 24 * 60 * 60 * 1000, 1, Number.MAX_SAFE_INTEGER);
+}
+function pendingVehicleDeleteRetryDelayMs() {
+  return clampInt(process.env.ADMIN_VEHICLE_DELETE_RETRY_DELAY_MS, 60000, 1, Number.MAX_SAFE_INTEGER);
+}
+
+function pendingVehicleDeleteFile(repoRoot) {
+  return resolve(repoRoot || "", PENDING_VEHICLE_DELETE_PATH);
+}
+
+// Intent only, like normalizePendingBaseDelete -- no captured actor-id list,
+// so flushVehicleDeletes re-enumerates fresh at flush time rather than
+// trusting what existed when the delete was requested.
+function normalizePendingVehicleDelete(entry) {
+  const vehicleId = Math.floor(Number(entry?.vehicleId));
+  if (!Number.isInteger(vehicleId) || vehicleId < 1) return null;
+  const partitionId = Math.floor(Number(entry?.partitionId));
+  return {
+    vehicleId,
+    map: String(entry?.map ?? "").slice(0, 120),
+    partitionId: Number.isInteger(partitionId) && partitionId > 0 ? partitionId : 0,
+    queuedAt: typeof entry?.queuedAt === "string" ? entry.queuedAt.slice(0, 40) : "",
+    attempts: clampInt(entry?.attempts, 0, 0, MAX_DELETE_FLUSH_ATTEMPTS),
+    nextRetryAt: Number.isFinite(Number(entry?.nextRetryAt)) ? Number(entry.nextRetryAt) : 0,
+    lastError: String(entry?.lastError ?? "").slice(0, 300)
+  };
+}
+
+export function listQueuedVehicleDeletes(repoRoot) {
+  const file = pendingVehicleDeleteFile(repoRoot);
+  if (!existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    // One entry per vehicle, so a double-clicked button cannot queue it twice.
+    const seen = new Set();
+    return parsed.map(normalizePendingVehicleDelete).filter((entry) => {
+      if (!entry || seen.has(entry.vehicleId)) return false;
+      seen.add(entry.vehicleId);
+      return true;
+    });
+  } catch (error) {
+    console.warn(`Ignoring unreadable pending vehicle delete queue: ${redact(error?.message || "Unexpected error.")}`);
+    return [];
+  }
+}
+
+function writeQueuedVehicleDeletes(repoRoot, entries) {
+  writeJsonAtomic(pendingVehicleDeleteFile(repoRoot), entries);
+  return entries;
+}
+
+export function queueVehicleDelete(repoRoot, { vehicleId, map = "", partitionId = 0, now = () => new Date() } = {}) {
+  const entry = normalizePendingVehicleDelete({ vehicleId, map, partitionId, queuedAt: now().toISOString() });
+  if (!entry) throw new Error("Invalid vehicle id");
+  const others = listQueuedVehicleDeletes(repoRoot).filter((row) => row.vehicleId !== entry.vehicleId);
+  if (others.length >= MAX_PENDING_VEHICLE_DELETES) {
+    throw new Error(`The pending delete queue already holds ${MAX_PENDING_VEHICLE_DELETES} vehicles. Restart the affected maps to apply them first.`);
+  }
+  writeQueuedVehicleDeletes(repoRoot, [...others, entry]);
+  return entry;
+}
+
+export function cancelQueuedVehicleDelete(repoRoot, vehicleId) {
+  const target = intParam(vehicleId, "vehicle id", 1);
+  const entries = listQueuedVehicleDeletes(repoRoot);
+  const remaining = entries.filter((entry) => entry.vehicleId !== target);
+  if (remaining.length === entries.length) throw new Error("That vehicle has no queued delete.");
+  writeQueuedVehicleDeletes(repoRoot, remaining);
+  return { ok: true, vehicleId: target, pending: remaining.length };
+}
+
+// vehiclePermissionActor throws exactly one message for a vehicle that was
+// destroyed or never existed ("That vehicle was not found") -- unlike bases,
+// there is no "no resolvable owner entity" alternative to also match, since
+// vehiclePermissionActor has no left-join/nullable-owner-entity chain the
+// way baseMapLocation does.
+function vehicleDeleteAlreadyGone(message) {
+  return /was not found/i.test(message);
+}
+
+// Mirrors flushBaseDeletes. Same onBeforeApply-runs-at-most-once-per-pass
+// semantics, for the same reason: a full database backup is not cheap, and
+// several vehicles can flush in the same pass.
+export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBeforeApply, allowBlockedStates = false } = {}) {
+  const pending = listQueuedVehicleDeletes(repoRoot);
+  if (!pending.length) return { flushed: [], pending: 0 };
+  const observed = await observeRefillPartitions(db, { now });
+  if (!observed) return { flushed: [], pending: pending.length, unsupported: true };
+
+  const flushed = [];
+  const outcomes = new Map();
+  const timestamp = now();
+  let backedUp = false;
+  for (const entry of pending) {
+    const queuedMs = Date.parse(entry.queuedAt);
+    if (Number.isFinite(queuedMs) && timestamp - queuedMs >= pendingVehicleDeleteMaxAgeMs()) {
+      const message = `Queued for longer than the ${Math.round(pendingVehicleDeleteMaxAgeMs() / 3600000)}h limit without being applied.`;
+      outcomes.set(entry.vehicleId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
+      continue;
+    }
+    if (!partitionWriteSafe(observed, entry.partitionId)) continue;
+    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    if (!backedUp && onBeforeApply) {
+      try {
+        await onBeforeApply();
+        backedUp = true;
+      } catch (error) {
+        return { flushed: [], pending: pending.length, backupFailed: true, error: String(error?.message || "Unexpected error.").slice(0, 300) };
+      }
+    }
+    try {
+      const result = await deleteVehicleCompletely(db, entry.vehicleId, { allowBlockedState: allowBlockedStates });
+      outcomes.set(entry.vehicleId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: true, ...result });
+    } catch (error) {
+      const message = String(error?.message || "Unexpected error.").slice(0, 300);
+      if (vehicleDeleteAlreadyGone(message)) {
+        outcomes.set(entry.vehicleId, { queuedAt: entry.queuedAt, keep: false });
+        flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: true, alreadyGone: true });
+        continue;
+      }
+      // Travel/backup/recovery states can persist legitimately until a map is
+      // positively stopped. They are not permanent failures and must never
+      // burn through the retry limit merely because the background poller saw
+      // the same state several times while a restart was in progress.
+      const blockedState = /currently (Travel|VehicleBackup|VehicleRecovery) and cannot be deleted/i.test(message);
+      const attempts = (blockedState || isTransientFlushError(message)) ? entry.attempts : entry.attempts + 1;
+      const dropped = attempts >= MAX_DELETE_FLUSH_ATTEMPTS;
+      const nextRetryAt = timestamp + pendingVehicleDeleteRetryDelayMs();
+      outcomes.set(entry.vehicleId, { queuedAt: entry.queuedAt, keep: !dropped, attempts, nextRetryAt, lastError: message });
+      flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: false, attempts, dropped, error: message });
+    }
+  }
+  const remaining = outcomes.size ? reconcileQueuedVehicleDeletes(repoRoot, outcomes) : pending;
+  return { flushed, pending: remaining.length };
+}
+
+function reconcileQueuedVehicleDeletes(repoRoot, outcomes) {
+  const next = [];
+  for (const entry of listQueuedVehicleDeletes(repoRoot)) {
+    const outcome = outcomes.get(entry.vehicleId);
+    if (!outcome || outcome.queuedAt !== entry.queuedAt) {
+      next.push(entry);
+      continue;
+    }
+    if (outcome.keep) next.push({ ...entry, attempts: outcome.attempts, nextRetryAt: outcome.nextRetryAt, lastError: outcome.lastError });
+  }
+  writeQueuedVehicleDeletes(repoRoot, next);
   return next;
 }
 
@@ -9081,11 +11558,19 @@ const BASE_INVENTORY_TYPES = {
       vehiclesfabricator_placeable: "Vehicles Fabricator",
       weaponsfabricator_placeable: "Weapons Fabricator",
       wearablesfabricator_placeable: "Garment Fabricator",
-      advancedsurvivalfabricator_placeable: "Advanced Survival Fabricator",
-      // Singular "Vehicle" -- the game is inconsistent here, the base building
-      // is VehiclesFabricator_Placeable but the advanced one is
-      // AdvancedVehicleFabricator_Placeable. Verified in the shipped paks.
-      advancedvehiclefabricator_placeable: "Advanced Vehicle Fabricator",
+      // Both Advanced_ entries carry a literal underscore after "Advanced"
+      // that the other three Advanced fabricators below do not -- confirmed
+      // against real placed buildings (kovalt_test.backup), not the pak
+      // asset names the no-underscore forms were pulled from (see
+      // [[reference_building_type_extraction_from_paks]]: presence in the
+      // paks is proof an asset exists, not proof of the exact instantiated
+      // building_type string). Getting this wrong silently dropped every
+      // Advanced Survival/Vehicles Fabricator out of the Inventory tab's
+      // Crafting group entirely, via baseInventory's inner join.
+      advanced_survivalfabricator_placeable: "Advanced Survival Fabricator",
+      // Also plural "Vehicles", matching the base building below it, not the
+      // singular "Vehicle" a prior pak-only read assumed.
+      advanced_vehiclesfabricator_placeable: "Advanced Vehicles Fabricator",
       advancedweaponsfabricator_placeable: "Advanced Weapons Fabricator",
       advancedwearablesfabricator_placeable: "Advanced Garment Fabricator"
     }
@@ -9125,6 +11610,7 @@ function baseInventoryTypeParams() {
     BASE_INVENTORY_TRIPLES.map(([, , typeName]) => typeName)
   ];
 }
+
 
 // Every stored item at a base, rolled up two ways off one query: by item
 // template (what does this base hold, and where) and by container (what is in
@@ -10352,6 +12838,19 @@ export async function flushWaterRefills(db, repoRoot, { now = Date.now } = {}) {
       });
     } catch (error) {
       const message = String(error?.message || "Unexpected error.").slice(0, 300);
+      if (refillNoLongerApplicable(message)) {
+        outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+        flushed.push({
+          baseId: entry.baseId,
+          map: entry.map,
+          partitionId: entry.partitionId,
+          ok: true,
+          cleared: true,
+          noLongerApplicable: true,
+          reason: message
+        });
+        continue;
+      }
       const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
@@ -10523,11 +13022,106 @@ const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
   group by template_id
 )`;
 
+function vehicleRepairThreshold(value) {
+  const threshold = Number(value);
+  if (!Number.isFinite(threshold) || threshold < 1 || threshold > 100) throw new Error("Vehicle repair threshold must be between 1 and 100 percent");
+  return { threshold, thresholdRatio: threshold / 100 };
+}
+
+// A vehicle remains live in its map server even after its owner logs out. The
+// game keeps that module state in memory and can overwrite a direct database
+// repair later, so the API must know exactly which running partitions to stop
+// before repairVehicleDecay writes. This preflight deliberately uses the same
+// maxima and eligibility rules as the write query below.
+export async function inspectVehicleDecayRepair(db, id, { thresholdPercent = 50 } = {}) {
+  await requireCapability(await supportsRepairVehicleDecay(db), "Repair vehicle decay requires dune.vehicle_modules.stats, dune.vehicle_modules.vehicle_id, and dune.actors.owner_account_id.");
+  const { threshold, thresholdRatio } = vehicleRepairThreshold(thresholdPercent);
+  const player = await resolvePlayerMutationTarget(db, id);
+  if (String(player.onlineStatus).toLowerCase() === "online") throw new Error("Repair vehicle decay requires the player to be offline so live state cannot overwrite the DB change");
+  const hasPermissionOwnership = await tableExists(db, "permission_actor_rank");
+  const hasWorldPartitions = await tableExists(db, "world_partition");
+  const permissionOwnershipClause = hasPermissionOwnership
+    ? `or exists (
+            select 1 from dune.permission_actor_rank par
+            where par.permission_actor_id = vm.vehicle_id
+              and par.player_id = $2
+              and par.rank = 1
+          )`
+    : "";
+  const ownerValues = hasPermissionOwnership ? [player.accountId, player.controllerId] : [player.accountId];
+  const thresholdParam = ownerValues.length + 1;
+  const result = await db.query(`
+    with ${VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE}, eligible as (
+      select vm.id,
+             vm.vehicle_id,
+             coalesce(a.map, '') as actor_map,
+             coalesce(a.partition_id, 0)::int as partition_id
+      from dune.vehicle_modules vm
+      join dune.actors a on a.id = vm.vehicle_id
+      left join template_maxima tm on tm.template_id = vm.template_id
+      cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
+      where (
+          a.owner_account_id = $1
+          ${permissionOwnershipClause}
+        )
+        and vm.stats is not null
+        and jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
+        and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
+        and jsonb_typeof(durability) = 'object'
+        and durability ? 'CurrentDurability'
+        and (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+        and coalesce(
+              case
+                when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                  then nullif((durability->>'MaxDurability')::numeric, 0)
+              end,
+              tm.max_durability
+            ) > 0
+        and (durability->>'CurrentDurability')::numeric < (coalesce(
+              case
+                when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                  then nullif((durability->>'MaxDurability')::numeric, 0)
+              end,
+              tm.max_durability
+            ) * $${thresholdParam})
+    )
+    select e.partition_id,
+           min(e.actor_map) as actor_map,
+           ${hasWorldPartitions ? "coalesce(wp.map, '')" : "''::text"} as partition_map,
+           ${hasWorldPartitions ? "coalesce(wp.dimension_index, 0)::int" : "0::int"} as dimension_index,
+           ${hasWorldPartitions ? `exists (
+             select 1 from pg_stat_activity sa
+             where sa.application_name = 'DuneSandbox - ' || nullif(wp.server_id, '')
+           )` : "false"} as connected,
+           count(*)::int as modules,
+           count(distinct e.vehicle_id)::int as vehicles
+    from eligible e
+    ${hasWorldPartitions ? "left join dune.world_partition wp on wp.partition_id = e.partition_id" : ""}
+    group by e.partition_id${hasWorldPartitions ? ", wp.map, wp.dimension_index, wp.server_id" : ""}
+    order by e.partition_id`, [...ownerValues, thresholdRatio]);
+  const targets = result.rows.map((row) => ({
+    partitionId: Number(row.partition_id || 0),
+    actorMap: String(row.actor_map || ""),
+    partitionMap: String(row.partition_map || ""),
+    dimensionIndex: Number(row.dimension_index || 0),
+    connected: row.connected === true || row.connected === "t",
+    modules: Number(row.modules || 0),
+    vehicles: Number(row.vehicles || 0)
+  }));
+  return {
+    ok: true,
+    player,
+    thresholdPercent: threshold,
+    eligible: targets.reduce((sum, row) => sum + row.modules, 0),
+    eligibleVehicles: targets.reduce((sum, row) => sum + row.vehicles, 0),
+    targets,
+    restartSupported: hasWorldPartitions
+  };
+}
+
 export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {}) {
   await requireCapability(await supportsRepairVehicleDecay(db), "Repair vehicle decay requires dune.vehicle_modules.stats, dune.vehicle_modules.vehicle_id, and dune.actors.owner_account_id.");
-  const threshold = Number(thresholdPercent);
-  if (!Number.isFinite(threshold) || threshold < 1 || threshold > 100) throw new Error("Vehicle repair threshold must be between 1 and 100 percent");
-  const thresholdRatio = threshold / 100;
+  const { threshold, thresholdRatio } = vehicleRepairThreshold(thresholdPercent);
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
     if (String(player.onlineStatus).toLowerCase() === "online") throw new Error("Repair vehicle decay requires the player to be offline so live state cannot overwrite the DB change");
@@ -10942,14 +13536,58 @@ async function clearDanglingTrackedContract(db, actorId) {
   return Number(result.rowCount || 0) > 0;
 }
 
-function linkedResearchRecipeId(itemKey) {
+function linkedResearchUnlock(itemKey) {
   const value = String(itemKey || "");
-  if (value.startsWith("BLD_") && !value.endsWith("_Patent")) {
+  if (value.startsWith("BLD_")) {
     const buildingId = value.slice(4);
-    const metadata = adminItemMetadata().get(buildingId);
-    if (String(metadata?.category || "").toLowerCase() === "buildings") return buildingId;
+    let unlockId = buildingId;
+    if (!value.endsWith("_Patent")) {
+      const metadata = adminItemMetadata().get(buildingId);
+      if (String(metadata?.category || "").toLowerCase() !== "buildings") unlockId = `${buildingId}_Patent`;
+    }
+    return {
+      kind: "building",
+      id: unlockId,
+      pieceId: `${unlockId.replace(/_Patent$/i, "")}_Placeable`
+    };
   }
-  return researchRecipeId(value);
+  const recipeId = researchRecipeId(value);
+  return recipeId
+    ? { kind: "recipe", id: recipeId, pieceId: "" }
+    : { kind: "group", id: "", pieceId: "" };
+}
+
+async function materializeResearchBuildingUnlock(db, characterId, unlockId, pieceId) {
+  if (!characterId) throw new UnsupportedCapabilityError("Player building progression was not found; research was not changed.");
+  const columns = await tableExists(db, "building_progression") ? await columnsFor(db, "building_progression") : new Set();
+  if (!["character_id", "learned_building_sets", "new_buildable_pieces"].every((column) => columns.has(column))) {
+    throw new UnsupportedCapabilityError("Building progression is unavailable in this game database; research was not changed.");
+  }
+  const current = await db.query(`
+    select coalesce(learned_building_sets, '{}'::text[]) as learned_building_sets,
+           coalesce(new_buildable_pieces, '{}'::text[]) as new_buildable_pieces
+    from dune.building_progression
+    where character_id = $1
+    for update`, [characterId]);
+  if (!current.rows.length) {
+    throw new UnsupportedCapabilityError(`Building progression was not found for player state ${characterId}; research was not changed.`);
+  }
+  const learned = Array.isArray(current.rows[0]?.learned_building_sets) ? current.rows[0].learned_building_sets.map(String) : [];
+  const pieces = Array.isArray(current.rows[0]?.new_buildable_pieces) ? current.rows[0].new_buildable_pieces.map(String) : [];
+  const addUnlock = !learned.includes(unlockId);
+  const addPiece = Boolean(pieceId) && !pieces.includes(pieceId);
+  if (addUnlock || addPiece) {
+    await db.query(`
+      update dune.building_progression
+      set learned_building_sets = $2::text[],
+          new_buildable_pieces = $3::text[]
+      where character_id = $1`, [
+      characterId,
+      addUnlock ? [...learned, unlockId] : learned,
+      addPiece ? [...pieces, pieceId] : pieces
+    ]);
+  }
+  return { progressionUpdated: addUnlock || addPiece, added: addUnlock || addPiece };
 }
 
 async function materializeResearchCraftingRecipe(db, actorId, recipeId) {

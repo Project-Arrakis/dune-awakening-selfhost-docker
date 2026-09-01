@@ -3,6 +3,13 @@ import { resolve } from "node:path";
 
 const FILLABLE_GROUPS = new Set(["refined_resource", "component", "raw_resource"]);
 
+const CUSTOMIZATION_GROUPS = Object.freeze([
+  { id: "atreides", name: "Atreides", matches: (itemId) => /^B1C3_Atre/i.test(itemId) },
+  { id: "harkonnen", name: "Harkonnen", matches: (itemId) => /^B1C3_Hark/i.test(itemId) },
+  { id: "smuggler", name: "Smuggler", matches: (itemId) => /^(?:MTX_)?B1C3_Smug/i.test(itemId) },
+  { id: "dune-man", name: "Dune Man", matches: (itemId) => /^MTX_B1C2_DuneMan/i.test(itemId) }
+]);
+
 export function resolveCatalogItem(repoRoot, { itemName = "", itemId = "" } = {}) {
   const value = String(itemId || itemName || "").trim();
   if (!value || value.length > 240 || /[\r\n]/.test(value)) throw new Error("Item name or id is required");
@@ -132,6 +139,34 @@ export function listBuildingUnlockItems(repoRoot) {
       experimental: buildingUnlockIsExperimental(item)
     }))
     .sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.itemId.localeCompare(b.itemId));
+}
+
+export function isCustomizationGrantItem(item = {}) {
+  return String(item.category || "").toLowerCase() === "customizations" &&
+    String(item.source || "").toLowerCase() === "customizations";
+}
+
+export function listCustomizationGrantItems(repoRoot) {
+  const items = JSON.parse(readFileSync(resolve(repoRoot, "runtime/data/admin-items.json"), "utf8"));
+  return CUSTOMIZATION_GROUPS.flatMap((group) => items
+    .filter(isCustomizationGrantItem)
+    .filter((item) => group.matches(String(item.id || "")))
+    .map((item) => ({ ...normalizeItem(item, repoRoot), groupId: group.id, group: group.name })))
+    .sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.itemId.localeCompare(b.itemId));
+}
+
+export function customizationGrantGroups(repoRoot) {
+  const items = listCustomizationGrantItems(repoRoot);
+  return CUSTOMIZATION_GROUPS.map(({ id, name }) => ({
+    id,
+    name,
+    count: items.filter((item) => item.groupId === id).length
+  }));
+}
+
+export function customizationGrantStatus(itemId, { pending = [] } = {}) {
+  const pendingIds = new Set((pending || []).map((value) => String(value).toLowerCase()));
+  return pendingIds.has(String(itemId || "").toLowerCase()) ? "Pending" : "Available";
 }
 
 export function buildingUnlockStatus(itemId, { owned = [], pending = [], supported = true } = {}) {

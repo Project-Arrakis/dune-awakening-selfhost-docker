@@ -6,11 +6,18 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function PlayerVehiclesTab({ playerId, playerName }: { playerId: string; playerName: string }) {
+type PlayerVehiclesTabProps = {
+  playerId: string;
+  playerName: string;
+  confirmAction: (message: string, options?: { title?: string; confirmLabel?: string; warning?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
+};
+
+export function PlayerVehiclesTab({ playerId, playerName, confirmAction }: PlayerVehiclesTabProps) {
   const [rows, setRows] = useState<VehicleRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [supported, setSupported] = useState(true);
   const [canEditPermissions, setCanEditPermissions] = useState(false);
+  const [storageSupported, setStorageSupported] = useState(false);
   const [message, setMessage] = useState("");
   const requestIdRef = useRef(0);
 
@@ -24,12 +31,14 @@ export function PlayerVehiclesTab({ playerId, playerName }: { playerId: string; 
       setRows(result.rows || []);
       setSupported(result.capabilities?.vehicles !== false);
       setCanEditPermissions(result.capabilities?.vehiclePermissions === true);
+      setStorageSupported(result.capabilities?.vehicleStorage === true);
       setMessage(result.reason || "");
     } catch (error) {
       if (requestIdRef.current !== requestId) return;
       setRows([]);
       setSupported(true);
       setCanEditPermissions(false);
+      setStorageSupported(false);
       setMessage(errorText(error));
     } finally {
       if (requestIdRef.current === requestId) setLoading(false);
@@ -69,6 +78,8 @@ export function PlayerVehiclesTab({ playerId, playerName }: { playerId: string; 
                   context="player"
                   emptyMessage={`${playerName} has no owned or shared vehicles.`}
                   canEditPermissions={canEditPermissions}
+                  storageSupported={storageSupported}
+                  confirmAction={confirmAction}
                   // ownedCount above derives from row.relationship, which
                   // shifts after a rank change -- refetch so the summary and
                   // the table stay in sync with what was just saved.

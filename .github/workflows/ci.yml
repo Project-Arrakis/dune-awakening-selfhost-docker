@@ -135,8 +135,10 @@ jobs:
         run: |
           runtime/tests/test-command-auth-token.sh
           runtime/tests/test-bind-ip-resolution.sh
+          runtime/tests/test-rmq-host-resolution.sh
           runtime/tests/test-deepdesert-dual-startup-reconcile.sh
           runtime/tests/test-deepdesert-dual-selector-cleanup.sh
+          runtime/tests/test-deepdesert-layout-apply-safety.sh
           runtime/tests/test-director-log-id-normalization.sh
           tests/fls-signals-test.sh
           tests/steamcmd-signals-test.sh
@@ -150,6 +152,7 @@ jobs:
           tests/autoscaler-igw-socket-health-test.sh
           tests/autoscaler-heal-scan-rate-limit-test.sh
           tests/autoscaler-scan-gating-inventory-test.sh
+          tests/coriolis-coordinator-test.sh
           tests/db-backup-validation-test.sh
           tests/battlegroup-identity-test.sh
           tests/db-system-backup-test.sh

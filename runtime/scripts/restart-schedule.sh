@@ -512,7 +512,22 @@ show_status() {
 }
 
 run_now() {
-  local public_ip_fallback
+  local public_ip_fallback lifecycle_lock_file rc
+
+  lifecycle_lock_file="${DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE:-runtime/generated/battlegroup-lifecycle.lock}"
+  mkdir -p "$(dirname "$lifecycle_lock_file")"
+  if [ "${DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD:-0}" != "1" ]; then
+    if flock -n -E 75 -o "$lifecycle_lock_file" env DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD=1 "$ROOT_DIR/runtime/scripts/restart-schedule.sh" run-now; then
+      return 0
+    else
+      rc=$?
+      if [ "$rc" -eq 75 ]; then
+        echo "Skipping scheduled restart: another battlegroup lifecycle operation is already running."
+        return 0
+      fi
+      return "$rc"
+    fi
+  fi
 
   echo "=== Scheduled battlegroup restart ==="
   echo "Validating persisted Sietch and gameplay settings..."

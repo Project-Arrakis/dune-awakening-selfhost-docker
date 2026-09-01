@@ -76,6 +76,8 @@ assert_contains() {
 
 assert_contains "runtime/scripts/publish-deepdesert-state.sh" 'routing_key="server_state.DeepDesert_1"'
 assert_contains "runtime/scripts/publish-deepdesert-overrides.sh" 'SOURCE_ROUTING_KEY="server_state.DeepDesert_1"'
+assert_contains "runtime/scripts/publish-deepdesert-overrides.sh" 'if managed_multi_instance_layout; then'
+assert_contains "runtime/scripts/publish-deepdesert-overrides.sh" 'restore_route'
 
 echo "Confirmed: both publishers target the same routing key (server_state.DeepDesert_1)."
 

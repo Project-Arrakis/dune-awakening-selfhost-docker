@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
-import { Brain, Building2, Car, ChevronDown, ChevronUp, Hammer, Map as MapIcon, Microscope, ScrollText, ShieldCheck, Star, UserRound } from "lucide-react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { Brain, Building2, Car, ChevronDown, ChevronUp, Hammer, House, Map as MapIcon, Microscope, Palette, ScrollText, ShieldCheck, Star, UserRound } from "lucide-react";
 import { adminApi } from "../../api/admin";
-import { playersApi } from "../../api/players";
+import { playersApi, type CharacterRecoveryInspection } from "../../api/players";
 import type { Task } from "../../api/setup";
 import { compareTableValues, DataTable, useResizableColumns, useSortableRows, useSortState } from "../../components/common/DataTable";
 import { InfoTooltip } from "../../components/common/DisplayPrimitives";
@@ -20,9 +20,14 @@ import { journeyActionsAvailable } from "./journeySafety";
 import { adminTaskFailureDetail, friendlyCraftingSource, friendlyInlineError, friendlyVehicleName, friendlyVehicleTemplateName, parseSkillModuleRows, parseVehicleCatalog, playerAdmin_bulkItemFailure, playerAdmin_friendlyFailure, playerAdmin_taskFailureMessage, playerAssignedFaction, splitInventoryByGroup, titleCaseWords, vehicleSpawnDistanceLabel, vehicleSpawnOffsetUnits } from "./playerAdminUtils";
 import { BlueprintsPanel } from "../blueprints/BlueprintsPanel";
 import { BuildingUnlocksTab } from "./BuildingUnlocksTab";
+import { CustomizationsTab } from "./CustomizationsTab";
+import { PlayerTeleportControls } from "./PlayerTeleportControls";
+import type { RestartGate } from "../server/restartQueueGuard";
+
+const PlayerBasesPanel = lazy(() => import("../bases/BasesPanel").then((module) => ({ default: module.BasesPanel })));
 
 type CraftingRecipeRow = { recipeId: string; displayName: string; category: string; source: string; qualityLevel: number; unlocked: boolean };
-type ResearchItemRow = { itemKey: string; displayName: string; category: string; productGroup: string; type: string; unlockedState: string; unlocked: boolean; isNew: boolean; recipeId: string; recipeUnlocked: boolean; researchPurchased: boolean; actionable: boolean; needsRecipeRepair: boolean };
+type ResearchItemRow = { itemKey: string; displayName: string; category: string; productGroup: string; type: string; unlockedState: string; unlocked: boolean; isNew: boolean; recipeId: string; recipeUnlocked: boolean; unlockKind: string; unlockId: string; unlockMaterialized: boolean; researchPurchased: boolean; actionable: boolean; needsUnlockRepair: boolean };
 type SkillModuleCatalogRow = { skillModule: string; category: string; id: string; maxLevel: number };
 type LearnedSkillModuleRow = { module_id?: unknown; moduleId?: unknown; id?: unknown; level?: unknown; rank?: unknown; skill_points_spent?: unknown; skillPointsSpent?: unknown };
 type SkillCard = { name: string; type: string; rank: string };
@@ -57,16 +62,18 @@ function playerAdmin_effectiveGrade(value: unknown, item?: { itemId?: string; id
   return Math.max(catalogItemMinimumGrade(item), normalizeItemGrade(value));
 }
 
-export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId, playerName, onError, onRefresh, onClose, confirmAction, waitForTask, formatMutationResult }: { detail: Record<string, unknown> | null; fallback: Record<string, unknown>; dbPlayerId: string; actionPlayerId: string; playerName: string; onError: (text: string) => void; onRefresh: () => void; onClose: () => void; confirmAction: ConfirmAction; waitForTask: (task: Task) => Promise<Task>; formatMutationResult: (result: unknown) => string }) {
+export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId, playerName, onError, onRefresh, onClose, confirmAction, waitForTask, formatMutationResult, restartGate }: { detail: Record<string, unknown> | null; fallback: Record<string, unknown>; dbPlayerId: string; actionPlayerId: string; playerName: string; onError: (text: string) => void; onRefresh: () => void; onClose: () => void; confirmAction: ConfirmAction; waitForTask: (task: Task) => Promise<Task>; formatMutationResult: (result: unknown) => string; restartGate: RestartGate }) {
   const playerAdmin_tabs = [
     { label: "Character", icon: UserRound },
     { label: "Crafting", icon: Hammer },
     { label: "Research", icon: Microscope },
     { label: "Building Sets", icon: Building2 },
+    { label: "Customizations", icon: Palette },
     { label: "Skills", icon: Brain },
     { label: "Specialization", icon: Star },
     { label: "Journey", icon: MapIcon },
     { label: "Blueprints", icon: ScrollText },
+    { label: "Bases", icon: House },
     { label: "Vehicles", icon: Car },
     { label: "Admin", icon: ShieldCheck }
   ];
@@ -122,11 +129,14 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const [playerAdmin_journeyError, playerAdmin_setJourneyError] = useState("");
   const [playerAdmin_journeyFilter, playerAdmin_setJourneyFilter] = useState("");
   const [playerAdmin_expandedJourney, playerAdmin_setExpandedJourney] = useState<Record<string, boolean>>({});
-  const [playerAdmin_coords, playerAdmin_setCoords] = useState({ x: "", y: "", z: "", yaw: "0" });
   const [playerAdmin_vehicleId, playerAdmin_setVehicleId] = useState("");
   const [playerAdmin_vehicleTemplate, playerAdmin_setVehicleTemplate] = useState("");
   const [playerAdmin_vehicleCatalog, playerAdmin_setVehicleCatalog] = useState<Record<string, string[]>>({});
   const [playerAdmin_vehicleDecayThreshold, playerAdmin_setVehicleDecayThreshold] = useState("50");
+  const [playerAdmin_characterRecovery, playerAdmin_setCharacterRecovery] = useState<CharacterRecoveryInspection | null>(null);
+  const [playerAdmin_characterRecoveryLoading, playerAdmin_setCharacterRecoveryLoading] = useState(false);
+  const [playerAdmin_characterRecoveryError, playerAdmin_setCharacterRecoveryError] = useState("");
+  const [playerAdmin_recoveryCandidateId, playerAdmin_setRecoveryCandidateId] = useState("");
   const playerAdmin_resultTimer = useRef<number | null>(null);
   const playerAdmin_skillBaselineRequest = useRef(0);
   useEffect(() => {
@@ -224,6 +234,60 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       const response = await playerAdmin_withSummaryRefresh(() => playersApi.repairFactionReputation(dbPlayerId, "REPAIR FACTION REPUTATION"));
       return { message: String(response.result?.message || `${playerName}'s earned faction progression and reputation were repaired. Relog required.`) };
     }, `${playerName}'s earned faction progression and reputation were repaired. Relog required.`, { actionType: "Repair Faction", target: playerName, amount: "1" });
+  }
+  async function playerAdmin_repairLandsraadQuests() {
+    if (!(await confirmAction(`Check and repair known Landsraad quest problems for ${playerName}? The player must be offline. A full safety backup is created only when a repair is needed.`, {
+      title: "Repair Landsraad Quests",
+      confirmLabel: "Repair Quests",
+      details: [{ label: "Player", value: playerName, tone: "accent" }]
+    }))) return;
+    await playerAdmin_runAction("repairLandsraadQuests", `Checking ${playerName}'s Landsraad quests`, async () => {
+      const response = await playersApi.repairLandsraadQuests(dbPlayerId, "REPAIR LANDSRAAD QUESTS");
+      await playerAdmin_loadJourneyRows();
+      return { message: String(response.result?.message || "No known Landsraad quest problems were found.") };
+    }, "No known Landsraad quest problems were found.", { actionType: "Repair Landsraad Quests", target: playerName, amount: "Known Problems" });
+  }
+  async function playerAdmin_loadCharacterRecovery() {
+    if (!dbPlayerId) return;
+    playerAdmin_setCharacterRecoveryLoading(true);
+    playerAdmin_setCharacterRecoveryError("");
+    try {
+      const recovery = await playersApi.characterRecovery(dbPlayerId);
+      playerAdmin_setCharacterRecovery(recovery);
+      playerAdmin_setRecoveryCandidateId((current) => recovery.candidates.some((candidate) => candidate.characterStateId === current)
+        ? current
+        : recovery.suggestedCandidateId);
+    } catch (error) {
+      playerAdmin_setCharacterRecovery(null);
+      playerAdmin_setCharacterRecoveryError(friendlyInlineError(error) || "Character recovery status could not be loaded.");
+    } finally {
+      playerAdmin_setCharacterRecoveryLoading(false);
+    }
+  }
+  async function playerAdmin_recoverDeletedCharacter() {
+    const candidate = playerAdmin_characterRecovery?.candidates.find((row) => row.characterStateId === playerAdmin_recoveryCandidateId);
+    if (!candidate) return;
+    const currentName = playerAdmin_characterRecovery?.active.characterName || playerName;
+    if (!(await confirmAction(
+      `Recover ${candidate.characterName}'s saved character data for ${currentName}? The player must remain offline. A Restore Safety Backup is created, the current character is kept as deleted for rollback, and ${candidate.sietch || "the affected Sietch"} is restarted. The current Funcom character name remains ${currentName}. After recovery, if the game shows a deleted-character or character-creation warning, cancel it and do not proceed.`,
+      {
+        title: "Recover Deleted Character",
+        confirmLabel: "Recover Character",
+        danger: true,
+        details: [
+          { label: "Current Character", value: currentName },
+          { label: "Recover From", value: candidate.characterName, tone: "accent" },
+          { label: "Detected Event", value: candidate.removalReason || "Unknown" },
+          { label: "Items Retained", value: String(candidate.itemCount), tone: "success" },
+          { label: "Sietch", value: candidate.sietch || `Partition ${candidate.partitionId}` }
+        ]
+      }
+    ))) return;
+    await playerAdmin_runAction("recoverDeletedCharacter", `Recovering ${candidate.characterName}'s saved character data`, async () => {
+      const response = await playersApi.recoverDeletedCharacter(dbPlayerId, candidate.characterStateId, "RECOVER DELETED CHARACTER");
+      onRefresh();
+      return { message: String(response.result?.message || `${candidate.characterName}'s saved character data was recovered.`) };
+    }, `${candidate.characterName}'s saved character data was recovered.`, { actionType: "Recover Deleted Character", target: currentName, amount: `${candidate.itemCount} Items` });
   }
   function playerAdmin_chooseItem(item: CatalogItem | null) {
     playerAdmin_setSelectedItem(item);
@@ -374,9 +438,12 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
         isNew: Boolean(row.isNew),
         recipeId: String(row.recipeId || ""),
         recipeUnlocked: Boolean(row.recipeUnlocked),
+        unlockKind: String(row.unlockKind || "recipe"),
+        unlockId: String(row.unlockId || row.recipeId || ""),
+        unlockMaterialized: Boolean(row.unlockMaterialized ?? row.recipeUnlocked),
         researchPurchased: Boolean(row.researchPurchased),
         actionable: Boolean(row.actionable),
-        needsRecipeRepair: Boolean(row.needsRecipeRepair)
+        needsUnlockRepair: Boolean(row.needsUnlockRepair ?? row.needsRecipeRepair)
       })).filter((row) => row.itemKey));
     } catch (error) {
       playerAdmin_setResearchRows([]);
@@ -393,10 +460,16 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       const response = await playersApi.unlockResearchItem(dbPlayerId, { itemKey: row.itemKey, confirmation: "UNLOCK RESEARCH ITEM" });
       const alreadyUnlocked = Boolean(response.result?.alreadyUnlocked);
       const repairedRecipe = Boolean(response.result?.repairedRecipe);
-      playerAdmin_addLog("Unlock Research", row.itemKey, "1", repairedRecipe ? "Recipe Repaired" : alreadyUnlocked ? "Already Unlocked" : "Succeeded");
+      const repairedUnlock = Boolean(response.result?.repairedUnlock);
+      const buildingUnlock = String(response.result?.unlockKind || row.unlockKind) === "building";
+      playerAdmin_addLog("Unlock Research", row.itemKey, "1", repairedUnlock ? (buildingUnlock ? "Building Unlock Repaired" : "Recipe Repaired") : alreadyUnlocked ? "Already Unlocked" : "Succeeded");
       await playerAdmin_loadResearchItems();
       await playerAdmin_loadCraftingRecipes();
-      playerAdmin_showResult(key, repairedRecipe ? "Build recipe repaired. Player will see it on next login." : alreadyUnlocked ? "Already researched and buildable." : "Researched and build recipe unlocked. Player will see it on next login.", "success");
+      playerAdmin_showResult(key, repairedUnlock || repairedRecipe
+        ? `${buildingUnlock ? "Building unlock" : "Build recipe"} repaired. Player will see it on next login.`
+        : alreadyUnlocked
+          ? "Already researched and buildable."
+          : `Researched and ${buildingUnlock ? "building" : "build recipe"} unlocked. Player will see it on next login.`, "success");
     } catch (error) {
       const message = friendlyInlineError(error);
       playerAdmin_showResult(key, message, "danger");
@@ -609,16 +682,6 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       playerAdmin_addLog(`Reset ${row.category}`, row.rawName || row.id, "1", `Failed: ${message}`);
     }
   }
-  async function playerAdmin_useCurrentPosition() {
-    const data = await playersApi.position(dbPlayerId);
-    const position = (data.position || data) as Record<string, unknown>;
-    const x = firstDefined(position.x, position.X, position.location_x, position.pos_x);
-    const y = firstDefined(position.y, position.Y, position.location_y, position.pos_y);
-    const z = firstDefined(position.z, position.Z, position.location_z, position.pos_z);
-    const yaw = firstDefined(position.yaw, position.Yaw, position.rotation_yaw, position.rot_yaw, 0);
-    if (x === undefined || y === undefined || z === undefined) throw new Error("Current position is not available from the detected player position schema.");
-    playerAdmin_setCoords({ x: String(x), y: String(y), z: String(z), yaw: String(yaw ?? 0) });
-  }
   async function playerAdmin_loadVehicles() {
     try {
       const response = await adminApi.structuredVehicles();
@@ -684,6 +747,9 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   useEffect(() => {
     if (playerAdmin_activeTab === "Admin" && !Object.keys(playerAdmin_vehicleCatalog).length) void playerAdmin_loadVehicles();
   }, [playerAdmin_activeTab, Object.keys(playerAdmin_vehicleCatalog).length]);
+  useEffect(() => {
+    if (playerAdmin_activeTab === "Admin") void playerAdmin_loadCharacterRecovery();
+  }, [playerAdmin_activeTab, dbPlayerId]);
   useEffect(() => {
     playerAdmin_setSkillBaseline({});
     playerAdmin_setSkillChanges({});
@@ -934,7 +1000,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       secondaryActionLabel="Result"
       secondaryActionClassName="playerAdmin_schematicResultCell"
       actionClassName="playerAdmin_schematicActionCell"
-      action={(row) => <button className="playerAdmin_stateActionButton" title={!row.actionable && !row.unlocked ? "Group markers cannot be safely unlocked as one recipe. Unlock the individual Recipe or Building entries." : undefined} disabled={!dbPlayerId || !Boolean(row.actionable) || Boolean(row.unlocked) || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockResearchItem(row as unknown as ResearchItemRow)}>{playerAdmin_busyActionKey === `research:${row.itemKey}` ? (row.needsRecipeRepair ? "Repairing..." : "Researching...") : row.unlocked ? "Researched" : !row.actionable ? "Group Entry" : row.needsRecipeRepair ? "Repair Unlock" : "Research"}</button>}
+      action={(row) => <button className="playerAdmin_stateActionButton" title={!row.actionable && !row.unlocked ? "Group markers cannot be safely unlocked as one entry. Unlock the individual Recipe or Building entries." : undefined} disabled={!dbPlayerId || !Boolean(row.actionable) || Boolean(row.unlocked) || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockResearchItem(row as unknown as ResearchItemRow)}>{playerAdmin_busyActionKey === `research:${row.itemKey}` ? (row.needsUnlockRepair ? "Repairing..." : "Researching...") : row.unlocked ? "Researched" : !row.actionable ? "Group Entry" : row.needsUnlockRepair ? "Repair Unlock" : "Research"}</button>}
     />
   );
   const playerAdmin_journeySortStory = useSortState();
@@ -1154,6 +1220,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
         </div>
       )}
       {playerAdmin_activeTab === "Building Sets" && <BuildingUnlocksTab dbPlayerId={dbPlayerId} playerName={playerName} confirmAction={confirmAction} onActionLog={playerAdmin_addLog} />}
+      {playerAdmin_activeTab === "Customizations" && <CustomizationsTab dbPlayerId={dbPlayerId} playerName={playerName} confirmAction={confirmAction} onActionLog={playerAdmin_addLog} />}
       {playerAdmin_activeTab === "Skills" && (
         <div className="playerAdmin_content">
           <section className="playerAdmin_box">
@@ -1205,8 +1272,9 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       )}
       {playerAdmin_activeTab === "Journey" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Journey Browser</h4><div className="playerAdmin_boxHeaderLine playerAdmin_filterHeaderLine"><p>Journey changes require the player to be fully offline and take effect on the next login. Reset keeps rewards already granted and cannot recreate a consumed Contract item.</p><div className="playerAdmin_filterToolsRow"><input className="playerAdmin_filterTextInput" value={playerAdmin_journeyFilter} onChange={(event) => playerAdmin_setJourneyFilter(event.target.value)} placeholder="Filter by name, ID, status, or dependency" aria-label="Filter Journey Browser" />{playerAdmin_journeyFilter && <button type="button" onClick={() => playerAdmin_setJourneyFilter("")}>Clear</button>}<span className="playerAdmin_note">{playerAdmin_journeyFilterTerms.length ? `${playerAdmin_filteredJourneyEntryCount} of ${playerAdmin_journeyEntryCount}` : playerAdmin_journeyEntryCount} Journey Entr{(playerAdmin_journeyFilterTerms.length ? playerAdmin_filteredJourneyEntryCount : playerAdmin_journeyEntryCount) === 1 ? "y" : "ies"} Detected</span></div></div>{playerAdmin_journeyError && <p className="playerAdmin_note danger">{playerAdmin_journeyError}</p>}{playerAdmin_toggleBox("journey_story", `Story (${playerAdmin_filteredJourneyRows.story.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.story.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.story, playerAdmin_journeyFilterTerms.length ? "No story entries match this filter." : "No story entries were found.", playerAdmin_journeySortStory, playerAdmin_journeyResizeStory))}{playerAdmin_toggleBox("journey_contract", `Contracts (${playerAdmin_filteredJourneyRows.contract.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.contract.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.contract, playerAdmin_journeyFilterTerms.length ? "No contract entries match this filter." : "No contract entries were found.", playerAdmin_journeySortContract, playerAdmin_journeyResizeContract))}{playerAdmin_toggleBox("journey_codex", `Codex (${playerAdmin_filteredJourneyRows.codex.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.codex.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.codex, playerAdmin_journeyFilterTerms.length ? "No codex entries match this filter." : "No codex entries were found.", playerAdmin_journeySortCodex, playerAdmin_journeyResizeCodex))}{playerAdmin_toggleBox("journey_tutorial", `Tutorial (${playerAdmin_filteredJourneyRows.tutorial.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.tutorial.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.tutorial, playerAdmin_journeyFilterTerms.length ? "No tutorial entries match this filter." : "No tutorial entries were found.", playerAdmin_journeySortTutorial, playerAdmin_journeyResizeTutorial))}</section></div>}
       {playerAdmin_activeTab === "Blueprints" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Blueprints</h4><BlueprintsPanel dbPlayerId={dbPlayerId} playerName={playerName} onError={onError} confirmAction={confirmAction} /></section></div>}
-      {playerAdmin_activeTab === "Vehicles" && <PlayerVehiclesTab playerId={dbPlayerId} playerName={playerName} />}
-      {playerAdmin_activeTab === "Admin" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Player Admin Actions</h4><p>Use this area for player maintenance and high-impact admin actions. Some actions require the player to be online, while database repairs require the player to be offline.</p><PlayerFactionAssignment playerId={dbPlayerId} playerName={playerName} currentFaction={String(playerAdmin_profile.faction || "Neutral")} guild={playerAdmin_profile.guild} supported={playerAdmin_capabilities.assignFaction === true} confirmAction={confirmAction} onRefresh={() => { onRefresh(); playerAdmin_setSummaryRefreshKey((current) => current + 1); }} onActionLog={(actionType, target, amount, notes) => playerAdmin_addLog(actionType, target, amount, notes)} /><div className="playerAdmin_section playerAdmin_repairSection"><h5>Repair</h5><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Faction</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Restores earned story progression and synchronizes reputation. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_repairFactionReputation()}>Repair Faction</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairFactionReputation" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Gear</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Equipped and carried gear durability. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
+      {playerAdmin_activeTab === "Bases" && <div className="playerAdmin_content"><Suspense fallback={<section className="playerAdmin_box"><div className="loading-panel"><span className="spinner" aria-hidden="true" /><strong className="loading-dots">Loading Bases</strong></div></section>}><PlayerBasesPanel key={dbPlayerId} playerId={dbPlayerId} playerName={playerName} embedded onError={onError} confirmAction={confirmAction} restartGate={restartGate} formatMutationResult={formatMutationResult} /></Suspense></div>}
+      {playerAdmin_activeTab === "Vehicles" && <PlayerVehiclesTab playerId={dbPlayerId} playerName={playerName} confirmAction={confirmAction} />}
+      {playerAdmin_activeTab === "Admin" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Player Admin Actions</h4><p>Use this area for player maintenance and high-impact admin actions. Some actions require the player to be online, while database repairs require the player to be offline.</p><PlayerFactionAssignment playerId={dbPlayerId} playerName={playerName} currentFaction={String(playerAdmin_profile.faction || "Neutral")} guild={playerAdmin_profile.guild} supported={playerAdmin_capabilities.assignFaction === true} confirmAction={confirmAction} onRefresh={() => { onRefresh(); playerAdmin_setSummaryRefreshKey((current) => current + 1); }} onActionLog={(actionType, target, amount, notes) => playerAdmin_addLog(actionType, target, amount, notes)} /><div className="playerAdmin_section playerAdmin_repairSection"><h5>Repair</h5><div className="playerAdmin_repairRow playerAdmin_characterRecoveryRow"><span className="playerAdmin_repairLabel"><span>Recover Deleted Character</span><em>{playerAdmin_isOnline ? "The player must be offline." : playerAdmin_characterRecoveryLoading ? "Checking deleted character history..." : playerAdmin_characterRecoveryError || (playerAdmin_characterRecovery?.candidates.some((candidate) => candidate.recoverable) ? "Restores the selected character's saved data while preserving the current Funcom identity. A safety backup and Sietch restart are included." : "No recoverable deleted character was detected.")}</em></span><span className="playerAdmin_characterRecoveryControls">{playerAdmin_characterRecovery?.candidates.some((candidate) => candidate.recoverable) && <select aria-label="Deleted character to recover" value={playerAdmin_recoveryCandidateId} onChange={(event) => playerAdmin_setRecoveryCandidateId(event.target.value)}>{playerAdmin_characterRecovery.candidates.filter((candidate) => candidate.recoverable).map((candidate) => <option key={candidate.characterStateId} value={candidate.characterStateId}>{candidate.characterName} · {candidate.itemCount} Items · {candidate.deletedAt ? new Date(candidate.deletedAt).toLocaleString() : "Unknown Date"}</option>)}</select>}<button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_characterRecoveryLoading || !playerAdmin_recoveryCandidateId || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_recoverDeletedCharacter()}>Recover Character</button></span><InlineActionResult result={playerAdmin_actionResult} resultKey="recoverDeletedCharacter" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Faction</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Restores earned story progression and synchronizes reputation. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_repairFactionReputation()}>Repair Faction</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairFactionReputation" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Landsraad Quests</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Repairs recognized stuck Landsraad quest states. A safety backup is created when needed."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_repairLandsraadQuests()}>Repair Quests</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairLandsraadQuests" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Gear</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Equipped and carried gear durability. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Repair gear for ${playerName}? The player must be offline and should relog after this.`))) return;
         void playerAdmin_runAction("repairGear", `Repairing ${playerName}'s gear`, async () => {
           const response = await playersApi.repairGear(dbPlayerId, "REPAIR GEAR");
@@ -1219,16 +1287,19 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
               : `No gear needed repair (${scanned} item${scanned === 1 ? "" : "s"} scanned).`
           };
         }, `${playerName}'s gear was repaired. Relog required.`, { actionType: "Repair Gear", target: playerName, amount: "1" });
-      }}>Repair Gear</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairGear" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span className="playerAdmin_labelWithInfo"><span>Repair Vehicle Durability</span><InfoTooltip id="repair-vehicle-durability-help" label="About Repair Vehicle Durability">Repairs owned vehicle modules whose current durability is below the selected percentage of a trustworthy stored or inferred maximum. Modules without usable current durability or a trustworthy maximum are skipped. The player must be offline and should relog afterward.</InfoTooltip></span><label className="playerAdmin_vehicleDecayField"><span>Repair Below</span><input value={playerAdmin_vehicleDecayThreshold} onChange={(event) => playerAdmin_setVehicleDecayThreshold(event.target.value)} inputMode="numeric" aria-label="Vehicle durability repair threshold percent" /><span>%</span></label><em>{playerAdmin_isOnline ? "The player must be offline." : "Repairs eligible owned vehicle modules below this percentage. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
+      }}>Repair Gear</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairGear" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span className="playerAdmin_labelWithInfo"><span>Repair Vehicle Durability</span><InfoTooltip id="repair-vehicle-durability-help" label="About Repair Vehicle Durability">Repairs owned vehicle modules whose current durability is below the selected percentage of a trustworthy stored or inferred maximum. Modules without usable current durability or a trustworthy maximum are skipped. Affected running map servers restart so their in-memory vehicle state cannot overwrite the repair.</InfoTooltip></span><label className="playerAdmin_vehicleDecayField"><span>Repair Below</span><input value={playerAdmin_vehicleDecayThreshold} onChange={(event) => playerAdmin_setVehicleDecayThreshold(event.target.value)} inputMode="numeric" aria-label="Vehicle durability repair threshold percent" /><span>%</span></label><em>{playerAdmin_isOnline ? "The player must be offline." : "Repairs eligible modules and restarts only their affected running maps."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
         const threshold = Number(playerAdmin_vehicleDecayThreshold);
         if (!Number.isFinite(threshold) || threshold < 1 || threshold > 100) {
           playerAdmin_showResult("repairVehicleDecay", "Use a threshold from 1 to 100.", "danger");
           return;
         }
-        if (!(await confirmAction(`Repair owned vehicle modules below ${threshold}% durability for ${playerName}? Modules without a trustworthy stored maximum will be skipped.`, {
+        if (!(await confirmAction(`Repair owned vehicle modules below ${threshold}% durability for ${playerName}? Affected running map servers will restart briefly so the game cannot overwrite the repair. Players on those maps will be disconnected. Modules without a trustworthy stored maximum will be skipped.`, {
           title: "Repair Vehicle Durability",
           confirmLabel: "Repair Vehicles",
-          details: [{ label: "Threshold", value: `${threshold}%`, tone: "accent" }]
+          details: [
+            { label: "Threshold", value: `${threshold}%`, tone: "accent" },
+            { label: "Map Servers", value: "Restart affected maps", tone: "danger" }
+          ]
         }))) return;
         void playerAdmin_runAction("repairVehicleDecay", `Repairing ${playerName}'s vehicle decay`, async () => {
           const response = await playersApi.repairVehicleDecay(dbPlayerId, { thresholdPercent: threshold, confirmation: "REPAIR VEHICLE DECAY" });
@@ -1240,15 +1311,17 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           const missingMaximum = Number(result.missingMaximum || 0);
           const missingCurrent = Number(result.missingCurrent || 0);
           const repairedVehicles = Number(result.repairedVehicles || 0);
+          const mapServersRestarted = Number(result.mapServersRestarted || 0);
+          const restartFailures = Array.isArray(result.restartFailures) ? result.restartFailures.map(String) : [];
           const skippedMaximumNote = missingMaximum > 0 ? ` ${missingMaximum} module${missingMaximum === 1 ? " was" : "s were"} skipped because no trustworthy maximum durability was available.` : "";
           const skippedCurrentNote = missingCurrent > 0 ? ` ${missingCurrent} module${missingCurrent === 1 ? " was" : "s were"} skipped because no usable current durability was stored.` : "";
           const skippedNote = `${skippedMaximumNote}${skippedCurrentNote}`;
           return {
             message: repaired > 0
-              ? `Repaired ${repaired} vehicle module${repaired === 1 ? "" : "s"} across ${repairedVehicles} vehicle${repairedVehicles === 1 ? "" : "s"}. Relog required.${skippedNote}`
+              ? `Repaired ${repaired} vehicle module${repaired === 1 ? "" : "s"} across ${repairedVehicles} vehicle${repairedVehicles === 1 ? "" : "s"}.${mapServersRestarted ? ` Restarted ${mapServersRestarted} affected map server${mapServersRestarted === 1 ? "" : "s"}.` : " All affected maps were already stopped."}${restartFailures.length ? ` Restart failed: ${restartFailures.join("; ")}.` : ""}${skippedNote}`
               : `No comparable vehicle modules were below the ${threshold}% durability threshold (${scanned} module${scanned === 1 ? "" : "s"} across ${vehicles} vehicle${vehicles === 1 ? "" : "s"} scanned; ${comparable} had usable current durability and a trustworthy maximum).${skippedNote}`
           };
-        }, `${playerName}'s vehicle decay was repaired. Relog required.`, { actionType: "Repair Vehicle Decay", target: playerName, amount: `${threshold}%` });
+        }, `${playerName}'s vehicle durability was repaired.`, { actionType: "Repair Vehicle Decay", target: playerName, amount: `${threshold}%` });
       }}>Repair Vehicles</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairVehicleDecay" /></div></div><div className="playerAdmin_section playerAdmin_dangerSection"><h5>Danger Zone</h5><div className="playerAdmin_buttonRow"><button className="danger" disabled={!actionPlayerId || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Repair ${playerName}'s login queue? Use this only when the player is stuck on connection errors and is not actually in-game.`, {
           title: "Repair Login Queue",
@@ -1290,10 +1363,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       }}>Wipe Inventory</button><button className="danger" disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Reset ${playerName}'s progression?`))) return;
         void playerAdmin_runAction("adminReset", `Resetting ${playerName}'s progression`, () => playerAdmin_runTask(() => playersApi.resetProgression(actionPlayerId, "RESET PROGRESSION")), `${playerName}'s progression was reset.`, { actionType: "Reset Progression", target: playerName, amount: "1" }, "danger");
-      }}>Reset Progression</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairLoginQueue" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminKick" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminBan" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminUnban" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminWipe" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminReset" /></div></div></section><section className="playerAdmin_box"><h4>Movement / Vehicles</h4><p>The player must be online.</p><div className="playerAdmin_actionRow playerAdmin_coordinatesRow"><span>Coordinates</span><input value={playerAdmin_coords.x} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, x: event.target.value })} placeholder="X" /><input value={playerAdmin_coords.y} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, y: event.target.value })} placeholder="Y" /><input value={playerAdmin_coords.z} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, z: event.target.value })} placeholder="Z" /><input value={playerAdmin_coords.yaw} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, yaw: event.target.value })} placeholder="Yaw" /><button disabled={!dbPlayerId || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_runAction("adminPosition", `Loading ${playerName}'s position`, playerAdmin_useCurrentPosition, "Position loaded. Edit X/Y/Z before teleporting if needed.", { actionType: "Load Position", target: playerName, amount: "1" })}>Use Current Position</button><button disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
-        if (!(await confirmAction(`Teleport ${playerName} to X=${playerAdmin_coords.x} Y=${playerAdmin_coords.y} Z=${playerAdmin_coords.z}?`))) return;
-        void playerAdmin_runAction("adminTeleport", `Teleporting ${playerName}`, () => playerAdmin_runTask(() => playersApi.teleport(actionPlayerId, { x: Number(playerAdmin_coords.x), y: Number(playerAdmin_coords.y), z: Number(playerAdmin_coords.z), yaw: Number(playerAdmin_coords.yaw) })), `${playerName} was teleported.`, { actionType: "Teleport", target: playerName, amount: "1" });
-      }}>Teleport</button><InlineActionResult result={playerAdmin_actionResult} resultKey="adminPosition" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminTeleport" /></div><div className="playerAdmin_actionRow playerAdmin_spawnVehicleRow"><span>Spawn Vehicle</span><select value={playerAdmin_vehicleId} onChange={(event) => { const nextVehicle = event.target.value; playerAdmin_setVehicleId(nextVehicle); playerAdmin_setVehicleTemplate([...(playerAdmin_vehicleCatalog[nextVehicle] || [])].sort((a, b) => friendlyVehicleTemplateName(a).localeCompare(friendlyVehicleTemplateName(b)))[0] || ""); }}>{playerAdmin_vehicleIds.length === 0 && <option value="">Manual Vehicle ID</option>}{playerAdmin_vehicleIds.map((id) => <option key={id} value={id}>{friendlyVehicleName(id)}</option>)}</select><select value={playerAdmin_vehicleTemplate} onChange={(event) => playerAdmin_setVehicleTemplate(event.target.value)}>{playerAdmin_selectedTemplates.length === 0 && <option value="">Manual Template</option>}{playerAdmin_selectedTemplates.map((template) => <option key={template} value={template}>{friendlyVehicleTemplateName(template)}</option>)}</select><button disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
+      }}>Reset Progression</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairLoginQueue" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminKick" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminBan" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminUnban" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminWipe" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminReset" /></div></div></section><section className="playerAdmin_box"><h4>Movement / Vehicles</h4><PlayerTeleportControls playerId={dbPlayerId} playerName={playerName} isOnline={playerAdmin_isOnline} confirmAction={confirmAction} onRefresh={onRefresh} onActionLog={playerAdmin_addLog} /><div className="playerAdmin_actionRow playerAdmin_spawnVehicleRow"><span>Spawn Vehicle</span><select value={playerAdmin_vehicleId} onChange={(event) => { const nextVehicle = event.target.value; playerAdmin_setVehicleId(nextVehicle); playerAdmin_setVehicleTemplate([...(playerAdmin_vehicleCatalog[nextVehicle] || [])].sort((a, b) => friendlyVehicleTemplateName(a).localeCompare(friendlyVehicleTemplateName(b)))[0] || ""); }}>{playerAdmin_vehicleIds.length === 0 && <option value="">Manual Vehicle ID</option>}{playerAdmin_vehicleIds.map((id) => <option key={id} value={id}>{friendlyVehicleName(id)}</option>)}</select><select value={playerAdmin_vehicleTemplate} onChange={(event) => playerAdmin_setVehicleTemplate(event.target.value)}>{playerAdmin_selectedTemplates.length === 0 && <option value="">Manual Template</option>}{playerAdmin_selectedTemplates.map((template) => <option key={template} value={template}>{friendlyVehicleTemplateName(template)}</option>)}</select><button disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
         const knownTemplates = Object.values(playerAdmin_vehicleCatalog).flat();
         if (knownTemplates.includes(playerAdmin_vehicleId) && !playerAdmin_vehicleCatalog[playerAdmin_vehicleId]) {
           playerAdmin_showResult("adminVehicle", `${playerAdmin_vehicleId} is a vehicle template, not a vehicle ID.`, "danger");

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { Boxes, ChevronDown, ChevronUp, Trash2, X } from "lucide-react";
 import type { VehicleModule, VehicleRow, VehicleSharedEntry } from "../../api/vehicles";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
 import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames";
 import { friendlyMapName } from "../maps/mapNames";
 import { VehiclePermissionsTab } from "./VehiclePermissionsTab";
+import { VehicleStorageOverlay } from "./VehicleStorageOverlay";
 
 const GLOBAL_COLUMNS = ["name", "type", "owner", "shared_with", "condition_percent", "fuel_percent", "location"];
 const PLAYER_COLUMNS = ["name", "type", "relationship", "owner", "condition_percent", "fuel_percent", "location"];
@@ -28,6 +29,32 @@ type VehicleTableProps = {
   onSort?: (column: string) => void;
   canEditPermissions?: boolean;
   onPermissionsSaved?: () => void;
+  // A deep-link request from elsewhere (the Live Map's "Open in Vehicles"
+  // button) to auto-expand one specific vehicle. focusNonce increments on
+  // every request so the same vehicle can be re-focused twice in a row.
+  focusVehicleId?: string;
+  focusNonce?: number;
+  // Required, not optional: an optional prop would let a mount point silently
+  // render VehiclePermissionsTab's transfer button with no confirmation.
+  confirmAction: (message: string, options?: { title?: string; confirmLabel?: string; warning?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
+  // Delete is optional and defaults off, unlike confirmAction above: this is
+  // v1 scoped to the global Vehicles panel only (matching how Delete Base
+  // shipped), so PlayerVehiclesTab's mount is unaffected until these are
+  // deliberately wired through there too.
+  canDeleteVehicle?: boolean;
+  // Whether the server can read a vehicle's cargo hold at all
+  // (capabilities.vehicleStorage). Off by default so a mount that does not
+  // pass it through never offers a button that comes back unsupported.
+  storageSupported?: boolean;
+  // Echoes a cargo-delete failure into the panel-level banner once the modal
+  // is dismissed. Optional: PlayerVehiclesTab has no such banner, and the
+  // overlay's own inline error is the primary surface either way.
+  onError?: (text: string) => void;
+  queuedDeleteVehicleIds?: Set<string>;
+  deletingId?: string;
+  cancelingDeleteId?: string;
+  onDeleteVehicle?: (vehicle: VehicleRow) => void;
+  onCancelQueuedDelete?: (vehicle: VehicleRow) => void;
 };
 
 function toNumber(value: unknown): number | null {
@@ -147,11 +174,20 @@ function renderComponent(module: VehicleModule, index: number) {
   );
 }
 
-export function VehicleTable({ rows, context = "global", emptyMessage = "No vehicles have been found yet.", sortColumn, sortDirection, onSort, canEditPermissions = false, onPermissionsSaved }: VehicleTableProps) {
+export function VehicleTable({
+  rows, context = "global", emptyMessage = "No vehicles have been found yet.", sortColumn, sortDirection, onSort,
+  canEditPermissions = false, onPermissionsSaved, focusVehicleId, focusNonce, confirmAction,
+  canDeleteVehicle = false, storageSupported = false, onError, queuedDeleteVehicleIds, deletingId, cancelingDeleteId, onDeleteVehicle, onCancelQueuedDelete
+}: VehicleTableProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [expandedTab, setExpandedTab] = useState<"components" | "permissions">("components");
+  // The open contents overlay's vehicle, or null. Held here rather than in
+  // renderExpandedRow so the modal is rendered outside the table -- inside it
+  // the dialog would live in a <td>.
+  const [storageFor, setStorageFor] = useState<VehicleRow | null>(null);
   const [instanceNames, setInstanceNames] = useState<Map<string, string>>(new Map());
   const expandedContentRef = useRef<HTMLDivElement>(null);
+  const satisfiedFocusNonceRef = useRef<number | undefined>(undefined);
   const columns = context === "player" ? PLAYER_COLUMNS : GLOBAL_COLUMNS;
   const partitionMapsKey = [...new Set(rows.map((row) => vehiclePartitionMap(row.map)).filter(Boolean))].sort().join(",");
 
@@ -161,6 +197,30 @@ export function VehicleTable({ rows, context = "global", emptyMessage = "No vehi
       setExpandedTab("components");
     }
   }, [expandedId, rows]);
+
+  // The overlay reads one vehicle's hold, so it cannot outlive that vehicle
+  // being on screen -- a background refresh that drops the row (a delete, or
+  // a search the admin changed) closes it rather than leaving a modal
+  // describing something no longer listed.
+  useEffect(() => {
+    if (storageFor && !rows.some((row) => String(row.id) === String(storageFor.id))) setStorageFor(null);
+  }, [rows, storageFor]);
+
+  // The caller's search request and this row data arrive on different
+  // renders (the id lands in `rows` only once the parent's fetch resolves),
+  // so this waits for a matching row instead of setting expandedId eagerly
+  // -- which would just get bounced straight back to null by the reset
+  // effect above while the old (non-matching) rows are still on screen.
+  // satisfiedFocusNonceRef stops a later, unrelated rows refresh (the
+  // 15-minute auto-refresh) from re-opening a panel the admin already
+  // closed by hand.
+  useEffect(() => {
+    if (focusNonce === undefined || !focusVehicleId || satisfiedFocusNonceRef.current === focusNonce) return;
+    if (!rows.some((row) => String(row.id) === focusVehicleId)) return;
+    satisfiedFocusNonceRef.current = focusNonce;
+    setExpandedTab("components");
+    setExpandedId(focusVehicleId);
+  }, [focusNonce, focusVehicleId, rows]);
 
   // Moves focus into the expanded content so keyboard and screen-reader users
   // land on what they just opened instead of staying on the (now possibly
@@ -174,8 +234,11 @@ export function VehicleTable({ rows, context = "global", emptyMessage = "No vehi
     // row in place (confirmed live: a 147px jump). Keyboard/screen-reader
     // users still get the focus move itself, which is what they need --
     // browsers already keep a newly focused element approximately in view
-    // when it was reached via Tab, since the click that expanded it was
-    // already scrolled to.
+    // when it was reached via Tab or a same-page click, since both already
+    // scrolled the row into view before it expanded. The Live Map's "Open
+    // in Vehicles" deep link (focusVehicleId below) also lands here after
+    // switching tabs and narrowing the search to one row, which puts it at
+    // the top of the page already -- same "already in view" outcome.
     if (expandedId) expandedContentRef.current?.focus({ preventScroll: true });
   }, [expandedId]);
 
@@ -203,6 +266,7 @@ export function VehicleTable({ rows, context = "global", emptyMessage = "No vehi
   }
 
   return (
+    <>
     <DataTable
       rows={rows}
       columns={columns}
@@ -215,6 +279,31 @@ export function VehicleTable({ rows, context = "global", emptyMessage = "No vehi
       sortColumn={sortColumn}
       sortDirection={sortDirection}
       onSort={onSort}
+      actionClassName="actions-column vehicles-actions-column"
+      action={canDeleteVehicle ? (row) => {
+        const vehicle = row as VehicleRow;
+        const id = String(vehicle.id);
+        const label = vehicle.name || `vehicle ${id}`;
+        const queued = queuedDeleteVehicleIds?.has(id) ?? false;
+        return queued
+          ? <span className="vehicles-queued-delete" title="Delete queued — applies when this map next restarts or stops">
+              <Trash2 size={16} aria-label={`Delete queued for ${label}`} />
+              <button
+                className="icon-toggle-button vehicles-queued-delete-cancel"
+                title="Cancel Queued Delete"
+                aria-label={`Cancel queued delete for ${label}`}
+                disabled={cancelingDeleteId === id}
+                onClick={(event) => { event.stopPropagation(); onCancelQueuedDelete?.(vehicle); }}
+              ><X size={14} /></button>
+            </span>
+          : <button
+              className="icon-toggle-button danger"
+              title="Delete Vehicle"
+              aria-label={`Delete ${label}`}
+              disabled={deletingId === id}
+              onClick={(event) => { event.stopPropagation(); onDeleteVehicle?.(vehicle); }}
+            ><Trash2 size={16} /></button>;
+      } : undefined}
       secondaryActionPosition="start"
       secondaryActionLabel=""
       secondaryActionClassName="vehicles-expand-column"
@@ -232,8 +321,26 @@ export function VehicleTable({ rows, context = "global", emptyMessage = "No vehi
         const vehicle = row as VehicleRow;
         const id = String(vehicle.id);
         const modules: VehicleModule[] = Array.isArray(vehicle.modules) ? vehicle.modules : [];
+        // A vehicle has exactly one cargo hold, on the vehicle actor itself --
+        // not one per module (dune.inventories.vehicle_module_id is empty in
+        // production; see duneDb.vehicleStorage). So this is a single control
+        // on the header rather than a button per storage card, which would
+        // open the same contents twice on a hypothetical two-module vehicle.
+        // The fitted storage module is still what gates it: a vehicle with no
+        // hold has a 0/0 inventory row and nothing worth opening.
+        const hasStorage = modules.some((module) => module.isStorage);
         const componentsPanel = <div className="vehicles-expanded">
-          <p className="vehicles-expanded-header">{modules.length} component{modules.length === 1 ? "" : "s"}</p>
+          <div className="vehicles-expanded-header-row">
+            <p className="vehicles-expanded-header">{modules.length} component{modules.length === 1 ? "" : "s"}</p>
+            {storageSupported && hasStorage && <button
+              className="bases-inventory-view-contents"
+              // Stops the row's own onRowClick from collapsing the panel out
+              // from under the modal. The permissions branch below wraps its
+              // content in the same guard; the no-permissions branch does not,
+              // so it has to live on the button.
+              onClick={(event) => { event.stopPropagation(); setStorageFor(vehicle); }}
+            ><Boxes size={14} aria-hidden="true" /> View Contents</button>}
+          </div>
           {modules.length === 0 ? <p className="muted">No components fitted.</p> : <div className="vehicles-component-grid">{modules.map(renderComponent)}</div>}
         </div>;
         // tabIndex=-1 makes this programmatically focusable (see the
@@ -267,6 +374,8 @@ export function VehicleTable({ rows, context = "global", emptyMessage = "No vehi
                     vehicleId={id}
                     vehicleName={String(vehicle.name || `vehicle ${id}`)}
                     onSaved={() => onPermissionsSaved?.()}
+                    confirmAction={confirmAction}
+                    deletePending={queuedDeleteVehicleIds?.has(id) ?? false}
                   />
                 </div>}
           </div>
@@ -274,5 +383,13 @@ export function VehicleTable({ rows, context = "global", emptyMessage = "No vehi
       }}
       emptyMessage={emptyMessage}
     />
+    {storageFor && <VehicleStorageOverlay
+      vehicleId={String(storageFor.id)}
+      vehicleName={String(storageFor.name || `vehicle ${storageFor.id}`)}
+      onClose={() => setStorageFor(null)}
+      confirmAction={confirmAction}
+      onError={onError}
+    />}
+    </>
   );
 }

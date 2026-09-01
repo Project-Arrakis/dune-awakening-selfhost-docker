@@ -194,3 +194,58 @@ test("parity: base container give/fill/bulk-delete routes resolve to their own n
   // sibling routes/regexes.
   assert.equal(actionForRoute("/api/bases/12858/containers/42/items/99", "DELETE"), "bases:delete-item");
 });
+
+test("parity: POST vehicle system-custodian transfer resolves to vehicles:mutate, not the read-only fallback", () => {
+  // Regression guard: REGEX_ACTIONS_BY_METHOD has no "POST /api/vehicles/"
+  // entry, so without a REGEX_ACTIONS_BY_METHOD_PATTERN entry this route
+  // would fall through to the method-agnostic "/api/vehicles/" ->
+  // vehicles:read rule, silently authorizing an ownership transfer under a
+  // read-only grant.
+  assert.equal(actionForRoute("/api/vehicles/2048/system-custodian", "POST"), "vehicles:mutate");
+  assert.notEqual(actionForRoute("/api/vehicles/2048/system-custodian", "POST"), "vehicles:read");
+});
+
+test("parity: DELETE vehicle resolves to vehicles:delete, not the read-only fallback", () => {
+  // Regression guard, same shape as the system-custodian one above: no
+  // "DELETE /api/vehicles/" prefix rule exists in REGEX_ACTIONS_BY_METHOD,
+  // so without the pattern entry this would fall through to
+  // "/api/vehicles/" -> vehicles:read, silently authorizing an irreversible
+  // delete under a read-only grant.
+  assert.equal(actionForRoute("/api/vehicles/2048", "DELETE"), "vehicles:delete");
+  assert.notEqual(actionForRoute("/api/vehicles/2048", "DELETE"), "vehicles:read");
+});
+
+test("parity: DELETE vehicle queued-delete cancel resolves to vehicles:mutate, not the read-only fallback", () => {
+  assert.equal(actionForRoute("/api/vehicles/2048/queued-delete", "DELETE"), "vehicles:mutate");
+  assert.notEqual(actionForRoute("/api/vehicles/2048/queued-delete", "DELETE"), "vehicles:read");
+});
+
+// The read-only fallback is the CORRECT answer here, unlike the three cases
+// above -- this pins that it is reached at all, so a future explicit rule for
+// a sibling sub-resource cannot accidentally shadow it into null (which fails
+// closed and would 403 every tier, owner included).
+test("parity: GET vehicle storage resolves to vehicles:read via the prefix fallback", () => {
+  assert.equal(actionForRoute("/api/vehicles/2048/storage", "GET"), "vehicles:read");
+  assert.notEqual(actionForRoute("/api/vehicles/2048/storage", "GET"), null);
+  assert.notEqual(actionForRoute("/api/vehicles/2048/storage", "GET"), "vehicles:mutate");
+});
+
+// The mirror of the three base-container carve-outs above: without these
+// explicit patterns a DELETE under /api/vehicles/ has no method-aware prefix
+// rule to land on, so it would fall through to the method-agnostic
+// "/api/vehicles/" -> vehicles:read bucket and let a read-only tier destroy
+// cargo.
+test("parity: vehicle cargo deletes resolve to their own actions, not the read-only fallback", () => {
+  for (const path of ["/api/vehicles/2048/storage/items", "/api/vehicles/2048/storage/all-items"]) {
+    assert.equal(actionForRoute(path, "DELETE"), "vehicles:bulk-delete-items");
+    assert.notEqual(actionForRoute(path, "DELETE"), "vehicles:read");
+  }
+  assert.equal(actionForRoute("/api/vehicles/2048/storage/items/77", "DELETE"), "vehicles:delete-item");
+  assert.notEqual(actionForRoute("/api/vehicles/2048/storage/items/77", "DELETE"), "vehicles:read");
+  // And the new siblings must not shadow the whole-vehicle delete beside them.
+  assert.equal(actionForRoute("/api/vehicles/2048", "DELETE"), "vehicles:delete");
+});
+
+test("parity: GET vehicle pending-deletes resolves to vehicles:read", () => {
+  assert.equal(actionForRoute("/api/vehicles/pending-deletes", "GET"), "vehicles:read");
+});

@@ -96,10 +96,14 @@ test("server.hardware.status bridge is core-owned and permission gated", async (
       const { status, body } = await bridge("hardware-allowed", "server.hardware.status");
       assert.equal(status, 200);
       assert.equal(body.ok, true);
-      assert.equal(body.result.version, 2);
+      assert.equal(body.result.version, 3);
+      assert.equal(typeof body.result.sampled_at, "string");
       assert.ok(Array.isArray(body.result.temperatures));
+      assert.ok(Array.isArray(body.result.fans));
       assert.equal(typeof body.result.cpu, "object");
       assert.ok(Array.isArray(body.result.storage));
+      assert.ok(Array.isArray(body.result.filesystems));
+      assert.ok(Array.isArray(body.result.network));
       assert.equal(typeof body.result.memory.total_kb, "number");
       assert.equal(typeof body.result.swap.total_kb, "number");
       assert.equal(typeof body.result.load.one, "number");

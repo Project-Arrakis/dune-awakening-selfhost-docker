@@ -38,7 +38,7 @@ Usage:
   dune db transfer pending
   dune db transfer apply-pending
   dune db transfer clear-pending
-  dune db delete <backup-file-or-name>
+  dune db delete <backup-file-or-name> [more-backups...]
   dune db delete --all
   dune db auto enable <HH:MM> [retention-days] [interval-hours]
   dune db auto disable
@@ -633,7 +633,7 @@ backup_db() {
   # authoritative but not visible without opening it), e.g.
   # kovalt-sietch-market-bot-buyback-20260819-020000.backup
   case "${DB_BACKUP_ORIGIN:-manual}" in
-    market-bot-*)
+    market-bot-*|vehicle-delete)
       artifact_id="$server_slug-$(printf '%s' "${DB_BACKUP_ORIGIN}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')"
       ;;
   esac
@@ -725,6 +725,9 @@ backup_db() {
   case "${DB_BACKUP_ORIGIN:-manual}" in
     market-bot-*)
       prune_market_bot_backups "$out_dir"
+      ;;
+    vehicle-delete)
+      prune_vehicle_delete_backups "$out_dir"
       ;;
   esac
 }
@@ -1145,30 +1148,35 @@ delete_backup() {
   local target="${1:-}"
   local name
   local file
+  local answer
+  local -a names=()
 
   if [ "$target" = "--all" ]; then
     delete_all_backups
     return
   fi
 
-  name="$(resolve_backup_name "$target" "$BACKUP_DIR_DEFAULT")" || exit 1
-  file="$(backup_path_for_name "$name" "$BACKUP_DIR_DEFAULT")"
-
-  if [ ! -f "$file" ]; then
-    echo "Backup file does not exist: $file"
-    exit 1
-  fi
+  [ "$#" -gt 0 ] || { echo "Missing backup name." >&2; exit 2; }
+  for target in "$@"; do
+    name="$(resolve_backup_name "$target" "$BACKUP_DIR_DEFAULT")" || exit 1
+    file="$(backup_path_for_name "$name" "$BACKUP_DIR_DEFAULT")"
+    [ -f "$file" ] || { echo "Backup file does not exist: $file"; exit 1; }
+    if [[ " ${names[*]} " != *" $name "* ]]; then names+=("$name"); fi
+  done
 
   if [ "${DUNE_DB_ASSUME_YES:-0}" != "1" ]; then
-    read -r -p "Delete backup '$name'? [y/N]: " answer
+    read -r -p "Delete ${#names[@]} selected backup(s)? [y/N]: " answer
     case "$answer" in
       y|Y|yes|YES) ;;
       *) echo "Delete cancelled."; exit 1 ;;
     esac
   fi
 
-  delete_backup_files_for_name "$name" "$BACKUP_DIR_DEFAULT"
-  echo "Deleted backup: $name"
+  for name in "${names[@]}"; do
+    delete_backup_files_for_name "$name" "$BACKUP_DIR_DEFAULT"
+    echo "Deleted backup: $name"
+  done
+  echo "Deleted ${#names[@]} selected database backup(s)."
 }
 
 delete_all_backups() {
@@ -1214,6 +1222,7 @@ delete_all_backups() {
 # market-bot-unseed), not the filename, so unlabeled backups written by older
 # releases are cleaned up too.
 MARKET_BOT_BACKUP_KEEP="${DUNE_MARKET_BOT_BACKUP_KEEP:-5}"
+VEHICLE_DELETE_BACKUP_KEEP="${DUNE_VEHICLE_DELETE_BACKUP_KEEP:-10}"
 
 backup_origin_value() {
   local backup_file="$1"
@@ -1229,6 +1238,46 @@ backup_is_market_bot() {
     market-bot-*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+backup_is_vehicle_delete() {
+  case "$(backup_origin_value "$1" | tr '[:upper:]' '[:lower:]' | tr '_' '-')" in
+    vehicle-delete) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prune_vehicle_delete_backups() {
+  local backup_dir="${1:-$BACKUP_DIR_DEFAULT}"
+  local keep="${2:-$VEHICLE_DELETE_BACKUP_KEEP}"
+  local removed=0
+  local index=0
+  local name
+
+  validate_positive_integer "$keep" || return 0
+  [ -d "$backup_dir" ] || return 0
+
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    index=$((index + 1))
+    [ "$index" -gt "$keep" ] || continue
+    if delete_backup_files_for_name "$name" "$backup_dir" >/dev/null; then
+      removed=$((removed + 1))
+    fi
+  done < <(
+    iter_valid_backup_names "$backup_dir" \
+      | while IFS= read -r candidate; do
+          [ -n "$candidate" ] || continue
+          backup_is_vehicle_delete "$(backup_path_for_name "$candidate" "$backup_dir")" || continue
+          printf '%s\t%s\n' "$(backup_timestamp_from_name "$candidate")" "$candidate"
+        done \
+      | sort -r \
+      | cut -f2-
+  )
+
+  if [ "$removed" -gt 0 ]; then
+    echo "Pruned $removed Vehicle Delete backup(s); the newest $keep are kept."
+  fi
 }
 
 # Keep only the newest $keep Market Bot backups (by the timestamp embedded in
@@ -2667,7 +2716,8 @@ case "$cmd" in
     transfer_command "$@"
     ;;
   delete)
-    delete_backup "${2:-}"
+    shift || true
+    delete_backup "$@"
     ;;
   auto)
     handle_auto_backup "${2:-status}" "${3:-}" "${4:-}" "${5:-}"

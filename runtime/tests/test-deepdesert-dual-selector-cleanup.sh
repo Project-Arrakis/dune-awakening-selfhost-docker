@@ -35,18 +35,18 @@ grep -Fq 'map-set Global global_pvp_enabled_partition_add "$pvp"' "$SCRIPT" \
 if grep -Fq 'map-set Global global_pve_enabled_partition_add' "$SCRIPT"; then
   fail "Dual Deep Desert must not write an explicit PvE selector"
 fi
-grep -Fq "set label = 'DualDeepDesert_' || partition_id::text" "$SCRIPT" \
+grep -Fq "set label = 'ManagedDeepDesert_' || partition_id::text" "$SCRIPT" \
   || fail "partition role reversal can hit the unique label constraint without temporary labels"
-enable_apply_count="$(awk '/^enable_dual\(\)/,/^disable_dual\(\)/' "$SCRIPT" | grep -c '^  apply_usergame$')"
+enable_apply_count="$(awk '/^enable_layout\(\)/,/^enable_dual\(\)/' "$SCRIPT" | grep -c '^  apply_usergame "\$count" "\$third_role" "\$previous_partition_ids" "\$previous_count" "\$previous_third_role"$')"
 [ "$enable_apply_count" = "1" ] \
-  || fail "Dual Deep Desert enable must materialize UserGame settings exactly once"
+  || fail "Deep Desert layout enable must materialize UserGame settings exactly once"
 
 early_cleanup_line="$(grep -n 'remove_dual_usergame_selectors "$pvp" "$pve"' "$SCRIPT" | head -n1 | cut -d: -f1)"
-early_remove_line="$(grep -n 'rm -f "$OVERRIDE_FILE"' "$SCRIPT" | head -n1 | cut -d: -f1)"
-[ -n "$early_cleanup_line" ] && [ -n "$early_remove_line" ] \
+early_single_override_line="$(grep -n 'write_single_director_override "$primary" "$original_display_name" "$original_global_server_pve"' "$SCRIPT" | head -n1 | cut -d: -f1)"
+[ -n "$early_cleanup_line" ] && [ -n "$early_single_override_line" ] \
   || fail "could not locate the missing-row cleanup path"
-[ "$early_cleanup_line" -lt "$early_remove_line" ] \
-  || fail "selector ownership is deleted before the missing-row cleanup can use it"
+[ "$early_cleanup_line" -lt "$early_single_override_line" ] \
+  || fail "selector ownership is replaced before the missing-row cleanup can use it"
 
 # The new map-unset operation is required to converge installations that previously received
 # the map-scoped force flag. Prove it removes only that field and leaves adjacent map settings.

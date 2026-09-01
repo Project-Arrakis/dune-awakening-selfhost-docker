@@ -8,6 +8,8 @@ import { taskOperations } from "../src/tasks.js";
 test("validates known service names and aliases", () => {
   assert.equal(validateServiceName("gateway"), "gateway");
   assert.equal(validateServiceName("sgw"), "gateway");
+  assert.equal(validateServiceName("coriolis"), "coriolis");
+  assert.equal(dockerContainerForLogService("coriolis"), "dune-coriolis-coordinator");
   assert.equal(validateServiceName("dune-server-survival-1-43"), "dune-server-survival-1-43");
   assert.throws(() => validateServiceName("gateway; rm -rf /"));
 });
@@ -63,6 +65,7 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("storageCleanupBuildCache"), ["storage", "cleanup", "--build-cache"]);
   assert.deepEqual(buildDuneArgs("restartService", { service: "director" }), ["restart", "director"]);
   assert.deepEqual(buildDuneArgs("restartServiceStop", { service: "survival" }), ["stop-service", "survival"]);
+  assert.deepEqual(buildDuneArgs("restartServiceStop", { service: "overmap" }), ["stop-service", "overmap"]);
   assert.deepEqual(buildDuneArgs("restartServiceStart", { service: "survival" }), ["restart", "survival"]);
   assert.deepEqual(buildDuneArgs("logs", { service: "gateway" }), ["logs", "gateway"]);
   assert.deepEqual(buildDuneArgs("backupRestore", { backup: "dune-db-test.backup" }), ["db", "restore", "dune-db-test.backup", "--no-safety-backup"]);
@@ -70,7 +73,10 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("backupRestore", { backup: "dune-db-test.backup", identityMode: "keep-current" }), ["db", "restore", "dune-db-test.backup", "--no-safety-backup", "--keep-current-battlegroup"]);
   assert.throws(() => buildDuneArgs("backupRestore", { backup: "dune-db-test.backup", identityMode: "automatic" }), /Unsupported backup Battlegroup identity choice/);
   assert.deepEqual(buildDuneArgs("backupDelete", { backup: "dune-db-test.backup" }), ["db", "delete", "dune-db-test.backup"]);
+  assert.deepEqual(buildDuneArgs("backupDeleteSelected", { backups: ["one.backup", "two.backup", "one.backup"] }), ["db", "delete", "one.backup", "two.backup"]);
+  assert.throws(() => buildDuneArgs("backupDeleteSelected", { backups: [] }), /Select between 1 and 100 backups/);
   assert.deepEqual(buildDuneArgs("backupDeleteAll"), ["db", "delete", "--all"]);
+  assert.deepEqual(buildDuneArgs("stopGameServersForDbWrites"), ["stop-game-servers-for-db-writes"]);
   assert.deepEqual(buildDuneArgs("adminAddXp", { playerId: "FLS_TEST", amount: 1000 }), ["admin", "award-xp", "FLS_TEST", "1000"]);
   assert.deepEqual(buildDuneArgs("updateApply"), ["update", "--yes"]);
   assert.deepEqual(buildDuneArgs("updateAutoStatus"), ["update", "auto", "status"]);
@@ -85,6 +91,8 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   }), ["update", "auto", "enable", "30", "1", "1", "10,5,1", "1", "240"]);
   assert.deepEqual(buildDuneArgs("updateAutoDisable"), ["update", "auto", "disable"]);
   assert.deepEqual(buildDuneArgs("selfUpdateApply"), ["self-update", "install", "latest"]);
+  assert.deepEqual(buildDuneArgs("selfUpdateQaApply", { sha: "a".repeat(40) }), ["self-update", "install-qa", "a".repeat(40)]);
+  assert.throws(() => buildDuneArgs("selfUpdateQaApply", { sha: "main; touch /tmp/nope" }), /Invalid QA build/);
   assert.deepEqual(buildDuneArgs("backupAutoStatus"), ["db", "auto", "status"]);
   assert.deepEqual(buildDuneArgs("backupAutoEnable", { time: "05:30", retentionDays: 14 }), ["db", "auto", "enable", "05:30", "14"]);
   assert.deepEqual(buildDuneArgs("backupAutoEnable", { time: "05:30", retentionDays: 0 }), ["db", "auto", "enable", "05:30"]);
@@ -135,6 +143,10 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.throws(() => buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Duke's Sietch" }), /not supported/);
   assert.throws(() => buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Alpha|Beta" }), /not supported/);
   assert.deepEqual(buildDuneArgs("deepdesertAction", { action: "disable" }), ["deepdesert", "dual", "disable", "--yes", "--force"]);
+  assert.deepEqual(buildDuneArgs("deepdesertAction", { instances: 3, thirdRole: "pvp" }), ["deepdesert", "layout", "set", "3", "--third-role", "pvp", "--yes", "--force"]);
+  assert.deepEqual(buildDuneArgs("deepdesertAction", { instances: 2 }), ["deepdesert", "layout", "set", "2", "--third-role", "pve", "--yes", "--force"]);
+  assert.throws(() => buildDuneArgs("deepdesertAction", { instances: 3, thirdRole: "open" }), /must be pve or pvp/);
+  assert.throws(() => buildDuneArgs("deepdesertAction", { instances: 4 }), /Expected integer 1-3/);
   assert.deepEqual(buildDuneArgs("userSettingsEngineValues"), ["usersettings", "engine-values"]);
   assert.deepEqual(buildDuneArgs("userSettingsMapEngineValues", { map: "Survival_1" }), ["usersettings", "map-engine-values", "Survival_1"]);
   assert.deepEqual(buildDuneArgs("userSettingsPartitionEngineValues", { map: "Survival_1", partitionId: 3 }), ["usersettings", "partition-engine-values", "Survival_1", "3"]);
