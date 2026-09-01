@@ -1649,6 +1649,24 @@ test("players query uses parameterized search input", async () => {
   assert.equal(result.rows[0].action_player_id, "RedBlink#75570");
 });
 
+test("players sorted by last online rank current players ahead of stored timestamps", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "online_status" }] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 2 }] };
+      return { rows: [{ actor_id: 82, total_count: 2 }] };
+    }
+  };
+
+  await listPlayers(db, { sortColumn: "last_seen", sortDirection: "desc" });
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+
+  assert.match(playerQuery.text, /order by case when actual_online_status = 'Online' then 0 else 1 end asc, last_seen desc, actor_id desc/);
+});
+
 test("players query resolves the game map partition used by configured Sietch names", async () => {
   const calls = [];
   const db = {

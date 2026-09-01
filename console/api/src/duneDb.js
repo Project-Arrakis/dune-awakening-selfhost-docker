@@ -1572,8 +1572,19 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const safeSortColumn = Object.hasOwn(PLAYER_SORT_COLUMNS, sortColumn) ? sortColumn : "character_name";
   const safeSortDirection = String(sortDirection).toLowerCase() === "desc" ? "desc" : "asc";
   const sortOrder = PLAYER_SORT_COLUMNS[safeSortColumn].order;
-  const pagedOrder = [...sortOrder, ...(sortOrder.includes("actor_id") ? [] : ["actor_id"])]
-    .map((column) => `${column} ${safeSortDirection}`).join(", ");
+  // An online player is more recent than every stored last-seen timestamp,
+  // even when the game leaves that timestamp at the start of their session.
+  // Keep that presence rank outside the timestamp itself so the returned value
+  // remains the game's real data while Last Online sorting matches the UI's
+  // "Currently Active" state. Ascending uses the inverse rank naturally.
+  const pagedOrder = safeSortColumn === "last_seen"
+    ? [
+        `case when actual_online_status = 'Online' then 0 else 1 end ${safeSortDirection === "desc" ? "asc" : "desc"}`,
+        `last_seen ${safeSortDirection}`,
+        `actor_id ${safeSortDirection}`
+      ].join(", ")
+    : [...sortOrder, ...(sortOrder.includes("actor_id") ? [] : ["actor_id"])]
+        .map((column) => `${column} ${safeSortDirection}`).join(", ");
   const playerStateColumns = await columnsFor(db, "player_state");
   const hasWorldPartition = await tableExists(db, "world_partition");
   const encryptedAccountColumns = await tableExists(db, "encrypted_accounts")
