@@ -22,8 +22,8 @@
 | Server login password secret | `runtime/secrets/server-login-password-secret.txt` | Plaintext | 600 | Manual | Manual |
 | Username server login secret | `runtime/secrets/username-server-login-secret.txt` | Plaintext | 600 | Manual | Manual |
 | Public directory JSON | `runtime/secrets/public-directory.json` | Plaintext JSON | 600 | Auto-managed | N/A |
-| ACP bot adapter token | `arrakis-control-panel/data/acp.db` | AES-256-GCM encrypted | 600 | Per-guild setup | Manual |
-| ACP Discord bot token | `arrakis-control-panel/.env` | Plaintext env var | 600 | No (operator) | Via Discord portal |
+| Mentat bot adapter token | `arrakis-control-panel/data/acp.db` (bot repo path/filename unchanged as of this writing -- credential vars/paths are a separate, not-yet-done pass, see the bot repo's own `docs/env-var-compatibility.md`) | AES-256-GCM encrypted | 600 | Per-guild setup | Manual |
+| Mentat Discord bot token | `arrakis-control-panel/.env` (same caveat) | Plaintext env var | 600 | No (operator) | Via Discord portal |
 
 **Total: 10+ secrets in 2 repos, all plaintext files except the bot's SQLite encryption layer.**
 
@@ -40,7 +40,7 @@ getOrCreateSecret(path, bytes):
   → Else: generate random, write file, return value
 ```
 
-Each secret is loaded independently. There's no unified secret store, no key hierarchy, no master key, and no rotation mechanism. The only existing encryption is the ACP bot's `ACP_SECRETS_KEY` → AES-256-GCM for SQLite at-rest encryption of adapter tokens and OAuth access tokens.
+Each secret is loaded independently. There's no unified secret store, no key hierarchy, no master key, and no rotation mechanism. The only existing encryption is the Mentat bot's `ACP_SECRETS_KEY` (env var name unchanged as of this writing -- deliberately deferred, see above) → AES-256-GCM for SQLite at-rest encryption of adapter tokens and OAuth access tokens.
 
 ### 1.3 The Current Threat Model
 

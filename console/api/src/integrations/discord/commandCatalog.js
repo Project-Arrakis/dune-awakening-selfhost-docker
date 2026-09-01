@@ -3,7 +3,7 @@
 // Red-Blink/dune-awakening-selfhost-docker#141). Tracked by
 // yacketrj/dune-awakening-selfhost-docker#337.
 //
-// Purpose: give the Discord bot (arrakis-control-panel) a single,
+// Purpose: give the Discord bot (Mentat) a single,
 // mechanically verifiable source of truth for which read-only Discord
 // adapter routes are live, what capability/tier each one requires, and what
 // Discord-facing metadata (name, description, params) each one needs --
@@ -59,7 +59,7 @@ import { DISCORD_CAPABILITIES, SELF_SCOPED_CAPABILITIES, minTierForCapability as
 // players/accounts/* family) not present on that upstream PR branch --
 // see issue #360. No live consumer exists yet (Phase 2/3 bot-side
 // generator is still unimplemented -- confirmed via grep across
-// arrakis-control-panel's src/), so this bump is forward hygiene, not a
+// the bot repo's src/), so this bump is forward hygiene, not a
 // fix for an active breakage.
 export const CATALOG_VERSION = 2;
 
@@ -119,7 +119,7 @@ function minTierForCapability(capability) {
 //
 // Six (group, subcommand) pairs intentionally fan out to two backing
 // routes each -- three shared with the upstream PR #171 branch
-// (storage/find/inventory, confirmed live against arrakis-control-panel's
+// (storage/find/inventory, confirmed live against the bot repo's
 // real commands.js) plus three specific to this fork's multi-account
 // superset (link/verify/unlink). Each fanned-out route entry carries its
 // own `selector` describing which param/value or param-presence picks it;
@@ -323,7 +323,7 @@ export const COMMAND_METADATA = Object.freeze({
   // single-link character"); at runtime it calls PLAYERS_UNLINK when
   // omitted (the default) or PLAYERS_ACCOUNTS_UNLINK when a
   // playerControllerId is given (verified directly against
-  // arrakis-control-panel's real commands.js key "player:unlink"). This
+  // the bot repo's real commands.js key "player:unlink"). This
   // is a genuine one-subcommand-fans-out-to-two-routes case, the same
   // shape as the storage/find/inventory pairs already fixed on the
   // upstream PR #171 branch (issue #358) -- NOT a naming collision to
@@ -339,7 +339,7 @@ export const COMMAND_METADATA = Object.freeze({
   // routeHasNoCurrentBotCaller (issue #342, found during an independent
   // re-audit of #337/PR #341): this route is genuinely live on Core (a
   // real handler, a real provider -- see linkAccountProvider() in
-  // routes.js) but no slash command in arrakis-control-panel calls it
+  // routes.js) but no slash command in the bot repo calls it
   // today (verified directly against arrakis-control-panel @ 8f3d3ed --
   // grep for "players-accounts-link" across that repo's src/ finds no
   // caller, re-confirmed during issue #360's audit). UNLIKE

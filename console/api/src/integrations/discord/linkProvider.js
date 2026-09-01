@@ -61,7 +61,7 @@ export function resetVerifyRateLimiterForTests(customLimiter) {
 
 function generateVerificationCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = "ACP-";
+  let code = "MENTAT-";
   for (let i = 0; i < CODE_LENGTH; i++) {
     code += chars[randomInt(0, chars.length)];
   }
@@ -145,7 +145,7 @@ export async function linkPlayerProvider(db, config, { discordUserId, characterN
   }
 
   // hasSteam: added for the Steam-connections-based linking flow (see
-  // yacketrj/arrakis-control-panel:docs/steam-link-architecture.md).
+  // Project-Arrakis/sentinel:docs/steam-link-architecture.md).
   // Checked BEFORE the online/funcom-id gates below, on purpose -- Steam
   // linking never needs the character in-game (unlike the whisper flow,
   // which requires an online character to receive an in-game message), so

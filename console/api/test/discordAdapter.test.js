@@ -755,7 +755,7 @@ test("player-link verify route rate limits repeated wrong-code attempts for one 
           const verifyOnce = () => fetch(`${base}${route}`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, route) },
-            body: JSON.stringify({ actor: observerActor, code: "ACP-WRONG" })
+            body: JSON.stringify({ actor: observerActor, code: "MENTAT-WRONG" })
           });
 
           const first = await verifyOnce();
@@ -1040,12 +1040,12 @@ test("account-link verify route rate limits independently from the single-link v
           const verifyAccountOnce = () => fetch(`${base}${accountVerifyRoute}`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, accountVerifyRoute) },
-            body: JSON.stringify({ actor: observerActor, code: "ACP-WRONG" })
+            body: JSON.stringify({ actor: observerActor, code: "MENTAT-WRONG" })
           });
           const verifySingleOnce = () => fetch(`${base}${singleVerifyRoute}`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, singleVerifyRoute) },
-            body: JSON.stringify({ actor: observerActor, code: "ACP-WRONG" })
+            body: JSON.stringify({ actor: observerActor, code: "MENTAT-WRONG" })
           });
 
           assert.equal((await verifyAccountOnce()).status, 200);

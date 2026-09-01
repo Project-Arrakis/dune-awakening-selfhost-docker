@@ -1,11 +1,11 @@
 # Discord Bot Output Architecture
 
 **Date:** 2026-08-10
-**Companion repository:** [yacketrj/arrakis-control-panel](https://github.com/yacketrj/arrakis-control-panel)
+**Companion repository:** [Project-Arrakis/sentinel](https://github.com/Project-Arrakis/sentinel) *(the bot's product name is now "Mentat" -- see `docs/bot/mentat-naming-disambiguation.md`; the repo itself is not yet renamed, see `Project-Arrakis/meta#56`)*
 
 ## Overview
 
-The Arrakis Control Panel Discord bot surfaces 54 slash commands across
+The Mentat Discord bot surfaces 54 slash commands across
 9 groups. Output formatting was consolidated from 4 independent rendering
 paths into a single unified pipeline with shared enrichment.
 
@@ -50,6 +50,6 @@ Every command response flows through one of 5 pipeline methods:
 
 ## Related
 
-- [Output polish issues #114–131](https://github.com/yacketrj/arrakis-control-panel/issues)
-- [Unified pipeline issue #118](https://github.com/yacketrj/arrakis-control-panel/issues/118)
+- [Output polish issues #114–131](https://github.com/Project-Arrakis/sentinel/issues)
+- [Unified pipeline issue #118](https://github.com/Project-Arrakis/sentinel/issues/118)
 - [Core RW architecture PR #141](https://github.com/Red-Blink/dune-awakening-selfhost-docker/pull/141)

@@ -43,7 +43,7 @@ const CODE_EXPIRY_MINUTES = 5;
 
 function generateVerificationCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = "ACP-";
+  let code = "MENTAT-";
   for (let i = 0; i < CODE_LENGTH; i++) {
     code += chars[randomInt(0, chars.length)];
   }
@@ -143,7 +143,7 @@ export async function linkAccountProvider(db, config, { discordUserId, character
   // rejected at the end is the exact same wasteful, confusing pattern
   // this session's Steam-link fix closes. Checked here even though this
   // route is not yet called by any real Discord command (confirmed via
-  // direct review of arrakis-control-panel's adapterClient.js -- only
+  // direct review of the bot repo's adapterClient.js -- only
   // linkAccountViaSteamProvider() is wired up today), so this route
   // starts correct rather than needing the same fix retrofitted later
   // once it is wired up.

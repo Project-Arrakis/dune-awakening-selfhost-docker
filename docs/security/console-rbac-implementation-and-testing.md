@@ -98,7 +98,7 @@ the implementation and testing contract for the Core-side work (Phases 2-4).
   **picks the Discord roles** that map to **admin**, **moderator**, and
   **player** (owner = the operator/guild owner by their relationship to the
   home guild). Those mappings are **written to the shared `guild_roles`
-  registry** the ACP bot already governs (bot-side DB, four `role_type`
+  registry** the Mentat bot already governs (bot-side DB, four `role_type`
   rows: `owner`/`admin`/`moderator`/`observer`), so **the bot's slash-command
   RBAC and the console's console RBAC stay in sync by construction** — there
   is exactly one source of truth, not two.
@@ -111,7 +111,7 @@ the implementation and testing contract for the Core-side work (Phases 2-4).
 
 ### 3.3 Role resolution — explicit decision (2026-08-06, operator-approved)
 
-- **Decision: the ACP bot performs the role check on behalf of the console,
+- **Decision: the Mentat bot performs the role check on behalf of the console,
   and the result is delivered as a signed handoff.**
 - **Initial setup:** the console OAuth login window lets the operator pick the
   Discord roles for admin/moderator/player of the designated home guild —
@@ -147,7 +147,7 @@ the implementation and testing contract for the Core-side work (Phases 2-4).
 | Mechanism | Decision | Notes |
 |---|---|---|
 | A. Console-side Discord gateway (GuildMembers intent) | Rejected for v1 | New long-lived connection into the console; SERVER MEMBERS INTENT — disproportionate complexity vs. reusing the bot |
-| **B. Bot relay, signed handoff** | **SELECTED** | The console delegates role resolution to the ACP bot via a signed handoff; one shared `guild_roles` source of truth for both bot slash-commands and console access |
+| **B. Bot relay, signed handoff** | **SELECTED** | The console delegates role resolution to the Mentat bot via a signed handoff; one shared `guild_roles` source of truth for both bot slash-commands and console access |
 | C. `guilds.members.read` OAuth scope | Rejected | Restricted scope requiring a verified Discord application — unrealistic for self-hosters |
 | D. Manual user-ID → tier table | Rejected | Operator wants guild-role-governed access; a manual per-user table diverges from the shared role registry |
 
@@ -229,7 +229,7 @@ explicitly public); a **parity test** (§8.1) mechanically enforces coverage.
    verifies before trusting any tier claim. **No tiered session may be created
    from an unsigned claim.** (Supersedes the old "hardening" framing — this is
    now the mechanism, not an optional hardening step.)
-2. **Bot side (arrakis-control-panel)**: expose two signed adapter endpoints:
+2. **Bot side (Mentat)**: expose two signed adapter endpoints:
    - `resolve-console-tier` (given userId + guildId, return effective
      `role_type` tier from the shared `guild_roles` registry); and
    - `set-role-mapping` (admin-only; writes the admin/moderator/player
