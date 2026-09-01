@@ -48,6 +48,9 @@ describe("BaseLandClaimTab", () => {
     expect(screen.getByRole("button", { name: "Apply Changes" })).toBeDisabled();
     expect(screen.getByLabelText("Sub-Fief origin")).toBeInTheDocument();
     expect(screen.getByLabelText("Existing segment 1, 0")).toBeInTheDocument();
+    const north = screen.getByRole("img", { name: "World North, fixed at the top" });
+    expect(north.querySelector(".land-claim-north-arrow")).not.toHaveAttribute("style");
+    expect(screen.getByTestId("land-claim-world-grid")).toHaveAttribute("transform", "rotate(90 0 0)");
   });
 
   it("keeps the editor mounted while a manual reload is in progress", async () => {
