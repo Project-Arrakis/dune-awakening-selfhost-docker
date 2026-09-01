@@ -134,3 +134,23 @@ CVE-2026-41567  # github.com/docker/docker
 CVE-2026-42306  # github.com/docker/docker
 CVE-2026-56864  # golang.org/x/mod
 CVE-2026-56865  # golang.org/x/mod
+# Added 2026-09-01 (issue #658). golang.org/x/crypto/ssh CRITICAL advisory
+# CVE-2026-56854 (auth bypass via unenforced source-address restriction).
+# Per this file's policy a version bump was checked FIRST: v5.5.0 (published
+# 2026-08-17) is still docker/compose's latest tagged release as of triage
+# time (`gh api repos/docker/compose/releases/latest`) -- the fix already
+# landed on their `main` branch (x/crypto bumped 0.54.0 -> 0.55.0, confirmed
+# by diffing `go.mod` at `main` vs the `v5.5.0` tag) but has not shipped in a
+# tagged release yet, so there is no release to pin to.
+# Exposure is nil regardless: this CVE is only exploitable in an SSH
+# *server* role -- specifically a server whose auth callback is
+# PasswordCallback/KeyboardInteractiveCallback/NoClientAuthCallback/GSSAPI
+# and which sets a source-address restriction in Permissions that then goes
+# unenforced (see GO-2026-6303; SSH-client-only usage, and PublicKeyCallback/
+# VerifiedPublicKeyCallback servers, are explicitly unaffected). This image
+# only ever invokes `docker compose` as a local CLI plugin against the host's
+# Docker socket (see the Dockerfile's own comment on why it's installed) --
+# it never runs as an SSH server accepting authenticated connections.
+# Re-check whenever a newer Compose release ships, and drop this line once
+# one does.
+CVE-2026-56854  # golang.org/x/crypto/ssh -- see note above; fixed upstream on main, not yet released
