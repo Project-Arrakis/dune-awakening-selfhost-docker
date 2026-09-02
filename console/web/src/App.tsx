@@ -697,6 +697,13 @@ export function App() {
     setTotpRequired(false);
     setUseRecoveryCode(false);
     setCsrfToken(null);
+    // Owner-initiated enrollment (Settings -> Two-Factor Authentication, issue
+    // #665) reaches this function while `auth` is still true from the normal
+    // session it started in -- forced first-login enrollment never had this
+    // problem (auth was always false at this point). Without this, cancelling
+    // or completing setup left the app trying to render the authenticated
+    // shell against a session the server just invalidated above.
+    setAuth(false);
   }
 
   async function doLogout() {
@@ -1152,6 +1159,7 @@ export function App() {
           onPasswordChanged={logoutAfterPasswordChange}
           publicListingUrl={publicDirectoryStatus?.serverId ? publicServerListingUrl(publicDirectoryStatus.serverId) : undefined}
           confirmAction={confirmDialog}
+          onTotpEnrollmentStarted={() => setSetupMode("enroll")}
         /></LazyTabBoundary>}
         {!redeploySetupOpen && tab !== "Maps" && <TaskProgress task={task} onDismiss={() => setTask(null)} />}
         <AppFooter />

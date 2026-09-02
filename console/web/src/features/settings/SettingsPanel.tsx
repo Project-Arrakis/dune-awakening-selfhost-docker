@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import { api, post } from "../../api/client";
+import { api, post, setCsrfToken } from "../../api/client";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill } from "../../components/common/DisplayPrimitives";
 import { RecoveryCodesPanel } from "../auth/RecoveryCodesPanel";
@@ -60,9 +60,13 @@ type SettingsPanelProps = {
   publicListingUrl?: string;
   // Needed by the API Keys section, which confirms before revoking a key.
   confirmAction: ConfirmAction;
+  // Called after POST /api/auth/2fa/enable succeeds, so App can switch to the
+  // same TotpSetupScreen the old forced-enrollment login flow used -- this
+  // panel doesn't own that top-level view state.
+  onTotpEnrollmentStarted: () => void;
 };
 
-export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmAction }: SettingsPanelProps) {
+export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmAction, onTotpEnrollmentStarted }: SettingsPanelProps) {
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   // Tier 3 credential state. secondFactorEnrolled is read from /api/auth/me,
@@ -75,6 +79,13 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   const [secondFactorUnavailable, setSecondFactorUnavailable] = useState(false);
   const [passwordTotpCode, setPasswordTotpCode] = useState("");
   const [twoFactorOpen, setTwoFactorOpen] = useState(false);
+  const [totpEnablePassword, setTotpEnablePassword] = useState("");
+  const [totpEnableSaving, setTotpEnableSaving] = useState(false);
+  const [totpEnableResult, setTotpEnableResult] = useState<SettingsTaskResult | null>(null);
+  const [totpDisablePassword, setTotpDisablePassword] = useState("");
+  const [totpDisableTotpCode, setTotpDisableTotpCode] = useState("");
+  const [totpDisableSaving, setTotpDisableSaving] = useState(false);
+  const [totpDisableResult, setTotpDisableResult] = useState<SettingsTaskResult | null>(null);
   const [regeneratePassword, setRegeneratePassword] = useState("");
   const [regenerateTotpCode, setRegenerateTotpCode] = useState("");
   const [regenerateSaving, setRegenerateSaving] = useState(false);
@@ -282,6 +293,56 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       setDiscordOAuthSaving(false);
     }
   }
+  async function enableTwoFactor() {
+    if (!totpEnablePassword) {
+      setTotpEnableResult({ status: "failed", title: "Could Not Start Setup", message: "Enter your current login password." });
+      return;
+    }
+    setTotpEnableSaving(true);
+    setTotpEnableResult({ status: "running", title: "Starting Two-Factor Setup..." });
+    try {
+      const result = await post<{ enrollmentRequired: boolean; csrfToken: string }>("/api/auth/2fa/enable", { currentPassword: totpEnablePassword });
+      setTotpEnablePassword("");
+      setTotpEnableResult(null);
+      // The server just swapped this session for a short-lived enrollment
+      // session and returned ITS csrf token -- the old one is no longer valid.
+      setCsrfToken(result.csrfToken);
+      onTotpEnrollmentStarted();
+    } catch (error) {
+      setTotpEnableResult({ status: "failed", title: "Could Not Start Setup", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setTotpEnableSaving(false);
+    }
+  }
+  async function disableTwoFactor() {
+    if (!totpDisablePassword) {
+      setTotpDisableResult({ status: "failed", title: "Disable Failed", message: "Enter your current login password." });
+      return;
+    }
+    if (!totpDisableTotpCode.trim()) {
+      setTotpDisableResult({ status: "failed", title: "Disable Failed", message: "Enter your current authenticator code." });
+      return;
+    }
+    const confirmed = await confirmAction(
+      "Two-factor authentication will be turned off, and your current recovery codes will stop working. You can enable it again any time.",
+      { title: "Disable two-factor authentication?", confirmLabel: "Disable", danger: true }
+    );
+    if (!confirmed) return;
+    setTotpDisableSaving(true);
+    setTotpDisableResult({ status: "running", title: "Disabling Two-Factor Authentication..." });
+    try {
+      await post("/api/auth/2fa/disable", { currentPassword: totpDisablePassword, totpCode: totpDisableTotpCode.trim() });
+      setTotpDisablePassword("");
+      setTotpDisableTotpCode("");
+      setTotpDisableResult({ status: "succeeded", title: "Two-Factor Authentication Disabled" });
+      await refreshCredentialState();
+    } catch (error) {
+      setTotpDisableTotpCode("");
+      setTotpDisableResult({ status: "failed", title: "Disable Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setTotpDisableSaving(false);
+    }
+  }
   async function changeWebPort() {
     const port = Number(webPort);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -362,6 +423,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   const serverListingEnabled = publicDirectory.enabled === true;
   const anonymousCountEnabled = publicDirectory.anonymousCountEnabled !== false;
   const passwordEnvManaged = Boolean(config.adminPasswordEnvManaged);
+  const consoleTotpAvailable = config.consoleTotpEnabled === true;
   const currentPort = String(config.port || "8088");
   return <section className="panel">
     <div className="panel-title"><h2>Settings</h2><div className="action-row settings-title-actions">
@@ -505,9 +567,12 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
         <code> runtime/generated/console-second-factor.json</code> &mdash; see the sign-in
         page&apos;s error for recovery guidance.
       </p>}
-      {secondFactorEnrolled && !regeneratedCodes && <div className={`playerAdmin_toggle ${twoFactorOpen ? "open" : ""}`}>
-        <button className="playerAdmin_toggleHeader" aria-label={twoFactorOpen ? "Collapse Two-Factor Authentication" : "Expand Two-Factor Authentication"} onClick={() => setTwoFactorOpen(!twoFactorOpen)}>{twoFactorOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Two-Factor Authentication</span></button>
-        {twoFactorOpen && <div className="playerAdmin_toggleBody">
+      {(secondFactorEnrolled || consoleTotpAvailable) && !secondFactorUnavailable && !regeneratedCodes && <div className={`playerAdmin_toggle ${twoFactorOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={twoFactorOpen ? "Collapse Two-Factor Authentication" : "Expand Two-Factor Authentication"} onClick={() => setTwoFactorOpen(!twoFactorOpen)}>
+          {twoFactorOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Two-Factor Authentication</span>
+          {!secondFactorEnrolled && <span className="theme-note"> (off)</span>}
+        </button>
+        {twoFactorOpen && (secondFactorEnrolled ? <div className="playerAdmin_toggleBody">
           <p className="muted">Generate a fresh set of 10 recovery codes. Your authenticator is unchanged, and you stay signed in everywhere.</p>
           <p className="attention-text">Your existing recovery codes stop working the moment new ones are issued.</p>
           <div className="settings-password-grid">
@@ -530,7 +595,43 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
               {regenerateResult.message && <span className="inline-task-message">{formatResultMessage(regenerateResult.message)}</span>}
             </span>}
           </div>
-        </div>}
+          <hr className="auto-update-settings-divider" />
+          <h4>Disable Two-Factor Authentication</h4>
+          <p className="attention-text">Turns two-factor off entirely and deletes every remaining recovery code. Signing in goes back to password-only until you enable it again.</p>
+          <div className="settings-password-grid">
+            <label htmlFor="settings-totp-disable-password">Password (to confirm it&apos;s you)<SecretInput id="settings-totp-disable-password" name="settings-totp-disable-password" disabled={totpDisableSaving} value={totpDisablePassword} onChange={(event) => setTotpDisablePassword(event.target.value)} placeholder="Your login password (to disable)" /></label>
+            <label htmlFor="settings-totp-disable-code">Authenticator Code (to confirm it&apos;s you)<input
+              id="settings-totp-disable-code"
+              name="settings-totp-disable-code"
+              disabled={totpDisableSaving}
+              value={totpDisableTotpCode}
+              onChange={(event) => setTotpDisableTotpCode(stripCodeWhitespace(event.target.value))}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder="Current 6-digit code (to disable)"
+            /></label>
+          </div>
+          <div className="action-row">
+            <button disabled={totpDisableSaving || !totpDisablePassword || !totpDisableTotpCode.trim()} onClick={() => { void disableTwoFactor(); }}>{totpDisableSaving ? "Disabling..." : "Disable Two-Factor Authentication"}</button>
+            {totpDisableResult && <span className={`inline-task-result result-${totpDisableResult.status === "succeeded" ? "ok" : totpDisableResult.status === "failed" ? "fail" : "running"}`}>
+              <strong className={totpDisableResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(totpDisableResult.title, totpDisableResult.status === "running")}</strong>
+              {totpDisableResult.message && <span className="inline-task-message">{formatResultMessage(totpDisableResult.message)}</span>}
+            </span>}
+          </div>
+        </div> : <div className="playerAdmin_toggleBody">
+          <p className="muted">Off by default. Turn it on to require an authenticator app code (plus 10 one-time recovery codes as backup) in addition to your password at sign-in.</p>
+          <div className="settings-password-grid">
+            <label htmlFor="settings-totp-enable-password">Password (to confirm it&apos;s you)<SecretInput id="settings-totp-enable-password" name="settings-totp-enable-password" disabled={totpEnableSaving} value={totpEnablePassword} onChange={(event) => setTotpEnablePassword(event.target.value)} placeholder="Your login password" /></label>
+          </div>
+          <p className="muted">You&apos;ll see a QR code to scan, then be asked to sign back in once it&apos;s confirmed.</p>
+          <div className="action-row">
+            <button disabled={totpEnableSaving || !totpEnablePassword} onClick={() => { void enableTwoFactor(); }}>{totpEnableSaving ? "Starting..." : "Enable Two-Factor Authentication"}</button>
+            {totpEnableResult && <span className={`inline-task-result result-${totpEnableResult.status === "succeeded" ? "ok" : totpEnableResult.status === "failed" ? "fail" : "running"}`}>
+              <strong className={totpEnableResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(totpEnableResult.title, totpEnableResult.status === "running")}</strong>
+              {totpEnableResult.message && <span className="inline-task-message">{formatResultMessage(totpEnableResult.message)}</span>}
+            </span>}
+          </div>
+        </div>)}
       </div>}
       <div className={`playerAdmin_toggle ${discordOAuthOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={discordOAuthOpen ? "Collapse Discord OAuth" : "Expand Discord OAuth"} onClick={() => setDiscordOAuthOpen(!discordOAuthOpen)}>{discordOAuthOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Discord OAuth</span></button>
