@@ -36,7 +36,7 @@ describe("Discord OAuth settings: per-role-ID display names", () => {
 
   it("renders no naming section when no role IDs are configured", async () => {
     mockBackend({});
-    render(<SettingsPanel onPasswordChanged={vi.fn()} confirmAction={vi.fn()} />);
+    render(<SettingsPanel onPasswordChanged={vi.fn()} confirmAction={vi.fn()} onTotpEnrollmentStarted={vi.fn()} />);
     await openDiscordSection();
     await waitFor(() => expect(screen.getByLabelText("Admin Role (required)")).toBeInTheDocument());
     expect(screen.queryByText(/Name your Discord roles/)).not.toBeInTheDocument();
@@ -47,7 +47,7 @@ describe("Discord OAuth settings: per-role-ID display names", () => {
       DISCORD_CONSOLE_ADMIN_ROLE_IDS: `${ADMIN_ROLE},${MOD_ROLE}`,
       DISCORD_CONSOLE_ROLE_NAMES: encodeRoleNamesForWire({ [ADMIN_ROLE]: "Heavy Bats" })
     });
-    render(<SettingsPanel onPasswordChanged={vi.fn()} confirmAction={vi.fn()} />);
+    render(<SettingsPanel onPasswordChanged={vi.fn()} confirmAction={vi.fn()} onTotpEnrollmentStarted={vi.fn()} />);
     await openDiscordSection();
     await waitFor(() => expect(screen.getByText(/Name your Discord roles/)).toBeInTheDocument());
     expect(screen.getByLabelText(ADMIN_ROLE)).toHaveValue("Heavy Bats");
@@ -56,7 +56,7 @@ describe("Discord OAuth settings: per-role-ID display names", () => {
 
   it("does not duplicate a role ID's input when the same ID is (invalidly) present in two fields", async () => {
     mockBackend({ DISCORD_CONSOLE_ADMIN_ROLE_IDS: ADMIN_ROLE, DISCORD_CONSOLE_MODERATOR_ROLE_IDS: ADMIN_ROLE });
-    render(<SettingsPanel onPasswordChanged={vi.fn()} confirmAction={vi.fn()} />);
+    render(<SettingsPanel onPasswordChanged={vi.fn()} confirmAction={vi.fn()} onTotpEnrollmentStarted={vi.fn()} />);
     await openDiscordSection();
     await waitFor(() => expect(screen.getByText(/Name your Discord roles/)).toBeInTheDocument());
     expect(screen.getAllByLabelText(ADMIN_ROLE)).toHaveLength(1);
@@ -67,7 +67,7 @@ describe("Discord OAuth settings: per-role-ID display names", () => {
       DISCORD_CONSOLE_ADMIN_ROLE_IDS: ADMIN_ROLE,
       DISCORD_CONSOLE_ROLE_NAMES: encodeRoleNamesForWire({ [ADMIN_ROLE]: "Old Name", "999999999999999999": "Stale, No Longer Mapped" })
     });
-    render(<SettingsPanel onPasswordChanged={vi.fn()} confirmAction={vi.fn()} />);
+    render(<SettingsPanel onPasswordChanged={vi.fn()} confirmAction={vi.fn()} onTotpEnrollmentStarted={vi.fn()} />);
     await openDiscordSection();
     await waitFor(() => expect(screen.getByLabelText(ADMIN_ROLE)).toHaveValue("Old Name"));
     fireEvent.change(screen.getByLabelText(ADMIN_ROLE), { target: { value: "Heavy Bats" } });
