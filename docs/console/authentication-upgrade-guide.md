@@ -53,7 +53,7 @@ package it needs only land when the image is rebuilt.
 
 Sign in as usual. **Nothing is different.** The option is off until Step 2.
 
-## Step 2 — turn it on
+## Step 2 — make two-factor available
 
 Open `.env` in the repository root and set:
 
@@ -68,15 +68,25 @@ Then:
 dune console restart
 ```
 
-Do this when you are sitting in front of the console with your phone in hand
-and somewhere to save the codes — not as part of an unattended deploy, because
-of what happens next.
+**Corrected 2026-09-02 (issue #665): this step only makes the feature
+available.** It does not turn two-factor on by itself, and your next sign-in
+is unaffected — password sign-in keeps working exactly as before until you
+opt in yourself in Step 3. (This page previously described the flag as
+forcing setup on your very next sign-in; live-testing feedback from the
+upstream maintainer was that forcing every operator into 2FA with no way to
+decline was the wrong default, so enrollment is now something you start
+yourself, whenever you're ready.)
 
-## Step 3 — your next sign-in sets up the authenticator
+## Step 3 — turn it on from Settings, when you're ready
 
-Enter your password as normal. Instead of the console, you will land on a
-setup screen. This is expected. You have **10 minutes**; if it expires, just
-sign in again to start over.
+Sign in as usual, then open **Settings → Two-Factor Authentication → Enable
+Two-Factor Authentication**. Do this when you are sitting in front of the
+console with your phone in hand and somewhere to save the codes — not as
+part of an unattended session, because of what happens next.
+
+Enter your current login password and click **Enable Two-Factor
+Authentication**. You land on a setup screen. You have **10 minutes**; if it
+expires, open the Settings control again to start over.
 
 **Scan the QR code** with your authenticator app. If you cannot scan, the
 same secret is printed beneath the QR under *Can't scan? Enter this code
@@ -104,16 +114,20 @@ authenticator?* for the day you need a recovery code instead.
 
 ## Managing it afterwards (Settings)
 
-Two things change on the Settings page:
+Two things change on the Settings page once you've enabled two-factor:
 
 - **Login Password** now asks for a current authenticator code as well as your
   current password before it will change the password.
-- A new **Two-Factor Authentication** section lets you **Regenerate Recovery
+- The **Two-Factor Authentication** section now lets you **Regenerate Recovery
   Codes** — enter your password and a current code, and you get ten fresh
   ones. The old ten stop working the moment the new ones are issued. Do this if
   you have used several, or are not sure where the sheet went.
 
 Your authenticator itself is not changed by either action.
+
+The same section also has a **Disable Two-Factor Authentication** control
+(password + a current code, same fresh-proof requirement as everything else
+here) — see *Turning it off again* below.
 
 ## Running behind a reverse proxy or tunnel
 
@@ -137,10 +151,20 @@ single trusted proxy hop is supported; chained proxies are out of scope.
 
 ## Turning it off again
 
-Set `CONSOLE_TOTP_ENABLED=0` (or remove the line) and run `dune console
-restart`. Sign-in goes back to password only. Your authenticator state is
-kept, so if you turn it back on later you do **not** set up again — your
-existing app and recovery codes just start working again.
+Two different things can be turned off, and they're not the same:
+
+- **Just for yourself, keeping the feature available:** Settings → Two-Factor
+  Authentication → **Disable Two-Factor Authentication** (password + a
+  current code). Sign-in goes back to password only immediately. This
+  deletes your authenticator pairing and recovery codes outright — if you
+  turn it back on later, you set up again from scratch, same as the first
+  time.
+- **Making the feature unavailable to everyone on this install:** set
+  `CONSOLE_TOTP_ENABLED=0` (or remove the line) and run `dune console
+  restart`. Sign-in goes back to password only. Unlike the Settings control
+  above, this does **not** delete anything — your authenticator state is
+  kept, so if you flip the flag back on later you do **not** set up again,
+  and the Settings control just shows you as already enrolled.
 
 ## If something goes wrong
 
@@ -160,10 +184,12 @@ need access to the machine: follow *Case 3* in
 [two-factor-recovery.md](two-factor-recovery.md). It is a two-minute
 procedure, and your password is not affected.
 
-**I set the flag and nothing happened.** Password sign-in still works with no
-code and no setup screen. Almost always this means the container did not get
-the setting: confirm you ran `dune console restart` *after* editing `.env`,
-then check with
+**I set the flag and nothing happened.** That's expected now — Step 2 only
+makes the feature available; it doesn't turn it on by itself. Password
+sign-in keeps working with no code and no setup screen until you go to
+Settings → Two-Factor Authentication and enable it yourself (Step 3). If the
+Settings section isn't there at all, that's the real problem: confirm you ran
+`dune console restart` *after* editing `.env`, then check with
 `docker inspect redblink-dune-docker-console --format '{{.Config.Env}}' | tr ' ' '\n' | grep CONSOLE_TOTP`.
 If it prints nothing, the compose file in your checkout predates this feature —
 update it.
@@ -175,8 +201,8 @@ forward again and sign in normally.
 
 **Sign-in says the two-factor state is unreadable.** The state file itself is
 damaged. Restore `runtime/generated/console-second-factor.json` from a backup,
-or — if you have no backup — remove it and set up again on your next sign-in,
-exactly as in Step 3.
+or — if you have no backup — remove it and enable two-factor again from
+Settings, exactly as in Step 3.
 
 **My recovery codes were rejected and the message mentions a restored backup.**
 The console noticed its state file is older than one it has seen before

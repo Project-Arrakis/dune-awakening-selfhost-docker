@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  getFreePort, startConsole, waitForHealth, stopProcess, api, login,
+  getFreePort, startConsole, waitForHealth, stopProcess, api, login, cookieFrom,
   readGeneratedPassword, secondFactorPath, auditLogPath,
   codeForStep, currentTotpStep, nextTotpCode, enroll,
 } from "../test-support/consoleHarness.js";
@@ -153,8 +153,14 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
     try {
       await waitForHealth(port, 20000, consoleProc.logs);
       const password = readGeneratedPassword(tempDir);
-      const enrollSession = await login(port, { password });
-      assert.equal(enrollSession.body.enrollmentRequired, true);
+      // TOTP is opt-in (issue #665): plain login is now a normal session, so an
+      // enroll-scope session must be requested explicitly via /api/auth/2fa/enable.
+      const normal = await login(port, { password });
+      assert.equal(normal.body.authenticated, true);
+      const enableRes = await api(port, "/api/auth/2fa/enable", { cookie: normal.cookie, csrf: normal.csrf, body: { currentPassword: password } });
+      const enableBody = await enableRes.json();
+      assert.equal(enableBody.enrollmentRequired, true);
+      const enrollSession = { cookie: cookieFrom(enableRes), csrf: enableBody.csrfToken };
 
       const res = await api(port, REGENERATE_PATH, {
         cookie: enrollSession.cookie, csrf: enrollSession.csrf, body: { currentPassword: password, totpCode: "000000" },

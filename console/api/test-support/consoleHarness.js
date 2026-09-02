@@ -202,8 +202,16 @@ export async function waitForStepAfter(step, { timeoutMs = 5 * TOTP_PERIOD_SECON
 // a clock boundary was involved.
 export async function enroll(port, tempDir, { assert }) {
   const password = readGeneratedPassword(tempDir);
-  const first = await login(port, { password });
-  assert.equal(first.body.enrollmentRequired, true, "first login with no factor yields an enrollment session");
+  // TOTP is opt-in (issue #665): a plain login with no factor configured is now
+  // a normal, fully-authenticated session, never a forced enrollment one.
+  // Enrollment is owner-initiated via POST /api/auth/2fa/enable, which mints
+  // the same enroll-scope session the old forced path used to mint automatically.
+  const normal = await login(port, { password });
+  assert.equal(normal.body.authenticated, true, "plain password login succeeds with no factor configured");
+  const enableRes = await api(port, "/api/auth/2fa/enable", { cookie: normal.cookie, csrf: normal.csrf, body: { currentPassword: password } });
+  const enableBody = await enableRes.json();
+  assert.equal(enableBody.enrollmentRequired, true, "POST /api/auth/2fa/enable yields an enrollment session");
+  const first = { cookie: cookieFrom(enableRes), csrf: enableBody.csrfToken, body: enableBody };
   const setup = await (await api(port, "/api/auth/2fa/setup", { cookie: first.cookie, csrf: first.csrf })).json();
 
   const code = codeFor(setup.secret, 0);
