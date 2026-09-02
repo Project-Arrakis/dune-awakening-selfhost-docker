@@ -80,6 +80,24 @@ test("player announcements publish join and leave events from online state chang
   assert.equal(left.sent, 1);
 });
 
+test("player announcements deliver Server messages directly to every recipient queue", async () => {
+  const cfg = config();
+  cfg.mockMode = false;
+  savePlayerAnnouncements(cfg, { joinEnabled: true, joinMessage: "{playerName} joined", leaveEnabled: false, leaveMessage: "{playerName} left" });
+  const calls = [];
+  const result = await runPlayerAnnouncementScan(cfg, [player("John")], {
+    persona: { funcomId: "Server#4242", hexFlsId: "5E121CE000000001" },
+    publishMapChat: async (_config, fields) => {
+      calls.push(fields);
+      return { stdout: "publish=ok" };
+    }
+  });
+  assert.equal(result.sent, 1);
+  assert.equal(calls[0].senderFuncomId, "Server#4242");
+  assert.equal(calls[0].senderHexFlsId, "5E121CE000000001");
+  assert.equal(calls[0].recipientQueue, "ABCDEF1234567890_queue");
+});
+
 test("player announcements treat changed login session as a fresh join", async () => {
   const cfg = config();
   savePlayerAnnouncements(cfg, { joinEnabled: true, joinMessage: "{playerName} joined", leaveEnabled: false, leaveMessage: "{playerName} left" });
