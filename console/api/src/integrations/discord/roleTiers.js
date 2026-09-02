@@ -30,13 +30,23 @@ export function roleTiersConfigured(roleTiers) {
 // Highest tier whose mapped roles intersect the member's roles, or "" when
 // none do. Order is explicit and never derived from object key order.
 export function resolveRoleTier(memberRoleIds, roleTiers) {
+  return resolveRoleTierDetailed(memberRoleIds, roleTiers).tier;
+}
+
+// Same precedence as resolveRoleTier, but also reports which role ID decided
+// the winning tier (F3, #573: the console shows that role's operator-given
+// name next to the tier). If two role IDs under the same tier are both held,
+// the one listed first in that tier's config wins -- deterministic, since
+// Discord gives no natural priority between two same-tier roles.
+export function resolveRoleTierDetailed(memberRoleIds, roleTiers) {
   const held = new Set(Array.isArray(memberRoleIds) ? memberRoleIds.map(String) : []);
-  if (!held.size) return "";
+  if (!held.size) return { tier: "", roleId: "" };
   for (const tier of ROLE_MAPPABLE_TIERS) {
     const mapped = roleTiers?.[tier] || [];
-    if (mapped.some((id) => held.has(String(id)))) return tier;
+    const roleId = mapped.map(String).find((id) => held.has(id));
+    if (roleId) return { tier, roleId };
   }
-  return "";
+  return { tier: "", roleId: "" };
 }
 
 // Of two tiers, the higher one ("" loses to anything).
@@ -80,4 +90,66 @@ export function roleTierConflicts(roleTiers) {
 
 export function describeRoleTierConflicts(conflicts) {
   return conflicts.map((c) => `role ${c.roleId} is mapped to ${c.tiers.join(" and ")}`).join("; ");
+}
+
+// ---- Role display names (F3, #573) ----
+//
+// An operator-typed { roleId: name } label map, keyed by role ID (not tier --
+// a tier field may map several role IDs, per ROLE_MAPPABLE_TIERS above, and
+// each needs its own label). Stored as base64url in DISCORD_CONSOLE_ROLE_NAMES
+// deliberately: a raw JSON object literal does not round-trip through this
+// codebase's .env quoting (services/envFile.js's quoteEnv escapes quote
+// characters that parseEnvLine's reader does not unescape -- reproduced
+// directly during the L1 design audit). Base64url's alphabet is a strict
+// subset of what quoteEnv already leaves unescaped, so it passes through
+// unchanged.
+export const MAX_ROLE_NAME_LENGTH = 100;
+export const MAX_ROLE_NAMES_ENTRIES = 50;
+const DANGEROUS_ROLE_NAME_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+// Write-time validation: used both to reject a bad Settings-UI submission
+// (400, actionable reason) and, via decodeRoleNamesSafe below, to re-validate
+// whatever is already on disk at read time.
+export function validateRoleNamesMap(value) {
+  if (value === null || value === undefined || value === "") return { ok: true, value: {} };
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, reason: "must be a JSON object mapping Discord role IDs to names" };
+  }
+  const entries = Object.entries(value);
+  if (entries.length > MAX_ROLE_NAMES_ENTRIES) {
+    return { ok: false, reason: `at most ${MAX_ROLE_NAMES_ENTRIES} role names are allowed` };
+  }
+  const clean = {};
+  for (const [roleId, name] of entries) {
+    // Explicit denylist, even though SNOWFLAKE_RE below already rejects these
+    // three (none are all-digit 17-19 char strings) -- defense in depth against
+    // a future loosening of the snowflake check, not load-bearing today.
+    if (DANGEROUS_ROLE_NAME_KEYS.has(roleId)) return { ok: false, reason: `invalid role id key: ${roleId}` };
+    if (!SNOWFLAKE_RE.test(roleId)) return { ok: false, reason: `invalid Discord role id: ${roleId}` };
+    if (typeof name !== "string" || name.length === 0 || name.length > MAX_ROLE_NAME_LENGTH) {
+      return { ok: false, reason: `role name for ${roleId} must be 1-${MAX_ROLE_NAME_LENGTH} characters` };
+    }
+    clean[roleId] = name;
+  }
+  return { ok: true, value: clean };
+}
+
+export function encodeRoleNames(map) {
+  return Buffer.from(JSON.stringify(map || {}), "utf8").toString("base64url");
+}
+
+// Read-time (config load): fails safe to {} on ANY error -- decode failure,
+// malformed JSON, or a shape that fails validateRoleNamesMap -- a corrupted
+// or hand-edited value must never crash console boot (L1 audit, Security
+// Architect HIGH finding: this is a purely cosmetic feature and must never
+// be riskier than what it replaces).
+export function decodeRoleNamesSafe(raw) {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(Buffer.from(String(raw), "base64url").toString("utf8"));
+    const result = validateRoleNamesMap(parsed);
+    return result.ok ? result.value : {};
+  } catch {
+    return {};
+  }
 }

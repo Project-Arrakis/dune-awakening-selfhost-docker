@@ -19,6 +19,17 @@ test("auth keeps tier and identity in the server-side session while the cookie r
 
 });
 
+test("auth (F3, #573): roleName is carried on the session when provided, and absent entirely when not", () => {
+  const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false });
+  const withName = auth.makeSession({ tier: "admin", userId: "123", username: "Tester", roleName: "Heavy Bats" });
+  const req = { headers: { cookie: `asc_session=${encodeURIComponent(withName.cookie)}` } };
+  assert.equal(auth.readSession(req)?.roleName, "Heavy Bats");
+
+  const withoutName = auth.makeSession({ tier: "admin", userId: "456", username: "Other" });
+  const req2 = { headers: { cookie: `asc_session=${encodeURIComponent(withoutName.cookie)}` } };
+  assert.equal("roleName" in auth.readSession(req2), false, "no roleName was given -- must not appear as a phantom undefined field");
+});
+
 test("auth uses the injected clock for session expiry", () => {
   let currentTime = 1_700_000_000_000;
   const auth = createAuth({ sessionSecret: "secret", adminPassword: "admin", authDisabled: false, now: () => currentTime });

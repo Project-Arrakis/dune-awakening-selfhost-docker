@@ -40,7 +40,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 | GET | `/api/auth/state` | Authentication state, CSRF token and — for a two-factor enrollment or re-setup session — `scope` (`enroll`/`resetup`), so a reloaded page resumes the setup screen instead of the console | None |
 | POST | `/api/auth/login` | Login with password; also carries the second factor when one is enrolled | `password` (string), optionally `totpCode` or `recoveryCode` |
 | POST | `/api/auth/logout` | Logout current session | None |
-| GET | `/api/auth/me` | The signed-in principal — `user{id,username,tier,guildId}`, `scope`, `allowedActions` (what the policy engine will allow this session) — plus second-factor state (`secondFactorEnrolled`, `secondFactorUnavailable`) | None |
+| GET | `/api/auth/me` | The signed-in principal — `user{id,username,tier,guildId,roleName}` (`roleName` is a purely cosmetic display label for the Discord role that decided this session's tier, `""` when none is configured — #573), `scope`, `allowedActions` (what the policy engine will allow this session) — plus second-factor state (`secondFactorEnrolled`, `secondFactorUnavailable`) | None |
 | POST | `/api/auth/2fa/setup` | Begin TOTP enrollment; returns secret, otpauth URI and QR | None (enrollment-scope session) |
 | POST | `/api/auth/2fa/confirm` | Confirm enrollment; returns the one-time recovery codes | `code` (string) |
 | POST | `/api/auth/2fa/recovery-codes/regenerate` | Issue a fresh recovery-code set, invalidating the old one | `currentPassword`, `totpCode` |

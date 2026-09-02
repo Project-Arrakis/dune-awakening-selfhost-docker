@@ -13,6 +13,33 @@ Part 8 (Discord), which needs a Discord server and test accounts.
 screen, message, or button differs from what is written here, that is a
 finding even when the flow still works — record the exact text you saw.
 
+**Getting this build onto your instance.** No git checkout is needed or
+expected. On your console: **Updates → QA Tester Login** (Discord sign-in),
+then confirm the build shown under *Latest GitHub Pre-Release* is the one
+you were told to test, then **Apply Pre-Release**. This rebuilds and
+restarts the console for you — wait for it to come back healthy before
+starting T01.
+
+**This is the base checklist for the whole Tier 1 (Discord OAuth/role
+tiers) + Tier 3 (mandatory TOTP) feature set.** Three more features layer
+on top of what this checklist covers, each with its own dedicated UAT plan
+— run this one first, then whichever of these apply to the build you were
+given:
+- `docs/console/discord-role-name-chip-uat.md` (#573) — the signed-in chip
+  shows a friendly role name instead of the bare tier.
+- `docs/console/discord-popup-login-uat.md` (#574) — Discord sign-in opens
+  a popup instead of a full-page redirect. **If this feature is in your
+  build, the "Sign in with Discord" step in Part 8 below opens a popup, not
+  a full-page redirect — see that doc's own T01–T07 for the popup-specific
+  behavior; Part 8's cases below are still valid for verifying WHO gets
+  admitted and at what tier, just not for the exact page-navigation
+  mechanics once #574 lands.**
+- `docs/console/access-control-editor-uat.md` (#634) and
+  `docs/console/discord-settings-embed-uat.md` (#643) — the Access Control
+  policy editor and the embedded Discord settings reconfiguration flow.
+  These ship from a separate branch than #573/#574; only relevant if your
+  build includes them (ask whoever assigned this UAT if you're unsure).
+
 ---
 
 ## Environment (fill in before starting)
@@ -20,7 +47,7 @@ finding even when the flow still works — record the exact text you saw.
 | Item | Value |
 |---|---|
 | Console URL used in the browser | `https://________________` (must be the URL you normally sign in with; if the install sets `ADMIN_SECURE_COOKIES=1` — recommended behind HTTPS — a plain `http://host:port` URL will never keep you signed in, because the session cookie is `Secure`) |
-| Build under test | commit `________` (e.g. `git rev-parse --short HEAD` on the host) |
+| Build under test | short SHA shown in **Updates → Latest GitHub Pre-Release** after applying it: `________` |
 | Admin password | held by tester, **not** written here |
 | Phone with an authenticator app | app name: `________` |
 | Second browser or private window | for "other sessions" checks |

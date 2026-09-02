@@ -14,7 +14,7 @@
 // - membership + explicit operator gates before any owner-tier session
 // - fail closed: any missing/invalid input yields no session, never a partial one
 
-import { resolveRoleTier, higherTier, mfaGateReason } from "./roleTiers.js";
+import { resolveRoleTierDetailed, higherTier, mfaGateReason } from "./roleTiers.js";
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 
 export const DISCORD_OAUTH_BASE_URL = "https://discord.com/api/v10";
@@ -252,19 +252,24 @@ export function resolveBootstrapTier({ userId, guildIds, allowOwnerBootstrap, ho
   return "owner";
 }
 
-// Resolves to { tier, source, reason }. source is "handoff" or
+// Resolves to { tier, source, reason, roleName? }. source is "handoff" or
 // "bootstrap"; reason is "" on success and names the denial cause for
 // the audit log only — it must never influence the authorization
 // decision, which is tier-empty-means-deny regardless of reason.
-export function createOAuthTierResolver({ bootstrap = {}, handoff = null, roleTiers = null, requireMfaTiers = [] } = {}) {
+// roleName (F3, #573) is a pure display label, present only when one is
+// available, and is never itself an authorization input.
+export function createOAuthTierResolver({ bootstrap = {}, handoff = null, roleTiers = null, roleNames = {}, requireMfaTiers = [] } = {}) {
   return async function resolveOAuthTier(identity) {
     const { userId, guildIds, roleIds = [], ownedGuildIds = [], mfaEnabled = false } = identity;
 
     // A configured handoff stays authoritative (§2.1): the bot is the single
     // source of truth for operators who run one, and this resolver must never
-    // produce a second, competing answer beside it.
+    // produce a second, competing answer beside it. roleName, when the bot
+    // sends one, is likewise authoritative -- the local roleNames map is never
+    // consulted on this path (a local label for a role the bot resolves would
+    // be stale-by-definition next to the bot's own live guild-role data).
     if (handoff && handoff.enabled) {
-      const { tier, reason } = await handoff.resolveTier({ userId, username: identity.username });
+      const { tier, reason, roleName } = await handoff.resolveTier({ userId, username: identity.username });
       if (!tier) return { tier: "", source: "handoff", reason: reason || "denied" };
       // The bot is authoritative for WHICH tier, but the operator's console-side
       // 2FA gate (DISCORD_OAUTH_REQUIRE_MFA_TIERS) is a separate policy layered
@@ -275,7 +280,9 @@ export function createOAuthTierResolver({ bootstrap = {}, handoff = null, roleTi
       // operator meant to deny. identity.mfaEnabled is available here.
       const mfaReason = mfaGateReason(tier, mfaEnabled, requireMfaTiers);
       if (mfaReason) return { tier: "", source: "handoff", reason: mfaReason, deniedTier: tier };
-      return { tier, source: "handoff", reason: "" };
+      return roleName !== undefined
+        ? { tier, source: "handoff", reason: "", roleName }
+        : { tier, source: "handoff", reason: "" };
     }
 
     const bootstrapTier = resolveBootstrapTier({
@@ -291,7 +298,8 @@ export function createOAuthTierResolver({ bootstrap = {}, handoff = null, roleTi
     const inHomeGuild = Boolean(bootstrap.homeGuildId) && guildIds.includes(bootstrap.homeGuildId);
     // Owner = the Discord server's owner (§2.1.1), derived from Discord itself.
     const guildOwnerTier = inHomeGuild && ownedGuildIds.includes(bootstrap.homeGuildId) ? "owner" : "";
-    const roleTier = inHomeGuild ? resolveRoleTier(roleIds, roleTiers) : "";
+    const roleDetail = inHomeGuild ? resolveRoleTierDetailed(roleIds, roleTiers) : { tier: "", roleId: "" };
+    const roleTier = roleDetail.tier;
     const tier = higherTier(guildOwnerTier, higherTier(bootstrapTier, roleTier));
     const source = guildOwnerTier ? "guild-owner" : (tier === roleTier && roleTier ? "roles" : "bootstrap");
     if (!tier) return { tier: "", source, reason: "not_authorized" };
@@ -300,7 +308,13 @@ export function createOAuthTierResolver({ bootstrap = {}, handoff = null, roleTi
     // already carries for Discord instead of adding an enrollment on top of OAuth.
     const mfaReason = mfaGateReason(tier, mfaEnabled, requireMfaTiers);
     if (mfaReason) return { tier: "", source, reason: mfaReason, deniedTier: tier };
-    return { tier, source, reason: "" };
+    // A role's name is only meaningful when this tier was genuinely decided by
+    // that role (source === "roles") -- guild-owner and bootstrap-allowlist
+    // tiers must never show an incidentally-held role's name (#573 L1 audit).
+    const roleName = source === "roles" ? roleNames?.[roleDetail.roleId] : undefined;
+    return roleName
+      ? { tier, source, reason: "", roleName }
+      : { tier, source, reason: "" };
   };
 }
 

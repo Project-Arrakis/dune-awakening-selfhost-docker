@@ -11,16 +11,34 @@
 //
 // Signature: HMAC-SHA256(sharedSecret, JSON.stringify(payload)) as hex.
 //
+// The bot's HTTP response may also carry an UNSIGNED sibling field, `roleName`
+// (F3, #573) -- a display label for the role that decided the tier. It is
+// deliberately excluded from the signed payload: it carries no authorization
+// weight, so it is read and length/type-validated independently, and never
+// affects tier resolution or signature verification either way.
+//
 // Max age: 30 s — a handoff is a real-time assertion, not a durable token.
 // The console calls the bot anew on every login; the timestamp prevents
 // replays within the window.
 
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { MAX_ROLE_NAME_LENGTH } from "./roleTiers.js";
 
 const VALID_TIERS = new Set(["owner", "admin", "moderator", "player"]);
 const USER_SNOWFLAKE_RE = /^\d{17,19}$/;
 const MAX_HANDOFF_AGE_MS = 30_000;
 const HTTP_TIMEOUT_MS = 5_000;
+// F3 (#573): the bot may optionally supply a display name for the role that
+// decided the tier. Deliberately NOT part of the signed payload -- it carries
+// zero authorization weight (only `tier`, still fully HMAC-verified, decides
+// session privilege), so it is validated independently and a malformed value
+// is silently dropped rather than denying an otherwise-valid tier claim.
+// MAX_ROLE_NAME_LENGTH is imported from roleTiers.js (not redefined here) so
+// the operator-typed cap and the bot-supplied cap can never silently diverge
+// (code review finding, PR #651).
+function readOptionalRoleName(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_ROLE_NAME_LENGTH ? value : undefined;
+}
 
 // ---- Public API ----
 
@@ -145,7 +163,12 @@ function liveHandoff(config) {
     }
 
     if (!body || typeof body !== "object") return { tier: "", reason: "malformed_response" };
-    const { signature, ...payload } = body;
+    // roleName is pulled out here, BEFORE the signed payload is assembled, so it
+    // can never participate in JSON.stringify(payload) / the HMAC it's checked
+    // against -- an oversized, wrong-typed, or attacker-modified roleName must
+    // never be able to invalidate (or forge) the signature over `tier`.
+    const { signature, roleName: rawRoleName, ...payload } = body;
+    const roleName = readOptionalRoleName(rawRoleName);
 
     const payloadCheck = validatePayload(payload);
     if (!payloadCheck.ok) return { tier: "", reason: payloadCheck.reason };
@@ -161,7 +184,9 @@ function liveHandoff(config) {
     if (payloadCheck.payload.userId !== userId) return { tier: "", reason: "user_mismatch" };
     if (payloadCheck.payload.guildId !== homeGuildId) return { tier: "", reason: "guild_mismatch" };
 
-    return { tier: payloadCheck.payload.tier, reason: "" };
+    return roleName !== undefined
+      ? { tier: payloadCheck.payload.tier, reason: "", roleName }
+      : { tier: payloadCheck.payload.tier, reason: "" };
   }
 
   return { enabled: true, resolveTier };

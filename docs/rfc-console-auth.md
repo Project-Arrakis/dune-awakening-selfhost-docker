@@ -101,6 +101,20 @@ This is the entire authorization fix — no cache, no grace window, no new persi
 | Moderator role ID | optional | `DISCORD_CONSOLE_MODERATOR_ROLE_IDS` |
 | Player role ID | recommended | `DISCORD_CONSOLE_PLAYER_ROLE_IDS` |
 | Require Discord 2FA for tiers | optional (suggested `owner,admin`) | `DISCORD_OAUTH_REQUIRE_MFA_TIERS` |
+| Role display names *(#573)* | optional, per role ID | `DISCORD_CONSOLE_ROLE_NAMES` (base64url-encoded JSON `{roleId: name}`, written by the Settings UI) |
+
+**Role display names (#573).** Purely cosmetic — the signed-in chip shows this
+label instead of the bare tier (owner/admin/moderator/player) when one is
+configured for the role that decided the session's tier. Never an
+authorization input: it has no effect on which tier a member is granted, only
+what that tier is called in the UI. On the role-derived path the console
+looks the deciding role's ID up in its own configured map; on the signed
+handoff path, a companion bot may instead supply its own `roleName`
+alongside the signed tier claim (an unsigned sibling field — see
+`console/api/src/integrations/discord/handoff.js`'s module comment for why),
+which always wins over the local map. Never shown for the guild-owner or
+bootstrap-allowlist tier sources, even if that account also holds a named
+role, since no role decided those tiers.
 
 Each role field accepts one or more Discord role IDs (17–19-digit snowflakes, comma-separated); the operator copies them from Discord with Developer Mode on, exactly as for the bot. Nothing is fetched from Discord to populate the form — listing a guild's roles requires a bot token, which the console deliberately does not hold.
 
