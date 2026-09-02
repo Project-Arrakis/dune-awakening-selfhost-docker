@@ -3183,7 +3183,15 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-layer-group { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
 .live-map-layer-expand { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 20px; height: 20px; padding: 0; margin: 0; line-height: 1; background: transparent; border: 1px solid #514232; border-radius: 4px; color: #d9c8aa; font-size: 13px; cursor: pointer; }
 .live-map-layer-expand-spacer { flex: 0 0 auto; width: 22px; height: 20px; }
-.live-map-layer-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-map-layer-label {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
 .live-map-layer-expand:hover { border-color: #c68b4a; color: #ffd08a; }
 .live-map-layer-sublist { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin-left: 22px; padding-left: 8px; border-left: 1px solid #302b25; }
 /* width:100% (from .checkbox-row.live-map-layer) is computed against the
