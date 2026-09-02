@@ -68,18 +68,18 @@ joined against `player_state` / `vehicles` / `buildings` / `placeables`.
 
 ### Spice & resources
 
-**Static Spice Spawns**, **Active Spice Blows**, and **Flour Sand** are
+**Possible Spice Locations**, **Active Spice Fields**, and **Flour Sand** are
 three independent layers built by `liveMapSpice()`
 (`console/api/src/services/liveMapSpice.js`):
 
-- *Static Spice Spawns* is the full known pool for the **current Coriolis
+- *Possible Spice Locations* is the full known pool for the **current Coriolis
   seed** (see below): the committed `console/api/data/
   large-spice-locations.json` archive (Large tier, Deep-Desert-only, built
   from ground truth) merged with a runtime-generated
   `learned-spice-locations.json` that the console grows itself by recording
   every field it has ever seen active. On a `field_id` collision the
   committed archive wins -- it is the higher-confidence source.
-- *Active Spice Blows* reads `dune.resourcefield_state` live
+- *Active Spice Fields* reads `dune.resourcefield_state` live
   (`field_kind_id = 1`), sized by `value_remaining`
   (`> 150000` Large, `> 5000` Medium, else Small), and positioned by
   decoding `field_id`'s bit-packing directly when no archive entry exists
@@ -181,9 +181,9 @@ The same log block also prints when the cycle ends, so a boundary that is
 already in the past is proof the logged seed is stale. `resolveCoriolisCycle()`
 treats that seed as **unknown** rather than trusting it: it returns a null seed
 plus a `staleSince` timestamp, which makes every archive and learned-pool
-lookup short-circuit and suppresses the write-back. *Static Spice Spawns*
+lookup short-circuit and suppresses the write-back. *Possible Spice Locations*
 therefore disappears until the map server restarts and prints the new seed,
-while *Active Spice Blows* and *Flour Sand* keep working -- they read Postgres
+while *Active Spice Fields* and *Flour Sand* keep working -- they read Postgres
 and never depend on the seed. The Overview strip shows `Coriolis Seed:
 Awaiting restart` during that window so the empty layer does not read as a bug.
 

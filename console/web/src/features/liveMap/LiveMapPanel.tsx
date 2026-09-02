@@ -60,7 +60,7 @@ import {
 const GATED_LAYER_KEYS = new Set(["spice", "spice_active", "flour_sand", "ore", "scrap", "flora", "poi", "house_representative", "trainer", "fortress", "hazard", "enemy"]);
 
 // Categories that expand into individual sub-types (e.g. Ores & Metals ->
-// RhyoliteOre/AzuriteOre/...; Active Spice Blows -> Small/Medium/Large).
+// RhyoliteOre/AzuriteOre/...; Active Spice Fields -> Small/Medium/Large).
 // Sub-type lists are derived dynamically from whatever `subtype` values are
 // actually present in the loaded markers -- not curated -- so a new
 // game-added resource type shows up with zero maintenance.
@@ -924,12 +924,12 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
             {activePartition && <div className="key-value-item"><span>Partition Status</span><strong>{partitionRuntimeStatus}</strong></div>}
             {coriolisSeed && <div className="key-value-item"><span>Coriolis Seed</span><strong>{coriolisSeedNumber(coriolisSeed)}</strong></div>}
             {activeMap?.key === "DeepDesert" && <div className="key-value-item"><span>Terrain</span><strong title={terrainFallback ? `Showing the flat map: ${terrainFallback}` : undefined}>{
-              terrainFallback ? `Flat Map (${titleTerrainReason(terrainFallback)})` : `layout ${coriolisLayout}`
+              terrainFallback ? `Flat Map (${titleTerrainReason(terrainFallback)})` : `Layout ${coriolisLayout}`
             }</strong></div>}
             {coriolisNextCycleAt && <div className="key-value-item"><span>Coriolis Countdown</span><strong>{formatCoriolisCountdown(coriolisNextCycleAt, now)}</strong></div>}
             {/* The seed is only printed at container startup, so between a
                 Coriolis boundary and the next restart the server can't know
-                which seed is live. Static Spice Spawns is suppressed in that
+                which seed is live. Possible Spice Locations is suppressed in that
                 window rather than showing the previous cycle's pool -- say so,
                 otherwise the empty layer reads as a bug. */}
             {coriolisSeedStaleSince && <div className="key-value-item"><span>Coriolis Seed</span><strong title={`Cycle rolled over at ${coriolisSeedStaleSince}; the new seed is only logged when the map server restarts.`}>Awaiting Restart</strong></div>}
@@ -1486,8 +1486,8 @@ function friendlyMarkerType(type: string) {
     base: "Base",
     storage: "Storage",
     service: "Service",
-    spice: "Static Spice Spawns",
-    spice_active: "Active Spice Blows",
+    spice: "Possible Spice Locations",
+    spice_active: "Active Spice Fields",
     flour_sand: "Flour Sand",
     ore: "Ores & Metals",
     scrap: "Scrap & Wrecks",
