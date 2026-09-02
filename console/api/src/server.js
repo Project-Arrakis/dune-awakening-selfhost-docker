@@ -25,7 +25,7 @@ import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
-import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
+import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
 import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
@@ -54,6 +54,7 @@ import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 import { liveMapSpice } from "./services/liveMapSpice.js";
 import { resolveCoriolisCycle } from "./services/coriolisSeed.js";
 import { liveMapPoi } from "./services/liveMapPoi.js";
+import { deliverMapChatToRecipients } from "./services/mapChatDelivery.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
 import { createZipArchive } from "./services/zipArchive.js";
@@ -1513,6 +1514,8 @@ async function liveMapMarkersRoute(res, url) {
       ...markers,
       ...configPayload,
       capabilities: { ...markers.capabilities, ...spice.capabilities, ...poi.capabilities },
+      knownSubtypes: poi.knownSubtypes || {},
+      subtypeLabels: poi.subtypeLabels || {},
       overlays: { ...markers.overlays, spice: spice.reason || "" },
       rows: [...markers.rows, ...spice.rows, ...poi.rows],
       // Every server container reports the identical farm-wide seed and
@@ -5216,18 +5219,7 @@ async function mapChatRoute(req, res) {
 
 async function deliverMapChatMessage(mapName, dimension, message) {
   const recipients = config.mockMode ? [{ queue: "mock-player_queue" }] : await mapChatRecipients(mapName, dimension);
-  if (!recipients.length) throw new Error("No online players are currently subscribed to that map.");
-  const sender = config.mockMode ? { funcomId: "Server#4242", hexFlsId: "5E121CE000000001" } : await ensureCarePackageServerPersona(db);
-  const result = config.mockMode
-    ? { code: 0, stdout: "mock map chat\n", stderr: "", args: [] }
-    : await publishMapChat(config, {
-        mapName,
-        dimension,
-        message,
-        senderFuncomId: sender.funcomId,
-        senderHexFlsId: sender.hexFlsId
-      });
-  return { ...result, recipients: recipients.length };
+  return deliverMapChatToRecipients(config, { mapName, dimension, message, recipients }, { db, mockMode: config.mockMode });
 }
 
 async function deliverScheduledMapMessage(schedule) {

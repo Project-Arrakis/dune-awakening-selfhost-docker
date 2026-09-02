@@ -61,9 +61,9 @@ const GATED_LAYER_KEYS = new Set(["spice", "spice_active", "flour_sand", "ore", 
 
 // Categories that expand into individual sub-types (e.g. Ores & Metals ->
 // RhyoliteOre/AzuriteOre/...; Active Spice Fields -> Small/Medium/Large).
-// Sub-type lists are derived dynamically from whatever `subtype` values are
-// actually present in the loaded markers -- not curated -- so a new
-// game-added resource type shows up with zero maintenance.
+// Sub-type lists combine the backend's supported-type registry with values
+// discovered in the loaded markers. This keeps known resources visible at a
+// zero count while still admitting new game-added marker types automatically.
 const EXPANDABLE_KEYS = new Set(["spice", "spice_active", "ore", "scrap", "flora", "poi", "house_representative", "trainer", "fortress", "hazard", "enemy", "vehicle"]);
 // Zoom was capped at 100% (1 map-pixel-unit == 1 CSS pixel), too tight for
 // precise marker/teleport placement.
@@ -204,6 +204,10 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   const [markers, setMarkers] = useState<LiveMapMarker[]>([]);
   const [overlays, setOverlays] = useState<Record<string, string>>({});
   const [capabilities, setCapabilities] = useState<Record<string, unknown>>({});
+  const knownSubtypesRef = useRef<Record<string, string[]>>({});
+  const subtypeLabelsRef = useRef<Record<string, Record<string, string>>>({});
+  const knownSubtypes = knownSubtypesRef.current;
+  const subtypeLabels = subtypeLabelsRef.current;
   // "Pinned" marker (clicked -- stays open until a click lands outside every
   // marker) takes priority over "hoveredMarker" (transient preview, cleared
   // on mouseleave) -- see displayedMarker below.
@@ -293,6 +297,13 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
       setSubtypeFilters((prev) => {
         const next: Record<string, Record<string, boolean>> = {};
         for (const key of Object.keys(prev)) next[key] = { ...prev[key] };
+        for (const [type, subtypes] of Object.entries(result.knownSubtypes || {})) {
+          if (!EXPANDABLE_KEYS.has(type)) continue;
+          if (!next[type]) next[type] = {};
+          for (const subtype of subtypes) {
+            if (!(subtype in next[type])) next[type][subtype] = savedSubtypeDefaults?.[type]?.[subtype] ?? DEFAULT_LAYER_FILTERS[type] ?? true;
+          }
+        }
         for (const marker of rows) {
           const type = String(marker.type);
           const subtype = typeof marker.subtype === "string" ? marker.subtype : null;
@@ -304,6 +315,10 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
       });
       setOverlays(result.overlays || {});
       setCapabilities((previous) => includeStatic ? (result.capabilities || {}) : ({ ...previous, ...(result.capabilities || {}) }));
+      if (includeStatic) {
+        knownSubtypesRef.current = result.knownSubtypes || {};
+        subtypeLabelsRef.current = result.subtypeLabels || {};
+      }
       setMapConfig(result.map || null);
       setMaps(result.maps || {});
       setPartitions(result.partitions || []);
@@ -1072,7 +1087,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
               const sectionName = item.header;
               currentSection = sectionName;
               const sectionExpanded = expandedSections[sectionName] !== false;
-              const memberKeys = (SECTION_MEMBERS[sectionName] || []).filter((memberKey) => !(GATED_LAYER_KEYS.has(memberKey) && capabilities[memberKey] === false) && (rawCategoryCounts[memberKey] || 0) > 0);
+              const memberKeys = (SECTION_MEMBERS[sectionName] || []).filter((memberKey) => !(GATED_LAYER_KEYS.has(memberKey) && capabilities[memberKey] === false) && ((rawCategoryCounts[memberKey] || 0) > 0 || Boolean(knownSubtypes[memberKey]?.length)));
               if (memberKeys.length === 0) return null;
               const sectionAllOn = memberKeys.length > 0 && memberKeys.every(keyFullyOn);
               const sectionAllOff = memberKeys.length > 0 && memberKeys.every(keyFullyOff);
@@ -1109,7 +1124,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
             const chevronSpacer = currentSection ? <span className="live-map-layer-expand-spacer" aria-hidden="true" /> : null;
             const key = item.key;
             if (GATED_LAYER_KEYS.has(key) && capabilities[key] === false) return null;
-            if ((rawCategoryCounts[key] || 0) === 0) return null;
+            if ((rawCategoryCounts[key] || 0) === 0 && !(knownSubtypes[key]?.length)) return null;
             const subtypes = EXPANDABLE_KEYS.has(key) ? Object.keys(subtypeFilters[key] || {}).sort() : [];
             if (subtypes.length === 0) {
               return indent(<label className="checkbox-row live-map-layer">{chevronSpacer}<span className="live-map-layer-label">{friendlyMarkerType(key)}</span><span className="muted">{markerCounts[key] || 0}</span><span className={`live-map-legend-dot marker-${key}`} /><input type="checkbox" checked={filters[key]} onChange={() => setFilters({ ...filters, [key]: !filters[key] })} /></label>, key);
@@ -1133,10 +1148,10 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
               </label>
               {expanded && <div className="live-map-layer-sublist">{(() => {
                 const renderSubtypeRow = (subtype: string, label: string = subtype) => {
-                  if ((rawSubtypeCounts[key]?.[subtype] || 0) === 0) return null;
                   const checked = subtypeFilters[key][subtype] !== false;
+                  const displayLabel = subtypeLabels[key]?.[subtype] || label;
                   return <label key={subtype} className="checkbox-row live-map-layer live-map-layer-sub">
-                    <span className="live-map-layer-label">{spaceWords(label)}</span>
+                    <span className="live-map-layer-label">{spaceWords(displayLabel)}</span>
                     <span className="muted">{subtypeCounts[key]?.[subtype] || 0}</span>
                     <span className={`live-map-legend-dot marker-${key} subtype-${subtype.toLowerCase()}`} />
                     <input type="checkbox" checked={checked} onChange={() => {
@@ -1168,7 +1183,6 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                 const groupBlocks = groupNames.map((group) => {
                   const groupItems = subtypesByGroup.get(group)!;
                   const groupSubtypes = groupItems.map((item) => item.subtype);
-                  if (!groupSubtypes.some((subtype) => (rawSubtypeCounts[key]?.[subtype] || 0) > 0)) return null;
                   const groupCheckedCount = groupSubtypes.filter((subtype) => subtypeFilters[key][subtype] !== false).length;
                   const groupAllChecked = groupCheckedCount === groupSubtypes.length;
                   const groupNoneChecked = groupCheckedCount === 0;
@@ -1405,6 +1419,7 @@ function spaceWords(text: string) {
 }
 
 function friendlyMarkerName(marker: LiveMapMarker) {
+  if (marker.subtypeLabel) return String(marker.subtypeLabel);
   const raw = String(marker.name || marker.id || marker.type || "Marker");
   const normalized = raw.toLowerCase();
   if (/ornithopter.*light|light.*ornithopter/.test(normalized)) return "Light Ornithopter";

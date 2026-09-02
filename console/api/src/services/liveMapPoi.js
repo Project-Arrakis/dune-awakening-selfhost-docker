@@ -17,6 +17,51 @@ export const POI_CATEGORIES = [
   { key: "enemy", label: "Enemy Camp/Outpost", group: "World" }
 ];
 
+// Known game marker identifiers keep the layer controls stable even before a
+// player has rediscovered a resource in the current Coriolis cycle. Unknown
+// future identifiers are still appended dynamically from dune.markers.
+export const LIVE_MAP_KNOWN_SUBTYPES = Object.freeze({
+  ore: Object.freeze([
+    "AzuriteOre", "AzuritePickup",
+    "BasaltOre", "BasaltPickup",
+    "BauxiteOre", "BauxitePickup",
+    "DolomiteRock", "DolomitePickup",
+    "ErythriteOre", "ErythritePickup",
+    "JasmiumOre", "JasmiumPickup",
+    "MagnetiteOre", "MagnetitePickup",
+    "RhyoliteOre", "RhyolitePickup",
+    "StravidiumOre", "StravidiumPickup",
+    "TitaniumOre", "TitaniumPickup"
+  ])
+});
+
+const RESOURCE_DISPLAY_NAMES = Object.freeze({
+  Azurite: "Copper",
+  Basalt: "Basalt",
+  Bauxite: "Aluminium",
+  Dolomite: "Carbon",
+  Erythrite: "Erythrite",
+  Jasmium: "Jasmium",
+  Magnetite: "Iron",
+  Rhyolite: "Granite",
+  Stravidium: "Stravidium",
+  Titanium: "Titanium"
+});
+
+export function liveMapSubtypeLabel(category, subtype) {
+  const raw = String(subtype || "");
+  if (category !== "ore") return raw;
+  const material = raw.replace(/(Ore|Pickup|Rock)$/, "");
+  return RESOURCE_DISPLAY_NAMES[material] || material || raw;
+}
+
+export const LIVE_MAP_SUBTYPE_LABELS = Object.freeze(Object.fromEntries(
+  Object.entries(LIVE_MAP_KNOWN_SUBTYPES).map(([category, subtypes]) => [
+    category,
+    Object.freeze(Object.fromEntries(subtypes.map((subtype) => [subtype, liveMapSubtypeLabel(category, subtype)])))
+  ])
+));
+
 export async function liveMapPoi(db, map = "", { fetchCategory = liveMapPoiMarkers } = {}) {
   const results = await Promise.all(POI_CATEGORIES.map(({ key }) =>
     fetchCategory(db, map, key).catch(() => ({ capabilities: { [key]: false }, rows: [] }))));
@@ -31,6 +76,7 @@ export async function liveMapPoi(db, map = "", { fetchCategory = liveMapPoiMarke
         type: key,
         name: row.marker_type,
         subtype: row.marker_type,
+        subtypeLabel: liveMapSubtypeLabel(key, row.marker_type),
         map: row.map,
         x: row.x,
         y: row.y,
@@ -38,5 +84,5 @@ export async function liveMapPoi(db, map = "", { fetchCategory = liveMapPoiMarke
       });
     }
   });
-  return { capabilities, rows };
+  return { capabilities, knownSubtypes: LIVE_MAP_KNOWN_SUBTYPES, subtypeLabels: LIVE_MAP_SUBTYPE_LABELS, rows };
 }

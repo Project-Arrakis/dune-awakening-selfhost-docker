@@ -405,6 +405,31 @@ it("falls back to an available partition when the map's default is not one of th
   });
 });
 
+it("keeps supported ore filters visible before rediscovery and uses player-facing names", async () => {
+  vi.mocked(liveMapApi.markers).mockResolvedValue({
+    rows: [],
+    overlays: {},
+    capabilities: { ore: true },
+    knownSubtypes: { ore: ["AzuriteOre", "JasmiumOre", "StravidiumOre", "TitaniumOre"] },
+    subtypeLabels: { ore: { AzuriteOre: "Copper", JasmiumOre: "Jasmium", StravidiumOre: "Stravidium", TitaniumOre: "Titanium" } },
+    map,
+    maps: { HaggaBasin: map },
+    defaultMap: "HaggaBasin",
+    partitions: [{ map: "HaggaBasin", partition_id: 1, name: "Sietch New", marker_count: 0 }]
+  });
+  const { container } = renderPanel();
+  const label = await screen.findByText("Ores & Metals");
+  expect(label.parentElement?.textContent).toContain("0");
+  fireEvent.click(label.parentElement!.querySelector("button")!);
+  const oreGroup = screen.getByText("Ore");
+  fireEvent.click(oreGroup.parentElement!.querySelector("button")!);
+  expect(screen.getByText("Copper")).toBeInTheDocument();
+  expect(screen.getByText("Jasmium")).toBeInTheDocument();
+  expect(screen.getByText("Stravidium")).toBeInTheDocument();
+  expect(screen.getByText("Titanium")).toBeInTheDocument();
+  expect(container.querySelectorAll(".live-map-layer-sub").length).toBe(4);
+});
+
 // jsdom has no ResizeObserver, and the sector-grid label effect observes the
 // map frame with one. No Hagga Basin test reaches that effect, so nothing here
 // needed it before.
