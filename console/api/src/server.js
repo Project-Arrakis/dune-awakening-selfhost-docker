@@ -58,6 +58,7 @@ import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePla
 import * as restartQueue from "./services/restartQueue.js";
 import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 import { liveMapSpice } from "./services/liveMapSpice.js";
+import { resolveCoriolisCycle } from "./services/coriolisSeed.js";
 import { liveMapPoi } from "./services/liveMapPoi.js";
 import { resolveSandstormStatus } from "./services/sandstormStatus.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
@@ -2790,10 +2791,20 @@ async function liveMapMarkersRoute(res, url) {
     const activeMap = configPayload.map.actorMap || configPayload.map.key;
     const partitionId = url.searchParams.get("partitionId") || "";
     const includeStatic = url.searchParams.get("static") !== "0";
-    const [markers, partitions, spice, poi, sandstorm] = await Promise.all([
+    // Fetched ahead of the Promise.all because the cycle resolver needs the
+    // partition ids: without a partitionId they are the only way to reach a
+    // container that logs the layout.
+    const partitions = await duneDb.liveMapPartitions(db).catch(() => ({ rows: [] }));
+    // Resolved once and handed to liveMapSpice: left to fetch its own, the two
+    // would race the 30s cache (no in-flight dedupe) and shell out twice.
+    const cycle = await resolveCoriolisCycle({
+      map: activeMap,
+      partitionId,
+      deepDesertPartitionIds: (partitions.rows || []).filter((row) => String(row.map) === "DeepDesert").map((row) => row.partition_id)
+    }).catch(() => ({ seed: null, nextCycleAt: null, layout: null }));
+    const [markers, spice, poi, sandstorm] = await Promise.all([
       duneDb.liveMapMarkers(db, activeMap),
-      duneDb.liveMapPartitions(db).catch(() => ({ rows: [] })),
-      liveMapSpice(db, config, activeMap, { partitionId, includeStaticPool: includeStatic }).catch(() => ({ capabilities: { ...(includeStatic ? { spice: false } : {}), spice_active: false, flour_sand: false }, rows: [] })),
+      liveMapSpice(db, config, activeMap, { partitionId, includeStaticPool: includeStatic, resolveCycle: async () => cycle }).catch(() => ({ capabilities: { ...(includeStatic ? { spice: false } : {}), spice_active: false, flour_sand: false }, rows: [] })),
       includeStatic ? liveMapPoi(db, activeMap).catch(() => ({ capabilities: {}, rows: [] })) : Promise.resolve({ capabilities: {}, rows: [] }),
       // Unlike the Coriolis seed/cycle (farm-wide, any container answers the
       // same value), a sandstorm's active status is genuinely per-partition
@@ -2813,15 +2824,23 @@ async function liveMapMarkersRoute(res, url) {
       // selected partitionId's own container first (more likely to actually
       // be running than a fixed default) before falling back to the
       // overmap/survival-1 default.
-      coriolisSeed: spice.currentSeed || "",
-      coriolisNextCycleAt: spice.nextCycleAt || "",
+      // From the cycle this route resolved, not from spice. liveMapSpice is
+      // handed that same cycle, so the values are identical when it succeeds --
+      // but its catch path returns no seed at all, which used to serve an empty
+      // seed beside a perfectly good coriolisLayout.
+      coriolisSeed: cycle.seed || "",
+      coriolisNextCycleAt: cycle.nextCycleAt || "",
+      coriolisSeedStaleSince: cycle.staleSince || "",
+      // Which cartography layout is live, for the terrain renderer. Null when it
+      // cannot be read or the cycle has expired; the client then draws the flat
+      // image rather than guessing. ?? not ||: layout 0 is valid.
+      coriolisLayout: cycle.layout ?? null,
       // Sandstorm status is a heuristic (no storm-end log line exists on
       // either map, see sandstormStatus.js) -- "active" means a start line
       // was seen within the last ACTIVE_WINDOW_MS, not a confirmed ongoing
       // storm.
       sandstormActive: sandstorm.active || false,
       sandstormLastStartAt: sandstorm.lastStartAt || "",
-      coriolisSeedStaleSince: spice.seedStaleSince || "",
       partitions: partitions.rows || []
     };
   });
