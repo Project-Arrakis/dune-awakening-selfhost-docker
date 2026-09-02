@@ -7963,6 +7963,10 @@ test("player live teleport builds a command with the actual FLS id", async () =>
   assert.equal(result.playerId, "FLS42");
   assert.deepEqual([result.x, result.y, result.z, result.yaw], [11.5, -22.5, 33.5, 0]);
   assert.match(result.message, /will be teleported/i);
+  await assert.rejects(
+    () => teleportPlayer(db, 42, { mode: "coordinates", x: 11.5, y: -22.5, z: 33.5, partitionId: 8 }),
+    /only move a player within their current Sietch or map/i
+  );
 });
 
 function fakeMutationDb(calls, fixtures = {}) {

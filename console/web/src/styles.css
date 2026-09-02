@@ -2714,6 +2714,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-view-controls { width: 50%; min-width: 600px; display: grid; grid-template-columns: minmax(260px, 1fr) minmax(280px, 1fr); gap: 14px; }
 .live-map-view-field, .live-map-view-summary { min-width: 0; display: grid; align-content: start; gap: 7px; }
 .live-map-view-summary { padding-top: 12px; border-top: 1px solid rgba(214, 185, 140, .13); }
+.live-map-partition-offline-note { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 6px 10px; margin-top: 3px; padding: 10px 12px; border: 1px solid rgba(198, 139, 74, .38); border-radius: 8px; background: rgba(88, 57, 24, .18); color: var(--muted-warm); font-size: 12px; line-height: 1.45; }
+.live-map-partition-offline-note strong { color: #e9bd78; white-space: nowrap; }
 .live-map-view-label { color: #ceb894; font-size: 13px; font-weight: 700; line-height: 1.2; }
 .live-map-partition-field select { width: 100%; min-width: 0; }
 .live-map-layout {
@@ -2878,6 +2880,18 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   flex: 0 0 24px;
 }
 .live-map-legend-dot-spacer { flex: 0 0 auto; width: 28px; height: 24px; }
+.live-map-sector-grid-layer { border-bottom: 1px solid rgba(198, 139, 74, .2); margin-bottom: 4px; padding-bottom: 8px; }
+.live-map-sector-grid-swatch {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  border: 1px solid rgba(198, 139, 74, .75);
+  border-radius: 4px;
+  background:
+    linear-gradient(to right, transparent 47%, rgba(198, 139, 74, .75) 47%, rgba(198, 139, 74, .75) 53%, transparent 53%),
+    linear-gradient(to bottom, transparent 47%, rgba(198, 139, 74, .75) 47%, rgba(198, 139, 74, .75) 53%, transparent 53%);
+  flex: 0 0 24px;
+}
 .live-map-frame {
   position: relative;
   /* Both maps are square (4096x4096) -- keeping the box itself square

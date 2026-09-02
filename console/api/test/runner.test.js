@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { appendBoundedOutput, buildDuneArgs, dockerContainerForLogService, isReadOnlySql, parseVehicleList, runDockerLogs, validateServiceName } from "../src/runner.js";
+import { appendBoundedOutput, buildDuneArgs, dockerContainerForLogService, isReadOnlySql, parseVehicleList, runDockerCurrentGameLog, runDockerLogs, validateServiceName } from "../src/runner.js";
 import { redact } from "../src/redact.js";
 import { taskOperations } from "../src/tasks.js";
 
@@ -49,6 +49,33 @@ test("live Docker logs do not buffer output and stop when the client aborts", as
   assert.deepEqual(lines, ["large live log line\n"]);
   assert.equal(result.stdout, "");
   assert.equal(result.stderr, "");
+});
+
+test("current game logs are read from the allowlisted container without interpolating service input", async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => {};
+  let command = null;
+  let args = null;
+  const resultPromise = runDockerCurrentGameLog("dune-server-deepdesert-1-59", {
+    tail: 1234,
+    timeoutMs: 1000,
+    spawnImpl: (nextCommand, nextArgs) => {
+      command = nextCommand;
+      args = nextArgs;
+      return child;
+    }
+  });
+  child.stdout.emit("data", Buffer.from("Current Coriolis World Seed: 4\n"));
+  child.emit("close", 0, null);
+  const result = await resultPromise;
+
+  assert.equal(command, "docker");
+  assert.deepEqual(args.slice(0, 3), ["exec", "dune-server-deepdesert-1-59", "sh"]);
+  assert.equal(args.at(-1), "1234");
+  assert.match(result.stdout, /World Seed: 4/);
+  assert.throws(() => runDockerCurrentGameLog("dune-server-deepdesert-1-59; touch /tmp/nope"), /Unsupported service/);
 });
 
 test("allows dynamic map containers as log targets", () => {

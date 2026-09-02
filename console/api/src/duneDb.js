@@ -3172,9 +3172,10 @@ export async function liveMapPartitions(db) {
       where a.transform is not null and coalesce(a.partition_id, 0) > 0
       group by a.map, a.partition_id
       order by map, partition_id`);
-    return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0) })) };
+    return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0), alive: null, ready: null })) };
   }
   const hasActors = await tableExists(db, "actors");
+  const hasFarmState = await tableExists(db, "farm_state");
   const result = await db.query(`
     select
       -- wp.map is the internal instance name ("DeepDesert_1"/"Survival_1"),
@@ -3186,20 +3187,39 @@ export async function liveMapPartitions(db) {
       coalesce(case lower(wp.map) when 'deepdesert_1' then 'DeepDesert' when 'survival_1' then 'HaggaBasin' else wp.map end, '') as map,
       wp.partition_id,
       coalesce(nullif(wp.label, ''), nullif(wp.map, ''), 'Partition ' || wp.partition_id::text) as name,
-      ${hasActors ? "count(a.id) filter (where a.transform is not null)::int" : "0"} as marker_count
+      ${hasActors ? "count(a.id) filter (where a.transform is not null)::int" : "0"} as marker_count,
+      ${hasFarmState ? "coalesce(bool_or(fs.alive), false)" : "null::boolean"} as alive,
+      ${hasFarmState ? "coalesce(bool_or(fs.ready), false)" : "null::boolean"} as ready
     from dune.world_partition wp
     ${hasActors ? "left join dune.actors a on a.partition_id = wp.partition_id" : ""}
+    ${hasFarmState ? "left join dune.farm_state fs on fs.server_id = wp.server_id" : ""}
     -- Confirmed live: dungeon/ecolab/overmap sub-instances (CB_Dungeon_*,
     -- CB_Ecolab_*, CB_Overland_*, Overmap, ...) carry a real, non-null
     -- server_id too -- they are genuinely running server processes, just
     -- not ones the Live Map exposes a tab for. nullif(server_id, '') alone
     -- does not exclude them; only the two instance names the map-name
     -- translation above actually understands are real Live Map partitions.
-    where wp.partition_id > 0 and nullif(wp.server_id, '') is not null
-      and lower(wp.map) in ('deepdesert_1', 'survival_1')
+    where wp.partition_id > 0 and lower(wp.map) in ('deepdesert_1', 'survival_1')
     group by wp.partition_id, wp.map, wp.label
     order by map, wp.partition_id`);
-  return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0) })) };
+  return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0), alive: row.alive == null ? null : Boolean(row.alive), ready: row.ready == null ? null : Boolean(row.ready) })) };
+}
+
+export async function liveMapPartitionRuntimeState(db, partitionId) {
+  const safePartitionId = intParam(partitionId, "partition id", 1);
+  if (!(await tableExists(db, "world_partition")) || !(await tableExists(db, "farm_state"))) {
+    return { known: false, exists: null, alive: null, ready: null };
+  }
+  const result = await db.query(`
+    select wp.partition_id,
+           coalesce(fs.alive, false) as alive,
+           coalesce(fs.ready, false) as ready
+    from dune.world_partition wp
+    left join dune.farm_state fs on fs.server_id = wp.server_id
+    where wp.partition_id = $1
+    limit 1`, [safePartitionId]);
+  if (!result.rows[0]) return { known: true, exists: false, alive: false, ready: false };
+  return { known: true, exists: true, alive: Boolean(result.rows[0].alive), ready: Boolean(result.rows[0].ready) };
 }
 
 export async function liveMapPlayers(db, map = "") {
@@ -3411,36 +3431,43 @@ export async function playerTeleportDestinations(db, id) {
 export async function teleportPlayer(db, id, body = {}) {
   const source = await playerTeleportIdentity(db, id);
   if (!playerOnline(source)) throw new Error("The player must be online to use live teleport.");
-    const mode = String(body.mode || "coordinates");
-    let destination;
-    if (mode === "player") {
-      destination = await teleportPlayerDestination(db, body.destinationId);
-      if (Number(body.destinationId) === source.actorId) throw new Error("Choose a different destination player.");
-    } else if (mode === "base") {
-      destination = await teleportBaseDestination(db, body.destinationId);
-    } else if (mode === "coordinates") {
-      destination = {
-        x: finiteTeleportCoordinate(body.x, "X"),
-        y: finiteTeleportCoordinate(body.y, "Y"),
-        z: finiteTeleportCoordinate(body.z, "Z"),
-        partitionId: source.partitionId,
-        map: source.map,
-        label: "the selected coordinates"
-      };
-    } else {
-      throw new Error("Unsupported teleport destination type.");
+  const mode = String(body.mode || "coordinates");
+  let destination;
+  if (mode === "player") {
+    destination = await teleportPlayerDestination(db, body.destinationId);
+    if (Number(body.destinationId) === source.actorId) throw new Error("Choose a different destination player.");
+  } else if (mode === "base") {
+    destination = await teleportBaseDestination(db, body.destinationId);
+  } else if (mode === "coordinates") {
+    const requestedPartition = body.partitionId === undefined || body.partitionId === null || Number(body.partitionId) === 0
+      ? source.partitionId
+      : intParam(body.partitionId, "destination partition id", 1);
+    if (requestedPartition !== source.partitionId) {
+      throw new Error("Live teleport can only move a player within their current Sietch or map. The destination partition must already contain that player.");
     }
-    if (mode !== "coordinates" && destination.partitionId !== source.partitionId) {
-      throw new Error("Live teleport can only move a player within their current Sietch or map. Choose a destination on the same map.");
-    }
-    return {
-      playerId: source.flsId,
-      x: destination.x,
-      y: destination.y,
-      z: destination.z,
-      yaw: Number.isFinite(destination.yaw) ? destination.yaw : 0,
-      message: `${source.characterName} will be teleported near ${destination.label}.`
+    destination = {
+      x: finiteTeleportCoordinate(body.x, "X"),
+      y: finiteTeleportCoordinate(body.y, "Y"),
+      z: finiteTeleportCoordinate(body.z, "Z"),
+      partitionId: source.partitionId,
+      map: source.map,
+      label: "the selected coordinates"
     };
+  } else {
+    throw new Error("Unsupported teleport destination type.");
+  }
+  if (mode !== "coordinates" && destination.partitionId !== source.partitionId) {
+    throw new Error("Live teleport can only move a player within their current Sietch or map. Choose a destination on the same map.");
+  }
+  return {
+    playerId: source.flsId,
+    x: destination.x,
+    y: destination.y,
+    z: destination.z,
+    yaw: Number.isFinite(destination.yaw) ? destination.yaw : 0,
+    partitionId: source.partitionId,
+    message: `${source.characterName} will be teleported near ${destination.label}.`
+  };
 }
 
 // dune.actors.class is a raw Unreal blueprint path (e.g.

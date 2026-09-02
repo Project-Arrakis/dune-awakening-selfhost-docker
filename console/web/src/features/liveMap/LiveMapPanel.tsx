@@ -37,6 +37,10 @@ function shortTerrainReason(reason: string): string {
   return reason.length <= TERRAIN_REASON_MAX ? reason : `${reason.slice(0, TERRAIN_REASON_MAX - 1).trimEnd()}…`;
 }
 
+function titleTerrainReason(reason: string): string {
+  return shortTerrainReason(reason).replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+}
+
 // Lazily loaded so a Hagga Basin user never downloads the WebGL renderer or the
 // asset-URL table that comes with it.
 const DeepDesertTerrain = lazy(() => import("./terrain/DeepDesertTerrain"));
@@ -444,6 +448,15 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   }, [activeMap?.key]);
   const mapOptions = Object.values(maps);
   const partitionOptions = partitions.filter((row) => row.map === (activeMap?.actorMap || activeMap?.key));
+  const activePartition = partitionOptions.find((row) => String(row.partition_id) === partitionId);
+  const partitionRuntimeStatus = activePartition?.ready === true
+    ? "Ready"
+    : activePartition?.alive === true
+      ? "Starting"
+      : activePartition?.ready === false
+        ? "Offline"
+        : "Unknown";
+  const partitionIsOffline = activePartition?.ready === false && activePartition?.alive === false;
   // Partition-filtered but not yet subtype-filtered -- the base population
   // subtype counts are measured against, so a sub-item's own count doesn't
   // change/disappear just because the user unchecked it.
@@ -791,6 +804,8 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   function onlinePlayersForMarker(marker: LiveMapMarker) {
     const map = activeMap?.actorMap || activeMap?.key || marker.map;
     const targetPartition = marker.partition_id !== undefined && marker.partition_id !== null ? String(marker.partition_id) : partitionId;
+    const targetRuntime = partitions.find((row) => String(row.partition_id) === targetPartition);
+    if (targetRuntime?.ready === false) return [];
     return markers.filter((row) => {
       if (String(row.type).toLowerCase() !== "player") return false;
       if (liveMapPlayerStatus(row) !== "online") return false;
@@ -906,9 +921,10 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
             <div className="key-value-item"><span>Visible</span><strong>{visible.length}</strong></div>
             <div className="key-value-item"><span>In Bounds</span><strong>{inBounds.length}</strong></div>
             <div className="key-value-item"><span>Zoom</span><strong>{zoomDisplayPercent}%</strong></div>
+            {activePartition && <div className="key-value-item"><span>Partition Status</span><strong>{partitionRuntimeStatus}</strong></div>}
             {coriolisSeed && <div className="key-value-item"><span>Coriolis Seed</span><strong>{coriolisSeedNumber(coriolisSeed)}</strong></div>}
             {activeMap?.key === "DeepDesert" && <div className="key-value-item"><span>Terrain</span><strong title={terrainFallback ? `Showing the flat map: ${terrainFallback}` : undefined}>{
-              terrainFallback ? `flat map (${shortTerrainReason(terrainFallback)})` : `layout ${coriolisLayout}`
+              terrainFallback ? `Flat Map (${titleTerrainReason(terrainFallback)})` : `layout ${coriolisLayout}`
             }</strong></div>}
             {coriolisNextCycleAt && <div className="key-value-item"><span>Coriolis Countdown</span><strong>{formatCoriolisCountdown(coriolisNextCycleAt, now)}</strong></div>}
             {/* The seed is only printed at container startup, so between a
@@ -916,8 +932,12 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                 which seed is live. Static Spice Spawns is suppressed in that
                 window rather than showing the previous cycle's pool -- say so,
                 otherwise the empty layer reads as a bug. */}
-            {coriolisSeedStaleSince && <div className="key-value-item"><span>Coriolis Seed</span><strong title={`Cycle rolled over at ${coriolisSeedStaleSince}; the new seed is only logged when the map server restarts.`}>Awaiting restart</strong></div>}
+            {coriolisSeedStaleSince && <div className="key-value-item"><span>Coriolis Seed</span><strong title={`Cycle rolled over at ${coriolisSeedStaleSince}; the new seed is only logged when the map server restarts.`}>Awaiting Restart</strong></div>}
           </div>
+          {partitionIsOffline && <div className="live-map-partition-offline-note" role="status">
+            <strong>Saved Map Data</strong>
+            <span>This dynamic partition is offline. Terrain, resources, bases, and vehicles remain visible from saved data. Teleport becomes available after normal in-game travel starts the partition.</span>
+          </div>}
         </div>
       </div>
     </section>
@@ -1040,7 +1060,14 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
               if (subtypes) return subtypes.length > 0 && subtypes.every((subtype) => subtypeFilters[key][subtype] === false);
               return !filters[key];
             };
-            return LEGEND_LAYOUT.map((item, index) => {
+            return <>
+            {activeMap?.key === "DeepDesert" && <label className="checkbox-row live-map-layer live-map-sector-grid-layer">
+              <span className="live-map-layer-label">Sector Grid</span>
+              <span className="muted">Overlay</span>
+              <span className="live-map-sector-grid-swatch" aria-hidden="true" />
+              <input type="checkbox" aria-label="Sector Grid" checked={showSectorGrid} onChange={() => setShowSectorGrid((on) => !on)} />
+            </label>}
+            {LEGEND_LAYOUT.map((item, index) => {
             if ("header" in item) {
               const sectionName = item.header;
               currentSection = sectionName;
@@ -1166,7 +1193,8 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                 return [...ungrouped.map(({ subtype, label }) => renderSubtypeRow(subtype, label)), ...groupBlocks];
               })()}</div>}
             </div>, key);
-            });
+            })}
+            </>;
           })()}</div>
         </section>
       </aside>
@@ -1175,7 +1203,6 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
           <button onClick={() => setZoomAround(zoom * 1.18)}>Zoom In</button>
           <button onClick={() => setZoomAround(zoom * 0.84)}>Zoom Out</button>
           <button onClick={fitLiveMapView}>Fit Map</button>
-          {activeMap?.key === "DeepDesert" && <button aria-pressed={showSectorGrid} className={showSectorGrid ? "active" : ""} onClick={() => setShowSectorGrid((on) => !on)}>Sector Grid</button>}
           <label>Zoom<input className="live-map-zoom-range" type="range" min={zoomMinPercent} max={zoomMaxPercent} value={zoomValuePercent} style={{ "--zoom-progress": `${zoomProgressPercent}%` } as React.CSSProperties} onChange={(event) => setZoomAround(Number(event.target.value) / 100)} /></label>
           <span className="muted">Drag to Pan. Mouse Wheel Zooms. Double-click to pick a location.</span>
         </div>
@@ -1220,7 +1247,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                     <span>Partition</span><strong>{partitionDisplayNames[partitionId] || partitionId || "none selected"}</strong>
                   </div>
                   <div className="live-map-marker-overlay-actions">
-                    <button type="button" className="live-map-marker-overlay-action" onClick={() => openTeleportPicker(pickedMarker)}>Teleport</button>
+                    <button type="button" className="live-map-marker-overlay-action" disabled={onlinePlayersForMarker(pickedMarker).length === 0} title={onlinePlayersForMarker(pickedMarker).length === 0 ? "Teleport is available only when an online player is already inside this running partition." : undefined} onClick={() => openTeleportPicker(pickedMarker)}>Teleport</button>
                   </div>
                   {teleportPickerFor && String(teleportPickerFor.id) === "picked" && <div className="live-map-marker-overlay-teleport">
                     <select aria-label="Teleport destination player" value={teleportPickerPlayerId} onChange={(event) => setTeleportPickerPlayerId(event.target.value)}>
@@ -1242,6 +1269,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                 const overlayOpen = isPinned || (!selected && isHovered);
                 const isTeleportPickerOpen = Boolean(teleportPickerFor && String(teleportPickerFor.type) === String(marker.type) && String(teleportPickerFor.id) === String(marker.id));
                 const isPlayer = String(marker.type).toLowerCase() === "player";
+                const canTeleportToMarker = onlinePlayersForMarker(marker).length > 0;
                 const isDraggingThisPlayer = Boolean(playerDrag && String(playerDrag.marker.id) === String(marker.id) && String(playerDrag.marker.type) === String(marker.type));
                 const isPreviewingThisPlayer = Boolean(playerTeleportPreview && String(playerTeleportPreview.marker.id) === String(marker.id) && String(playerTeleportPreview.marker.type) === String(marker.type));
                 const renderPoint = isDraggingThisPlayer ? playerDrag!.point : isPreviewingThisPlayer ? playerTeleportPreview!.point : point;
@@ -1286,7 +1314,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                       {liveMapOverlayFacts(marker, maps, partitions, partitionDisplayNames).map(([key, value]) => <React.Fragment key={key}><span>{key}</span><strong>{value}</strong></React.Fragment>)}
                     </div>
                     <div className="live-map-marker-overlay-actions">
-                      <button type="button" className="live-map-marker-overlay-action" onClick={(event) => { event.stopPropagation(); openTeleportPicker(marker); }}>Teleport</button>
+                      <button type="button" className="live-map-marker-overlay-action" disabled={!canTeleportToMarker} title={!canTeleportToMarker ? "Teleport is available only when an online player is already inside this running partition." : undefined} onClick={(event) => { event.stopPropagation(); openTeleportPicker(marker); }}>Teleport</button>
                       {String(marker.type).toLowerCase() === "base" && <button type="button" className="live-map-marker-overlay-action" onClick={(event) => { event.stopPropagation(); onOpenBase(String(marker.id)); }}>Open in Bases</button>}
                       {String(marker.type).toLowerCase() === "vehicle" && <button type="button" className="live-map-marker-overlay-action" onClick={(event) => { event.stopPropagation(); onOpenVehicle(String(marker.id)); }}>Open in Vehicles</button>}
                     </div>

@@ -288,7 +288,7 @@ it("a vehicle overlay shows its Owner like a base does, and Open in Vehicles ope
   expect(onOpenVehicle).toHaveBeenCalledWith("900");
 });
 
-it("clicking Teleport with no online players on the map/partition shows an inline error instead of a picker", async () => {
+it("disables Teleport when no online player is inside the running map partition", async () => {
   vi.mocked(liveMapApi.markers).mockResolvedValue({
     rows: [
       { id: 31573, type: "base", name: "Desert Home", base_type: "Sub-Fief", owner_name: "Chani", map: "HaggaBasin", partition_id: 1, x: 500, y: 500, z: 20 },
@@ -311,9 +311,9 @@ it("clicking Teleport with no online players on the map/partition shows an inlin
   />);
 
   fireEvent.click(await screen.findByRole("button", { name: "Base: Desert Home" }));
-  fireEvent.click(screen.getByRole("button", { name: "Teleport" }));
-
-  expect(screen.getByText("Error: No online players.")).toBeInTheDocument();
+  const teleport = screen.getByRole("button", { name: "Teleport" });
+  expect(teleport).toBeDisabled();
+  expect(teleport).toHaveAttribute("title", expect.stringMatching(/online player is already inside/i));
   expect(screen.queryByRole("combobox", { name: "Teleport destination player" })).not.toBeInTheDocument();
 });
 
@@ -449,6 +449,20 @@ function useDeepDesert(extra: Record<string, unknown> = {}) {
   } as never);
 }
 
+it("labels an offline dynamic Deep Desert as saved data and keeps teleport unavailable", async () => {
+  useDeepDesert({
+    partitions: [{ map: "DeepDesert", partition_id: 8, name: "PvP", marker_count: 1, alive: false, ready: false }]
+  });
+  renderPanel();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Base: Sietch Tabr" }));
+  expect(screen.getByText("Partition Status")).toBeInTheDocument();
+  expect(screen.getByText("Offline")).toBeInTheDocument();
+  expect(screen.getByText("Saved Map Data")).toBeInTheDocument();
+  expect(screen.getByText(/normal in-game travel starts the partition/i)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Teleport" })).toBeDisabled();
+});
+
 it("draws the sector grid on the Deep Desert, with a full 9x9 of labels", async () => {
   useDeepDesert({ coriolisLayout: 3 });
   const { container } = renderPanel();
@@ -470,18 +484,18 @@ it("hides the grid when the Sector Grid toggle is switched off", async () => {
   const { container } = renderPanel();
   await screen.findByRole("button", { name: "Base: Sietch Tabr" });
 
-  const toggle = screen.getByRole("button", { name: "Sector Grid" });
+  const toggle = screen.getByRole("checkbox", { name: "Sector Grid" });
   // On by default: the terrain carries no grid of its own.
-  expect(toggle).toHaveAttribute("aria-pressed", "true");
+  expect(toggle).toBeChecked();
   fireEvent.click(toggle);
-  expect(toggle).toHaveAttribute("aria-pressed", "false");
+  expect(toggle).not.toBeChecked();
   expect(container.querySelector("svg.live-map-sector-grid")).toBeNull();
 });
 
 it("offers no sector grid on Hagga Basin, which has no lettered sectors", async () => {
   const { container } = renderPanel();
   await screen.findByRole("button", { name: "Base: Desert Home" });
-  expect(screen.queryByRole("button", { name: "Sector Grid" })).toBeNull();
+  expect(screen.queryByRole("checkbox", { name: "Sector Grid" })).toBeNull();
   expect(container.querySelector("svg.live-map-sector-grid")).toBeNull();
 });
 
@@ -491,7 +505,15 @@ it("falls back to the flat image and says so when the layout is unknown", async 
   await screen.findByRole("button", { name: "Base: Sietch Tabr" });
 
   expect(container.querySelector("img.live-map-image")).not.toBeNull();
-  expect(screen.getByText("flat map (layout unknown)")).toBeInTheDocument();
+  expect(screen.getByText("Flat Map (Layout Unknown)")).toBeInTheDocument();
+});
+
+it("capitalizes the stale Coriolis seed status", async () => {
+  useDeepDesert({ coriolisSeed: null, coriolisSeedStaleSince: "2026-09-01T05:00:00.000Z" });
+  renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+
+  expect(screen.getByText("Awaiting Restart")).toBeInTheDocument();
 });
 
 it("reports the layout once one is known", async () => {
@@ -517,7 +539,7 @@ it("says a layout it cannot draw is not shipped, rather than claiming it rendere
 
   expect(container.querySelector("img.live-map-image")).not.toBeNull();
   expect(container.querySelector("canvas.live-map-terrain")).toBeNull();
-  expect(screen.getByText("flat map (layout 12 not shipped)")).toBeInTheDocument();
+  expect(screen.getByText("Flat Map (Layout 12 Not Shipped)")).toBeInTheDocument();
   expect(screen.queryByText("layout 12")).toBeNull();
 });
 
@@ -533,7 +555,7 @@ it("still draws the grid over the flat image, now that the two agree", async () 
 
   expect(container.querySelector("img.live-map-image")).not.toBeNull();
   expect(container.querySelector("svg.live-map-sector-grid")).not.toBeNull();
-  expect(screen.getByRole("button", { name: "Sector Grid" })).toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: "Sector Grid" })).toBeInTheDocument();
 });
 
 // Finding 5 of the branch review: the grid geometry was rebuilt on every render

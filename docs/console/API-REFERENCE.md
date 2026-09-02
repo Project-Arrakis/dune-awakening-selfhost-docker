@@ -682,8 +682,8 @@ meshes, and the conditions under which it falls back to the flat image.
 | GET | `/api/map/markers` | Get map markers & configuration (actors, merged with spice/POI rows; response also includes `coriolisSeed`, `coriolisNextCycleAt`, `coriolisSeedStaleSince`, and `coriolisLayout`) | `map?`, `partitionId?`, `static?` (`0` omits static archive/POI rows for lightweight live refreshes) |
 | GET | `/api/map/spice` | Get spice/flour-sand layers (static pool, active blows, flour sand) for a map/partition | `map?`, `partitionId?` (query params) |
 | GET | `/api/map/poi` | Get registry-driven POI layers (ore, scrap, flora, poi, house_representative, trainer, fortress, hazard, enemy) for a map | `map?` (query param) |
-| POST | `/api/map/teleport-player` | Teleport player to map coords | `playerId`, `x`, `y`, `z`, `yaw?`, `partitionId?`, `online?` |
-| GET | `/api/map/partitions` | List map partitions | None |
+| POST | `/api/map/teleport-player` | Teleport a player to coordinates in the player's current ready partition; this never starts a dynamic map or crosses partitions | `playerId`, `x`, `y`, `z`, `yaw?`, `partitionId?`, `online?` |
+| GET | `/api/map/partitions` | List live-map partitions, including `alive` and `ready` runtime state for stopped dynamic maps | None |
 | GET | `/api/map/players` | Get player positions | `map?` (query param) |
 | GET | `/api/map/bases` | Get base locations | `map?` (query param) |
 | GET | `/api/map/storage` | Get storage locations | `map?` (query param) |

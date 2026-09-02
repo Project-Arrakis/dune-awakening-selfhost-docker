@@ -1552,13 +1552,20 @@ async function liveMapTeleportPlayerRoute(req, res) {
   }
   if (body.online === true) {
     try {
-      buildDuneArgs("adminTeleport", payload);
+      const resolved = await duneDb.teleportPlayer(db, playerId, { mode: "coordinates", ...payload });
+      const runtime = await duneDb.liveMapPartitionRuntimeState(db, resolved.partitionId);
+      if (runtime.known && (!runtime.exists || !runtime.ready)) {
+        return json(res, 409, { error: "The destination partition is offline. Start it through normal in-game travel before teleporting a player there." });
+      }
+      const taskPayload = { ...payload, playerId: resolved.playerId, partitionId: resolved.partitionId };
+      buildDuneArgs("adminTeleport", taskPayload);
+      if (!applyMutationRateLimit(req, res, "live-map.teleport.live")) return;
+      audit(config, req, "live-map.teleport.live", { playerId: resolved.playerId, x: payload.x, y: payload.y, z: payload.z, partitionId: resolved.partitionId });
+      return json(res, 202, { path: "live", task: tasks.create("admin", "adminTeleport", taskPayload) });
     } catch (error) {
-      return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
+      const failure = apiErrorPayload(error, 400);
+      return json(res, failure.status, failure.body);
     }
-    if (!applyMutationRateLimit(req, res, "live-map.teleport.live")) return;
-    audit(config, req, "live-map.teleport.live", { playerId, x: payload.x, y: payload.y, z: payload.z, partitionId: payload.partitionId });
-    return json(res, 202, { path: "live", task: tasks.create("admin", "adminTeleport", payload) });
   }
   try {
     if (!applyMutationRateLimit(req, res, "live-map.teleport.offline")) return;

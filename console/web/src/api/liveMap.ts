@@ -40,6 +40,8 @@ export type LiveMapPartition = {
   partition_id: number;
   name: string;
   marker_count: number;
+  alive?: boolean | null;
+  ready?: boolean | null;
 };
 
 export const liveMapApi = {
