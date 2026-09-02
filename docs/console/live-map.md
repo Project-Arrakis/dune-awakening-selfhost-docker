@@ -6,7 +6,7 @@ The Live Map panel renders Hagga Basin and The Deep Desert as pannable,
 zoomable square maps with real-time markers read directly from Postgres --
 players, vehicles, bases, storage, spice, resources, and points of interest.
 Nothing on this page polls the game server itself except the Coriolis seed
-(a `docker logs` tail) and player teleport (a live in-game move); everything
+(read from the current game log) and player teleport (a live in-game move); everything
 else is a straight database read. Live actors and active fields refresh every
 5 seconds; the much larger static POI/resource atlas refreshes once per minute
 and is retained between live polls.
@@ -19,9 +19,13 @@ The two **Choose Map** buttons switch between Hagga Basin and The Deep
 Desert. Each map's config (world bounds, image, default partition) lives in
 `LIVE_MAP_CONFIGS` in `duneDb.js`.
 
-The **Partition** dropdown lists every partition for the active map that has
-a `server_id` (i.e. an actual assigned shard, not a story/dungeon instance
-with no server). Its display name resolves in two layers:
+The **Partition** dropdown lists every Hagga Basin and Deep Desert partition
+known to `world_partition`, including a stopped dynamic partition whose active
+`server_id` has been released. Story and dungeon instances remain excluded by
+map type. A stopped partition is marked **Offline**, and the map explains that
+its terrain, resources, bases, and vehicles are saved database/static data;
+opening or browsing it does not start a map process. Its display name resolves
+in two layers:
 
 1. Preferred: the effective, merged `Bgd.ServerDisplayName` for that
    partition -- the same name a player sees in-game -- fetched from the
@@ -148,15 +152,19 @@ own legend row instead of only being reachable by expanding POI's first.
 
 The active spice-blow schedule is tied to Deep Desert's Coriolis storm
 cycle. The current seed and next-cycle time are resolved from the selected
-partition's own server container logs (`console/api/src/services/
-coriolisSeed.js`): a bounded `docker logs --tail 10000` with a 5-second
-timeout and a short server-side cache, since every server container prints
-the identical farm-wide seed and cycle boundary once at startup. Candidate
-container names are built from the map/partition
-(`dune-server-survival-1[-<id>]` for Hagga Basin,
+partition's own server logs (`console/api/src/services/coriolisSeed.js`). The
+resolver reads the active `DuneSandbox_PIDX*.log` inside that allowlisted map
+container first, using a bounded 10,000-line tail and a 5-second timeout. This
+matters after a container stop/start: retained `docker logs` output can still
+contain the previous cycle even though the current game process has written a
+fresh seed to `Saved/Logs`. `docker logs` remains a compatibility fallback
+when the active file cannot be read. Results use a short server-side cache,
+since every server container prints the identical farm-wide seed and cycle
+boundary once at startup. Candidate container names are built from the
+map/partition (`dune-server-survival-1[-<id>]` for Hagga Basin,
 `dune-server-deepdesert-1-<id>` for Deep Desert, both falling back to a
 farm-wide `overmap`/`survival-1` default) and re-validated against the same
-allowlist regex the rest of the console's Docker-log access uses.
+allowlist regex used by the rest of the Console's Docker access.
 
 ### Why a stale seed suppresses the static pool
 
@@ -377,11 +385,13 @@ Every marker overlay also carries a **Teleport** button, for sending a
 player *to* that marker instead of dragging a player marker *to* a new
 spot. Clicking it lists the online players sharing the marker's own map
 and partition (a static-pool marker with no partition, such as a spice
-field or POI, matches any online player on that map); picking one and
+field or POI, uses the partition currently selected by the admin); picking one and
 confirming teleports them to the marker's coordinates through the same
-`teleport-player` path as the drag gesture. If no online player matches,
-the button reports "Error: No online players." instead of opening the
-picker.
+`teleport-player` path as the drag gesture. The button is disabled unless an
+online player is already inside that exact ready partition. The API independently
+enforces both conditions, so Live Map never starts a dynamic Deep Desert or
+moves a player across partitions; normal in-game travel must start and place the
+player in that partition first.
 
 **Double-clicking empty map** picks that point and opens the same overlay on it,
 headed *Picked Location*: the world X and Y, the partition, the sector on the

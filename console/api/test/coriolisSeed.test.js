@@ -50,6 +50,54 @@ test("resolveCoriolisCycle parses both the seed and the next cycle's UTC start",
   assert.equal(result.nextCycleAt, "2099-08-25T05:00:00.000Z");
 });
 
+test("resolveCoriolisCycle prefers the active game log over stale retained Docker output", async () => {
+  const runCurrentLog = async () => ({
+    stdout: [
+      "Current Coriolis World Seed: 4",
+      "Next Coriolis Cycle start date UTC: 2999.09.08-05.00.00"
+    ].join("\n"),
+    stderr: ""
+  });
+  let dockerLogCalls = 0;
+  const runLogs = async () => {
+    dockerLogCalls += 1;
+    return {
+      stdout: "Current Coriolis World Seed: 3\nNext Coriolis Cycle start date UTC: 2020.09.01-05.00.00\n",
+      stderr: ""
+    };
+  };
+
+  const result = await resolveCoriolisCycle({ map: "HaggaBasin", partitionId: "1", runCurrentLog, runLogs });
+  assert.equal(result.seed, "cor-4");
+  assert.equal(result.nextCycleAt, "2999-09-08T05:00:00.000Z");
+  assert.equal(result.staleSince, null);
+  assert.equal(dockerLogCalls, 0);
+});
+
+test("resolveCoriolisCycle falls back to Docker output when the active game log is unavailable", async () => {
+  const runCurrentLog = async () => { throw new Error("current log unavailable"); };
+  const runLogs = async () => ({
+    stdout: "Current Coriolis World Seed: 6\nNext Coriolis Cycle start date UTC: 2999.09.08-05.00.00\n",
+    stderr: ""
+  });
+
+  const result = await resolveCoriolisCycle({ map: "HaggaBasin", partitionId: "1", runCurrentLog, runLogs });
+  assert.equal(result.seed, "cor-6");
+});
+
+test("resolveCoriolisCycle does not revive stale Docker output while an active log is still warming up", async () => {
+  const runCurrentLog = async () => ({ stdout: "LogInit: starting map\n", stderr: "" });
+  let dockerLogCalls = 0;
+  const runLogs = async () => {
+    dockerLogCalls += 1;
+    return { stdout: "Current Coriolis World Seed: 3\n", stderr: "" };
+  };
+
+  const result = await resolveCoriolisCycle({ services: ["survival-1"], runCurrentLog, runLogs });
+  assert.equal(result.seed, null);
+  assert.equal(dockerLogCalls, 0);
+});
+
 test("resolveCoriolisCycle returns nulls when the container isn't running", async () => {
   const runLogs = async () => { throw new Error("docker logs failed with exit 1"); };
   const result = await resolveCoriolisCycle({ runLogs });

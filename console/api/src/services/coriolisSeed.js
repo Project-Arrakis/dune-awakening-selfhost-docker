@@ -1,4 +1,4 @@
-import { runDockerLogs } from "../runner.js";
+import { runDockerCurrentGameLog, runDockerLogs } from "../runner.js";
 
 // Every running game-server instance -- Deep Desert, Hagga Basin, the
 // static-heavy sietches, overmap -- logs this identical farm-wide block at
@@ -109,7 +109,26 @@ function partitionContainerCandidates(map, partitionId, deepDesertPartitionIds =
 // The layout line prints in the same startup block, and a Deep Desert server is
 // busier than overmap: ~3,900 lines over a 7-day cycle against this 10,000
 // tail, so it stays reachable with roughly 2.5x headroom.
-async function fetchCoriolisLog(service, { tail = 10000, timeoutMs = 5000, runLogs = runDockerLogs } = {}) {
+async function fetchCoriolisLog(service, options = {}) {
+  const { tail = 10000, timeoutMs = 5000, runLogs = runDockerLogs } = options;
+  // An injected Docker-log runner is a unit-test seam. Do not unexpectedly
+  // invoke the host Docker daemon from those tests unless a current-file runner
+  // was explicitly injected as well.
+  const runCurrentLog = options.runCurrentLog === undefined
+    ? (options.runLogs ? null : runDockerCurrentGameLog)
+    : options.runCurrentLog;
+  if (runCurrentLog) {
+    try {
+      const result = await runCurrentLog(service, { tail, timeoutMs });
+      // A successfully opened active log is authoritative even while it is
+      // still warming up and contains no Coriolis block yet. Falling through to
+      // retained Docker output here would revive the previous cycle's seed.
+      return `${result?.stdout || ""}\n${result?.stderr || ""}`;
+    } catch {
+      // Older/custom images may not expose Saved/Logs. Preserve the existing
+      // Docker-output path as a compatibility fallback.
+    }
+  }
   try {
     const result = await runLogs(service, { tail, timeoutMs, captureOutput: true });
     return `${result?.stdout || ""}\n${result?.stderr || ""}`;
