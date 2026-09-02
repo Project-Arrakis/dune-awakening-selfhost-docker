@@ -838,16 +838,24 @@ async function handleApi(req, res) {
       loginRateLimiter.recordFailure(rateKey);
       return json(res, 401, { error: "Incorrect password. Please try again!" });
     }
-    // Password OK. Tier 3 (RFC §2.3/§4): the password tier requires a mandatory
-    // TOTP second factor -- but only when enabled (see config.consoleTotpEnabled;
-    // gated off during incremental rollout until the console UI can drive
-    // enrollment). authDisabled (dev) also keeps the old single-factor path.
-    if (config.authDisabled || !config.consoleTotpEnabled) {
+    // Grants a normal, fully-authenticated owner session. Used both when TOTP
+    // isn't in play at all and when it's in play but not required for this
+    // particular login (see call sites below) -- written once so a future
+    // change to what a successful login grants can't land in only some of
+    // them (requireFreshTier3Proof's own header describes exactly this
+    // three-copies failure mode for a smaller preamble).
+    const grantPasswordSession = () => {
       loginRateLimiter.recordSuccess(rateKey);
       const session = auth.makeSession();
       setSessionCookie(res, session, config);
       audit(config, loginUrl, "auth.login", { ok: true });
       return json(res, 200, { authenticated: true, csrfToken: session.csrf });
+    };
+    // Password OK. Tier 3 (RFC §2.3/§4) offers an OPTIONAL TOTP second factor --
+    // owner-initiated from Settings (POST /api/auth/2fa/enable), never forced
+    // here. authDisabled (dev) also keeps the old single-factor path.
+    if (config.authDisabled || !config.consoleTotpEnabled) {
+      return grantPasswordSession();
     }
     let configured;
     try {
@@ -860,16 +868,19 @@ async function handleApi(req, res) {
       return secondFactorUnavailable(res, loginUrl, req, err);
     }
     if (!configured) {
-      // §4: first post-upgrade login with no TOTP state -> mandatory enrollment.
-      // Issue a short-lived, non-renewable enrollment-only session. tier "enroll"
-      // is not a valid policy tier (evaluate() default-denies it), so even if the
-      // scope allowlist guard were ever bypassed the session grants nothing --
-      // containment is defense-in-depth, not solely the guard.
-      loginRateLimiter.recordSuccess(rateKey);
-      const session = auth.makeSession({ tier: "enroll", scope: "enroll", ttlMs: config.enrollmentSessionTtlMs, renewable: false });
-      setSessionCookie(res, session, config, { maxAgeSeconds: Math.floor(config.enrollmentSessionTtlMs / 1000) });
-      audit(config, loginUrl, "auth.login", { ok: true, enrollment: true });
-      return json(res, 200, { enrollmentRequired: true, csrfToken: session.csrf });
+      // Nothing enrolled -> nothing to verify, so a correct password alone
+      // completes login, exactly like the flag-off path above.
+      //
+      // This used to mandatorily redirect into enrollment instead (RFC §4):
+      // live-testing feedback from the upstream maintainer (Red-Blink, via
+      // Discord, 2026-09-02 -- "what if I don't want to setup 2FA? Your PRs
+      // are forcing the users to do it") was that a self-hosted admin tool
+      // forcing MFA with no opt-out is a real adoption blocker. Tracked in
+      // issue #665. Enrollment is now exclusively owner-initiated via
+      // POST /api/auth/2fa/enable (Settings -> Two-Factor Authentication),
+      // which mints the same enroll-scope session this branch used to mint
+      // automatically -- /api/auth/2fa/setup and /confirm are unchanged.
+      return grantPasswordSession();
     }
     // Enrolled: a TOTP code OR a recovery code must accompany the password.
     const totpCode = String(body.totpCode || "").trim();
@@ -933,11 +944,7 @@ async function handleApi(req, res) {
       audit(config, loginUrl, "auth.login", { ok: false, reason: `totp_${verify.reason}` });
       return json(res, 401, { totpRequired: true, recoveryAvailable: true, error: "That authenticator code was not accepted. Check your device's clock and enter the current code." });
     }
-    loginRateLimiter.recordSuccess(rateKey);
-    const session = auth.makeSession();
-    setSessionCookie(res, session, config);
-    audit(config, loginUrl, "auth.login", { ok: true });
-    return json(res, 200, { authenticated: true, csrfToken: session.csrf });
+    return grantPasswordSession();
   }
   // Enrollment-only sessions (RFC §4) may reach ONLY the enrollment endpoints
   // plus /me and /logout. This single allowlist guard sits above every
@@ -1440,6 +1447,11 @@ async function handleApi(req, res) {
   // completing re-enrollment. The handler also calls requireAuth itself,
   // so this placement is defence in depth rather than the only guard.
   if (path === "/api/auth/2fa/recovery-codes/regenerate" && req.method === "POST") return recoveryCodesRegenerateRoute(req, res);
+  // Same placement reasoning as recovery-codes/regenerate immediately above:
+  // below the central policy gate (settings:enable-totp / settings:disable-totp,
+  // both owner-only) and below the enrollment-scope allowlist guard.
+  if (path === "/api/auth/2fa/enable" && req.method === "POST") return totpEnableRoute(req, res);
+  if (path === "/api/auth/2fa/disable" && req.method === "POST") return totpDisableRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
   if (path === "/api/settings/iam/policies" && req.method === "GET") {
     // The Access Control editor needs the action catalog, not just the policy
@@ -2837,6 +2849,97 @@ async function recoveryCodesRegenerateRoute(req, res) {
     }
     throw err;
   }
+}
+
+// Owner-initiated TOTP enrollment (RFC §4, made opt-in per issue #665): a
+// normal, already-authenticated owner session proves the current password,
+// then gets the SAME short-lived enroll-scope session /api/auth/login used to
+// mint automatically before this change. /api/auth/2fa/setup and /confirm are
+// unaware of the difference -- only the trigger moved, not the mechanics.
+async function totpEnableRoute(req, res) {
+  const session = auth.requireAuth(req, res);
+  if (!session) return;
+  const auditUrl = sanitizedUrl(req, "/api/auth/2fa/enable");
+  const ACTION = "settings.totp-enable-started";
+  const actor = { tier: session.tier || "owner", userId: session.userId || "local-owner" };
+  const deny = (status, payload, detail, headers) => {
+    audit(config, auditUrl, ACTION, { ok: false, ...actor, ...detail });
+    return json(res, status, payload, headers || {});
+  };
+  if (config.authDisabled) {
+    return deny(400, { error: "Two-factor authentication is unavailable while admin authentication is disabled." }, { reason: "auth_disabled" });
+  }
+  if (!config.consoleTotpEnabled) {
+    return deny(400, { error: "Two-factor authentication is not available on this console." }, { reason: "totp_unavailable" });
+  }
+  const body = await readJson(req);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return deny(400, { error: "Request body must be a JSON object." }, { reason: "malformed_body" });
+  }
+  let configured;
+  try {
+    configured = await secondFactor.isConfigured();
+  } catch (err) {
+    return secondFactorUnavailable(res, auditUrl, req, err, ACTION, actor);
+  }
+  if (configured) {
+    return deny(409, { error: "Two-factor authentication is already enabled. Disable it first to set up a new authenticator." }, { reason: "already_configured" });
+  }
+  // requireEnrolled:false -- nothing is enrolled yet, so the password alone is
+  // the whole credential to prove (same reasoning as password rotation).
+  const proof = await requireFreshTier3Proof(req, res, body, {
+    auditUrl, action: ACTION, actor, requireEnrolled: false,
+  });
+  if (!proof.ok) return;
+  const enrollSession = auth.makeSession({ tier: "enroll", scope: "enroll", ttlMs: config.enrollmentSessionTtlMs, renewable: false });
+  setSessionCookie(res, enrollSession, config, { maxAgeSeconds: Math.floor(config.enrollmentSessionTtlMs / 1000) });
+  audit(config, auditUrl, ACTION, { ok: true, ...actor });
+  return json(res, 200, { enrollmentRequired: true, csrfToken: enrollSession.csrf });
+}
+
+// Owner-initiated TOTP removal (issue #665's other half -- opt-in implies
+// being able to opt back out, not just in). Requires fresh password+TOTP
+// proof, exactly like recovery-code regeneration, then wipes the second-
+// factor store outright (secondFactor.clear() -- the same documented
+// total-loss reset RFC §3.4 already describes).
+async function totpDisableRoute(req, res) {
+  const session = auth.requireAuth(req, res);
+  if (!session) return;
+  const auditUrl = sanitizedUrl(req, "/api/auth/2fa/disable");
+  const ACTION = "settings.totp-disabled";
+  const actor = { tier: session.tier || "owner", userId: session.userId || "local-owner" };
+  const deny = (status, payload, detail, headers) => {
+    audit(config, auditUrl, ACTION, { ok: false, ...actor, ...detail });
+    return json(res, status, payload, headers || {});
+  };
+  if (config.authDisabled) {
+    return deny(400, { error: "Two-factor authentication is unavailable while admin authentication is disabled." }, { reason: "auth_disabled" });
+  }
+  if (!config.consoleTotpEnabled) {
+    return deny(400, { error: "Two-factor authentication is not enabled on this console." }, { reason: "totp_disabled" });
+  }
+  const body = await readJson(req);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return deny(400, { error: "Request body must be a JSON object." }, { reason: "malformed_body" });
+  }
+  // requireEnrolled:true -- nothing to disable without an existing factor.
+  const proof = await requireFreshTier3Proof(req, res, body, {
+    auditUrl, action: ACTION, actor, requireEnrolled: true,
+  });
+  if (!proof.ok) return;
+  try {
+    await secondFactor.clear();
+  } catch (err) {
+    return secondFactorUnavailable(res, auditUrl, req, err, ACTION, actor);
+  }
+  audit(config, auditUrl, ACTION, { ok: true, ...actor });
+  // Scoped invalidation, same as a password rotation (RFC §2.3/§5): every
+  // OTHER password/TOTP session is revoked so a still-open session elsewhere
+  // can't silently keep operating under credentials this session just weakened
+  // without ever re-proving the new state.
+  const sessionsRevoked = auth.invalidatePasswordSessions(session.id);
+  audit(config, auditUrl, "auth.totp-disabled.sessions-revoked", { ...actor, count: sessionsRevoked });
+  return json(res, 200, { ok: true, sessionsRevoked });
 }
 
 async function apiKeyCreateRoute(req, res) {

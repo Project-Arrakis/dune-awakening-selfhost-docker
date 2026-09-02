@@ -75,6 +75,18 @@ function codeFor(secretBase32, offsetSteps = 0) {
   return totpCode(secret, Math.floor(Date.now() / 1000) + offsetSteps * TOTP_PERIOD_SECONDS);
 }
 
+// TOTP is opt-in (issue #665): a plain password login no longer yields an
+// enroll-scope session by itself. Login normally, then explicitly opt in via
+// POST /api/auth/2fa/enable, which mints the same enroll-scope session
+// (tier "enroll", scope "enroll") the old forced-login path used to mint
+// automatically -- returns the raw fetch Response, matching what a caller of
+// the old `api(port, "/api/auth/login", ...)` got back.
+async function beginEnrollment(port, password = PASSWORD) {
+  const login = await api(port, "/api/auth/login", { body: { password } });
+  const loginBody = await login.json();
+  return api(port, "/api/auth/2fa/enable", { cookie: cookieFrom(login), csrf: loginBody.csrfToken, body: { currentPassword: password } });
+}
+
 test("full enrollment: password login -> enroll -> TOTP login, with replay rejected", async () => {
   const port = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "enroll-e2e-"));
@@ -82,13 +94,17 @@ test("full enrollment: password login -> enroll -> TOTP login, with replay rejec
   try {
     await waitForHealth(port);
 
-    // 1. Fresh install: correct password -> enrollment required (no normal session).
+    // 1. Fresh install: correct password logs in normally (TOTP is opt-in), then
+    // the owner opts in from Settings -> an enrollment session, not a normal one.
     const login1 = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
     assert.equal(login1.status, 200);
-    const body1 = await login1.json();
+    assert.equal((await login1.clone().json()).authenticated, true, "plain login succeeds with no factor configured");
+    const enable1 = await beginEnrollment(port);
+    assert.equal(enable1.status, 200);
+    const body1 = await enable1.json();
     assert.equal(body1.enrollmentRequired, true);
-    assert.equal(body1.authenticated, undefined, "no normal session before enrollment");
-    const enrollCookie = cookieFrom(login1);
+    assert.equal(body1.authenticated, undefined, "no normal session before enrollment completes");
+    const enrollCookie = cookieFrom(enable1);
     const enrollCsrf = body1.csrfToken;
     assert.ok(enrollCookie && enrollCsrf);
 
@@ -193,9 +209,9 @@ test("2fa/setup rejects a valid enrollment session that omits the CSRF token", a
   const console = startConsole(port, tempDir);
   try {
     await waitForHealth(port);
-    const login = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
-    const cookie = cookieFrom(login);
-    const csrf = (await login.json()).csrfToken;
+    const enable = await beginEnrollment(port);
+    const cookie = cookieFrom(enable);
+    const csrf = (await enable.json()).csrfToken;
     // valid enroll cookie, NO csrf header -> rejected
     assert.equal((await api(port, "/api/auth/2fa/setup", { cookie })).status, 403);
     // with the csrf header -> accepted (proves the cookie itself is valid)
@@ -235,10 +251,10 @@ test("a second enrollment that loses the race gets 409 already_configured", asyn
   try {
     await waitForHealth(port);
     // two independent enrollment sessions (no factor configured yet, so each
-    // password login yields an enroll session)
-    const la = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+    // opt-in call yields its own enroll session)
+    const la = await beginEnrollment(port);
     const ca = cookieFrom(la), sa = (await la.json()).csrfToken;
-    const lb = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+    const lb = await beginEnrollment(port);
     const cb = cookieFrom(lb), sb = (await lb.json()).csrfToken;
 
     const setupA = await (await api(port, "/api/auth/2fa/setup", { cookie: ca, csrf: sa })).json();
@@ -331,7 +347,7 @@ test("break-glass: after deleting the state file, re-enrolled recovery codes act
     await waitForHealth(port);
 
     // Enroll, then spend one recovery code so the epoch and watermark advance.
-    const l1 = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+    const l1 = await beginEnrollment(port);
     const c1 = cookieFrom(l1), s1 = (await l1.json()).csrfToken;
     const setup1 = await (await api(port, "/api/auth/2fa/setup", { cookie: c1, csrf: s1 })).json();
     const conf1 = await (await api(port, "/api/auth/2fa/confirm", { cookie: c1, csrf: s1, body: { code: codeFor(setup1.secret) } })).json();
@@ -352,11 +368,15 @@ test("break-glass: after deleting the state file, re-enrolled recovery codes act
   const consoleProc2 = startConsole(port2, tempDir);
   try {
     await waitForHealth(port2);
-    // Password login sees no factor and re-enrolls, issuing a fresh code set.
+    // Password login sees no factor -> a normal session (TOTP is opt-in, so a
+    // deleted store does not force anything -- the operator chooses to
+    // re-enroll from Settings, exactly like a fresh install).
     const l2 = await api(port2, "/api/auth/login", { body: { password: PASSWORD } });
-    const body2 = await l2.json();
-    assert.equal(body2.enrollmentRequired, true, "a deleted store must re-enter enrollment");
-    const c2 = cookieFrom(l2), s2 = body2.csrfToken;
+    assert.equal((await l2.clone().json()).authenticated, true, "a deleted store logs in normally, not into forced enrollment");
+    const enable2 = await beginEnrollment(port2);
+    const body2 = await enable2.json();
+    assert.equal(body2.enrollmentRequired, true, "opting in re-enrolls and issues a fresh code set");
+    const c2 = cookieFrom(enable2), s2 = body2.csrfToken;
     const setup2 = await (await api(port2, "/api/auth/2fa/setup", { cookie: c2, csrf: s2 })).json();
     const conf2 = await (await api(port2, "/api/auth/2fa/confirm", { cookie: c2, csrf: s2, body: { code: codeFor(setup2.secret) } })).json();
     assert.equal(conf2.recoveryCodes.length, 10);
@@ -394,9 +414,9 @@ test("one-time secret responses carry Cache-Control: no-store", async () => {
   const console = startConsole(port, tempDir);
   try {
     await waitForHealth(port);
-    const login = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
-    const cookie = cookieFrom(login);
-    const csrf = (await login.json()).csrfToken;
+    const enable = await beginEnrollment(port);
+    const cookie = cookieFrom(enable);
+    const csrf = (await enable.json()).csrfToken;
 
     const setup = await api(port, "/api/auth/2fa/setup", { cookie, csrf });
     assert.equal(setup.status, 200);
@@ -415,11 +435,11 @@ test("POST /api/auth/2fa/confirm is rate-limited per session (review finding: un
   const console = startConsole(port, tempDir);
   try {
     await waitForHealth(port);
-    const login = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
-    const loginBody = await login.json();
-    assert.equal(loginBody.enrollmentRequired, true);
-    const cookie = cookieFrom(login);
-    const csrf = loginBody.csrfToken;
+    const enable = await beginEnrollment(port);
+    const enableBody = await enable.json();
+    assert.equal(enableBody.enrollmentRequired, true);
+    const cookie = cookieFrom(enable);
+    const csrf = enableBody.csrfToken;
     assert.ok(cookie && csrf);
 
     const setup = await api(port, "/api/auth/2fa/setup", { cookie, csrf });
