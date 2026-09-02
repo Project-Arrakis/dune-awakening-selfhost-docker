@@ -7969,6 +7969,32 @@ test("player live teleport builds a command with the actual FLS id", async () =>
   );
 });
 
+test("player live teleport resolves the stable FLS id used by Live Map markers", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes('where ac."user" = $1') && text.includes("a.class ilike")) {
+        return { rows: [{ actor_id: 42 }] };
+      }
+      if (text.includes("from dune.actors a") && text.includes("player_state ps") && text.includes("where a.id = $1")) {
+        return { rows: [{ actor_id: 42, account_id: 7, controller_id: 8, player_state_id: 9, online_status: "Online" }] };
+      }
+      if (text.includes("from dune.accounts ac")) {
+        return { rows: [{ fls_id: "FLS42", character_name: "To'bar", map: "HaggaBasin", partition_id: 4 }] };
+      }
+      throw new Error(`unexpected query: ${text}`);
+    }
+  };
+
+  const result = await teleportPlayer(db, "FLS42", { mode: "coordinates", x: 11.5, y: -22.5, z: 33.5, partitionId: 4 });
+
+  assert.equal(result.playerId, "FLS42");
+  assert.equal(result.partitionId, 4);
+  assert.deepEqual(calls[0].values, ["FLS42"]);
+  assert.deepEqual(calls[1].values, [42]);
+});
+
 function fakeMutationDb(calls, fixtures = {}) {
   const db = {
     async query(text, values = []) {

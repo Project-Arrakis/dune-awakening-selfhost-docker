@@ -3320,7 +3320,26 @@ function safeDestinationFromTransform(row, forwardOffset, heightOffset) {
 }
 
 async function playerTeleportIdentity(db, actorId) {
-  const player = await resolvePlayerMutationTarget(db, actorId);
+  // Player pages address this action with the numeric pawn actor id, while
+  // Live Map markers deliberately expose the stable FLS id so the same marker
+  // can also be used by the offline-teleport path. Resolve either identity at
+  // this boundary instead of making the browser translate between them.
+  const rawId = String(actorId ?? "").trim();
+  let resolvedActorId = rawId;
+  if (!/^\d+$/.test(rawId)) {
+    const flsId = validatePlayerIdForDb(rawId);
+    const resolved = await db.query(`
+      select a.id as actor_id
+      from dune.accounts ac
+      join dune.player_state ps on ps.account_id = ac.id
+      join dune.actors a on a.id = ps.player_pawn_id
+      where ac."user" = $1
+        and a.class ilike '%PlayerCharacter%'
+      limit 1`, [flsId]);
+    if (!resolved.rows[0]?.actor_id) throw playerNotFoundError();
+    resolvedActorId = resolved.rows[0].actor_id;
+  }
+  const player = await resolvePlayerMutationTarget(db, resolvedActorId);
   const result = await db.query(`
     select coalesce(ac."user", '') as fls_id,
            coalesce(ps.character_name, '') as character_name,
