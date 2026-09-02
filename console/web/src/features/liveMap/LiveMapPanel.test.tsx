@@ -63,7 +63,7 @@ beforeEach(() => {
     rows: [
       { id: 31573, type: "base", name: "Desert Home", base_type: "Sub-Fief", owner_name: "Chani", map: "HaggaBasin", partition_id: 1, x: 500, y: 500, z: 20 },
       { id: 31574, type: "base", name: "Second Base", base_type: "Sub-Fief", owner_name: "Paul", map: "HaggaBasin", partition_id: 1, x: 600, y: 600, z: 20 },
-      { id: 500, type: "player", name: "Liet", online_status: "online", map: "HaggaBasin", partition_id: 1, x: 10, y: 10 },
+      { id: 500, action_player_id: "FLS500", type: "player", name: "Liet", online_status: "online", map: "HaggaBasin", partition_id: 1, x: 10, y: 10 },
       { id: 501, type: "player", name: "Duncan", online_status: "offline", map: "HaggaBasin", partition_id: 1, x: 20, y: 20 },
       { id: 502, type: "player", name: "Farok", online_status: "online", map: "HaggaBasin", partition_id: 2, x: 30, y: 30 },
       { id: 700, type: "spice_active", name: "Active Small Spice", map: "HaggaBasin", x: 300, y: 300 },
@@ -339,7 +339,7 @@ it("confirming a Teleport sends the picked player to the overlay marker's coordi
   expect(confirmAction.mock.calls[0][0]).toMatch(/Teleport Liet to Desert Home/);
 
   await waitFor(() => expect(liveMapApi.teleportPlayer).toHaveBeenCalledWith({
-    playerId: "500",
+    playerId: "FLS500",
     x: 500,
     y: 500,
     z: 20,
