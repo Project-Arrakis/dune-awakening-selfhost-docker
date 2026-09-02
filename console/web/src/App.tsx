@@ -392,6 +392,14 @@ export function App() {
   const [discordSetupOpen, setDiscordSetupOpen] = useState(() => new URLSearchParams(window.location.search).has("discordSetup"));
   const [wantDiscordSetup, setWantDiscordSetup] = useState(() => new URLSearchParams(window.location.search).has("discordSetup"));
   const [showPasswordLogin, setShowPasswordLogin] = useState(false);
+  // Focuses the admin-password field the moment "Set up Discord sign-in" is
+  // clicked (issue #666 -- live-testing feedback: the instruction that follows
+  // says "enter the admin password above", but nothing ever drew the eye or
+  // the cursor there).
+  const discordSetupPasswordRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (wantDiscordSetup) discordSetupPasswordRef.current?.focus();
+  }, [wantDiscordSetup]);
   // What the policy engine will allow this session. Used only to hide the
   // Settings tab from Discord tiers a 403 would refuse anyway; enforcement
   // stays server-side, and an empty answer (read failed) hides nothing.
@@ -740,6 +748,13 @@ export function App() {
     setTotpRequired(false);
     setUseRecoveryCode(false);
     setCsrfToken(null);
+    // Owner-initiated enrollment (Settings -> Two-Factor Authentication, issue
+    // #665) reaches this function while `auth` is still true from the normal
+    // session it started in -- forced first-login enrollment never had this
+    // problem (auth was always false at this point). Without this, cancelling
+    // or completing setup left the app trying to render the authenticated
+    // shell against a session the server just invalidated above.
+    setAuth(false);
   }
 
   async function doLogout() {
@@ -938,7 +953,7 @@ export function App() {
       </div>
     ) : (
       <div className="login-password-fields">
-        <input type="password" id="login-admin-password" name="login-admin-password" aria-label="Admin password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
+        <input ref={discordSetupPasswordRef} type="password" id="login-admin-password" name="login-admin-password" aria-label="Admin password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
         <button type="submit" className="login-primary-button">Sign In</button>
       </div>
     );
@@ -977,7 +992,7 @@ export function App() {
                 discordPendingRestart ? (
                   <p className="muted">Discord sign-in is set up — restart the console to switch it on.</p>
                 ) : wantDiscordSetup ? (
-                  <p className="muted">Enter the admin password above to set up Discord sign-in. <button type="button" className="login-password-toggle" onClick={() => setWantDiscordSetup(false)}>cancel</button></p>
+                  <p className="muted">Type your admin password above, then select <strong>Sign In</strong> to continue setting up Discord sign-in. <button type="button" className="login-password-toggle" onClick={() => setWantDiscordSetup(false)}>cancel</button></p>
                 ) : (
                   <button type="button" className="login-discord-button login-discord-button-secondary" onClick={() => setWantDiscordSetup(true)}>
                     <DiscordLogo size={17} aria-hidden="true" /> Set up Discord sign-in
@@ -1201,6 +1216,7 @@ export function App() {
           onPasswordChanged={logoutAfterPasswordChange}
           publicListingUrl={publicDirectoryStatus?.serverId ? publicServerListingUrl(publicDirectoryStatus.serverId) : undefined}
           confirmAction={confirmDialog}
+          onTotpEnrollmentStarted={() => setSetupMode("enroll")}
         /></LazyTabBoundary>}
         {!redeploySetupOpen && tab !== "Maps" && <TaskProgress task={task} onDismiss={() => setTask(null)} />}
         <AppFooter />

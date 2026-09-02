@@ -175,7 +175,35 @@ A passkey login dispatches by principal type. `discord:*` re-resolves the curren
 
 **Dependency**: `@simplewebauthn/server` (npm, MIT, pinned `13.3.2`, 8 well-scoped direct dependencies for CBOR/ASN.1/X.509 parsing) + `@simplewebauthn/browser` (MIT, zero dependencies, pinned to the matching major) for the registration/authentication ceremonies, using the standard `attestationType: "none"` flow with neither the library's certificate-revocation check nor its FIDO Metadata Service integration ever enabled — keeping its own network-capable code paths entirely unreached. Because that zero-egress property is configuration, not enforcement, the test suite includes a ceremony test with `globalThis.fetch` stubbed to throw, proving full registration+authentication round-trips complete with no outbound call (§6). `qrcode` (npm, MIT, zero runtime dependencies in its browser bundle, pinned) for TOTP QR rendering (Tier 3, §2.3).
 
-### 2.3 Tier 3 — Password + mandatory TOTP + recovery codes (universal, dual-role)
+### 2.3 Tier 3 — Password + TOTP (opt-in) + recovery codes (universal, dual-role)
+
+**Correction (2026-09-02, issue #665): mandatory, forced-on-login enrollment was
+reversed to owner-initiated opt-in.** Live-testing feedback from the upstream
+maintainer (Red-Blink), relayed during the actual PR review this RFC's design
+was submitted for: *"what if I don't want to setup 2FA? Your PRs are forcing
+the users to do it... 2FA should be optional and users can opt in, from the
+settings page."* This section's original argument below (single shared,
+non-device-bound secret, so a compromise is total) is real and unchanged —
+what changed is the conclusion drawn from it: forcing every operator through
+enrollment with no way to decline is a real adoption blocker for a
+self-hosted tool, and it turned out to be the wrong trade-off even though the
+underlying risk analysis was sound. **What actually changed, precisely:**
+`POST /api/auth/login` no longer redirects an unconfigured install into a
+forced enrollment session (§4's flow below is now historical for the *login*
+trigger specifically) — a correct password logs in normally regardless of
+whether TOTP is configured. Enrollment is now owner-initiated via
+`POST /api/auth/2fa/enable` (Settings → Two-Factor Authentication), which
+requires fresh password proof and mints the exact same short-lived
+enroll-scope session §4 describes; `POST /api/auth/2fa/enable`'s counterpart,
+`POST /api/auth/2fa/disable` (fresh password + TOTP proof, then
+`secondFactor.clear()`), is new — the RFC never previously needed a disable
+path because there was no way to have opted in in the first place. Every
+other mechanic in this section — TOTP parameters, recovery-code encoding,
+recovery-login flow, rotation/session-invalidation, audit logging, backup/
+restore guidance — is unchanged; only the trigger for *starting* enrollment
+moved from automatic to explicit. Every "mandatory" in the untouched prose
+below describes the state *once an operator has opted in*, not a forced
+starting condition.
 
 This tier is **not** pure emergency break-glass. For an operator with neither Tier 1 nor Tier 2 configured — no Discord community around their server, no TLS anywhere in the access path — this is their real, everyday primary login, every session, not a degraded fallback. For an operator who *does* have Tier 1 and/or Tier 2 configured, this tier correctly serves as break-glass recovery. Both roles are real and this design must be genuinely good at both, not merely tolerable in one.
 
@@ -244,7 +272,7 @@ Every credential this design introduces has an explicit answer to "what happens 
 | TOTP device (codes still held) | Recovery-code login (§2.3 flow) → forced re-setup | Old recovery set invalidated; re-enroll TOTP |
 | All recovery codes (TOTP still works) | Regenerate the set from settings (fresh proof of possession) | Old sheet worthless — intended |
 | Password (any other factor state) | None at the login surface — `ADMIN_PASSWORD`/generated-secret management is host-side, exactly as today | Host access required, as today |
-| TOTP device **and** all recovery codes | **Host-filesystem reset, and nothing less**: stop the console, delete `runtime/generated/console-second-factor.json`, restart. The install now has no TOTP state, so §4's mandatory enrollment-only flow re-triggers on the next password login. | See below — this is a deliberate, visible root of trust, not a loophole |
+| TOTP device **and** all recovery codes | **Host-filesystem reset, and nothing less**: stop the console, delete `runtime/generated/console-second-factor.json`, restart. The install now has no TOTP state; the next password login is a normal, single-factor login (issue #665 — re-enrollment is opt-in via Settings, no longer forced), and §4's enrollment-only flow re-triggers only once the operator opens `POST /api/auth/2fa/enable` themselves. | See below — this is a deliberate, visible root of trust, not a loophole |
 | `webauthn-credentials.json` deleted | All passkeys unregistered; Tier 1/3 unaffected; re-register from settings | Devices re-enroll |
 | `webauthn-credentials.json` corrupted | Passkey login/registration fail closed, loudly logged at startup and shown in settings; Tier 1/3 unaffected; operator deletes/restores the file | As above |
 
@@ -255,6 +283,19 @@ Every credential this design introduces has an explicit answer to "what happens 
 ---
 
 ## 4. Migration Path
+
+**Correction (2026-09-02, issue #665): the bullet below describing forced
+enrollment "on first password authentication after upgrade" is historical —
+see §2.3's correction note for what actually ships.** An in-place upgrade to
+a build with `CONSOLE_TOTP_ENABLED=1` is now invisible at the login surface:
+an existing single-factor install keeps logging in with the password alone,
+exactly as before, and the operator opts into everything described below
+(the 10-minute enrollment session, the acknowledgment-gated recovery-code
+display, the forced re-login afterward) from Settings, on their own
+schedule, via `POST /api/auth/2fa/enable`. The mechanics of the enrollment
+session itself — its scope, TTL, and the confirm/acknowledge/re-login
+sequence — are unchanged; only the sentence "on first password
+authentication after upgrade" is no longer true.
 
 - **Tier 1 fix has no upgrade-path complexity**: it's a behavior correction to already-optional, already-Discord-OAuth-configured installs only. An operator who has never configured Discord OAuth is completely unaffected.
 - **`WEBAUTHN_RP_ID` and `WEBAUTHN_ORIGIN` both unset (default) is byte-identical to today**: no new routes registered, no new file created, zero behavior change for any operator who doesn't opt in. A partial pair is rejected at boot.
