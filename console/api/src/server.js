@@ -1132,7 +1132,7 @@ async function handleApi(req, res) {
       const pending = oauthPendingStates.issue(undefined, { purpose: "setup", sessionId: ownerSession.id, owner: setupKey });
       if (!pending) return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
       res.setHeader("Set-Cookie", oauthStateCookie(pending.state));
-      res.writeHead(302, { Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: pending.state, codeChallenge: pending.challenge, prompt: "none" }) });
+      res.writeHead(302, withSecurityHeaders({ Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: pending.state, codeChallenge: pending.challenge, prompt: "none" }) }));
       res.end();
       audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true, purpose: "setup" });
       return;
@@ -1167,14 +1167,19 @@ async function handleApi(req, res) {
     oauthStartRateLimiter.record(startKey);
     // Keyed by client so a flood from one address can only ever evict its own
     // pending states, never another user's in-flight sign-in (oauth.js).
-    const pending = oauthPendingStates.issue(undefined, { owner: startKey });
+    // presentation (F4, #574): "popup" when the caller opened this in a
+    // popup window instead of navigating the whole tab -- read here, never
+    // trusted from anywhere else, and travels with the pending state the
+    // same way `purpose` already does.
+    const presentation = startUrl.searchParams.get("presentation") === "popup" ? "popup" : "page";
+    const pending = oauthPendingStates.issue(undefined, { owner: startKey, presentation });
     if (!pending) {
       return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
     }
     const { state, challenge } = pending;
     res.setHeader("Set-Cookie", oauthStateCookie(state));
     const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state, codeChallenge: challenge, prompt: "none" });
-    res.writeHead(302, { Location: authorizeUrl });
+    res.writeHead(302, withSecurityHeaders({ Location: authorizeUrl }));
     res.end();
     audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true });
     return;
@@ -6829,6 +6834,17 @@ function oauthReturnPage() {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign-in complete</title></head><body><noscript><a href="/">Return to the console</a></noscript><script>window.location.replace("/");</script></body></html>`;
 }
 
+// F4, #574: served instead of oauthReturnPage() when the flow started as a
+// popup (window.open, not a full-tab navigation) -- must NOT navigate this
+// small window to the full console UI. Closes itself; the opener learns of
+// success by polling /api/auth/state (the session cookie is already set on
+// this same response, visible to every window of this origin before the
+// popup even finishes closing). Plain-text fallback for the rare case
+// script execution is blocked -- the operator can just close it by hand.
+function oauthPopupReturnPage() {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign-in complete</title></head><body><p>Signed in. You can close this window.</p><script>window.close();</script></body></html>`;
+}
+
 // The callback is reached by a top-level browser navigation (Discord
 // redirects the user's tab here), so failure responses must be readable
 // HTML with a way back to the sign-in screen -- a JSON body would be
@@ -6888,11 +6904,15 @@ async function handleOAuthCallback(req, res) {
       // always tries prompt=none first -- into a shared, unattributed
       // bucket, defeating that per-owner eviction guarantee for the one
       // call site nearly every real sign-in passes through.
-      const retry = oauthPendingStates.issue(undefined, { purpose: consumed.purpose, sessionId: consumed.sessionId, owner: rateKey });
+      // presentation (F4, #574) must ALSO ride the retry, or a popup login
+      // needing this interactive round trip silently reverts to the
+      // full-page response on its eventual completion -- loading the whole
+      // console UI inside the popup window.
+      const retry = oauthPendingStates.issue(undefined, { purpose: consumed.purpose, sessionId: consumed.sessionId, owner: rateKey, presentation: consumed.presentation });
       if (!retry) return html(res, 429, oauthErrorPage("Too many Discord sign-in sessions in progress. Try again in a moment."));
       res.setHeader("Set-Cookie", oauthStateCookie(retry.state));
       audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: `silent_${oauthError}`, retry: "interactive", purpose: consumed.purpose });
-      res.writeHead(302, { Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: retry.state, codeChallenge: retry.challenge }) });
+      res.writeHead(302, withSecurityHeaders({ Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: retry.state, codeChallenge: retry.challenge }) }));
       res.end();
       return;
     }
@@ -7020,7 +7040,7 @@ async function handleOAuthCallback(req, res) {
   const session = auth.makeSession({ tier: resolved.tier, userId: identity.userId, username: identity.username, displayName: identity.displayName, guildId: config.discordHomeGuildId });
   res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie()]);
   audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: resolved.tier });
-  return html(res, 200, oauthReturnPage());
+  return html(res, 200, consumed.presentation === "popup" ? oauthPopupReturnPage() : oauthReturnPage());
 }
 
 function applyMutationRateLimit(req, res, scope) {

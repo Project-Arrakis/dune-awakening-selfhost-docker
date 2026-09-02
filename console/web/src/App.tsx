@@ -1,6 +1,7 @@
 import { Fragment, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { Archive, Bug, Building2, Car, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, LogOut, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, ShieldCheck, Sparkles, Store, UserRound, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, loginRequest, post, setCsrfToken } from "./api/client";
+import { runDiscordPopupLogin, type DiscordAuthState } from "./features/auth/discordPopupLogin";
 import { TotpSetupScreen } from "./features/auth/TotpSetupScreen";
 import { DiscordSetupWizard } from "./features/auth/DiscordSetupWizard";
 import { setServerPorts, setAdminPort, type ServerPorts } from "./api/serverPorts";
@@ -361,6 +362,17 @@ function AppFooter() {
 
 export function App() {
   const [auth, setAuth] = useState(false);
+  // F4, #574: popup+poll Discord sign-in state. mountedRef lets the poll
+  // loop (runDiscordPopupLogin) stop cold on unmount without needing to
+  // cancel an in-flight fetch -- see discordPopupLogin.ts's own comment for
+  // why this is NOT modeled on the Updates panel's uncancellable QA login.
+  const discordPopupMountedRef = useRef(true);
+  useEffect(() => {
+    discordPopupMountedRef.current = true;
+    return () => { discordPopupMountedRef.current = false; };
+  }, []);
+  const [discordPopupBusy, setDiscordPopupBusy] = useState(false);
+  const [discordPopupMessage, setDiscordPopupMessage] = useState("");
   const [password, setPassword] = useState("");
   // Tier 3 second factor (RFC §2.3/§4). All inert unless the server actually
   // asks for a code, so a console with CONSOLE_TOTP_ENABLED unset renders the
@@ -634,6 +646,45 @@ export function App() {
   // totpRequired/recoveryFailed, 429 rate-limited) is a real outcome to branch
   // on -- there is no session yet at login time, so the shared
   // session-expiry-on-401 handling used elsewhere would misrepresent all of them.
+  // F4, #574: intercepts a plain left-click on "Sign in with Discord" to run
+  // the popup+poll flow. A modifier-click/middle-click (new-tab intent) is
+  // deliberately left alone -- it falls through to the anchor's native
+  // behavior (today's full-page flow, opened in the new tab the user asked
+  // for), which is the right outcome, not a gap to close.
+  function startDiscordPopupLogin(event: React.MouseEvent<HTMLAnchorElement>) {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    if (discordPopupBusy) return; // synchronous disable -- no second popup/poll loop from a double-click
+    setDiscordPopupBusy(true);
+    setDiscordPopupMessage("");
+    void runDiscordPopupLogin({
+      openPopup: () => window.open("about:blank", "console-discord-login", "popup,width=480,height=720"),
+      fetchAuthState: () => api<DiscordAuthState>("/api/auth/state"),
+      sleep: (ms) => new Promise((resolveSleep) => window.setTimeout(resolveSleep, ms)),
+      navigateFullPage: (url) => { window.location.href = url; },
+      onSuccess: (state) => { setCsrfToken(state.csrfToken); setAuth(true); },
+      isMounted: () => discordPopupMountedRef.current
+    }).then((result) => {
+      if (!discordPopupMountedRef.current) return;
+      if (result.outcome === "success") return; // the console re-renders as authenticated; nothing left to show here
+      setDiscordPopupBusy(false);
+      if (result.outcome === "fallback") return; // navigating away on this same click; no message to show
+      setDiscordPopupMessage(
+        result.outcome === "cancelled"
+          ? "Discord sign-in was closed before it completed. Try again."
+          : "Discord sign-in did not complete in time. Try again, or use the regular sign-in link."
+      );
+    }).catch(() => {
+      // Code review finding: with no catch here, an unexpected throw (e.g. a
+      // browser where window.open() itself throws instead of returning null)
+      // left the button stuck on "Waiting for Discord..." forever, with no
+      // way to retry short of a full page reload.
+      if (!discordPopupMountedRef.current) return;
+      setDiscordPopupBusy(false);
+      setDiscordPopupMessage("Discord sign-in could not be started. Try again, or use the regular sign-in link.");
+    });
+  }
+
   async function login() {
     const body: Record<string, string> = { password };
     let codeAttempted = false;
@@ -920,9 +971,15 @@ export function App() {
               top of Discord. */}
           {discordSignInAvailable && !totpRequired ? (
             <>
-              <a className="login-discord-button login-discord-button-primary" href="/api/auth/discord/start">
-                <DiscordLogo size={19} aria-hidden="true" /> Sign in with Discord
+              <a
+                className="login-discord-button login-discord-button-primary"
+                href="/api/auth/discord/start"
+                aria-disabled={discordPopupBusy}
+                onClick={startDiscordPopupLogin}
+              >
+                <DiscordLogo size={19} aria-hidden="true" /> {discordPopupBusy ? "Waiting for Discord..." : "Sign in with Discord"}
               </a>
+              {discordPopupMessage && <p className="attention-text" role="alert">{discordPopupMessage}</p>}
               <button type="button" className="login-password-toggle" onClick={() => setShowPasswordLogin(!showPasswordLogin)}>
                 {showPasswordLogin ? "Hide the admin password" : "Use the admin password instead"}
               </button>

@@ -52,7 +52,11 @@ export function createPendingStateStore({
   // fetch identity only, mint nothing, hand the guild list back to the owner
   // session identified by `sessionId`). It travels with the pending state so a
   // login-purpose callback can never be replayed as setup or vice versa.
-  function issue(random = randomBytes, { purpose = "login", sessionId = "", owner = "" } = {}) {
+  // `presentation` is "page" (full-page redirect, the original flow) or
+  // "popup" (F4, #574: opened via window.open, polled from the opener) --
+  // independent of `purpose`, so a popup-flagged state still separately
+  // tracks whether it's a login or a setup round trip.
+  function issue(random = randomBytes, { purpose = "login", sessionId = "", owner = "", presentation = "page" } = {}) {
     // Evict used and expired entries before the size check. Without this, an
     // unauthenticated flood of /discord/start requests that never complete a
     // callback fills the table permanently (entries are only marked used /
@@ -94,7 +98,7 @@ export function createPendingStateStore({
     const state = random(16).toString("base64url");
     const verifier = random(32).toString("base64url");
     const challenge = createHash("sha256").update(verifier).digest("base64url");
-    pending.set(state, { createdAt: now(), used: false, verifier, challenge, purpose, sessionId, owner });
+    pending.set(state, { createdAt: now(), used: false, verifier, challenge, purpose, sessionId, owner, presentation });
     return { state, challenge };
   }
 
@@ -112,7 +116,7 @@ export function createPendingStateStore({
     if (!constantTimeStringEqual(state, cookieValue)) return { ok: false, reason: "state_cookie_mismatch" };
     if (timestamp - entry.createdAt > ttlMs) return { ok: false, reason: "stale_state" };
     entry.used = true;
-    return { ok: true, verifier: entry.verifier, purpose: entry.purpose || "login", sessionId: entry.sessionId || "" };
+    return { ok: true, verifier: entry.verifier, purpose: entry.purpose || "login", sessionId: entry.sessionId || "", presentation: entry.presentation || "page" };
   }
 
   return { issue, consume, size: () => pending.size };
