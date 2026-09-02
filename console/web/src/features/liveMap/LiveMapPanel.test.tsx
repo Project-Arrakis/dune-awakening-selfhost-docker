@@ -243,7 +243,7 @@ it("a static-pool marker with no partition of its own falls back to the partitio
     onOpenVehicle={vi.fn()}
   />);
 
-  fireEvent.click(await screen.findByRole("button", { name: "Active Spice Blows: Active Small Spice" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Active Spice Fields: Active Small Spice" }));
   fireEvent.click(screen.getByRole("button", { name: "Teleport" }));
 
   expect(screen.getByRole("option", { name: "Liet" })).toBeInTheDocument();
@@ -525,7 +525,7 @@ it("reports the layout once one is known", async () => {
   // rather than merely observing the canvas element and racing onReady().
   await waitFor(() => expect(container.querySelector("img.live-map-image")).toBeNull());
   expect(container.querySelector("canvas.live-map-terrain")).not.toBeNull();
-  expect(screen.getByText("layout 3")).toBeInTheDocument();
+  expect(screen.getByText("Layout 3")).toBeInTheDocument();
 });
 
 // Finding 9: the API caps the layout at 63 so a future Layout_12 is reported
