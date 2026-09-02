@@ -1121,7 +1121,7 @@ reconcile_coriolis_coordinator_after_deploy() {
 
   # The shared launcher knows whether the Battlegroup is active. This keeps a
   # Console-only update from reviving an intentionally stopped deployment.
-  runtime/scripts/start-coriolis-coordinator.sh --if-stack-running || {
+  runtime/scripts/start-coriolis-coordinator.sh --replace-if-stack-running || {
     echo "Warning: the Coriolis Coordinator could not be started after the Console deployment." >&2
   }
 }
