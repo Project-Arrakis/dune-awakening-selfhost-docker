@@ -71,10 +71,14 @@ function codeFor(secretBase32, offsetSteps = 0) {
   return totpCode(base32Decode(secretBase32), Math.floor(Date.now() / 1000) + offsetSteps * TOTP_PERIOD_SECONDS);
 }
 
+// TOTP is opt-in (issue #665): a plain login no longer yields an enroll-scope
+// session by itself. Login normally, then opt in via POST /api/auth/2fa/enable.
 async function enrollFresh(port) {
   const login = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
-  const cookie = cookieFrom(login);
-  const csrf = (await login.json()).csrfToken;
+  const loginBody = await login.json();
+  const enable = await api(port, "/api/auth/2fa/enable", { cookie: cookieFrom(login), csrf: loginBody.csrfToken, body: { currentPassword: PASSWORD } });
+  const cookie = cookieFrom(enable);
+  const csrf = (await enable.json()).csrfToken;
   const setup = await (await api(port, "/api/auth/2fa/setup", { cookie, csrf })).json();
   const confirm = await api(port, "/api/auth/2fa/confirm", { cookie, csrf, body: { code: codeFor(setup.secret) } });
   const body = await confirm.json();

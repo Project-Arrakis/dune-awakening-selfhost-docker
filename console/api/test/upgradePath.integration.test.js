@@ -91,7 +91,14 @@ function codeFor(secretBase32, offsetSteps = 0) {
 
 const secondFactorPath = (tempDir) => join(tempDir, "runtime", "generated", "console-second-factor.json");
 
-test("in-place upgrade: an existing single-factor install is forced through enrollment and cannot log in with the password alone afterwards", async () => {
+// TOTP is opt-in (issue #665, RFC §4 revised): live-testing feedback from the
+// upstream maintainer was that forcing enrollment with no opt-out is a real
+// adoption blocker for a self-hosted admin tool. Flipping CONSOLE_TOTP_ENABLED
+// on an EXISTING single-factor install must not, by itself, change how that
+// operator logs in -- the flag only makes the feature available in Settings.
+// Enrollment stays exactly as available and exactly as functional as before;
+// only the trigger moved from automatic to owner-initiated.
+test("in-place upgrade: an existing single-factor install keeps logging in with the password alone, and can opt into TOTP afterwards", async () => {
   const tempDir = mkdtempSync(join(tmpdir(), "upgrade-e2e-"));
   let running = null;
   try {
@@ -120,21 +127,36 @@ test("in-place upgrade: an existing single-factor install is forced through enro
     running = startConsole(portAfter, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
     await waitForHealth(portAfter);
 
-    // RFC §4: sessions are in-memory, so the pre-upgrade session does not survive
-    // the restart. An operator is never left holding a live single-factor session
-    // on an install that now mandates a second factor.
+    // Sessions are in-memory, so the pre-upgrade session does not survive the
+    // restart regardless -- unrelated to the opt-in change, just a fact about
+    // process restarts.
     const carriedOver = await api(portAfter, "/api/auth/me", { method: "GET", cookie: legacyCookie });
-    assert.equal(carriedOver.status, 401, "the pre-upgrade session does not survive the upgrade");
+    assert.equal(carriedOver.status, 401, "the pre-upgrade session does not survive a restart");
 
-    // First post-upgrade password login gets an enrollment-only session, not a
-    // normal one -- this is the whole operator-visible behavior change.
+    // The upgrade itself is invisible at the login surface: turning the flag on
+    // with no factor configured logs the operator straight in, exactly as
+    // before. This is the whole point of #665 -- no forced detour, no opt-out
+    // to hunt for.
     const upgradeLogin = await api(portAfter, "/api/auth/login", { body: { password: PASSWORD } });
     assert.equal(upgradeLogin.status, 200);
     const upgradeBody = await upgradeLogin.json();
-    assert.equal(upgradeBody.enrollmentRequired, true, "post-upgrade: enrollment is mandatory");
-    assert.equal(upgradeBody.authenticated, undefined, "post-upgrade: no normal session is issued before enrollment");
-    const enrollCookie = cookieFrom(upgradeLogin);
-    const enrollCsrf = upgradeBody.csrfToken;
+    assert.equal(upgradeBody.authenticated, true, "post-upgrade with the flag on: password alone still signs in");
+    assert.equal(upgradeBody.enrollmentRequired, undefined, "post-upgrade: enrollment is never forced");
+    const normalCookie = cookieFrom(upgradeLogin);
+    const normalCsrf = upgradeBody.csrfToken;
+    assert.ok(normalCookie && normalCsrf);
+    // No restricted enrollment scope -- unlike the enroll session further down,
+    // this is a normal session.
+    const normalState = await api(portAfter, "/api/auth/state", { method: "GET", cookie: normalCookie });
+    assert.equal((await normalState.json()).scope, null, "a plain post-upgrade login is a normal session, not an enrollment one");
+
+    // The feature is available, though: the operator can opt in from Settings.
+    const enableRes = await api(portAfter, "/api/auth/2fa/enable", { cookie: normalCookie, csrf: normalCsrf, body: { currentPassword: PASSWORD } });
+    assert.equal(enableRes.status, 200);
+    const enableBody = await enableRes.json();
+    assert.equal(enableBody.enrollmentRequired, true, "opting in mints the same enroll-scope session the old forced path used to");
+    const enrollCookie = cookieFrom(enableRes);
+    const enrollCsrf = enableBody.csrfToken;
     assert.ok(enrollCookie && enrollCsrf);
 
     // The enrollment session reaches nothing but enrollment. /me and /logout are
@@ -156,8 +178,8 @@ test("in-place upgrade: an existing single-factor install is forced through enro
     assert.equal(confirmBody.enrolled, true);
     assert.equal(confirmBody.recoveryCodes.length, 10, "the operator is handed exactly 10 recovery codes, once");
 
-    // The upgrade is now complete and irreversible from the login surface:
-    // the password alone no longer works.
+    // Now that TOTP is actually configured, the password alone is no longer
+    // enough -- this part of the RFC is unchanged, only how you get here moved.
     const passwordOnly = await api(portAfter, "/api/auth/login", { body: { password: PASSWORD } });
     assert.equal(passwordOnly.status, 401, "post-enrollment: the password alone is rejected");
     assert.equal((await passwordOnly.json()).totpRequired, true);
@@ -181,11 +203,14 @@ test("rollback: turning the flag back off on an enrolled install restores single
     await waitForHealth(portOn);
 
     const login = await api(portOn, "/api/auth/login", { body: { password: PASSWORD } });
-    const body = await login.json();
+    const loginBody = await login.json();
+    assert.equal(loginBody.authenticated, true, "TOTP is opt-in: plain login succeeds with no factor configured");
+    const enableRes = await api(portOn, "/api/auth/2fa/enable", { cookie: cookieFrom(login), csrf: loginBody.csrfToken, body: { currentPassword: PASSWORD } });
+    const body = await enableRes.json();
     assert.equal(body.enrollmentRequired, true);
-    const setup = await api(portOn, "/api/auth/2fa/setup", { cookie: cookieFrom(login), csrf: body.csrfToken });
+    const setup = await api(portOn, "/api/auth/2fa/setup", { cookie: cookieFrom(enableRes), csrf: body.csrfToken });
     const { secret } = await setup.json();
-    const confirm = await api(portOn, "/api/auth/2fa/confirm", { cookie: cookieFrom(login), csrf: body.csrfToken, body: { code: codeFor(secret) } });
+    const confirm = await api(portOn, "/api/auth/2fa/confirm", { cookie: cookieFrom(enableRes), csrf: body.csrfToken, body: { code: codeFor(secret) } });
     assert.equal(confirm.status, 200);
     const stateBefore = readFileSync(secondFactorPath(tempDir), "utf8");
 
@@ -218,9 +243,12 @@ test("upgrade path: the enrollment session is short-lived and non-renewable (RFC
   try {
     await waitForHealth(port);
     const login = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
-    assert.equal((await login.clone().json()).enrollmentRequired, true);
+    const loginBody = await login.json();
+    assert.equal(loginBody.authenticated, true, "TOTP is opt-in: plain login succeeds with no factor configured");
+    const enableRes = await api(port, "/api/auth/2fa/enable", { cookie: cookieFrom(login), csrf: loginBody.csrfToken, body: { currentPassword: PASSWORD } });
+    assert.equal((await enableRes.clone().json()).enrollmentRequired, true);
 
-    const entry = setCookieEntry(login);
+    const entry = setCookieEntry(enableRes);
     assert.ok(entry, "an enrollment session cookie is set");
     const maxAge = /max-age=(\d+)/i.exec(entry);
     assert.ok(maxAge, "the enrollment cookie carries an explicit Max-Age");
@@ -239,14 +267,22 @@ test("upgrade path: an abandoned enrollment restarts with a REGENERATED secret, 
   try {
     await waitForHealth(port);
 
+    // Each "attempt" is a normal login (TOTP is opt-in) followed by opting in.
+    async function beginEnrollment() {
+      const login = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+      const loginBody = await login.json();
+      return api(port, "/api/auth/2fa/enable", { cookie: cookieFrom(login), csrf: loginBody.csrfToken, body: { currentPassword: PASSWORD } });
+    }
+
     // First attempt: get a secret, then walk away without confirming.
-    const first = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+    const first = await beginEnrollment();
     const firstBody = await first.json();
     const firstSetup = await api(port, "/api/auth/2fa/setup", { cookie: cookieFrom(first), csrf: firstBody.csrfToken });
     const { secret: abandonedSecret } = await firstSetup.json();
 
-    // Second attempt: a fresh enrollment session.
-    const second = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+    // Second attempt: a fresh enrollment session -- nothing was ever confirmed,
+    // so isConfigured() is still false and a second /2fa/enable call succeeds.
+    const second = await beginEnrollment();
     const secondBody = await second.json();
     assert.equal(secondBody.enrollmentRequired, true, "an abandoned enrollment leaves no committed state");
     const secondCookie = cookieFrom(second);
