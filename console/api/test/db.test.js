@@ -20,6 +20,7 @@ import {
   queueWaterRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
+import { deleteBaseCompletely } from "../src/duneDb.js";
 import { addBaseContainerItem, addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addonPlayerIdentities, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteAllBaseContainerItems, deleteBaseContainerItem, deleteInventoryItem, deleteMultipleBaseContainerItems, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, fillItemToBaseContainer, fillItemToStorage, generatorUptimePolicy, giveItemToBaseContainer, giveItemToPlayer, giveItemToStorage, giveMultipleItemsToBaseContainer, guildMembers, inspectDeletedCharacterRecovery, inspectLandsraadQuestRepairs, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerCustomizationGrantState, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerServerMemberships, playerSolarisCoinTotal, playerTeleportDestinations, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, recoverDeletedCharacter, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairLandsraadQuests, repairVehicleDecay, resetJourneyNode, resetTutorial, resolvePlayerTarget, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, teleportPlayer, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 import { listStorage, liveMapBases, liveMapStorage, liveMapVehicles, portalStorage, trackPlayerPlaytime } from "../src/duneDb.js";
 
@@ -8644,6 +8645,35 @@ test("flush preserves a refill queued while it was awaiting the database", async
   });
 });
 
+// Partitions are re-observed per entry, not once at pass start. A pass is
+// several round-trips per entry and can outlive the window it began in -- a map
+// server reconnecting partway through, or a pass the restart timeout abandoned
+// but could not cancel. Writing to a live map is what these queues exist to
+// avoid, since the game never picks those writes up.
+test("a map that comes back up mid-pass stops the entries that follow", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    _resetRefillPartitionDwellForTests();
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    queueGeneratorRefill(repoRoot, { baseId: 517, map: "Overmap", partitionId: 9 });
+
+    const partitions = [{ partitionId: 3, unassigned: true }, { partitionId: 9, unassigned: true }];
+    const { db } = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions });
+    const inner = db.transaction;
+    db.transaction = async (fn) => {
+      // The map servers reconnect while the first entry is being written.
+      partitions[0] = { partitionId: 3, connected: true };
+      partitions[1] = { partitionId: 9, connected: true };
+      return inner(fn);
+    };
+
+    const result = await flushGeneratorRefills(db, repoRoot);
+
+    assert.deepEqual(result.flushed.map((entry) => entry.baseId), [482], "only the entry begun while the map was down");
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot).map((entry) => entry.baseId), [517],
+      "the rest stay queued for a window that is genuinely safe");
+  });
+});
+
 test("flush does not resurrect an entry canceled while it was awaiting the database", async () => {
   await withTempRepoRoot(async (repoRoot) => {
     _resetRefillPartitionDwellForTests();
@@ -9484,4 +9514,92 @@ test("vehicleStorageDeleteSafety withholds deletion when the schema cannot suppo
   assert.equal(safety.safe, false);
   assert.equal(safety.known, true);
   assert.match(safety.reason, /dune\.delete_item\(bigint\)/);
+});
+
+// The map-down hook passes ignoreRetryBackoff so a restart's brief write window
+// is not wasted on entries the 5s poller happens to have backed off. Measured on
+// a live server: the poller stamps nextRetryAt 60s out on every failed attempt
+// and runs every 5s, so a persistently-blocked entry sits inside a backoff
+// window for roughly 55 of every 60 seconds -- the hook lands in one about 92%
+// of the time and would silently apply nothing.
+//
+// These cover the three queues the delete queues' own tests do not reach. Each
+// asserts both directions, because only the pair is meaningful: honouring the
+// window without the flag, and overriding it with the flag. A skipped entry
+// produces no flushed record at all, which is what distinguishes it from one
+// that was attempted and failed.
+const BACKOFF_AT = 5_000_000;
+
+function alwaysFailingDb(partitions) {
+  const { db } = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions });
+  db.transaction = async () => { throw new Error("simulated write failure"); };
+  return db;
+}
+
+for (const queue of [
+  {
+    label: "generator refill",
+    queueEntry: (repoRoot) => queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 }),
+    flush: (db, repoRoot, options) => flushGeneratorRefills(db, repoRoot, options),
+    list: listQueuedGeneratorRefills
+  },
+  {
+    label: "water refill",
+    queueEntry: (repoRoot) => queueWaterRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 }),
+    flush: (db, repoRoot, options) => flushWaterRefills(db, repoRoot, options),
+    list: listQueuedWaterRefills
+  }
+]) {
+  test(`the map-down pass applies a ${queue.label} the poller just backed off`, async () => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      queue.queueEntry(repoRoot);
+      const db = alwaysFailingDb(DESPAWNED_PARTITIONS);
+
+      // Poller attempt fails and stamps a retry window on the entry.
+      const first = await queue.flush(db, repoRoot, { now: () => BACKOFF_AT });
+      assert.equal(first.flushed.length, 1, "the first pass must actually attempt the entry");
+      assert.ok(queue.list(repoRoot)[0].nextRetryAt > BACKOFF_AT, "a retry window must be stamped");
+
+      // Background tick inside that window: skipped entirely, nothing reported.
+      _resetRefillPartitionDwellForTests();
+      const skipped = await queue.flush(db, repoRoot, { now: () => BACKOFF_AT + 1 });
+      assert.deepEqual(skipped.flushed, [], "the poller must still honour its own backoff");
+
+      // Map-down hook in the same window: attempted despite the backoff.
+      _resetRefillPartitionDwellForTests();
+      const forced = await queue.flush(db, repoRoot, { now: () => BACKOFF_AT + 1, ignoreRetryBackoff: true });
+      assert.equal(forced.flushed.length, 1, "ignoreRetryBackoff must override the window");
+      assert.equal(forced.flushed[0].baseId, 482);
+    });
+  });
+}
+
+// supportsBaseDelete must probe every relation the delete path reads. The
+// in-transaction backed-up guard LEFT JOINs dune.permission_actor, so a schema
+// without it has to fail as a clean capability message -- not as an aborted
+// transaction after the claim actor is already locked FOR UPDATE.
+function baseDeleteCapabilityDb({ missingTable = null } = {}) {
+  const query = async (text, values = []) => {
+    if (text.includes("to_regclass")) {
+      const target = String(values[0]);
+      return okRows([{ exists: missingTable ? target !== `dune.${missingTable}` : true }]);
+    }
+    if (text.includes("to_regprocedure")) return okRows([{ exists: true }]);
+    return okRows([]);
+  };
+  return { query, transaction: async (fn) => fn({ query }) };
+}
+
+test("base delete reports unsupported capability when permission_actor is absent", async () => {
+  const db = baseDeleteCapabilityDb({ missingTable: "permission_actor" });
+  await assert.rejects(() => deleteBaseCompletely(db, 1), UnsupportedCapabilityError);
+});
+
+// Control: with the same mock and nothing missing, the capability gate passes
+// and the call gets far enough to fail on the base lookup instead. Without this
+// the test above would still pass if the probe rejected for any other reason.
+test("base delete passes the capability gate once permission_actor is present", async () => {
+  const db = baseDeleteCapabilityDb();
+  await assert.rejects(() => deleteBaseCompletely(db, 1), /was not found/);
 });
