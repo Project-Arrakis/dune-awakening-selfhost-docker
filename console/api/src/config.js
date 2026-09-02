@@ -232,11 +232,11 @@ export function loadConfig() {
     adminPassword: process.env.ADMIN_PASSWORD || getOrCreateSecret(adminPasswordFile, 18),
     adminPasswordFile,
     // Tier 3 password + mandatory TOTP (RFC docs/rfc-console-auth.md §2.3/§4).
-    // Gated OFF by default during incremental rollout: the backend enrollment/
-    // login flow lands before the console UI that drives it (a later phase), so
-    // activating it on every upgrade now would strand operators at an
-    // enrollment prompt the UI can't yet complete. With the flag unset, password
-    // login is byte-identical to today (single factor) -- Requirement 0.
+    // Off by default (Requirement 0): with the flag unset, password login is
+    // byte-identical to today (single factor), and the Settings UI doesn't
+    // even offer the feature. When set, TOTP is available but opt-in --
+    // enrollment is owner-initiated via POST /api/auth/2fa/enable (Settings ->
+    // Two-Factor Authentication), never forced on login (issue #665).
     consoleTotpEnabled: process.env.CONSOLE_TOTP_ENABLED === "1",
     // Real-client-IP rate-limit key. Empty by default -- every operator who
     // never sets this sees byte-identical behavior (the raw socket address).

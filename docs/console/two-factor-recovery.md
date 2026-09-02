@@ -1,19 +1,28 @@
 # Console two-factor: recovery and lockout
 
-Applies to the password console login when `CONSOLE_TOTP_ENABLED=1`
-(Tier 3 of the layered-auth design — see `docs/rfc-console-auth.md`
-§2.3/§3.4/§4). If you have never set that flag, none of this applies to
-you: your console login is unchanged, single-factor, and there is nothing
-here to lose.
+Applies to the password console login once you turn on two-factor
+authentication, which requires `CONSOLE_TOTP_ENABLED=1` (Tier 3 of the
+layered-auth design — see `docs/rfc-console-auth.md` §2.3/§3.4/§4). If you
+have never turned it on, none of this applies to you: your console login is
+unchanged, single-factor, and there is nothing here to lose.
 
-Read this **before** enabling the flag. The whole point of the document is
+**Corrected 2026-09-02 (issue #665):** two-factor is opt-in, not automatic.
+Setting `CONSOLE_TOTP_ENABLED=1` only makes the feature available — it does
+not, by itself, change how you log in. You turn it on yourself from
+**Settings → Two-Factor Authentication → Enable Two-Factor Authentication**,
+whenever you're ready. This page previously said enrollment happened
+automatically on your first password login after the flag was set; that is
+no longer true, following live-testing feedback that forcing every operator
+through enrollment with no opt-out was the wrong default.
+
+Read this **before** turning it on. The whole point of the document is
 that the recovery paths are much easier to use while you still have
 something to recover with.
 
 ## What you are given, and when
 
-Enrollment happens once, on the first password login after the flag is
-turned on. At the end of it the console shows you two things:
+Enrollment happens once, whenever you choose to start it from Settings. At
+the end of it the console shows you two things:
 
 | Thing | Shown | Recoverable later? |
 |---|---|---|
@@ -101,13 +110,16 @@ brand-new codes as a restored backup and wiped all ten, unused, the first
 time you tried to use one. The fix was to seed the epoch from the watermark
 instead, which makes the second deletion both unnecessary and harmful.)
 
-The install now has no TOTP state, so your next password login re-enters
-the normal enrollment flow described above. Your password is unchanged
-throughout — this resets the second factor, not the first.
+The install now has no TOTP state. Your next password login is a normal,
+single-factor login — two-factor is opt-in, so nothing forces you back into
+enrollment. Turn it on again from Settings whenever you're ready. Your
+password is unchanged throughout — this resets the second factor, not the
+first.
 
-If you would rather come back up single-factor and enroll later on your own
-schedule, set `CONSOLE_TOTP_ENABLED=0` in `.env` before step 3. Rolling the
-flag back off leaves any enrolled state intact.
+If you'd rather the feature not even be offered for a while, set
+`CONSOLE_TOTP_ENABLED=0` in `.env` before step 3. Rolling the flag back off
+leaves any enrolled state intact and just hides the Settings control until
+you turn the flag on again.
 
 `dune console status` will show you the container and the console URL once
 it is back up.
