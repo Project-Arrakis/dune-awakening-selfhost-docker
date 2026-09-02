@@ -33,6 +33,19 @@ export DUNE_CORIOLIS_COOLDOWN_SECONDS=300
 export DUNE_CORIOLIS_GRACE_SECONDS=0
 export DUNE_CORIOLIS_RETRY_SECONDS=0
 export DUNE_CORIOLIS_MAX_ATTEMPTS=1
+export DUNE_CORIOLIS_CLEANUP_SCRIPT="$TEST_ROOT/bin/coriolis-cleanup"
+
+cat > "$DUNE_CORIOLIS_CLEANUP_SCRIPT" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${DUNE_CORIOLIS_TEST_CLEANUP_COUNT:?}"
+count=0
+[ ! -f "$count_file" ] || count="$(cat "$count_file")"
+printf '%s\n' "$((count + 1))" > "$count_file"
+[ "${DUNE_CORIOLIS_TEST_CLEANUP_FAIL:-0}" != "1" ]
+MOCK
+chmod +x "$DUNE_CORIOLIS_CLEANUP_SCRIPT"
+export DUNE_CORIOLIS_TEST_CLEANUP_COUNT="$TEST_ROOT/cleanup-count"
 
 source "$REPO_ROOT/runtime/scripts/coriolis-coordinator.sh"
 
@@ -45,6 +58,7 @@ perform_farm_restart() {
 
 scan_once
 [ "$(cat "$restart_count_file")" = "1" ]
+[ "$(cat "$DUNE_CORIOLIS_TEST_CLEANUP_COUNT")" = "1" ]
 
 # A process interruption while the request is in progress must be recoverable;
 # only terminal outcomes are deduplicated by the cooldown.
@@ -52,6 +66,7 @@ now_epoch="$(date +%s)"
 write_state running "$now_epoch" "Interrupted request under test."
 handle_restart_signal dune-server-survival-1-67
 [ "$(cat "$restart_count_file")" = "2" ]
+[ "$(cat "$DUNE_CORIOLIS_TEST_CLEANUP_COUNT")" = "2" ]
 grep -qx 'state=succeeded' "$DUNE_CORIOLIS_STATE_FILE"
 grep -qx 'message=Coriolis game-farm restart completed successfully.' "$DUNE_CORIOLIS_STATE_FILE"
 
@@ -59,6 +74,18 @@ grep -qx 'message=Coriolis game-farm restart completed successfully.' "$DUNE_COR
 # must collapse them (and overlapping log windows) into one farm restart.
 scan_once
 [ "$(cat "$restart_count_file")" = "2" ]
+[ "$(cat "$DUNE_CORIOLIS_TEST_CLEANUP_COUNT")" = "2" ]
+
+# Cleanup failure must be visible but must never block Funcom's requested
+# restart. The next independent request gets another cleanup attempt.
+write_state running "$(date +%s)" "Cleanup failure test."
+export DUNE_CORIOLIS_TEST_CLEANUP_FAIL=1
+handle_restart_signal dune-server-survival-1-68
+unset DUNE_CORIOLIS_TEST_CLEANUP_FAIL
+[ "$(cat "$restart_count_file")" = "3" ]
+[ "$(cat "$DUNE_CORIOLIS_TEST_CLEANUP_COUNT")" = "3" ]
+grep -qx 'state=succeeded' "$DUNE_CORIOLIS_STATE_FILE"
+grep -qx 'message=Coriolis game-farm restart completed, but cycle data cleanup failed.' "$DUNE_CORIOLIS_STATE_FILE"
 
 # Deep Desert is intentionally not a trigger source: the authoritative signal
 # comes from Survival/Sietch processes and applies to the whole game farm.
@@ -81,15 +108,21 @@ assert "runtime/scripts/recycle-world-game-servers.sh stop-all" in restart
 assert "docker rm -f dune-server-gateway dune-director" in restart
 assert "DUNE_START_KEEP_INFRA=1" in restart
 assert "DUNE_CORIOLIS_GRACE_SECONDS" in (root / "runtime/scripts/coriolis-coordinator.sh").read_text()
+assert "perform_cycle_data_cleanup" in (root / "runtime/scripts/coriolis-coordinator.sh").read_text()
+assert "delete_markers_for_all_players" in (root / "runtime/scripts/coriolis-data-cleanup.sh").read_text()
+assert "resourcefield_state" in (root / "runtime/scripts/coriolis-data-cleanup.sh").read_text()
+assert "delete_actors_and_respawns_on_server" not in (root / "runtime/scripts/coriolis-data-cleanup.sh").read_text()
 assert "dune-postgres dune-rmq-admin dune-rmq-game dune-text-router" in start
 assert "runtime/scripts/start-coriolis-coordinator.sh" in start
 assert "dune-coriolis-coordinator" in stop
 assert "start-coriolis-coordinator.sh" in self_update
 assert "reconcile_coriolis_coordinator_after_deploy" in self_update
 assert "reconcile_coriolis_coordinator_after_deploy\n  self_update_running restarting 94" in self_update
-assert "--if-stack-running" in self_update
+assert "--replace-if-stack-running" in self_update
 assert "dune-orchestrator|dune-autoscaler|dune-director" in (root / "runtime/scripts/start-coriolis-coordinator.sh").read_text()
 assert "start-coriolis-coordinator.sh" in (root / "runtime/scripts/console.sh").read_text()
+assert "start-coriolis-coordinator.sh --replace-if-stack-running" in (root / "runtime/scripts/console.sh").read_text()
+assert "DUNE_CORIOLIS_SAFE_DATA_CLEANUP" in (root / "runtime/scripts/start-coriolis-coordinator.sh").read_text()
 entrypoint = (root / "console/api/entrypoint.sh").read_text()
 assert "start-coriolis-coordinator.sh --if-stack-running" in entrypoint
 assert '"dune-coriolis-coordinator": "Coriolis Coordinator"' in (root / "console/web/src/components/ReadinessTimeline.tsx").read_text()
