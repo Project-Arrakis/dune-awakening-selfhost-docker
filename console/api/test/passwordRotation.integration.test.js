@@ -73,6 +73,16 @@ async function login(port, password) {
   return { status: res.status, cookie: cookieFrom(res), csrf: body.csrfToken, body };
 }
 
+// TOTP is opt-in (issue #665): a plain login no longer yields an enroll-scope
+// session by itself. Login normally, then opt in via POST /api/auth/2fa/enable,
+// which mints the same enroll-scope session the old forced-login path used to.
+async function beginEnrollment(port, password) {
+  const normal = await login(port, password);
+  const res = await api(port, "/api/auth/2fa/enable", { cookie: normal.cookie, csrf: normal.csrf, body: { currentPassword: password } });
+  const body = await res.json();
+  return { status: res.status, cookie: cookieFrom(res), csrf: body.csrfToken, body };
+}
+
 function codeFor(secretBase32, offsetSteps = 0) {
   return totpCode(base32Decode(secretBase32), Math.floor(Date.now() / 1000) + offsetSteps * TOTP_PERIOD_SECONDS);
 }
@@ -191,7 +201,7 @@ test("rotating the password requires fresh TOTP proof when TOTP is enrolled, and
   try {
     await waitForHealth(port);
     const password = readGeneratedPassword(tempDir);
-    const firstLogin = await login(port, password);
+    const firstLogin = await beginEnrollment(port, password);
     const setup = await (await api(port, "/api/auth/2fa/setup", { cookie: firstLogin.cookie, csrf: firstLogin.csrf })).json();
     let step = currentTotpStep();
     const confirm = await api(port, "/api/auth/2fa/confirm", { cookie: firstLogin.cookie, csrf: firstLogin.csrf, body: { code: codeFor(setup.secret, 0) } });
@@ -251,7 +261,7 @@ test("rotation fails closed (503) and revokes nothing when the second-factor sta
   try {
     await waitForHealth(port);
     const password = readGeneratedPassword(tempDir);
-    const firstLogin = await login(port, password);
+    const firstLogin = await beginEnrollment(port, password);
     const setup = await (await api(port, "/api/auth/2fa/setup", { cookie: firstLogin.cookie, csrf: firstLogin.csrf })).json();
     const confirm = await api(port, "/api/auth/2fa/confirm", { cookie: firstLogin.cookie, csrf: firstLogin.csrf, body: { code: codeFor(setup.secret, 0) } });
     assert.equal(confirm.status, 200);
