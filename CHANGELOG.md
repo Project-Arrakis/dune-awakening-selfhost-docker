@@ -9,6 +9,25 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.3.95)
 
+### Documentation
+
+- Added `docs/console/building-set-grants.md`, documenting why a
+  raw-SQL/admin grant of a `category: "buildings"` patent must deliver the
+  real item via `dune.items` (matching `giveItemToPlayer()`) rather than
+  writing its ID into `CraftingRecipesLibraryActorComponent.m_KnownItemRecipes`
+  — the latter makes the item show "known" in the Crafting tab but does not
+  populate `dune.building_progression`, the store that actually gates
+  construction-menu availability in-game. Found by hand: a batch grant of 40
+  Construction-category patents via the recipe-list write left 3 of them
+  (Large Ore Refinery, Large Spice Refinery, Medium Chemical Refinery)
+  unusable in-game despite the database write succeeding. Includes a dated
+  addendum cross-referencing the announced Filmic Archive DLC (ships
+  2026-09-22) against this fork's `runtime/data/admin-items.json`: 27 of its
+  "Caladan Castle" placeables are already present in the catalog ahead of
+  the DLC's entitlement unlock, with their in-game names and template IDs
+  listed; the Part Two Sardaukar set and several named armor/weapon/emote
+  items were not found under any guessed naming.
+
 ### Changed
 
 - **Companion-bot naming references updated: Sentinel/ACP/Arrakis Control Panel → Mentat**, matching the bot repository's own completed rebrand (`sentinel#234`). Docs, code comments, and the Discord player-link verification-code prefix (`"ACP-"` → `"MENTAT-"`) updated across `docs/rw-architecture.md`, `docs/bot/output-architecture.md`, `docs/runtime/METRICS-ALERTMANAGER-DISCORD-RELAY.md`, `docs/security/secrets-management.md`, `docs/security/console-rbac-implementation-and-testing.md`, `console/api/src/integrations/discord/{commandCatalog,handoff,linkProvider,multiAccountLinkProvider}.js`, `console/api/src/duneDb.js`, `.env.example`, and the corresponding tests. The in-game "Mentat" player specialization (`CharacterAdminUI.tsx` and friends) is unrelated and untouched — see `docs/bot/mentat-naming-disambiguation.md` for the full disambiguation. Dated, commit-SHA-pinned historical citations (e.g. "verified against arrakis-control-panel @ 8f3d3ed") and the entirely separate `docs/security/discord-player-link-hardening.md` investigation write-up were deliberately left as-is — they're accurate history, not current-state claims.
