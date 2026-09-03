@@ -329,6 +329,22 @@ describe("Discord OAuth disable / enable / forget (#676 §6)", { concurrency: 4 
         const body = await disable.json();
         assert.equal(disable.status, 409, JSON.stringify(body));
         assert.equal(body.zeroFactorWarning, true);
+
+        // Layer 2 audit finding (QA hat, CRITICAL): this "warn" test alone
+        // never proved the acknowledgeNoOtherFactor:true bypass actually
+        // works -- confirmed empirically that a broken/disabled bypass
+        // (renamed condition, always-false check) still left the ENTIRE
+        // suite green. Resubmit the identical request, acknowledged, and
+        // assert the guard is skipped this time (falling through to
+        // requireFreshTier3Proof's own "not enrolled" 400 in this fixture,
+        // never a second 409).
+        const acknowledged = await api(port, "/api/auth/2fa/disable", {
+          cookie: session.cookie, csrf: session.csrf,
+          body: { currentPassword: password, acknowledgeNoOtherFactor: true },
+        });
+        const acknowledgedBody = await acknowledged.json();
+        assert.notEqual(acknowledged.status, 409, JSON.stringify(acknowledgedBody));
+        assert.notEqual(acknowledgedBody.zeroFactorWarning, true, JSON.stringify(acknowledgedBody));
       } finally {
         await stopProcess(consoleProc.child);
         rmSync(tempDir, { recursive: true, force: true });
@@ -349,7 +365,10 @@ describe("Discord OAuth disable / enable / forget (#676 §6)", { concurrency: 4 
         // Falls through to requireFreshTier3Proof's own "not configured"
         // refusal (400), never the zero-factor warning (409) -- proving the
         // guard did not fire when Discord's MFA already covers this tier.
-        assert.notEqual(disable.status, 409, JSON.stringify(body));
+        // Asserted as the specific expected status (not just "not 409" --
+        // Layer 2 audit finding, QA hat LOW) so an unrelated regression
+        // (e.g. a 500) can't hide behind a technically-true assertion.
+        assert.equal(disable.status, 400, JSON.stringify(body));
       } finally {
         await stopProcess(consoleProc.child);
         rmSync(tempDir, { recursive: true, force: true });
@@ -367,7 +386,7 @@ describe("Discord OAuth disable / enable / forget (#676 §6)", { concurrency: 4 
 
         const disable = await api(port, "/api/auth/2fa/disable", { cookie: session.cookie, csrf: session.csrf, body: { currentPassword: password } });
         const body = await disable.json();
-        assert.notEqual(disable.status, 409, JSON.stringify(body));
+        assert.equal(disable.status, 400, JSON.stringify(body));
       } finally {
         await stopProcess(consoleProc.child);
         rmSync(tempDir, { recursive: true, force: true });
@@ -407,5 +426,94 @@ describe("Discord OAuth disable / enable / forget (#676 §6)", { concurrency: 4 
       await stopProcess(consoleProc.child);
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+
+  // Layer 2 audit finding (Network/Security Architect/Cloud Security hats,
+  // convergent HIGH): config.discordOAuthConfigured/AppConfigured are
+  // boot-time snapshots, so a naive fix would leave Discord sign-in fully
+  // functional in this SAME still-running process until an actual restart
+  // completes -- and that restart is triggered by a separate, best-effort
+  // client call that can be lost entirely (closed tab, dropped connection).
+  // These tests prove the cutoff is immediate and in-process, independent of
+  // any restart ever happening: no second process, no waiting, no polling.
+  describe("disable/forget cut off Discord sign-in immediately, before any restart (#676 follow-up)", () => {
+    test("disable: the start route refuses in the SAME process, immediately after disable succeeds -- no restart needed", async () => {
+      const port = await getFreePort();
+      const tempDir = mkdtempSync(join(tmpdir(), "discord-disable-immediate-"));
+      const consoleProc = startConsole(port, tempDir, DISCORD_ENV);
+      try {
+        await waitForHealth(port, 20000, consoleProc.logs);
+        const password = readGeneratedPassword(tempDir);
+        const session = await login(port, { password });
+
+        // Before disable: Discord sign-in is live -- a real 302 to Discord.
+        const before = await api(port, "/api/auth/discord/start", { method: "GET" });
+        assert.equal(before.status, 302, "expected Discord sign-in to be live before disabling it");
+
+        const disable = await api(port, "/api/settings/discord-oauth/disable", {
+          cookie: session.cookie, csrf: session.csrf, body: { currentPassword: password },
+        });
+        assert.equal(disable.status, 200, JSON.stringify(await disable.json()));
+
+        // Immediately after, in this SAME process (no restart triggered, no
+        // wait) -- Discord sign-in must already be refused.
+        const after = await api(port, "/api/auth/discord/start", { method: "GET" });
+        assert.equal(after.status, 404, "Discord sign-in must be cut off in-process, not only after a future restart");
+      } finally {
+        await stopProcess(consoleProc.child);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test("forget: the start route also refuses immediately, in-process", async () => {
+      const port = await getFreePort();
+      const tempDir = mkdtempSync(join(tmpdir(), "discord-forget-immediate-"));
+      const consoleProc = startConsole(port, tempDir, DISCORD_ENV);
+      try {
+        await waitForHealth(port, 20000, consoleProc.logs);
+        writeDiscordEnvFile(tempDir);
+        const password = readGeneratedPassword(tempDir);
+        const session = await login(port, { password });
+
+        const forget = await api(port, "/api/settings/discord-oauth/forget", {
+          cookie: session.cookie, csrf: session.csrf, body: { currentPassword: password },
+        });
+        assert.equal(forget.status, 200, JSON.stringify(await forget.json()));
+
+        const after = await api(port, "/api/auth/discord/start", { method: "GET" });
+        assert.equal(after.status, 404);
+      } finally {
+        await stopProcess(consoleProc.child);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test("enable: restores in-process immediately too, reversing a disable before its restart ever ran", async () => {
+      const port = await getFreePort();
+      const tempDir = mkdtempSync(join(tmpdir(), "discord-enable-immediate-"));
+      const consoleProc = startConsole(port, tempDir, DISCORD_ENV);
+      try {
+        await waitForHealth(port, 20000, consoleProc.logs);
+        const password = readGeneratedPassword(tempDir);
+        const session = await login(port, { password });
+
+        await api(port, "/api/settings/discord-oauth/disable", {
+          cookie: session.cookie, csrf: session.csrf, body: { currentPassword: password },
+        });
+        const disabledCheck = await api(port, "/api/auth/discord/start", { method: "GET" });
+        assert.equal(disabledCheck.status, 404);
+
+        const enable = await api(port, "/api/settings/discord-oauth/enable", {
+          cookie: session.cookie, csrf: session.csrf, body: {},
+        });
+        assert.equal(enable.status, 200, JSON.stringify(await enable.json()));
+
+        const reEnabledCheck = await api(port, "/api/auth/discord/start", { method: "GET" });
+        assert.equal(reEnabledCheck.status, 302, "enable must restore Discord sign-in in-process too, not only after a restart");
+      } finally {
+        await stopProcess(consoleProc.child);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
   });
 });

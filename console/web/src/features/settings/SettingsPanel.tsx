@@ -641,7 +641,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
             <p>Disabling this will leave your console with no two-factor authentication anywhere &mdash; Discord sign-in doesn&apos;t require Discord&apos;s own two-factor for your role.</p>
             <p className="muted">You can turn on &ldquo;Require Discord two-factor for Owner and Admin&rdquo; from the Discord OAuth section above (Change application credentials) if you&apos;d like to keep two-factor active another way.</p>
             <div className="action-row">
-              <button className="settings-danger-button" disabled={totpDisableSaving} onClick={() => { void disableTwoFactor(true); }}>{totpDisableSaving ? "Disabling..." : "Disable anyway"}</button>
+              <button className="danger" disabled={totpDisableSaving} onClick={() => { void disableTwoFactor(true); }}>{totpDisableSaving ? "Disabling..." : "Disable anyway"}</button>
               <button type="button" className="login-password-toggle" onClick={() => setTotpDisableZeroFactorWarning(false)}>Cancel</button>
             </div>
           </div>}
@@ -719,7 +719,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
             <label htmlFor="settings-discord-forget-confirm">Type &ldquo;forget&rdquo; to confirm<input id="settings-discord-forget-confirm" name="settings-discord-forget-confirm" disabled={discordForgetSaving} value={discordForgetConfirmText} onChange={(event) => setDiscordForgetConfirmText(event.target.value)} placeholder="forget" /></label>
           </div>
           <div className="action-row">
-            <button className="settings-danger-button" disabled={discordForgetSaving || discordForgetConfirmText.trim().toLowerCase() !== "forget" || !discordForgetPassword} onClick={() => { void forgetDiscordOAuth(); }}>{discordForgetSaving ? "Forgetting..." : "Forget This Configuration Entirely"}</button>
+            <button className="danger" disabled={discordForgetSaving || discordForgetConfirmText.trim().toLowerCase() !== "forget" || !discordForgetPassword || (secondFactorEnrolled && !discordForgetTotpCode.trim())} onClick={() => { void forgetDiscordOAuth(); }}>{discordForgetSaving ? "Forgetting..." : "Forget This Configuration Entirely"}</button>
             {discordForgetResult && <span className={`inline-task-result result-${discordForgetResult.status === "succeeded" ? "ok" : discordForgetResult.status === "failed" ? "fail" : "running"}`}>
               <strong className={discordForgetResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(discordForgetResult.title, discordForgetResult.status === "running")}</strong>
               {discordForgetResult.message && <span className="inline-task-message">{formatResultMessage(discordForgetResult.message)}</span>}
@@ -763,7 +763,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
               /></label>}
             </div>
             <div className="action-row">
-              <button className="settings-danger-button" disabled={discordDisableSaving || !discordDisablePassword} onClick={() => { void disableDiscordOAuth(); }}>{discordDisableSaving ? "Disabling..." : "Disable Discord Sign-In"}</button>
+              <button className="danger" disabled={discordDisableSaving || !discordDisablePassword || (secondFactorEnrolled && !discordDisableTotpCode.trim())} onClick={() => { void disableDiscordOAuth(); }}>{discordDisableSaving ? "Disabling..." : "Disable Discord Sign-In"}</button>
               {discordDisableResult && <span className={`inline-task-result result-${discordDisableResult.status === "succeeded" ? "ok" : discordDisableResult.status === "failed" ? "fail" : "running"}`}>
                 <strong className={discordDisableResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(discordDisableResult.title, discordDisableResult.status === "running")}</strong>
                 {discordDisableResult.message && <span className="inline-task-message">{formatResultMessage(discordDisableResult.message)}</span>}

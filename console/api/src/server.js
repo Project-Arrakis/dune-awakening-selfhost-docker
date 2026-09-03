@@ -1137,7 +1137,7 @@ async function handleApi(req, res) {
       audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true, purpose: "setup" });
       return;
     }
-    if (!config.discordOAuthConfigured) {
+    if (!config.discordOAuthConfigured || discordOAuthSoftDisabledInProcess) {
       return json(res, 404, { error: "Discord sign-in is not configured for this console. Sign in with the admin password." });
     }
     if (handoff.misconfigured) {
@@ -1180,7 +1180,7 @@ async function handleApi(req, res) {
     return;
   }
   if (path === "/api/auth/discord/callback") {
-    if (!config.discordOAuthAppConfigured) {
+    if (!config.discordOAuthAppConfigured || discordOAuthSoftDisabledInProcess) {
       return json(res, 404, { error: "Discord sign-in is not configured for this console. Sign in with the admin password." });
     }
     return handleOAuthCallback(req, res);
@@ -3020,6 +3020,29 @@ function discordOAuthSecretFile() {
   return resolve(config.secretsDir, "discord-oauth-client-secret.txt");
 }
 
+// Layer 2 audit finding (Network/Security Architect/Cloud Security hats,
+// convergent HIGH, #676): config.discordOAuthConfigured/AppConfigured are
+// plain properties computed once at process boot from process.env -- writing
+// DISCORD_OAUTH_DISABLED=1 to .env is real, but invisible to THIS running
+// process until it restarts. Restart is triggered by a *separate*,
+// best-effort client call (consoleRestart.ts's own follow-up POST to
+// /api/setup/discord-restart) made only after this route's response is
+// already back in the browser -- a closed tab, dropped connection, or a
+// failed restart leaves Discord sign-in fully live in the still-running
+// process, with no visible indication anywhere that the intended lockout
+// never took effect. Reordering the shared restart script (docker compose
+// build before/after docker rm -f) was considered and rejected: that
+// function is also used by the web-port change and first-time-setup
+// restarts, where minimizing downtime during the build is the right
+// tradeoff -- changing it globally would trade a security gap here for
+// unnecessary downtime there. Instead, this flag makes the security
+// property hold synchronously, in-process, for the remainder of THIS
+// process's life, independent of whether any restart ever completes:
+// checked at the exact two points (start/callback below) that would
+// otherwise use the stale boot-time config to grant Discord-authenticated
+// access.
+let discordOAuthSoftDisabledInProcess = false;
+
 async function discordOAuthDisableRoute(req, res) {
   const session = auth.requireAuth(req, res);
   if (!session) return;
@@ -3050,6 +3073,12 @@ async function discordOAuthDisableRoute(req, res) {
     auditUrl, action: ACTION, actor, requireEnrolled: false,
   });
   if (!proof.ok) return;
+  // Immediate, synchronous cutoff -- see discordOAuthSoftDisabledInProcess's
+  // own comment. Set BEFORE the .env write returns, so there is no window
+  // (not even one dependent on the write or the restart) where this process
+  // still accepts Discord sign-in after this route has already responded
+  // "disabled."
+  discordOAuthSoftDisabledInProcess = true;
   await updateEnvFileValue("DISCORD_OAUTH_DISABLED", "1");
   audit(config, auditUrl, ACTION, { ok: true, ...actor });
   return json(res, 200, { ok: true, restartRequired: true });
@@ -3061,13 +3090,21 @@ async function discordOAuthEnableRoute(req, res) {
   const auditUrl = sanitizedUrl(req, "/api/settings/discord-oauth/enable");
   const ACTION = "settings.discord-oauth-enabled";
   const actor = { tier: session.tier || "owner", userId: session.userId || "local-owner" };
-  if (!config.discordOAuthDisabled) {
+  // Checks the in-process flag too, not just the (boot-time-stale)
+  // persisted config: a disable in THIS process life is real and in effect
+  // immediately (discordOAuthSoftDisabledInProcess), but config.discordOAuthDisabled
+  // won't reflect it until an actual restart re-reads .env -- without this,
+  // enable would wrongly refuse to reverse a disable that hasn't restarted yet.
+  if (!config.discordOAuthDisabled && !discordOAuthSoftDisabledInProcess) {
     audit(config, auditUrl, ACTION, { ok: false, ...actor, reason: "not_disabled" });
     return json(res, 400, { error: "Discord sign-in is not currently disabled." });
   }
   // No fresh proof required (#676 §6.3): re-enabling only restores an
   // existing login option, it can never strand the acting session the way
   // disable/forget can, so the self-lockout rationale above does not apply.
+  // Also clears the in-process override immediately, in case a disable is
+  // still pending its own restart when the owner changes their mind.
+  discordOAuthSoftDisabledInProcess = false;
   await updateEnvFileValue("DISCORD_OAUTH_DISABLED", "0");
   audit(config, auditUrl, ACTION, { ok: true, ...actor });
   return json(res, 200, { ok: true, restartRequired: true });
@@ -3097,6 +3134,9 @@ async function discordOAuthForgetRoute(req, res) {
     auditUrl, action: ACTION, actor, requireEnrolled: false,
   });
   if (!proof.ok) return;
+  // Same immediate cutoff as disable, and for the same reason -- forget is
+  // strictly more destructive, so it gets the identical guarantee.
+  discordOAuthSoftDisabledInProcess = true;
   // #676 §6.4: log the pre-wipe NON-secret fields (never the secret itself)
   // so a mistaken "Forget" has a recoverable record -- the secret is the only
   // piece an operator can always regenerate from Discord's own portal; the
