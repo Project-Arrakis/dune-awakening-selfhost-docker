@@ -43,7 +43,7 @@ import { createMemoryBalancer } from "./services/memoryBalancer.js";
 import { collectContainerHealth } from "./services/containerHealth.js";
 import { parseMemorySwapStatus } from "./services/memorySwap.js";
 import { createDeathPoller } from "./deathPoller.js";
-import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
+import { updateEnvFileValue as updateEnvValue, updateEnvFileValues as updateEnvValues } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
@@ -2697,7 +2697,7 @@ async function databasePasswordRoute(req, res) {
     return json(res, 400, { error: "Database password changes are unavailable while ADMIN_DATABASE_URL is set. Update the connection URL instead." });
   }
   await duneDb.changeDunePassword(db, password);
-  updateEnvFileValue("DUNE_DB_PASSWORD", password);
+  await updateEnvFileValue("DUNE_DB_PASSWORD", password);
   process.env.DUNE_DB_PASSWORD = password;
   const previousDb = db;
   db = createDb(config);
@@ -2995,7 +2995,7 @@ async function webPortRoute(req, res) {
   if (port !== config.port) await assertWebPortAvailable(port);
   const host = webConsoleDisplayHost(req);
   const url = `http://${host}:${port}`;
-  updateEnvFileValue("ADMIN_BIND_PORT", String(port));
+  await updateEnvFileValue("ADMIN_BIND_PORT", String(port));
   process.env.ADMIN_BIND_PORT = String(port);
   audit(config, req, "settings.change-web-port", { port });
   json(res, 200, {
@@ -3114,6 +3114,14 @@ function validateAdminPassword(value) {
 
 function updateEnvFileValue(key, value) {
   return updateEnvValue(config.repoRoot, key, value);
+}
+
+// Every caller writing more than one related key must use this, not a loop of
+// updateEnvFileValue calls -- a loop still races against a different request's
+// write landing between iterations, even though each individual call is
+// itself serialized (see envFile.js's own header comment, #678).
+function updateEnvFileValues(fields) {
+  return updateEnvValues(config.repoRoot, fields);
 }
 
 async function dbJson(res, fn) {
@@ -6320,7 +6328,7 @@ async function discordSetupFinalize(req, res, session) {
     player: parseRoleIdList(fields.DISCORD_CONSOLE_PLAYER_ROLE_IDS),
   });
   if (conflicts.length) return deny(400, { error: `Each Discord role can map to only one access level -- ${describeRoleTierConflicts(conflicts)}.` }, "role_mapping_unsound");
-  for (const [key, value] of Object.entries(fields)) updateEnvFileValue(key, value);
+  await updateEnvFileValues(fields);
   // A live marker so the sign-in page can say "configured, restart pending"
   // instead of showing the setup entry again (which loops). config reads .env
   // only at boot; boot removes this marker once discordOAuthConfigured is true.
@@ -6428,11 +6436,13 @@ async function writeOAuthConfig(req, res) {
     return json(res, 400, { error: `Each Discord role can map to only one access level -- ${describeRoleTierConflicts(conflicts)}. Owner is never a role: it is the Discord server's owner.` });
   }
   const changes = [];
+  const oauthFields = {};
   for (const key of allowed) {
     if (body[key] === undefined) continue;
-    updateEnvFileValue(key, body[key] == null ? "" : String(body[key]));
+    oauthFields[key] = body[key] == null ? "" : String(body[key]);
     changes.push(key);
   }
+  if (changes.length) await updateEnvFileValues(oauthFields);
   audit(config, req, "setup.write-oauth-config", { keys: changes });
   return json(res, 200, { ok: true, changes });
 }
@@ -6551,9 +6561,11 @@ async function mapsRuntimeSettingsRoute(req, res) {
   if (!Number.isInteger(value) || value < 1 || value > safeMaximum) {
     return json(res, 400, { error: `Always-on startup parallelism must be a whole number from 1 to ${safeMaximum} with these protection settings.` });
   }
-  updateEnvFileValue("DUNE_ALWAYS_ON_STARTUP_PARALLELISM", String(value));
-  updateEnvFileValue("DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY", protectionEnabled ? "1" : "0");
-  updateEnvFileValue("DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB", automaticReserve ? "" : String(reserveGiB));
+  await updateEnvFileValues({
+    DUNE_ALWAYS_ON_STARTUP_PARALLELISM: String(value),
+    DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY: protectionEnabled ? "1" : "0",
+    DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB: automaticReserve ? "" : String(reserveGiB),
+  });
   process.env.DUNE_ALWAYS_ON_STARTUP_PARALLELISM = String(value);
   process.env.DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY = protectionEnabled ? "1" : "0";
   process.env.DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB = automaticReserve ? "" : String(reserveGiB);
@@ -6688,9 +6700,11 @@ async function playerAnnouncementsAutoTick() {
 async function writeConfig(req, res) {
   const body = await readJson(req);
   const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID"];
+  const fields = {};
   for (const key of allowed) {
-    if (body[key] !== undefined) updateEnvFileValue(key, String(body[key]));
+    if (body[key] !== undefined) fields[key] = String(body[key]);
   }
+  if (Object.keys(fields).length) await updateEnvFileValues(fields);
   audit(config, req, "setup.write-config", { keys: Object.keys(body).filter((key) => allowed.includes(key)) });
   return json(res, 200, { ok: true });
 }
@@ -6714,19 +6728,21 @@ async function publicDirectorySettingsRoute(req, res) {
     return json(res, 409, { error: "Server listing is available only when the server is running in public mode." });
   }
   let discordInvite = current.discordInvite;
+  const directoryFields = {};
   if (hasDiscordInvite) {
     discordInvite = normalizeDiscordInvite(body.discordInvite);
     if (discordInvite === null) {
       return json(res, 400, { error: "Enter a valid discord.gg or discord.com/invite link." });
     }
-    updateEnvFileValue("DUNE_PUBLIC_DIRECTORY_DISCORD_INVITE", discordInvite);
+    directoryFields.DUNE_PUBLIC_DIRECTORY_DISCORD_INVITE = discordInvite;
   }
   if (hasEnabled) {
-    updateEnvFileValue("DUNE_PUBLIC_DIRECTORY_ENABLED", body.enabled ? "true" : "false");
+    directoryFields.DUNE_PUBLIC_DIRECTORY_ENABLED = body.enabled ? "true" : "false";
   }
   if (hasAnonymousCountEnabled) {
-    updateEnvFileValue("DUNE_ANONYMOUS_SERVER_COUNT_ENABLED", body.anonymousCountEnabled ? "true" : "false");
+    directoryFields.DUNE_ANONYMOUS_SERVER_COUNT_ENABLED = body.anonymousCountEnabled ? "true" : "false";
   }
+  if (Object.keys(directoryFields).length) await updateEnvFileValues(directoryFields);
   audit(config, req, "settings.public-directory", {
     enabled: hasEnabled ? body.enabled : current.enabled,
     anonymousCountEnabled: hasAnonymousCountEnabled ? body.anonymousCountEnabled : current.anonymousCountEnabled,
