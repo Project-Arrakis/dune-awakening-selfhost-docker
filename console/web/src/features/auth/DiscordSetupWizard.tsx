@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, post } from "../../api/client";
 import { getAdminPort } from "../../api/serverPorts";
 import { SecretInput } from "../../components/SecretInput";
@@ -77,15 +77,36 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
   // application's credentials -- normal step derivation below has no other
   // way to reach that form once app.configured is true.
   const [forceReconfigure, setForceReconfigure] = useState(false);
+  // #676 §8: awareness, not a real proof-gate. At first-time setup the acting
+  // session is always password-tier (Discord OAuth can't exist yet), so this
+  // is trivially satisfiable there -- its job is making sure the human does
+  // not walk into "Tier 1 -> 4 blocked, don't know the password" later,
+  // unknowingly. Shown on every reconfiguration too (not just first-time),
+  // since it costs nothing and is a fine standing reminder either way.
+  const [passwordAwarenessAcknowledged, setPasswordAwarenessAcknowledged] = useState(false);
+  // #676 §7: captured ONCE, from the first successful probe only -- whether
+  // this was a genuine first-time configuration (unconfigured -> configured)
+  // rather than a reconfiguration (e.g. "Change application credentials" on
+  // an already-fully-configured install). This is the offer step's own
+  // trigger condition, alongside secondFactorEnrolledAtMount below; neither
+  // is re-derived after the first probe, since by the time finalize()
+  // succeeds discordOAuthConfigured is already true either way.
+  const wasConfiguredAtMount = useRef<boolean | null>(null);
+  const [secondFactorEnrolledAtMount, setSecondFactorEnrolledAtMount] = useState(false);
 
   // Learn the host's state on mount, and every time it might have changed. Both
   // probes are unconditional -- NOT gated on a URL param -- so a refresh at any
   // point re-derives where we are.
   const probe = useCallback(async () => {
-    const [settings, id] = await Promise.allSettled([
-      api<{ serverConfig?: Record<string, string>; config?: { discordOAuthAppConfigured?: boolean } }>("/api/settings"),
+    const [settings, id, me] = await Promise.allSettled([
+      api<{ serverConfig?: Record<string, string>; config?: { discordOAuthAppConfigured?: boolean; discordOAuthConfigured?: boolean } }>("/api/settings"),
       api<Identity>("/api/setup/discord-identity"),
+      wasConfiguredAtMount.current === null ? api<{ secondFactorEnrolled?: boolean }>("/api/auth/me") : Promise.resolve(null),
     ]);
+    if (me.status === "fulfilled" && me.value) setSecondFactorEnrolledAtMount(Boolean(me.value.secondFactorEnrolled));
+    if (settings.status === "fulfilled" && wasConfiguredAtMount.current === null) {
+      wasConfiguredAtMount.current = Boolean(settings.value.config?.discordOAuthConfigured);
+    }
     if (settings.status === "fulfilled") {
       const c = settings.value.serverConfig || {};
       setApp({
@@ -359,7 +380,15 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
               </span>
             </label>
 
-            <button type="button" className="login-primary-button" disabled={busy || !guildId} onClick={() => { void finalize(); }}>{busy ? "Saving..." : "Turn on Discord sign-in"}</button>
+            <label className="discord-mfa-option" htmlFor="wiz-password-awareness">
+              <input id="wiz-password-awareness" name="wiz-password-awareness" type="checkbox" checked={passwordAwarenessAcknowledged} onChange={(e) => setPasswordAwarenessAcknowledged(e.target.checked)} disabled={busy} />
+              <span className="discord-mfa-text">
+                <span className="discord-mfa-title">I know this console&apos;s admin password</span>
+                <span className="muted">This console also has a separate admin password &mdash; a break-glass fallback if Discord sign-in is ever unavailable. Confirm you (or your server operator) know it before continuing: it&apos;s in <code>runtime/secrets/admin-web-password.txt</code> on the host.</span>
+              </span>
+            </label>
+
+            <button type="button" className="login-primary-button" disabled={busy || !guildId || !passwordAwarenessAcknowledged} onClick={() => { void finalize(); }}>{busy ? "Saving..." : "Turn on Discord sign-in"}</button>
           </>
         )}
 
@@ -374,7 +403,24 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
             </p>
             {restarting
               ? <p className="loading-dots">Restarting the console — this page will reconnect shortly</p>
-              : <button type="button" className="login-primary-button" onClick={() => { void restartNow(); }}>Restart the console now</button>}
+              : <button
+                  type="button"
+                  className="login-primary-button"
+                  onClick={() => {
+                    // #676 §7: set ONLY at the moment the restart is actually
+                    // invoked (not at finalize() time) -- skipping this
+                    // button (e.g. "Back to Settings" instead) must never
+                    // set the marker, since the config change it refers to
+                    // was never actually applied. Fires for a genuine
+                    // first-time configuration with TOTP already enrolled;
+                    // App.tsx consumes this once, after the real Discord
+                    // login that follows the restart.
+                    if (wasConfiguredAtMount.current === false && secondFactorEnrolledAtMount) {
+                      try { window.sessionStorage.setItem("dune-console:discord-oauth-just-configured", "1"); } catch { /* best effort */ }
+                    }
+                    void restartNow();
+                  }}
+                >Restart the console now</button>}
             <p className="muted">Prefer to do it yourself? Run <code>dune console restart</code> on the host instead.</p>
           </>
         )}

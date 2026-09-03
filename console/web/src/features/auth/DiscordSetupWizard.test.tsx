@@ -346,6 +346,123 @@ describe("DiscordSetupWizard: change application credentials (§4.2)", () => {
   });
 });
 
+describe("DiscordSetupWizard: password-awareness checkbox on the map step (#676 §8)", () => {
+  beforeEach(() => { vi.clearAllMocks(); stubHttps(true); });
+
+  function stubReadyToFinalize() {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({ serverConfig: {}, config: { discordOAuthAppConfigured: true } } as never);
+      if (path === "/api/setup/discord-identity") {
+        return Promise.resolve({ user: { id: "u1", username: "owner", mfaEnabled: true }, guilds: [{ id: "333333333333333333", name: "My Server", owner: true }] } as never);
+      }
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+  }
+
+  it("\"Turn on Discord sign-in\" stays disabled until the password-awareness checkbox is checked, even with a valid guild and role", async () => {
+    stubReadyToFinalize();
+    render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByText("My Server", { exact: false });
+    fireEvent.change(await screen.findByLabelText(/admin role/i), { target: { value: "400000000000000002" } });
+
+    const finalizeButton = screen.getByText("Turn on Discord sign-in");
+    expect(finalizeButton).toBeDisabled();
+
+    fireEvent.click(screen.getByLabelText(/I know this console's admin password/i));
+    expect(finalizeButton).not.toBeDisabled();
+  });
+
+  it("mentions where the admin password lives", async () => {
+    stubReadyToFinalize();
+    render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+    expect(await screen.findByText(/runtime\/secrets\/admin-web-password\.txt/i)).toBeTruthy();
+  });
+});
+
+describe("DiscordSetupWizard: the offer-step marker (#676 §7)", () => {
+  beforeEach(() => { vi.clearAllMocks(); stubHttps(true); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function stubLocationReplace() {
+    const replace = vi.fn();
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, protocol: "https:", origin: "https://console.example.org", search: "", replace },
+      writable: true,
+    });
+    return replace;
+  }
+
+  async function driveToRestartButtonOnDoneStep({ secondFactorEnrolled }: { secondFactorEnrolled: boolean }) {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({ serverConfig: {}, config: { discordOAuthAppConfigured: true, discordOAuthConfigured: false } } as never);
+      if (path === "/api/setup/discord-identity") {
+        return Promise.resolve({ user: { id: "u1", username: "owner", mfaEnabled: true }, guilds: [{ id: "333333333333333333", name: "My Server", owner: true }] } as never);
+      }
+      if (path === "/api/auth/me") return Promise.resolve({ secondFactorEnrolled } as never);
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    mockPost.mockImplementation((path: string) => {
+      if (path === "/api/setup/discord-finalize") return Promise.resolve({ ok: true, guild: { name: "My Server" }, owner: { username: "owner" } } as never);
+      if (path === "/api/setup/discord-restart") return Promise.resolve({ ok: true } as never);
+      return Promise.reject(new Error(`unexpected post: ${path}`));
+    });
+    render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByText("My Server", { exact: false });
+    fireEvent.change(await screen.findByLabelText(/admin role/i), { target: { value: "400000000000000002" } });
+    fireEvent.click(screen.getByLabelText(/I know this console's admin password/i));
+    fireEvent.click(screen.getByText("Turn on Discord sign-in"));
+    return screen.findByText("Restart the console now");
+  }
+
+  it("sets the marker when this is a first-time configuration (not already configured) with TOTP already enrolled", async () => {
+    window.sessionStorage.clear();
+    const restartButton = await driveToRestartButtonOnDoneStep({ secondFactorEnrolled: true });
+    fireEvent.click(restartButton);
+    expect(window.sessionStorage.getItem("dune-console:discord-oauth-just-configured")).toBe("1");
+    window.sessionStorage.clear();
+  });
+
+  it("does NOT set the marker when TOTP was never enrolled", async () => {
+    window.sessionStorage.clear();
+    const restartButton = await driveToRestartButtonOnDoneStep({ secondFactorEnrolled: false });
+    fireEvent.click(restartButton);
+    expect(window.sessionStorage.getItem("dune-console:discord-oauth-just-configured")).toBeNull();
+  });
+
+  it("does NOT set the marker for a re-edit (already fully configured before this session started)", async () => {
+    window.sessionStorage.clear();
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") return Promise.resolve({ serverConfig: {}, config: { discordOAuthAppConfigured: true, discordOAuthConfigured: true } } as never);
+      if (path === "/api/setup/discord-identity") {
+        return Promise.resolve({ user: { id: "u1", username: "owner", mfaEnabled: true }, guilds: [{ id: "333333333333333333", name: "My Server", owner: true }] } as never);
+      }
+      if (path === "/api/auth/me") return Promise.resolve({ secondFactorEnrolled: true } as never);
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    mockPost.mockImplementation((path: string) => {
+      if (path === "/api/setup/discord-finalize") return Promise.resolve({ ok: true, guild: { name: "My Server" }, owner: { username: "owner" } } as never);
+      if (path === "/api/setup/discord-restart") return Promise.resolve({ ok: true } as never);
+      return Promise.reject(new Error(`unexpected post: ${path}`));
+    });
+    render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByText("My Server", { exact: false });
+    fireEvent.change(await screen.findByLabelText(/admin role/i), { target: { value: "400000000000000002" } });
+    fireEvent.click(screen.getByLabelText(/I know this console's admin password/i));
+    fireEvent.click(screen.getByText("Turn on Discord sign-in"));
+    fireEvent.click(await screen.findByText("Restart the console now"));
+
+    expect(window.sessionStorage.getItem("dune-console:discord-oauth-just-configured")).toBeNull();
+  });
+
+  it("does NOT set the marker when the restart button is never clicked (e.g. \"Back to Settings\" instead)", async () => {
+    window.sessionStorage.clear();
+    await driveToRestartButtonOnDoneStep({ secondFactorEnrolled: true });
+    // Deliberately not clicking "Restart the console now" -- the marker must
+    // only ever be set at the moment the restart is actually invoked.
+    expect(window.sessionStorage.getItem("dune-console:discord-oauth-just-configured")).toBeNull();
+  });
+});
+
 describe("DiscordSetupWizard: role/MFA pre-fill on the map step (§4.3)", () => {
   beforeEach(() => { vi.clearAllMocks(); stubHttps(true); });
 
@@ -364,7 +481,7 @@ describe("DiscordSetupWizard: role/MFA pre-fill on the map step (§4.3)", () => 
         } as never);
       }
       if (path === "/api/setup/discord-identity") {
-        return Promise.resolve({ user: { id: "u1", username: "owner", mfaEnabled: true }, guilds: [{ id: "g1", name: "My Server", owner: true }] } as never);
+        return Promise.resolve({ user: { id: "u1", username: "owner", mfaEnabled: true }, guilds: [{ id: "333333333333333333", name: "My Server", owner: true }] } as never);
       }
       return Promise.reject(new Error(`unexpected api call: ${path}`));
     });

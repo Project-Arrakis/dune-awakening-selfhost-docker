@@ -118,6 +118,23 @@ export function post<T>(path: string, body: unknown = {}) {
   return api<T>(path, { method: "POST", body: JSON.stringify(body) });
 }
 
+// #676 §7: `post()`/`api()` throw on any non-2xx, exposing only the error
+// STRING -- fine for a plain failure, but the zero-2FA guard's whole point is
+// a DISTINGUISHABLE 409 (zeroFactorWarning: true) a caller can react to
+// differently from an ordinary rejection, without the fragility of matching
+// on error text. This mirrors apiRequest's own request-building exactly
+// (headers, CSRF, credentials) but never throws -- callers get the real
+// status and parsed body for any outcome, 2xx or not.
+export async function postForResult<T extends Record<string, unknown>>(path: string, body: unknown = {}): Promise<{ status: number; body: T }> {
+  const headers = new Headers({ "content-type": "application/json" });
+  if (csrfToken) headers.set("x-csrf-token", csrfToken);
+  const response = await fetch(path, { method: "POST", headers, credentials: "include", body: JSON.stringify(body) });
+  const text = await response.text();
+  let parsed: T;
+  try { parsed = text ? (JSON.parse(text) as T) : ({} as T); } catch { parsed = ({} as T); }
+  return { status: response.status, body: parsed };
+}
+
 export interface LoginResponse {
   status: number;
   body: Record<string, unknown>;
