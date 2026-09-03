@@ -82,6 +82,15 @@ detect_github_fetch_remote() {
   local repo="$1"
   local remote_name remote_repo
 
+  # Release updates for the public project must not inherit an installation's
+  # credential-bearing, SSH-only, or otherwise locally rewritten remote. The
+  # detached Console helper has no interactive terminal and users do not need
+  # a GitHub account to download a public release.
+  if [ "$repo" = "$DEFAULT_SELF_UPDATE_REPO" ]; then
+    printf '%s\n' "https://github.com/${repo}.git"
+    return 0
+  fi
+
   if command -v git >/dev/null 2>&1; then
     for remote_name in upstream origin; do
       remote_repo="$(github_repo_from_git_remote "$remote_name" 2>/dev/null || true)"
@@ -1222,8 +1231,8 @@ install_release_tag_with_git() {
   echo "Updating stack Git checkout from:"
   echo "  $remote"
   echo "Fetching release tag: $tag"
-  git fetch --force --tags "$remote"
-  git fetch --force "$remote" "refs/tags/${tag}:refs/tags/${tag}" >/dev/null 2>&1 || true
+  GIT_TERMINAL_PROMPT=0 git fetch --force --tags "$remote"
+  GIT_TERMINAL_PROMPT=0 git fetch --force "$remote" "refs/tags/${tag}:refs/tags/${tag}" >/dev/null 2>&1 || true
 
   target="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null || true)"
   if [ -z "$target" ]; then
