@@ -820,10 +820,22 @@ async function handleApi(req, res) {
     // sign-in page show "configured -- restart pending" rather than re-offer
     // setup, which is the loop an operator hits between finalize and restart.
     const discordSetupPendingRestart = !config.discordOAuthConfigured && existsSync(resolve(config.generatedDir, "discord-setup-pending-restart"));
+    // Layer 3 audit finding (#676 follow-up): same "live, not baked into
+    // publicConfig" reasoning as discordSetupPendingRestart above --
+    // discordOAuthSoftDisabledInProcess takes effect immediately for the
+    // acting session's own requests, but without exposing it here, any
+    // OTHER open tab/session polling this route kept seeing the stale
+    // boot-time discordOAuthConfigured=true and would click through to a
+    // confusing 404 instead of a clear "temporarily disabled" state.
     // `scope` lets a reloaded page tell an enrollment/re-setup session apart
     // from a normal one: without it the client treated the restricted session
     // as signed in and rendered a console where every route is 403.
-    return json(res, 200, { authenticated: Boolean(session), csrfToken: session?.csrf || null, scope: session?.scope || null, config: { ...publicConfig(config), discordSetupPendingRestart } });
+    return json(res, 200, { authenticated: Boolean(session), csrfToken: session?.csrf || null, scope: session?.scope || null, config: {
+      ...publicConfig(config),
+      discordSetupPendingRestart,
+      discordOAuthConfigured: config.discordOAuthConfigured && !discordOAuthSoftDisabledInProcess,
+      discordOAuthDisabled: config.discordOAuthDisabled || discordOAuthSoftDisabledInProcess,
+    } });
   }
   if (path === "/api/auth/login" && req.method === "POST") {
     const loginUrl = sanitizedUrl(req, "/api/auth/login");
@@ -1115,7 +1127,15 @@ async function handleApi(req, res) {
       if ((ownerSession.tier || "owner") !== "owner" || SETUP_SCOPES.has(ownerSession.scope)) {
         return json(res, 403, { error: "Only the console owner can set up Discord sign-in." });
       }
-      if (!config.discordOAuthAppConfigured) {
+      // Layer 3 audit finding (#676 follow-up): this setup-mode branch is a
+      // third real gate point (alongside the plain start and callback routes
+      // below) and was missed when discordOAuthSoftDisabledInProcess was
+      // added -- without it, the embedded wizard's own still-mounted
+      // "active"/"authorize" step link could keep completing real OAuth
+      // round-trips through this exact URL during the disable/forget
+      // restart window, defeating the "immediate, no-window cutoff"
+      // guarantee for this one path specifically.
+      if (!config.discordOAuthAppConfigured || discordOAuthSoftDisabledInProcess) {
         return json(res, 400, { error: "This console has no Discord application yet. Set DISCORD_OAUTH_CLIENT_ID, DISCORD_OAUTH_CLIENT_SECRET and DISCORD_OAUTH_REDIRECT_URI in .env (like a bot's), or enter them on the setup screen." });
       }
       // Setup mode requires an authenticated owner session, but that owner
@@ -3042,6 +3062,19 @@ function discordOAuthSecretFile() {
 // otherwise use the stale boot-time config to grant Discord-authenticated
 // access.
 let discordOAuthSoftDisabledInProcess = false;
+// Layer 3 audit finding (#676 follow-up): distinct from the flag above.
+// Forget is destructive (deletes the Client Secret file, clears guild/role
+// .env fields) and Enable deliberately requires no fresh credential proof
+// at all (restoring a mere pause can never strand the session -- see
+// discordOAuthEnableRoute's own comment). Without this separate flag, Enable's
+// "is it currently disabled" check was satisfied by Forget's own
+// discordOAuthSoftDisabledInProcess=true too, so calling Enable during
+// Forget's restart window silently reversed the wipe with zero proof --
+// Discord sign-in came back live using config.discordOAuthClientSecret,
+// still cached at boot and unaffected by the secret file's deletion. Set by
+// Forget, checked by Enable, and never cleared except by an actual restart
+// (a genuine re-setup is the only way back after a real Forget).
+let discordOAuthForgottenInProcess = false;
 
 async function discordOAuthDisableRoute(req, res) {
   const session = auth.requireAuth(req, res);
@@ -3099,6 +3132,17 @@ async function discordOAuthEnableRoute(req, res) {
     audit(config, auditUrl, ACTION, { ok: false, ...actor, reason: "not_disabled" });
     return json(res, 400, { error: "Discord sign-in is not currently disabled." });
   }
+  // Layer 3 audit finding (#676 follow-up): checked separately from, and
+  // before, the flags above -- Forget also sets discordOAuthSoftDisabledInProcess,
+  // so without this an Enable call made during Forget's own restart window
+  // would silently reverse the wipe with zero credential proof, using
+  // config.discordOAuthClientSecret still cached at boot and unaffected by
+  // the secret file Forget just deleted. A real Forget can only be undone by
+  // setting Discord OAuth up again after the restart actually completes.
+  if (discordOAuthForgottenInProcess) {
+    audit(config, auditUrl, ACTION, { ok: false, ...actor, reason: "forgotten" });
+    return json(res, 400, { error: "This Discord sign-in configuration was forgotten and must be set up again -- it cannot simply be re-enabled." });
+  }
   // No fresh proof required (#676 §6.3): re-enabling only restores an
   // existing login option, it can never strand the acting session the way
   // disable/forget can, so the self-lockout rationale above does not apply.
@@ -3135,8 +3179,12 @@ async function discordOAuthForgetRoute(req, res) {
   });
   if (!proof.ok) return;
   // Same immediate cutoff as disable, and for the same reason -- forget is
-  // strictly more destructive, so it gets the identical guarantee.
+  // strictly more destructive, so it gets the identical guarantee. Also
+  // marks this process as having genuinely forgotten its config (not just
+  // paused), so Enable cannot silently reverse it -- see
+  // discordOAuthForgottenInProcess's own comment.
   discordOAuthSoftDisabledInProcess = true;
+  discordOAuthForgottenInProcess = true;
   // #676 §6.4: log the pre-wipe NON-secret fields (never the secret itself)
   // so a mistaken "Forget" has a recoverable record -- the secret is the only
   // piece an operator can always regenerate from Discord's own portal; the

@@ -515,5 +515,70 @@ describe("Discord OAuth disable / enable / forget (#676 §6)", { concurrency: 4 
         rmSync(tempDir, { recursive: true, force: true });
       }
     });
+
+    // Layer 3 audit finding (#676 follow-up): the setup-mode start route
+    // (?setup=1, used by the embedded wizard's own "active"/"authorize"
+    // step links) is a THIRD real gate point alongside the plain start and
+    // callback routes above, and was missed when the in-process cutoff flag
+    // was added -- it kept issuing real 302s to Discord during the
+    // disable/forget restart window.
+    test("disable: the setup-mode start route (?setup=1) also refuses immediately, in-process", async () => {
+      const port = await getFreePort();
+      const tempDir = mkdtempSync(join(tmpdir(), "discord-disable-setup-mode-"));
+      const consoleProc = startConsole(port, tempDir, DISCORD_ENV);
+      try {
+        await waitForHealth(port, 20000, consoleProc.logs);
+        const password = readGeneratedPassword(tempDir);
+        const session = await login(port, { password });
+
+        const before = await api(port, "/api/auth/discord/start?setup=1", { method: "GET", cookie: session.cookie });
+        assert.equal(before.status, 302, "expected the setup-mode round-trip to be live before disabling Discord OAuth");
+
+        await api(port, "/api/settings/discord-oauth/disable", {
+          cookie: session.cookie, csrf: session.csrf, body: { currentPassword: password },
+        });
+
+        const after = await api(port, "/api/auth/discord/start?setup=1", { method: "GET", cookie: session.cookie });
+        assert.equal(after.status, 400, "the setup-mode round-trip must be cut off in-process too, not only the plain start/callback routes");
+      } finally {
+        await stopProcess(consoleProc.child);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    // Layer 3 audit finding (#676 follow-up): Forget also set
+    // discordOAuthSoftDisabledInProcess, which is the SAME flag Enable's own
+    // "is it disabled" check reads -- so calling Enable during Forget's
+    // restart window silently reversed the wipe with zero credential proof,
+    // using config.discordOAuthClientSecret still cached at boot and
+    // unaffected by the secret file Forget just deleted.
+    test("enable cannot reverse a forget -- a real forget can only be undone by setting Discord OAuth up again", async () => {
+      const port = await getFreePort();
+      const tempDir = mkdtempSync(join(tmpdir(), "discord-forget-enable-"));
+      const consoleProc = startConsole(port, tempDir, DISCORD_ENV);
+      try {
+        await waitForHealth(port, 20000, consoleProc.logs);
+        writeDiscordEnvFile(tempDir);
+        const password = readGeneratedPassword(tempDir);
+        const session = await login(port, { password });
+
+        const forget = await api(port, "/api/settings/discord-oauth/forget", {
+          cookie: session.cookie, csrf: session.csrf, body: { currentPassword: password },
+        });
+        assert.equal(forget.status, 200, JSON.stringify(await forget.json()));
+
+        const enable = await api(port, "/api/settings/discord-oauth/enable", {
+          cookie: session.cookie, csrf: session.csrf, body: {},
+        });
+        const enableBody = await enable.json();
+        assert.equal(enable.status, 400, JSON.stringify(enableBody));
+
+        const after = await api(port, "/api/auth/discord/start", { method: "GET" });
+        assert.equal(after.status, 404, "Discord sign-in must stay cut off -- enable must not have silently reversed the forget");
+      } finally {
+        await stopProcess(consoleProc.child);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
   });
 });
