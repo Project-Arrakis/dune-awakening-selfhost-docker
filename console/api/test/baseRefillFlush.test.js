@@ -1,6 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { flushBaseRefillQueues } from "../src/services/baseRefillFlush.js";
+import { createSharedDeleteBackup, flushBaseRefillQueues } from "../src/services/baseRefillFlush.js";
+
+test("a mixed base and vehicle delete batch shares one safety backup", async () => {
+  let calls = 0;
+  const backup = createSharedDeleteBackup(async () => {
+    calls += 1;
+    await new Promise((resolve) => setImmediate(resolve));
+    return { code: 0 };
+  });
+
+  const [baseResult, vehicleResult] = await Promise.all([backup(), backup()]);
+  assert.equal(calls, 1);
+  assert.deepEqual(baseResult, { code: 0 });
+  assert.equal(vehicleResult, baseResult);
+});
 
 test("map-down refill flush waits for both queues and labels their results", async () => {
   const completed = [];
