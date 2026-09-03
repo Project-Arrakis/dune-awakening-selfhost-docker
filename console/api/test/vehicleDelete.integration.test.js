@@ -362,12 +362,17 @@ test("real PostgreSQL: background flush retains a Travel-state vehicle without b
       queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
 
       const db = pgTransactionalDb(pool);
+      let backupCalls = 0;
       for (let round = 0; round < 4; round += 1) {
-        const result = await flushVehicleDeletes(db, repoRoot, { now: () => 1_000_000 + round * 120_000 });
+        const result = await flushVehicleDeletes(db, repoRoot, {
+          now: () => 1_000_000 + round * 120_000,
+          onBeforeApply: () => { backupCalls += 1; }
+        });
         assert.equal(result.flushed[0].ok, false);
         assert.equal(result.flushed[0].attempts, 0);
         assert.equal(result.flushed[0].dropped, false);
       }
+      assert.equal(backupCalls, 0, "a predictably blocked retry must not create a database backup");
       assert.equal(listQueuedVehicleDeletes(repoRoot)[0].attempts, 0);
       assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
     });
@@ -456,6 +461,49 @@ test("real PostgreSQL: flush leaves a delete queued while its map is still live"
       const afterDwell = await flushVehicleDeletes(db, repoRoot, { now: () => 1_000_000 + 30_000 });
       assert.equal(afterDwell.flushed[0]?.ok, true);
       assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
+    });
+  });
+});
+
+test("real PostgreSQL: an explicitly stopped assigned partition bypasses only the disconnect dwell", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', 'srv-stopped')");
+      queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
+
+      const db = pgTransactionalDb(pool);
+      const result = await flushVehicleDeletes(db, repoRoot, {
+        now: () => 1_000_000,
+        trustedDownPartitionIds: new Set([3])
+      });
+
+      assert.equal(result.flushed[0]?.ok, true);
+      assert.equal(result.pending, 0);
+      assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
+    });
+  });
+});
+
+test("real PostgreSQL: trusted stop metadata never overrides a live game connection", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', 'srv-live')");
+      queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
+      const live = await pool.connect();
+      try {
+        await live.query("set application_name = 'DuneSandbox - srv-live'");
+        const result = await flushVehicleDeletes(pgTransactionalDb(pool), repoRoot, {
+          now: () => 1_000_000,
+          trustedDownPartitionIds: new Set([3])
+        });
+        assert.deepEqual(result.flushed, []);
+        assert.equal(result.pending, 1);
+        assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
+      } finally {
+        live.release();
+      }
     });
   });
 });

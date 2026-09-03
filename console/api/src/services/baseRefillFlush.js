@@ -1,5 +1,14 @@
 import { redactDbError } from "../db.js";
 
+export function createSharedDeleteBackup(createBackup) {
+  if (!createBackup) return undefined;
+  let backupPromise;
+  return () => {
+    backupPromise ||= Promise.resolve().then(createBackup);
+    return backupPromise;
+  };
+}
+
 // A map restart must not begin its start/spawn half until every queue has
 // finished using the brief write-safe window. Promise.allSettled is
 // deliberate: if one queue fails, we still wait for the others rather than
