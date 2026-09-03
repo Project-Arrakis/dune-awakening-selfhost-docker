@@ -429,7 +429,7 @@ have Discord 2FA **off** for T31.
 3. Settings → Discord OAuth.
 
 **Expected**
-- No owner field of any kind — the section says *Owner is the Discord server's owner — automatic, not a role.* The fields are the application settings (Client ID, Redirect URI, Client Secret, Discord Server ID) and the Admin / Moderator / Player role fields plus *Require Discord 2FA for*; nothing names an owner.
+- **Corrected (#643/#676):** the manual Client ID/Redirect URI/Client Secret/Discord Server ID form described here no longer exists — Settings embeds the same guided wizard the sign-in page uses. Since Discord OAuth is already fully active and this browser session hasn't itself done the setup OAuth round-trip, the section shows a calm **"Discord Sign-In" (active)** summary ("Discord sign-in is connected and active for this server…") rather than a form, with **"Change application credentials"** and a link to re-authenticate for updating server/role mapping. No owner field anywhere, in the wizard's map step or here — ownership is never editable.
 
 ### T30 · Demotion takes effect at next sign-in
 1. While A is signed in, remove A's Admin role in Discord. A keeps clicking around.
@@ -483,6 +483,47 @@ have Discord 2FA **off** for T31.
 **Expected**
 - A is Owner (Settings visible). You get only what your roles map to — Admin if you hold the admin role, otherwise refused. Transfer ownership back; at the next sign-in the roles swap accordingly.
 
+## Part 9 — Discord OAuth lifecycle: disable, re-enable, forget, and the zero-2FA guard (#676)
+
+Needs: an install with Discord OAuth already fully configured and active (T26 done). All four cases below were run live against a real dev deployment (not a mocked/local run) — see Results for the exact evidence.
+
+### T37 · Disable, verify the cutoff, re-enable
+1. Settings → Discord OAuth (active) → **Disable Discord Sign-In**, enter the admin password, confirm.
+
+**Expected**
+- The console restarts (own progress state shown: "Disabling…" then "Restarting the console…"). After it reconnects, the sign-in page shows the password field only, with a secondary **Set up Discord sign-in** link — not **Sign in with Discord**. `/api/auth/state` reports `discordOAuthConfigured: false, discordOAuthDisabled: true`.
+2. Sign in with the admin password. Settings → Discord OAuth.
+
+**Expected**
+- A compact **"Discord Sign-In (disabled)"** banner: *"Your Discord application's settings are kept, not deleted — re-enable any time."*, a **Re-enable Discord Sign-In** button, and a secondary **"Forget this configuration entirely"** link (collapsed).
+3. Click **Re-enable Discord Sign-In**.
+
+**Expected**
+- The console restarts again; after it reconnects, the sign-in page shows **Sign in with Discord** again, with **Use the admin password instead** underneath. `/api/auth/state` reports `discordOAuthConfigured: true, discordOAuthDisabled: false`. Signing in with Discord as the owner still works, unchanged.
+
+### T38 · Zero-2FA guard: both branches
+Requires the password tier's own TOTP (`CONSOLE_TOTP_ENABLED=1`) enrolled for this test.
+1. With **Require Discord 2FA for** set to `owner,admin` (T31) and the acting session's Discord-derived tier covered by it, enroll TOTP (Settings → Two-Factor Authentication → Enable), then try to disable it again.
+
+**Expected**
+- No warning — TOTP disables immediately. Discord's own 2FA already covers this role, so removing the password tier's separate TOTP does not leave the console with zero factors anywhere.
+2. Change **Require Discord 2FA for** to exclude the acting tier (or clear it), restart, then try disabling TOTP again with TOTP re-enrolled.
+
+**Expected**
+- A 409 warning inline: *"Disabling this will leave your console with no two-factor authentication anywhere — Discord sign-in doesn't require Discord's own two-factor for your role."*, with a pointer back to the Discord OAuth section's MFA-requirement toggle, and a **"Disable anyway"** button that proceeds only on a second, explicit click.
+
+### T39 · Forget: the destructive path
+1. Settings → Discord OAuth (active or disabled) → **"Forget this configuration entirely"** → type `forget` to confirm, enter the admin password (+ authenticator code if TOTP is enrolled).
+
+**Expected**
+- The confirm button stays disabled until `forget` is typed exactly. After confirming: the console restarts; afterward the sign-in page shows password-only with **Set up Discord sign-in**, exactly as if Discord OAuth had never been configured — the Client Secret file is gone from disk and every Discord OAuth `.env` field is cleared (guild ID, role mappings, MFA requirement). Re-running T26 from scratch is the only way back.
+
+### T40 · Already-active summary, wrong session
+1. As an admin who signed in with the console **password** (never did the wizard's own OAuth round-trip this session), open Settings → Discord OAuth on an install where Discord sign-in is already fully configured and active.
+
+**Expected**
+- **Fixed as a direct result of this UAT pass (was a real bug before this fix):** the section shows the calm **"Discord Sign-In" (active)** summary, never **"Set up Discord sign-in"** / a big **"Continue with Discord"** primary button — that combination previously read as broken or unconfigured for an integration that was demonstrably working. A **"Sign in with Discord to update server or role mapping"** link and **"Change application credentials"** remain available for reconfiguration.
+
 ## Results
 
 | Case | Result | Evidence / exact text seen | Notes |
@@ -523,6 +564,10 @@ have Discord 2FA **off** for T31.
 | T34 | | | |
 | T35 | | | |
 | T36 | | | |
+| T37 | Pass | Ran live on dune-dev, 2026-09-03. `discordOAuthDisabled`/`discordOAuthConfigured` flipped correctly at each step; sign-in screen matched exactly. First attempt found a real bug (`DISCORD_OAUTH_DISABLED` written to `.env` but never reaching the container — missing `docker-compose.web.yml` passthrough); fixed, then the full cycle passed on re-run. | |
+| T38 | Partial | "Already covered" branch (step 1) verified live on dune-dev with a real generated TOTP code — no warning, TOTP disabled immediately. "Not covered" branch (step 2, the 409 warning itself) is covered by `discordOAuthDisable.integration.test.js`'s automated suite (including the `acknowledgeNoOtherFactor:true` bypass, added after a Layer 2 audit found it untested) but **not yet independently re-run live** end-to-end on a real deployment — do before marking this row Pass. | Owner: whoever does the final live UAT pass before this PR leaves draft. |
+| T39 | Not yet run live | Covered by `discordOAuthDisable.integration.test.js`'s real, subprocess-backed integration suite (secret-file deletion, field-clearing, immediate in-process cutoff all asserted against a real running console). Not yet independently re-run by hand on a live deployment. | |
+| T40 | Pass | Ran live on dune-dev, 2026-09-03 — this exact scenario (password-session admin, already-active Discord OAuth) is what surfaced the bug this row's fix addresses; screenshots taken before and after the fix. | |
 
 **Tester:** ______  **Date:** ______  **Build:** ______
 **Verdict:** ☐ all pass  ☐ pass with findings filed: ______  ☐ blocked
