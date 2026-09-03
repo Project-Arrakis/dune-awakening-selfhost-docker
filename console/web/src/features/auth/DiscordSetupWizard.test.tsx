@@ -346,6 +346,65 @@ describe("DiscordSetupWizard: change application credentials (§4.2)", () => {
   });
 });
 
+describe("DiscordSetupWizard: already-active state, no identity for this session (live UAT UX finding, #676 follow-up)", () => {
+  beforeEach(() => { vi.clearAllMocks(); stubHttps(true); });
+
+  // Found live on dune-dev: an admin who signed in with the console password
+  // and opens Settings -> Discord OAuth for an install where Discord sign-in
+  // is already fully configured and actively used by other people saw "Set up
+  // Discord sign-in" / "Continue with Discord" as the primary heading and
+  // call to action -- reading as broken or unconfigured, when the integration
+  // was demonstrably live. Root cause: the wizard only ever tracked
+  // discordOAuthAppConfigured (app credentials saved), never
+  // discordOAuthConfigured (guild/role mapping actually finalized), so
+  // "mapping still in progress" and "fully active, this session just hasn't
+  // done its own OAuth round-trip" were indistinguishable and both rendered
+  // as the "authorize" step.
+  function stubFullyActiveNoIdentity() {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") {
+        return Promise.resolve({
+          serverConfig: { DISCORD_OAUTH_CLIENT_ID: "123456789012345678" },
+          config: { discordOAuthAppConfigured: true, discordOAuthConfigured: true },
+        } as never);
+      }
+      if (path === "/api/setup/discord-identity") return Promise.reject(new Error("not signed in with Discord yet"));
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+  }
+
+  it("shows an active summary, not the 'Set up Discord sign-in' authorize prompt, when mapping is already finalized", async () => {
+    stubFullyActiveNoIdentity();
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    expect(await screen.findByText(/connected and active for this server/i)).toBeTruthy();
+    expect(screen.queryByText("Set up Discord sign-in")).toBeNull();
+    expect(screen.queryByRole("link", { name: /^continue with discord$/i })).toBeNull();
+  });
+
+  it("still offers a way to update server/role mapping and to change application credentials", async () => {
+    stubFullyActiveNoIdentity();
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    expect(await screen.findByRole("link", { name: /sign in with discord to update server or role mapping/i })).toBeTruthy();
+    expect(screen.getByText("Change application credentials")).toBeTruthy();
+  });
+
+  it("the mapping-update link still sets the embedded return marker like the authorize step's own link does", async () => {
+    window.sessionStorage.clear();
+    stubFullyActiveNoIdentity();
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.click(await screen.findByRole("link", { name: /sign in with discord to update server or role mapping/i }));
+    expect(window.sessionStorage.getItem("dune-console:discord-setup-return")).toBe("1");
+    window.sessionStorage.clear();
+  });
+
+  it("falls back to the authorize step when the app is configured but mapping is not finalized yet (unchanged behavior)", async () => {
+    stubAlreadyConfiguredNoIdentity();
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    expect(await screen.findByRole("link", { name: /^continue with discord$/i })).toBeTruthy();
+    expect(screen.queryByText(/connected and active for this server/i)).toBeNull();
+  });
+});
+
 describe("DiscordSetupWizard: password-awareness checkbox on the map step (#676 §8)", () => {
   beforeEach(() => { vi.clearAllMocks(); stubHttps(true); });
 
