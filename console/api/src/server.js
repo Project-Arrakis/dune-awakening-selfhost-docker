@@ -1447,6 +1447,12 @@ async function handleApi(req, res) {
   // both owner-only) and below the enrollment-scope allowlist guard.
   if (path === "/api/auth/2fa/enable" && req.method === "POST") return totpEnableRoute(req, res);
   if (path === "/api/auth/2fa/disable" && req.method === "POST") return totpDisableRoute(req, res);
+  // #676: settings:disable-discord-oauth / :enable- / :forget-, all under the
+  // settings:* CROWN_JEWEL_DENY_ACTIONS wildcard -- owner-only, same as every
+  // other route on this list.
+  if (path === "/api/settings/discord-oauth/disable" && req.method === "POST") return discordOAuthDisableRoute(req, res);
+  if (path === "/api/settings/discord-oauth/enable" && req.method === "POST") return discordOAuthEnableRoute(req, res);
+  if (path === "/api/settings/discord-oauth/forget" && req.method === "POST") return discordOAuthForgetRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
   if (path === "/api/settings/iam/policies" && req.method === "GET") {
     // The Access Control editor needs the action catalog, not just the policy
@@ -2917,6 +2923,25 @@ async function totpDisableRoute(req, res) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return deny(400, { error: "Request body must be a JSON object." }, { reason: "malformed_body" });
   }
+  // #676 §7: the zero-2FA guard. Enforced HERE, at the single point every
+  // disable path reaches (the guided offer screen and the always-available
+  // fallback-section form both call this same route) -- a Layer 1 audit
+  // finding on an earlier draft of this feature found that a guard living
+  // only in the guided offer's own UI left this route itself reachable
+  // directly, bypassing it entirely. Only fires when Discord OAuth is
+  // configured but its own MFA requirement doesn't cover this session's
+  // tier -- disabling with NO Discord OAuth configured at all is the
+  // ordinary, always-acceptable password-only state and is not gated.
+  // Soft: an explicit acknowledgeNoOtherFactor:true in a resubmitted request
+  // proceeds anyway -- this is a nudge against an accidental zero-factor
+  // state, not a hard security boundary (an operator may have a considered
+  // reason to run with none).
+  if (config.discordOAuthConfigured && !config.discordOAuthRequireMfaTiers.includes(actor.tier) && !body.acknowledgeNoOtherFactor) {
+    return deny(409, {
+      zeroFactorWarning: true,
+      error: "Disabling this will leave your console with no two-factor authentication anywhere -- Discord sign-in doesn't require Discord's own two-factor for your role."
+    }, { reason: "zero_factor_warning" });
+  }
   // requireEnrolled:true -- nothing to disable without an existing factor.
   const proof = await requireFreshTier3Proof(req, res, body, {
     auditUrl, action: ACTION, actor, requireEnrolled: true,
@@ -2935,6 +2960,133 @@ async function totpDisableRoute(req, res) {
   const sessionsRevoked = auth.invalidatePasswordSessions(session.id);
   audit(config, auditUrl, "auth.totp-disabled.sessions-revoked", { ...actor, count: sessionsRevoked });
   return json(res, 200, { ok: true, sessionsRevoked });
+}
+
+// #676 §6: Tier 1 -> 3 removal (soft-disable / re-enable / forget). This is
+// the SINGLE source of truth for "what fields make up Discord OAuth config"
+// -- every route below derives its field list from this, never a
+// hand-maintained duplicate. A Layer 1 audit finding on an earlier draft of
+// this feature undercounted this list by hand ("seven .env keys") and,
+// separately, omitted the Client Secret entirely (it is not an .env key --
+// see discordOAuthSecretFile below) -- both are now structurally impossible
+// to repeat, since every caller reads the same list.
+const DISCORD_OAUTH_ENV_FIELDS = [
+  "DISCORD_OAUTH_CLIENT_ID",
+  "DISCORD_OAUTH_REDIRECT_URI",
+  "DISCORD_HOME_GUILD_ID",
+  "DISCORD_CONSOLE_ADMIN_ROLE_IDS",
+  "DISCORD_CONSOLE_MODERATOR_ROLE_IDS",
+  "DISCORD_CONSOLE_PLAYER_ROLE_IDS",
+  "DISCORD_OAUTH_REQUIRE_MFA_TIERS",
+  "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP",
+  "DISCORD_OAUTH_OWNER_ALLOWLIST",
+];
+function discordOAuthSecretFile() {
+  return resolve(config.secretsDir, "discord-oauth-client-secret.txt");
+}
+
+async function discordOAuthDisableRoute(req, res) {
+  const session = auth.requireAuth(req, res);
+  if (!session) return;
+  const auditUrl = sanitizedUrl(req, "/api/settings/discord-oauth/disable");
+  const ACTION = "settings.discord-oauth-disabled";
+  const actor = { tier: session.tier || "owner", userId: session.userId || "local-owner" };
+  const deny = (status, payload, detail, headers) => {
+    audit(config, auditUrl, ACTION, { ok: false, ...actor, ...detail });
+    return json(res, status, payload, headers || {});
+  };
+  if (!config.discordOAuthConfigured) {
+    return deny(400, { error: "Discord sign-in is not currently configured, so there is nothing to disable." }, { reason: "not_configured" });
+  }
+  const body = await readJson(req);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return deny(400, { error: "Request body must be a JSON object." }, { reason: "malformed_body" });
+  }
+  // requireEnrolled:false, same reasoning as password rotation -- this proves
+  // the acting session knows the Tier 3 password, not that TOTP exists. The
+  // reason for requiring this proof at all is NOT Tier 3 credential
+  // integrity (this route never touches the password/TOTP credential) -- it
+  // is a self-lockout guard: Tier 3 can never be removed (RFC's own
+  // permanent-fallback guarantee), so the one real risk here is the ACTING
+  // session not actually knowing the password it is about to become solely
+  // dependent on. Reusing requireFreshTier3Proof for a different rationale
+  // than its other callers, deliberately -- see #676 §6.3.
+  const proof = await requireFreshTier3Proof(req, res, body, {
+    auditUrl, action: ACTION, actor, requireEnrolled: false,
+  });
+  if (!proof.ok) return;
+  await updateEnvFileValue("DISCORD_OAUTH_DISABLED", "1");
+  audit(config, auditUrl, ACTION, { ok: true, ...actor });
+  return json(res, 200, { ok: true, restartRequired: true });
+}
+
+async function discordOAuthEnableRoute(req, res) {
+  const session = auth.requireAuth(req, res);
+  if (!session) return;
+  const auditUrl = sanitizedUrl(req, "/api/settings/discord-oauth/enable");
+  const ACTION = "settings.discord-oauth-enabled";
+  const actor = { tier: session.tier || "owner", userId: session.userId || "local-owner" };
+  if (!config.discordOAuthDisabled) {
+    audit(config, auditUrl, ACTION, { ok: false, ...actor, reason: "not_disabled" });
+    return json(res, 400, { error: "Discord sign-in is not currently disabled." });
+  }
+  // No fresh proof required (#676 §6.3): re-enabling only restores an
+  // existing login option, it can never strand the acting session the way
+  // disable/forget can, so the self-lockout rationale above does not apply.
+  await updateEnvFileValue("DISCORD_OAUTH_DISABLED", "0");
+  audit(config, auditUrl, ACTION, { ok: true, ...actor });
+  return json(res, 200, { ok: true, restartRequired: true });
+}
+
+async function discordOAuthForgetRoute(req, res) {
+  const session = auth.requireAuth(req, res);
+  if (!session) return;
+  const auditUrl = sanitizedUrl(req, "/api/settings/discord-oauth/forget");
+  const ACTION = "settings.discord-oauth-forgotten";
+  const actor = { tier: session.tier || "owner", userId: session.userId || "local-owner" };
+  const deny = (status, payload, detail, headers) => {
+    audit(config, auditUrl, ACTION, { ok: false, ...actor, ...detail });
+    return json(res, status, payload, headers || {});
+  };
+  if (!config.discordOAuthAppConfigured && !config.discordOAuthDisabled) {
+    return deny(400, { error: "Discord sign-in is not currently configured, so there is nothing to forget." }, { reason: "not_configured" });
+  }
+  const body = await readJson(req);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return deny(400, { error: "Request body must be a JSON object." }, { reason: "malformed_body" });
+  }
+  // At least as strict as disable (#676 §6.3) -- this is strictly MORE
+  // destructive (irreversible for the role/guild mapping, see §6.4 below),
+  // so it gets the identical self-lockout proof, never a lighter one.
+  const proof = await requireFreshTier3Proof(req, res, body, {
+    auditUrl, action: ACTION, actor, requireEnrolled: false,
+  });
+  if (!proof.ok) return;
+  // #676 §6.4: log the pre-wipe NON-secret fields (never the secret itself)
+  // so a mistaken "Forget" has a recoverable record -- the secret is the only
+  // piece an operator can always regenerate from Discord's own portal; the
+  // guild ID and role mapping are hand-entered decisions with no external
+  // system to re-derive them from.
+  const preWipe = readSetupConfigValues();
+  const recoverable = {
+    guildId: preWipe.DISCORD_HOME_GUILD_ID || "",
+    adminRoleIds: preWipe.DISCORD_CONSOLE_ADMIN_ROLE_IDS || "",
+    moderatorRoleIds: preWipe.DISCORD_CONSOLE_MODERATOR_ROLE_IDS || "",
+    playerRoleIds: preWipe.DISCORD_CONSOLE_PLAYER_ROLE_IDS || "",
+    requireMfaTiers: preWipe.DISCORD_OAUTH_REQUIRE_MFA_TIERS || "",
+  };
+  const clearedFields = Object.fromEntries(DISCORD_OAUTH_ENV_FIELDS.map((key) => [key, ""]));
+  clearedFields.DISCORD_OAUTH_DISABLED = "0"; // full forget returns to "never configured," not "configured but disabled"
+  await updateEnvFileValues(clearedFields);
+  // #676 §6.1 (DBA CRITICAL): the Client Secret is NOT an .env key -- it is a
+  // separate file (see discordOAuthSecretFile above). Clearing only the
+  // fields above, as an earlier draft of this feature did, would leave the
+  // one genuinely sensitive artifact on disk after the operator believes
+  // it's gone. Deleted outright, not blanked, since there is no .env key
+  // referencing it to blank.
+  try { unlinkSync(discordOAuthSecretFile()); } catch { /* already absent -- fine */ }
+  audit(config, auditUrl, ACTION, { ok: true, ...actor, recoverable });
+  return json(res, 200, { ok: true, restartRequired: true });
 }
 
 async function apiKeyCreateRoute(req, res) {
