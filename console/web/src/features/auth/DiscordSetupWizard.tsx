@@ -218,6 +218,29 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
       if (!adminRoleIds.trim()) throw new Error("Map an Admin role, or only you (the server owner) will be able to use the console through Discord.");
       const bad = [adminRoleIds, moderatorRoleIds, playerRoleIds].flatMap((v) => v.split(",").map((x) => x.trim()).filter(Boolean)).filter((x) => !SNOWFLAKE.test(x));
       if (bad.length) throw new Error(`Not a Discord role ID: ${bad.join(", ")}`);
+      // Layer 3 audit finding (#676 follow-up): the old manual Discord OAuth
+      // form (replaced by this wizard, #643) checked this instantly and
+      // locally; the server's own describeRoleTierConflicts (server.js) still
+      // enforces it either way, but without this the operator only finds out
+      // about a duplicate role mapping after a network round-trip instead of
+      // before clicking "Turn on Discord sign-in" at all.
+      const tierLists: [string, string[]][] = [
+        ["Admin", adminRoleIds.split(",").map((x) => x.trim()).filter(Boolean)],
+        ["Moderator", moderatorRoleIds.split(",").map((x) => x.trim()).filter(Boolean)],
+        ["Player", playerRoleIds.split(",").map((x) => x.trim()).filter(Boolean)],
+      ];
+      const tiersByRole = new Map<string, string[]>();
+      for (const [tier, ids] of tierLists) {
+        for (const id of ids) {
+          const tiers = tiersByRole.get(id) || [];
+          if (!tiers.includes(tier)) tiers.push(tier);
+          tiersByRole.set(id, tiers);
+        }
+      }
+      const conflicts = [...tiersByRole.entries()].filter(([, tiers]) => tiers.length > 1);
+      if (conflicts.length) {
+        throw new Error(`Each Discord role can map to only one access level -- ${conflicts.map(([roleId, tiers]) => `role ${roleId} is mapped to ${tiers.join(" and ")}`).join("; ")}.`);
+      }
       const res = await post<{ ok: boolean; guild: { name: string }; owner: { username: string } }>("/api/setup/discord-finalize", {
         guildId, adminRoleIds: adminRoleIds.trim(), moderatorRoleIds: moderatorRoleIds.trim(), playerRoleIds: playerRoleIds.trim(), requireMfa
       });
