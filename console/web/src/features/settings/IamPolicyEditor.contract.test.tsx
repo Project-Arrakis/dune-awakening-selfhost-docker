@@ -2,10 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { api } from "../../api/client";
 import { IamPolicyEditor } from "./IamPolicyEditor";
-// Vite raw-import suffix (no ambient module declared in this project -- no
-// vite-env.d.ts -- but the suffix is resolved by Vite's transform pipeline at
-// build/test time regardless of TS's own module resolution).
-// @ts-expect-error -- see comment above
+// Vite raw-import suffix, resolved by Vite's transform pipeline at build/test
+// time. Vite 8's own bundled types now declare "*?raw" as an ambient module
+// (confirmed: the @ts-expect-error this line previously needed -- to suppress
+// a real TS error under Vite 6 -- became a TS2578 "unused directive" error
+// the moment the Vite 6 -> 8 upstream bump landed, since TS no longer errors
+// on this import at all).
 import iamPolicyEditorSource from "./IamPolicyEditor.tsx?raw";
 
 // Regression tests for three IAM-editor contract bugs found in review:
