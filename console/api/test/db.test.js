@@ -1731,7 +1731,7 @@ test("playtime tracker persists active sessions and closes players no longer onl
   const calls = [];
   const run = async (text, values = []) => {
     calls.push({ text, values });
-    if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+    if (text.includes("to_regclass")) return { rows: [{ exists: values[0] !== "dune.console_player_playtime" }] };
     if (text.includes("information_schema.columns")) {
       return { rows: ["account_id", "online_status", "last_login_time"].map((column_name) => ({ column_name })) };
     }
@@ -1755,7 +1755,7 @@ test("playtime tracker remains compatible without a session login timestamp", as
   const db = {
     query: async (text, values = []) => {
       calls.push({ text, values });
-      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regclass")) return { rows: [{ exists: values[0] !== "dune.console_player_playtime" }] };
       if (text.includes("information_schema.columns")) {
         return { rows: ["account_id", "online_status"].map((column_name) => ({ column_name })) };
       }
@@ -1766,6 +1766,31 @@ test("playtime tracker remains compatible without a session login timestamp", as
   await trackPlayerPlaytime(db);
   const tick = calls.find((call) => call.text.includes("with currently_online as"));
   assert.match(tick.text, /null::timestamp with time zone as session_login_at/);
+});
+
+test("playtime tracker recreates its Console-owned table after a database restore removes it", async () => {
+  const calls = [];
+  let playtimeTableExists = false;
+  const run = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes("to_regclass")) {
+      const name = String(values[0] || "");
+      return { rows: [{ exists: name === "dune.console_player_playtime" ? playtimeTableExists : true }] };
+    }
+    if (text.includes("information_schema.columns")) {
+      return { rows: ["account_id", "online_status", "last_login_time"].map((column_name) => ({ column_name })) };
+    }
+    if (text.includes("create table if not exists dune.console_player_playtime")) playtimeTableExists = true;
+    return { rows: [] };
+  };
+  const db = { query: run, transaction: async (fn) => fn({ query: run }) };
+
+  await trackPlayerPlaytime(db);
+  playtimeTableExists = false; // A foreign restore replaced the dune schema.
+  await trackPlayerPlaytime(db);
+
+  assert.equal(calls.filter((call) => call.text.includes("create table if not exists dune.console_player_playtime")).length, 2);
+  assert.equal(calls.filter((call) => call.text.includes("with currently_online as")).length, 2);
 });
 
 test("storage discovery includes verified developer storage containers", async () => {

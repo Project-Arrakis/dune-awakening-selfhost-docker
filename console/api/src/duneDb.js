@@ -1453,28 +1453,40 @@ const PLAYER_SORT_COLUMNS = {
 
 const playerPlaytimeMigrations = new WeakMap();
 
-export function migratePlayerPlaytimeSchema(db) {
-  if (!playerPlaytimeMigrations.has(db)) {
-    const migrate = async (tx) => {
-      await tx.query(`
-        create table if not exists dune.console_player_playtime (
-          account_id bigint primary key,
-          total_seconds bigint not null default 0,
-          session_started_at timestamp with time zone,
-          session_login_at timestamp with time zone,
-          last_observed_at timestamp with time zone,
-          updated_at timestamp with time zone not null default current_timestamp,
-          constraint console_player_playtime_total_nonnegative check (total_seconds >= 0)
-        )`);
-    };
-    const promise = Promise.resolve(typeof db.transaction === "function" ? db.transaction(migrate) : migrate(db))
-      .catch((error) => {
-        playerPlaytimeMigrations.delete(db);
-        throw error;
-      });
-    playerPlaytimeMigrations.set(db, promise);
+export async function migratePlayerPlaytimeSchema(db) {
+  // A restore replaces the whole dune schema underneath the long-lived
+  // Console process. A backup from another installation may not contain this
+  // Console-owned table, so a previously resolved migration promise is not
+  // proof that the table still exists. Recheck before reusing the process-local
+  // cache and recreate it after a restore when necessary.
+  if (await tableExists(db, "console_player_playtime")) return;
+
+  const cached = playerPlaytimeMigrations.get(db);
+  if (cached) {
+    await cached;
+    if (await tableExists(db, "console_player_playtime")) return;
+    playerPlaytimeMigrations.delete(db);
   }
-  return playerPlaytimeMigrations.get(db);
+
+  const migrate = async (tx) => {
+    await tx.query(`
+      create table if not exists dune.console_player_playtime (
+        account_id bigint primary key,
+        total_seconds bigint not null default 0,
+        session_started_at timestamp with time zone,
+        session_login_at timestamp with time zone,
+        last_observed_at timestamp with time zone,
+        updated_at timestamp with time zone not null default current_timestamp,
+        constraint console_player_playtime_total_nonnegative check (total_seconds >= 0)
+      )`);
+  };
+  const promise = Promise.resolve(typeof db.transaction === "function" ? db.transaction(migrate) : migrate(db))
+    .catch((error) => {
+      playerPlaytimeMigrations.delete(db);
+      throw error;
+    });
+  playerPlaytimeMigrations.set(db, promise);
+  return promise;
 }
 
 // The game exposes current presence and the current session's login timestamp,
