@@ -10,7 +10,7 @@ import { createLoginRateLimiter, createMutationRateLimiter, resolveClientIp, cre
 import { createApiKeyStore, GLOBAL_RATE_LIMIT_PER_MINUTE } from "./apiKeys.js";
 import { scopeCatalog } from "./apiKeyScopes.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
-import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, TaskManager, publicTask } from "./tasks.js";
+import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, mapWriteFlushTimeoutMs, TaskManager, publicTask } from "./tasks.js";
 import { preflight } from "./preflight.js";
 import { buildDuneArgs, isDynamicServerService, parseVehicleList, runDockerLogs, runDune, validateServiceName } from "./runner.js";
 // isReadOnlySql comes from db.js, NOT runner.js. runner's copy tests the raw
@@ -27,7 +27,7 @@ import { createSecondFactorStore } from "./auth/secondFactorStore.js";
 import { generateTotpSecret, provisioningUri, provisioningQrDataUri, verifyTotpMatch } from "./auth/totp.js";
 import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
-import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
+import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
 import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
@@ -54,7 +54,9 @@ import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePla
 import * as restartQueue from "./services/restartQueue.js";
 import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 import { liveMapSpice } from "./services/liveMapSpice.js";
+import { resolveCoriolisCycle } from "./services/coriolisSeed.js";
 import { liveMapPoi } from "./services/liveMapPoi.js";
+import { deliverMapChatToRecipients } from "./services/mapChatDelivery.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
 import { createZipArchive } from "./services/zipArchive.js";
@@ -68,13 +70,15 @@ import { ensureExchangeHistory, listExchangeTransactions } from "./services/exch
 import { listMarketExchanges, marketBotStatus, saveMarketBuybackSchedule, saveMarketSeedSchedule, decodeSeedPlanCsvUpload, exportMarketSeedPlanCsv, importMarketSeedPlanFromCsv, renameMarketSeedPlan, setActiveMarketSeedPlan } from "./services/exchangeMarket.js";
 import { loadMarketSeedPlan } from "./addonSeedJob.js";
 import { readMarketItemOverrides, saveMarketItemOverrides, readUnsafeTemplateIds, listBotItemCatalogPickerItems, getOverrideRow } from "./services/marketItemOverrides.js";
-import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
-import { autoRefillWaterPublicState, createAutoRefillWaterScheduler, setBaseAutoRefillWater } from "./services/autoRefillWater.js";
+import { autoRefillPublicState, clampAutoRefillNextRun, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
+import { autoRefillWaterPublicState, clampAutoRefillWaterNextRun, createAutoRefillWaterScheduler, setBaseAutoRefillWater } from "./services/autoRefillWater.js";
+import { autoRefillSettingsView, saveAutoRefillSettings } from "./services/autoRefillSettings.js";
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
 import { parseEffectiveGuildMemberLimit } from "./services/guildSettings.js";
 import { parseEffectivePermissionLimit } from "./services/permissionSettings.js";
-import { flushBaseRefillQueues } from "./services/baseRefillFlush.js";
+import { createSharedDeleteBackup, flushBaseRefillQueues } from "./services/baseRefillFlush.js";
 import { verifyBaseBackupState } from "./services/baseBackupSafety.js";
+import { createSingleFlight } from "./services/singleFlight.js";
 import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
@@ -289,42 +293,66 @@ function shouldNoteApiKeyAuthThrottle(failureKey, at = Date.now()) {
 }
 const apiKeys = createApiKeyStore({ file: config.apiKeysFile });
 const bridgeRateLimiter = createBridgeRateLimiter();
+
+async function trustedPartitionsForCompletedStop(operation, payload = {}) {
+  if (operation === "stopGameServersForDbWrites") return "all";
+  if (operation === "sietchesRestartStop") {
+    const partitionId = Number(payload.partitionId);
+    return Number.isInteger(partitionId) && partitionId > 0 ? new Set([partitionId]) : new Set();
+  }
+  if (operation === "restartServiceStop" && ["survival", "survival-1"].includes(String(payload.service || "").toLowerCase())) {
+    const targets = await duneDb.partitionRestartTargets(db);
+    return new Set([...targets.entries()]
+      .filter(([, target]) => target.map === "Survival_1" && target.dimensionIndex === 0)
+      .map(([partitionId]) => partitionId));
+  }
+  return new Set();
+}
+
 // Deferred db read: db is assigned below and is reassignable on reconnect.
 // Both flush paths go through flushQueuedGeneratorRefills/flushQueuedWaterRefills
 // so a write lands in the audit log no matter which one applied it.
 const tasks = new TaskManager(config, {
-  onMapDown: () => flushBaseRefillQueues({
-    flushGenerators: flushQueuedGeneratorRefills,
-    flushWater: flushQueuedWaterRefills,
-    flushDeletes: flushQueuedBaseDeletes,
-    flushChildAccess: flushQueuedBaseChildAccess,
-    // A background probe may have sampled the map immediately before the stop.
-    // Wait for it, then perform a fresh pass while the map is positively down.
+  // forceFresh on every leg: the tick's in-flight pass, if there is one, was
+  // started before the map stopped and so observed it as still live. Reusing
+  // that result here would report "nothing to flush" for the one window in
+  // which the queued writes are actually safe to apply.
+  onMapDown: async (operation, payload) => {
+    const trustedDownPartitionIds = await trustedPartitionsForCompletedStop(operation, payload);
+    // Base and vehicle queues are independent, but the same database snapshot
+    // protects both destructive batches in this one write-safe window. Share
+    // the in-flight promise so mixed batches cannot dump the whole database
+    // twice in parallel.
+    const ensureDeleteBackup = createSharedDeleteBackup(config.mockMode ? undefined : () =>
+      runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } }));
+    return flushBaseRefillQueues({
+    // ignoreRetryBackoff: the poller's 60s backoff would otherwise skip an
+    // entry for ~55 of every 60 seconds, so most restarts silently applied
+    // nothing. Only this hook sets it; the poller keeps backing off.
+    flushGenerators: () => flushQueuedGeneratorRefills({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds }),
+    flushWater: () => flushQueuedWaterRefills({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds }),
+    flushDeletes: () => flushQueuedBaseDeletes({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds, onBeforeApply: ensureDeleteBackup }),
+    flushChildAccess: () => flushQueuedBaseChildAccess({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds }),
     // The task hook runs only after the requested map servers have positively
-    // stopped. At that point an explicit admin delete may safely remove even
-    // a stale Travel/backup/recovery row; the background poller remains
+    // stopped. At that point an explicit admin delete may safely remove even a
+    // stale Travel/backup/recovery row; the background poller stays
     // conservative and leaves those states queued while maps may be live.
-    flushVehicleDeletes: () => flushQueuedVehicleDeletes({ forceFresh: true, allowBlockedStates: true })
-  })
+    flushVehicleDeletes: () => flushQueuedVehicleDeletes({ forceFresh: true, allowBlockedStates: true, ignoreRetryBackoff: true, trustedDownPartitionIds, onBeforeApply: ensureDeleteBackup })
+    });
+  }
 });
 let db = createDb(config);
 const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db });
 let carePackageAutoRunning = false;
 let carePackageAutoLastRun = 0;
 let carePackageAutoNextAllowedRun = 0;
-// The 5s poll and the restart-task onMapDown hook both call
-// flushQueuedGeneratorRefills and can overlap; refillBaseGenerators only locks
-// existing fuel rows, so an empty generator has nothing to serialize two
-// concurrent inserts against without this guard.
-let generatorRefillFlushRunning = false;
-// Same reasoning as generatorRefillFlushRunning, for the water queue.
-let waterRefillFlushRunning = false;
-// Same reasoning as generatorRefillFlushRunning, for the pending-delete queue.
-let baseDeleteFlushRunning = false;
-// Same reasoning as generatorRefillFlushRunning, for the base permission queue.
-let baseChildAccessFlushRunning = false;
-// Same reasoning as baseDeleteFlushRunning, for the vehicle pending-delete queue.
-let vehicleDeleteFlushPromise = null;
+// The 5s poll and the restart-task onMapDown hook both call every one of the
+// flushes below and can overlap; refillBaseGenerators only locks existing fuel
+// rows, so an empty generator has nothing to serialize two concurrent inserts
+// against without a guard. Each flush is therefore wrapped in createSingleFlight
+// rather than a boolean: a boolean serializes correctly but makes the hook's
+// call a no-op whenever the tick is mid-pass, which is precisely when the hook
+// matters -- see services/singleFlight.js.
 let messageOfTheDayAutoRunning = false;
 let messageOfTheDayAutoLastRun = 0;
 let messageOfTheDayAutoNextAllowedRun = 0;
@@ -503,98 +531,70 @@ setInterval(() => {
 // Every queued-refill write goes through here so it is audited whichever path
 // triggered it: the tick above, or the restart task runner's onMapDown hook.
 // These are real writes to player property, so an unaudited one is not acceptable.
-async function flushQueuedGeneratorRefills() {
-  if (generatorRefillFlushRunning) return { flushed: [] };
-  generatorRefillFlushRunning = true;
-  try {
-    const result = await duneDb.flushGeneratorRefills(db, config.repoRoot);
-    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-refill", entry);
-    return result;
-  } finally {
-    generatorRefillFlushRunning = false;
-  }
-}
+const flushQueuedGeneratorRefills = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) => {
+  const result = await duneDb.flushGeneratorRefills(db, config.repoRoot, { ignoreRetryBackoff, trustedDownPartitionIds });
+  for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-refill", entry);
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
 
 // Same reasoning as flushQueuedGeneratorRefills, for the water queue.
-async function flushQueuedWaterRefills() {
-  if (waterRefillFlushRunning) return { flushed: [] };
-  waterRefillFlushRunning = true;
-  try {
-    const result = await duneDb.flushWaterRefills(db, config.repoRoot);
-    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-water-refill", entry);
-    return result;
-  } finally {
-    waterRefillFlushRunning = false;
-  }
-}
+const flushQueuedWaterRefills = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) => {
+  const result = await duneDb.flushWaterRefills(db, config.repoRoot, { ignoreRetryBackoff, trustedDownPartitionIds });
+  for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-water-refill", entry);
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
 
 // Same reasoning as flushQueuedGeneratorRefills, for the base permission
 // queue. These change who can open a player's doors, so an unaudited apply is
 // not acceptable either.
-async function flushQueuedBaseChildAccess() {
-  if (baseChildAccessFlushRunning) return { flushed: [] };
-  baseChildAccessFlushRunning = true;
-  try {
-    const result = await duneDb.flushBaseChildAccess(db, config.repoRoot);
-    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-child-access", entry);
-    return result;
-  } finally {
-    baseChildAccessFlushRunning = false;
-  }
-}
+const flushQueuedBaseChildAccess = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) => {
+  const result = await duneDb.flushBaseChildAccess(db, config.repoRoot, { ignoreRetryBackoff, trustedDownPartitionIds });
+  for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-child-access", entry);
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
 
 // Same guard reasoning as flushQueuedGeneratorRefills. The one full-database
 // safety backup for this pass happens inside flushBaseDeletes's onBeforeApply
 // hook -- lazily, at most once, immediately before the first entry that is
 // actually about to be deleted, not merely because the queue is non-empty.
-async function flushQueuedBaseDeletes() {
-  if (baseDeleteFlushRunning) return { flushed: [] };
-  baseDeleteFlushRunning = true;
-  try {
-    const result = await duneDb.flushBaseDeletes(db, config.repoRoot, {
-      // Matches databaseQuery's explicit mock-mode guard: this runs as a
-      // background tick, not through directDbMutation, so it is not skipped
-      // for free the way a request-time delete's backup call is.
-      onBeforeApply: config.mockMode
-        ? undefined
-        : () => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } })
-    });
-    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-delete", entry);
-    if (result.backupFailed) {
-      audit(config, null, "bases.flush-queued-delete-backup-failed", { error: result.error, pending: result.pending });
-    }
-    return result;
-  } finally {
-    baseDeleteFlushRunning = false;
+const flushQueuedBaseDeletes = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds, onBeforeApply } = {}) => {
+  const result = await duneDb.flushBaseDeletes(db, config.repoRoot, {
+    ignoreRetryBackoff,
+    trustedDownPartitionIds,
+    // Matches databaseQuery's explicit mock-mode guard: this runs as a
+    // background tick, not through directDbMutation, so it is not skipped
+    // for free the way a request-time delete's backup call is.
+    onBeforeApply: config.mockMode
+      ? undefined
+      : onBeforeApply || (() => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } }))
+  });
+  for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-delete", entry);
+  if (result.backupFailed) {
+    audit(config, null, "bases.flush-queued-delete-backup-failed", { error: result.error, pending: result.pending });
   }
-}
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
 
 // Same guard reasoning as flushQueuedBaseDeletes, for the vehicle queue.
-async function flushQueuedVehicleDeletes({ forceFresh = false, allowBlockedStates = false } = {}) {
-  if (vehicleDeleteFlushPromise) {
-    const inFlight = await vehicleDeleteFlushPromise;
-    if (!forceFresh) return inFlight;
+// allowBlockedStates reaches the pass through createSingleFlight, which hands
+// each call's options to the run function. Only the map-down hook sets it, and
+// that hook always sets forceFresh too, so it never rides along on a reused
+// in-flight result that was started without it.
+const flushQueuedVehicleDeletes = createSingleFlight(async ({ allowBlockedStates = false, ignoreRetryBackoff = false, trustedDownPartitionIds, onBeforeApply } = {}) => {
+  const result = await duneDb.flushVehicleDeletes(db, config.repoRoot, {
+    allowBlockedStates,
+    ignoreRetryBackoff,
+    trustedDownPartitionIds,
+    onBeforeApply: config.mockMode
+      ? undefined
+      : onBeforeApply || (() => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "vehicle-delete" } }))
+  });
+  for (const entry of result.flushed || []) audit(config, null, "vehicles.flush-queued-delete", entry);
+  if (result.backupFailed) {
+    audit(config, null, "vehicles.flush-queued-delete-backup-failed", { error: result.error, pending: result.pending });
   }
-  const current = (async () => {
-    const result = await duneDb.flushVehicleDeletes(db, config.repoRoot, {
-      allowBlockedStates,
-      onBeforeApply: config.mockMode
-        ? undefined
-        : () => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "vehicle-delete" } })
-    });
-    for (const entry of result.flushed || []) audit(config, null, "vehicles.flush-queued-delete", entry);
-    if (result.backupFailed) {
-      audit(config, null, "vehicles.flush-queued-delete-backup-failed", { error: result.error, pending: result.pending });
-    }
-    return result;
-  })();
-  vehicleDeleteFlushPromise = current;
-  try {
-    return await current;
-  } finally {
-    if (vehicleDeleteFlushPromise === current) vehicleDeleteFlushPromise = null;
-  }
-}
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
 
 function runBackgroundTick(label, fn) {
   Promise.resolve()
@@ -1341,6 +1341,8 @@ async function handleApi(req, res) {
   }));
   if (path === "/api/bases/pending-refills") return pendingGeneratorRefillsRoute(res);
   if (path === "/api/bases/auto-refill") return basesAutoRefillStateRoute(res);
+  if (path === "/api/bases/auto-refill/settings" && req.method === "GET") return basesAutoRefillSettingsRoute(res);
+  if (path === "/api/bases/auto-refill/settings" && req.method === "POST") return basesAutoRefillSettingsSaveRoute(req, res);
   if (path === "/api/bases/pending-water-refills") return pendingWaterRefillsRoute(res);
   if (path === "/api/bases/auto-refill-water") return basesAutoRefillWaterStateRoute(res);
   if (path === "/api/bases/pending-deletes") return pendingBaseDeletesRoute(res);
@@ -1709,6 +1711,12 @@ async function addonBridgeRoute(req, res, path) {
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
     return json(res, 200, { ok: true, result });
   }
+  if (action === "players.identity.list") {
+    const addon = assertInstalledAddonPermission(config, id, "players:read");
+    const result = await duneDb.addonPlayerIdentities(db);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
   if (action === "ops.health.summary" || action === "ops.health.players" || action === "ops.health.farms" || action === "ops.health.summary.v2") {
     const addon = assertInstalledAddonPermission(config, id, "ops:read");
     const result = action === "ops.health.players"
@@ -1930,16 +1938,28 @@ async function liveMapMarkersRoute(res, url) {
     const activeMap = configPayload.map.actorMap || configPayload.map.key;
     const partitionId = url.searchParams.get("partitionId") || "";
     const includeStatic = url.searchParams.get("static") !== "0";
-    const [markers, partitions, spice, poi] = await Promise.all([
+    // Fetched ahead of the Promise.all because the cycle resolver needs the
+    // partition ids: without a partitionId they are the only way to reach a
+    // container that logs the layout.
+    const partitions = await duneDb.liveMapPartitions(db).catch(() => ({ rows: [] }));
+    // Resolved once and handed to liveMapSpice: left to fetch its own, the two
+    // would race the 30s cache (no in-flight dedupe) and shell out twice.
+    const cycle = await resolveCoriolisCycle({
+      map: activeMap,
+      partitionId,
+      deepDesertPartitionIds: (partitions.rows || []).filter((row) => String(row.map) === "DeepDesert").map((row) => row.partition_id)
+    }).catch(() => ({ seed: null, nextCycleAt: null, layout: null }));
+    const [markers, spice, poi] = await Promise.all([
       duneDb.liveMapMarkers(db, activeMap),
-      duneDb.liveMapPartitions(db).catch(() => ({ rows: [] })),
-      liveMapSpice(db, config, activeMap, { partitionId, includeStaticPool: includeStatic }).catch(() => ({ capabilities: { ...(includeStatic ? { spice: false } : {}), spice_active: false, flour_sand: false }, rows: [] })),
+      liveMapSpice(db, config, activeMap, { partitionId, includeStaticPool: includeStatic, resolveCycle: async () => cycle }).catch(() => ({ capabilities: { ...(includeStatic ? { spice: false } : {}), spice_active: false, flour_sand: false }, rows: [] })),
       includeStatic ? liveMapPoi(db, activeMap).catch(() => ({ capabilities: {}, rows: [] })) : Promise.resolve({ capabilities: {}, rows: [] })
     ]);
     return {
       ...markers,
       ...configPayload,
       capabilities: { ...markers.capabilities, ...spice.capabilities, ...poi.capabilities },
+      knownSubtypes: poi.knownSubtypes || {},
+      subtypeLabels: poi.subtypeLabels || {},
       overlays: { ...markers.overlays, spice: spice.reason || "" },
       rows: [...markers.rows, ...spice.rows, ...poi.rows],
       // Every server container reports the identical farm-wide seed and
@@ -1947,9 +1967,17 @@ async function liveMapMarkersRoute(res, url) {
       // selected partitionId's own container first (more likely to actually
       // be running than a fixed default) before falling back to the
       // overmap/survival-1 default.
-      coriolisSeed: spice.currentSeed || "",
-      coriolisNextCycleAt: spice.nextCycleAt || "",
-      coriolisSeedStaleSince: spice.seedStaleSince || "",
+      // From the cycle this route resolved, not from spice. liveMapSpice is
+      // handed that same cycle, so the values are identical when it succeeds --
+      // but its catch path returns no seed at all, which used to serve an empty
+      // seed beside a perfectly good coriolisLayout.
+      coriolisSeed: cycle.seed || "",
+      coriolisNextCycleAt: cycle.nextCycleAt || "",
+      coriolisSeedStaleSince: cycle.staleSince || "",
+      // Which cartography layout is live, for the terrain renderer. Null when it
+      // cannot be read or the cycle has expired; the client then draws the flat
+      // image rather than guessing. ?? not ||: layout 0 is valid.
+      coriolisLayout: cycle.layout ?? null,
       partitions: partitions.rows || []
     };
   });
@@ -1971,13 +1999,20 @@ async function liveMapTeleportPlayerRoute(req, res) {
   }
   if (body.online === true) {
     try {
-      buildDuneArgs("adminTeleport", payload);
+      const resolved = await duneDb.teleportPlayer(db, playerId, { mode: "coordinates", ...payload });
+      const runtime = await duneDb.liveMapPartitionRuntimeState(db, resolved.partitionId);
+      if (runtime.known && (!runtime.exists || !runtime.ready)) {
+        return json(res, 409, { error: "The destination partition is offline. Start it through normal in-game travel before teleporting a player there." });
+      }
+      const taskPayload = { ...payload, playerId: resolved.playerId, partitionId: resolved.partitionId };
+      buildDuneArgs("adminTeleport", taskPayload);
+      if (!applyMutationRateLimit(req, res, "live-map.teleport.live")) return;
+      audit(config, req, "live-map.teleport.live", { playerId: resolved.playerId, x: payload.x, y: payload.y, z: payload.z, partitionId: resolved.partitionId });
+      return json(res, 202, { path: "live", task: tasks.create("admin", "adminTeleport", taskPayload) });
     } catch (error) {
-      return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
+      const failure = apiErrorPayload(error, 400);
+      return json(res, failure.status, failure.body);
     }
-    if (!applyMutationRateLimit(req, res, "live-map.teleport.live")) return;
-    audit(config, req, "live-map.teleport.live", { playerId, x: payload.x, y: payload.y, z: payload.z, partitionId: payload.partitionId });
-    return json(res, 202, { path: "live", task: tasks.create("admin", "adminTeleport", payload) });
   }
   try {
     if (!applyMutationRateLimit(req, res, "live-map.teleport.offline")) return;
@@ -4817,6 +4852,36 @@ async function basesAutoRefillStateRoute(res) {
   return json(res, 200, { supported, ...autoRefillPublicState(config.repoRoot) });
 }
 
+// Tuning shared by both auto-refill scanners. Answers with the database down,
+// like basesAutoRefillStateRoute above: this is a file, not a query.
+async function basesAutoRefillSettingsRoute(res) {
+  return json(res, 200, autoRefillSettingsView(config.repoRoot));
+}
+
+// Console-owned configuration, so it follows the settings routes (plain handler
+// plus an explicit audit) rather than directDbMutation's confirmation machinery.
+// Unlike the per-base toggles below it IS rate limited, matching
+// exchangeConfigSaveRoute: this retunes every enrolled base at once.
+async function basesAutoRefillSettingsSaveRoute(req, res) {
+  // Before readJson, so a client spamming this never gets its body parsed.
+  if (!applyMutationRateLimit(req, res, "bases.auto-refill-settings")) return;
+  const body = await readJson(req);
+  try {
+    const saved = saveAutoRefillSettings(config.repoRoot, body);
+    // A shortened interval must pull the armed scan in, or the change looks
+    // like it did nothing until the old interval elapses. Both no-op otherwise.
+    const nextRunAt = clampAutoRefillNextRun(config.repoRoot);
+    const waterNextRunAt = clampAutoRefillWaterNextRun(config.repoRoot);
+    audit(config, req, "bases.auto-refill-settings", { ...saved, nextRunAt, waterNextRunAt });
+    return json(res, 200, { ok: true, ...autoRefillSettingsView(config.repoRoot), nextRunAt, waterNextRunAt });
+  } catch (error) {
+    return json(res, error?.statusCode === 400 ? 400 : 500, {
+      ok: false,
+      error: redact(error?.message || "Unexpected error.")
+    });
+  }
+}
+
 // Console-owned configuration rather than a database mutation, so this follows
 // the settings routes (plain handler plus an explicit audit) instead of
 // directDbMutation's confirmation-phrase machinery.
@@ -5799,18 +5864,7 @@ async function mapChatRoute(req, res) {
 
 async function deliverMapChatMessage(mapName, dimension, message) {
   const recipients = config.mockMode ? [{ queue: "mock-player_queue" }] : await mapChatRecipients(mapName, dimension);
-  if (!recipients.length) throw new Error("No online players are currently subscribed to that map.");
-  const sender = config.mockMode ? { funcomId: "Server#4242", hexFlsId: "5E121CE000000001" } : await ensureCarePackageServerPersona(db);
-  const result = config.mockMode
-    ? { code: 0, stdout: "mock map chat\n", stderr: "", args: [] }
-    : await publishMapChat(config, {
-        mapName,
-        dimension,
-        message,
-        senderFuncomId: sender.funcomId,
-        senderHexFlsId: sender.hexFlsId
-      });
-  return { ...result, recipients: recipients.length };
+  return deliverMapChatToRecipients(config, { mapName, dimension, message, recipients }, { db, mockMode: config.mockMode });
 }
 
 async function deliverScheduledMapMessage(schedule) {

@@ -18,6 +18,13 @@
      differently-tinted surfaces these sit on. 8.40:1, still brighter than
      the labels beneath it so title > subtitle > label survives. */
   --text-subtle: #bebcb6;
+  /* The same neutral one step further down: --text blended ~58% toward the
+     card background rather than 75%. Supporting micro-copy sat at --muted
+     (#ad9f89), which is the same warm family as the field labels above it at
+     only a few points of saturation apart, so the two ran together. A dimmer
+     NEUTRAL separates by hue instead of fighting for lightness. 5.6:1 -- still
+     AA for the 11px it is used at. */
+  --text-faint: #979692;
   --title: #ffd08a;
   --accent: #c68b4a;
   --accent-strong: #d49a5c;
@@ -1399,6 +1406,35 @@ main { padding: 22px; min-width: 0; }
 }
 .concise-output { max-height: 180px; }
 .technical-details, .task-technical-details { display: none; margin-top: 12px; min-width: 0; max-width: 100%; }
+/* A restart that succeeded can still carry queued writes that did not apply.
+   Warm amber, not danger red: the task itself did not fail, and colouring it
+   as a failure next to a green "succeeded" badge reads as a contradiction. */
+.task-warnings {
+  margin-top: 10px;
+  padding: 10px 12px;
+  /* var(--warning) is 4.63:1 on the panel; the previous #6b5b39 was 2.69:1,
+     under WCAG 1.4.11's 3:1 for a non-text boundary that is the only thing
+     marking this block, since it has no background of its own. */
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  display: grid;
+  gap: 6px;
+}
+/* overflow-wrap: a warning is a raw error message and can carry a long
+   unbreakable identifier; without this it overflows the bordered box and is
+   clipped rather than scrolled, losing the text an operator needs. */
+.task-warnings p { margin: 0; color: #ffd08a; display: flex; gap: 6px; overflow-wrap: anywhere; min-width: 0; }
+/* Pin the triangle to the first line: these warnings are long enough to wrap,
+   and a centred icon on a two-line paragraph drifts to the middle. Same
+   treatment as the land-claim warning rule further down. */
+.task-warnings p svg { flex: 0 0 auto; margin-top: 3px; }
+/* .badge is an inline span with no display of its own, so a bare SVG child
+   would sit on the text baseline. Deliberately a sibling class rather than a
+   change to .badge-warn, which text-only badges elsewhere still rely on. */
+.task-warning-count { display: inline-flex; align-items: center; gap: 5px; }
+/* .action-row children get min-width: 0 (:6296), so without this the icon is a
+   shrinkable flex item and collapses to zero width before the numeral wraps. */
+.task-warning-count svg { flex: 0 0 auto; }
 .task-technical-details { display: block; }
 body.debug .technical-details { display: block; }
 .update-log-details { margin-top: 6px; }
@@ -2118,6 +2154,61 @@ body.debug .technical-details { display: block; }
   line-height: 1.4;
   color: var(--danger-text);
 }
+/* Square icon button in the Bases panel title. 43px is the measured height of
+   the Refresh button beside it (global button rule: 10px padding + 16px line
+   box + 1px border, doubled) -- anything less sits visibly inset in the
+   centre-aligned .action-row. Not a reuse of .exchange-config-button, which is
+   the same size for a different reason and lives in the exchange section. */
+.bases-settings-button { width: 43px; height: 43px; min-width: 0; padding: 0; display: inline-grid; place-items: center; }
+.auto-refill-settings-modal { width: min(500px, calc(100vw - 32px)); }
+/* .primary has no global styling inside a modal -- .exchange-config-modal
+   scopes its own. Same treatment here rather than leaving Save unstyled. */
+.auto-refill-settings-modal .confirm-modal-actions .primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a130a;
+}
+.auto-refill-settings-modal .confirm-modal-actions .primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+.auto-refill-settings-group { display: grid; gap: 9px; }
+.auto-refill-settings-group-divided { border-top: 1px solid var(--border); padding-top: 13px; }
+.auto-refill-settings-group-title {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.auto-refill-settings-field-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 10px; }
+.auto-refill-settings-field { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.auto-refill-settings-field > span:first-child { flex: 1; }
+.auto-refill-settings-field input { width: 74px; text-align: right; }
+.auto-refill-settings-unit { width: 14px; color: var(--muted); }
+.auto-refill-settings-reset { padding: 6px 10px; font-size: 12px; min-width: 0; }
+/* Errors and hints span both columns so they sit under the field, not beside
+   the Reset button. */
+/* `.confirm-modal p` (0,1,1) sets its own colour, so the .danger-note and
+   .muted class rules (both 0,1,0) lose inside this modal and the validation
+   error renders in ordinary body text. Re-assert here, where the selector
+   outranks it -- and use the re-assertion to separate four tiers.
+   The title, section headings and muted copy were previously three steps of
+   the same warm amber, which reads as one blurred block however good the
+   contrast ratio is. So each tier differs from its neighbour in hue OR
+   treatment, not only in lightness:
+     title      h1-h5 -> --title  #ffd08a  amber, 18px      (unchanged)
+     subtitle   --text-subtle     #bebcb6  NEUTRAL grey     (breaks the family)
+     category   --accent          #c68b4a  amber, UPPERCASE + tracked
+     label      --text            #f3efe7  near-white body
+     footnote   --text-faint      #979692  NEUTRAL, dimmest, 11px            */
+.auto-refill-settings-modal .danger-note { color: var(--danger-text); }
+/* Direct children only: the lede and the "Loading..." line. The note is also a
+   direct child and also carries .muted, so it has to win on the same class
+   count -- hence `p.` on the two rules below and their order after this one. */
+.auto-refill-settings-modal > p.muted { color: var(--text-subtle); }
+.auto-refill-settings-modal p.auto-refill-settings-hint,
+.auto-refill-settings-modal p.auto-refill-settings-note { color: var(--text-faint); }
+.auto-refill-settings-field-row .danger-note,
+.auto-refill-settings-hint { grid-column: 1 / -1; margin: 0; font-size: 11px; line-height: 1.4; }
+.auto-refill-settings-note { margin: 0; font-size: 11px; line-height: 1.5; border-top: 1px solid var(--border); padding-top: 12px; }
 @media (max-width: 760px) {
   .blueprint-file-field { flex-basis: 100%; max-width: none; }
   .blueprint-list-toolbar, .blueprint-list-toolbar .service-actions { align-items: stretch; }
@@ -2347,7 +2438,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .exchange-transaction-summary strong { color: #fff1d4; font-size: 18px; font-variant-numeric: tabular-nums; }
 .action-row.exchange-transaction-filters > select { flex: 0 1 180px; width: auto; min-width: 150px; height: 43px; }
 .exchange-transaction-filters .exchange-id-filter { flex: 0 1 150px; min-width: 120px; }
-.exchange-transaction-table { min-width: 980px; }
+.exchange-transaction-table { width: 100%; min-width: 980px; }
 .exchange-transaction-table th { white-space: nowrap; }
 .exchange-transaction-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .exchange-transaction-party-name { color: #f3efe7; }
@@ -2623,6 +2714,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-view-controls { width: 50%; min-width: 600px; display: grid; grid-template-columns: minmax(260px, 1fr) minmax(280px, 1fr); gap: 14px; }
 .live-map-view-field, .live-map-view-summary { min-width: 0; display: grid; align-content: start; gap: 7px; }
 .live-map-view-summary { padding-top: 12px; border-top: 1px solid rgba(214, 185, 140, .13); }
+.live-map-partition-offline-note { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 6px 10px; margin-top: 3px; padding: 10px 12px; border: 1px solid rgba(198, 139, 74, .38); border-radius: 8px; background: rgba(88, 57, 24, .18); color: var(--muted-warm); font-size: 12px; line-height: 1.45; }
+.live-map-partition-offline-note strong { color: #e9bd78; white-space: nowrap; }
 .live-map-view-label { color: #ceb894; font-size: 13px; font-weight: 700; line-height: 1.2; }
 .live-map-partition-field select { width: 100%; min-width: 0; }
 .live-map-layout {
@@ -2638,8 +2731,6 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-main { min-width: 0; display: grid; gap: 10px; }
 .live-map-map-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .live-map-map-buttons button { width: 100%; white-space: normal; min-height: 40px; }
-.live-map-coordinates-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.live-map-coordinates-clear { width: auto; min-height: 30px; padding: 5px 11px; font-size: 12px; }
 .live-map-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .live-map-toolbar button { width: auto; }
 .live-map-toolbar label { display: flex; align-items: center; gap: 8px; width: auto; color: #ceb894; }
@@ -2789,6 +2880,18 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   flex: 0 0 24px;
 }
 .live-map-legend-dot-spacer { flex: 0 0 auto; width: 28px; height: 24px; }
+.live-map-sector-grid-layer { border-bottom: 1px solid rgba(198, 139, 74, .2); margin-bottom: 4px; padding-bottom: 8px; }
+.live-map-sector-grid-swatch {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  border: 1px solid rgba(198, 139, 74, .75);
+  border-radius: 4px;
+  background:
+    linear-gradient(to right, transparent 47%, rgba(198, 139, 74, .75) 47%, rgba(198, 139, 74, .75) 53%, transparent 53%),
+    linear-gradient(to bottom, transparent 47%, rgba(198, 139, 74, .75) 47%, rgba(198, 139, 74, .75) 53%, transparent 53%);
+  flex: 0 0 24px;
+}
 .live-map-frame {
   position: relative;
   /* Both maps are square (4096x4096) -- keeping the box itself square
@@ -2815,9 +2918,45 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-frame.dragging { cursor: grabbing; user-select: none; }
 .live-map-frame.dragging-player { cursor: grabbing; user-select: none; }
 .live-map-canvas { position: relative; background: #101316; }
-.live-map-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; user-select: none; pointer-events: none; }
+.live-map-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; user-select: none; pointer-events: none; z-index: 0; }
+/* The terrain canvas covers the frame's viewport, not the scaled map: at
+   maximum zoom the map is 16384px, beyond MAX_TEXTURE_SIZE on many GPUs. It is
+   translated to follow the scrollport on every scroll, so it stays put while
+   the markers above it move with the content. */
+.live-map-terrain {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  display: block;
+  pointer-events: none;
+  will-change: transform;
+}
 .live-map-placeholder { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(circle at center, #251d14, #07090b 72%); color: #ffd08a; border: 1px dashed #514232; }
-.live-map-marker-layer { position: absolute; inset: 0; }
+/* Sits between the map and the markers. Drawn in map-pixel space via viewBox,
+   so one stroke-width follows the zoom instead of needing per-frame maths. */
+.live-map-sector-grid { position: absolute; top: 0; left: 0; z-index: 1; pointer-events: none; overflow: visible; }
+/* non-scaling-stroke means these widths are screen pixels, not viewBox units,
+   so the grid stays the same weight at every zoom rather than thickening as you
+   zoom in. Kept hairline-thin and dark: it is a reference overlay, and terrain
+   detail has to stay readable through it. */
+.live-map-sector-grid .lines line { stroke: rgba(16, 11, 4, .8); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.live-map-sector-grid .lines line.edge { stroke: rgba(16, 11, 4, .95); stroke-width: 2; }
+/* font-size is set inline as viewBox units divided by zoom, so the label stays
+   a constant size on screen. Sizing it in viewBox units alone would scale it
+   with the map -- at maximum zoom a cell label would render ~368px tall. */
+.live-map-sector-grid .labels text {
+  fill: rgba(28, 21, 12, .78);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-weight: 600;
+  text-anchor: middle;
+  dominant-baseline: central;
+  paint-order: stroke;
+  stroke: rgba(255, 246, 230, .5);
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+.live-map-marker-layer { position: absolute; inset: 0; z-index: 2; }
 .live-map-marker {
   position: absolute;
   width: 12px;
@@ -2856,8 +2995,26 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-marker.marker-storage:hover { width: 26px; height: 26px; }
 .live-map-marker.marker-spice, .live-map-marker.marker-spice_active { width: 48px; height: 48px; }
 .live-map-marker.marker-spice:hover, .live-map-marker.marker-spice_active:hover { width: 60px; height: 60px; }
-.live-map-marker.marker-spice { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; opacity: .55; }
-.live-map-marker.marker-spice_active { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; filter: drop-shadow(0 0 5px rgba(232, 135, 30, .85)); }
+.live-map-marker.marker-spice { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; }
+.live-map-marker.marker-spice_active { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; filter: drop-shadow(0 0 7px rgba(232, 135, 30, .95)); }
+.live-map-marker.marker-spice::after, .live-map-marker.marker-spice_active::after {
+  position: absolute;
+  top: -8px;
+  right: -12px;
+  z-index: 2;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid #090b0d;
+  border-radius: 999px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .7);
+  color: #fff;
+  font: 800 9px/14px "IBM Plex Mono", ui-monospace, monospace;
+  text-align: center;
+  pointer-events: none;
+}
+.live-map-marker.marker-spice::after { content: "?"; background: #59636d; }
+.live-map-marker.marker-spice_active::after { content: "LIVE"; background: #b85d0b; }
 /* Active/pool spice markers are sized by tier (subtype) -- the base
    marker-spice/marker-spice_active rules above are the Large tier's size;
    these modifiers step Medium/Small down so a whole bloom's yield reads at
@@ -2917,8 +3074,12 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-marker.subtype-mediumornithopter, .live-map-legend-dot.subtype-mediumornithopter { background: url("/images/maps/ornithoptervehicle.webp") center / contain no-repeat; }
 .live-map-marker.subtype-transportornithopter, .live-map-legend-dot.subtype-transportornithopter { background: url("/images/maps/ornithoptervehicle.webp") center / contain no-repeat; }
 .live-map-marker.subtype-containervehicle, .live-map-legend-dot.subtype-containervehicle { background: url("/images/maps/cargocontainervehicle.webp") center / contain no-repeat; }
-.live-map-legend-dot.marker-spice { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; opacity: .55; }
-.live-map-legend-dot.marker-spice_active { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; filter: drop-shadow(0 0 3px rgba(232, 135, 30, .75)); }
+.live-map-legend-dot.marker-spice, .live-map-legend-dot.marker-spice_active { position: relative; border: none; border-radius: 0; background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; }
+.live-map-legend-dot.marker-spice { box-shadow: none; }
+.live-map-legend-dot.marker-spice_active { box-shadow: none; filter: drop-shadow(0 0 4px rgba(232, 135, 30, .9)); }
+.live-map-legend-dot.marker-spice::after, .live-map-legend-dot.marker-spice_active::after { position: absolute; right: -9px; top: -7px; min-width: 13px; height: 12px; padding: 0 2px; border: 1px solid #090b0d; border-radius: 999px; color: #fff; font: 800 7px/10px "IBM Plex Mono", ui-monospace, monospace; text-align: center; }
+.live-map-legend-dot.marker-spice::after { content: "?"; background: #59636d; }
+.live-map-legend-dot.marker-spice_active::after { content: "LIVE"; background: #b85d0b; }
 .live-map-legend-dot.marker-ore { color: #9ca3af; background: #9ca3af; }
 .live-map-legend-dot.marker-scrap { color: #b45309; background: #b45309; }
 .live-map-legend-dot.marker-poi { color: #60a5fa; background: #60a5fa; }
@@ -3022,7 +3183,15 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-layer-group { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
 .live-map-layer-expand { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 20px; height: 20px; padding: 0; margin: 0; line-height: 1; background: transparent; border: 1px solid #514232; border-radius: 4px; color: #d9c8aa; font-size: 13px; cursor: pointer; }
 .live-map-layer-expand-spacer { flex: 0 0 auto; width: 22px; height: 20px; }
-.live-map-layer-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-map-layer-label {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
 .live-map-layer-expand:hover { border-color: #c68b4a; color: #ffd08a; }
 .live-map-layer-sublist { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin-left: 22px; padding-left: 8px; border-left: 1px solid #302b25; }
 /* width:100% (from .checkbox-row.live-map-layer) is computed against the
@@ -3059,6 +3228,9 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-target:after { content: ""; position: absolute; background: #ff9d8f; }
 .live-map-target:before { left: 50%; top: -7px; width: 2px; height: 32px; transform: translateX(-50%); }
 .live-map-target:after { top: 50%; left: -7px; height: 2px; width: 32px; transform: translateY(-50%); }
+/* The crosshair itself stays click-through so it never eats a double-click, but
+   the overlay hanging off it has to take pointer events for its own buttons. */
+.live-map-target > .live-map-marker-overlay { pointer-events: auto; }
 /* Anchored to the marker div itself (position:absolute against its
    position:relative-via-.live-map-marker ancestor -- see .live-map-marker's
    own rule), so it pans/zooms with the map for free instead of needing its
@@ -3088,21 +3260,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   padding: 10px 12px;
   border: 1px solid #4d4032;
   border-radius: 8px;
-  /* .6 alpha + blur, not a thinner wash on its own -- a plain 50% background
-     with no blur washed out illegibly over light map terrain (confirmed via
-     mockup review). The blur keeps the panel see-through while text stays
-     crisp regardless of what's under it. */
-  background: rgba(15, 17, 20, .6);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
-  /* Some anchor variants below cancel the base transform (translateX(-50%)
-     only makes sense for the centered case) -- transform was doubling as
-     this element's GPU layer-promotion trigger, so anchored overlays lost
-     it and rendered the backdrop-filter unblurred despite computed style
-     still reporting blur(10px) (a real, DOM-invisible browser compositing
-     quirk, not a CSS mistake). will-change promotes a layer independent of
-     which anchor variant is active, so every overlay blurs the same way. */
-  will-change: backdrop-filter;
+  background: #0f1114;
   box-shadow: 0 10px 28px rgba(0, 0, 0, .45);
   color: #d9c8aa;
   text-align: left;
@@ -3137,7 +3295,12 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-marker-overlay-action { flex: 1 1 0; min-width: 0; padding: 6px 10px; font-size: 12px; }
 .live-map-marker-overlay-teleport { display: grid; gap: 6px; margin-bottom: 8px; }
 .live-map-marker-overlay-teleport select { width: 100%; padding: 6px 8px; font-size: 12px; }
-.live-map-stats { grid-template-columns: repeat(5, minmax(88px, 1fr)); gap: 7px; }
+/* auto-fit, not a fixed count: the strip's items are conditional (Coriolis
+   seed, terrain layout and countdown each appear only sometimes), so a hardcoded
+   column count wraps the moment the item count exceeds it and leaves most of a
+   second row empty. Letting the track count follow the item count keeps them on
+   one row and stretched to fill, which is how the strip already looked. */
+.live-map-stats { grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); gap: 7px; }
 .live-map-stats .key-value-item { min-height: 56px; padding: 10px 11px; align-content: center; }
 .menu-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 12px 0 18px; }
 .menu-card { justify-content: center; min-height: 48px; white-space: normal; }
@@ -5138,6 +5301,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .land-claim-section-heading button { width: auto; flex: 0 0 auto; }
 .land-claim-reload-icon { animation: spin 1s linear infinite; }
 .land-claim-grid-wrap {
+  position: relative;
   min-height: 300px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, .07);
@@ -5147,6 +5311,39 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
     linear-gradient(rgba(255, 255, 255, .025) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, .025) 1px, transparent 1px);
   background-size: 18px 18px;
+}
+.land-claim-north-indicator {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  min-width: 52px;
+  padding: 7px 6px 6px;
+  border: 1px solid rgba(227, 173, 66, .48);
+  border-radius: 8px;
+  background: rgba(17, 15, 12, .88);
+  color: var(--muted-warm);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  line-height: 1;
+  text-transform: uppercase;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .24);
+}
+.land-claim-north-arrow {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(227, 173, 66, .34);
+  border-radius: 50%;
+  background: rgba(227, 173, 66, .09);
+  color: #f0bd55;
+  transform-origin: center;
 }
 .land-claim-grid { display: block; width: 100%; height: clamp(300px, 42vw, 500px); }
 .land-claim-cell {
@@ -6436,6 +6633,12 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .community-button { width: 100%; min-height: 44px; }
   .panel, .drawer, .action-section { padding: clamp(11px, 3vw, 16px); }
   .panel-title, .action-row, .action-line { align-items: stretch; }
+  /* stretch makes the StatusBadge grow to the Dismiss button and keep its text
+     on the first line, while this badge stays 25px and centres in the row --
+     measured 9px lower than its neighbour. Scoped here because the row is
+     align-items: center above this breakpoint, where the default already
+     agrees and flex-start would introduce the same 9px in the other direction. */
+  .task-warning-count { align-self: flex-start; }
   .panel-title > .action-row,
   .panel-title > .service-actions,
   .panel-title > .addons-title-actions,
@@ -6520,8 +6723,61 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .playerAdmin_header { grid-template-columns: 1fr; }
   .playerAdmin_customizationCards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .playerAdmin_summaryActions { align-items: stretch; }
-  .playerAdmin_filterToolsRow { justify-content: flex-start; width: 100%; flex-basis: 100%; }
-  .playerAdmin_filterTextInput { flex: 1 1 220px; min-width: 0; }
+  .playerAdmin_filterActionLine { align-items: stretch; }
+  .playerAdmin_filterToolsRow,
+  .playerAdmin_filterActionsRight {
+    width: 100%;
+    max-width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+  .playerAdmin_filterToolsRow { flex-basis: 100%; }
+  .playerAdmin_filterTextInput {
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+  }
+  .playerAdmin_filterToolsRow .playerAdmin_note {
+    min-width: 0;
+    min-height: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .playerAdmin_filterActionsRight select {
+    flex: 1 1 180px;
+    width: auto;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .playerAdmin_iconRail::before {
+    top: 48px;
+    transform: none;
+  }
+  .playerAdmin_iconRailItems {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    overflow: visible;
+  }
+  .playerAdmin_iconRailItems::before { display: none; }
+  .playerAdmin_iconRailIconGroup {
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+  .playerAdmin_iconRailLabel {
+    justify-self: center;
+    max-width: 100%;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
+  }
   .live-map-toolbar label { width: 100%; justify-content: space-between; }
   .live-map-toolbar input[type="range"].live-map-zoom-range { flex: 1 1 auto; width: auto; min-width: 120px; }
   .live-map-frame { width: 100%; min-width: 0; height: clamp(360px, 58dvh, 600px); }
