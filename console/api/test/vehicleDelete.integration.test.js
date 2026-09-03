@@ -362,12 +362,17 @@ test("real PostgreSQL: background flush retains a Travel-state vehicle without b
       queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
 
       const db = pgTransactionalDb(pool);
+      let backupCalls = 0;
       for (let round = 0; round < 4; round += 1) {
-        const result = await flushVehicleDeletes(db, repoRoot, { now: () => 1_000_000 + round * 120_000 });
+        const result = await flushVehicleDeletes(db, repoRoot, {
+          now: () => 1_000_000 + round * 120_000,
+          onBeforeApply: () => { backupCalls += 1; }
+        });
         assert.equal(result.flushed[0].ok, false);
         assert.equal(result.flushed[0].attempts, 0);
         assert.equal(result.flushed[0].dropped, false);
       }
+      assert.equal(backupCalls, 0, "a predictably blocked retry must not create a database backup");
       assert.equal(listQueuedVehicleDeletes(repoRoot)[0].attempts, 0);
       assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
     });
@@ -391,6 +396,55 @@ test("real PostgreSQL: explicit map-down flush deletes a Travel-state vehicle", 
   });
 });
 
+// Measured against a real database: the poller sets nextRetryAt = now + 60s on
+// every failed attempt, so a blocked entry sits inside a backoff window for ~55
+// of every 60 seconds. Honouring that window on the map-down pass meant the one
+// moment allowBlockedStates could ever apply was skipped most of the time --
+// upstream's fix was defeated in practice by a pre-existing skip.
+test("real PostgreSQL: the map-down pass applies an entry the poller just backed off", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', null)");
+      await pool.query("insert into dune.actor_state (actor_id, state) values ($1, 'Travel')", [VEHICLE_ID]);
+      queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
+
+      const db = pgTransactionalDb(pool);
+      // Poller attempt: refused, and it stamps a retry window on the entry.
+      const blocked = await flushVehicleDeletes(db, repoRoot, { now: () => 1_000_000 });
+      assert.equal(blocked.flushed[0].ok, false);
+      assert.ok(listQueuedVehicleDeletes(repoRoot)[0].nextRetryAt > 1_000_000);
+
+      // Map-down hook lands inside that window, as it usually will.
+      const hook = await flushVehicleDeletes(db, repoRoot, {
+        now: () => 1_000_001, allowBlockedStates: true, ignoreRetryBackoff: true
+      });
+      assert.equal(hook.flushed[0].ok, true);
+      assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
+    });
+  });
+});
+
+test("real PostgreSQL: the background poller still honours its own backoff", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', null)");
+      await pool.query("insert into dune.actor_state (actor_id, state) values ($1, 'Travel')", [VEHICLE_ID]);
+      queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
+
+      const db = pgTransactionalDb(pool);
+      await flushVehicleDeletes(db, repoRoot, { now: () => 1_000_000 });
+      // No ignoreRetryBackoff: the entry is skipped entirely, so nothing is
+      // reported for it at all.
+      const second = await flushVehicleDeletes(db, repoRoot, { now: () => 1_000_001 });
+      assert.deepEqual(second.flushed, []);
+      assert.equal(second.pending, 1);
+      assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
+    });
+  });
+});
+
 test("real PostgreSQL: flush leaves a delete queued while its map is still live", async (t) => {
   await withDatabase(t, async (pool) => {
     await withTempRepoRoot(async (repoRoot) => {
@@ -407,6 +461,49 @@ test("real PostgreSQL: flush leaves a delete queued while its map is still live"
       const afterDwell = await flushVehicleDeletes(db, repoRoot, { now: () => 1_000_000 + 30_000 });
       assert.equal(afterDwell.flushed[0]?.ok, true);
       assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
+    });
+  });
+});
+
+test("real PostgreSQL: an explicitly stopped assigned partition bypasses only the disconnect dwell", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', 'srv-stopped')");
+      queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
+
+      const db = pgTransactionalDb(pool);
+      const result = await flushVehicleDeletes(db, repoRoot, {
+        now: () => 1_000_000,
+        trustedDownPartitionIds: new Set([3])
+      });
+
+      assert.equal(result.flushed[0]?.ok, true);
+      assert.equal(result.pending, 0);
+      assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
+    });
+  });
+});
+
+test("real PostgreSQL: trusted stop metadata never overrides a live game connection", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', 'srv-live')");
+      queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
+      const live = await pool.connect();
+      try {
+        await live.query("set application_name = 'DuneSandbox - srv-live'");
+        const result = await flushVehicleDeletes(pgTransactionalDb(pool), repoRoot, {
+          now: () => 1_000_000,
+          trustedDownPartitionIds: new Set([3])
+        });
+        assert.deepEqual(result.flushed, []);
+        assert.equal(result.pending, 1);
+        assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
+      } finally {
+        live.release();
+      }
     });
   });
 });
