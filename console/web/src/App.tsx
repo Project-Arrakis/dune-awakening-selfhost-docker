@@ -375,10 +375,32 @@ export function App() {
   // OAuth application is fully configured; the button is otherwise absent.
   const [discordSignInAvailable, setDiscordSignInAvailable] = useState(false);
   const [discordPendingRestart, setDiscordPendingRestart] = useState(false);
+  // #643: an operator RECONFIGURING Discord from an already-authenticated
+  // Settings session sets this sessionStorage marker immediately before
+  // navigating to the setup-mode OAuth round-trip -- distinguishing that
+  // return from the pre-login first-run flow below, which also lands back on
+  // "/?discordSetup=done" but must keep its existing standalone-wizard +
+  // forced-logout behavior unchanged. Read (and removed) at most once per
+  // mount, via this lazy initializer -- never re-checked afterward, so a
+  // later reload of "/" after the marker's own consumption cannot re-trigger it.
+  const [discordSetupReturnMarker] = useState(() => {
+    try {
+      const value = window.sessionStorage.getItem("dune-console:discord-setup-return");
+      if (value) window.sessionStorage.removeItem("dune-console:discord-setup-return");
+      return value;
+    } catch { return null; }
+  });
   // Guided first-run setup: opened from the sign-in page (after the password),
-  // or automatically when returning from the setup-mode Discord round-trip.
-  const [discordSetupOpen, setDiscordSetupOpen] = useState(() => new URLSearchParams(window.location.search).has("discordSetup"));
-  const [wantDiscordSetup, setWantDiscordSetup] = useState(() => new URLSearchParams(window.location.search).has("discordSetup"));
+  // or automatically when returning from the setup-mode Discord round-trip --
+  // but NOT when discordSetupReturnMarker is set, since that return belongs to
+  // the embedded-in-Settings reconfiguration path instead (see autoOpenDiscordSetup below).
+  const [discordSetupOpen, setDiscordSetupOpen] = useState(() => !discordSetupReturnMarker && new URLSearchParams(window.location.search).has("discordSetup"));
+  const [wantDiscordSetup, setWantDiscordSetup] = useState(() => !discordSetupReturnMarker && new URLSearchParams(window.location.search).has("discordSetup"));
+  // #643: read once (see discordSetupReturnMarker above), passed to SettingsPanel
+  // to auto-expand its embedded Discord wizard on mount; SettingsPanel calls
+  // onDiscordSetupAutoOpened() once it has, so a later remount (navigate away
+  // from Settings and back) never re-triggers the auto-open.
+  const [autoOpenDiscordSetup, setAutoOpenDiscordSetup] = useState(() => Boolean(discordSetupReturnMarker));
   const [showPasswordLogin, setShowPasswordLogin] = useState(false);
   // Focuses the admin-password field the moment "Set up Discord sign-in" is
   // clicked (issue #666 -- live-testing feedback: the instruction that follows
@@ -407,6 +429,13 @@ export function App() {
   const [meFetchFailed, setMeFetchFailed] = useState(false);
   const [userInfo, setUserInfo] = useState<{ username: string; displayName: string; tier: string } | null>(null);
   const [tab, setTab] = useActiveTab();
+  // #643: the one-shot Settings redirect for a reconfiguration Discord round-trip
+  // (see discordSetupReturnMarker above) -- must run after useActiveTab so setTab
+  // is already defined; deliberately outside any other effect's deps.
+  useEffect(() => {
+    if (discordSetupReturnMarker) setTab("Settings");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on mount
+  }, []);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
   const [selectedPinnedAddonId, setSelectedPinnedAddonId] = useState("");
@@ -1160,6 +1189,8 @@ export function App() {
           publicListingUrl={publicDirectoryStatus?.serverId ? publicServerListingUrl(publicDirectoryStatus.serverId) : undefined}
           confirmAction={confirmDialog}
           onTotpEnrollmentStarted={() => setSetupMode("enroll")}
+          autoOpenDiscordSetup={autoOpenDiscordSetup}
+          onDiscordSetupAutoOpened={() => setAutoOpenDiscordSetup(false)}
         /></LazyTabBoundary>}
         {!redeploySetupOpen && tab !== "Maps" && <TaskProgress task={task} onDismiss={() => setTask(null)} />}
         <AppFooter />
