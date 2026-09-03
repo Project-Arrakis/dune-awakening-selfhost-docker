@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, renameSync, chmodSync } from "node:fs";
 import { resolve } from "node:path";
 
 // Every writer of .env (the wizard's per-field save, the manual Discord OAuth
@@ -65,6 +65,14 @@ export function updateEnvFileValues(repoRoot, entries) {
     // partially written.
     const tempPath = `${envPath}.${process.pid}.tmp`;
     writeFileSync(tempPath, `${next.join("\n")}\n`, { mode: 0o644 });
+    // Layer 3 audit finding (#676 follow-up): writeFileSync's `mode` option
+    // is masked by the process umask at creation time (unlike chmod, which
+    // is not) -- on a host/container with a stricter default umask, the temp
+    // file could be created at 0600 and silently leave .env there after the
+    // rename, breaking anything that previously relied on it being readable
+    // at 0644. chmodSync explicitly re-asserts the intended mode regardless
+    // of umask.
+    chmodSync(tempPath, 0o644);
     renameSync(tempPath, envPath);
   });
 }
