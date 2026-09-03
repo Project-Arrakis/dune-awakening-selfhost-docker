@@ -20,7 +20,8 @@ import {
   queueWaterRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
-import { addBaseContainerItem, addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteAllBaseContainerItems, deleteBaseContainerItem, deleteInventoryItem, deleteMultipleBaseContainerItems, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, fillItemToBaseContainer, fillItemToStorage, generatorUptimePolicy, giveItemToBaseContainer, giveItemToPlayer, giveItemToStorage, giveMultipleItemsToBaseContainer, guildMembers, inspectDeletedCharacterRecovery, inspectLandsraadQuestRepairs, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerCustomizationGrantState, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerServerMemberships, playerSolarisCoinTotal, playerTeleportDestinations, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, recoverDeletedCharacter, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairLandsraadQuests, repairVehicleDecay, resetJourneyNode, resetTutorial, resolvePlayerTarget, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, teleportPlayer, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
+import { deleteBaseCompletely } from "../src/duneDb.js";
+import { addBaseContainerItem, addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addonPlayerIdentities, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteAllBaseContainerItems, deleteBaseContainerItem, deleteInventoryItem, deleteMultipleBaseContainerItems, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, fillItemToBaseContainer, fillItemToStorage, generatorUptimePolicy, giveItemToBaseContainer, giveItemToPlayer, giveItemToStorage, giveMultipleItemsToBaseContainer, guildMembers, inspectDeletedCharacterRecovery, inspectLandsraadQuestRepairs, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerCustomizationGrantState, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerServerMemberships, playerSolarisCoinTotal, playerTeleportDestinations, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, recoverDeletedCharacter, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairLandsraadQuests, repairVehicleDecay, resetJourneyNode, resetTutorial, resolvePlayerTarget, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, teleportPlayer, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 import { listStorage, liveMapBases, liveMapStorage, liveMapVehicles, portalStorage, trackPlayerPlaytime } from "../src/duneDb.js";
 
 beforeEach(() => {
@@ -1649,6 +1650,24 @@ test("players query uses parameterized search input", async () => {
   assert.equal(result.rows[0].action_player_id, "RedBlink#75570");
 });
 
+test("players sorted by last online rank current players ahead of stored timestamps", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "online_status" }] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 2 }] };
+      return { rows: [{ actor_id: 82, total_count: 2 }] };
+    }
+  };
+
+  await listPlayers(db, { sortColumn: "last_seen", sortDirection: "desc" });
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+
+  assert.match(playerQuery.text, /order by case when actual_online_status = 'Online' then 0 else 1 end asc, last_seen desc, actor_id desc/);
+});
+
 test("players query resolves the game map partition used by configured Sietch names", async () => {
   const calls = [];
   const db = {
@@ -1712,7 +1731,7 @@ test("playtime tracker persists active sessions and closes players no longer onl
   const calls = [];
   const run = async (text, values = []) => {
     calls.push({ text, values });
-    if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+    if (text.includes("to_regclass")) return { rows: [{ exists: values[0] !== "dune.console_player_playtime" }] };
     if (text.includes("information_schema.columns")) {
       return { rows: ["account_id", "online_status", "last_login_time"].map((column_name) => ({ column_name })) };
     }
@@ -1736,7 +1755,7 @@ test("playtime tracker remains compatible without a session login timestamp", as
   const db = {
     query: async (text, values = []) => {
       calls.push({ text, values });
-      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regclass")) return { rows: [{ exists: values[0] !== "dune.console_player_playtime" }] };
       if (text.includes("information_schema.columns")) {
         return { rows: ["account_id", "online_status"].map((column_name) => ({ column_name })) };
       }
@@ -1747,6 +1766,31 @@ test("playtime tracker remains compatible without a session login timestamp", as
   await trackPlayerPlaytime(db);
   const tick = calls.find((call) => call.text.includes("with currently_online as"));
   assert.match(tick.text, /null::timestamp with time zone as session_login_at/);
+});
+
+test("playtime tracker recreates its Console-owned table after a database restore removes it", async () => {
+  const calls = [];
+  let playtimeTableExists = false;
+  const run = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes("to_regclass")) {
+      const name = String(values[0] || "");
+      return { rows: [{ exists: name === "dune.console_player_playtime" ? playtimeTableExists : true }] };
+    }
+    if (text.includes("information_schema.columns")) {
+      return { rows: ["account_id", "online_status", "last_login_time"].map((column_name) => ({ column_name })) };
+    }
+    if (text.includes("create table if not exists dune.console_player_playtime")) playtimeTableExists = true;
+    return { rows: [] };
+  };
+  const db = { query: run, transaction: async (fn) => fn({ query: run }) };
+
+  await trackPlayerPlaytime(db);
+  playtimeTableExists = false; // A foreign restore replaced the dune schema.
+  await trackPlayerPlaytime(db);
+
+  assert.equal(calls.filter((call) => call.text.includes("create table if not exists dune.console_player_playtime")).length, 2);
+  assert.equal(calls.filter((call) => call.text.includes("with currently_online as")).length, 2);
 });
 
 test("storage discovery includes verified developer storage containers", async () => {
@@ -2229,6 +2273,55 @@ test("addon leadership players include level and faction summaries", async () =>
     ["Test Two", 7, "Harkonnen"]
   ]);
   assert.deepEqual(result.rows.map((row) => row.guild), ["Water Sellers", "Spice Guild"]);
+});
+
+test("addon player identities expose the narrow identity shape in one platform lookup", async () => {
+  let platformLookups = 0;
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.actors", "dune.player_state", "dune.accounts"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) {
+        const table = String(values[1] || "");
+        if (table === "player_state") return { rows: ["player_pawn_id", "online_status"].map((column_name) => ({ column_name })) };
+        if (table === "accounts") return { rows: ["id", "platform_id", "platform_name"].map((column_name) => ({ column_name })) };
+        return { rows: [] };
+      }
+      if (text.includes("from dune.actors a")) {
+        return { rows: [
+          { actor_id: 101, player_pawn_id: 101, account_id: 201, character_name: "Test One", player_controller_id: 301, funcom_id: "TestOne#1234", fls_id: "72BBAAAC39232A68", map: "Survival_1", online_status: "Online", last_seen: "" },
+          { actor_id: 102, player_pawn_id: 102, account_id: 202, character_name: "Test Two", player_controller_id: 302, funcom_id: "TestTwo#5678", fls_id: "72BBAAAC39232A69", map: "Overmap", online_status: "Offline", last_seen: "" }
+        ] };
+      }
+      if (text.includes("from dune.accounts") && text.includes("where id = any")) {
+        platformLookups += 1;
+        assert.deepEqual(values, [["201", "202"]]);
+        return { rows: [
+          { account_id: "201", platform_id: "76561198000000001", platform_name: "Steam" },
+          { account_id: "202", platform_id: "76561198000000002", platform_name: "Steam" }
+        ] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const result = await addonPlayerIdentities(db);
+  assert.deepEqual(result.capabilities, { players: true, identities: true });
+  assert.equal(platformLookups, 1);
+  assert.deepEqual(result.rows, [
+    {
+      actorId: "101", controllerId: "301", accountId: "201", name: "Test One",
+      funcomId: "TestOne#1234", flsId: "72BBAAAC39232A68",
+      platformId: "76561198000000001", platformName: "Steam", status: "Online", map: "Survival_1"
+    },
+    {
+      actorId: "102", controllerId: "302", accountId: "202", name: "Test Two",
+      funcomId: "TestTwo#5678", flsId: "72BBAAAC39232A69",
+      platformId: "76561198000000002", platformName: "Steam", status: "Offline", map: "Overmap"
+    }
+  ]);
 });
 
 test("list guilds returns capability response when dune.guilds is missing", async () => {
@@ -3703,15 +3796,16 @@ test("live map player markers validate map filter and use parameterized transfor
     query: async (text, values = []) => {
       calls.push({ text, values });
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
-      return { rows: [{ id: 10, type: "player", name: "Red", online_status: "Online", map: "Survival_1", partition_id: 1, class: "Player", x: "1", y: "2", z: "3" }] };
+      return { rows: [{ id: 10, type: "player", name: "Red", online_status: "Online", map: "DeepDesert", partition_id: 1, class: "Player", x: "-52656", y: "-52066", z: "3" }] };
     }
   };
-  const result = await liveMapPlayers(db, "Survival_1");
+  const result = await liveMapPlayers(db, "DeepDesert");
   assert.equal(result.rows[0].type, "player");
+  assert.equal(result.rows[0].sector, "E5");
   const markerQuery = calls.find((call) => call.text.includes("join dune.player_state"));
   assert.ok(markerQuery);
   assert.match(markerQuery.text, /a\.map = \$1/);
-  assert.deepEqual(markerQuery.values, ["Survival_1"]);
+  assert.deepEqual(markerQuery.values, ["DeepDesert"]);
   await assert.rejects(() => liveMapPlayers(db, "bad;map"), /Invalid map name/);
 });
 
@@ -7331,6 +7425,29 @@ test("research listing exposes purchased entries whose build recipe needs repair
   assert.equal(result.rows[1].needsRecipeRepair, false);
 });
 
+test("research listing verifies building research against building progression", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    researchListRows: [
+      { item_key: "BLD_LargeOreRefinery_Patent", unlocked_state: "Purchased", is_new: false },
+      { item_key: "BLD_LargeSpiceRefinery_Patent", unlocked_state: "Purchased", is_new: false }
+    ],
+    craftingListRows: [],
+    buildingProgressionRows: [{
+      learned_building_sets: ["LargeOreRefinery_Patent"],
+      new_buildable_pieces: []
+    }]
+  });
+  const result = await playerResearchItems(db, 123);
+  assert.equal(result.rows[0].unlockKind, "building");
+  assert.equal(result.rows[0].unlockId, "LargeOreRefinery_Patent");
+  assert.equal(result.rows[0].unlocked, true);
+  assert.equal(result.rows[0].needsUnlockRepair, false);
+  assert.equal(result.rows[1].unlocked, false);
+  assert.equal(result.rows[1].unlockId, "LargeSpiceRefinery_Patent");
+  assert.equal(result.rows[1].needsUnlockRepair, true);
+});
+
 test("building unlock state reads owned progression and pending patent tokens without changing either", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
@@ -7380,24 +7497,27 @@ test("research unlock updates TechKnowledge and materializes verified recipe", a
   assert.equal(JSON.parse(recipeUpdate.values[1])[0].BaseRecipeId.Name, "HealthPackRecipe");
 });
 
-test("research unlock appends missing verified key without duplicating existing entries", async () => {
+test("research unlock appends building research to authoritative building progression", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     researchExists: true,
     currentResearchItems: [{ ItemKey: "DA_GRP_SandbikePack", bIsNewEntry: true, UnlockedState: "NotPurchased" }],
-    currentCraftingRecipes: []
+    buildingProgressionRows: [{ learned_building_sets: [], new_buildable_pieces: [] }]
   });
-  const result = await unlockResearchItem(db, 123, { itemKey: "BLD_WaterCistern_Patent" });
-  assert.equal(result.recipeId, "WaterCistern_Patent");
-  assert.equal(result.recipeMaterialized, true);
+  const result = await unlockResearchItem(db, 123, { itemKey: "BLD_LargeOreRefinery_Patent" });
+  assert.equal(result.unlockKind, "building");
+  assert.equal(result.buildingUnlockId, "LargeOreRefinery_Patent");
+  assert.equal(result.buildingPieceId, "LargeOreRefinery_Placeable");
+  assert.equal(result.buildingProgressionUpdated, true);
   const researchUpdate = calls.find((call) => call.text.includes("TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData") && call.text.includes("update dune.actors"));
   assert.ok(researchUpdate);
   const items = JSON.parse(researchUpdate.values[1]);
   assert.equal(items.length, 2);
-  assert.deepEqual(items[1], { ItemKey: "BLD_WaterCistern_Patent", bIsNewEntry: false, UnlockedState: "Purchased" });
-  const recipeUpdate = calls.find((call) => call.text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && call.text.includes("update dune.actors"));
-  assert.ok(recipeUpdate);
-  assert.equal(JSON.parse(recipeUpdate.values[1])[0].BaseRecipeId.Name, "WaterCistern_Patent");
+  assert.deepEqual(items[1], { ItemKey: "BLD_LargeOreRefinery_Patent", bIsNewEntry: false, UnlockedState: "Purchased" });
+  const progressionUpdate = calls.find((call) => call.text.includes("update dune.building_progression"));
+  assert.ok(progressionUpdate);
+  assert.deepEqual(progressionUpdate.values, [5, ["LargeOreRefinery_Patent"], ["LargeOreRefinery_Placeable"]]);
+  assert.equal(calls.some((call) => call.text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && call.text.includes("update dune.actors")), false);
 });
 
 test("research unlock repairs an already-purchased entry with a missing recipe", async () => {
@@ -7421,13 +7541,13 @@ test("research unlock uses exact catalog building IDs when the research key is n
   const db = fakeMutationDb(calls, {
     researchExists: true,
     currentResearchItems: [],
-    currentCraftingRecipes: []
+    buildingProgressionRows: [{ learned_building_sets: [], new_buildable_pieces: [] }]
   });
   const result = await unlockResearchItem(db, 123, { itemKey: "BLD_SmallSpiceRefinery" });
-  assert.equal(result.recipeId, "SmallSpiceRefinery");
-  assert.equal(result.recipeMaterialized, true);
-  const recipeUpdate = calls.find((call) => call.text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && call.text.includes("update dune.actors"));
-  assert.equal(JSON.parse(recipeUpdate.values[1])[0].BaseRecipeId.Name, "SmallSpiceRefinery");
+  assert.equal(result.unlockKind, "building");
+  assert.equal(result.buildingUnlockId, "SmallSpiceRefinery");
+  const progressionUpdate = calls.find((call) => call.text.includes("update dune.building_progression"));
+  assert.deepEqual(progressionUpdate.values, [5, ["SmallSpiceRefinery"], ["SmallSpiceRefinery_Placeable"]]);
 });
 
 test("research unlock does not change research when the recipe component is unavailable", async () => {
@@ -7440,6 +7560,20 @@ test("research unlock does not change research when the recipe component is unav
   await assert.rejects(
     () => unlockResearchItem(db, 123, { itemKey: "RCP_HealthPackRecipe" }),
     /research was not changed/
+  );
+  assert.equal(calls.some((call) => call.text.includes("TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData") && call.text.includes("update dune.actors")), false);
+});
+
+test("building research does not change research when building progression is unavailable", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    researchExists: true,
+    currentResearchItems: [{ ItemKey: "BLD_LargeSpiceRefinery_Patent", bIsNewEntry: true, UnlockedState: "NotPurchased" }],
+    buildingProgressionRows: []
+  });
+  await assert.rejects(
+    () => unlockResearchItem(db, 123, { itemKey: "BLD_LargeSpiceRefinery_Patent" }),
+    /Building progression was not found/
   );
   assert.equal(calls.some((call) => call.text.includes("TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData") && call.text.includes("update dune.actors")), false);
 });
@@ -7855,6 +7989,36 @@ test("player live teleport builds a command with the actual FLS id", async () =>
   assert.equal(result.playerId, "FLS42");
   assert.deepEqual([result.x, result.y, result.z, result.yaw], [11.5, -22.5, 33.5, 0]);
   assert.match(result.message, /will be teleported/i);
+  await assert.rejects(
+    () => teleportPlayer(db, 42, { mode: "coordinates", x: 11.5, y: -22.5, z: 33.5, partitionId: 8 }),
+    /only move a player within their current Sietch or map/i
+  );
+});
+
+test("player live teleport resolves the stable FLS id used by Live Map markers", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes('where ac."user" = $1') && text.includes("a.class ilike")) {
+        return { rows: [{ actor_id: 42 }] };
+      }
+      if (text.includes("from dune.actors a") && text.includes("player_state ps") && text.includes("where a.id = $1")) {
+        return { rows: [{ actor_id: 42, account_id: 7, controller_id: 8, player_state_id: 9, online_status: "Online" }] };
+      }
+      if (text.includes("from dune.accounts ac")) {
+        return { rows: [{ fls_id: "FLS42", character_name: "To'bar", map: "HaggaBasin", partition_id: 4 }] };
+      }
+      throw new Error(`unexpected query: ${text}`);
+    }
+  };
+
+  const result = await teleportPlayer(db, "FLS42", { mode: "coordinates", x: 11.5, y: -22.5, z: 33.5, partitionId: 4 });
+
+  assert.equal(result.playerId, "FLS42");
+  assert.equal(result.partitionId, 4);
+  assert.deepEqual(calls[0].values, ["FLS42"]);
+  assert.deepEqual(calls[1].values, [42]);
 });
 
 function fakeMutationDb(calls, fixtures = {}) {
@@ -8534,6 +8698,35 @@ test("flush preserves a refill queued while it was awaiting the database", async
 
     assert.deepEqual(result.flushed.map((entry) => entry.baseId), [482]);
     assert.deepEqual(listQueuedGeneratorRefills(repoRoot).map((entry) => entry.baseId), [517]);
+  });
+});
+
+// Partitions are re-observed per entry, not once at pass start. A pass is
+// several round-trips per entry and can outlive the window it began in -- a map
+// server reconnecting partway through, or a pass the restart timeout abandoned
+// but could not cancel. Writing to a live map is what these queues exist to
+// avoid, since the game never picks those writes up.
+test("a map that comes back up mid-pass stops the entries that follow", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    _resetRefillPartitionDwellForTests();
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 });
+    queueGeneratorRefill(repoRoot, { baseId: 517, map: "Overmap", partitionId: 9 });
+
+    const partitions = [{ partitionId: 3, unassigned: true }, { partitionId: 9, unassigned: true }];
+    const { db } = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions });
+    const inner = db.transaction;
+    db.transaction = async (fn) => {
+      // The map servers reconnect while the first entry is being written.
+      partitions[0] = { partitionId: 3, connected: true };
+      partitions[1] = { partitionId: 9, connected: true };
+      return inner(fn);
+    };
+
+    const result = await flushGeneratorRefills(db, repoRoot);
+
+    assert.deepEqual(result.flushed.map((entry) => entry.baseId), [482], "only the entry begun while the map was down");
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot).map((entry) => entry.baseId), [517],
+      "the rest stay queued for a window that is genuinely safe");
   });
 });
 
@@ -9377,4 +9570,92 @@ test("vehicleStorageDeleteSafety withholds deletion when the schema cannot suppo
   assert.equal(safety.safe, false);
   assert.equal(safety.known, true);
   assert.match(safety.reason, /dune\.delete_item\(bigint\)/);
+});
+
+// The map-down hook passes ignoreRetryBackoff so a restart's brief write window
+// is not wasted on entries the 5s poller happens to have backed off. Measured on
+// a live server: the poller stamps nextRetryAt 60s out on every failed attempt
+// and runs every 5s, so a persistently-blocked entry sits inside a backoff
+// window for roughly 55 of every 60 seconds -- the hook lands in one about 92%
+// of the time and would silently apply nothing.
+//
+// These cover the three queues the delete queues' own tests do not reach. Each
+// asserts both directions, because only the pair is meaningful: honouring the
+// window without the flag, and overriding it with the flag. A skipped entry
+// produces no flushed record at all, which is what distinguishes it from one
+// that was attempted and failed.
+const BACKOFF_AT = 5_000_000;
+
+function alwaysFailingDb(partitions) {
+  const { db } = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions });
+  db.transaction = async () => { throw new Error("simulated write failure"); };
+  return db;
+}
+
+for (const queue of [
+  {
+    label: "generator refill",
+    queueEntry: (repoRoot) => queueGeneratorRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 }),
+    flush: (db, repoRoot, options) => flushGeneratorRefills(db, repoRoot, options),
+    list: listQueuedGeneratorRefills
+  },
+  {
+    label: "water refill",
+    queueEntry: (repoRoot) => queueWaterRefill(repoRoot, { baseId: 482, map: "Survival_1", partitionId: 3 }),
+    flush: (db, repoRoot, options) => flushWaterRefills(db, repoRoot, options),
+    list: listQueuedWaterRefills
+  }
+]) {
+  test(`the map-down pass applies a ${queue.label} the poller just backed off`, async () => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      queue.queueEntry(repoRoot);
+      const db = alwaysFailingDb(DESPAWNED_PARTITIONS);
+
+      // Poller attempt fails and stamps a retry window on the entry.
+      const first = await queue.flush(db, repoRoot, { now: () => BACKOFF_AT });
+      assert.equal(first.flushed.length, 1, "the first pass must actually attempt the entry");
+      assert.ok(queue.list(repoRoot)[0].nextRetryAt > BACKOFF_AT, "a retry window must be stamped");
+
+      // Background tick inside that window: skipped entirely, nothing reported.
+      _resetRefillPartitionDwellForTests();
+      const skipped = await queue.flush(db, repoRoot, { now: () => BACKOFF_AT + 1 });
+      assert.deepEqual(skipped.flushed, [], "the poller must still honour its own backoff");
+
+      // Map-down hook in the same window: attempted despite the backoff.
+      _resetRefillPartitionDwellForTests();
+      const forced = await queue.flush(db, repoRoot, { now: () => BACKOFF_AT + 1, ignoreRetryBackoff: true });
+      assert.equal(forced.flushed.length, 1, "ignoreRetryBackoff must override the window");
+      assert.equal(forced.flushed[0].baseId, 482);
+    });
+  });
+}
+
+// supportsBaseDelete must probe every relation the delete path reads. The
+// in-transaction backed-up guard LEFT JOINs dune.permission_actor, so a schema
+// without it has to fail as a clean capability message -- not as an aborted
+// transaction after the claim actor is already locked FOR UPDATE.
+function baseDeleteCapabilityDb({ missingTable = null } = {}) {
+  const query = async (text, values = []) => {
+    if (text.includes("to_regclass")) {
+      const target = String(values[0]);
+      return okRows([{ exists: missingTable ? target !== `dune.${missingTable}` : true }]);
+    }
+    if (text.includes("to_regprocedure")) return okRows([{ exists: true }]);
+    return okRows([]);
+  };
+  return { query, transaction: async (fn) => fn({ query }) };
+}
+
+test("base delete reports unsupported capability when permission_actor is absent", async () => {
+  const db = baseDeleteCapabilityDb({ missingTable: "permission_actor" });
+  await assert.rejects(() => deleteBaseCompletely(db, 1), UnsupportedCapabilityError);
+});
+
+// Control: with the same mock and nothing missing, the capability gate passes
+// and the call gets far enough to fail on the base lookup instead. Without this
+// the test above would still pass if the probe rejected for any other reason.
+test("base delete passes the capability gate once permission_actor is present", async () => {
+  const db = baseDeleteCapabilityDb();
+  await assert.rejects(() => deleteBaseCompletely(db, 1), /was not found/);
 });

@@ -8,6 +8,7 @@ import { redact } from "./redact.js";
 import { itemImagePath } from "./adminCatalog.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
 import { isFiefClaimPlaceable } from "./blueprintSafety.js";
+import { withLiveMapSector } from "./liveMapSector.js";
 import { renderPlayerMessageTemplate } from "./services/messageTemplate.js";
 import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA, MESSAGE_OF_THE_DAY_PERSONA } from "./systemPersonas.js";
 import {
@@ -1453,28 +1454,40 @@ const PLAYER_SORT_COLUMNS = {
 
 const playerPlaytimeMigrations = new WeakMap();
 
-export function migratePlayerPlaytimeSchema(db) {
-  if (!playerPlaytimeMigrations.has(db)) {
-    const migrate = async (tx) => {
-      await tx.query(`
-        create table if not exists dune.console_player_playtime (
-          account_id bigint primary key,
-          total_seconds bigint not null default 0,
-          session_started_at timestamp with time zone,
-          session_login_at timestamp with time zone,
-          last_observed_at timestamp with time zone,
-          updated_at timestamp with time zone not null default current_timestamp,
-          constraint console_player_playtime_total_nonnegative check (total_seconds >= 0)
-        )`);
-    };
-    const promise = Promise.resolve(typeof db.transaction === "function" ? db.transaction(migrate) : migrate(db))
-      .catch((error) => {
-        playerPlaytimeMigrations.delete(db);
-        throw error;
-      });
-    playerPlaytimeMigrations.set(db, promise);
+export async function migratePlayerPlaytimeSchema(db) {
+  // A restore replaces the whole dune schema underneath the long-lived
+  // Console process. A backup from another installation may not contain this
+  // Console-owned table, so a previously resolved migration promise is not
+  // proof that the table still exists. Recheck before reusing the process-local
+  // cache and recreate it after a restore when necessary.
+  if (await tableExists(db, "console_player_playtime")) return;
+
+  const cached = playerPlaytimeMigrations.get(db);
+  if (cached) {
+    await cached;
+    if (await tableExists(db, "console_player_playtime")) return;
+    playerPlaytimeMigrations.delete(db);
   }
-  return playerPlaytimeMigrations.get(db);
+
+  const migrate = async (tx) => {
+    await tx.query(`
+      create table if not exists dune.console_player_playtime (
+        account_id bigint primary key,
+        total_seconds bigint not null default 0,
+        session_started_at timestamp with time zone,
+        session_login_at timestamp with time zone,
+        last_observed_at timestamp with time zone,
+        updated_at timestamp with time zone not null default current_timestamp,
+        constraint console_player_playtime_total_nonnegative check (total_seconds >= 0)
+      )`);
+  };
+  const promise = Promise.resolve(typeof db.transaction === "function" ? db.transaction(migrate) : migrate(db))
+    .catch((error) => {
+      playerPlaytimeMigrations.delete(db);
+      throw error;
+    });
+  playerPlaytimeMigrations.set(db, promise);
+  return promise;
 }
 
 // The game exposes current presence and the current session's login timestamp,
@@ -1572,8 +1585,19 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const safeSortColumn = Object.hasOwn(PLAYER_SORT_COLUMNS, sortColumn) ? sortColumn : "character_name";
   const safeSortDirection = String(sortDirection).toLowerCase() === "desc" ? "desc" : "asc";
   const sortOrder = PLAYER_SORT_COLUMNS[safeSortColumn].order;
-  const pagedOrder = [...sortOrder, ...(sortOrder.includes("actor_id") ? [] : ["actor_id"])]
-    .map((column) => `${column} ${safeSortDirection}`).join(", ");
+  // An online player is more recent than every stored last-seen timestamp,
+  // even when the game leaves that timestamp at the start of their session.
+  // Keep that presence rank outside the timestamp itself so the returned value
+  // remains the game's real data while Last Online sorting matches the UI's
+  // "Currently Active" state. Ascending uses the inverse rank naturally.
+  const pagedOrder = safeSortColumn === "last_seen"
+    ? [
+        `case when actual_online_status = 'Online' then 0 else 1 end ${safeSortDirection === "desc" ? "asc" : "desc"}`,
+        `last_seen ${safeSortDirection}`,
+        `actor_id ${safeSortDirection}`
+      ].join(", ")
+    : [...sortOrder, ...(sortOrder.includes("actor_id") ? [] : ["actor_id"])]
+        .map((column) => `${column} ${safeSortDirection}`).join(", ");
   const playerStateColumns = await columnsFor(db, "player_state");
   const hasWorldPartition = await tableExists(db, "world_partition");
   const encryptedAccountColumns = await tableExists(db, "encrypted_accounts")
@@ -1890,6 +1914,63 @@ export async function addonLeadershipPlayers(db) {
         status: row.online_status || "Offline",
         map: row.map || "",
         lastSeen: row.last_seen || ""
+      };
+    })
+  };
+}
+
+// Addons that correlate external player activity (for example chat events)
+// need stable game and platform identities, but not the broader player REST
+// API. Keep this response deliberately narrow and permission it through the
+// addon bridge's existing players:read grant.
+export async function addonPlayerIdentities(db) {
+  const result = await listAllPlayers(db, {});
+  if (!result?.capabilities?.players) return result;
+  const rows = result.rows || [];
+  const accountIds = [...new Set(rows
+    .map((row) => String(row.account_id || ""))
+    .filter((value) => /^[1-9][0-9]*$/.test(value)))];
+  const platforms = new Map();
+
+  if (accountIds.length && await tableExists(db, "accounts")) {
+    const accountColumns = await columnsFor(db, "accounts");
+    const platformIdSelect = accountColumns.has("platform_id")
+      ? "coalesce(platform_id::text, '')"
+      : "''";
+    const platformNameSelect = accountColumns.has("platform_name")
+      ? "coalesce(platform_name::text, '')"
+      : "''";
+    const platformResult = await db.query(`
+      select id::text as account_id,
+             ${platformIdSelect} as platform_id,
+             ${platformNameSelect} as platform_name
+      from dune.accounts
+      where id = any($1::bigint[])`, [accountIds]);
+    for (const row of platformResult.rows) {
+      platforms.set(String(row.account_id), {
+        platformId: String(row.platform_id || ""),
+        platformName: String(row.platform_name || "")
+      });
+    }
+  }
+
+  return {
+    capabilities: { players: true, identities: true },
+    rows: rows.map((row) => {
+      const actorId = String(row.actor_id || "");
+      const accountId = String(row.account_id || "");
+      const platform = platforms.get(accountId) || { platformId: "", platformName: "" };
+      return {
+        actorId,
+        controllerId: String(row.player_controller_id || ""),
+        accountId,
+        name: row.character_name || `Player ${actorId}`,
+        funcomId: String(row.funcom_id || ""),
+        flsId: String(row.fls_id || ""),
+        platformId: platform.platformId,
+        platformName: platform.platformName,
+        status: row.online_status || "Offline",
+        map: row.map || ""
       };
     })
   };
@@ -3062,10 +3143,15 @@ const LIVE_MAP_CONFIGS = {
     image: "/images/maps/deep-desert.png",
     width: 4096,
     height: 4096,
-    minX: -1268624.82,
-    maxX: 1163312.83,
-    minY: -1266548.17,
-    maxY: 1162416.13,
+    // The rect is the 9x9 sector square itself: 250,000 uu cells spanning
+    // +/-1,125,000 about the map centre, which is exactly what the image covers.
+    // It used to be ~8% wider, which stretched the picture across a rect it does
+    // not fill and drew every marker short of where the image puts it -- exact at
+    // the centre, 84,163 uu adrift at the edges, a third of a sector cell.
+    minX: -1177656,
+    maxX: 1072344,
+    minY: -1177066,
+    maxY: 1072934,
     flipY: false,
     defaultPartitionId: 8
   }
@@ -3099,9 +3185,10 @@ export async function liveMapPartitions(db) {
       where a.transform is not null and coalesce(a.partition_id, 0) > 0
       group by a.map, a.partition_id
       order by map, partition_id`);
-    return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0) })) };
+    return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0), alive: null, ready: null })) };
   }
   const hasActors = await tableExists(db, "actors");
+  const hasFarmState = await tableExists(db, "farm_state");
   const result = await db.query(`
     select
       -- wp.map is the internal instance name ("DeepDesert_1"/"Survival_1"),
@@ -3113,20 +3200,39 @@ export async function liveMapPartitions(db) {
       coalesce(case lower(wp.map) when 'deepdesert_1' then 'DeepDesert' when 'survival_1' then 'HaggaBasin' else wp.map end, '') as map,
       wp.partition_id,
       coalesce(nullif(wp.label, ''), nullif(wp.map, ''), 'Partition ' || wp.partition_id::text) as name,
-      ${hasActors ? "count(a.id) filter (where a.transform is not null)::int" : "0"} as marker_count
+      ${hasActors ? "count(a.id) filter (where a.transform is not null)::int" : "0"} as marker_count,
+      ${hasFarmState ? "coalesce(bool_or(fs.alive), false)" : "null::boolean"} as alive,
+      ${hasFarmState ? "coalesce(bool_or(fs.ready), false)" : "null::boolean"} as ready
     from dune.world_partition wp
     ${hasActors ? "left join dune.actors a on a.partition_id = wp.partition_id" : ""}
+    ${hasFarmState ? "left join dune.farm_state fs on fs.server_id = wp.server_id" : ""}
     -- Confirmed live: dungeon/ecolab/overmap sub-instances (CB_Dungeon_*,
     -- CB_Ecolab_*, CB_Overland_*, Overmap, ...) carry a real, non-null
     -- server_id too -- they are genuinely running server processes, just
     -- not ones the Live Map exposes a tab for. nullif(server_id, '') alone
     -- does not exclude them; only the two instance names the map-name
     -- translation above actually understands are real Live Map partitions.
-    where wp.partition_id > 0 and nullif(wp.server_id, '') is not null
-      and lower(wp.map) in ('deepdesert_1', 'survival_1')
+    where wp.partition_id > 0 and lower(wp.map) in ('deepdesert_1', 'survival_1')
     group by wp.partition_id, wp.map, wp.label
     order by map, wp.partition_id`);
-  return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0) })) };
+  return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0), alive: row.alive == null ? null : Boolean(row.alive), ready: row.ready == null ? null : Boolean(row.ready) })) };
+}
+
+export async function liveMapPartitionRuntimeState(db, partitionId) {
+  const safePartitionId = intParam(partitionId, "partition id", 1);
+  if (!(await tableExists(db, "world_partition")) || !(await tableExists(db, "farm_state"))) {
+    return { known: false, exists: null, alive: null, ready: null };
+  }
+  const result = await db.query(`
+    select wp.partition_id,
+           coalesce(fs.alive, false) as alive,
+           coalesce(fs.ready, false) as ready
+    from dune.world_partition wp
+    left join dune.farm_state fs on fs.server_id = wp.server_id
+    where wp.partition_id = $1
+    limit 1`, [safePartitionId]);
+  if (!result.rows[0]) return { known: true, exists: false, alive: false, ready: false };
+  return { known: true, exists: true, alive: Boolean(result.rows[0].alive), ready: Boolean(result.rows[0].ready) };
 }
 
 export async function liveMapPlayers(db, map = "") {
@@ -3227,7 +3333,26 @@ function safeDestinationFromTransform(row, forwardOffset, heightOffset) {
 }
 
 async function playerTeleportIdentity(db, actorId) {
-  const player = await resolvePlayerMutationTarget(db, actorId);
+  // Player pages address this action with the numeric pawn actor id, while
+  // Live Map markers deliberately expose the stable FLS id so the same marker
+  // can also be used by the offline-teleport path. Resolve either identity at
+  // this boundary instead of making the browser translate between them.
+  const rawId = String(actorId ?? "").trim();
+  let resolvedActorId = rawId;
+  if (!/^\d+$/.test(rawId)) {
+    const flsId = validatePlayerIdForDb(rawId);
+    const resolved = await db.query(`
+      select a.id as actor_id
+      from dune.accounts ac
+      join dune.player_state ps on ps.account_id = ac.id
+      join dune.actors a on a.id = ps.player_pawn_id
+      where ac."user" = $1
+        and a.class ilike '%PlayerCharacter%'
+      limit 1`, [flsId]);
+    if (!resolved.rows[0]?.actor_id) throw playerNotFoundError();
+    resolvedActorId = resolved.rows[0].actor_id;
+  }
+  const player = await resolvePlayerMutationTarget(db, resolvedActorId);
   const result = await db.query(`
     select coalesce(ac."user", '') as fls_id,
            coalesce(ps.character_name, '') as character_name,
@@ -3338,36 +3463,43 @@ export async function playerTeleportDestinations(db, id) {
 export async function teleportPlayer(db, id, body = {}) {
   const source = await playerTeleportIdentity(db, id);
   if (!playerOnline(source)) throw new Error("The player must be online to use live teleport.");
-    const mode = String(body.mode || "coordinates");
-    let destination;
-    if (mode === "player") {
-      destination = await teleportPlayerDestination(db, body.destinationId);
-      if (Number(body.destinationId) === source.actorId) throw new Error("Choose a different destination player.");
-    } else if (mode === "base") {
-      destination = await teleportBaseDestination(db, body.destinationId);
-    } else if (mode === "coordinates") {
-      destination = {
-        x: finiteTeleportCoordinate(body.x, "X"),
-        y: finiteTeleportCoordinate(body.y, "Y"),
-        z: finiteTeleportCoordinate(body.z, "Z"),
-        partitionId: source.partitionId,
-        map: source.map,
-        label: "the selected coordinates"
-      };
-    } else {
-      throw new Error("Unsupported teleport destination type.");
+  const mode = String(body.mode || "coordinates");
+  let destination;
+  if (mode === "player") {
+    destination = await teleportPlayerDestination(db, body.destinationId);
+    if (Number(body.destinationId) === source.actorId) throw new Error("Choose a different destination player.");
+  } else if (mode === "base") {
+    destination = await teleportBaseDestination(db, body.destinationId);
+  } else if (mode === "coordinates") {
+    const requestedPartition = body.partitionId === undefined || body.partitionId === null || Number(body.partitionId) === 0
+      ? source.partitionId
+      : intParam(body.partitionId, "destination partition id", 1);
+    if (requestedPartition !== source.partitionId) {
+      throw new Error("Live teleport can only move a player within their current Sietch or map. The destination partition must already contain that player.");
     }
-    if (mode !== "coordinates" && destination.partitionId !== source.partitionId) {
-      throw new Error("Live teleport can only move a player within their current Sietch or map. Choose a destination on the same map.");
-    }
-    return {
-      playerId: source.flsId,
-      x: destination.x,
-      y: destination.y,
-      z: destination.z,
-      yaw: Number.isFinite(destination.yaw) ? destination.yaw : 0,
-      message: `${source.characterName} will be teleported near ${destination.label}.`
+    destination = {
+      x: finiteTeleportCoordinate(body.x, "X"),
+      y: finiteTeleportCoordinate(body.y, "Y"),
+      z: finiteTeleportCoordinate(body.z, "Z"),
+      partitionId: source.partitionId,
+      map: source.map,
+      label: "the selected coordinates"
     };
+  } else {
+    throw new Error("Unsupported teleport destination type.");
+  }
+  if (mode !== "coordinates" && destination.partitionId !== source.partitionId) {
+    throw new Error("Live teleport can only move a player within their current Sietch or map. Choose a destination on the same map.");
+  }
+  return {
+    playerId: source.flsId,
+    x: destination.x,
+    y: destination.y,
+    z: destination.z,
+    yaw: Number.isFinite(destination.yaw) ? destination.yaw : 0,
+    partitionId: source.partitionId,
+    message: `${source.characterName} will be teleported near ${destination.label}.`
+  };
 }
 
 // dune.actors.class is a raw Unreal blueprint path (e.g.
@@ -3901,6 +4033,21 @@ const BASE_UNCLAIMED_MESSAGE = "This base is not claimed -- it has no dune.permi
 // (or a stale bookmarked base id) would otherwise still be able to mutate
 // it. Every mutation route checks this before writing, the same way each
 // already checks the pending-delete lock.
+// Thrown by deleteBaseCompletely when the base was picked up into a backup.
+// Distinct from server.js's BASE_BACKED_UP_MESSAGE ("cannot be modified"):
+// this one is also raised from the queued flush path, long after any request
+// finished, so it has to read as a statement about the base rather than about
+// the caller's request.
+export const BASE_DELETE_BACKED_UP_MESSAGE =
+  "This base was picked up into a backup and is no longer claimed. It cannot be deleted until the player redeploys it.";
+
+// Deliberately an exact-message test, not a loose /backup/i match: it decides
+// whether a queued entry keeps its retry budget, so a database error that
+// merely mentions a backup table must never be mistaken for this state.
+export function baseDeleteBlockedByBackup(message) {
+  return String(message || "").includes(BASE_DELETE_BACKED_UP_MESSAGE);
+}
+
 export async function baseIsBackedUp(db, baseId) {
   const target = intParam(baseId, "base id", 1);
   if (!(await tableExists(db, "base_backup_linked_actors"))) return false;
@@ -4347,7 +4494,7 @@ function reconcileQueuedBaseChildAccess(repoRoot, outcomes) {
 // except each entry's payload is applied in 100-update batches (the cap
 // setBaseChildAccessLevels enforces) and stale pieces are skipped rather than
 // failing the whole entry.
-export async function flushBaseChildAccess(db, repoRoot, { now = Date.now } = {}) {
+export async function flushBaseChildAccess(db, repoRoot, { now = Date.now, ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) {
   const pending = listQueuedBaseChildAccess(repoRoot);
   if (!pending.length) return { flushed: [], pending: 0 };
   const observed = await observeRefillPartitions(db, { now });
@@ -4365,17 +4512,14 @@ export async function flushBaseChildAccess(db, repoRoot, { now = Date.now } = {}
       flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
       continue;
     }
-    // Re-observed per entry, not once for the whole pass: applying an entry is
-    // several round-trips, and a map server that reconnects partway through
-    // would otherwise still be treated as down for every remaining entry --
-    // writing access levels to a running map, which is the one thing this
-    // queue exists to avoid, since the game never picks them up.
-    const fresh = await observeRefillPartitions(db, { now });
-    if (!partitionWriteSafe(fresh || observed, entry.partitionId)) continue;
-    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    if (!(await entryWriteSafe(db, observed, entry, now, trustedDownPartitionIds))) continue;
+    if (retryBackoffBlocks(entry, timestamp, ignoreRetryBackoff)) continue;
+    // Declared outside the try because each batch below is its own
+    // transaction: when a later batch throws, batches 1..k are already
+    // committed and the catch has to report them rather than claim zero.
+    let updated = 0;
+    const skipped = [];
     try {
-      let updated = 0;
-      const skipped = [];
       for (let i = 0; i < entry.updates.length; i += 100) {
         const result = await setBaseChildAccessLevels(db, entry.baseId, entry.updates.slice(i, i + 100), { skipStale: true });
         updated += result.updated;
@@ -4385,6 +4529,14 @@ export async function flushBaseChildAccess(db, repoRoot, { now = Date.now } = {}
       flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: true, updated, skipped });
     } catch (error) {
       const message = String(error?.message || "Unexpected error.").slice(0, 300);
+      if (childAccessNoLongerApplicable(message)) {
+        // Every piece in a committed batch is already counted in updated or
+        // skipped, so only the ones this pass never reached are added here.
+        for (const update of entry.updates.slice(updated + skipped.length)) skipped.push(update.actorId);
+        outcomes.set(entry.baseId, { ...stamp, keep: false });
+        flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: true, noLongerApplicable: true, updated, skipped });
+        continue;
+      }
       const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_REFILL_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingRefillRetryDelayMs();
@@ -5443,7 +5595,11 @@ function quaternionYawDegrees(qz, qw) {
 // procedures), so a self-hosted server missing these tables/functions cannot
 // have a delete proc added for it -- it is simply unsupported.
 async function supportsBaseDelete(db) {
-  for (const table of ["buildings", "building_instances", "actor_fgl_entities", "placeables", "actors"]) {
+  // Every relation the delete path names, LEFT JOINs included: permission_actor
+  // via the in-transaction baseIsBackedUp guard, map_names via
+  // basePermissionActor. A relation the path reads must fail as a clean
+  // capability message, not as an aborted transaction after the FOR UPDATE.
+  for (const table of ["buildings", "building_instances", "actor_fgl_entities", "placeables", "actors", "permission_actor", "map_names"]) {
     if (!(await tableExists(db, table))) return false;
   }
   return await functionExists(db, "dune.permission_actor_destroy(bigint)")
@@ -5514,9 +5670,20 @@ export async function deleteBaseCompletely(db, baseId) {
     const { actor, actorIds, buildingCount, placeableCount } = await baseDeletionActorIds(tx, target);
     // Lock the claim actor row, not a maybe-empty child row -- same reasoning
     // as mutateBasePermissions: it is guaranteed to exist, and `for update`
-    // over zero rows would serialize nothing.
+    // over zero rows would serialize nothing. It serializes this delete against
+    // another console write taking the same lock; it does NOT hold off the
+    // game's own pickup path, which takes no lock on dune.actors. What keeps a
+    // pickup out is that the queue only ever flushes with the map down.
     const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
     if (!locked.rowCount) throw new Error("That base was not found.");
+    // Re-checked here, not just at the route, for the same reason the actor ids
+    // are re-enumerated above: a delete can sit queued for hours waiting for its
+    // map to come down, and a player can pick the base up into a backup in the
+    // meantime. The route's check proves nothing about the moment the delete
+    // actually runs. A picked-up base still holds all of its data -- the backup
+    // tool only unclaims it and registers its actor ids -- so deleting one here
+    // destroys something the player expects to redeploy.
+    if (await baseIsBackedUp(tx, target)) throw new Error(BASE_DELETE_BACKED_UP_MESSAGE);
     // permission_actor_destroy first: it is the only thing that clears
     // markers/player_markers, which are keyed on the claim actor id but not
     // FK-cascaded from actors (only from map_names). Its permission_actor/
@@ -6600,13 +6767,26 @@ export async function playerResearchItems(db, id) {
     )
     select recipe_id from player_recipes`, [player.actorId]);
   const unlockedRecipes = new Set(playerRecipes.rows.map((row) => String(row.recipe_id || "")).filter(Boolean));
+  const progressionColumns = await tableExists(db, "building_progression") ? await columnsFor(db, "building_progression") : new Set();
+  const buildingProgressionSupported = ["character_id", "learned_building_sets"].every((column) => progressionColumns.has(column));
+  const progression = buildingProgressionSupported && player.playerStateId ? await db.query(`
+    select coalesce(learned_building_sets, '{}'::text[]) as learned_building_sets
+    from dune.building_progression
+    where character_id = $1
+    limit 1`, [player.playerStateId]) : { rows: [] };
+  const learnedBuildingSets = new Set((progression.rows[0]?.learned_building_sets || []).map(String).filter(Boolean));
   return {
     capabilities: { researchItems: true },
     player,
     rows: result.rows.map((row) => {
-      const recipeId = linkedResearchRecipeId(row.item_key);
+      const unlock = linkedResearchUnlock(row.item_key);
+      const recipeId = unlock.kind === "recipe" ? unlock.id : "";
       const researchPurchased = row.unlocked_state === "Purchased";
-      const recipeUnlocked = !recipeId || unlockedRecipes.has(recipeId);
+      const unlockMaterialized = unlock.kind === "building"
+        ? buildingProgressionSupported && learnedBuildingSets.has(unlock.id)
+        : unlock.kind === "recipe"
+          ? unlockedRecipes.has(unlock.id)
+          : true;
       return {
         itemKey: row.item_key,
         displayName: researchDisplayName(row.item_key),
@@ -6616,11 +6796,15 @@ export async function playerResearchItems(db, id) {
         unlockedState: row.unlocked_state || "Unknown",
         isNew: Boolean(row.is_new),
         recipeId,
-        recipeUnlocked,
+        recipeUnlocked: unlock.kind !== "recipe" || unlockMaterialized,
+        unlockKind: unlock.kind,
+        unlockId: unlock.id,
+        unlockMaterialized,
         researchPurchased,
-        actionable: Boolean(recipeId),
-        needsRecipeRepair: Boolean(recipeId && researchPurchased && !recipeUnlocked),
-        unlocked: researchPurchased && recipeUnlocked
+        actionable: Boolean(unlock.id) && (unlock.kind !== "building" || buildingProgressionSupported),
+        needsRecipeRepair: Boolean(unlock.id && researchPurchased && !unlockMaterialized),
+        needsUnlockRepair: Boolean(unlock.id && researchPurchased && !unlockMaterialized),
+        unlocked: researchPurchased && unlockMaterialized
       };
     })
   };
@@ -6729,11 +6913,13 @@ export async function unlockResearchItem(db, id, { itemKey }) {
     if (!found) {
       nextItems.push({ ItemKey: safeItemKey, bIsNewEntry: false, UnlockedState: "Purchased" });
     }
-    const recipeId = linkedResearchRecipeId(safeItemKey);
-    if (!recipeId) {
-      throw new Error(`Research group ${safeItemKey} cannot be unlocked directly because it does not identify one build recipe. Unlock its individual Recipe or Building entries instead.`);
+    const unlock = linkedResearchUnlock(safeItemKey);
+    if (!unlock.id) {
+      throw new Error(`Research group ${safeItemKey} cannot be unlocked directly because it does not identify one buildable unlock. Unlock its individual Recipe or Building entries instead.`);
     }
-    const recipe = await materializeResearchCraftingRecipe(tx, player.actorId, recipeId);
+    const materialized = unlock.kind === "building"
+      ? await materializeResearchBuildingUnlock(tx, player.playerStateId, unlock.id, unlock.pieceId)
+      : await materializeResearchCraftingRecipe(tx, player.actorId, unlock.id);
     await tx.query(`
       update dune.actors
       set properties = jsonb_set(properties, '{TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData}', $2::jsonb, true)
@@ -6743,10 +6929,17 @@ export async function unlockResearchItem(db, id, { itemKey }) {
       player,
       itemKey: safeItemKey,
       alreadyUnlocked,
-      recipeId,
-      recipeMaterialized: recipe.recipeUnlocked,
-      recipeAdded: recipe.recipeAdded,
-      repairedRecipe: Boolean(alreadyUnlocked && recipe.recipeAdded)
+      unlockKind: unlock.kind,
+      unlockId: unlock.id,
+      unlockMaterialized: true,
+      recipeId: unlock.kind === "recipe" ? unlock.id : "",
+      recipeMaterialized: unlock.kind === "recipe" ? materialized.recipeUnlocked : false,
+      recipeAdded: unlock.kind === "recipe" ? materialized.recipeAdded : false,
+      buildingUnlockId: unlock.kind === "building" ? unlock.id : "",
+      buildingPieceId: unlock.kind === "building" ? unlock.pieceId : "",
+      buildingProgressionUpdated: unlock.kind === "building" ? materialized.progressionUpdated : false,
+      repairedRecipe: Boolean(unlock.kind === "recipe" && alreadyUnlocked && materialized.recipeAdded),
+      repairedUnlock: Boolean(alreadyUnlocked && materialized.added)
     };
   });
 }
@@ -10459,6 +10652,7 @@ export async function observeRefillPartitions(db, { now = Date.now } = {}) {
   const timestamp = now();
   const safe = new Set();
   const known = new Set();
+  const disconnected = new Set();
   for (const row of result.rows || []) {
     const partitionId = Number(row.partition_id || 0);
     if (partitionId <= 0) continue;
@@ -10467,6 +10661,7 @@ export async function observeRefillPartitions(db, { now = Date.now } = {}) {
       partitionDisconnectedSince.delete(partitionId);
       continue;
     }
+    disconnected.add(partitionId);
     if (row.unassigned) {
       partitionDisconnectedSince.delete(partitionId);
       safe.add(partitionId);
@@ -10479,17 +10674,33 @@ export async function observeRefillPartitions(db, { now = Date.now } = {}) {
   for (const partitionId of [...partitionDisconnectedSince.keys()]) {
     if (!known.has(partitionId)) partitionDisconnectedSince.delete(partitionId);
   }
-  return { safe, known };
+  return { safe, known, disconnected };
 }
 
 // A base outside any known partition is simulated by nothing, so it is always
 // safe; a null observation means the queue is unsupported and writes stay
 // immediate, matching the behaviour before the queue existed.
-function partitionWriteSafe(observed, partitionId) {
+function partitionWriteSafe(observed, partitionId, trustedDownPartitionIds) {
   if (!observed) return true;
   if (partitionId <= 0) return true;
   if (!observed.known.has(partitionId)) return true;
-  return observed.safe.has(partitionId);
+  if (observed.safe.has(partitionId)) return true;
+  // The restart task may bypass only the dwell timer for a partition it has
+  // just positively stopped. A fresh pg_stat_activity observation must still
+  // show it disconnected, so this cannot turn a live map into a write target.
+  return observed.disconnected?.has(partitionId)
+    && (trustedDownPartitionIds === "all" || trustedDownPartitionIds?.has?.(partitionId));
+}
+
+// Re-observed per entry rather than trusting the pass-start snapshot. Applying
+// an entry is several round-trips, and a pass can outlive the window it started
+// in: a map server that reconnects partway through, or a pass the restart
+// timeout abandoned but could not cancel, would otherwise still be treated as
+// down for every remaining entry -- writing to a live map, which is the one
+// thing these queues exist to avoid, since the game never picks those writes up.
+async function entryWriteSafe(db, observed, entry, now, trustedDownPartitionIds) {
+  const fresh = await observeRefillPartitions(db, { now });
+  return partitionWriteSafe(fresh || observed, entry.partitionId, trustedDownPartitionIds);
 }
 
 // generatorRefill accepts an already-known flag so a caller that just
@@ -10590,6 +10801,16 @@ export async function vehicleWriteTarget(db, vehicleId, { observed } = {}) {
 // A database that is restarting, or a schema mid-migration, will succeed on a
 // later tick. Mirrors the filter runBackgroundTick and the death poller already
 // use for the same "the stack is moving, not broken" states.
+// Backoff exists so the 5s poller stops hammering a failing entry. The map-down
+// hook is the opposite case: a rare window with the map positively down, and the
+// only moment some entries can ever apply. Measured against a real database, a
+// blocked entry sits inside its 60s window for ~55 of every 60 seconds, so
+// honouring it there silently skipped most restarts. Only the hook passes
+// ignoreRetryBackoff; the poller keeps backing off.
+function retryBackoffBlocks(entry, timestamp, ignoreRetryBackoff) {
+  return !ignoreRetryBackoff && Boolean(entry.nextRetryAt) && timestamp < entry.nextRetryAt;
+}
+
 function isTransientFlushError(message) {
   return /connect|ECONNREFUSED|ECONNRESET|terminated|timeout|does not exist|relation|shutting down|starting up|deadlock|too many clients/i.test(message);
 }
@@ -10601,6 +10822,16 @@ function isTransientFlushError(message) {
 // domain-level "nothing to refill" results as successful reconciliation, not
 // as database failures. Keep this deliberately narrower than generic "not
 // found" matching so a schema/connection problem can never discard a request.
+// The child-access twin of refillNoLongerApplicable. setBaseChildAccessLevels
+// throws this when skipStale left nothing to apply -- every queued piece was
+// demolished while the entry waited. Retrying cannot make those pieces exist
+// again, so it is reconciliation, not a failure to burn attempts against.
+// Deliberately an exact-message test, for the same reason as the base-delete
+// matcher: it decides whether an entry is dropped.
+function childAccessNoLongerApplicable(message) {
+  return String(message || "").includes("None of the queued pieces are still children of this base.");
+}
+
 function refillNoLongerApplicable(message) {
   return message === "No generators or wind turbines were found at this base"
     || message === "No water storage was found at this base";
@@ -10614,7 +10845,7 @@ function refillNoLongerApplicable(message) {
 // before the map servers) plus any single-map despawn, and polling for "this
 // partition has no server" catches both -- including restarts triggered by the
 // scheduler, an IP change, or the CLI, none of which run through the console.
-export async function flushGeneratorRefills(db, repoRoot, { now = Date.now } = {}) {
+export async function flushGeneratorRefills(db, repoRoot, { now = Date.now, ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) {
   const pending = listQueuedGeneratorRefills(repoRoot);
   if (!pending.length) return { flushed: [], pending: 0 };
   const observed = await observeRefillPartitions(db, { now });
@@ -10633,8 +10864,8 @@ export async function flushGeneratorRefills(db, repoRoot, { now = Date.now } = {
       flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
       continue;
     }
-    if (!partitionWriteSafe(observed, entry.partitionId)) continue;
-    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    if (!(await entryWriteSafe(db, observed, entry, now, trustedDownPartitionIds))) continue;
+    if (retryBackoffBlocks(entry, timestamp, ignoreRetryBackoff)) continue;
     try {
       const result = await refillBaseGenerators(db, repoRoot, entry.baseId);
       outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
@@ -10815,7 +11046,7 @@ function baseDeleteAlreadyGone(message) {
 //     a failed safety backup is not about any one base, and deleting others
 //     without it would defeat the point just the same. Every entry stays
 //     queued and is retried, backup included, on the next tick.
-export async function flushBaseDeletes(db, repoRoot, { now = Date.now, onBeforeApply } = {}) {
+export async function flushBaseDeletes(db, repoRoot, { now = Date.now, onBeforeApply, ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) {
   const pending = listQueuedBaseDeletes(repoRoot);
   if (!pending.length) return { flushed: [], pending: 0 };
   const observed = await observeRefillPartitions(db, { now });
@@ -10835,8 +11066,37 @@ export async function flushBaseDeletes(db, repoRoot, { now = Date.now, onBeforeA
       flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
       continue;
     }
-    if (!partitionWriteSafe(observed, entry.partitionId)) continue;
-    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    if (!(await entryWriteSafe(db, observed, entry, now, trustedDownPartitionIds))) continue;
+    if (retryBackoffBlocks(entry, timestamp, ignoreRetryBackoff)) continue;
+    // Checked before the safety backup, not only inside the transaction. A
+    // picked-up base is refused either way, but paying for a full-database
+    // backup first -- on every retry pass, for up to the age limit -- is pure
+    // waste for a delete that cannot proceed. db.sh count-prunes this origin so
+    // it cannot fill the disk; this keeps it from churning at all. The
+    // in-transaction check is the one that decides; this only avoids the cost
+    // of a refusal. If the probe itself fails, fall through and let the
+    // transaction decide.
+    //
+    // Both checks run with the map down, which is what actually keeps a pickup
+    // from racing them -- see the note on the row lock in deleteBaseCompletely.
+    if (await baseIsBackedUp(db, entry.baseId).catch(() => false)) {
+      const nextRetryAt = timestamp + pendingBaseDeleteRetryDelayMs();
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: true, attempts: entry.attempts, nextRetryAt, lastError: BASE_DELETE_BACKED_UP_MESSAGE });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, attempts: entry.attempts, dropped: false, error: BASE_DELETE_BACKED_UP_MESSAGE });
+      continue;
+    }
+    // Same reasoning as the backed-up check above, for the other case that
+    // cannot proceed: baseIsBackedUp inner-joins the entity chain, so a base
+    // whose owner_entity_id links are gone reports false, buys a full-database
+    // backup, and then throws "no resolvable owner entity" on the next line.
+    // Measured against a restored dump, 12 of 35 buildings rows resolve to no
+    // claim actor. Resolving it here clears the entry for free instead.
+    const gone = await basePermissionActor(db, entry.baseId).then(() => null, (error) => String(error?.message || ""));
+    if (gone && baseDeleteAlreadyGone(gone)) {
+      outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
+      flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: true, alreadyGone: true });
+      continue;
+    }
     if (!backedUp && onBeforeApply) {
       try {
         await onBeforeApply();
@@ -10856,7 +11116,16 @@ export async function flushBaseDeletes(db, repoRoot, { now = Date.now, onBeforeA
         flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: true, alreadyGone: true });
         continue;
       }
-      const attempts = isTransientFlushError(message) ? entry.attempts : entry.attempts + 1;
+      // A base parked in a backup fails identically on every pass, so counting
+      // those passes would exhaust the retry budget and silently drop a delete
+      // that was never wrong -- only blocked. Deliberately no allowBlockedStates
+      // escape hatch of the kind the vehicle queue has for Travel/recovery: those
+      // are mid-transit artifacts that a stopped map resolves, whereas a picked-up
+      // base is a deliberate player action that survives any number of restarts.
+      // The existing age-out above is what eventually clears one that never
+      // redeploys.
+      const blockedByBackup = baseDeleteBlockedByBackup(message);
+      const attempts = (blockedByBackup || isTransientFlushError(message)) ? entry.attempts : entry.attempts + 1;
       const dropped = attempts >= MAX_DELETE_FLUSH_ATTEMPTS;
       const nextRetryAt = timestamp + pendingBaseDeleteRetryDelayMs();
       outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: !dropped, attempts, nextRetryAt, lastError: message });
@@ -10984,7 +11253,7 @@ function vehicleDeleteAlreadyGone(message) {
 // Mirrors flushBaseDeletes. Same onBeforeApply-runs-at-most-once-per-pass
 // semantics, for the same reason: a full database backup is not cheap, and
 // several vehicles can flush in the same pass.
-export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBeforeApply, allowBlockedStates = false } = {}) {
+export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBeforeApply, allowBlockedStates = false, ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) {
   const pending = listQueuedVehicleDeletes(repoRoot);
   if (!pending.length) return { flushed: [], pending: 0 };
   const observed = await observeRefillPartitions(db, { now });
@@ -11002,8 +11271,23 @@ export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBefo
       flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
       continue;
     }
-    if (!partitionWriteSafe(observed, entry.partitionId)) continue;
-    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    if (!(await entryWriteSafe(db, observed, entry, now, trustedDownPartitionIds))) continue;
+    if (retryBackoffBlocks(entry, timestamp, ignoreRetryBackoff)) continue;
+    // Background retries must not create a full-database backup for a vehicle
+    // that the conservative delete path is guaranteed to refuse. These states
+    // can persist for days; probing first prevents one backup per retry while
+    // preserving the queue for the explicit map-down pass, where
+    // allowBlockedStates is intentionally enabled.
+    if (!allowBlockedStates) {
+      const blockedState = await vehicleBlockedDeleteState(db, entry.vehicleId).catch(() => "");
+      if (blockedState) {
+        const message = `This vehicle is currently ${blockedState} and cannot be deleted until that clears. Try again once the vehicle is no longer mid-transit or pending recovery.`;
+        const nextRetryAt = timestamp + pendingVehicleDeleteRetryDelayMs();
+        outcomes.set(entry.vehicleId, { queuedAt: entry.queuedAt, keep: true, attempts: entry.attempts, nextRetryAt, lastError: message });
+        flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: false, attempts: entry.attempts, dropped: false, error: message });
+        continue;
+      }
+    }
     if (!backedUp && onBeforeApply) {
       try {
         await onBeforeApply();
@@ -12712,7 +12996,7 @@ function reconcileQueuedWaterRefills(repoRoot, outcomes) {
 
 // Applies every queued water refill whose map is currently down and leaves
 // the rest queued. Same driver and reasoning as flushGeneratorRefills.
-export async function flushWaterRefills(db, repoRoot, { now = Date.now } = {}) {
+export async function flushWaterRefills(db, repoRoot, { now = Date.now, ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) {
   const pending = listQueuedWaterRefills(repoRoot);
   if (!pending.length) return { flushed: [], pending: 0 };
   const observed = await observeRefillPartitions(db, { now });
@@ -12729,8 +13013,8 @@ export async function flushWaterRefills(db, repoRoot, { now = Date.now } = {}) {
       flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
       continue;
     }
-    if (!partitionWriteSafe(observed, entry.partitionId)) continue;
-    if (entry.nextRetryAt && timestamp < entry.nextRetryAt) continue;
+    if (!(await entryWriteSafe(db, observed, entry, now, trustedDownPartitionIds))) continue;
+    if (retryBackoffBlocks(entry, timestamp, ignoreRetryBackoff)) continue;
     try {
       const result = await refillBaseWater(db, entry.baseId);
       outcomes.set(entry.baseId, { queuedAt: entry.queuedAt, keep: false });
@@ -13442,14 +13726,58 @@ async function clearDanglingTrackedContract(db, actorId) {
   return Number(result.rowCount || 0) > 0;
 }
 
-function linkedResearchRecipeId(itemKey) {
+function linkedResearchUnlock(itemKey) {
   const value = String(itemKey || "");
-  if (value.startsWith("BLD_") && !value.endsWith("_Patent")) {
+  if (value.startsWith("BLD_")) {
     const buildingId = value.slice(4);
-    const metadata = adminItemMetadata().get(buildingId);
-    if (String(metadata?.category || "").toLowerCase() === "buildings") return buildingId;
+    let unlockId = buildingId;
+    if (!value.endsWith("_Patent")) {
+      const metadata = adminItemMetadata().get(buildingId);
+      if (String(metadata?.category || "").toLowerCase() !== "buildings") unlockId = `${buildingId}_Patent`;
+    }
+    return {
+      kind: "building",
+      id: unlockId,
+      pieceId: `${unlockId.replace(/_Patent$/i, "")}_Placeable`
+    };
   }
-  return researchRecipeId(value);
+  const recipeId = researchRecipeId(value);
+  return recipeId
+    ? { kind: "recipe", id: recipeId, pieceId: "" }
+    : { kind: "group", id: "", pieceId: "" };
+}
+
+async function materializeResearchBuildingUnlock(db, characterId, unlockId, pieceId) {
+  if (!characterId) throw new UnsupportedCapabilityError("Player building progression was not found; research was not changed.");
+  const columns = await tableExists(db, "building_progression") ? await columnsFor(db, "building_progression") : new Set();
+  if (!["character_id", "learned_building_sets", "new_buildable_pieces"].every((column) => columns.has(column))) {
+    throw new UnsupportedCapabilityError("Building progression is unavailable in this game database; research was not changed.");
+  }
+  const current = await db.query(`
+    select coalesce(learned_building_sets, '{}'::text[]) as learned_building_sets,
+           coalesce(new_buildable_pieces, '{}'::text[]) as new_buildable_pieces
+    from dune.building_progression
+    where character_id = $1
+    for update`, [characterId]);
+  if (!current.rows.length) {
+    throw new UnsupportedCapabilityError(`Building progression was not found for player state ${characterId}; research was not changed.`);
+  }
+  const learned = Array.isArray(current.rows[0]?.learned_building_sets) ? current.rows[0].learned_building_sets.map(String) : [];
+  const pieces = Array.isArray(current.rows[0]?.new_buildable_pieces) ? current.rows[0].new_buildable_pieces.map(String) : [];
+  const addUnlock = !learned.includes(unlockId);
+  const addPiece = Boolean(pieceId) && !pieces.includes(pieceId);
+  if (addUnlock || addPiece) {
+    await db.query(`
+      update dune.building_progression
+      set learned_building_sets = $2::text[],
+          new_buildable_pieces = $3::text[]
+      where character_id = $1`, [
+      characterId,
+      addUnlock ? [...learned, unlockId] : learned,
+      addPiece ? [...pieces, pieceId] : pieces
+    ]);
+  }
+  return { progressionUpdated: addUnlock || addPiece, added: addUnlock || addPiece };
 }
 
 async function materializeResearchCraftingRecipe(db, actorId, recipeId) {
@@ -13795,14 +14123,14 @@ async function offlineTeleportPlayerExists(db, playerId) {
 }
 
 function normalizeMarker(row) {
-  return {
+  return withLiveMapSector({
     ...row,
     id: Number(row.id),
     partition_id: Number(row.partition_id || 0),
     x: Number(row.x),
     y: Number(row.y),
     z: Number(row.z)
-  };
+  });
 }
 
 function unsupportedMap(feature, requiredTables) {

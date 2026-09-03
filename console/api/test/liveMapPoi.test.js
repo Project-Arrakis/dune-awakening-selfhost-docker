@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { liveMapPoi, POI_CATEGORIES } from "../src/services/liveMapPoi.js";
+import { liveMapPoi, liveMapSubtypeLabel, POI_CATEGORIES } from "../src/services/liveMapPoi.js";
 
 test("liveMapPoi runs every registered category and merges rows/capabilities", async () => {
   const fetchCategory = async (db, map, category) => {
@@ -11,7 +11,27 @@ test("liveMapPoi runs every registered category and merges rows/capabilities", a
   assert.equal(result.capabilities.ore, true);
   assert.equal(result.capabilities.scrap, false);
   assert.equal(result.rows.length, 1);
-  assert.deepEqual(result.rows[0], { id: "1", type: "ore", name: "RhyoliteOre", subtype: "RhyoliteOre", map: "HaggaBasin", x: 100, y: 200, z: 300 });
+  assert.deepEqual(result.rows[0], { id: "1", type: "ore", name: "RhyoliteOre", subtype: "RhyoliteOre", subtypeLabel: "Granite", map: "HaggaBasin", x: 100, y: 200, z: 300 });
+  assert.ok(result.knownSubtypes.ore.includes("JasmiumOre"));
+  assert.ok(result.knownSubtypes.ore.includes("StravidiumOre"));
+  assert.ok(result.knownSubtypes.ore.includes("TitaniumOre"));
+});
+
+test("ore marker identifiers receive their player-facing resource names", () => {
+  assert.equal(liveMapSubtypeLabel("ore", "AzuriteOre"), "Copper");
+  assert.equal(liveMapSubtypeLabel("ore", "BauxitePickup"), "Aluminium");
+  assert.equal(liveMapSubtypeLabel("ore", "DolomiteRock"), "Carbon");
+  assert.equal(liveMapSubtypeLabel("ore", "MagnetiteOre"), "Iron");
+  assert.equal(liveMapSubtypeLabel("ore", "RhyoliteOre"), "Granite");
+  assert.equal(liveMapSubtypeLabel("ore", "FutureiumOre"), "Futureium");
+});
+
+test("Deep Desert POI rows include their grid sector", async () => {
+  const fetchCategory = async (db, map, category) => category === "poi"
+    ? { capabilities: { poi: true }, rows: [{ id: "dd-poi", marker_type: "TestPoi", map, x: -52656, y: -52066, z: 0 }] }
+    : { capabilities: { [category]: false }, rows: [] };
+  const result = await liveMapPoi(null, "DeepDesert", { fetchCategory });
+  assert.equal(result.rows[0].sector, "E5");
 });
 
 test("one category failing doesn't take down the others", async () => {
