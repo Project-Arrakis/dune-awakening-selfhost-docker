@@ -1,6 +1,6 @@
 # Consolidate Settings' Password/2FA and Discord OAuth sections — L1 Design
 
-**Status:** Revision 2 — Eight Hats Layer 1 audit complete (8 independent dispatches), all CRITICAL/HIGH findings resolved below
+**Status:** Revision 3 — Eight Hats Layer 1 audit complete (8 independent dispatches), all CRITICAL/HIGH findings resolved below; #678 pulled into implementation scope (§6.5)
 **Tracking issue:** dune-awakening-selfhost-docker#676
 **Related:** #641 (guided Discord app-creation wizard, shipped to `tier1-upstream`), #643 (embed that wizard into Settings — this design treats #643 as a given), #665/#666 (the originating live-testing feedback thread), #634 (IAM Visual Editor, same branch), #678 (`.env` write-race, surfaced again by this audit, filed for real this time), #679 (Phase 3 — age-encryption, split out per the audit below)
 
@@ -97,9 +97,11 @@ Revision 1's "no meaningful security difference" framing for soft-disable is acc
 
 **Fix:** the `settings.discord-oauth-forgotten` audit entry (§6.3) logs the pre-wipe non-secret fields (guild ID, role mappings, MFA list — never the secret itself) as a recoverable record an operator can consult after a mistaken click, rather than requiring full reconstruction from memory. The confirmation dialog for "Forget" is upgraded from the standard `confirmAction()` danger dialog to require typing the word "forget" (matching this codebase's existing pattern for its most destructive confirmations), given ordinary confirmation friction was judged insufficient for an action this irreversible.
 
-### 6.5 Concurrent writes (acknowledges, links, does not re-defer silently — resolves DBA/Cloud Security convergent MEDIUM)
+### 6.5 Concurrent writes — remediated in this implementation, not deferred (revision 3 decision)
 
-`services/envFile.js`'s `updateEnvFileValue()` has no locking/atomicity — two Settings actions racing can silently drop one write. **This is real, pre-existing, and was already found once before** (a #643-revision design doc's own DBA finding, since deleted from the repo with its promised follow-up never filed) — independently rediscovered by two hats in this same audit. Unlike revision 1 (which didn't mention this at all) and unlike the deleted prior doc (whose promised follow-up silently vanished), this revision does not let that pattern repeat a third time: **filed as #678**, linked here explicitly. `/disable`/`/enable`/`/forget` are still being added as a third/fourth/fifth writer to this same unprotected file — that's an accepted, explicitly-tracked risk for this PR, not a silent one, and #678 should be prioritized rather than deferred again.
+`services/envFile.js`'s `updateEnvFileValue()` has no locking/atomicity — two Settings actions racing can silently drop one write. This is real, pre-existing, and was already found once before (a #643-revision design doc's own DBA finding, since deleted from the repo with its promised follow-up never filed) — independently rediscovered by two hats in this audit, filed for real as #678.
+
+**Revision 3: #678's remediation is pulled into this implementation rather than left tracked-but-deferred** (operator decision, given `/disable`/`/enable`/`/forget` were about to become the third/fourth/fifth writer to this same unprotected file — shipping more writers on top of a known, acknowledged race was judged worse than fixing it now that it's directly in scope). A single serialized-write helper (an in-process async mutex/queue is sufficient — all writers run in the same Node process, no cross-process coordination needed) wraps every `updateEnvFileValue()` call site, including the pre-existing wizard/manual-form writers, not just this design's three new ones. #678 stays open only to track backporting the same fix to any other in-flight branch that touches `envFile.js` independently.
 
 ### 6.6 Credential rotation reminder (resolves Cloud Security MEDIUM)
 
@@ -168,7 +170,7 @@ Per this project's Requirement 20, this document plus §13 below together consti
 - Multi-owner support.
 - Tier 2 (passkey).
 - #679 (age-encryption) implementation — design pointers only here; ships as its own PR after that issue's trust-boundary questions are resolved and Red-Blink has weighed in on the scope expansion.
-- #678 (`.env` write-race fix) — acknowledged and linked (§6.5), not fixed as part of this PR; tracked separately given it's a pre-existing condition this design adds one more writer to, not something this design introduces.
+- ~~#678 (`.env` write-race fix) — acknowledged and linked (§6.5), not fixed as part of this PR~~ **Revision 3: pulled into scope, see §6.5.**
 - Any bypass of `requireFreshTier3Proof` — considered and rejected (§8), independently reconfirmed by the audit (§13).
 - A password-reveal endpoint — considered and rejected for the same reasoning.
 
@@ -181,6 +183,7 @@ Per this project's Requirement 20, this document plus §13 below together consti
 5. #679 scope: designed here, implementation deferred to a separate issue/PR — revision 2 makes this concrete (filed, not just recommended) after the audit found real trust-boundary questions that need resolving first.
 6. Revision 2 addition: the zero-2FA guard (§7) is enforced at every path that can reach TOTP-disable, not only inside the guided offer flow, after two independent audit hats converged on the same gap from different angles (security-boundary vs. UX-flow).
 7. Revision 2 addition: `/disable` and `/forget` restart immediately and non-skippably, unlike the wizard's existing optional-restart pattern for benign credential rotation — because presenting "disabled" as fait accompli before the restart actually happens is misleading specifically during the scenario (suspected compromise) this action exists for.
+8. Revision 3 addition: #678's `.env` write-race fix is pulled into this implementation rather than left deferred, since this design was about to add three more unsynchronized writers on top of a known, twice-found race — fixing the shared helper once is less risk than shipping on top of it a third time.
 
 ## 13. Layer 1 Eight Hats audit — findings register
 
@@ -211,7 +214,7 @@ Eight independent dispatches, each reading this document's revision 1 plus the r
 | 21 | GRC | MEDIUM | §9's deferral had no tracking issue or owner. | **Fixed.** Filed as #679. |
 | 22 | GRC | MEDIUM | RFC §3.4 not cross-referenced with this design's own §5 credential-loss table. | **Fixed — §5, §10.** Cross-reference required in the implementation PR. |
 | 23 | GRC | MEDIUM | Session-wipe side effect of disable/enable/forget isn't flagged for operator docs. | **Fixed — §10.** |
-| 24 | DBA / Cloud Security (convergent) | MEDIUM | `.env` write race is real, pre-existing, and was already found once and lost (a deleted #643-era design doc). | **Fixed.** Filed for real this time as #678, linked §6.5 — not deferred silently a third time. |
+| 24 | DBA / Cloud Security (convergent) | MEDIUM | `.env` write race is real, pre-existing, and was already found once and lost (a deleted #643-era design doc). | **Fixed for real.** Filed as #678 (§6.5), then pulled into this implementation's scope in revision 3 rather than deferred a third time — a single serialized-write helper wraps every `envFile.js` writer. |
 | 25 | QA | MEDIUM | `sessionStorage` round-trip test as specified doesn't prove an actual round trip. | **Fixed — §10.** |
 | 26 | QA | MEDIUM | Offer's "first-time, not a re-edit" trigger condition had no specified mechanism to test against. | **Fixed — §7.** Tied to the marker being set only at actual restart invocation. |
 | 27 | UI/UX | MEDIUM | Tab-close limitation has no compensating signpost elsewhere in the UI. | **Fixed — §3, §7.** |
