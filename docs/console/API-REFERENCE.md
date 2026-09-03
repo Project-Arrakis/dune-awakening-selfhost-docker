@@ -263,6 +263,8 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 | DELETE | `/api/bases/{baseId}/queued-refill` | Cancel a base's queued generator refill | `baseId` |
 | GET | `/api/bases/auto-refill` | Get per-base auto-refill enrollment state | None |
 | POST | `/api/bases/{baseId}/auto-refill` | Enable/disable auto-refill for a base | `baseId`, `enabled` |
+| GET | `/api/bases/auto-refill/settings` | Get the threshold and scan interval for both auto-refill subsystems, with the source (`console`/`env`/`default`), reset value, and range of each | None |
+| POST | `/api/bases/auto-refill/settings` | Save auto-refill thresholds/intervals. A number sets, `null` resets to the env/default layer, an omitted key is unchanged. Rate limited; requires `bases:write-config`, not `bases:mutate` | `thresholdPercent?`, `intervalHours?`, `waterThresholdPercent?`, `waterIntervalHours?` |
 | GET | `/api/bases/{baseId}/water` | Get a base's water storage containers (count, volume, fill %; blood volume/fill for Blood Purifiers) | `baseId` |
 | POST | `/api/bases/{baseId}/refill-water` | Refill all base water storage (queued instead if the map isn't safely writable right now). Water only -- blood is never touched | `baseId` |
 | GET | `/api/bases/pending-water-refills` | List queued water refills, grouped by restart target | None |
@@ -452,7 +454,7 @@ Each row also carries a `region` sub-region name where the map has a region tabl
 (`runtime/data/hagga-regions.json`, extracted from the game paks; Hagga Basin is
 covered). It is resolved from the nearest `dune.markers.area_id` and is best-effort
 — absent when marker data is unavailable. Deep Desert instead exposes its A–I/1–9
-sector grid, derived client-side from coordinates.
+sector grid as the `sector` field, derived from each row's coordinates.
 
 The separate `/api/admin/vehicles*` routes under [Admin Tools](#admin-tools) are a
 different, CLI-backed surface (blueprint catalog and spawning), not this Postgres
@@ -675,17 +677,25 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 ## Live Map
 
 See [live-map.md](live-map.md) for how the panel uses these endpoints --
-partition display-name resolution, the spice/POI data model, and the
-Layers legend's default-settings mechanism.
+partition display-name resolution, the spice/POI data model, the
+Layers legend's default-settings mechanism, and what `coriolisLayout`
+drives: the WebGL renderer that draws the Deep Desert's own cartography
+meshes, and the conditions under which it falls back to the flat image.
+
+Coordinate-bearing Deep Desert marker rows include a `sector` field such as
+`"F6"`. It is `null` when a coordinate lies outside the A1–I9 grid. This applies
+to the combined marker response and the dedicated player, base, storage, spice,
+and POI responses, so announcement tools and bots do not need to duplicate the
+coordinate conversion.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | GET | `/api/map/capabilities` | Get map feature capabilities | None |
-| GET | `/api/map/markers` | Get map markers & configuration (actors, merged with spice/POI rows; response also includes `coriolisSeed`, `coriolisNextCycleAt`) | `map?`, `partitionId?`, `static?` (`0` omits static archive/POI rows for lightweight live refreshes) |
+| GET | `/api/map/markers` | Get map markers & configuration (actors, merged with spice/POI rows; response also includes `coriolisSeed`, `coriolisNextCycleAt`, `coriolisSeedStaleSince`, and `coriolisLayout`) | `map?`, `partitionId?`, `static?` (`0` omits static archive/POI rows for lightweight live refreshes) |
 | GET | `/api/map/spice` | Get spice/flour-sand layers (static pool, active blows, flour sand) for a map/partition | `map?`, `partitionId?` (query params) |
 | GET | `/api/map/poi` | Get registry-driven POI layers (ore, scrap, flora, poi, house_representative, trainer, fortress, hazard, enemy) for a map | `map?` (query param) |
-| POST | `/api/map/teleport-player` | Teleport player to map coords | `playerId`, `x`, `y`, `z`, `yaw?`, `partitionId?`, `online?` |
-| GET | `/api/map/partitions` | List map partitions | None |
+| POST | `/api/map/teleport-player` | Teleport a player to coordinates in the player's current ready partition; this never starts a dynamic map or crosses partitions | `playerId`, `x`, `y`, `z`, `yaw?`, `partitionId?`, `online?` |
+| GET | `/api/map/partitions` | List live-map partitions, including `alive` and `ready` runtime state for stopped dynamic maps | None |
 | GET | `/api/map/players` | Get player positions | `map?` (query param) |
 | GET | `/api/map/bases` | Get base locations | `map?` (query param) |
 | GET | `/api/map/storage` | Get storage locations | `map?` (query param) |
@@ -814,6 +824,10 @@ pre-write backup before the query is rejected.
 | DELETE | `/api/addons/installed/{id}` | Remove addon | `id` |
 | POST | `/api/addons/installed/{id}/bridge` | Addon bridge API | `id`, `action`, payload varies |
 | GET | `/api/addons/installed/{id}/content/{path}` | Get addon content file | `id`, `path` |
+
+### Player Identity Bridge
+
+`players.identity.list` requires an approved `players:read` addon permission. It returns the minimal player identity data needed to correlate addon events: `name`, `actorId`, `controllerId`, `accountId`, `funcomId`, `flsId`, `platformId`, `platformName`, `status`, and `map`. Addons do not need direct access to the Console player REST endpoints.
 
 ### Hardware Status Bridge
 

@@ -82,8 +82,10 @@ test("player portal map snapshots contain world layers but no private actors", a
   const result = await playerPortalMapSnapshot({}, {}, {
     fetchPoi: async (_db, map) => ({
       capabilities: { ore: true },
+      knownSubtypes: { ore: ["JasmiumOre", "StravidiumOre", "TitaniumOre"] },
+      subtypeLabels: { ore: { JasmiumOre: "Jasmium", StravidiumOre: "Stravidium", TitaniumOre: "Titanium" } },
       rows: [
-        { id: "ore-1", type: "ore", name: "TitaniumOre", map, x: 10, y: 20, z: 30 },
+        { id: "ore-1", type: "ore", name: "TitaniumOre", map, x: 10, y: 20, z: 30, ...(map === "DeepDesert" ? { sector: "E5" } : {}) },
         { id: "player-2", type: "player", name: "Other Player", map, x: 40, y: 50, z: 60, owner_name: "Private" }
       ]
     }),
@@ -98,11 +100,36 @@ test("player portal map snapshots contain world layers but no private actors", a
 
   assert.ok(result.rows.some((row) => row.type === "ore"));
   assert.ok(result.rows.some((row) => row.type === "spice_active"));
+  assert.ok(result.rows.some((row) => row.type === "ore" && row.map === "DeepDesert" && row.sector === "E5"));
   assert.equal(result.rows.some((row) => row.type === "player"), false);
   assert.equal(JSON.stringify(result).includes("Other Player"), false);
   assert.equal(JSON.stringify(result).includes("owner_name"), false);
   assert.deepEqual(result.partitions, [{ map: "DeepDesert", partitionId: 31, name: "Deep Desert 1" }]);
   assert.equal(result.cycles.DeepDesert.coriolisSeed, "7");
+  assert.deepEqual(result.knownSubtypes.ore, ["JasmiumOre", "StravidiumOre", "TitaniumOre"]);
+  assert.equal(result.subtypeLabels.ore.TitaniumOre, "Titanium");
+});
+
+test("player portal map snapshots exclude owner-disabled world layers before upload", async () => {
+  const result = await playerPortalMapSnapshot({}, {}, {
+    allowedTypes: ["poi"],
+    fetchPoi: async (_db, map) => ({
+      capabilities: { ore: true, poi: true },
+      knownSubtypes: { ore: ["TitaniumOre"], poi: ["Ecolab"] },
+      subtypeLabels: { ore: { TitaniumOre: "Titanium" }, poi: { Ecolab: "Ecology Lab" } },
+      rows: [
+        { id: "ore-1", type: "ore", name: "TitaniumOre", map, x: 10, y: 20 },
+        { id: "poi-1", type: "poi", name: "Ecolab", map, x: 30, y: 40 }
+      ]
+    }),
+    fetchSpice: async () => ({ capabilities: { spice_active: true }, rows: [] }),
+    fetchPartitions: async () => ({ rows: [] })
+  });
+  assert.ok(result.rows.length > 0);
+  assert.equal(result.rows.every((row) => row.type === "poi"), true);
+  assert.deepEqual(result.capabilities, { poi: true });
+  assert.deepEqual(result.knownSubtypes, { poi: ["Ecolab"] });
+  assert.equal(JSON.stringify(result).includes("Titanium"), false);
 });
 
 test("player portal map partitions use configured Sietch display names", async () => {
@@ -796,6 +823,7 @@ test("reporter uploads only player portal identities requested by the claimed li
   const files = fixture();
   const requests = [];
   const requestedHash = "a".repeat(64);
+  let mapOptions;
   const journeyData = { journey_aliases: { journey: "Friendly Journey" } };
   const skillData = [{ id: "Skills.Ability.Test", name: "Friendly Skill" }];
   try {
@@ -814,11 +842,14 @@ test("reporter uploads only player portal identities requested by the claimed li
         listings: [{ sellerActorId: "123" }],
         overview: { available: true, items: [{ templateId: "MelangeSpice", listingCount: 2 }] }
       }),
-      collectPlayerPortalMapSnapshot: async () => ({
+      collectPlayerPortalMapSnapshot: async (_db, options) => {
+        mapOptions = options;
+        return ({
         maps: { HaggaBasin: { key: "HaggaBasin" } },
         defaultMap: "HaggaBasin",
         rows: [{ id: "ore-1", type: "ore", name: "TitaniumOre", map: "HaggaBasin", x: 10, y: 20, z: 30 }]
-      }),
+        });
+      },
       collectPlayerPortalSnapshots: async (_db, hashes, loadedJourneys, loadedSkills, marketSnapshot) => {
         assert.deepEqual(hashes, [requestedHash]);
         assert.equal(loadedJourneys, journeyData);
@@ -836,7 +867,7 @@ test("reporter uploads only player portal identities requested by the claimed li
       fetchImpl: async (url, options) => {
         requests.push({ url, options });
         if (url.endsWith("/heartbeat")) return response({ ok: true, nextHeartbeatSeconds: 60, listingClaimed: true });
-        if (url.endsWith("/claim-status")) return response({ ok: true, claimed: true, playerPortalEnabled: true, requestedAccountHashes: [requestedHash] });
+        if (url.endsWith("/claim-status")) return response({ ok: true, claimed: true, playerPortalEnabled: true, playerPortalMapEnabled: true, playerPortalMapLayers: ["ore", "poi"], requestedAccountHashes: [requestedHash] });
         if (url.endsWith("/player-portal/market-snapshot")) return response({ ok: true, stored: true });
         if (url.endsWith("/player-portal/map-snapshot")) return response({ ok: true, stored: true });
         return response({ ok: true, stored: 1 });
@@ -853,6 +884,7 @@ test("reporter uploads only player portal identities requested by the claimed li
     assert.ok(marketUpload);
     const mapUpload = requests.find(request => request.url.endsWith("/player-portal/map-snapshot"));
     assert.ok(mapUpload);
+    assert.deepEqual(mapOptions, { allowedTypes: ["ore", "poi"] });
     assert.equal(JSON.parse(mapUpload.options.body).map.rows[0].type, "ore");
     assert.equal(JSON.parse(marketUpload.options.body).exchangeOverview.items[0].templateId, "MelangeSpice");
     const body = JSON.parse(upload.options.body);
@@ -860,6 +892,39 @@ test("reporter uploads only player portal identities requested by the claimed li
     assert.equal(body.snapshots[0].accountHash, requestedHash);
     assert.equal(Object.hasOwn(body.snapshots[0], "platformId"), false);
     assert.equal(Object.hasOwn(body.snapshots[0].data, "exchangeOverview"), false, "server market data must not be duplicated into every private snapshot");
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("reporter does not collect or upload a disabled Player Portal Live Map", async () => {
+  const files = fixture();
+  const requests = [];
+  const requestedHash = "c".repeat(64);
+  try {
+    const reporter = createPublicDirectoryReporter({
+      repoRoot: files.repoRoot,
+      generatedDir: files.generatedDir,
+      secretsDir: files.secretsDir
+    }, {
+      db: fakeDb(),
+      getBattlegroupRunning: () => true,
+      baseUrl: "https://directory.test/api/v1/servers",
+      collectPlayerPortalMapSnapshot: async () => assert.fail("disabled map must not be collected"),
+      collectPlayerPortalSnapshots: async () => [{ accountHash: requestedHash, found: true, data: {} }],
+      collectPlayerPortalMarketSnapshot: async () => null,
+      fetchImpl: async (url, options) => {
+        requests.push({ url, options });
+        if (url.endsWith("/heartbeat")) return response({ ok: true, nextHeartbeatSeconds: 60, listingClaimed: true });
+        if (url.endsWith("/claim-status")) return response({ ok: true, claimed: true, playerPortalEnabled: true, playerPortalMapEnabled: false, requestedAccountHashes: [requestedHash] });
+        return response({ ok: true, stored: 1 });
+      },
+      setTimeoutFn: () => ({ unref() {} }),
+      now: () => Date.parse("2026-08-29T12:00:00Z")
+    });
+    await reporter.tick();
+    assert.equal(requests.some((request) => request.url.endsWith("/player-portal/map-snapshot")), false);
+    assert.equal(requests.some((request) => request.url.endsWith("/player-portal/snapshot")), true);
   } finally {
     files.cleanup();
   }

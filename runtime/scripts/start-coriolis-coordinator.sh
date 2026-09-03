@@ -4,11 +4,11 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 START_MODE="${1:-}"
-if [ -n "$START_MODE" ] && [ "$START_MODE" != "--if-stack-running" ]; then
-  echo "Usage: $0 [--if-stack-running]" >&2
+if [ -n "$START_MODE" ] && [ "$START_MODE" != "--if-stack-running" ] && [ "$START_MODE" != "--replace-if-stack-running" ]; then
+  echo "Usage: $0 [--if-stack-running|--replace-if-stack-running]" >&2
   exit 2
 fi
-if [ "$START_MODE" = "--if-stack-running" ] && ! docker ps --format '{{.Names}}' 2>/dev/null \
+if [ -n "$START_MODE" ] && ! docker ps --format '{{.Names}}' 2>/dev/null \
   | grep -Eq '^(dune-orchestrator|dune-autoscaler|dune-director|dune-server-gateway|dune-server-survival-1|dune-server-overmap)$'; then
   echo "Coriolis Coordinator startup skipped because the Battlegroup is stopped."
   exit 0
@@ -46,8 +46,12 @@ fi
 
 mkdir -p runtime/generated runtime/logs
 if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
-  echo "Coriolis Coordinator already running: $CONTAINER_NAME"
-  exit 0
+  if [ "$START_MODE" = "--replace-if-stack-running" ]; then
+    docker rm -f "$CONTAINER_NAME" >/dev/null
+  else
+    echo "Coriolis Coordinator already running: $CONTAINER_NAME"
+    exit 0
+  fi
 fi
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 docker image inspect "$IMAGE" >/dev/null 2>&1 || {
@@ -70,6 +74,7 @@ docker run -d \
   -e "DUNE_HOST_REPO_ROOT=$HOST_REPO_ROOT" \
   -e "DUNE_HOST_UID=$HOST_UID" \
   -e "DUNE_HOST_GID=$HOST_GID" \
+  -e "DUNE_CORIOLIS_SAFE_DATA_CLEANUP=${DUNE_CORIOLIS_SAFE_DATA_CLEANUP:-1}" \
   -e DUNE_RUNTIME_PERMISSIONS_REPAIRED=1 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$HOST_REPO_ROOT:$CONTAINER_REPO_ROOT" \
