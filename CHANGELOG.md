@@ -26,7 +26,16 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   "Caladan Castle" placeables are already present in the catalog ahead of
   the DLC's entitlement unlock, with their in-game names and template IDs
   listed; the Part Two Sardaukar set and several named armor/weapon/emote
-  items were not found under any guessed naming.
+  items were not found under any guessed naming. Follow-up same day: found
+  Harkonnen Cataphract Armor is actually present under an internal codename
+  (`Hark_Armor_CombatSuit01`, a complete 6-piece set) but has no item/reward
+  wiring anywhere, so it's still not obtainable. Added
+  `docs/console/examples-grant-building-sets.sql`, a tested worked example
+  (executed live against both dune-dev and dune-prod: 68 candidate items, 5
+  actually new, the rest already owned) that also documents a real Postgres
+  bug — `text[] || 'literal'` is ambiguous between the array-append and
+  array-concatenation overloads and fails with `malformed array literal`;
+  use `array_append(arr, 'literal'::text)` instead.
 
 ### Changed
 

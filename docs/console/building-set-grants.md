@@ -38,6 +38,16 @@ Schematics (plain `category: "schematics"` items, no separate ownership
 table) are unaffected by any of this — `m_KnownItemRecipes` is the correct
 and complete mechanism for those.
 
+`category: "customizations"` wardrobe/cosmetic items (`isCustomizationGrantItem()`
+in `adminCatalog.js`) follow the same delivery-not-database-write pattern as
+building patents — a real item is delivered to inventory and the live
+server consumes it — but this console has no ownership table equivalent to
+`building_progression` for them yet (`playerCustomizationGrantState()` hardcodes
+`customizationOwnership: false`; it can only report "pending in inventory,"
+never "owned"). The `dune.items`-based grant pattern below works identically
+for these — just skip the `building_progression` owned-check, since it will
+never match a customization item's template ID anyway.
+
 ## The correct mechanism: deliver the real patent token
 
 Nothing in this codebase writes to `building_progression` directly, by
@@ -98,10 +108,26 @@ A raw-SQL grant for building patents should therefore:
   database-direct mutation in this codebase, and the Advanced SQL Console
   does **not** enforce it for you.
 
-A worked example generated for a real grant is archived at
-`docs/archive/sessions/` (see the git history of this file's introducing PR
-for the exact script) — copy its DO-block structure rather than writing the
-position-claiming logic from scratch each time.
+A worked, tested example is `docs/console/examples-grant-building-sets.sql`
+— copy its DO-block structure rather than writing the position-claiming
+logic from scratch each time. It was executed against both dune-dev and
+dune-prod for a real grant (68 candidate items, 63 already owned and
+correctly skipped, 5 actually granted on each server) and caught a real bug
+in the process: `text[] || 'literal'` is ambiguous in Postgres between the
+array-append and array-concatenation overloads of `||` and fails with
+`malformed array literal` — use `array_append(arr, 'literal'::text)`
+instead. The failure happened before any `INSERT` executed (mid-loop, while
+building the column/value arrays for the first item that wasn't a skip), so
+it rolled back cleanly with zero partial writes; still worth not repeating.
+
+**Confirmed live (2026-09-02): both the Building Sets and Customizations
+grant UIs are deployed and available on both dune-dev and dune-prod** —
+checked directly against the running console container's `server.js`
+(`buildingUnlockGrantRoute`, `customizationGrantRoute`, and their supporting
+functions all present on both). Everything this raw-SQL example grants
+could equally have been granted through those tabs directly; the SQL
+version exists for batch grants across many items at once, not because the
+console UI is missing anything.
 
 ## Addendum (2026-09-02): Filmic Archive DLC content pre-loaded ahead of launch
 
@@ -207,3 +233,39 @@ either server**, as of this check — this is a real absence in the shipped
 game files, not a gap in this fork's curated catalog. It's a reasonable bet
 this content lands in a content patch closer to the DLC's 2026-09-22 launch;
 re-run the grep above after that date before concluding otherwise.
+
+**Second follow-up (2026-09-02, same day): one Part Two item is present after
+all, under an internal codename, not its marketing name.** A broader sweep
+(`grep -aoE "[A-Za-z0-9_]*Sard[A-Za-z0-9_]*"` and the `CombatSuit0[0-9]`
+variant of it) found `Hark_Armor_CombatSuit01` — a complete, finished 6-piece
+Harkonnen armor set (Belt, Boots, Chest, Gloves, Helmet, Pants, each with
+ID/M/N/IndexMap texture maps), almost certainly **Harkonnen Cataphract
+Armor** by description. This corrects the "confirmed absent" call above for
+that one item specifically: the 3D art is real and shipped, it was just
+never going to show up under the string "Cataphract" because that's a
+marketing name, not the asset's internal one (the same pattern already
+established for `SardaukarBatorArmor`/"Sardaukar Bator Body" above). **It is
+still not grantable** — zero references to `CombatSuit` exist anywhere in
+`admin-items.json` or the `DA_PlayerRewards_DLC_*` reward-table convention,
+so there is no item/reward wiring an admin or player can use to obtain it.
+An equivalent search for the same pattern against Atreides (`Atre_Armor_*`)
+found no `CombatSuit`-style asset — only pre-existing generic armor
+materials — so Atreides Hoplite Armor is still confirmed absent, and this
+codename convention is not a rule that generalizes to every announced item.
+A single orphaned `Sard_CombatSuit01` helmet material reference also exists
+(one asset, versus Harkonnen's full 24), too thin to call a real set;
+candidate codenames for the Sardaukar Legionnaire/Velites/Oathblade/Tactical
+Swatch items (`Legion`, `Veli`, `Oath`, `Bene`, `Tact`, `Aver` combined with
+`MTX_Sard_`) were tried and found nothing.
+
+**What's actually grantable from this DLC as of 2026-09-02**, combining both
+follow-ups: the 27 Caladan Palace placeables above, plus two `category:
+customizations` wardrobe items confirmed via the same Paks sweep —
+`MTX_Sard_Stillsuit_01_SetVariant` ("Sardaukar Bator Body") and
+`MTX_Sard_Scout_SetVariant` ("Sardaukar Chestpiece Variant", same asset
+family, not itself reward-table-tagged). `MTX_Atre_CaladanTrenchcoat_SetVariant_{Top,Gloves}`
+("Caladan Trenchcoat") is a plausible but unconfirmed match for "Caladan
+Stormcoat" — real, existing, grantable, just not reward-table-tagged to this
+DLC specifically. All four were included in
+`docs/console/examples-grant-building-sets.sql` and granted to a real
+character on both dune-dev and dune-prod as a live test of this mechanism.
