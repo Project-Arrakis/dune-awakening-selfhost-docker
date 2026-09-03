@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { updateEnvFileValue, updateEnvFileValues } from "../src/services/envFile.js";
@@ -158,5 +158,40 @@ test("updateEnvFileValue: a failed write does not block a subsequent write from 
   await updateEnvFileValue(dir, "B", "2");
   const lines = readEnvLines(join(dir, ".env"));
   assert.deepEqual(lines, ["B=2", ""]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// Layer 2 audit finding (DBA hat, #676): the previous write used a bare
+// writeFileSync straight to .env, which truncates the target before writing
+// -- a process kill/OOM/power-loss mid-write left .env corrupted with no
+// fallback (reproduced directly: a truncated write dropped DUNE_DB_PASSWORD
+// entirely and left a dangling, unparseable key). Fixed by writing to a
+// uniquely-named temp file first and renaming over the target, matching this
+// repo's own established atomic-write pattern (jsonStore.js's
+// writeJsonAtomic). These two tests pin that guarantee.
+
+test("updateEnvFileValues: writes via a temp file + rename, leaving no leftover temp artifact behind", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "envfile-"));
+  const envPath = join(dir, ".env");
+  writeFileSync(envPath, "EXISTING_KEY=1\n");
+  await updateEnvFileValues(dir, { NEW_KEY: "2" });
+  const lines = readEnvLines(envPath);
+  assert.deepEqual(lines, ["EXISTING_KEY=1", "NEW_KEY=2", ""]);
+  const leftoverTempFiles = readdirSync(dir).filter((name) => name.includes(".tmp"));
+  assert.deepEqual(leftoverTempFiles, []);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("updateEnvFileValues: a write that fails before the rename step leaves the existing .env completely untouched", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "envfile-"));
+  const envPath = join(dir, ".env");
+  writeFileSync(envPath, "DUNE_DB_PASSWORD=original-secret\n");
+  // Force the temp-file write step to fail by pre-creating its exact path as
+  // a directory -- writeFileSync throws EISDIR before ever opening the real
+  // .env file, standing in for a crash/kill/disk-full mid-write.
+  const tempPath = `${envPath}.${process.pid}.tmp`;
+  mkdirSync(tempPath);
+  await assert.rejects(() => updateEnvFileValues(dir, { DUNE_DB_PASSWORD: "new-secret" }));
+  assert.equal(readFileSync(envPath, "utf8"), "DUNE_DB_PASSWORD=original-secret\n");
   rmSync(dir, { recursive: true, force: true });
 });

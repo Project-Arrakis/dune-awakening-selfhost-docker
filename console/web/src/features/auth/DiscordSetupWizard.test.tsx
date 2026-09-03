@@ -344,6 +344,46 @@ describe("DiscordSetupWizard: change application credentials (§4.2)", () => {
     const clientIdInput = await screen.findByLabelText(/client id/i) as HTMLInputElement;
     expect(clientIdInput.value).toBe("123456789012345678");
   });
+
+  // Layer 2 audit finding (Software Architect hat, HIGH, #676 follow-up):
+  // saveApp() sets appSaved=true/forceReconfigure=false, but
+  // discordOAuthConfigured/discordOAuthAppConfigured are boot-time snapshots
+  // that a save alone cannot flip (the console only reads .env at boot) --
+  // for an install that was ALREADY fully active before this reconfigure
+  // (mappingConfigured true the whole time), the step re-derivation used to
+  // fall straight back to "active", silently skipping the "a restart is
+  // needed" card. A subsequent "Continue with Discord" click would then
+  // authorize against the stale, pre-rotation credentials still resident in
+  // the running process.
+  it("after saving new credentials for an ALREADY fully-active install, shows the restart-required card instead of silently reverting to the active summary", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") {
+        return Promise.resolve({
+          serverConfig: { DISCORD_OAUTH_CLIENT_ID: "123456789012345678" },
+          // Reconfigure-of-active scenario: mapping was already finalized
+          // before this save started, and (per the real bug) STAYS true
+          // after saveApp()'s own probe() re-fetch, since nothing has
+          // actually restarted yet.
+          config: { discordOAuthAppConfigured: true, discordOAuthConfigured: true },
+        } as never);
+      }
+      if (path === "/api/setup/discord-identity") return Promise.reject(new Error("not signed in with Discord yet"));
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    mockPost.mockImplementation((path: string) => {
+      if (path === "/api/setup/write-oauth-config") return Promise.resolve({ ok: true } as never);
+      return Promise.reject(new Error(`unexpected post: ${path}`));
+    });
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+
+    fireEvent.click(await screen.findByText("Change application credentials"));
+    fireEvent.change(await screen.findByLabelText(/client id/i), { target: { value: "999999999999999999" } });
+    fireEvent.click(screen.getByText(/^save$/i));
+
+    expect(await screen.findByText(/a restart is needed before Discord sign-in can continue/i)).toBeTruthy();
+    expect(screen.queryByText(/connected and active for this server/i)).toBeNull();
+    expect(screen.queryByRole("link", { name: /sign in with discord to update server or role mapping/i })).toBeNull();
+  });
 });
 
 describe("DiscordSetupWizard: already-active state, no identity for this session (live UAT UX finding, #676 follow-up)", () => {
