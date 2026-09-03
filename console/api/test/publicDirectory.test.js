@@ -85,7 +85,7 @@ test("player portal map snapshots contain world layers but no private actors", a
       knownSubtypes: { ore: ["JasmiumOre", "StravidiumOre", "TitaniumOre"] },
       subtypeLabels: { ore: { JasmiumOre: "Jasmium", StravidiumOre: "Stravidium", TitaniumOre: "Titanium" } },
       rows: [
-        { id: "ore-1", type: "ore", name: "TitaniumOre", map, x: 10, y: 20, z: 30 },
+        { id: "ore-1", type: "ore", name: "TitaniumOre", map, x: 10, y: 20, z: 30, ...(map === "DeepDesert" ? { sector: "E5" } : {}) },
         { id: "player-2", type: "player", name: "Other Player", map, x: 40, y: 50, z: 60, owner_name: "Private" }
       ]
     }),
@@ -100,6 +100,7 @@ test("player portal map snapshots contain world layers but no private actors", a
 
   assert.ok(result.rows.some((row) => row.type === "ore"));
   assert.ok(result.rows.some((row) => row.type === "spice_active"));
+  assert.ok(result.rows.some((row) => row.type === "ore" && row.map === "DeepDesert" && row.sector === "E5"));
   assert.equal(result.rows.some((row) => row.type === "player"), false);
   assert.equal(JSON.stringify(result).includes("Other Player"), false);
   assert.equal(JSON.stringify(result).includes("owner_name"), false);

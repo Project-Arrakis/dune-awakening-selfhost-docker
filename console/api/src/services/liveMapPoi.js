@@ -1,4 +1,5 @@
 import { liveMapPoiMarkers } from "../duneDb.js";
+import { withLiveMapSector } from "../liveMapSector.js";
 
 // The registry of dune.markers-backed live map categories -- one source of
 // truth for both the backend aggregation below and the frontend's Layers
@@ -71,7 +72,7 @@ export async function liveMapPoi(db, map = "", { fetchCategory = liveMapPoiMarke
     const key = POI_CATEGORIES[index].key;
     capabilities[key] = Boolean(result.capabilities?.[key]);
     for (const row of result.rows || []) {
-      rows.push({
+      rows.push(withLiveMapSector({
         id: row.id,
         type: key,
         name: row.marker_type,
@@ -81,7 +82,7 @@ export async function liveMapPoi(db, map = "", { fetchCategory = liveMapPoiMarke
         x: row.x,
         y: row.y,
         z: row.z
-      });
+      }));
     }
   });
   return { capabilities, knownSubtypes: LIVE_MAP_KNOWN_SUBTYPES, subtypeLabels: LIVE_MAP_SUBTYPE_LABELS, rows };

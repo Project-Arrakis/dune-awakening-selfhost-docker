@@ -15,6 +15,7 @@ export type LiveMapMarker = {
   x?: number;
   y?: number;
   z?: number;
+  sector?: string | null;
   confidence?: string;
   subtype?: string;
   subtypeLabel?: string;

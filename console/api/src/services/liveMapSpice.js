@@ -3,6 +3,7 @@ import { readLearnedPool, fieldsForLearnedSeed, recordObservedFields } from "./l
 import { resolveCoriolisCycle } from "./coriolisSeed.js";
 import { decodeFieldPosition } from "./spiceFieldDecode.js";
 import { liveMapSpiceFieldRows, liveMapFlourSandFieldRows } from "../duneDb.js";
+import { withLiveMapSector } from "../liveMapSector.js";
 
 // Three independent resource-field layers for the live map:
 //
@@ -117,5 +118,5 @@ export async function liveMapSpice(db, config, map = "", {
 function spiceRow(fieldId, type, name, map, x, y, confidence, subtype) {
   const row = { id: fieldId, type, name, map, x, y, z: null, confidence };
   if (subtype) row.subtype = subtype;
-  return row;
+  return withLiveMapSector(row);
 }
