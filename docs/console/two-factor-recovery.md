@@ -16,11 +16,12 @@ no longer true, following live-testing feedback that forcing every operator
 through enrollment with no opt-out was the wrong default.
 
 **Correction (#676):** if Discord OAuth is also configured, that Settings
-control moves under a collapsed **"Password Sign-In (fallback)"** section
-instead of sitting directly on the page — it's still there, just demoted in
-prominence since Discord OAuth becomes the primary sign-in method. This
-document's own recovery paths (recovery codes, host-filesystem reset) are
-unaffected by that move.
+control stays its own separately collapsible **Two-Factor Authentication**
+section (nothing merges it into a wrapping section) but moves further down
+the page, below Discord OAuth — it's still there, just demoted in prominence
+since Discord OAuth becomes the primary sign-in method. This document's own
+recovery paths (recovery codes, host-filesystem reset) are unaffected by that
+move.
 
 Read this **before** turning it on. The whole point of the document is
 that the recovery paths are much easier to use while you still have

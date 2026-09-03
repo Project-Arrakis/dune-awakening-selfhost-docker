@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
 
 // Every writer of .env (the wizard's per-field save, the manual Discord OAuth
@@ -54,8 +54,18 @@ export function updateEnvFileValues(repoRoot, entries) {
       return existing;
     });
     for (const [key, value] of remaining) next.push(`${key}=${quoteEnv(value)}`);
-    writeFileSync(envPath, `${next.join("\n")}\n`, { mode: 0o644 });
-    try { chmodSync(envPath, 0o644); } catch {}
+    // Layer 2 audit finding (DBA hat, #676): writeFileSync's default flag
+    // truncates the target before writing, so a process kill/OOM/power-loss
+    // mid-write left .env corrupted with no fallback -- reproduced directly
+    // (a truncated write dropped DUNE_DB_PASSWORD entirely and left a
+    // dangling, unparseable key). Write to a uniquely-named temp file first
+    // and rename over the target instead, matching this repo's own
+    // established atomic-write pattern (jsonStore.js's writeJsonAtomic) --
+    // a same-filesystem rename is atomic, so .env is never observed
+    // partially written.
+    const tempPath = `${envPath}.${process.pid}.tmp`;
+    writeFileSync(tempPath, `${next.join("\n")}\n`, { mode: 0o644 });
+    renameSync(tempPath, envPath);
   });
 }
 

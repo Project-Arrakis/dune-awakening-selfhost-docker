@@ -261,10 +261,26 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
   // to "connect" regardless, for an operator rotating an already-configured
   // application's credentials -- but never once "done" is reached, since that
   // outcome is final for this mount.
+  //
+  // appSaved is checked right after forceReconfigure, ahead of
+  // identity/mappingConfigured/configured -- Layer 2 audit finding (Software
+  // Architect hat, HIGH): saveApp() sets appSaved=true and forceReconfigure=
+  // false, but app.mappingConfigured/app.configured are boot-time snapshots
+  // that DON'T change from a save alone (the console only reads .env at
+  // boot -- see restartNow()'s own comment). For an operator reconfiguring an
+  // ALREADY-active install (mappingConfigured was already true before this
+  // save started, and stays true until an actual restart), the step would
+  // otherwise re-derive straight back to "active"/"authorize", silently
+  // skipping the "Saved. ...a restart is needed" card -- and a subsequent
+  // "Continue with Discord" click would authorize against the stale,
+  // pre-rotation credentials still resident in the running process. appSaved
+  // is reset by the full page reload restartNow() does on success, so it
+  // cannot linger and block a later identity/map transition.
   const step: "loading" | "connect" | "authorize" | "active" | "map" | "done" =
     done ? "done"
       : !probed ? "loading"
       : forceReconfigure ? "connect"
+      : appSaved ? "connect"
       : identity ? "map"
       : app?.mappingConfigured ? "active"
       : app?.configured ? "authorize"

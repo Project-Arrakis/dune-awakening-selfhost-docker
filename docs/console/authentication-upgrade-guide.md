@@ -1,16 +1,22 @@
 # Console sign-in: upgrading an existing install
 
-**Status: Current.** Verified 2026-08-27 by upgrading a live install running
-v1.4.3 in place, with an authenticator already enrolled from an earlier build.
+**Status: Current, with one exception below.** Verified 2026-08-27 by
+upgrading a live install running v1.4.3 in place, with an authenticator
+already enrolled from an earlier build. The #676 correction immediately below
+has NOT itself been verified against a live upgrade the same way — it
+describes the shipped UI structure, but treat it as unverified until someone
+actually walks through it end-to-end and updates this banner.
 
 **Correction (#676, this session):** Settings' authentication area was
 restructured. Every specific instruction below that says "open **Settings →
 Two-Factor Authentication**" as a directly-visible control is still accurate
-**only while Discord OAuth is not configured**. Once it is, Two-Factor
-Authentication and Login Password both move under a collapsed **"Password
-Sign-In (fallback)"** section (still fully functional, just demoted in
-prominence, since Discord OAuth becomes the primary sign-in method) — expand
-it the same way you would any other collapsed section. Discord OAuth itself
+**only while Discord OAuth is not configured**. Once it is, **Login Password**
+and **Two-Factor Authentication** stay exactly the two separate, independently
+collapsible sections they already were — nothing merges into a single wrapping
+"Password Sign-In" section — but both move below Discord OAuth on the page,
+and Login Password's header gains a **"(fallback)"** suffix, since Discord
+OAuth is now the primary sign-in method. Both stay fully functional and are
+still expanded/collapsed the same way as any other section. Discord OAuth itself
 also gained three new controls once configured: **Disable Discord Sign-In**
 (soft, reversible — your application's settings are kept), **Re-enable**, and
 a secondary **"Forget this configuration entirely"** (destructive — deletes
