@@ -17,6 +17,16 @@ type HostApp = {
   redirectUri: string;
   secretSaved: boolean;
   configured: boolean;
+  // Distinct from `configured` (DISCORD_OAUTH_CLIENT_ID/SECRET saved): this is
+  // discordOAuthConfigured, i.e. guild + role mapping already finalized and
+  // Discord sign-in is actually live for other sessions right now. Without
+  // this, the wizard could not tell "app credentials saved, mapping still in
+  // progress" (the real "authorize" step) apart from "fully active, this
+  // session just hasn't signed in with Discord yet" -- see the "active" step
+  // below, added after live UAT found the authorize step's "Set up Discord
+  // sign-in" / "Continue with Discord" copy rendering for an already-active
+  // integration (#676 follow-up UX finding).
+  mappingConfigured: boolean;
   adminRoleIds: string;
   moderatorRoleIds: string;
   playerRoleIds: string;
@@ -114,6 +124,7 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
         redirectUri: c["DISCORD_OAUTH_REDIRECT_URI"] || "",
         secretSaved: Boolean(c["_discordOAuthSecretSaved"]),
         configured: Boolean(settings.value.config?.discordOAuthAppConfigured),
+        mappingConfigured: Boolean(settings.value.config?.discordOAuthConfigured),
         // #643 §4.3: pre-fill from whatever the host already has, matching
         // what SettingsPanel's old manual form did correctly (and this
         // wizard's own map step did NOT -- reopening it from Settings would
@@ -125,7 +136,7 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
         requireMfa: Boolean(c["DISCORD_OAUTH_REQUIRE_MFA_TIERS"]),
       });
     } else {
-      setApp({ clientId: "", redirectUri: "", secretSaved: false, configured: false, adminRoleIds: "", moderatorRoleIds: "", playerRoleIds: "", requireMfa: true });
+      setApp({ clientId: "", redirectUri: "", secretSaved: false, configured: false, mappingConfigured: false, adminRoleIds: "", moderatorRoleIds: "", playerRoleIds: "", requireMfa: true });
     }
     if (id.status === "fulfilled") {
       setIdentity(id.value);
@@ -243,13 +254,21 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
     setError("The console is taking longer than expected to restart. Give it another minute and reload this page, or run `dune console restart` on the host.");
   }
 
-  // Derived step -- the fix for the loop. identity present => map; else app
-  // ready => authorize; else connect the application. forceReconfigure (#643
-  // §4.2) overrides this to "connect" regardless, for an operator rotating an
-  // already-configured application's credentials -- but never once "done" is
-  // reached, since that outcome is final for this mount.
-  const step: "loading" | "connect" | "authorize" | "map" | "done" =
-    done ? "done" : !probed ? "loading" : forceReconfigure ? "connect" : identity ? "map" : (app?.configured ? "authorize" : "connect");
+  // Derived step -- the fix for the loop. identity present => map; else
+  // mapping already finalized (active for everyone else, just not this
+  // session) => active; else app ready but mapping not finished => authorize;
+  // else connect the application. forceReconfigure (#643 §4.2) overrides this
+  // to "connect" regardless, for an operator rotating an already-configured
+  // application's credentials -- but never once "done" is reached, since that
+  // outcome is final for this mount.
+  const step: "loading" | "connect" | "authorize" | "active" | "map" | "done" =
+    done ? "done"
+      : !probed ? "loading"
+      : forceReconfigure ? "connect"
+      : identity ? "map"
+      : app?.mappingConfigured ? "active"
+      : app?.configured ? "authorize"
+      : "connect";
   const chosen = identity?.guilds.find((g) => g.id === guildId) || null;
 
   // #643: embedded mode drops the full-page "login-screen" chrome -- this
@@ -260,7 +279,7 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
 
   const body = (
     <>
-        <Heading>Set up Discord sign-in</Heading>
+        <Heading>{step === "active" ? "Discord Sign-In" : "Set up Discord sign-in"}</Heading>
 
         {step === "loading" && <p className="loading-dots">Checking this console&apos;s Discord configuration</p>}
 
@@ -333,6 +352,24 @@ export function DiscordSetupWizard({ onDone, onCancel, embedded = false }: Props
             >Back</button>
           </>
         )}
+        {step === "active" && (
+          <>
+            <p className="muted">Discord sign-in is connected and active for this server &mdash; people are already signing in with it. This browser session doesn&apos;t need to sign in with Discord again just to see this.</p>
+            <a
+              className="login-discord-button login-discord-button-secondary"
+              href="/api/auth/discord/start?setup=1"
+              onClick={() => {
+                // #643 §4.1: same marker as the authorize step's own
+                // "Continue with Discord" -- this link reaches the identical
+                // OAuth round-trip, just reframed for an operator who wants to
+                // update guild/role mapping rather than finish first-time setup.
+                if (embedded) { try { window.sessionStorage.setItem(DISCORD_SETUP_RETURN_MARKER, "1"); } catch { /* best effort */ } }
+              }}
+            >Sign in with Discord to update server or role mapping</a>
+            <button type="button" className="login-password-toggle" onClick={() => { setAppPath("have-app"); setForceReconfigure(true); }}>Change application credentials</button>
+          </>
+        )}
+
         {step === "authorize" && (
           <>
             <p className="muted">Sign in with Discord. The console will learn who you are and which servers you are in; the server you own makes you its Owner. Your admin password is not needed again — it stays as the way back in if Discord is ever unavailable.</p>
