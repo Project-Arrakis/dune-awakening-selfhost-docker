@@ -159,12 +159,51 @@ ambiguous `Outpost` naming shared with a non-DLC Atreides building set
 `MTX_Atreides_Outpost_FloorLight_Movie_Patent`): treat these as probable, not
 confirmed, without checking the shipped paks directly.
 
-**Not found under any guessed naming** in this catalog snapshot: the Dune:
-Part Two Sardaukar building set (the announcement's "73 Sardaukar building
-pieces + 17 decorations"), Harkonnen Cataphract Armor, Longhaul Stillsuit,
-Aegis of an Unwalked Path, Atreides Hoplite Armor, Benediction Disruptor, or
-either of the two named emotes. `runtime/data/admin-items.json` is a
-manually curated subset (per its own header comment), not a live dump of the
-game's item templates — absence here is not proof of absence in the actual
-shipped game files, only that this particular curated file doesn't have them
-under any name tried.
+**Confirmed absent from the live shipped client, not just this catalog file
+(2026-09-02 follow-up).** The DLC announcement also names specific Part Two
+items — Harkonnen Cataphract Armor, Atreides Hoplite Armor, Longhaul
+Stillsuit, Aegis of an Unwalked Path Armor, Caladan Stormcoat, Sardaukar
+Legionnaire/Velites Armor, Sardaukar Averruncus Stillsuit, Sardaukar
+Oathblade, Sardaukar Benediction Disruptor, Sardaukar Tactical Swatch, and
+two emotes (Sardaukar Kneel, Sardaukar Blood Wipe) — plus "73 Sardaukar
+building pieces + 17 decorations." None of these were found in
+`admin-items.json`, so this was re-checked directly against the actual
+shipped server Paks (the same methodology `docs/console/base-inventory.md`
+already establishes for exactly this kind of question: "presence is proof,
+absence is not"):
+
+```bash
+docker exec dune-server-survival-1 bash -c \
+  'cat /home/dune/server/DuneSandbox/Content/Paks/*.pak | \
+   grep -aoE "[A-Za-z0-9_]*(Legionnaire|Velites|Averruncus|Oathblade|TacticalSwatch|Cataphract|Hoplite|Longhaul|Unwalked|AegisOf|Stormcoat|Benediction|BloodWipe)[A-Za-z0-9_]*" | sort -u'
+```
+
+Run against both `dune-server-survival-1` on dune-dev and dune-prod (their
+Paks are byte-identical — confirmed via `md5sum`, so one server's result
+speaks for both): **zero matches for any of these terms**, while the same
+grep methodology correctly finds a known-present control term
+(`LargeOreRefinery` → `LargeOreRefinery`, `LargeOreRefinery_Placeable`), so
+the null result isn't a broken command.
+
+A broader `grep -aoE "[A-Za-z0-9_]*DLC[A-Za-z0-9_]*"` sweep surfaced the
+actual internal reward-table naming convention,
+`DA_PlayerRewards_DLC_<Codename>` — a single table covering multiple,
+unrelated DLCs/reward packs (`..._LostHarvest`, `..._OutsideTheLaw`,
+`..._WildlifeOfArrakis`, `..._Chapter3_Cosmetics`, two sandbike/ornithopter
+paint swatches, etc.), not something scoped to "Filmic Archive" specifically
+or named that. Two entries in it do match this DLC: `DA_PlayerRewards_DLC_
+CaladanPalaceBuildingSet` (the 27-item placeable set above) and
+`DA_PlayerRewards_DLC_SardaukarBatorArmor` — which resolves to the two
+`category: customizations` items already in the catalog,
+`MTX_Sard_Stillsuit_01_SetVariant` ("Sardaukar Bator Body") and, probably
+the same set, `MTX_Sard_Scout_SetVariant` ("Sardaukar Chestpiece Variant",
+not itself confirmed via the reward table). Customization/wardrobe items use
+a different unlock mechanism than building patents (not `dune.items` +
+`building_progression`) — not investigated here.
+
+**Conclusion: the Part Two Sardaukar armor/weapon/stillsuit/emote set named
+in the announcement is not present in the client build currently running on
+either server**, as of this check — this is a real absence in the shipped
+game files, not a gap in this fork's curated catalog. It's a reasonable bet
+this content lands in a content patch closer to the DLC's 2026-09-22 launch;
+re-run the grep above after that date before concluding otherwise.
