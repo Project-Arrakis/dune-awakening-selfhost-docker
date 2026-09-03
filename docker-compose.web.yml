@@ -54,6 +54,11 @@ services:
       # it in .env" is true.
       DISCORD_OAUTH_CLIENT_ID: "${DISCORD_OAUTH_CLIENT_ID:-}"
       DISCORD_OAUTH_CLIENT_SECRET: "${DISCORD_OAUTH_CLIENT_SECRET:-}"
+      # Settings -> Discord OAuth "Disable"/"Enable" (docs/design/auth-settings-consolidation-l1-design-2026-09-03.md).
+      # Same passthrough requirement as every other Discord OAuth key below:
+      # console/api/src/config.js reads this from process.env, so a value that
+      # only exists in .env on the host is invisible to it without this line.
+      DISCORD_OAUTH_DISABLED: "${DISCORD_OAUTH_DISABLED:-0}"
       DISCORD_OAUTH_BASE_URL: "${DISCORD_OAUTH_BASE_URL:-https://discord.com/api/v10}"
       DISCORD_OAUTH_REDIRECT_URI: "${DISCORD_OAUTH_REDIRECT_URI:-}"
       DISCORD_HOME_GUILD_ID: "${DISCORD_HOME_GUILD_ID:-}"
