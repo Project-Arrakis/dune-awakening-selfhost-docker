@@ -254,3 +254,132 @@ describe("DiscordSetupWizard: a restart is required after saving (the process on
     expect(replace).toHaveBeenCalledWith("/");
   });
 });
+
+// #643 (embed the guided wizard into Settings). Real Eight Hats Layer 1
+// findings this suite regression-pins (design doc
+// docs/design/discord-settings-embed-l1-design-2026-08-30.md, §4):
+//   - Architect CRITICAL (#676's own audit, carried into this implementation):
+//     the "done" step's restartNow() always ends in window.location.replace,
+//     a full navigation -- embedded mode must never rely on a subsequent
+//     Discord round-trip re-mounting THIS component; App.tsx owns that via
+//     the sessionStorage marker instead (asserted below).
+//   - Cloud Security HIGH (#676): the credential-entry form must remain the
+//     ONLY reachable way to rotate the Discord Client Secret once this
+//     replaces SettingsPanel's old always-editable manual form -- "Change
+//     application credentials" (§4.2).
+//   - GRC HIGH (#676): the map step's role/MFA fields must pre-fill from
+//     already-saved config, not silently reset to blank/true on reopen (§4.3).
+function stubAlreadyConfiguredNoIdentity() {
+  mockApi.mockImplementation((path: string) => {
+    if (path === "/api/settings") {
+      return Promise.resolve({
+        serverConfig: {
+          DISCORD_OAUTH_CLIENT_ID: "123456789012345678",
+          DISCORD_CONSOLE_ADMIN_ROLE_IDS: "111111111111111111",
+          DISCORD_CONSOLE_MODERATOR_ROLE_IDS: "",
+          DISCORD_CONSOLE_PLAYER_ROLE_IDS: "222222222222222222",
+          DISCORD_OAUTH_REQUIRE_MFA_TIERS: "owner,admin",
+        },
+        config: { discordOAuthAppConfigured: true },
+      } as never);
+    }
+    if (path === "/api/setup/discord-identity") return Promise.reject(new Error("not signed in with Discord yet"));
+    return Promise.reject(new Error(`unexpected api call: ${path}`));
+  });
+}
+
+describe("DiscordSetupWizard: embedded mode structural difference", () => {
+  beforeEach(() => { vi.clearAllMocks(); stubHttps(true); });
+
+  it("standalone (not embedded): renders the full-page login-screen wrapper, no embedded wrapper", async () => {
+    stubNotYetConfigured();
+    const { container } = render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByText("I already have a Discord application");
+    expect(container.querySelector("main.login-screen")).not.toBeNull();
+    expect(container.querySelector(".discord-setup-panel-embedded")).toBeNull();
+  });
+
+  it("embedded: renders the embedded wrapper, never the full-page login-screen wrapper", async () => {
+    stubNotYetConfigured();
+    const { container } = render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByText("I already have a Discord application");
+    expect(container.querySelector(".discord-setup-panel-embedded")).not.toBeNull();
+    expect(container.querySelector("main.login-screen")).toBeNull();
+  });
+
+  it("embedded: sets the DISCORD_SETUP_RETURN_MARKER in sessionStorage before navigating to the OAuth round-trip; standalone mode never sets it", async () => {
+    window.sessionStorage.clear();
+    stubAlreadyConfiguredNoIdentity();
+    render(<DiscordSetupWizard embedded onDone={() => {}} onCancel={() => {}} />);
+    const link = await screen.findByRole("link", { name: /continue with discord/i });
+    fireEvent.click(link);
+    expect(window.sessionStorage.getItem("dune-console:discord-setup-return")).toBe("1");
+    window.sessionStorage.clear();
+  });
+
+  it("standalone: never sets the marker, since the pre-login flow's existing forced-logout/standalone-mount behavior must stay unchanged", async () => {
+    window.sessionStorage.clear();
+    stubAlreadyConfiguredNoIdentity();
+    render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+    const link = await screen.findByRole("link", { name: /continue with discord/i });
+    fireEvent.click(link);
+    expect(window.sessionStorage.getItem("dune-console:discord-setup-return")).toBeNull();
+  });
+});
+
+describe("DiscordSetupWizard: change application credentials (§4.2)", () => {
+  beforeEach(() => { vi.clearAllMocks(); stubHttps(true); });
+
+  it("is not shown before the application is configured", async () => {
+    stubNotYetConfigured();
+    render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByText("I already have a Discord application");
+    expect(screen.queryByText("Change application credentials")).toBeNull();
+  });
+
+  it("once configured (authorize step), offers a way back to the credential-entry form, pre-filled with the saved Client ID", async () => {
+    stubAlreadyConfiguredNoIdentity();
+    render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.click(await screen.findByText("Change application credentials"));
+    const clientIdInput = await screen.findByLabelText(/client id/i) as HTMLInputElement;
+    expect(clientIdInput.value).toBe("123456789012345678");
+  });
+});
+
+describe("DiscordSetupWizard: role/MFA pre-fill on the map step (§4.3)", () => {
+  beforeEach(() => { vi.clearAllMocks(); stubHttps(true); });
+
+  it("pre-fills admin/player role IDs and the MFA requirement from already-saved config, not blank/default", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings") {
+        return Promise.resolve({
+          serverConfig: {
+            DISCORD_OAUTH_CLIENT_ID: "123456789012345678",
+            DISCORD_CONSOLE_ADMIN_ROLE_IDS: "111111111111111111",
+            DISCORD_CONSOLE_MODERATOR_ROLE_IDS: "",
+            DISCORD_CONSOLE_PLAYER_ROLE_IDS: "222222222222222222",
+            DISCORD_OAUTH_REQUIRE_MFA_TIERS: "",
+          },
+          config: { discordOAuthAppConfigured: true },
+        } as never);
+      }
+      if (path === "/api/setup/discord-identity") {
+        return Promise.resolve({ user: { id: "u1", username: "owner", mfaEnabled: true }, guilds: [{ id: "g1", name: "My Server", owner: true }] } as never);
+      }
+      return Promise.reject(new Error(`unexpected api call: ${path}`));
+    });
+    render(<DiscordSetupWizard onDone={() => {}} onCancel={() => {}} />);
+
+    // The map step can render (identity alone gates it) before the app-config
+    // probe's own pre-fill effect has applied -- wait for the VALUE, not just
+    // the element, to avoid a real race between the two independent probes.
+    const adminInput = await screen.findByLabelText(/admin role/i) as HTMLInputElement;
+    await waitFor(() => expect(adminInput.value).toBe("111111111111111111"));
+    const playerInput = screen.getByLabelText(/player role/i) as HTMLInputElement;
+    expect(playerInput.value).toBe("222222222222222222");
+    // Saved config had no MFA requirement -- the checkbox must reflect that,
+    // not silently default to checked (the real bug this pre-fill fixes).
+    const mfaCheckbox = screen.getByLabelText(/require.*two-factor for owner and admin/i) as HTMLInputElement;
+    expect(mfaCheckbox.checked).toBe(false);
+  });
+});
