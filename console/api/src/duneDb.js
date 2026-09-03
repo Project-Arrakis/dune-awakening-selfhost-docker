@@ -8,6 +8,7 @@ import { redact } from "./redact.js";
 import { itemImagePath } from "./adminCatalog.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
 import { isFiefClaimPlaceable } from "./blueprintSafety.js";
+import { withLiveMapSector } from "./liveMapSector.js";
 import { renderPlayerMessageTemplate } from "./services/messageTemplate.js";
 import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA, MESSAGE_OF_THE_DAY_PERSONA } from "./systemPersonas.js";
 import {
@@ -14122,14 +14123,14 @@ async function offlineTeleportPlayerExists(db, playerId) {
 }
 
 function normalizeMarker(row) {
-  return {
+  return withLiveMapSector({
     ...row,
     id: Number(row.id),
     partition_id: Number(row.partition_id || 0),
     x: Number(row.x),
     y: Number(row.y),
     z: Number(row.z)
-  };
+  });
 }
 
 function unsupportedMap(feature, requiredTables) {

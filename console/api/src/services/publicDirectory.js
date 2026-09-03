@@ -298,6 +298,7 @@ export async function playerPortalMapSnapshot(config, db, options = {}) {
       };
       if (marker.subtype) row.subtype = String(marker.subtype);
       if (marker.confidence) row.confidence = String(marker.confidence);
+      if (Object.hasOwn(marker, "sector")) row.sector = marker.sector == null ? null : String(marker.sector);
       if (marker.partition_id != null && Number.isInteger(Number(marker.partition_id))) {
         row.partitionId = Number(marker.partition_id);
       }

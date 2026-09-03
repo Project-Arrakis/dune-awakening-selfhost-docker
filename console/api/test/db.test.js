@@ -3796,15 +3796,16 @@ test("live map player markers validate map filter and use parameterized transfor
     query: async (text, values = []) => {
       calls.push({ text, values });
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
-      return { rows: [{ id: 10, type: "player", name: "Red", online_status: "Online", map: "Survival_1", partition_id: 1, class: "Player", x: "1", y: "2", z: "3" }] };
+      return { rows: [{ id: 10, type: "player", name: "Red", online_status: "Online", map: "DeepDesert", partition_id: 1, class: "Player", x: "-52656", y: "-52066", z: "3" }] };
     }
   };
-  const result = await liveMapPlayers(db, "Survival_1");
+  const result = await liveMapPlayers(db, "DeepDesert");
   assert.equal(result.rows[0].type, "player");
+  assert.equal(result.rows[0].sector, "E5");
   const markerQuery = calls.find((call) => call.text.includes("join dune.player_state"));
   assert.ok(markerQuery);
   assert.match(markerQuery.text, /a\.map = \$1/);
-  assert.deepEqual(markerQuery.values, ["Survival_1"]);
+  assert.deepEqual(markerQuery.values, ["DeepDesert"]);
   await assert.rejects(() => liveMapPlayers(db, "bad;map"), /Invalid map name/);
 });
 

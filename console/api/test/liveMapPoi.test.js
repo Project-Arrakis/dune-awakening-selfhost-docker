@@ -26,6 +26,14 @@ test("ore marker identifiers receive their player-facing resource names", () => 
   assert.equal(liveMapSubtypeLabel("ore", "FutureiumOre"), "Futureium");
 });
 
+test("Deep Desert POI rows include their grid sector", async () => {
+  const fetchCategory = async (db, map, category) => category === "poi"
+    ? { capabilities: { poi: true }, rows: [{ id: "dd-poi", marker_type: "TestPoi", map, x: -52656, y: -52066, z: 0 }] }
+    : { capabilities: { [category]: false }, rows: [] };
+  const result = await liveMapPoi(null, "DeepDesert", { fetchCategory });
+  assert.equal(result.rows[0].sector, "E5");
+});
+
 test("one category failing doesn't take down the others", async () => {
   const fetchCategory = async (db, map, category) => {
     if (category === "scrap") throw new Error("boom");

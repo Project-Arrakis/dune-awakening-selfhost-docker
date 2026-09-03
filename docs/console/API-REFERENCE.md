@@ -448,7 +448,7 @@ Each row also carries a `region` sub-region name where the map has a region tabl
 (`runtime/data/hagga-regions.json`, extracted from the game paks; Hagga Basin is
 covered). It is resolved from the nearest `dune.markers.area_id` and is best-effort
 — absent when marker data is unavailable. Deep Desert instead exposes its A–I/1–9
-sector grid, derived client-side from coordinates.
+sector grid as the `sector` field, derived from each row's coordinates.
 
 The separate `/api/admin/vehicles*` routes under [Admin Tools](#admin-tools) are a
 different, CLI-backed surface (blueprint catalog and spawning), not this Postgres
@@ -675,6 +675,12 @@ partition display-name resolution, the spice/POI data model, the
 Layers legend's default-settings mechanism, and what `coriolisLayout`
 drives: the WebGL renderer that draws the Deep Desert's own cartography
 meshes, and the conditions under which it falls back to the flat image.
+
+Coordinate-bearing Deep Desert marker rows include a `sector` field such as
+`"F6"`. It is `null` when a coordinate lies outside the A1–I9 grid. This applies
+to the combined marker response and the dedicated player, base, storage, spice,
+and POI responses, so announcement tools and bots do not need to duplicate the
+coordinate conversion.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
