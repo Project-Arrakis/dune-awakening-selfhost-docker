@@ -3,6 +3,23 @@
 **Status: Current.** Verified 2026-08-27 by upgrading a live install running
 v1.4.3 in place, with an authenticator already enrolled from an earlier build.
 
+**Correction (#676, this session):** Settings' authentication area was
+restructured. Every specific instruction below that says "open **Settings →
+Two-Factor Authentication**" as a directly-visible control is still accurate
+**only while Discord OAuth is not configured**. Once it is, Two-Factor
+Authentication and Login Password both move under a collapsed **"Password
+Sign-In (fallback)"** section (still fully functional, just demoted in
+prominence, since Discord OAuth becomes the primary sign-in method) — expand
+it the same way you would any other collapsed section. Discord OAuth itself
+also gained three new controls once configured: **Disable Discord Sign-In**
+(soft, reversible — your application's settings are kept), **Re-enable**, and
+a secondary **"Forget this configuration entirely"** (destructive — deletes
+the Client Secret and every saved field; requires typing "forget" to confirm).
+Disabling Two-Factor Authentication while Discord OAuth is configured but
+doesn't itself require Discord's own two-factor for your role now shows an
+extra confirmation step, warning that you'd otherwise be left with no
+two-factor authentication anywhere.
+
 This guide is for operators who already run the console and want to know what
 changes, what they need to do, and what they will see on screen. Nothing here
 happens automatically — updating the console leaves your sign-in exactly as it
