@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import { api, post, setCsrfToken } from "../../api/client";
+import { api, post, postForResult, setCsrfToken } from "../../api/client";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill } from "../../components/common/DisplayPrimitives";
 import { RecoveryCodesPanel } from "../auth/RecoveryCodesPanel";
+import { DiscordSetupWizard } from "../auth/DiscordSetupWizard";
+import { restartConsoleAndReload } from "../../lib/consoleRestart";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
 import { ApiKeysSection } from "./ApiKeysSection";
 
@@ -14,28 +16,6 @@ import { ApiKeysSection } from "./ApiKeysSection";
 // rate-limiter budget.
 function stripCodeWhitespace(value: string) {
   return value.replace(/\s/g, "");
-}
-
-// Discord snowflake IDs are 17-19 decimal digits. The server (roleTiers.js's
-// parseRoleIdList) always filters role-ID text through this shape before
-// comparing for conflicts; mirroring that here too (review finding) avoids a
-// false-positive "role conflict" -- and a disabled Save button -- for a
-// malformed/non-snowflake token (a typo or paste artifact) that the server
-// would simply drop and save without complaint.
-const DISCORD_SNOWFLAKE_RE = /^\d{17,19}$/;
-
-// Separation of duties for Discord sign-in: one Discord role, one console tier.
-// Mirrors the server's check so the operator is told before the round-trip.
-function discordRoleConflicts(fields: Record<string, string>) {
-  const seen = new Map<string, string[]>();
-  for (const [tier, value] of Object.entries(fields)) {
-    for (const id of value.split(",").map((v) => v.trim()).filter((v) => DISCORD_SNOWFLAKE_RE.test(v))) {
-      const tiers = seen.get(id) || [];
-      if (!tiers.includes(tier)) tiers.push(tier);
-      seen.set(id, tiers);
-    }
-  }
-  return [...seen.entries()].filter(([, tiers]) => tiers.length > 1).map(([id, tiers]) => `${id} is mapped to ${tiers.join(" and ")}`);
 }
 
 type SettingsTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
@@ -64,9 +44,20 @@ type SettingsPanelProps = {
   // same TotpSetupScreen the old forced-enrollment login flow used -- this
   // panel doesn't own that top-level view state.
   onTotpEnrollmentStarted: () => void;
+  // #643: true exactly once, when this mount follows a reconfiguration
+  // Discord OAuth round-trip (App's own discordSetupReturnMarker) -- auto-
+  // expands the Discord OAuth accordion below. onDiscordSetupAutoOpened must
+  // be called once consumed, so App can clear it and a later remount of this
+  // panel (navigate away from Settings and back) never re-triggers it.
+  autoOpenDiscordSetup?: boolean;
+  onDiscordSetupAutoOpened?: () => void;
+  // #676 §7: same one-shot pattern, for the guided offer screen's "take me
+  // there" branch when Discord's own MFA already covers the acting tier.
+  autoOpenTwoFactor?: boolean;
+  onTwoFactorAutoOpened?: () => void;
 };
 
-export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmAction, onTotpEnrollmentStarted }: SettingsPanelProps) {
+export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmAction, onTotpEnrollmentStarted, autoOpenDiscordSetup, onDiscordSetupAutoOpened, autoOpenTwoFactor, onTwoFactorAutoOpened }: SettingsPanelProps) {
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   // Tier 3 credential state. secondFactorEnrolled is read from /api/auth/me,
@@ -77,8 +68,20 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   // Hiding the controls then is the worst possible response -- that is exactly
   // when the operator needs them.
   const [secondFactorUnavailable, setSecondFactorUnavailable] = useState(false);
+  // #676 §8: true when the acting session authenticated via Discord OAuth,
+  // not the console password -- drives contextual copy on the TOTP
+  // enable/disable forms, since that session may not know the password at all.
+  const [discordSessionActing, setDiscordSessionActing] = useState(false);
   const [passwordTotpCode, setPasswordTotpCode] = useState("");
   const [twoFactorOpen, setTwoFactorOpen] = useState(false);
+  // #676 §7: same one-shot pattern as autoOpenDiscordSetup above.
+  useEffect(() => {
+    if (autoOpenTwoFactor) {
+      setTwoFactorOpen(true);
+      onTwoFactorAutoOpened?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on mount
+  }, []);
   const [totpEnablePassword, setTotpEnablePassword] = useState("");
   const [totpEnableSaving, setTotpEnableSaving] = useState(false);
   const [totpEnableResult, setTotpEnableResult] = useState<SettingsTaskResult | null>(null);
@@ -92,20 +95,43 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   const [regenerateResult, setRegenerateResult] = useState<SettingsTaskResult | null>(null);
   const [regeneratedCodes, setRegeneratedCodes] = useState<string[] | null>(null);
   const [regenerateAcknowledged, setRegenerateAcknowledged] = useState(false);
-  // Discord OAuth (Tier 1). The role fields are the same information the
-  // companion bot's setup form asks for: Discord IDs, typed in, no picker.
-  const [discordOAuthOpen, setDiscordOAuthOpen] = useState(false);
-  const [discordOAuthSaving, setDiscordOAuthSaving] = useState(false);
-  const [discordOAuthResult, setDiscordOAuthResult] = useState<SettingsTaskResult | null>(null);
-  const [discordClientId, setDiscordClientId] = useState("");
-  const [discordRedirectUri, setDiscordRedirectUri] = useState("");
-  const [discordClientSecret, setDiscordClientSecret] = useState("");
-  const [discordSecretSaved, setDiscordSecretSaved] = useState(false);
-  const [discordHomeGuildId, setDiscordHomeGuildId] = useState("");
-  const [discordAdminRoleIds, setDiscordAdminRoleIds] = useState("");
-  const [discordModeratorRoleIds, setDiscordModeratorRoleIds] = useState("");
-  const [discordPlayerRoleIds, setDiscordPlayerRoleIds] = useState("");
-  const [discordRequireMfaTiers, setDiscordRequireMfaTiers] = useState("");
+  // Discord OAuth (Tier 1) -- #643: the embedded DiscordSetupWizard now owns
+  // all of this, replacing the manual per-field form that used to live here.
+  //
+  // #676 §3: the accordion defaults OPEN once Discord OAuth is configured
+  // (primary) and closed otherwise -- but that default must stay overridable
+  // by hand, so this is `null` (no manual choice yet) until the operator
+  // actually toggles it, and the computed value below falls back to the
+  // config-driven default whenever no override is set.
+  const [discordOAuthOpenOverride, setDiscordOAuthOpenOverride] = useState<boolean | null>(null);
+  // #643: consume the one-shot auto-open prop exactly once on mount -- never
+  // re-checked afterward, so toggling the accordion closed by hand doesn't
+  // get silently reopened by a stale prop value from a parent re-render.
+  useEffect(() => {
+    if (autoOpenDiscordSetup) {
+      setDiscordOAuthOpenOverride(true);
+      onDiscordSetupAutoOpened?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on mount
+  }, []);
+  // #676 §6: soft-disable / re-enable / forget.
+  const [discordDisableOpen, setDiscordDisableOpen] = useState(false);
+  const [discordDisablePassword, setDiscordDisablePassword] = useState("");
+  const [discordDisableTotpCode, setDiscordDisableTotpCode] = useState("");
+  const [discordDisableSaving, setDiscordDisableSaving] = useState(false);
+  const [discordDisableResult, setDiscordDisableResult] = useState<SettingsTaskResult | null>(null);
+  const [discordEnableSaving, setDiscordEnableSaving] = useState(false);
+  const [discordEnableResult, setDiscordEnableResult] = useState<SettingsTaskResult | null>(null);
+  const [discordForgetOpen, setDiscordForgetOpen] = useState(false);
+  const [discordForgetPassword, setDiscordForgetPassword] = useState("");
+  const [discordForgetTotpCode, setDiscordForgetTotpCode] = useState("");
+  const [discordForgetConfirmText, setDiscordForgetConfirmText] = useState("");
+  const [discordForgetSaving, setDiscordForgetSaving] = useState(false);
+  const [discordForgetResult, setDiscordForgetResult] = useState<SettingsTaskResult | null>(null);
+  // #676 §7: the zero-2FA guard's UI half -- the server is the sole source of
+  // truth for whether this fires (see totpDisableRoute), the client only
+  // reacts to the 409 it returns rather than duplicating the same check.
+  const [totpDisableZeroFactorWarning, setTotpDisableZeroFactorWarning] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordResult, setPasswordResult] = useState<SettingsTaskResult | null>(null);
@@ -133,6 +159,10 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       const me = await api<{ secondFactorEnrolled?: boolean; secondFactorUnavailable?: boolean; user?: { id?: string } }>("/api/auth/me");
       setSecondFactorEnrolled(Boolean(me.secondFactorEnrolled));
       setSecondFactorUnavailable(Boolean(me.secondFactorUnavailable));
+      // #676 §8: "local-owner" is the server's own literal fallback for a
+      // password/TOTP session's empty userId (server.js /api/auth/me route) --
+      // anything else means this session is Discord-authenticated.
+      setDiscordSessionActing(Boolean(me.user?.id) && me.user?.id !== "local-owner");
     } catch {
       // Unknown, not "no". Mirror the server's canonical unknown shape --
       // {enrolled:false, unavailable:true}, BOTH flags. Setting only
@@ -151,16 +181,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
     setSettings(nextSettings);
     const config = (nextSettings.config as Record<string, unknown> | undefined) || {};
     const directory = (nextSettings.publicDirectory as PublicDirectorySettings | undefined) || {};
-    const serverConfig = (nextSettings.serverConfig as Record<string, string> | undefined) || {};
     setWebPort(String(config.port || "8088"));
-    setDiscordClientId(serverConfig["DISCORD_OAUTH_CLIENT_ID"] || "");
-    setDiscordRedirectUri(serverConfig["DISCORD_OAUTH_REDIRECT_URI"] || "");
-    setDiscordHomeGuildId(serverConfig["DISCORD_HOME_GUILD_ID"] || "");
-    setDiscordSecretSaved(Boolean(serverConfig["_discordOAuthSecretSaved"]));
-    setDiscordAdminRoleIds(serverConfig["DISCORD_CONSOLE_ADMIN_ROLE_IDS"] || "");
-    setDiscordModeratorRoleIds(serverConfig["DISCORD_CONSOLE_MODERATOR_ROLE_IDS"] || "");
-    setDiscordPlayerRoleIds(serverConfig["DISCORD_CONSOLE_PLAYER_ROLE_IDS"] || "");
-    setDiscordRequireMfaTiers(serverConfig["DISCORD_OAUTH_REQUIRE_MFA_TIERS"] || "");
   }
   useEffect(() => {
     refresh().catch(() => undefined);
@@ -194,7 +215,6 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   const passwordStarted = newPassword.length > 0;
   const confirmStarted = confirmPassword.length > 0;
   const passwordsMatch = newPassword === confirmPassword;
-  const discordRoleConflictList = discordRoleConflicts({ Admin: discordAdminRoleIds, Moderator: discordModeratorRoleIds, Player: discordPlayerRoleIds });
   async function changeLoginPassword() {
     if (!currentPassword) {
       setPasswordResult({ status: "failed", title: "Password Change Failed", message: "Enter your current login password." });
@@ -268,31 +288,6 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       setRegenerateSaving(false);
     }
   }
-  async function saveDiscordOAuth() {
-    setDiscordOAuthSaving(true);
-    setDiscordOAuthResult({ status: "running", title: "Saving Discord OAuth config..." });
-    try {
-      await post<{ ok: boolean }>("/api/setup/write-oauth-config", {
-        DISCORD_OAUTH_CLIENT_ID: discordClientId,
-        DISCORD_OAUTH_REDIRECT_URI: discordRedirectUri,
-        DISCORD_HOME_GUILD_ID: discordHomeGuildId,
-        DISCORD_CONSOLE_ADMIN_ROLE_IDS: discordAdminRoleIds,
-        DISCORD_CONSOLE_MODERATOR_ROLE_IDS: discordModeratorRoleIds,
-        DISCORD_CONSOLE_PLAYER_ROLE_IDS: discordPlayerRoleIds,
-        DISCORD_OAUTH_REQUIRE_MFA_TIERS: discordRequireMfaTiers
-      });
-      if (discordClientSecret) {
-        await post<{ ok: boolean }>("/api/setup/save-oauth-secret", { secret: discordClientSecret, overwrite: discordSecretSaved });
-        setDiscordClientSecret("");
-        setDiscordSecretSaved(true);
-      }
-      setDiscordOAuthResult({ status: "succeeded", title: "Discord OAuth config saved. Restart the console for changes to take effect." });
-    } catch (error) {
-      setDiscordOAuthResult({ status: "failed", title: "Save failed", message: error instanceof Error ? error.message : String(error) });
-    } finally {
-      setDiscordOAuthSaving(false);
-    }
-  }
   async function enableTwoFactor() {
     if (!totpEnablePassword) {
       setTotpEnableResult({ status: "failed", title: "Could Not Start Setup", message: "Enter your current login password." });
@@ -314,7 +309,10 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       setTotpEnableSaving(false);
     }
   }
-  async function disableTwoFactor() {
+  // #676 §7: acknowledged=true resubmits after the zero-2FA guard's warning
+  // was shown and the operator chose "Disable anyway" -- the guard itself is
+  // entirely server-side (totpDisableRoute); this only reacts to its 409.
+  async function disableTwoFactor(acknowledged = false) {
     if (!totpDisablePassword) {
       setTotpDisableResult({ status: "failed", title: "Disable Failed", message: "Enter your current login password." });
       return;
@@ -323,15 +321,28 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       setTotpDisableResult({ status: "failed", title: "Disable Failed", message: "Enter your current authenticator code." });
       return;
     }
-    const confirmed = await confirmAction(
-      "Two-factor authentication will be turned off, and your current recovery codes will stop working. You can enable it again any time.",
-      { title: "Disable two-factor authentication?", confirmLabel: "Disable", danger: true }
-    );
-    if (!confirmed) return;
+    if (!acknowledged) {
+      const confirmed = await confirmAction(
+        "Two-factor authentication will be turned off, and your current recovery codes will stop working. You can enable it again any time.",
+        { title: "Disable two-factor authentication?", confirmLabel: "Disable", danger: true }
+      );
+      if (!confirmed) return;
+    }
+    setTotpDisableZeroFactorWarning(false);
     setTotpDisableSaving(true);
     setTotpDisableResult({ status: "running", title: "Disabling Two-Factor Authentication..." });
     try {
-      await post("/api/auth/2fa/disable", { currentPassword: totpDisablePassword, totpCode: totpDisableTotpCode.trim() });
+      const { status, body } = await postForResult<{ error?: string; zeroFactorWarning?: boolean }>("/api/auth/2fa/disable", {
+        currentPassword: totpDisablePassword,
+        totpCode: totpDisableTotpCode.trim(),
+        ...(acknowledged ? { acknowledgeNoOtherFactor: true } : {}),
+      });
+      if (status === 409 && body.zeroFactorWarning) {
+        setTotpDisableZeroFactorWarning(true);
+        setTotpDisableResult(null);
+        return;
+      }
+      if (status < 200 || status >= 300) throw new Error(body.error || `Request failed: ${status}`);
       setTotpDisablePassword("");
       setTotpDisableTotpCode("");
       setTotpDisableResult({ status: "succeeded", title: "Two-Factor Authentication Disabled" });
@@ -343,6 +354,93 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       setTotpDisableSaving(false);
     }
   }
+  // #676 §6: soft-disable. Requires fresh Tier-3 proof (self-lockout guard,
+  // not credential integrity -- see server.js's own comment on this route)
+  // and restarts immediately and non-skippably (§6.3): showing "disabled" in
+  // this UI before the restart actually applies it would be misleading
+  // specifically during the scenario (suspected compromise) this exists for.
+  async function disableDiscordOAuth() {
+    if (!discordDisablePassword) {
+      setDiscordDisableResult({ status: "failed", title: "Disable Failed", message: "Enter your current login password." });
+      return;
+    }
+    const confirmed = await confirmAction(
+      "Discord sign-in will stop working as soon as the console restarts. You'll need the admin password to sign in until you turn it back on -- your Discord application's settings are kept, not deleted.",
+      { title: "Disable Discord sign-in?", confirmLabel: "Disable", danger: true }
+    );
+    if (!confirmed) return;
+    setDiscordDisableSaving(true);
+    setDiscordDisableResult({ status: "running", title: "Disabling Discord sign-in..." });
+    try {
+      await post("/api/settings/discord-oauth/disable", {
+        currentPassword: discordDisablePassword,
+        ...(discordDisableTotpCode.trim() ? { totpCode: discordDisableTotpCode.trim() } : {}),
+      });
+      setDiscordDisablePassword("");
+      setDiscordDisableTotpCode("");
+      await restartConsoleAndReload((c) => c.discordOAuthDisabled === true, {
+        onRestarting: () => setDiscordDisableResult({ status: "running", title: "Restarting the console..." }),
+        onTimeout: (message) => setDiscordDisableResult({ status: "failed", title: "Restart taking longer than expected", message }),
+      });
+    } catch (error) {
+      setDiscordDisableResult({ status: "failed", title: "Disable Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setDiscordDisableSaving(false);
+    }
+  }
+
+  // #676 §6.3: no fresh proof required -- re-enabling only restores an
+  // existing login option, it can never strand the acting session.
+  async function enableDiscordOAuth() {
+    setDiscordEnableSaving(true);
+    setDiscordEnableResult({ status: "running", title: "Re-enabling Discord sign-in..." });
+    try {
+      await post("/api/settings/discord-oauth/enable", {});
+      await restartConsoleAndReload((c) => c.discordOAuthDisabled !== true, {
+        onRestarting: () => setDiscordEnableResult({ status: "running", title: "Restarting the console..." }),
+        onTimeout: (message) => setDiscordEnableResult({ status: "failed", title: "Restart taking longer than expected", message }),
+      });
+    } catch (error) {
+      setDiscordEnableResult({ status: "failed", title: "Re-enable Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setDiscordEnableSaving(false);
+    }
+  }
+
+  // #676 §6.4: irreversible for the role/guild mapping (the Client Secret
+  // alone can always be regenerated from Discord's own portal) -- typed
+  // confirmation replaces the standard confirmAction dialog here, judged
+  // insufficient friction for an action this destructive.
+  async function forgetDiscordOAuth() {
+    if (discordForgetConfirmText.trim().toLowerCase() !== "forget") {
+      setDiscordForgetResult({ status: "failed", title: "Not Confirmed", message: 'Type "forget" to confirm.' });
+      return;
+    }
+    if (!discordForgetPassword) {
+      setDiscordForgetResult({ status: "failed", title: "Forget Failed", message: "Enter your current login password." });
+      return;
+    }
+    setDiscordForgetSaving(true);
+    setDiscordForgetResult({ status: "running", title: "Forgetting Discord configuration..." });
+    try {
+      await post("/api/settings/discord-oauth/forget", {
+        currentPassword: discordForgetPassword,
+        ...(discordForgetTotpCode.trim() ? { totpCode: discordForgetTotpCode.trim() } : {}),
+      });
+      setDiscordForgetPassword("");
+      setDiscordForgetTotpCode("");
+      setDiscordForgetConfirmText("");
+      await restartConsoleAndReload((c) => c.discordOAuthConfigured !== true && c.discordOAuthDisabled !== true, {
+        onRestarting: () => setDiscordForgetResult({ status: "running", title: "Restarting the console..." }),
+        onTimeout: (message) => setDiscordForgetResult({ status: "failed", title: "Restart taking longer than expected", message }),
+      });
+    } catch (error) {
+      setDiscordForgetResult({ status: "failed", title: "Forget Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setDiscordForgetSaving(false);
+    }
+  }
+
   async function changeWebPort() {
     const port = Number(webPort);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -424,88 +522,29 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   const anonymousCountEnabled = publicDirectory.anonymousCountEnabled !== false;
   const passwordEnvManaged = Boolean(config.adminPasswordEnvManaged);
   const consoleTotpAvailable = config.consoleTotpEnabled === true;
+  // #676 §3/§6: the three Discord OAuth states this page's structure is
+  // driven by. discordOAuthDisabled is independent of discordOAuthConfigured
+  // (config.js gates the latter to false whenever the former is true) --
+  // reading only discordOAuthConfigured could not tell "never configured"
+  // apart from "configured, then soft-disabled."
+  const discordOAuthConfigured = config.discordOAuthConfigured === true;
+  const discordOAuthDisabled = config.discordOAuthDisabled === true;
+  const discordOAuthOpen = discordOAuthOpenOverride ?? discordOAuthConfigured;
   const currentPort = String(config.port || "8088");
-  return <section className="panel">
-    <div className="panel-title"><h2>Settings</h2><div className="action-row settings-title-actions">
-      <div className="memory-feature-toggle settings-anonymous-count-control">
-        <InfoTooltip id="anonymous-count-help" label="About Anonymous Count">Helps us understand how many Dune Docker servers are in use, including local and unlisted installations. Only anonymous server presence is reported—never your server name, IP address, players, or configuration. These statistics help demonstrate project usage and guide future development.</InfoTooltip>
-        <label className={`switch-checkbox settings-anonymous-count-toggle ${anonymousCountEnabled ? "enabled" : "disabled"}`}>
-          <input
-            type="checkbox"
-            disabled={anonymousCountSaving}
-            checked={anonymousCountEnabled}
-            onChange={(event) => { void changeAnonymousCount(event.target.checked); }}
-          />
-          <span className="switch-label">Anonymous Count:</span>
-          <strong className="switch-state">{anonymousCountSaving ? "Saving" : anonymousCountEnabled ? "Enabled" : "Disabled"}</strong>
-        </label>
-      </div>
-      {serverListingVisible && <label className={`switch-checkbox settings-server-listing-toggle ${serverListingEnabled ? "enabled" : "disabled"}`}>
-        <input
-          type="checkbox"
-          disabled={serverListingSaving}
-          checked={serverListingEnabled}
-          onChange={(event) => { void changeServerListing(event.target.checked); }}
-        />
-        <span className="switch-label">Server Listing:</span>
-        <strong className="switch-state">{serverListingSaving ? "Saving" : serverListingEnabled ? "Enabled" : "Disabled"}</strong>
-      </label>}
-      <button onClick={refresh}>Refresh</button>
-    </div></div>
-    {serverListingError && <p className="error settings-server-listing-error">{serverListingError}</p>}
-    {serverListingVisible && serverListingEnabled && publicDirectory.probeError &&
-      <p className="error settings-server-listing-error">Server listing issue: {publicDirectory.probeError}</p>}
-    <div className="settings-section-stack">
-      {serverListingVisible && <div className={`playerAdmin_toggle settings-public-profile-toggle ${publicProfileOpen ? "open" : ""}`}>
-        <button className="playerAdmin_toggleHeader" aria-label={publicProfileOpen ? "Collapse Public Listing Profile" : "Expand Public Listing Profile"} onClick={() => setPublicProfileOpen(!publicProfileOpen)}>
-          {publicProfileOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-          <span>Public Listing Profile</span>
-        </button>
-        {publicProfileOpen && <div className="playerAdmin_toggleBody">
-          <p className="muted">Public descriptions, community links, recruitment details, and Player Portal settings are managed on DuneDocker.app. Generate a claim code from {publicListingUrl
-            ? <a className="settings-server-page-link" href={publicListingUrl} target="_blank" rel="noreferrer">[Your Server Page]</a>
-            : "[Your Server Page]"}, then paste it below.</p>
-          <label className="settings-discord-field">
-            <span className="field-label-row"><span className="settings-discord-label">Generated Claim Code</span></span>
-            <input
-              disabled={publicProfileSaving}
-              value={claimCode}
-              onChange={(event) => setClaimCode(event.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 14))}
-              placeholder="ABCD-EF12-3456"
-              autoComplete="off"
-            />
-          </label>
-          <div className="action-row">
-            <button disabled={publicProfileSaving || claimCode.replace(/[^A-Z0-9]/g, "").length !== 12} onClick={() => { void verifyListingClaim(); }}>
-              {publicProfileSaving ? "Verifying..." : "Verify Generated Code"}
-            </button>
-            {publicProfileResult && <span className={`inline-task-result result-${publicProfileResult.status === "succeeded" ? "ok" : publicProfileResult.status === "failed" ? "fail" : "running"}`}>
-              <strong className={publicProfileResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(publicProfileResult.title, publicProfileResult.status === "running")}</strong>
-              {publicProfileResult.message && <span className="inline-task-message">{formatResultMessage(publicProfileResult.message)}</span>}
-            </span>}
-          </div>
-        </div>}
-      </div>}
-      <RuntimeSettingsSummary settings={settings} />
-      <div className={`playerAdmin_toggle settings-web-port-toggle ${webPortOpen ? "open" : ""}`}>
-        <button className="playerAdmin_toggleHeader" aria-label={webPortOpen ? "Collapse Web Console Port" : "Expand Web Console Port"} onClick={() => setWebPortOpen(!webPortOpen)}>{webPortOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Web Console Port</span></button>
-        {webPortOpen && <div className="playerAdmin_toggleBody">
-          <p className="muted">Change the browser port used by this web console.</p>
-          <p className="attention-text">After saving, this page will stop responding on port {currentPort}. Open the new address shown in the result message.</p>
-          <div className="settings-password-grid settings-web-port-grid">
-            <label>Console Port<input disabled={webPortSaving} type="number" min="1" max="65535" step="1" value={webPort} onChange={(event) => setWebPort(event.target.value.replace(/[^\d]/g, "").slice(0, 5))} placeholder="8088" /></label>
-          </div>
-          <div className="action-row">
-            <button disabled={webPortSaving || Boolean(webPortRedirectUrl) || !webPort || webPort === currentPort} onClick={() => { void changeWebPort(); }}>{webPortSaving ? "Saving..." : "Save And Restart Console"}</button>
-            {webPortResult && <span className={`inline-task-result result-${webPortResult.status === "succeeded" ? "ok" : webPortResult.status === "failed" ? "fail" : "running"}`}>
-              <strong className={webPortResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(webPortResult.title, webPortResult.status === "running")}</strong>
-              <span className="inline-task-message">{formatWebPortResultMessage(webPortResult, webPortRedirectUrl, webPortRedirectCountdown)}</span>
-            </span>}
-          </div>
-        </div>}
-      </div>
+  // #676 §3: extracted so render order can flip based on which credential is
+  // primary right now, without duplicating either block's JSX.
+  const passwordSignInSection = <>
+      {/* #676 §3: shown only once Discord OAuth is the primary sign-in path --
+          states plainly that this is now the break-glass fallback, and (once
+          Discord's own MFA covers this tier) that the password's separate
+          two-factor can safely be turned off here any time, independent of
+          the one-time guided offer that may have already covered this. */}
+      {discordOAuthConfigured && <p className="muted settings-password-fallback-note">
+        This password is Discord sign-in&apos;s break-glass fallback if it&apos;s ever unavailable &mdash; make sure whoever manages Discord access also knows it.
+        {secondFactorEnrolled && <> Discord sign-in already requires its own two-factor for your role, you can safely turn off this password-based two-factor below any time.</>}
+      </p>}
       <div className={`playerAdmin_toggle settings-login-password-toggle ${loginPasswordOpen ? "open" : ""}`}>
-        <button className="playerAdmin_toggleHeader" aria-label={loginPasswordOpen ? "Collapse Login Password" : "Expand Login Password"} onClick={() => setLoginPasswordOpen(!loginPasswordOpen)}>{loginPasswordOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Login Password</span></button>
+        <button className="playerAdmin_toggleHeader" aria-label={loginPasswordOpen ? "Collapse Login Password" : "Expand Login Password"} onClick={() => setLoginPasswordOpen(!loginPasswordOpen)}>{loginPasswordOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Login Password{discordOAuthConfigured ? " (fallback)" : ""}</span></button>
         {loginPasswordOpen && <div className="playerAdmin_toggleBody">
           <p className="muted">Change the password used to sign in to this web console.</p>
           {passwordEnvManaged && <p className="attention-text">The login password is managed by <code>ADMIN_PASSWORD</code>. Update the environment value to change it.</p>}
@@ -598,6 +637,14 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
           <hr className="auto-update-settings-divider" />
           <h4>Disable Two-Factor Authentication</h4>
           <p className="attention-text">Turns two-factor off entirely and deletes every remaining recovery code. Signing in goes back to password-only until you enable it again.</p>
+          {totpDisableZeroFactorWarning && <div className="settings-zero-factor-warning attention-text">
+            <p>Disabling this will leave your console with no two-factor authentication anywhere &mdash; Discord sign-in doesn&apos;t require Discord&apos;s own two-factor for your role.</p>
+            <p className="muted">You can turn on &ldquo;Require Discord two-factor for Owner and Admin&rdquo; from the Discord OAuth section above (Change application credentials) if you&apos;d like to keep two-factor active another way.</p>
+            <div className="action-row">
+              <button className="danger" disabled={totpDisableSaving} onClick={() => { void disableTwoFactor(true); }}>{totpDisableSaving ? "Disabling..." : "Disable anyway"}</button>
+              <button type="button" className="login-password-toggle" onClick={() => setTotpDisableZeroFactorWarning(false)}>Cancel</button>
+            </div>
+          </div>}
           <div className="settings-password-grid">
             <label htmlFor="settings-totp-disable-password">Password (to confirm it&apos;s you)<SecretInput id="settings-totp-disable-password" name="settings-totp-disable-password" disabled={totpDisableSaving} value={totpDisablePassword} onChange={(event) => setTotpDisablePassword(event.target.value)} placeholder="Your login password (to disable)" /></label>
             <label htmlFor="settings-totp-disable-code">Authenticator Code (to confirm it&apos;s you)<input
@@ -620,6 +667,10 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
           </div>
         </div> : <div className="playerAdmin_toggleBody">
           <p className="muted">Off by default. Turn it on to require an authenticator app code (plus 10 one-time recovery codes as backup) in addition to your password at sign-in.</p>
+          {/* #676 §8: contextual copy for a Discord-authenticated session --
+              this is the password credential's OWN 2FA, unrelated to Discord
+              sign-in, and this session may not know the password at all. */}
+          {discordSessionActing && <p className="muted">This protects the console&apos;s separate password login. Don&apos;t know it? Check <code>runtime/secrets/admin-web-password.txt</code> on the host, or ask whoever manages the server.</p>}
           <div className="settings-password-grid">
             <label htmlFor="settings-totp-enable-password">Password (to confirm it&apos;s you)<SecretInput id="settings-totp-enable-password" name="settings-totp-enable-password" disabled={totpEnableSaving} value={totpEnablePassword} onChange={(event) => setTotpEnablePassword(event.target.value)} placeholder="Your login password" /></label>
           </div>
@@ -633,39 +684,182 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
           </div>
         </div>)}
       </div>}
-      <div className={`playerAdmin_toggle ${discordOAuthOpen ? "open" : ""}`}>
-        <button className="playerAdmin_toggleHeader" aria-label={discordOAuthOpen ? "Collapse Discord OAuth" : "Expand Discord OAuth"} onClick={() => setDiscordOAuthOpen(!discordOAuthOpen)}>{discordOAuthOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Discord OAuth</span></button>
-        {discordOAuthOpen && <div className="playerAdmin_toggleBody">
-          <p className="muted">Let people sign in with Discord and get console access from their roles in your server. Needs a Discord application (Developer Portal) with this console&apos;s callback URL as a redirect. Leave blank for password-only sign-in.</p>
+  </>;
+
+  // #676 §6: the tri-state Discord OAuth section -- the embedded wizard
+  // (#643) when configured-and-active or never-configured, a compact banner
+  // with Re-enable/Forget when soft-disabled.
+  const discordOAuthSection = discordOAuthDisabled ? <div className="playerAdmin_toggle open settings-discord-disabled-banner">
+      <div className="playerAdmin_toggleBody">
+        <p><strong>Discord Sign-In (disabled)</strong></p>
+        <p className="muted">Your Discord application&apos;s settings are kept, not deleted &mdash; re-enable any time.</p>
+        <div className="action-row">
+          <button disabled={discordEnableSaving} onClick={() => { void enableDiscordOAuth(); }}>{discordEnableSaving ? "Re-enabling..." : "Re-enable Discord Sign-In"}</button>
+          {discordEnableResult && <span className={`inline-task-result result-${discordEnableResult.status === "succeeded" ? "ok" : discordEnableResult.status === "failed" ? "fail" : "running"}`}>
+            <strong className={discordEnableResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(discordEnableResult.title, discordEnableResult.status === "running")}</strong>
+            {discordEnableResult.message && <span className="inline-task-message">{formatResultMessage(discordEnableResult.message)}</span>}
+          </span>}
+        </div>
+        <hr className="auto-update-settings-divider" />
+        <button type="button" className="login-password-toggle" onClick={() => setDiscordForgetOpen(!discordForgetOpen)}>{discordForgetOpen ? "Hide" : "Forget this configuration entirely"}</button>
+        {discordForgetOpen && <div className="settings-discord-forget-form">
+          <p className="attention-text">Permanently deletes the Client Secret and every saved field (guild, role mapping, MFA requirement). This cannot be undone from here &mdash; you would need to reconfigure from scratch, including generating a new Client Secret in Discord&apos;s Developer Portal.</p>
           <div className="settings-password-grid">
-            <label htmlFor="settings-discord-client-id">Client ID<input id="settings-discord-client-id" name="settings-discord-client-id" disabled={discordOAuthSaving} value={discordClientId} onChange={(event) => setDiscordClientId(event.target.value)} placeholder="Discord application client ID" /></label>
-            <label htmlFor="settings-discord-redirect">Redirect URI<input id="settings-discord-redirect" name="settings-discord-redirect" disabled={discordOAuthSaving} value={discordRedirectUri} onChange={(event) => setDiscordRedirectUri(event.target.value)} placeholder="https://your-console-host/api/auth/discord/callback" /></label>
-            <label htmlFor="settings-discord-secret">Client Secret{discordSecretSaved ? <span className="theme-note"> (saved)</span> : null}<SecretInput id="settings-discord-secret" name="settings-discord-secret" disabled={discordOAuthSaving} value={discordClientSecret} onChange={(event) => setDiscordClientSecret(event.target.value)} placeholder={discordSecretSaved ? "Paste a new one to replace" : "Client secret"} /></label>
-            <label htmlFor="settings-discord-guild">Discord Server ID<input id="settings-discord-guild" name="settings-discord-guild" disabled={discordOAuthSaving} value={discordHomeGuildId} onChange={(event) => setDiscordHomeGuildId(event.target.value)} placeholder="Server (guild) ID" /></label>
+            <label htmlFor="settings-discord-forget-password">Password (to confirm it&apos;s you)<SecretInput id="settings-discord-forget-password" name="settings-discord-forget-password" disabled={discordForgetSaving} value={discordForgetPassword} onChange={(event) => setDiscordForgetPassword(event.target.value)} placeholder="Your login password" /></label>
+            {secondFactorEnrolled && <label htmlFor="settings-discord-forget-code">Authenticator Code (to confirm it&apos;s you)<input
+              id="settings-discord-forget-code"
+              name="settings-discord-forget-code"
+              disabled={discordForgetSaving}
+              value={discordForgetTotpCode}
+              onChange={(event) => setDiscordForgetTotpCode(stripCodeWhitespace(event.target.value))}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder="Current 6-digit code"
+            /></label>}
+            <label htmlFor="settings-discord-forget-confirm">Type &ldquo;forget&rdquo; to confirm<input id="settings-discord-forget-confirm" name="settings-discord-forget-confirm" disabled={discordForgetSaving} value={discordForgetConfirmText} onChange={(event) => setDiscordForgetConfirmText(event.target.value)} placeholder="forget" /></label>
           </div>
-          <p className="muted" style={{ marginTop: "12px" }}>
-            <strong>Owner is the Discord server&apos;s owner</strong> &mdash; automatic, not a role. Copy role IDs from Discord with Developer Mode on (User Settings &rarr; Advanced), then right-click a role &rarr; Copy Role ID. Each field takes one or more IDs, comma-separated. A member gets the <em>highest</em> tier of any mapped role they hold. Map at least an Admin role, or only the server owner can use the console through Discord.
-          </p>
-          <div className="settings-password-grid">
-            <label htmlFor="settings-discord-admin-role">Admin Role <em>(required)</em><input id="settings-discord-admin-role" name="settings-discord-admin-role" disabled={discordOAuthSaving} value={discordAdminRoleIds} onChange={(event) => setDiscordAdminRoleIds(event.target.value)} placeholder="Discord role ID" /></label>
-            <label htmlFor="settings-discord-moderator-role">Moderator Role <em>(optional)</em><input id="settings-discord-moderator-role" name="settings-discord-moderator-role" disabled={discordOAuthSaving} value={discordModeratorRoleIds} onChange={(event) => setDiscordModeratorRoleIds(event.target.value)} placeholder="Discord role ID" /></label>
-            <label htmlFor="settings-discord-player-role">Player Role <em>(recommended)</em><input id="settings-discord-player-role" name="settings-discord-player-role" disabled={discordOAuthSaving} value={discordPlayerRoleIds} onChange={(event) => setDiscordPlayerRoleIds(event.target.value)} placeholder="Discord role ID" /></label>
-            <label htmlFor="settings-discord-mfa">Require Discord 2FA for <em>(optional)</em>{!discordRequireMfaTiers ? <button type="button" className="login-password-toggle" onClick={() => setDiscordRequireMfaTiers("owner,admin")}>use recommended</button> : null}<input id="settings-discord-mfa" name="settings-discord-mfa" disabled={discordOAuthSaving} value={discordRequireMfaTiers} onChange={(event) => setDiscordRequireMfaTiers(event.target.value)} placeholder="blank = off; recommended: owner,admin" /></label>
-          </div>
-          {discordRoleConflictList.length > 0 && <p className="attention-text">Each Discord role can map to only one access level &mdash; {discordRoleConflictList.join("; ")}. Owner is never a role: it is the server&apos;s owner.</p>}
-          <p className="muted">With &ldquo;Require Discord 2FA for&rdquo; set, sign-ins for those tiers are refused unless the Discord account itself has two-factor enabled (recommended for owner and admin). If you also run a companion bot with a signed tier handoff, the bot decides tiers and the role fields above are ignored. Additional owners beyond the server owner can be set with <code>DISCORD_OAUTH_OWNER_ALLOWLIST</code> in <code>.env</code> (advanced).</p>
-          <div className="action-row" style={{ marginTop: "12px" }}>
-            <button disabled={discordOAuthSaving || discordRoleConflictList.length > 0 || (!discordClientId && !discordRedirectUri && !discordClientSecret && !discordHomeGuildId && !discordAdminRoleIds && !discordModeratorRoleIds && !discordPlayerRoleIds && !discordRequireMfaTiers)} onClick={() => { void saveDiscordOAuth(); }}>
-              {discordOAuthSaving ? "Saving..." : "Save Discord OAuth"}
-            </button>
-            <a className="login-password-toggle" href="/?discordSetup=start">Run the guided setup again</a>
-            {discordOAuthResult && <span className={`inline-task-result result-${discordOAuthResult.status === "succeeded" ? "ok" : discordOAuthResult.status === "failed" ? "fail" : "running"}`}>
-              <strong className={discordOAuthResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(discordOAuthResult.title, discordOAuthResult.status === "running")}</strong>
-              {discordOAuthResult.message && <span className="inline-task-message">{formatResultMessage(discordOAuthResult.message)}</span>}
+          <div className="action-row">
+            <button className="danger" disabled={discordForgetSaving || discordForgetConfirmText.trim().toLowerCase() !== "forget" || !discordForgetPassword || (secondFactorEnrolled && !discordForgetTotpCode.trim())} onClick={() => { void forgetDiscordOAuth(); }}>{discordForgetSaving ? "Forgetting..." : "Forget This Configuration Entirely"}</button>
+            {discordForgetResult && <span className={`inline-task-result result-${discordForgetResult.status === "succeeded" ? "ok" : discordForgetResult.status === "failed" ? "fail" : "running"}`}>
+              <strong className={discordForgetResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(discordForgetResult.title, discordForgetResult.status === "running")}</strong>
+              {discordForgetResult.message && <span className="inline-task-message">{formatResultMessage(discordForgetResult.message)}</span>}
             </span>}
           </div>
         </div>}
       </div>
+    </div> : <div className={`playerAdmin_toggle ${discordOAuthOpen ? "open" : ""}`}>
+      {/* #643: replaces the old manual Client ID/Secret/roles form with the
+          same guided wizard the pre-login flow uses -- full replacement, no
+          "keep both forms" fallback (design decision, discord-settings-embed
+          L1 design §6). onDone/onCancel just collapse this accordion; unlike
+          the pre-login flow, reconfiguring from an already-authenticated
+          session never forces a logout (see the wizard's own embedded-mode
+          handling, #643 §4.1). */}
+      <button className="playerAdmin_toggleHeader" aria-label={discordOAuthOpen ? "Collapse Discord OAuth" : "Expand Discord OAuth"} onClick={() => setDiscordOAuthOpenOverride(!discordOAuthOpen)}>{discordOAuthOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Discord OAuth</span></button>
+      {discordOAuthOpen && <div className="playerAdmin_toggleBody settings-discord-wizard-embed">
+        <DiscordSetupWizard
+          embedded
+          onCancel={() => setDiscordOAuthOpenOverride(false)}
+          onDone={() => { setDiscordOAuthOpenOverride(false); void refresh(); }}
+        />
+        {/* #676 §6: only once there is something to disable -- "never
+            configured" shows just the wizard, no danger action. */}
+        {discordOAuthConfigured && <>
+          <hr className="auto-update-settings-divider" />
+          <button type="button" className="login-password-toggle" onClick={() => setDiscordDisableOpen(!discordDisableOpen)}>{discordDisableOpen ? "Hide" : "Disable Discord Sign-In"}</button>
+          {discordDisableOpen && <div className="settings-discord-disable-form">
+            <p className="attention-text">Discord sign-in will stop working as soon as the console restarts. Your application&apos;s settings are kept, not deleted.</p>
+            <div className="settings-password-grid">
+              <label htmlFor="settings-discord-disable-password">Password (to confirm it&apos;s you)<SecretInput id="settings-discord-disable-password" name="settings-discord-disable-password" disabled={discordDisableSaving} value={discordDisablePassword} onChange={(event) => setDiscordDisablePassword(event.target.value)} placeholder="Your login password" /></label>
+              {secondFactorEnrolled && <label htmlFor="settings-discord-disable-code">Authenticator Code (to confirm it&apos;s you)<input
+                id="settings-discord-disable-code"
+                name="settings-discord-disable-code"
+                disabled={discordDisableSaving}
+                value={discordDisableTotpCode}
+                onChange={(event) => setDiscordDisableTotpCode(stripCodeWhitespace(event.target.value))}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder="Current 6-digit code"
+              /></label>}
+            </div>
+            <div className="action-row">
+              <button className="danger" disabled={discordDisableSaving || !discordDisablePassword || (secondFactorEnrolled && !discordDisableTotpCode.trim())} onClick={() => { void disableDiscordOAuth(); }}>{discordDisableSaving ? "Disabling..." : "Disable Discord Sign-In"}</button>
+              {discordDisableResult && <span className={`inline-task-result result-${discordDisableResult.status === "succeeded" ? "ok" : discordDisableResult.status === "failed" ? "fail" : "running"}`}>
+                <strong className={discordDisableResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(discordDisableResult.title, discordDisableResult.status === "running")}</strong>
+                {discordDisableResult.message && <span className="inline-task-message">{formatResultMessage(discordDisableResult.message)}</span>}
+              </span>}
+            </div>
+          </div>}
+        </>}
+      </div>}
+    </div>;
+
+  return <section className="panel">
+    <div className="panel-title"><h2>Settings</h2><div className="action-row settings-title-actions">
+      <div className="memory-feature-toggle settings-anonymous-count-control">
+        <InfoTooltip id="anonymous-count-help" label="About Anonymous Count">Helps us understand how many Dune Docker servers are in use, including local and unlisted installations. Only anonymous server presence is reported—never your server name, IP address, players, or configuration. These statistics help demonstrate project usage and guide future development.</InfoTooltip>
+        <label className={`switch-checkbox settings-anonymous-count-toggle ${anonymousCountEnabled ? "enabled" : "disabled"}`}>
+          <input
+            type="checkbox"
+            disabled={anonymousCountSaving}
+            checked={anonymousCountEnabled}
+            onChange={(event) => { void changeAnonymousCount(event.target.checked); }}
+          />
+          <span className="switch-label">Anonymous Count:</span>
+          <strong className="switch-state">{anonymousCountSaving ? "Saving" : anonymousCountEnabled ? "Enabled" : "Disabled"}</strong>
+        </label>
+      </div>
+      {serverListingVisible && <label className={`switch-checkbox settings-server-listing-toggle ${serverListingEnabled ? "enabled" : "disabled"}`}>
+        <input
+          type="checkbox"
+          disabled={serverListingSaving}
+          checked={serverListingEnabled}
+          onChange={(event) => { void changeServerListing(event.target.checked); }}
+        />
+        <span className="switch-label">Server Listing:</span>
+        <strong className="switch-state">{serverListingSaving ? "Saving" : serverListingEnabled ? "Enabled" : "Disabled"}</strong>
+      </label>}
+      <button onClick={refresh}>Refresh</button>
+    </div></div>
+    {serverListingError && <p className="error settings-server-listing-error">{serverListingError}</p>}
+    {serverListingVisible && serverListingEnabled && publicDirectory.probeError &&
+      <p className="error settings-server-listing-error">Server listing issue: {publicDirectory.probeError}</p>}
+    <div className="settings-section-stack">
+      {serverListingVisible && <div className={`playerAdmin_toggle settings-public-profile-toggle ${publicProfileOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={publicProfileOpen ? "Collapse Public Listing Profile" : "Expand Public Listing Profile"} onClick={() => setPublicProfileOpen(!publicProfileOpen)}>
+          {publicProfileOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+          <span>Public Listing Profile</span>
+        </button>
+        {publicProfileOpen && <div className="playerAdmin_toggleBody">
+          <p className="muted">Public descriptions, community links, recruitment details, and Player Portal settings are managed on DuneDocker.app. Generate a claim code from {publicListingUrl
+            ? <a className="settings-server-page-link" href={publicListingUrl} target="_blank" rel="noreferrer">[Your Server Page]</a>
+            : "[Your Server Page]"}, then paste it below.</p>
+          <label className="settings-discord-field">
+            <span className="field-label-row"><span className="settings-discord-label">Generated Claim Code</span></span>
+            <input
+              disabled={publicProfileSaving}
+              value={claimCode}
+              onChange={(event) => setClaimCode(event.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 14))}
+              placeholder="ABCD-EF12-3456"
+              autoComplete="off"
+            />
+          </label>
+          <div className="action-row">
+            <button disabled={publicProfileSaving || claimCode.replace(/[^A-Z0-9]/g, "").length !== 12} onClick={() => { void verifyListingClaim(); }}>
+              {publicProfileSaving ? "Verifying..." : "Verify Generated Code"}
+            </button>
+            {publicProfileResult && <span className={`inline-task-result result-${publicProfileResult.status === "succeeded" ? "ok" : publicProfileResult.status === "failed" ? "fail" : "running"}`}>
+              <strong className={publicProfileResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(publicProfileResult.title, publicProfileResult.status === "running")}</strong>
+              {publicProfileResult.message && <span className="inline-task-message">{formatResultMessage(publicProfileResult.message)}</span>}
+            </span>}
+          </div>
+        </div>}
+      </div>}
+      <RuntimeSettingsSummary settings={settings} />
+      <div className={`playerAdmin_toggle settings-web-port-toggle ${webPortOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={webPortOpen ? "Collapse Web Console Port" : "Expand Web Console Port"} onClick={() => setWebPortOpen(!webPortOpen)}>{webPortOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Web Console Port</span></button>
+        {webPortOpen && <div className="playerAdmin_toggleBody">
+          <p className="muted">Change the browser port used by this web console.</p>
+          <p className="attention-text">After saving, this page will stop responding on port {currentPort}. Open the new address shown in the result message.</p>
+          <div className="settings-password-grid settings-web-port-grid">
+            <label>Console Port<input disabled={webPortSaving} type="number" min="1" max="65535" step="1" value={webPort} onChange={(event) => setWebPort(event.target.value.replace(/[^\d]/g, "").slice(0, 5))} placeholder="8088" /></label>
+          </div>
+          <div className="action-row">
+            <button disabled={webPortSaving || Boolean(webPortRedirectUrl) || !webPort || webPort === currentPort} onClick={() => { void changeWebPort(); }}>{webPortSaving ? "Saving..." : "Save And Restart Console"}</button>
+            {webPortResult && <span className={`inline-task-result result-${webPortResult.status === "succeeded" ? "ok" : webPortResult.status === "failed" ? "fail" : "running"}`}>
+              <strong className={webPortResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(webPortResult.title, webPortResult.status === "running")}</strong>
+              <span className="inline-task-message">{formatWebPortResultMessage(webPortResult, webPortRedirectUrl, webPortRedirectCountdown)}</span>
+            </span>}
+          </div>
+        </div>}
+      </div>
+      {/* #676 §3: Discord OAuth is primary (rendered first) once configured
+          and active; Password Sign-In is primary otherwise -- including when
+          Discord OAuth is soft-disabled, per the design's own "reverts to
+          primary" rule for that state. */}
+      {discordOAuthConfigured && !discordOAuthDisabled
+        ? <>{discordOAuthSection}{passwordSignInSection}</>
+        : <>{passwordSignInSection}{discordOAuthSection}</>}
       <div className={`playerAdmin_toggle settings-api-keys-toggle ${apiKeysOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={apiKeysOpen ? "Collapse API Keys" : "Expand API Keys"} onClick={() => setApiKeysOpen(!apiKeysOpen)}>{apiKeysOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>API Keys</span></button>
         {apiKeysOpen && <div className="playerAdmin_toggleBody"><ApiKeysSection confirmAction={confirmAction} /></div>}

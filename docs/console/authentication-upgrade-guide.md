@@ -1,7 +1,30 @@
 # Console sign-in: upgrading an existing install
 
-**Status: Current.** Verified 2026-08-27 by upgrading a live install running
-v1.4.3 in place, with an authenticator already enrolled from an earlier build.
+**Status: Current, with one exception below.** Verified 2026-08-27 by
+upgrading a live install running v1.4.3 in place, with an authenticator
+already enrolled from an earlier build. The #676 correction immediately below
+has NOT itself been verified against a live upgrade the same way — it
+describes the shipped UI structure, but treat it as unverified until someone
+actually walks through it end-to-end and updates this banner.
+
+**Correction (#676, this session):** Settings' authentication area was
+restructured. Every specific instruction below that says "open **Settings →
+Two-Factor Authentication**" as a directly-visible control is still accurate
+**only while Discord OAuth is not configured**. Once it is, **Login Password**
+and **Two-Factor Authentication** stay exactly the two separate, independently
+collapsible sections they already were — nothing merges into a single wrapping
+"Password Sign-In" section — but both move below Discord OAuth on the page,
+and Login Password's header gains a **"(fallback)"** suffix, since Discord
+OAuth is now the primary sign-in method. Both stay fully functional and are
+still expanded/collapsed the same way as any other section. Discord OAuth itself
+also gained three new controls once configured: **Disable Discord Sign-In**
+(soft, reversible — your application's settings are kept), **Re-enable**, and
+a secondary **"Forget this configuration entirely"** (destructive — deletes
+the Client Secret and every saved field; requires typing "forget" to confirm).
+Disabling Two-Factor Authentication while Discord OAuth is configured but
+doesn't itself require Discord's own two-factor for your role now shows an
+extra confirmation step, warning that you'd otherwise be left with no
+two-factor authentication anywhere.
 
 This guide is for operators who already run the console and want to know what
 changes, what they need to do, and what they will see on screen. Nothing here

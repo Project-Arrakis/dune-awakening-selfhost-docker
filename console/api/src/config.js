@@ -282,12 +282,26 @@ export function loadConfig() {
     // a stray `touch`) used to still read as "configured" here while every
     // real token exchange with Discord sent client_secret="" and silently
     // failed (review finding).
+    //
+    // discordOAuthDisabled (#676 §6.2): an operator's own explicit soft-disable
+    // (Settings -> Discord OAuth -> Disable), distinct from "never configured."
+    // Gates BOTH booleans below -- a Layer 1 audit finding on the first draft
+    // of this feature found that gating discordOAuthConfigured alone left
+    // discordOAuthAppConfigured (and therefore the OAuth callback route and
+    // the setup-mode start route, which gate on THAT flag, not the other one)
+    // still reachable after "disable," which is not what "disabled" should
+    // mean at the API layer. All Discord OAuth config VALUES are deliberately
+    // preserved on disk when this is set (soft-disable, not a wipe -- see the
+    // disable route below); only reachability is gated here.
+    discordOAuthDisabled: process.env.DISCORD_OAUTH_DISABLED === "1",
     discordOAuthAppConfigured: Boolean(
+      process.env.DISCORD_OAUTH_DISABLED !== "1" &&
       process.env.DISCORD_OAUTH_CLIENT_ID &&
       readInlineOrFile(process.env.DISCORD_OAUTH_CLIENT_SECRET, resolve(secretsDir, "discord-oauth-client-secret.txt")) &&
       process.env.DISCORD_OAUTH_REDIRECT_URI
     ),
     discordOAuthConfigured: Boolean(
+      process.env.DISCORD_OAUTH_DISABLED !== "1" &&
       process.env.DISCORD_OAUTH_CLIENT_ID &&
       readInlineOrFile(process.env.DISCORD_OAUTH_CLIENT_SECRET, resolve(secretsDir, "discord-oauth-client-secret.txt")) &&
       process.env.DISCORD_OAUTH_REDIRECT_URI &&
@@ -524,6 +538,13 @@ export function publicConfig(config) {
     mockMode: config.mockMode,
     consoleTotpEnabled: config.consoleTotpEnabled,
     discordOAuthConfigured: config.discordOAuthConfigured,
-    discordOAuthAppConfigured: config.discordOAuthAppConfigured
+    discordOAuthAppConfigured: config.discordOAuthAppConfigured,
+    // #676 §6.2: lets the client tell "soft-disabled, previously fully
+    // configured" apart from "never configured" -- without this the wizard's
+    // own step derivation (identical for both, since it only reads the two
+    // booleans above) would jump a re-opened, soft-disabled wizard straight
+    // into re-choosing a guild and re-mapping roles that are already correctly
+    // saved and untouched on disk.
+    discordOAuthDisabled: config.discordOAuthDisabled
   };
 }

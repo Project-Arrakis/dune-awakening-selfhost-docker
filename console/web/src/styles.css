@@ -910,6 +910,19 @@ main { padding: 22px; min-width: 0; }
   margin: 8px 0 0;
   color: var(--warning);
 }
+/* Layer 3 audit finding (#676 follow-up): the zero-2FA warning and the
+   destructive Discord "Forget" form previously had no visual treatment of
+   their own beyond the generic attention-text/muted utility classes -- no
+   stronger warning than an ordinary settings section. Matches the existing
+   .error-banner pattern used elsewhere for a "danger zone" box. */
+.settings-zero-factor-warning,
+.settings-discord-forget-form {
+  background: #351b1b;
+  border: 1px solid var(--danger-strong);
+  border-radius: 6px;
+  padding: 12px;
+  margin-top: 10px;
+}
 .password-check-box {
   display: grid;
   gap: 10px;

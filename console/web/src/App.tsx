@@ -2,6 +2,7 @@ import { Fragment, lazy, useCallback, useEffect, useRef, useState } from "react"
 import { Archive, Bug, Building2, Car, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, LogOut, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, ShieldCheck, Sparkles, Store, UserRound, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, loginRequest, post, setCsrfToken } from "./api/client";
 import { TotpSetupScreen } from "./features/auth/TotpSetupScreen";
+import { DiscordMigrationOffer } from "./features/auth/DiscordMigrationOffer";
 import { DiscordSetupWizard } from "./features/auth/DiscordSetupWizard";
 import { setServerPorts, setAdminPort, type ServerPorts } from "./api/serverPorts";
 import { serverApi, type RestartQueueTarget } from "./api/server";
@@ -375,10 +376,32 @@ export function App() {
   // OAuth application is fully configured; the button is otherwise absent.
   const [discordSignInAvailable, setDiscordSignInAvailable] = useState(false);
   const [discordPendingRestart, setDiscordPendingRestart] = useState(false);
+  // #643: an operator RECONFIGURING Discord from an already-authenticated
+  // Settings session sets this sessionStorage marker immediately before
+  // navigating to the setup-mode OAuth round-trip -- distinguishing that
+  // return from the pre-login first-run flow below, which also lands back on
+  // "/?discordSetup=done" but must keep its existing standalone-wizard +
+  // forced-logout behavior unchanged. Read (and removed) at most once per
+  // mount, via this lazy initializer -- never re-checked afterward, so a
+  // later reload of "/" after the marker's own consumption cannot re-trigger it.
+  const [discordSetupReturnMarker] = useState(() => {
+    try {
+      const value = window.sessionStorage.getItem("dune-console:discord-setup-return");
+      if (value) window.sessionStorage.removeItem("dune-console:discord-setup-return");
+      return value;
+    } catch { return null; }
+  });
   // Guided first-run setup: opened from the sign-in page (after the password),
-  // or automatically when returning from the setup-mode Discord round-trip.
-  const [discordSetupOpen, setDiscordSetupOpen] = useState(() => new URLSearchParams(window.location.search).has("discordSetup"));
-  const [wantDiscordSetup, setWantDiscordSetup] = useState(() => new URLSearchParams(window.location.search).has("discordSetup"));
+  // or automatically when returning from the setup-mode Discord round-trip --
+  // but NOT when discordSetupReturnMarker is set, since that return belongs to
+  // the embedded-in-Settings reconfiguration path instead (see autoOpenDiscordSetup below).
+  const [discordSetupOpen, setDiscordSetupOpen] = useState(() => !discordSetupReturnMarker && new URLSearchParams(window.location.search).has("discordSetup"));
+  const [wantDiscordSetup, setWantDiscordSetup] = useState(() => !discordSetupReturnMarker && new URLSearchParams(window.location.search).has("discordSetup"));
+  // #643: read once (see discordSetupReturnMarker above), passed to SettingsPanel
+  // to auto-expand its embedded Discord wizard on mount; SettingsPanel calls
+  // onDiscordSetupAutoOpened() once it has, so a later remount (navigate away
+  // from Settings and back) never re-triggers the auto-open.
+  const [autoOpenDiscordSetup, setAutoOpenDiscordSetup] = useState(() => Boolean(discordSetupReturnMarker));
   const [showPasswordLogin, setShowPasswordLogin] = useState(false);
   // Focuses the admin-password field the moment "Set up Discord sign-in" is
   // clicked (issue #666 -- live-testing feedback: the instruction that follows
@@ -406,7 +429,20 @@ export function App() {
   // known-empty-actions branch exists to protect from that same trap.
   const [meFetchFailed, setMeFetchFailed] = useState(false);
   const [userInfo, setUserInfo] = useState<{ username: string; displayName: string; tier: string } | null>(null);
+  // #676 §7: the guided offer screen. Shown at most once, consumed the
+  // moment a real Discord login (not password) lands with the marker
+  // DiscordSetupWizard's own "done" step set right before its restart --
+  // see the /api/auth/me effect below for where this actually fires.
+  const [discordOfferMode, setDiscordOfferMode] = useState(false);
+  const [autoOpenTwoFactorSetting, setAutoOpenTwoFactorSetting] = useState(false);
   const [tab, setTab] = useActiveTab();
+  // #643: the one-shot Settings redirect for a reconfiguration Discord round-trip
+  // (see discordSetupReturnMarker above) -- must run after useActiveTab so setTab
+  // is already defined; deliberately outside any other effect's deps.
+  useEffect(() => {
+    if (discordSetupReturnMarker) setTab("Settings");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on mount
+  }, []);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pinnedAddons, setPinnedAddons] = useState<PinnedAddon[]>(() => loadPinnedAddons());
   const [selectedPinnedAddonId, setSelectedPinnedAddonId] = useState("");
@@ -458,7 +494,28 @@ export function App() {
     let cancelled = false;
     setMeFetchFailed(false);
     api<{ user: { id: string; username: string; displayName: string; tier: string; guildId: string }; allowedActions: string[] }>("/api/auth/me")
-      .then((res) => { if (!cancelled) { setAllowedActions(res.allowedActions || []); setUserInfo({ username: res.user.username, displayName: res.user.displayName || res.user.username, tier: res.user.tier }); setMeLoaded(true); } })
+      .then((res) => {
+        if (cancelled) return;
+        setAllowedActions(res.allowedActions || []);
+        setUserInfo({ username: res.user.username, displayName: res.user.displayName || res.user.username, tier: res.user.tier });
+        setMeLoaded(true);
+        // #676 §7: consumed at most once, the first time a session lands
+        // here with the marker present. "local-owner" is the server's own
+        // literal fallback for a password/TOTP session's empty userId
+        // (server.js /api/auth/me route) -- anything else is a real Discord
+        // sign-in, which is what this offer specifically needs to have just
+        // verified. A password login while the marker happens to be present
+        // (an operator skipped Discord and used the fallback instead) just
+        // silently consumes and drops it -- the offer would make no sense
+        // there, since nothing about Discord was actually just proven live.
+        try {
+          const hasOfferMarker = window.sessionStorage.getItem("dune-console:discord-oauth-just-configured");
+          if (hasOfferMarker) {
+            window.sessionStorage.removeItem("dune-console:discord-oauth-just-configured");
+            if (res.user.id && res.user.id !== "local-owner") setDiscordOfferMode(true);
+          }
+        } catch { /* sessionStorage unavailable -- the offer just never fires, no functional loss */ }
+      })
       .catch(() => { if (!cancelled) { setMeFetchFailed(true); setMeLoaded(true); } /* a failed read leaves the UI ungated; the server still enforces */ });
     return () => { cancelled = true; };
   }, [auth]);
@@ -855,6 +912,13 @@ export function App() {
     return <DiscordSetupWizard onDone={() => { setDiscordSetupOpen(false); setWantDiscordSetup(false); setShowPasswordLogin(false); void post("/api/auth/logout").catch(() => {}); setCsrfToken(null); setAuth(false); setPassword(""); }} onCancel={() => { setDiscordSetupOpen(false); setWantDiscordSetup(false); setShowPasswordLogin(false); }} />;
   }
 
+  if (auth && discordOfferMode) {
+    return <DiscordMigrationOffer
+      onReview={() => { setDiscordOfferMode(false); setTab("Settings"); setAutoOpenTwoFactorSetting(true); }}
+      onDismiss={() => setDiscordOfferMode(false)}
+    />;
+  }
+
   if (!auth) {
     const passwordFields = totpRequired ? (
       <div className="login-password-fields">
@@ -1160,6 +1224,10 @@ export function App() {
           publicListingUrl={publicDirectoryStatus?.serverId ? publicServerListingUrl(publicDirectoryStatus.serverId) : undefined}
           confirmAction={confirmDialog}
           onTotpEnrollmentStarted={() => setSetupMode("enroll")}
+          autoOpenDiscordSetup={autoOpenDiscordSetup}
+          onDiscordSetupAutoOpened={() => setAutoOpenDiscordSetup(false)}
+          autoOpenTwoFactor={autoOpenTwoFactorSetting}
+          onTwoFactorAutoOpened={() => setAutoOpenTwoFactorSetting(false)}
         /></LazyTabBoundary>}
         {!redeploySetupOpen && tab !== "Maps" && <TaskProgress task={task} onDismiss={() => setTask(null)} />}
         <AppFooter />
