@@ -1,6 +1,6 @@
 # Consolidate Settings' Password/2FA and Discord OAuth sections — L1 Design
 
-**Status:** Revision 3 — Eight Hats Layer 1 audit complete (8 independent dispatches), all CRITICAL/HIGH findings resolved below; #678 pulled into implementation scope (§6.5)
+**Status:** Revision 4 — implemented (backend PR #683, frontend on `feat/676-auth-settings-consolidation`). Eight Hats Layer 1 audit complete (8 independent dispatches), all CRITICAL/HIGH findings resolved below; #678 pulled into implementation scope (§6.5)
 **Tracking issue:** dune-awakening-selfhost-docker#676
 **Related:** #641 (guided Discord app-creation wizard, shipped to `tier1-upstream`), #643 (embed that wizard into Settings — this design treats #643 as a given), #665/#666 (the originating live-testing feedback thread), #634 (IAM Visual Editor, same branch), #678 (`.env` write-race, surfaced again by this audit, filed for real this time), #679 (Phase 3 — age-encryption, split out per the audit below)
 
@@ -129,6 +129,8 @@ Revision 1's guard only existed inside this one-time guided flow. **The Security
 **Fix:** the same branch logic now lives at the point of disable itself, not only in the offer screen:
 - **Discord's own MFA already required for the acting tier:** disabling proceeds normally (existing form, unchanged).
 - **Not required:** the Disable-TOTP form (wherever it's reached — offer screen or the fallback section directly) shows: *"Disabling this will leave your console with no two-factor authentication anywhere — Discord sign-in doesn't require Discord's own two-factor for your role. [Turn that on instead] [Disable anyway]"* — a soft warning with an explicit override, not a hard block (a hard block could itself create an availability problem for an operator who has a considered reason to run with no 2FA). This closes the gap for real, at every entry path, rather than only advising once during setup — resolving both the Security Architect's HIGH (enforcement) and the UI/UX hat's convergent HIGH (the "not required" branch previously stranding the operator with no return path — it no longer needs one, since the same choice is always available at the same place, not gated behind a one-time flow).
+
+**Revision 4 implementation note:** the offer screen itself (`DiscordMigrationOffer.tsx`) does **not** duplicate this branch logic. It offers a single action — "Review Two-Factor Settings," navigating into Settings' Two-Factor section, auto-opened — where the real, single-source-of-truth guard (`totpDisableRoute`'s 409, described above) already handles both outcomes correctly regardless of how the operator got there. Maintaining two copies of "does Discord's MFA cover this tier" (one in the offer screen, one server-side) was judged a worse risk than the small extra click, given this exact class of drift is what the guard's own server-side-only design was already built to avoid. The offer screen's copy is deliberately generic ("you may want to review whether you still need both") rather than asserting which branch applies.
 
 ## 8. Tier 1 → 4 (enable TOTP from a Discord-only session)
 
