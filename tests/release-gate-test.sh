@@ -98,6 +98,13 @@ done
   || fail "fresh archive VERSION does not match the source commit"
 pass "fresh extraction contains every required install and update file"
 
+self_update_script="runtime/scripts/self-update.sh"
+grep -Fq 'if [ "$repo" = "$DEFAULT_SELF_UPDATE_REPO" ]; then' "$self_update_script" \
+  || fail "self-update does not force the public project through its anonymous HTTPS remote"
+[ "$(grep -Fc 'GIT_TERMINAL_PROMPT=0 git fetch' "$self_update_script")" -eq 2 ] \
+  || fail "every self-update git fetch must disable interactive credential prompts"
+pass "self-update uses anonymous public release fetches without credential prompts"
+
 (
   cd "$fresh_root"
   export SERVER_IP=127.0.0.1
