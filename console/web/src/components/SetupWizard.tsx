@@ -26,11 +26,12 @@ const redeploySteps: { id: StepId; label: string }[] = [
   { id: "finish", label: "Finish" }
 ];
 const regions = ["Europe", "North America", "South America", "Asia", "Oceania", "Africa"];
-type SetupConfig = { SERVER_TITLE: string; SERVER_REGION: string; SERVER_IP: string; SERVER_IP_MODE: string; SERVER_PROVIDER: string; STEAM_APP_ID: string };
+type SetupConfig = { SERVER_TITLE: string; SERVER_REGION: string; SERVER_IP: string; SERVER_IP_MODE: string; HOST_DATACENTER_ID: string; STEAM_APP_ID: string };
 const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
 const completionRedirectSeconds = 10;
 const deploymentSuccessHoldMs = 3000;
-const defaultSetupConfig: SetupConfig = { SERVER_TITLE: "My Dune Server", SERVER_REGION: "Europe", SERVER_IP: "auto", SERVER_IP_MODE: "public", SERVER_PROVIDER: "dune-docker", STEAM_APP_ID: "4754530" };
+const defaultSetupConfig: SetupConfig = { SERVER_TITLE: "My Dune Server", SERVER_REGION: "Europe", SERVER_IP: "auto", SERVER_IP_MODE: "public", HOST_DATACENTER_ID: "dune-docker", STEAM_APP_ID: "4754530" };
+const datacenterIdPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
 
 export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy", onSetupComplete }: { initialStep?: number; jumpNonce?: number; mode?: "first-run" | "redeploy"; onSetupComplete?: () => void }) {
   const steps = mode === "first-run" ? firstRunSteps : redeploySteps;
@@ -136,7 +137,8 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
   }
 
   const hasToken = Boolean(token.trim() || existingToken);
-  const configReady = Boolean(config.SERVER_TITLE.trim() && config.SERVER_REGION && config.SERVER_IP.trim() && config.SERVER_IP_MODE && config.SERVER_PROVIDER.trim() && config.STEAM_APP_ID.trim());
+  const datacenterIdValid = validDatacenterId(config.HOST_DATACENTER_ID);
+  const configReady = Boolean(config.SERVER_TITLE.trim() && config.SERVER_REGION && config.SERVER_IP.trim() && config.SERVER_IP_MODE && datacenterIdValid && config.STEAM_APP_ID.trim());
   const checksReady = checks.length > 0 && checks.every((check) => check.status !== "fail");
   const deploymentSucceeded = task?.status === "succeeded";
   const deploymentRunning = Boolean(task && !terminalStatuses.has(task.status));
@@ -203,9 +205,11 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
             <label>Region<select value={config.SERVER_REGION} onChange={(event) => setConfig({ ...config, SERVER_REGION: event.target.value })}>{regions.map((region) => <option key={region} value={region}>{region}</option>)}</select></label>
             <label>Install mode<select value={config.SERVER_IP_MODE} onChange={(event) => setConfig({ ...config, SERVER_IP_MODE: event.target.value })}><option value="public">Public</option><option value="local">Local</option></select></label>
             <label>Server IP<input value={config.SERVER_IP} onChange={(event) => setConfig({ ...config, SERVER_IP: event.target.value })} /></label>
-            <label>Provider<input value={config.SERVER_PROVIDER} onChange={(event) => setConfig({ ...config, SERVER_PROVIDER: event.target.value })} /></label>
+            <label>Datacenter ID<input value={config.HOST_DATACENTER_ID} onChange={(event) => setConfig({ ...config, HOST_DATACENTER_ID: event.target.value })} /></label>
             <label>Steam app ID<input value={config.STEAM_APP_ID} onChange={(event) => setConfig({ ...config, STEAM_APP_ID: event.target.value })} /></label>
           </div>
+          <p className="muted">Advanced: This identity is sent by the Director, Gateway, and Text Router. Changing it is not proven to fix server-browser ping, so keep the default unless Funcom or your hosting provider gives you another value.</p>
+          {!datacenterIdValid && <p className="danger-note">Enter a valid hostname or short ID using only letters, numbers, dots, and hyphens.</p>}
         </>}
         {activeStep === "token" && <>
           <h2>Funcom Token</h2>
@@ -255,7 +259,7 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
                 ["Region", config.SERVER_REGION],
                 ["Mode", titleCase(config.SERVER_IP_MODE)],
                 ["Server IP", config.SERVER_IP],
-                ["Provider", config.SERVER_PROVIDER],
+                ["Datacenter ID", config.HOST_DATACENTER_ID],
                 ["Steam App ID", config.STEAM_APP_ID]
               ]} />
             </section>
@@ -322,13 +326,20 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
   );
 }
 
-function configFromSetupState(values: Record<string, unknown> | undefined): SetupConfig {
+export function configFromSetupState(values: Record<string, unknown> | undefined): SetupConfig {
   const next = { ...defaultSetupConfig };
   for (const key of Object.keys(next) as Array<keyof SetupConfig>) {
     const value = values?.[key];
     if (value !== undefined && String(value).trim()) next[key] = String(value);
   }
+  if (values?.HOST_DATACENTER_ID === undefined && String(values?.SERVER_PROVIDER || "").trim()) {
+    next.HOST_DATACENTER_ID = String(values?.SERVER_PROVIDER);
+  }
   return next;
+}
+
+export function validDatacenterId(value: string) {
+  return value.length <= 253 && datacenterIdPattern.test(value);
 }
 
 function ReviewGrid({ items }: { items: [string, string][] }) {

@@ -193,6 +193,31 @@ first_known_value() {
   return 1
 }
 
+host_datacenter_id_is_valid() {
+  local value="${1:-}"
+
+  [ "${#value}" -ge 1 ] && [ "${#value}" -le 253 ] \
+    && printf '%s' "$value" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$'
+}
+
+resolve_host_datacenter_id() {
+  local value
+
+  value="$(first_known_value \
+    "$(config_value .env HOST_DATACENTER_ID 2>/dev/null || true)" \
+    "${HOST_DATACENTER_ID:-}" \
+    "$(config_value .env SERVER_PROVIDER 2>/dev/null || true)" \
+    "${SERVER_PROVIDER:-}" \
+    "dune-docker")"
+
+  if ! host_datacenter_id_is_valid "$value"; then
+    printf '%s\n' "Invalid HOST_DATACENTER_ID=$value; use a hostname or short ID containing only letters, numbers, dots, and hyphens." >&2
+    return 1
+  fi
+
+  printf '%s' "$value"
+}
+
 resolve_server_title() {
   first_known_value     "$(config_value .env SERVER_TITLE 2>/dev/null || true)"     "${SERVER_TITLE:-}"     "$(container_env_value_any_state dune-director BATTLEGROUP_TITLE 2>/dev/null || true)"     "$(container_env_value_any_state dune-server-gateway gateway_display_name 2>/dev/null || true)"     "My Dune Server"
 }

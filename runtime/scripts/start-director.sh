@@ -46,6 +46,7 @@ LOGIN_PASSWORD_SKEW_SECONDS="$(resolve_login_password_skew_seconds)"
 SERVER_TITLE="$(resolve_server_title)"
 SERVER_REGION="$(resolve_server_region)"
 SERVER_IP="$(resolve_server_ip)"
+HOST_DATACENTER_ID_VALUE="$(resolve_host_datacenter_id)"
 BATTLEGROUP_ID="$(resolve_battlegroup_id)"
 DUNE_DB_PASSWORD="${DUNE_DB_PASSWORD:-dune}"
 FAKE_K8S_SERVICEACCOUNT_DIR="$(fake_k8s_serviceaccount_dir director)"
@@ -324,7 +325,7 @@ docker run -d \
   -e "AuthenticationConfiguration__SchemeMap__BackendLogin__BackendLoginConfiguration__LoginPasswordSkewEnvironmentVariable=DUNE_LOGIN_PASSWORD_SKEW_SECONDS" \
   -e "AuthenticationConfiguration__SchemeMap__BackendLogin__BackendLoginConfiguration__LoginPasswordSkew=$LOGIN_PASSWORD_SKEW_SECONDS" \
   -e "fls-apikey=$FLS_APIKEY" \
-  -e "HOST_DATACENTER_ID=${SERVER_PROVIDER:-dune-docker}" \
+  -e "HOST_DATACENTER_ID=$HOST_DATACENTER_ID_VALUE" \
   -e "HOST_DATACENTER_IP_ADDRESS=$SERVER_IP" \
   -e "ASPNETCORE_URLS=http://0.0.0.0:11717" \
   -e "DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE=false" \
