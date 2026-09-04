@@ -56,11 +56,11 @@ export function createAuth(config) {
   // second-factor enrollment session (RFC §4) that the route gate restricts to
   // the enrollment endpoints only. renewable:false keeps the enrollment window
   // fixed so it can't be extended by activity.
-  function makeSession({ tier = "owner", userId = "", username = "", guildId = "", scope = null, ttlMs = DEFAULT_TTL_MS, renewable = true } = {}) {
+  function makeSession({ tier = "owner", userId = "", username = "", displayName = "", guildId = "", scope = null, ttlMs = DEFAULT_TTL_MS, renewable = true } = {}) {
     const id = randomBytes(32).toString("base64url");
     const csrf = randomBytes(24).toString("base64url");
     const expiresAt = now() + ttlMs;
-    const session = { id, csrf, expiresAt, tier, userId, username, guildId, scope, renewable };
+    const session = { id, csrf, expiresAt, tier, userId, username, displayName, guildId, scope, renewable };
     sessions.set(id, session);
     return { ...session, cookie: `${id}.${sign(id)}` };
   }
@@ -80,6 +80,15 @@ export function createAuth(config) {
     return session;
   }
 
+  // Invalidate one session by id (enrollment completion, logout, rotation).
+  // Server-side lookup by session id, for a flow that must hand data back to
+  // a specific live session it did not receive a cookie for (the Discord setup
+  // callback). Expiry is honored exactly as readSession does.
+  function readSessionById(id) {
+    const session = sessions.get(id);
+    if (!session || session.expiresAt < now()) return null;
+    return session;
+  }
   function invalidateSession(id) {
     return sessions.delete(id);
   }
@@ -123,7 +132,7 @@ export function createAuth(config) {
     return session;
   }
 
-  return { makeSession, readSession, passwordMatches, requireAuth, invalidateSession, invalidatePasswordSessions };
+  return { makeSession, readSession, readSessionById, passwordMatches, requireAuth, invalidateSession, invalidatePasswordSessions };
 }
 
 export function setSessionCookie(res, session, config = {}, { maxAgeSeconds = 43200 } = {}) {

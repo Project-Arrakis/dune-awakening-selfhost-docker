@@ -2,10 +2,10 @@ import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { totalmem } from "node:os";
 import { spawn } from "node:child_process";
-import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync } from "node:fs";
+import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig, publicConfig, parseAllowedIps, resolvePorts } from "./config.js";
-import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders } from "./auth.js";
+import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders, parseCookies } from "./auth.js";
 import { createLoginRateLimiter, createMutationRateLimiter, resolveClientIp, createApiKeyRateLimiter } from "./rateLimit.js";
 import { createApiKeyStore, GLOBAL_RATE_LIMIT_PER_MINUTE } from "./apiKeys.js";
 import { scopeCatalog } from "./apiKeyScopes.js";
@@ -25,6 +25,9 @@ import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { createSecondFactorStore } from "./auth/secondFactorStore.js";
 import { generateTotpSecret, provisioningUri, provisioningQrDataUri, verifyTotpMatch } from "./auth/totp.js";
+import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
+import { createHandoff } from "./integrations/discord/handoff.js";
+import { roleTiersConfigured, roleTierConflicts, describeRoleTierConflicts, parseRoleIdList } from "./integrations/discord/roleTiers.js";
 import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishServerCommand } from "./rmq.js";
@@ -40,13 +43,13 @@ import { createMemoryBalancer } from "./services/memoryBalancer.js";
 import { collectContainerHealth } from "./services/containerHealth.js";
 import { parseMemorySwapStatus } from "./services/memorySwap.js";
 import { createDeathPoller } from "./deathPoller.js";
-import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
+import { updateEnvFileValue as updateEnvValue, updateEnvFileValues as updateEnvValues } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
-import { actionForRoute, ROUTE_ACTIONS } from "./actions.js";
+import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
 import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions } from "./policy.js";
 import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
@@ -117,6 +120,10 @@ for (const { tier, pattern } of policyLoad.unknownActions) {
   // into the file needs to know it matches no real action and is withholding
   // nothing. Silence here is how a policy comes to look safer than it is.
   console.warn(`IAM policy warning: ${tier} names "${pattern}", which matches no known action and has no effect.`);
+}
+// Discord setup took effect on this boot: drop the "restart pending" marker.
+if (config.discordOAuthConfigured) {
+  try { const m = resolve(config.generatedDir, "discord-setup-pending-restart"); if (existsSync(m)) unlinkSync(m); } catch { /* ignore */ }
 }
 const auth = createAuth(config);
 // One second-factor store instance for the process (the store enforces this;
@@ -247,6 +254,24 @@ async function requireFreshTier3Proof(req, res, body, { auditUrl, action, actor 
 }
 const qaUpdates = createQaUpdates(config);
 const loginRateLimiter = createLoginRateLimiter();
+// A SEPARATE bucket for the Discord OAuth callback/start: it is reached by
+// unauthenticated third parties (junk state, not-a-member), and must never be
+// able to spend the password-login limiter's shared __global__ budget and lock
+// operators out of the password fallback. Same limits, independent bucket.
+// No shared __global__ bucket here (globalMaxAttempts: Infinity). That bucket
+// exists to slow a DISTRIBUTED password brute-force; the OAuth callback has no
+// guessable secret (a 128-bit random state that must also match a cookie), so
+// the only thing a global bucket would achieve is letting any anonymous party
+// -- or a public community's own non-member players hitting "not authorized"
+// -- lock every user out of Discord sign-in for 15 minutes at a time. The
+// per-client bucket stays, which is the real protection.
+const oauthCallbackRateLimiter = createLoginRateLimiter({ globalMaxAttempts: Infinity });
+// GET /api/auth/discord/start is unauthenticated and creates server-side
+// state, so it is metered per client on its own (the login limiter only ever
+// counts FAILURES, which /start never records). Generous for a human, tight
+// for a loop that tries to flood the pending-state table.
+const OAUTH_START_PER_MINUTE = 20;
+const oauthStartRateLimiter = createMutationRateLimiter({ maxRequests: OAUTH_START_PER_MINUTE, globalMaxRequests: Infinity, windowMs: 60 * 1000 });
 // Separate bucket for re-proving the Tier 3 credential from an ALREADY
 // AUTHENTICATED session (password rotation, recovery-code regeneration).
 //
@@ -265,6 +290,52 @@ const loginRateLimiter = createLoginRateLimiter();
 // valid session and CSRF token, while /api/auth/login is reachable by anyone --
 // two very different exposures should not share one lockout.
 const credentialProofRateLimiter = createLoginRateLimiter();
+const oauthPendingStates = createPendingStateStore();
+const handoff = createHandoff({
+  secret: config.discordBotHandoffSecret,
+  botUrl: config.discordBotHandoffUrl,
+  homeGuildId: config.discordHomeGuildId
+});
+if (handoff.misconfigured) {
+  const detail = [
+    handoff.missing?.length ? `missing: ${handoff.missing.join(", ")}` : "",
+    handoff.invalid?.length ? `invalid: ${handoff.invalid.join(", ")}` : ""
+  ].filter(Boolean).join("; ");
+  console.warn(
+    `Discord bot handoff is half-configured (${detail}) -- Discord sign-in is disabled until this is fixed. ` +
+    "Set all of the handoff values -- runtime/secrets/discord-bot-handoff-secret.txt (or DISCORD_BOT_HANDOFF_SECRET), DISCORD_BOT_HANDOFF_URL (http/https), and the Discord home guild id -- or unset the handoff values entirely. Password sign-in is unaffected."
+  );
+}
+// Separation of duties: one Discord role, one console tier. A role mapped to
+// two tiers would make every holder the higher one (owner, if that is one of
+// them). Refused at save, and refused here for a hand-edited .env -- Discord
+// sign-in is disabled until the mapping is sound, never silently resolved.
+if (config.discordConsoleRoleTierConflicts.length) {
+  console.warn(
+    `Discord role mapping is unsound (${describeRoleTierConflicts(config.discordConsoleRoleTierConflicts)}) -- ` +
+    "Discord sign-in is disabled until each role maps to exactly one tier. Fix DISCORD_CONSOLE_*_ROLE_IDS in .env (or Settings -> Discord OAuth) and restart. Password sign-in is unaffected."
+  );
+}
+const roleMappingUnsound = () => config.discordConsoleRoleTierConflicts.length > 0;
+const roleMappingUnsoundPage = () => oauthErrorPage(
+  `Discord sign-in is disabled because this console's role mapping gives one Discord role two different access levels (${describeRoleTierConflicts(config.discordConsoleRoleTierConflicts)}). ` +
+  "Each role must map to exactly one of Owner, Admin, Moderator or Player. If you administer this install, fix it under Settings -> Discord OAuth and restart. Sign in with the admin password in the meantime."
+);
+const resolveOAuthTier = createOAuthTierResolver({
+  bootstrap: {
+    allowOwnerBootstrap: config.discordOAuthAllowOwnerBootstrap,
+    homeGuildId: config.discordHomeGuildId,
+    ownerAllowlist: config.discordOAuthOwnerAllowlist
+  },
+  handoff: handoff.enabled ? handoff : null,
+  roleTiers: config.discordConsoleRoleTiers,
+  requireMfaTiers: config.discordOAuthRequireMfaTiers
+});
+// True when Discord sign-in can produce ANY tier: a handoff, a role mapping, or
+// an enabled owner allowlist. With none of these the callback denies early
+// rather than sending the user on a Discord round-trip that must fail.
+// With a home guild set there is always at least one possible tier: its owner.
+const discordTierSourceConfigured = () => handoff.enabled || Boolean(config.discordHomeGuildId);
 const mutationRateLimiter = createMutationRateLimiter();
 const apiKeyRateLimiter = createApiKeyRateLimiter({ globalMaxRequests: GLOBAL_RATE_LIMIT_PER_MINUTE });
 // Failed bearer attempts are bucketed by client address under this cap, on a
@@ -744,10 +815,27 @@ async function handleApi(req, res) {
   if (path === "/api/health") return json(res, 200, { ok: true, app: config.appName });
   if (path === "/api/auth/state") {
     const session = auth.readSession(req);
+    // Live, not baked into publicConfig: true when setup wrote a config the
+    // running process has not loaded yet (it reads .env only at boot). Lets the
+    // sign-in page show "configured -- restart pending" rather than re-offer
+    // setup, which is the loop an operator hits between finalize and restart.
+    const discordSetupPendingRestart = !config.discordOAuthConfigured && existsSync(resolve(config.generatedDir, "discord-setup-pending-restart"));
+    // Layer 3 audit finding (#676 follow-up): same "live, not baked into
+    // publicConfig" reasoning as discordSetupPendingRestart above --
+    // discordOAuthSoftDisabledInProcess takes effect immediately for the
+    // acting session's own requests, but without exposing it here, any
+    // OTHER open tab/session polling this route kept seeing the stale
+    // boot-time discordOAuthConfigured=true and would click through to a
+    // confusing 404 instead of a clear "temporarily disabled" state.
     // `scope` lets a reloaded page tell an enrollment/re-setup session apart
     // from a normal one: without it the client treated the restricted session
     // as signed in and rendered a console where every route is 403.
-    return json(res, 200, { authenticated: Boolean(session), csrfToken: session?.csrf || null, scope: session?.scope || null, config: publicConfig(config) });
+    return json(res, 200, { authenticated: Boolean(session), csrfToken: session?.csrf || null, scope: session?.scope || null, config: {
+      ...publicConfig(config),
+      discordSetupPendingRestart,
+      discordOAuthConfigured: config.discordOAuthConfigured && !discordOAuthSoftDisabledInProcess,
+      discordOAuthDisabled: config.discordOAuthDisabled || discordOAuthSoftDisabledInProcess,
+    } });
   }
   if (path === "/api/auth/login" && req.method === "POST") {
     const loginUrl = sanitizedUrl(req, "/api/auth/login");
@@ -1020,6 +1108,7 @@ async function handleApi(req, res) {
       user: {
         id: session.userId || "local-owner",
         username: session.username || "Admin",
+        displayName: session.displayName || session.username || "Admin",
         tier: session.tier || "owner",
         guildId: session.guildId || ""
       },
@@ -1030,6 +1119,101 @@ async function handleApi(req, res) {
       // a 403 would refuse anyway. Enrollment-scope sessions get nothing.
       allowedActions: SETUP_SCOPES.has(session.scope) ? [] : resolveAllowedActions(session.tier || "owner")
     });
+  }
+  if (path === "/api/auth/discord/start" && req.method === "GET") {
+    const startUrl = new URL(req.url || "", "http://localhost");
+    // Setup mode (rfc-console-auth.md §2.1.1 first-run flow): reachable only from
+    // an owner session, needs the application (id/secret/redirect) but not yet a
+    // home guild, and the callback will mint NO session for it -- it only hands
+    // the operator's identity and guild list back to this owner session.
+    if (startUrl.searchParams.get("setup") === "1") {
+      // Setup mode (rfc-console-auth.md §2.1.1): the callback mints NO session
+      // and resolves no tier -- it hands the operator's identity and guild list
+      // back to the owner session that started the round-trip.
+      // The admin password comes FIRST: without it, anyone who owns some Discord
+      // server could point this console at it and become its owner.
+      const ownerSession = auth.requireAuth(req, res);
+      if (!ownerSession) return;
+      if ((ownerSession.tier || "owner") !== "owner" || SETUP_SCOPES.has(ownerSession.scope)) {
+        return json(res, 403, { error: "Only the console owner can set up Discord sign-in." });
+      }
+      // Layer 3 audit finding (#676 follow-up): this setup-mode branch is a
+      // third real gate point (alongside the plain start and callback routes
+      // below) and was missed when discordOAuthSoftDisabledInProcess was
+      // added -- without it, the embedded wizard's own still-mounted
+      // "active"/"authorize" step link could keep completing real OAuth
+      // round-trips through this exact URL during the disable/forget
+      // restart window, defeating the "immediate, no-window cutoff"
+      // guarantee for this one path specifically.
+      if (!config.discordOAuthAppConfigured || discordOAuthSoftDisabledInProcess) {
+        return json(res, 400, { error: "This console has no Discord application yet. Set DISCORD_OAUTH_CLIENT_ID, DISCORD_OAUTH_CLIENT_SECRET and DISCORD_OAUTH_REDIRECT_URI in .env (like a bot's), or enter them on the setup screen." });
+      }
+      // Setup mode requires an authenticated owner session, but that owner
+      // cookie could be stolen/replayed -- it must not get an unrated
+      // exemption the normal login branch below does not have (review
+      // finding: this branch issued pending states with no rate check at all).
+      const setupKey = loginRateLimitKey(req);
+      const setupStartRate = oauthStartRateLimiter.check(setupKey);
+      if (!setupStartRate.allowed) {
+        audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: false, purpose: "setup", reason: "rate_limited" });
+        return json(res, 429, { error: "Too many Discord sign-in attempts from this address. Wait a minute, then try again." }, { "retry-after": String(setupStartRate.retryAfterSeconds) });
+      }
+      oauthStartRateLimiter.record(setupKey);
+      const pending = oauthPendingStates.issue(undefined, { purpose: "setup", sessionId: ownerSession.id, owner: setupKey });
+      if (!pending) return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
+      res.setHeader("Set-Cookie", oauthStateCookie(pending.state));
+      res.writeHead(302, { Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: pending.state, codeChallenge: pending.challenge, prompt: "none" }) });
+      res.end();
+      audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true, purpose: "setup" });
+      return;
+    }
+    if (!config.discordOAuthConfigured || discordOAuthSoftDisabledInProcess) {
+      return json(res, 404, { error: "Discord sign-in is not configured for this console. Sign in with the admin password." });
+    }
+    if (handoff.misconfigured) {
+      // Don't send the user on a Discord round-trip the callback will
+      // refuse anyway (half-configured handoff -- see handleOAuthCallback).
+      audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: false, reason: "handoff_misconfigured" });
+      return html(res, 403, oauthErrorPage("Discord sign-in is disabled because this console's bot handoff is only partially configured. If you administer this install, check the console logs for the missing value, then either complete or remove the handoff configuration. Sign in with the admin password in the meantime."));
+    }
+    // With a configured handoff, the bot is the sole tier source and the role
+    // mapping env vars are documented as ignored entirely (.env.example) --
+    // stale DISCORD_CONSOLE_*_ROLE_IDS left over from before switching to
+    // handoff mode must not disable a working handoff (review finding).
+    if (!handoff.enabled && roleMappingUnsound()) {
+      audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: false, reason: "role_mapping_unsound" });
+      return html(res, 403, roleMappingUnsoundPage());
+    }
+    const startKey = loginRateLimitKey(req);
+    const rate = oauthCallbackRateLimiter.check(startKey);
+    if (!rate.allowed) {
+      return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
+    }
+    const startRate = oauthStartRateLimiter.check(startKey);
+    if (!startRate.allowed) {
+      audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: false, reason: "rate_limited" });
+      return json(res, 429, { error: "Too many Discord sign-in attempts from this address. Wait a minute, then try again." }, { "retry-after": String(startRate.retryAfterSeconds) });
+    }
+    oauthStartRateLimiter.record(startKey);
+    // Keyed by client so a flood from one address can only ever evict its own
+    // pending states, never another user's in-flight sign-in (oauth.js).
+    const pending = oauthPendingStates.issue(undefined, { owner: startKey });
+    if (!pending) {
+      return json(res, 429, { error: "Too many Discord sign-in sessions in progress. Try again in a moment." });
+    }
+    const { state, challenge } = pending;
+    res.setHeader("Set-Cookie", oauthStateCookie(state));
+    const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state, codeChallenge: challenge, prompt: "none" });
+    res.writeHead(302, { Location: authorizeUrl });
+    res.end();
+    audit(config, sanitizedUrl(req, "/api/auth/discord/start"), "auth.oauth.start", { ok: true });
+    return;
+  }
+  if (path === "/api/auth/discord/callback") {
+    if (!config.discordOAuthAppConfigured || discordOAuthSoftDisabledInProcess) {
+      return json(res, 404, { error: "Discord sign-in is not configured for this console. Sign in with the admin password." });
+    }
+    return handleOAuthCallback(req, res);
   }
   if (isDiscordAdapterRoute(path)) {
     return handleDiscordAdapterRoute({ req, res, path, config, readJson, json, db });
@@ -1099,6 +1283,25 @@ async function handleApi(req, res) {
   if (path === "/api/setup/preflight" && req.method === "POST") return json(res, 200, await preflight(config));
   if (path === "/api/setup/write-config" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/setup/save-token" && req.method === "POST") return saveToken(req, res);
+  if (path === "/api/setup/save-oauth-secret" && req.method === "POST") return saveOAuthClientSecret(req, res);
+  if (path === "/api/setup/discord-finalize" && req.method === "POST") return discordSetupFinalize(req, res, session);
+  if (path === "/api/setup/discord-restart" && req.method === "POST") {
+    // Reuses the same self-recreate the web-port change uses (a detached helper
+    // container rebuilds and brings this one back), so an operator can finish
+    // Discord setup without touching the host. Owner-only via the setup:write
+    // gate above.
+    audit(config, sanitizedUrl(req, "/api/setup/discord-restart"), "setup.discord-restart", { ok: true, ...({ tier: session.tier || "owner" }) });
+    scheduleConsoleRestart(config.port);
+    return json(res, 202, { ok: true, message: "The console is restarting. This page will reconnect in about 10-20 seconds." });
+  }
+  if (path === "/api/setup/discord-identity" && req.method === "GET") {
+    // The wizard's server picker. Only ever the identity captured by THIS
+    // session's own setup round-trip; never anyone else's, never persisted.
+    const captured = session.pendingDiscordSetup;
+    if (!captured) return json(res, 404, { error: "No Discord identity has been captured for this session yet. Continue with Discord first." });
+    return json(res, 200, { user: { id: captured.userId, username: captured.username, mfaEnabled: captured.mfaEnabled }, guilds: captured.guilds });
+  }
+  if (path === "/api/setup/write-oauth-config" && req.method === "POST") return writeOAuthConfig(req, res);
   if (path === "/api/setup/init" && req.method === "POST") return task(req, res, "setup", "init", {});
   if (path === "/api/setup/tasks") return json(res, 200, { tasks: tasks.list().map(publicTask) });
   if (path === "/api/public-directory/status") return json(res, 200, publicDirectory.publicState());
@@ -1274,12 +1477,41 @@ async function handleApi(req, res) {
   // both owner-only) and below the enrollment-scope allowlist guard.
   if (path === "/api/auth/2fa/enable" && req.method === "POST") return totpEnableRoute(req, res);
   if (path === "/api/auth/2fa/disable" && req.method === "POST") return totpDisableRoute(req, res);
+  // #676: settings:disable-discord-oauth / :enable- / :forget-, all under the
+  // settings:* CROWN_JEWEL_DENY_ACTIONS wildcard -- owner-only, same as every
+  // other route on this list.
+  if (path === "/api/settings/discord-oauth/disable" && req.method === "POST") return discordOAuthDisableRoute(req, res);
+  if (path === "/api/settings/discord-oauth/enable" && req.method === "POST") return discordOAuthEnableRoute(req, res);
+  if (path === "/api/settings/discord-oauth/forget" && req.method === "POST") return discordOAuthForgetRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
   if (path === "/api/settings/iam/policies" && req.method === "GET") {
-    // The catalog rides along because policies are hand-authored JSON with no
-    // editor UI: without it the only way to learn the vocabulary is to read
-    // actions.js, which is how misspelled actions get written in the first place.
-    return json(res, 200, { policies: getAllPolicies(), actions: [...allKnownActions()].sort() });
+    // The Access Control editor needs the action catalog, not just the policy
+    // documents: `actionMap` (route -> IAM action), `allActions` (the
+    // complete vocabulary) and `namespaces`. Returning only { policies }
+    // crashed the tab on load.
+    //
+    // Merge-conflict finding (upstream-main-base sync): this fork's own
+    // pre-existing `actions` contract was route keys (matching actionMap);
+    // upstream's real main ships `actions` as the action-name vocabulary
+    // instead, pinned by its own "the policies endpoint hands back the
+    // vocabulary" test (policyActionValidation.test.js, new in this merge).
+    // Adopted upstream's shape rather than kept the fork's own, since this
+    // branch is itself an upstream submission and the editor doesn't read
+    // `actions` either way (it reads allActions/actionMap; see
+    // IamPolicyEditor.tsx) -- oauthRoutes.integration.test.js's own
+    // pre-existing assertion about this field was updated to match.
+    return json(res, 200, {
+      policies: getAllPolicies(),
+      actions: [...allKnownActions()].sort(),
+      actionMap: ROUTE_ACTIONS,
+      // The COMPLETE IAM action vocabulary, including parameterized-route
+      // actions (players:kick/ban/teleport, bases:delete, vehicles:delete-item)
+      // that live only in the regex/pattern tables and have no literal
+      // ROUTE_ACTIONS key. The action-centric editor iterates this so those
+      // actions get a real checkbox instead of being editable only via raw JSON.
+      allActions: [...allKnownActions()].sort(),
+      namespaces: NAMESPACES
+    });
   }
   if (path === "/api/settings/iam/policy" && req.method === "PUT") {
     const body = await readJson(req);
@@ -2536,7 +2768,7 @@ async function databasePasswordRoute(req, res) {
     return json(res, 400, { error: "Database password changes are unavailable while ADMIN_DATABASE_URL is set. Update the connection URL instead." });
   }
   await duneDb.changeDunePassword(db, password);
-  updateEnvFileValue("DUNE_DB_PASSWORD", password);
+  await updateEnvFileValue("DUNE_DB_PASSWORD", password);
   process.env.DUNE_DB_PASSWORD = password;
   const previousDb = db;
   db = createDb(config);
@@ -2756,6 +2988,25 @@ async function totpDisableRoute(req, res) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return deny(400, { error: "Request body must be a JSON object." }, { reason: "malformed_body" });
   }
+  // #676 §7: the zero-2FA guard. Enforced HERE, at the single point every
+  // disable path reaches (the guided offer screen and the always-available
+  // fallback-section form both call this same route) -- a Layer 1 audit
+  // finding on an earlier draft of this feature found that a guard living
+  // only in the guided offer's own UI left this route itself reachable
+  // directly, bypassing it entirely. Only fires when Discord OAuth is
+  // configured but its own MFA requirement doesn't cover this session's
+  // tier -- disabling with NO Discord OAuth configured at all is the
+  // ordinary, always-acceptable password-only state and is not gated.
+  // Soft: an explicit acknowledgeNoOtherFactor:true in a resubmitted request
+  // proceeds anyway -- this is a nudge against an accidental zero-factor
+  // state, not a hard security boundary (an operator may have a considered
+  // reason to run with none).
+  if (config.discordOAuthConfigured && !config.discordOAuthRequireMfaTiers.includes(actor.tier) && !body.acknowledgeNoOtherFactor) {
+    return deny(409, {
+      zeroFactorWarning: true,
+      error: "Disabling this will leave your console with no two-factor authentication anywhere -- Discord sign-in doesn't require Discord's own two-factor for your role."
+    }, { reason: "zero_factor_warning" });
+  }
   // requireEnrolled:true -- nothing to disable without an existing factor.
   const proof = await requireFreshTier3Proof(req, res, body, {
     auditUrl, action: ACTION, actor, requireEnrolled: true,
@@ -2774,6 +3025,201 @@ async function totpDisableRoute(req, res) {
   const sessionsRevoked = auth.invalidatePasswordSessions(session.id);
   audit(config, auditUrl, "auth.totp-disabled.sessions-revoked", { ...actor, count: sessionsRevoked });
   return json(res, 200, { ok: true, sessionsRevoked });
+}
+
+// #676 §6: Tier 1 -> 3 removal (soft-disable / re-enable / forget). This is
+// the SINGLE source of truth for "what fields make up Discord OAuth config"
+// -- every route below derives its field list from this, never a
+// hand-maintained duplicate. A Layer 1 audit finding on an earlier draft of
+// this feature undercounted this list by hand ("seven .env keys") and,
+// separately, omitted the Client Secret entirely (it is not an .env key --
+// see discordOAuthSecretFile below) -- both are now structurally impossible
+// to repeat, since every caller reads the same list.
+const DISCORD_OAUTH_ENV_FIELDS = [
+  "DISCORD_OAUTH_CLIENT_ID",
+  "DISCORD_OAUTH_REDIRECT_URI",
+  "DISCORD_HOME_GUILD_ID",
+  "DISCORD_CONSOLE_ADMIN_ROLE_IDS",
+  "DISCORD_CONSOLE_MODERATOR_ROLE_IDS",
+  "DISCORD_CONSOLE_PLAYER_ROLE_IDS",
+  "DISCORD_OAUTH_REQUIRE_MFA_TIERS",
+  "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP",
+  "DISCORD_OAUTH_OWNER_ALLOWLIST",
+];
+function discordOAuthSecretFile() {
+  return resolve(config.secretsDir, "discord-oauth-client-secret.txt");
+}
+
+// Layer 2 audit finding (Network/Security Architect/Cloud Security hats,
+// convergent HIGH, #676): config.discordOAuthConfigured/AppConfigured are
+// plain properties computed once at process boot from process.env -- writing
+// DISCORD_OAUTH_DISABLED=1 to .env is real, but invisible to THIS running
+// process until it restarts. Restart is triggered by a *separate*,
+// best-effort client call (consoleRestart.ts's own follow-up POST to
+// /api/setup/discord-restart) made only after this route's response is
+// already back in the browser -- a closed tab, dropped connection, or a
+// failed restart leaves Discord sign-in fully live in the still-running
+// process, with no visible indication anywhere that the intended lockout
+// never took effect. Reordering the shared restart script (docker compose
+// build before/after docker rm -f) was considered and rejected: that
+// function is also used by the web-port change and first-time-setup
+// restarts, where minimizing downtime during the build is the right
+// tradeoff -- changing it globally would trade a security gap here for
+// unnecessary downtime there. Instead, this flag makes the security
+// property hold synchronously, in-process, for the remainder of THIS
+// process's life, independent of whether any restart ever completes:
+// checked at the exact two points (start/callback below) that would
+// otherwise use the stale boot-time config to grant Discord-authenticated
+// access.
+let discordOAuthSoftDisabledInProcess = false;
+// Layer 3 audit finding (#676 follow-up): distinct from the flag above.
+// Forget is destructive (deletes the Client Secret file, clears guild/role
+// .env fields) and Enable deliberately requires no fresh credential proof
+// at all (restoring a mere pause can never strand the session -- see
+// discordOAuthEnableRoute's own comment). Without this separate flag, Enable's
+// "is it currently disabled" check was satisfied by Forget's own
+// discordOAuthSoftDisabledInProcess=true too, so calling Enable during
+// Forget's restart window silently reversed the wipe with zero proof --
+// Discord sign-in came back live using config.discordOAuthClientSecret,
+// still cached at boot and unaffected by the secret file's deletion. Set by
+// Forget, checked by Enable, and never cleared except by an actual restart
+// (a genuine re-setup is the only way back after a real Forget).
+let discordOAuthForgottenInProcess = false;
+
+async function discordOAuthDisableRoute(req, res) {
+  const session = auth.requireAuth(req, res);
+  if (!session) return;
+  const auditUrl = sanitizedUrl(req, "/api/settings/discord-oauth/disable");
+  const ACTION = "settings.discord-oauth-disabled";
+  const actor = { tier: session.tier || "owner", userId: session.userId || "local-owner" };
+  const deny = (status, payload, detail, headers) => {
+    audit(config, auditUrl, ACTION, { ok: false, ...actor, ...detail });
+    return json(res, status, payload, headers || {});
+  };
+  if (!config.discordOAuthConfigured) {
+    return deny(400, { error: "Discord sign-in is not currently configured, so there is nothing to disable." }, { reason: "not_configured" });
+  }
+  const body = await readJson(req);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return deny(400, { error: "Request body must be a JSON object." }, { reason: "malformed_body" });
+  }
+  // requireEnrolled:false, same reasoning as password rotation -- this proves
+  // the acting session knows the Tier 3 password, not that TOTP exists. The
+  // reason for requiring this proof at all is NOT Tier 3 credential
+  // integrity (this route never touches the password/TOTP credential) -- it
+  // is a self-lockout guard: Tier 3 can never be removed (RFC's own
+  // permanent-fallback guarantee), so the one real risk here is the ACTING
+  // session not actually knowing the password it is about to become solely
+  // dependent on. Reusing requireFreshTier3Proof for a different rationale
+  // than its other callers, deliberately -- see #676 §6.3.
+  const proof = await requireFreshTier3Proof(req, res, body, {
+    auditUrl, action: ACTION, actor, requireEnrolled: false,
+  });
+  if (!proof.ok) return;
+  // Immediate, synchronous cutoff -- see discordOAuthSoftDisabledInProcess's
+  // own comment. Set BEFORE the .env write returns, so there is no window
+  // (not even one dependent on the write or the restart) where this process
+  // still accepts Discord sign-in after this route has already responded
+  // "disabled."
+  discordOAuthSoftDisabledInProcess = true;
+  await updateEnvFileValue("DISCORD_OAUTH_DISABLED", "1");
+  audit(config, auditUrl, ACTION, { ok: true, ...actor });
+  return json(res, 200, { ok: true, restartRequired: true });
+}
+
+async function discordOAuthEnableRoute(req, res) {
+  const session = auth.requireAuth(req, res);
+  if (!session) return;
+  const auditUrl = sanitizedUrl(req, "/api/settings/discord-oauth/enable");
+  const ACTION = "settings.discord-oauth-enabled";
+  const actor = { tier: session.tier || "owner", userId: session.userId || "local-owner" };
+  // Checks the in-process flag too, not just the (boot-time-stale)
+  // persisted config: a disable in THIS process life is real and in effect
+  // immediately (discordOAuthSoftDisabledInProcess), but config.discordOAuthDisabled
+  // won't reflect it until an actual restart re-reads .env -- without this,
+  // enable would wrongly refuse to reverse a disable that hasn't restarted yet.
+  if (!config.discordOAuthDisabled && !discordOAuthSoftDisabledInProcess) {
+    audit(config, auditUrl, ACTION, { ok: false, ...actor, reason: "not_disabled" });
+    return json(res, 400, { error: "Discord sign-in is not currently disabled." });
+  }
+  // Layer 3 audit finding (#676 follow-up): checked separately from, and
+  // before, the flags above -- Forget also sets discordOAuthSoftDisabledInProcess,
+  // so without this an Enable call made during Forget's own restart window
+  // would silently reverse the wipe with zero credential proof, using
+  // config.discordOAuthClientSecret still cached at boot and unaffected by
+  // the secret file Forget just deleted. A real Forget can only be undone by
+  // setting Discord OAuth up again after the restart actually completes.
+  if (discordOAuthForgottenInProcess) {
+    audit(config, auditUrl, ACTION, { ok: false, ...actor, reason: "forgotten" });
+    return json(res, 400, { error: "This Discord sign-in configuration was forgotten and must be set up again -- it cannot simply be re-enabled." });
+  }
+  // No fresh proof required (#676 §6.3): re-enabling only restores an
+  // existing login option, it can never strand the acting session the way
+  // disable/forget can, so the self-lockout rationale above does not apply.
+  // Also clears the in-process override immediately, in case a disable is
+  // still pending its own restart when the owner changes their mind.
+  discordOAuthSoftDisabledInProcess = false;
+  await updateEnvFileValue("DISCORD_OAUTH_DISABLED", "0");
+  audit(config, auditUrl, ACTION, { ok: true, ...actor });
+  return json(res, 200, { ok: true, restartRequired: true });
+}
+
+async function discordOAuthForgetRoute(req, res) {
+  const session = auth.requireAuth(req, res);
+  if (!session) return;
+  const auditUrl = sanitizedUrl(req, "/api/settings/discord-oauth/forget");
+  const ACTION = "settings.discord-oauth-forgotten";
+  const actor = { tier: session.tier || "owner", userId: session.userId || "local-owner" };
+  const deny = (status, payload, detail, headers) => {
+    audit(config, auditUrl, ACTION, { ok: false, ...actor, ...detail });
+    return json(res, status, payload, headers || {});
+  };
+  if (!config.discordOAuthAppConfigured && !config.discordOAuthDisabled) {
+    return deny(400, { error: "Discord sign-in is not currently configured, so there is nothing to forget." }, { reason: "not_configured" });
+  }
+  const body = await readJson(req);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return deny(400, { error: "Request body must be a JSON object." }, { reason: "malformed_body" });
+  }
+  // At least as strict as disable (#676 §6.3) -- this is strictly MORE
+  // destructive (irreversible for the role/guild mapping, see §6.4 below),
+  // so it gets the identical self-lockout proof, never a lighter one.
+  const proof = await requireFreshTier3Proof(req, res, body, {
+    auditUrl, action: ACTION, actor, requireEnrolled: false,
+  });
+  if (!proof.ok) return;
+  // Same immediate cutoff as disable, and for the same reason -- forget is
+  // strictly more destructive, so it gets the identical guarantee. Also
+  // marks this process as having genuinely forgotten its config (not just
+  // paused), so Enable cannot silently reverse it -- see
+  // discordOAuthForgottenInProcess's own comment.
+  discordOAuthSoftDisabledInProcess = true;
+  discordOAuthForgottenInProcess = true;
+  // #676 §6.4: log the pre-wipe NON-secret fields (never the secret itself)
+  // so a mistaken "Forget" has a recoverable record -- the secret is the only
+  // piece an operator can always regenerate from Discord's own portal; the
+  // guild ID and role mapping are hand-entered decisions with no external
+  // system to re-derive them from.
+  const preWipe = readSetupConfigValues();
+  const recoverable = {
+    guildId: preWipe.DISCORD_HOME_GUILD_ID || "",
+    adminRoleIds: preWipe.DISCORD_CONSOLE_ADMIN_ROLE_IDS || "",
+    moderatorRoleIds: preWipe.DISCORD_CONSOLE_MODERATOR_ROLE_IDS || "",
+    playerRoleIds: preWipe.DISCORD_CONSOLE_PLAYER_ROLE_IDS || "",
+    requireMfaTiers: preWipe.DISCORD_OAUTH_REQUIRE_MFA_TIERS || "",
+  };
+  const clearedFields = Object.fromEntries(DISCORD_OAUTH_ENV_FIELDS.map((key) => [key, ""]));
+  clearedFields.DISCORD_OAUTH_DISABLED = "0"; // full forget returns to "never configured," not "configured but disabled"
+  await updateEnvFileValues(clearedFields);
+  // #676 §6.1 (DBA CRITICAL): the Client Secret is NOT an .env key -- it is a
+  // separate file (see discordOAuthSecretFile above). Clearing only the
+  // fields above, as an earlier draft of this feature did, would leave the
+  // one genuinely sensitive artifact on disk after the operator believes
+  // it's gone. Deleted outright, not blanked, since there is no .env key
+  // referencing it to blank.
+  try { unlinkSync(discordOAuthSecretFile()); } catch { /* already absent -- fine */ }
+  audit(config, auditUrl, ACTION, { ok: true, ...actor, recoverable });
+  return json(res, 200, { ok: true, restartRequired: true });
 }
 
 async function apiKeyCreateRoute(req, res) {
@@ -2834,7 +3280,7 @@ async function webPortRoute(req, res) {
   if (port !== config.port) await assertWebPortAvailable(port);
   const host = webConsoleDisplayHost(req);
   const url = `http://${host}:${port}`;
-  updateEnvFileValue("ADMIN_BIND_PORT", String(port));
+  await updateEnvFileValue("ADMIN_BIND_PORT", String(port));
   process.env.ADMIN_BIND_PORT = String(port);
   audit(config, req, "settings.change-web-port", { port });
   json(res, 200, {
@@ -2953,6 +3399,14 @@ function validateAdminPassword(value) {
 
 function updateEnvFileValue(key, value) {
   return updateEnvValue(config.repoRoot, key, value);
+}
+
+// Every caller writing more than one related key must use this, not a loop of
+// updateEnvFileValue calls -- a loop still races against a different request's
+// write landing between iterations, even though each individual call is
+// itself serialized (see envFile.js's own header comment, #678).
+function updateEnvFileValues(fields) {
+  return updateEnvValues(config.repoRoot, fields);
 }
 
 async function dbJson(res, fn) {
@@ -6124,8 +6578,183 @@ function publicDirectorySettings() {
   };
 }
 
+// Completes the guided Discord setup from an OWNER session. No password here:
+// authorization is the owner session itself (which was created by entering the
+// password to START setup), plus the requirement that the captured Discord
+// identity OWNS the chosen server -- so the person turning this on is the
+// server's owner and becomes the console Owner. The console password is the
+// break-glass path, not a step in this flow.
+async function discordSetupFinalize(req, res, session) {
+  const auditUrl = sanitizedUrl(req, "/api/setup/discord-finalize");
+  const deny = (status, payload, reason) => { audit(config, auditUrl, "setup.discord-finalize", { ok: false, reason }); return json(res, status, payload); };
+  const body = await readJson(req);
+  if (!body || typeof body !== "object" || Array.isArray(body)) return deny(400, { error: "Request body must be a JSON object." }, "malformed_body");
+  if (!config.authDisabled && req.headers["x-csrf-token"] !== session.csrf) return deny(403, { error: "Your setup session expired. Start Discord setup again." }, "csrf");
+  const captured = session.pendingDiscordSetup;
+  if (!captured) return deny(400, { error: "Continue with Discord first." }, "no_identity");
+  const guildId = String(body.guildId || "").trim();
+  const guild = captured.guilds.find((g) => g.id === guildId);
+  if (!guild) return deny(400, { error: "Choose one of your Discord servers." }, "guild_not_in_list");
+  if (!guild.owner) return deny(403, { error: `You do not own ${guild.name}. Only that server's owner can connect it to this console.` }, "not_guild_owner");
+  // Requiring Discord 2FA for owner/admin while the operator's OWN Discord
+  // account has no 2FA would lock them out of the Discord sign-in path the
+  // moment the console restarts (their session resolves to owner -> MFA gate ->
+  // 403). Their mfa_enabled state was captured at OAuth time, so refuse the
+  // combination with an actionable message rather than shipping a self-lockout.
+  const wantMfaRequirement = body.requireMfa !== false;
+  if (wantMfaRequirement && !captured.mfaEnabled) {
+    return deny(400, {
+      error: "Your Discord account does not have two-factor authentication enabled, but you asked to require it for Owner and Admin. Enable 2FA on your Discord account and try again, or clear the two-factor requirement -- otherwise you would lock yourself out of Discord sign-in.",
+    }, "operator_mfa_missing");
+  }
+  // DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP is deliberately NOT written here (review
+  // finding): this wizard has no field for it, so unconditionally forcing it to
+  // "0" on every run silently clobbered an operator's already-configured
+  // bootstrap allowlist (DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP=1 +
+  // DISCORD_OAUTH_OWNER_ALLOWLIST, the documented way to grant Owner to a
+  // second Discord account) the moment they re-ran setup just to add a role
+  // mapping. The sibling manual path (writeOAuthConfig) already gets this
+  // right by only writing keys the request body actually includes -- match it.
+  const fields = {
+    DISCORD_HOME_GUILD_ID: guildId,
+    DISCORD_CONSOLE_ADMIN_ROLE_IDS: String(body.adminRoleIds || "").trim(),
+    DISCORD_CONSOLE_MODERATOR_ROLE_IDS: String(body.moderatorRoleIds || "").trim(),
+    DISCORD_CONSOLE_PLAYER_ROLE_IDS: String(body.playerRoleIds || "").trim(),
+    DISCORD_OAUTH_REQUIRE_MFA_TIERS: wantMfaRequirement ? "owner,admin" : "",
+  };
+  for (const [key, value] of Object.entries(fields)) {
+    const error = validateOAuthWriteConfigKey(key, value);
+    if (error) return deny(400, { error }, "invalid_field");
+  }
+  const conflicts = roleTierConflicts({
+    admin: parseRoleIdList(fields.DISCORD_CONSOLE_ADMIN_ROLE_IDS),
+    moderator: parseRoleIdList(fields.DISCORD_CONSOLE_MODERATOR_ROLE_IDS),
+    player: parseRoleIdList(fields.DISCORD_CONSOLE_PLAYER_ROLE_IDS),
+  });
+  if (conflicts.length) return deny(400, { error: `Each Discord role can map to only one access level -- ${describeRoleTierConflicts(conflicts)}.` }, "role_mapping_unsound");
+  await updateEnvFileValues(fields);
+  // A live marker so the sign-in page can say "configured, restart pending"
+  // instead of showing the setup entry again (which loops). config reads .env
+  // only at boot; boot removes this marker once discordOAuthConfigured is true.
+  try { writeFileSync(resolve(config.generatedDir, "discord-setup-pending-restart"), `${guildId}\n`, { mode: 0o600 }); } catch { /* best effort */ }
+  audit(config, auditUrl, "setup.discord-finalize", { ok: true, guildId, userId: captured.userId, keys: Object.keys(fields) });
+  delete session.pendingDiscordSetup;
+  return json(res, 200, { ok: true, guild: { id: guild.id, name: guild.name }, owner: { id: captured.userId, username: captured.username }, restartRequired: true });
+}
+
+async function saveOAuthClientSecret(req, res) {
+  const body = (await readJson(req)) || {}; // guard: readJson returns null for a literal `null` body
+  const secret = body.secret;
+  if (!secret || String(secret).length < 20) {
+    return json(res, 400, { error: "Client secret must be at least 20 characters." });
+  }
+  const dir = config.secretsDir;
+  mkdirSync(dir, { recursive: true });
+  const path = resolve(dir, "discord-oauth-client-secret.txt");
+  if (existsSync(path) && readFileSync(path, "utf8").trim().length > 0 && !body.overwrite) {
+    return json(res, 409, { error: "A client secret already exists. Set 'overwrite: true' to replace it." });
+  }
+  try {
+    writeFileSync(path, `${String(secret).trim()}\n`, { mode: 0o600 });
+    chmodSync(path, 0o600);
+  } catch (error) {
+    return json(res, 500, { error: "Failed to save client secret." });
+  }
+  audit(config, sanitizedUrl(req, "/api/setup/save-oauth-secret"), "setup.save-oauth-secret", { secret: "<redacted>", overwrite: Boolean(body.overwrite) });
+  return json(res, 200, { ok: true });
+}
+
+const DISCORD_SNOWFLAKE_RE = /^\d{17,19}$/;
+
+function validateOAuthWriteConfigKey(key, value) {
+  const v = String(value || "").trim();
+  if (!v) return null;
+  switch (key) {
+    case "DISCORD_HOME_GUILD_ID":
+    case "DISCORD_OAUTH_CLIENT_ID":
+      if (!DISCORD_SNOWFLAKE_RE.test(v)) return `Invalid Discord snowflake for ${key}`;
+      break;
+    case "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP":
+      if (v !== "0" && v !== "1") return `${key} must be "0" or "1"`;
+      break;
+    case "DISCORD_OAUTH_OWNER_ALLOWLIST":
+      if (v) {
+        const items = v.split(",").map((item) => item.trim()).filter(Boolean);
+        if (items.some((item) => !DISCORD_SNOWFLAKE_RE.test(item))) return `${key} must be comma-separated Discord user IDs (17-19 digits each)`;
+      }
+      break;
+    case "DISCORD_OAUTH_REDIRECT_URI":
+      if (!/^https?:\/\/.+/.test(v)) return `${key} must be a valid URL`;
+      break;
+    case "DISCORD_CONSOLE_ADMIN_ROLE_IDS":
+    case "DISCORD_CONSOLE_MODERATOR_ROLE_IDS":
+    case "DISCORD_CONSOLE_PLAYER_ROLE_IDS": {
+      const items = v.split(",").map((item) => item.trim()).filter(Boolean);
+      if (items.some((item) => !DISCORD_SNOWFLAKE_RE.test(item))) return `${key} must be comma-separated Discord role IDs (17-19 digits each)`;
+      break;
+    }
+    case "DISCORD_OAUTH_REQUIRE_MFA_TIERS": {
+      const bad = v.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean).filter((t) => !["owner","admin","moderator","player"].includes(t));
+      if (bad.length) return `${key} may only list tiers (owner, admin, moderator, player)`;
+      break;
+    }
+  }
+  return null;
+}
+
+async function writeOAuthConfig(req, res) {
+  const body = (await readJson(req)) || {}; // guard: readJson returns null for a literal `null` body
+  const allowed = [
+    "DISCORD_HOME_GUILD_ID",
+    "DISCORD_OAUTH_CLIENT_ID",
+    "DISCORD_OAUTH_REDIRECT_URI",
+    "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP",
+    "DISCORD_OAUTH_OWNER_ALLOWLIST",
+    "DISCORD_CONSOLE_ADMIN_ROLE_IDS",
+    "DISCORD_CONSOLE_MODERATOR_ROLE_IDS",
+    "DISCORD_CONSOLE_PLAYER_ROLE_IDS",
+    "DISCORD_OAUTH_REQUIRE_MFA_TIERS"
+  ];
+  // Validate every submitted key first, then the mapping as a whole -- the
+  // submitted values merged over what is already saved, so a partial update
+  // cannot create a conflict with a field it did not touch. Nothing is written
+  // until both pass (separation of duties: one role, one tier).
+  for (const key of allowed) {
+    if (body[key] === undefined) continue;
+    const error = validateOAuthWriteConfigKey(key, body[key]);
+    if (error) return json(res, 400, { error });
+  }
+  const current = readSetupConfigValues();
+  // A null field value means "clear this field", not the literal string "null":
+  // validation collapses null -> "" (a valid empty), so the write/merge paths
+  // must do the same or they persist DISCORD_OAUTH_REDIRECT_URI=null (non-empty,
+  // so OAuth reads as configured while every sign-in fails at Discord).
+  const merged = (key) => body[key] !== undefined ? (body[key] == null ? "" : String(body[key])) : (current[key] || "");
+  const conflicts = roleTierConflicts({
+    admin: parseRoleIdList(merged("DISCORD_CONSOLE_ADMIN_ROLE_IDS")),
+    moderator: parseRoleIdList(merged("DISCORD_CONSOLE_MODERATOR_ROLE_IDS")),
+    player: parseRoleIdList(merged("DISCORD_CONSOLE_PLAYER_ROLE_IDS")),
+  });
+  if (conflicts.length) {
+    audit(config, req, "setup.write-oauth-config", { ok: false, reason: "role_mapping_unsound", conflicts: conflicts.map((c) => c.roleId) });
+    return json(res, 400, { error: `Each Discord role can map to only one access level -- ${describeRoleTierConflicts(conflicts)}. Owner is never a role: it is the Discord server's owner.` });
+  }
+  const changes = [];
+  const oauthFields = {};
+  for (const key of allowed) {
+    if (body[key] === undefined) continue;
+    oauthFields[key] = body[key] == null ? "" : String(body[key]);
+    changes.push(key);
+  }
+  if (changes.length) await updateEnvFileValues(oauthFields);
+  audit(config, req, "setup.write-oauth-config", { keys: changes });
+  return json(res, 200, { ok: true, changes });
+}
+
 function readSetupConfigValues() {
-  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID"];
+  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID",
+    "DISCORD_HOME_GUILD_ID", "DISCORD_OAUTH_CLIENT_ID", "DISCORD_OAUTH_REDIRECT_URI", "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP", "DISCORD_OAUTH_OWNER_ALLOWLIST",
+    "DISCORD_CONSOLE_ADMIN_ROLE_IDS", "DISCORD_CONSOLE_MODERATOR_ROLE_IDS", "DISCORD_CONSOLE_PLAYER_ROLE_IDS", "DISCORD_OAUTH_REQUIRE_MFA_TIERS"];
   const values = {};
   for (const file of [resolve(config.repoRoot, ".env"), resolve(config.generatedDir, "battlegroup.env")]) {
     if (!existsSync(file)) continue;
@@ -6135,6 +6764,15 @@ function readSetupConfigValues() {
       values[parsed.key] = parsed.value;
     }
   }
+  // Checked by actual trimmed content, not existsSync -- an empty or
+  // whitespace-only secret file (a botched write, a stray `touch`) used to
+  // still report as "saved" here, so the setup screen and Settings UI both
+  // showed the secret as already configured while every real token exchange
+  // silently sent client_secret="" (review finding; mirrors config.js's
+  // discordOAuthConfigured/discordOAuthAppConfigured fix).
+  try {
+    if (readFileSync(resolve(config.secretsDir, "discord-oauth-client-secret.txt"), "utf8").trim()) values._discordOAuthSecretSaved = "1";
+  } catch { /* file missing or unreadable -- not saved */ }
   return values;
 }
 
@@ -6227,9 +6865,11 @@ async function mapsRuntimeSettingsRoute(req, res) {
   if (!Number.isInteger(value) || value < 1 || value > safeMaximum) {
     return json(res, 400, { error: `Always-on startup parallelism must be a whole number from 1 to ${safeMaximum} with these protection settings.` });
   }
-  updateEnvFileValue("DUNE_ALWAYS_ON_STARTUP_PARALLELISM", String(value));
-  updateEnvFileValue("DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY", protectionEnabled ? "1" : "0");
-  updateEnvFileValue("DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB", automaticReserve ? "" : String(reserveGiB));
+  await updateEnvFileValues({
+    DUNE_ALWAYS_ON_STARTUP_PARALLELISM: String(value),
+    DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY: protectionEnabled ? "1" : "0",
+    DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB: automaticReserve ? "" : String(reserveGiB),
+  });
   process.env.DUNE_ALWAYS_ON_STARTUP_PARALLELISM = String(value);
   process.env.DUNE_ALWAYS_ON_HOST_MEMORY_SAFETY = protectionEnabled ? "1" : "0";
   process.env.DUNE_ALWAYS_ON_HOST_MEMORY_RESERVE_GIB = automaticReserve ? "" : String(reserveGiB);
@@ -6364,9 +7004,11 @@ async function playerAnnouncementsAutoTick() {
 async function writeConfig(req, res) {
   const body = await readJson(req);
   const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID"];
+  const fields = {};
   for (const key of allowed) {
-    if (body[key] !== undefined) updateEnvFileValue(key, String(body[key]));
+    if (body[key] !== undefined) fields[key] = String(body[key]);
   }
+  if (Object.keys(fields).length) await updateEnvFileValues(fields);
   audit(config, req, "setup.write-config", { keys: Object.keys(body).filter((key) => allowed.includes(key)) });
   return json(res, 200, { ok: true });
 }
@@ -6390,19 +7032,21 @@ async function publicDirectorySettingsRoute(req, res) {
     return json(res, 409, { error: "Server listing is available only when the server is running in public mode." });
   }
   let discordInvite = current.discordInvite;
+  const directoryFields = {};
   if (hasDiscordInvite) {
     discordInvite = normalizeDiscordInvite(body.discordInvite);
     if (discordInvite === null) {
       return json(res, 400, { error: "Enter a valid discord.gg or discord.com/invite link." });
     }
-    updateEnvFileValue("DUNE_PUBLIC_DIRECTORY_DISCORD_INVITE", discordInvite);
+    directoryFields.DUNE_PUBLIC_DIRECTORY_DISCORD_INVITE = discordInvite;
   }
   if (hasEnabled) {
-    updateEnvFileValue("DUNE_PUBLIC_DIRECTORY_ENABLED", body.enabled ? "true" : "false");
+    directoryFields.DUNE_PUBLIC_DIRECTORY_ENABLED = body.enabled ? "true" : "false";
   }
   if (hasAnonymousCountEnabled) {
-    updateEnvFileValue("DUNE_ANONYMOUS_SERVER_COUNT_ENABLED", body.anonymousCountEnabled ? "true" : "false");
+    directoryFields.DUNE_ANONYMOUS_SERVER_COUNT_ENABLED = body.anonymousCountEnabled ? "true" : "false";
   }
+  if (Object.keys(directoryFields).length) await updateEnvFileValues(directoryFields);
   audit(config, req, "settings.public-directory", {
     enabled: hasEnabled ? body.enabled : current.enabled,
     anonymousCountEnabled: hasAnonymousCountEnabled ? body.anonymousCountEnabled : current.anonymousCountEnabled,
@@ -6499,6 +7143,204 @@ function requireEnrollmentSession(req, res) {
     return null;
   }
   return session;
+}
+
+function oauthReturnPage() {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign-in complete</title></head><body><noscript><a href="/">Return to the console</a></noscript><script>window.location.replace("/");</script></body></html>`;
+}
+
+// The callback is reached by a top-level browser navigation (Discord
+// redirects the user's tab here), so failure responses must be readable
+// HTML with a way back to the sign-in screen -- a JSON body would be
+// rendered raw by the browser with no path to the password fallback the
+// message text offers (rfc-console-auth.md §2.1).
+function oauthErrorPage(message) {
+  const safe = String(message)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign-in failed</title></head><body><p>${safe}</p><p><a href="/">Return to the console sign-in</a></p></body></html>`;
+}
+
+// html/sessionCookieValue: local helpers for the OAuth callback route,
+// which needs to set two cookies in one response (the session cookie AND
+// clearOAuthStateCookie) and render a raw HTML redirect page -- neither
+// need is shared with any other route. auth.js's exported html()/
+// sessionCookieValue() were removed upstream (fix 6dc988ab, "preserve
+// opaque sessions") since upstream has no route that needs them; kept
+// here, scoped to server.js, mirroring setSessionCookie()'s own cookie
+// string exactly, rather than re-adding them to auth.js's public surface
+// for this one caller.
+function html(res, status, body, headers = {}) {
+  res.writeHead(status, withSecurityHeaders({ "content-type": "text/html; charset=utf-8", ...headers }));
+  res.end(body);
+}
+
+function sessionCookieValue(session, config = {}, { maxAgeSeconds = 43200 } = {}) {
+  const secure = config.secureCookies ? "; Secure" : "";
+  return `asc_session=${encodeURIComponent(session.cookie)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAgeSeconds}${secure}`;
+}
+
+async function handleOAuthCallback(req, res) {
+  const url = new URL(req.url || "", "http://localhost");
+  const code = url.searchParams.get("code") || "";
+  const state = url.searchParams.get("state") || "";
+  const cookieState = parseCookies(req.headers.cookie || "").get("discord_oauth_state") || "";
+  const rateKey = loginRateLimitKey(req);
+  const rate = oauthCallbackRateLimiter.check(rateKey);
+  if (!rate.allowed) {
+    return html(res, 429, oauthErrorPage("Too many sign-in attempts. Please wait a few minutes, then try again."), { "retry-after": String(rate.retryAfterSeconds) });
+  }
+  const consumed = oauthPendingStates.consume(state, cookieState);
+  // Silent (prompt=none) outcome handling. When Discord cannot satisfy a
+  // prompt=none attempt without user interaction it redirects back with
+  // ?error=login_required|consent_required|interaction_required and NO code --
+  // that is not a failure, it just means "show your UI once". Retry the SAME
+  // flow INTERACTIVELY (no prompt=none), preserving purpose + owner sessionId.
+  // A valid consumed state is required so a third party cannot drive the retry;
+  // the interactive attempt can never itself return these errors, so there is
+  // no loop. Any OTHER error (access_denied, unexpected code) fails LOUDLY.
+  const oauthError = url.searchParams.get("error") || "";
+  if (oauthError && consumed.ok) {
+    if (["login_required", "consent_required", "interaction_required"].includes(oauthError)) {
+      // owner must be threaded through the retry too (review finding): every
+      // other issue() call site attributes its state to a client key so a
+      // flood can only ever evict its OWN pending states; omitting it here
+      // pooled every silent-auth retry -- the common path, since /start
+      // always tries prompt=none first -- into a shared, unattributed
+      // bucket, defeating that per-owner eviction guarantee for the one
+      // call site nearly every real sign-in passes through.
+      const retry = oauthPendingStates.issue(undefined, { purpose: consumed.purpose, sessionId: consumed.sessionId, owner: rateKey });
+      if (!retry) return html(res, 429, oauthErrorPage("Too many Discord sign-in sessions in progress. Try again in a moment."));
+      res.setHeader("Set-Cookie", oauthStateCookie(retry.state));
+      audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: `silent_${oauthError}`, retry: "interactive", purpose: consumed.purpose });
+      res.writeHead(302, { Location: buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordOAuthRedirectUri, state: retry.state, codeChallenge: retry.challenge }) });
+      res.end();
+      return;
+    }
+    oauthCallbackRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: `oauth_error_${oauthError}` });
+    const msg = oauthError === "access_denied"
+      ? "Discord sign-in was cancelled. Return to the console and try again, or sign in with the admin password."
+      : `Discord sign-in failed (${oauthError}). Return to the console and try again, or sign in with the admin password.`;
+    return html(res, 403, oauthErrorPage(msg));
+  }
+  // A half-configured handoff is refused outright: the operator
+  // demonstrably intended handoff-authoritative auth, so silently
+  // degrading to the static bootstrap allowlist would reopen the exact
+  // stale-allowlist fail-open this change removes (L2 audit, Architect
+  // finding 2 on ). Password sign-in is unaffected.
+  //
+  // Both checks are skipped for a setup-purpose callback (review finding):
+  // the wizard's whole point is to let an owner FIX a misconfigured handoff
+  // or an unsound role mapping, and the setup branch below never resolves a
+  // tier from either -- it only captures identity for the owner session.
+  // Gating it behind these checks locked the operator out of the one UI
+  // built to repair exactly this state, forcing a hand-edit of .env instead.
+  // The /start route already gets this right (its setup-mode branch returns
+  // before these checks); this makes the callback consistent with it.
+  //
+  // !consumed.ok is checked FIRST, before the handoff/role-mapping checks
+  // below (review finding): those checks used to run even for a request that
+  // never started a real OAuth flow at all (no/invalid state, no cookie), so
+  // an anonymous caller received the specific "bot handoff is only partially
+  // configured" or "role mapping is unsound" page instead of the generic
+  // invalid/expired message -- disclosing this console's misconfiguration
+  // state to a caller with no valid pending state to act on.
+  if (!consumed.ok) {
+    oauthCallbackRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: consumed.reason });
+    return html(res, 400, oauthErrorPage("Discord sign-in could not be completed. The request was invalid or expired — return to the console and start again."));
+  }
+  const isSetupCallback = consumed.purpose === "setup";
+  if (!isSetupCallback && handoff.misconfigured) {
+    oauthCallbackRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "handoff_misconfigured" });
+    return html(res, 403, oauthErrorPage("Discord sign-in is disabled because this console's bot handoff is only partially configured. If you administer this install, check the console logs for the missing value, then either complete or remove the handoff configuration. Sign in with the admin password in the meantime."));
+  }
+  // With a configured handoff, the bot is the tier source and owner
+  // bootstrap is not required. Without one, bootstrap is the only
+  // possible tier source, so its being disabled is an early deny. A working
+  // handoff's own role mapping (if any legacy env vars remain) is ignored
+  // entirely per .env.example, so it must not be gated by this check either
+  // (review finding, mirrors the /start route's identical fix).
+  if (!isSetupCallback && !handoff.enabled && roleMappingUnsound()) {
+    oauthCallbackRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "role_mapping_unsound" });
+    return html(res, 403, roleMappingUnsoundPage());
+  }
+  if (consumed.purpose !== "setup" && !discordTierSourceConfigured()) {
+    oauthCallbackRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "no_tier_source" });
+    return html(res, 403, oauthErrorPage("Discord sign-in is not finished being set up: no Discord server has been chosen, so the console cannot decide what a Discord user may do. If you administer this install, sign in with the admin password and finish Discord setup (choose the server and map an Admin role)."));
+  }
+  let token;
+  let identity;
+  try {
+    token = await exchangeDiscordAuthCode({
+      code,
+      redirectUri: config.discordOAuthRedirectUri,
+      clientId: config.discordOAuthClientId,
+      clientSecret: config.discordOAuthClientSecret,
+      codeVerifier: consumed.verifier,
+      apiBaseUrl: config.discordOAuthApiBaseUrl
+    });
+    identity = await fetchDiscordIdentity({ accessToken: token.access_token, homeGuildId: config.discordHomeGuildId, apiBaseUrl: config.discordOAuthApiBaseUrl });
+  } catch (error) {
+    oauthCallbackRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: error.code || "oauth_error" });
+    const status = error.statusCode && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 400;
+    return html(res, status, oauthErrorPage("Discord sign-in failed. Please try again, or sign in with the admin password."));
+  }
+  if (consumed.purpose === "setup") {
+    // Setup mode: no tier, no session. Hand the operator's identity and guild
+    // list (with owner flags) to the owner session that started the flow, then
+    // return to the wizard. If that session is gone, the wizard simply restarts.
+    const captured = {
+      userId: identity.userId, username: identity.username, mfaEnabled: identity.mfaEnabled,
+      // Only servers this person OWNS. Owner tier is derived from ownership and
+      // finalize refuses any other server, so the rest are noise -- and the
+      // console has no reason to hold a list of every guild the operator is in.
+      guilds: identity.guilds.filter((g) => g.owner), capturedAt: Date.now()
+    };
+    const ownerSession = consumed.sessionId ? auth.readSessionById(consumed.sessionId) : null;
+    if (!ownerSession) {
+      audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, purpose: "setup", reason: "owner_session_gone" });
+      return html(res, 403, oauthErrorPage("Your console session ended while Discord was authorizing. Sign in with the admin password and start Discord setup again."));
+    }
+    ownerSession.pendingDiscordSetup = captured; // readSessionById returns the live object, so this sticks
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, purpose: "setup", userId: identity.userId, guilds: identity.guilds.length });
+    res.setHeader("Set-Cookie", [clearOAuthStateCookie()]);
+    return html(res, 200, `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Discord connected</title></head><body><noscript><a href="/?discordSetup=done">Continue Discord setup</a></noscript><script>window.location.replace("/?discordSetup=done");</script></body></html>`);
+  }
+  const resolved = await resolveOAuthTier(identity);
+  if (!resolved.tier) {
+    oauthCallbackRateLimiter.recordFailure(rateKey);
+    if (resolved.source === "handoff") {
+      // The reason code is recorded for forensics/debugging only; the
+      // response deliberately does not distinguish outage from an
+      // explicit deny, but does point an operator at the real
+      // remediation (rfc-console-auth.md §2.1). The denied userId is a
+      // public Discord snowflake, included so a bad_signature or
+      // user_mismatch row identifies the subject, not just a remote IP.
+      audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.handoff-denied", { ok: false, reason: resolved.reason, userId: identity.userId });
+      return html(res, 403, oauthErrorPage("The console could not verify your current Discord role, so sign-in was denied. If you administer this install, check that the companion bot is running and reachable, then try again in a few minutes — or sign in with the admin password. If you're a player, contact this server's administrator for console access."));
+    }
+    if (resolved.reason === "mfa_required") {
+      // The account would have been granted `deniedTier`; recorded so an
+      // operator can see who is being turned away by the 2FA gate.
+      audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "mfa_required", userId: identity.userId, deniedTier: resolved.deniedTier });
+      return html(res, 403, oauthErrorPage(`This console requires two-factor authentication on your Discord account before granting ${resolved.deniedTier} access. Enable 2FA in Discord (User Settings -> My Account), then sign in again.`));
+    }
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "not_authorized", userId: identity.userId });
+    return html(res, 403, oauthErrorPage("Discord sign-in succeeded, but this account is not authorized to sign in to this console. If you believe it should be, contact this server's administrator."));
+  }
+  // A successful Discord sign-in relieves this client's OAuth rate-limit
+  // bucket (symmetric with the password-login route), so transient denials
+  // during the flow do not linger against a user who ultimately succeeds.
+  oauthCallbackRateLimiter.recordSuccess(rateKey);
+  const session = auth.makeSession({ tier: resolved.tier, userId: identity.userId, username: identity.username, displayName: identity.displayName, guildId: config.discordHomeGuildId });
+  res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie()]);
+  audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: resolved.tier });
+  return html(res, 200, oauthReturnPage());
 }
 
 function applyMutationRateLimit(req, res, scope) {
