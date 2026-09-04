@@ -139,6 +139,7 @@ mode="$(resolve_server_ip_mode 2>/dev/null || printf '%s' unknown)"
 title="$(resolve_server_title)"
 region="$(resolve_server_region)"
 battlegroup="$(resolve_battlegroup_id)"
+datacenter_id="$(resolve_host_datacenter_id 2>/dev/null || true)"
 client_port_base="$(resolve_client_port_base)"
 igw_port_base="$(resolve_igw_port_base)"
 overmap_game_port="$client_port_base"
@@ -151,6 +152,7 @@ echo
 print_row "Title" "$title" ""
 print_row "Region" "$region" ""
 print_row "Battlegroup" "$battlegroup" ""
+print_row "Datacenter ID" "${datacenter_id:-<invalid>}" ""
 print_row "IP mode" "$mode" ""
 print_row "Advertised IP" "$server_ip" ""
 print_row "Local bind IP" "$bind_ip" ""
@@ -161,11 +163,39 @@ if [ "$mode" = "public" ] && is_private_ipv4 "$bind_ip" && [ "$server_ip" != "$b
   echo "Network mode: public/NAT"
   warn_msg "Public mode advertises $server_ip while game UDP is bound on private host IP $bind_ip."
   echo "     This is valid only when the router/firewall forwards the public UDP ports to $bind_ip."
-  echo "     A blank in-game ping usually means the client cannot reach ${server_ip}:${survival_game_port}/udp or ${server_ip}:${overmap_game_port}/udp."
+  echo "     Verify those UDP forwards for gameplay connectivity. A blank browser ping can still occur when gameplay traffic succeeds."
 elif is_private_ipv4 "$server_ip" && [ "$mode" = "public" ]; then
   fail_msg "Public mode is configured but advertised IP is private: $server_ip"
 else
   echo "Network mode: $mode"
+fi
+
+echo
+
+echo "=== Datacenter identity ==="
+if [ -z "$datacenter_id" ]; then
+  fail_msg "HOST_DATACENTER_ID is invalid. Use a hostname or short ID containing only letters, numbers, dots, and hyphens."
+elif is_ipv4 "$datacenter_id"; then
+  if [ "$datacenter_id" = "$server_ip" ]; then
+    ok "Datacenter ID is the advertised server IP"
+  else
+    warn_msg "Datacenter ID $datacenter_id differs from advertised IP $server_ip."
+  fi
+elif [[ "$datacenter_id" == *.* ]]; then
+  if ! command -v getent >/dev/null 2>&1; then
+    warn_msg "Cannot resolve Datacenter ID $datacenter_id because getent is unavailable."
+  else
+    datacenter_addresses="$(getent ahostsv4 "$datacenter_id" 2>/dev/null | awk '{ print $1 }' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+    if [ -z "$datacenter_addresses" ]; then
+      warn_msg "Datacenter ID $datacenter_id does not resolve to an IPv4 address."
+    elif printf '%s\n' "$datacenter_addresses" | tr ' ' '\n' | grep -Fxq "$server_ip"; then
+      ok "Datacenter ID $datacenter_id resolves to advertised IP $server_ip"
+    else
+      warn_msg "Datacenter ID $datacenter_id resolves to $datacenter_addresses, not advertised IP $server_ip."
+    fi
+  fi
+else
+  warn_msg "Datacenter ID $datacenter_id is a short ID, so its relationship to server-browser ping cannot be verified through DNS."
 fi
 
 echo
@@ -284,10 +314,16 @@ if docker_available; then
 
   if container_running dune-server-gateway; then
     gateway_env_host="$(container_env_value dune-server-gateway HOST_DATACENTER_IP_ADDRESS || true)"
+    gateway_datacenter_id="$(container_env_value dune-server-gateway HOST_DATACENTER_ID || true)"
     gateway_host="$(container_arg_value dune-server-gateway --RMQGameHostname= || true)"
     gateway_port="$(container_arg_value dune-server-gateway --RMQGamePort= || true)"
     gateway_http_port="$(container_arg_value dune-server-gateway --RMQGameHttpPort= || true)"
     [ "$gateway_env_host" = "$server_ip" ] && ok "Gateway datacenter IP $gateway_env_host" || fail_msg "Gateway datacenter IP is ${gateway_env_host:-<empty>} expected $server_ip"
+    if [ "$gateway_datacenter_id" = "$datacenter_id" ]; then
+      ok "Gateway Datacenter ID $gateway_datacenter_id"
+    else
+      fail_msg "Gateway Datacenter ID is ${gateway_datacenter_id:-<empty>} expected $datacenter_id"
+    fi
     [ "$gateway_host" = "$server_ip" ] && ok "Gateway advertises RMQ host $gateway_host" || fail_msg "Gateway RMQ host is $gateway_host expected $server_ip"
     [ "$gateway_port" = "$rmq_game_port" ] && ok "Gateway advertises RMQ game port $rmq_game_port" || fail_msg "Gateway RMQ game port is $gateway_port expected $rmq_game_port"
     [ "$gateway_http_port" = "$rmq_game_http_port" ] && ok "Gateway advertises RMQ HTTP port $rmq_game_http_port" || fail_msg "Gateway RMQ HTTP port is $gateway_http_port expected $rmq_game_http_port"
@@ -297,9 +333,28 @@ if docker_available; then
 
   if container_running dune-director; then
     director_env_host="$(container_env_value dune-director HOST_DATACENTER_IP_ADDRESS || true)"
+    director_datacenter_id="$(container_env_value dune-director HOST_DATACENTER_ID || true)"
     [ "$director_env_host" = "$server_ip" ] && ok "Director datacenter IP $director_env_host" || fail_msg "Director datacenter IP is ${director_env_host:-<empty>} expected $server_ip"
+    if [ "$director_datacenter_id" = "$datacenter_id" ]; then
+      ok "Director Datacenter ID $director_datacenter_id"
+    else
+      fail_msg "Director Datacenter ID is ${director_datacenter_id:-<empty>} expected $datacenter_id"
+    fi
   else
     fail_msg "dune-director is not running"
+  fi
+
+  if container_running dune-text-router; then
+    text_router_env_host="$(container_env_value dune-text-router HOST_DATACENTER_IP_ADDRESS || true)"
+    text_router_datacenter_id="$(container_env_value dune-text-router HOST_DATACENTER_ID || true)"
+    [ "$text_router_env_host" = "$server_ip" ] && ok "Text Router datacenter IP $text_router_env_host" || fail_msg "Text Router datacenter IP is ${text_router_env_host:-<empty>} expected $server_ip"
+    if [ "$text_router_datacenter_id" = "$datacenter_id" ]; then
+      ok "Text Router Datacenter ID $text_router_datacenter_id"
+    else
+      fail_msg "Text Router Datacenter ID is ${text_router_datacenter_id:-<empty>} expected $datacenter_id"
+    fi
+  else
+    fail_msg "dune-text-router is not running"
   fi
 else
   warn_msg "Docker is not reachable; skipped container argument checks."
@@ -409,12 +464,13 @@ echo
 echo "=== External reachability note ==="
 if [ "$mode" = "public" ]; then
   echo "Repo-side checks cannot prove that the public internet can reach your router/firewall UDP forwards."
-  echo "For non-blank ping, external clients must be able to reach:"
+  echo "For gameplay connectivity, external clients must be able to reach:"
   echo "  ${server_ip}:${overmap_game_port}/udp"
   echo "  ${server_ip}:${survival_game_port}/udp"
   echo "IGW/server-to-server traffic stays on the local bind IP:"
   echo "  ${igw_advertised_ip}:${survival_igw_port}/udp"
   echo "  ${igw_advertised_ip}:${overmap_igw_port}/udp"
+  echo "Funcom's in-game browser ping is not proven to be controlled by HOST_DATACENTER_ID or these gameplay ports."
 else
   echo "Local/LAN mode advertises a private IP. Clients outside the LAN should not be expected to ping or join it."
 fi

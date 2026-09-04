@@ -91,6 +91,7 @@ import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
 import { validateDiscordRoleIds, readDiscordBotSettingsState, applyDiscordBotEnableRequest, discordAdminRoleIdsChanged, updateDiscordBotRoleIds, regenerateDiscordBotToken, persistHostedBotConnectedGuild, disableDiscordBotAdapter, setDeploymentChoice } from "./integrations/discord/adapterSettings.js";
 import { createScheduledMapMessageScheduler } from "./services/scheduledMapMessages.js";
 import { createQaUpdates } from "./services/qaUpdates.js";
+import { SETUP_CONFIG_KEYS, validHostDatacenterId } from "./services/setupConfig.js";
 
 const config = loadConfig();
 // #141: ADMIN_AUTH_DISABLED bypasses both password auth (auth.js requireAuth)
@@ -6950,7 +6951,7 @@ function publicDirectorySettings() {
 }
 
 function readSetupConfigValues() {
-  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID",
+  const allowed = [...SETUP_CONFIG_KEYS,
     "DISCORD_HOME_GUILD_ID", "DISCORD_OAUTH_CLIENT_ID", "DISCORD_OAUTH_REDIRECT_URI", "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP", "DISCORD_OAUTH_OWNER_ALLOWLIST"];
   const values = {};
   for (const file of [resolve(config.repoRoot, ".env"), resolve(config.generatedDir, "battlegroup.env")]) {
@@ -7192,9 +7193,12 @@ async function playerAnnouncementsAutoTick() {
 
 async function writeConfig(req, res) {
   const body = await readJson(req);
-  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID"];
+  const allowed = SETUP_CONFIG_KEYS;
+  if (body.HOST_DATACENTER_ID !== undefined && !validHostDatacenterId(body.HOST_DATACENTER_ID)) {
+    return json(res, 400, { error: "Datacenter ID must be a valid hostname or short ID using only letters, numbers, dots, and hyphens." });
+  }
   for (const key of allowed) {
-    if (body[key] !== undefined) updateEnvFileValue(key, String(body[key]));
+    if (body[key] !== undefined) updateEnvFileValue(key, key === "HOST_DATACENTER_ID" ? String(body[key]).trim() : String(body[key]));
   }
   audit(config, req, "setup.write-config", { keys: Object.keys(body).filter((key) => allowed.includes(key)) });
   return json(res, 200, { ok: true });
