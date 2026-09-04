@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, publicConfig, readConsoleBuildId, resolvePorts } from "../src/config.js";
+import { loadConfig, publicConfig, readConsoleBuildId, resolvePorts, APP_NAME } from "../src/config.js";
 
 test("frontend build ID changes when the built entry file changes", () => {
   const staticDir = mkdtempSync(join(tmpdir(), "arrakis-build-id-"));
@@ -40,6 +40,29 @@ test("web config exposes safe deployment flags and JSON body limit", () => {
 
     process.env.ADMIN_SECURE_COOKIES = "0";
     assert.equal(loadConfig().secureCookies, false);
+  } finally {
+    process.env = previous;
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+// An operator running several installs sees each in their authenticator app
+// as "My Server A", "My Server B", etc. instead of several indistinguishable
+// "Dune Docker Console" entries -- only useful if it actually falls back
+// cleanly for the (common) case where SERVER_TITLE isn't set at all.
+test("totpIssuer uses SERVER_TITLE when set, falls back to the generic app name otherwise", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-"));
+  const previous = { ...process.env };
+  process.env.DUNE_DOCKER_DIR = repoRoot;
+  try {
+    delete process.env.SERVER_TITLE;
+    assert.equal(loadConfig().totpIssuer, APP_NAME);
+
+    process.env.SERVER_TITLE = "Arrakeen Test Server";
+    assert.equal(loadConfig().totpIssuer, "Arrakeen Test Server");
+
+    process.env.SERVER_TITLE = "   ";
+    assert.equal(loadConfig().totpIssuer, APP_NAME, "a blank/whitespace-only title must not produce an empty issuer");
   } finally {
     process.env = previous;
     rmSync(repoRoot, { recursive: true, force: true });
