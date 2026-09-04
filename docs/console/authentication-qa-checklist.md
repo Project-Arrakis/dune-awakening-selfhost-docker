@@ -379,6 +379,15 @@ account whose roles you can change), a Discord application with this console's
 callback registered, Developer Mode on to copy IDs. One of the accounts must
 have Discord 2FA **off** for T31.
 
+**Status (2026-09-03): deliberately deferred to the operator's own QA process
+during UAT, not run as part of the #676 consolidation work.** Every other case
+in this document that could be driven by automation against a real deployment
+was (Parts 1-7, 9); this one genuinely can't be -- it needs several real
+Discord identities with different role assignments, one account with Discord
+2FA off, and hands-on control of the Discord server's role membership and
+(for T36) test-server ownership, none of which a scripted session can
+substitute for. Results below are still blank pending that pass.
+
 ### T26 · Guided setup, as an operator would
 *Host precondition:* the Discord application is in `.env` (`DISCORD_OAUTH_CLIENT_ID`, `DISCORD_OAUTH_CLIENT_SECRET` or the secret file, `DISCORD_OAUTH_REDIRECT_URI`), console restarted. (If it is not, the setup screen shows the `.env` keys to set and restart — there is **no** client-ID/secret form in the browser; worth a pass too.)
 1. On the sign-in page click **Set up Discord sign-in**.
