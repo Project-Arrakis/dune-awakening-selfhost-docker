@@ -271,7 +271,12 @@ export function loadConfig() {
       .map((item) => item.trim())
       .filter(Boolean),
     secondFactorFile: resolve(generatedDir, "console-second-factor.json"),
-    totpIssuer: APP_NAME,
+    // Falls back to the generic app name when SERVER_TITLE isn't set -- an
+    // operator running only one install never notices either way, but one
+    // running several sees each in their authenticator app as "My Server A",
+    // "My Server B", etc. instead of several indistinguishable "Dune Docker
+    // Console" entries.
+    totpIssuer: String(process.env.SERVER_TITLE || "").trim() || APP_NAME,
     enrollmentSessionTtlMs: 10 * 60 * 1000, // §4: short-lived, non-renewable enrollment session
     adminPasswordEnvManaged,
     // ---- Discord OAuth sign-in (Tier 1, rfc-console-auth.md §2.1 / §2.1.1) ----
