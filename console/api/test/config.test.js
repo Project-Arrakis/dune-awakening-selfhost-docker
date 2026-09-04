@@ -46,23 +46,19 @@ test("web config exposes safe deployment flags and JSON body limit", () => {
   }
 });
 
-// An operator running several installs sees each in their authenticator app
-// as "My Server A", "My Server B", etc. instead of several indistinguishable
-// "Dune Docker Console" entries -- only useful if it actually falls back
-// cleanly for the (common) case where SERVER_TITLE isn't set at all.
-test("totpIssuer uses SERVER_TITLE when set, falls back to the generic app name otherwise", () => {
+// #690: totpIssuer itself is just the static fallback (APP_NAME) -- the real,
+// live SERVER_TITLE-based issuer is computed per-request from the .env FILE
+// in the /api/auth/2fa/setup route handler, not baked into boot-time config
+// via process.env (docker-compose.web.yml's environment: passthrough doesn't
+// carry SERVER_TITLE, so a process.env-based version of this silently never
+// worked -- found live). See totpOptIn.integration.test.js's two issuer
+// tests for the real, route-level coverage.
+test("totpIssuer is the static fallback app name", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-"));
   const previous = { ...process.env };
   process.env.DUNE_DOCKER_DIR = repoRoot;
   try {
-    delete process.env.SERVER_TITLE;
     assert.equal(loadConfig().totpIssuer, APP_NAME);
-
-    process.env.SERVER_TITLE = "Arrakeen Test Server";
-    assert.equal(loadConfig().totpIssuer, "Arrakeen Test Server");
-
-    process.env.SERVER_TITLE = "   ";
-    assert.equal(loadConfig().totpIssuer, APP_NAME, "a blank/whitespace-only title must not produce an empty issuer");
   } finally {
     process.env = previous;
     rmSync(repoRoot, { recursive: true, force: true });
