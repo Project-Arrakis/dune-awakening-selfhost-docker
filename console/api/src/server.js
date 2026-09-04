@@ -991,7 +991,17 @@ async function handleApi(req, res) {
     if (!session) return;
     const { secretBytes, base32 } = generateTotpSecret();
     session.pendingTotpSecret = secretBytes; // held server-side on the in-memory session only
-    const otpauthUri = provisioningUri({ secretBase32: base32, accountName: "console-admin", issuer: config.totpIssuer });
+    // #690: SERVER_TITLE is read live from the .env FILE via
+    // readSetupConfigValues(), not process.env -- docker-compose.web.yml's
+    // environment: block is a fixed console-specific allowlist that does not
+    // (and should not) carry every operator-set game-server value, and this
+    // is the established pattern this codebase already uses for exactly
+    // that class of value (see publicDirectory.js's identical fileEnv read).
+    // An earlier version of this fix baked SERVER_TITLE into boot-time
+    // config.totpIssuer via process.env, which silently never worked for
+    // the same reason.
+    const issuer = String(readSetupConfigValues().SERVER_TITLE || "").trim() || config.totpIssuer;
+    const otpauthUri = provisioningUri({ secretBase32: base32, accountName: "console-admin", issuer });
     const qrCodeDataUri = await provisioningQrDataUri(otpauthUri);
     audit(config, sanitizedUrl(req, "/api/auth/2fa/setup"), "auth.2fa.setup", { ok: true });
     return json(res, 200, { secret: base32, otpauthUri, qrCodeDataUri }, { "cache-control": "no-cache, no-store, must-revalidate", pragma: "no-cache", expires: "0" });
