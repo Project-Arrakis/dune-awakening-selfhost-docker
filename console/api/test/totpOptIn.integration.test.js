@@ -1,6 +1,6 @@
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -103,6 +103,67 @@ describe("TOTP opt-in: enable and disable", { concurrency: 4 }, () => {
         auditLines.find((l) => l.action === "settings.totp-enable-started" && l.detail?.ok === true),
         "settings.totp-enable-started was audited"
       );
+    } finally {
+      await stopProcess(consoleProc.child);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  // #690: an operator running several installs sees each in their
+  // authenticator app as "My Server A", "My Server B", etc. instead of
+  // several indistinguishable "Dune Docker Console" entries. Read live from
+  // the .env FILE (readSetupConfigValues(), server.js), not process.env --
+  // docker-compose.web.yml's environment: block is a fixed console-specific
+  // allowlist that doesn't (and shouldn't) carry every operator-set
+  // game-server value; an earlier version of this fix baked SERVER_TITLE
+  // into boot-time config via process.env, which silently never reached the
+  // container for exactly that reason (found live, on a real deployment).
+  test("the QR code's issuer is the operator's SERVER_TITLE when set, read live from .env", async () => {
+    const port = await getFreePort();
+    const tempDir = mkdtempSync(join(tmpdir(), "totp-optin-issuer-"));
+    const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+    try {
+      await waitForHealth(port, 20000, consoleProc.logs);
+      writeFileSync(join(tempDir, ".env"), 'SERVER_TITLE="Arrakeen Test Server"\n');
+      const password = readGeneratedPassword(tempDir);
+      const session = await login(port, { password });
+
+      const enableRes = await api(port, "/api/auth/2fa/enable", {
+        cookie: session.cookie, csrf: session.csrf, body: { currentPassword: password },
+      });
+      const enableBody = await enableRes.json();
+      const enrollCookie = cookieFrom(enableRes);
+
+      const setup = await api(port, "/api/auth/2fa/setup", { cookie: enrollCookie, csrf: enableBody.csrfToken });
+      const setupBody = await setup.json();
+      const decoded = decodeURIComponent(setupBody.otpauthUri);
+      assert.ok(decoded.includes("Arrakeen Test Server"), `expected the operator's SERVER_TITLE as issuer, got: ${decoded}`);
+      assert.ok(!decoded.includes("Dune Docker Console"), "the generic app name must not appear once SERVER_TITLE is set");
+    } finally {
+      await stopProcess(consoleProc.child);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("the QR code's issuer falls back to the generic app name when SERVER_TITLE isn't set", async () => {
+    const port = await getFreePort();
+    const tempDir = mkdtempSync(join(tmpdir(), "totp-optin-issuer-fallback-"));
+    const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+    try {
+      await waitForHealth(port, 20000, consoleProc.logs);
+      const password = readGeneratedPassword(tempDir);
+      const session = await login(port, { password });
+
+      const enableRes = await api(port, "/api/auth/2fa/enable", {
+        cookie: session.cookie, csrf: session.csrf, body: { currentPassword: password },
+      });
+      const enableBody = await enableRes.json();
+      const enrollCookie = cookieFrom(enableRes);
+
+      const setup = await api(port, "/api/auth/2fa/setup", { cookie: enrollCookie, csrf: enableBody.csrfToken });
+      const setupBody = await setup.json();
+      const decoded = decodeURIComponent(setupBody.otpauthUri);
+      assert.ok(decoded.includes("Dune Docker Console"), `expected the fallback app name with no SERVER_TITLE set, got: ${decoded}`);
     } finally {
       await stopProcess(consoleProc.child);
       rmSync(tempDir, { recursive: true, force: true });
