@@ -698,12 +698,12 @@ main { padding: 22px; min-width: 0; }
 .addon-result-panel { margin-top: 12px; animation: addonNoticeFade 5s ease forwards; }
 .addons-empty-state { margin-top: 8px; padding-top: 6px; }
 .addons-table { width: 100%; min-width: 0; table-layout: fixed; }
-.addons-table col.addon-col-identity { width: 25%; }
-.addons-table col.addon-col-author { width: 15%; }
-.addons-table col.addon-col-version { width: 11%; }
-.addons-table col.addon-col-permissions { width: 12%; }
-.addons-table col.addon-col-status { width: 12%; }
-.addons-table col.addon-col-actions { width: 19%; }
+.addons-table col.addon-col-identity { width: 24%; }
+.addons-table col.addon-col-author { width: 14%; }
+.addons-table col.addon-col-version { width: 10%; }
+.addons-table col.addon-col-permissions { width: 15%; }
+.addons-table col.addon-col-status { width: 13%; }
+.addons-table col.addon-col-actions { width: 18%; }
 .addons-table col.addon-col-submenu { width: 6%; }
 .addons-table th, .addons-table td { padding: 11px 10px; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; font-size: 14px; line-height: 1.35; vertical-align: middle; }
 .addons-table th:nth-child(2), .addons-table td:nth-child(2) { white-space: nowrap; overflow-wrap: normal; }
@@ -731,8 +731,9 @@ main { padding: 22px; min-width: 0; }
 .addon-pin-column { text-align: center; }
 .addon-source-link { display: block; color: var(--accent); font-weight: 800; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .addon-source-link:hover { color: #f1c96f; text-decoration: underline; }
-.addon-permissions-list { display: grid; justify-items: center; gap: 7px; max-width: none; }
-.addon-permission-chip { border: 1px solid #3a3127; border-radius: 999px; color: #cbbda8; background: rgba(255,255,255,.03); padding: 3px 8px; font-size: 13px; white-space: nowrap; text-transform: capitalize; }
+.addon-permissions-cell { min-width: 0; overflow: hidden !important; }
+.addon-permissions-list { display: grid; justify-items: center; gap: 7px; width: 100%; max-width: 100%; min-width: 0; }
+.addon-permission-chip { display: block; width: fit-content; max-width: 100%; border: 1px solid #3a3127; border-radius: 999px; color: #cbbda8; background: rgba(255,255,255,.03); padding: 3px 8px; font-size: 13px; line-height: 1.3; white-space: normal; overflow-wrap: anywhere; text-align: center; text-transform: capitalize; }
 .addon-permission-chip.approved { border-color: rgba(61,139,98,.55); color: var(--success-text); background: rgba(61,139,98,.14); }
 .addon-pin-toggle { min-width: 0; min-height: 0; justify-content: center; border-color: transparent; background: transparent; padding: 0; color: inherit; }
 .addon-pin-toggle.enabled, .addon-pin-toggle.disabled, .addon-pin-toggle:hover { border-color: transparent; background: transparent; box-shadow: none; }

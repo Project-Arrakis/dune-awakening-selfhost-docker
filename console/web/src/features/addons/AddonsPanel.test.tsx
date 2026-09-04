@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { addonsApi, type CommunityAddonSummary, type InstalledAddon } from "../../api/addons";
 import { AddonsPanel } from "./AddonsPanel";
 import { addonUpdateAvailable, hasAddonUpdates } from "./addonVersions";
+import "../../styles.css";
 
 vi.mock("../../api/addons", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api/addons")>();
@@ -68,6 +69,26 @@ beforeEach(() => {
 });
 
 describe("AddonsPanel updates", () => {
+  it("keeps multiple permission labels contained beside addon status", async () => {
+    render(<AddonsPanel
+      pinnedAddons={[]}
+      setPinnedAddons={vi.fn()}
+      selectedAddonId=""
+      clearSelectedAddon={vi.fn()}
+      setAddonUpdateAvailable={vi.fn()}
+      confirmAction={vi.fn().mockResolvedValue(true)}
+    />);
+
+    const permission = await screen.findByText("Database Read & Write");
+    const cell = permission.closest("td");
+    expect(cell).toHaveClass("addon-permissions-cell");
+    expect(getComputedStyle(cell as HTMLElement).overflow).toBe("hidden");
+    expect(getComputedStyle(permission).whiteSpace).toBe("normal");
+    expect(getComputedStyle(permission).overflowWrap).toBe("anywhere");
+    expect(screen.getByText("Scheduler Server")).toBeInTheDocument();
+    expect(screen.getByText("Enabled").closest("td")).not.toBe(cell);
+  });
+
   it("detects newer semantic versions but not equal, older, or malformed versions", () => {
     expect(addonUpdateAvailable("0.9.2", "0.11.0")).toBe(true);
     expect(addonUpdateAvailable("1.0.0-rc.2", "1.0.0")).toBe(true);
