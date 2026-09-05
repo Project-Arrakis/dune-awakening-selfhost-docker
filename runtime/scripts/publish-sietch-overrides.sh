@@ -7,6 +7,7 @@ export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 
 cd "$(dirname "$0")/../.."
 source runtime/scripts/host-file-ownership.sh
+source runtime/scripts/farm-readiness.sh
 
 PID_FILE="runtime/generated/sietch-overrides.pid"
 LOOP_TOKEN_FILE="runtime/generated/sietch-overrides.loop-token"
@@ -22,6 +23,8 @@ FORWARD_POLL_SECONDS="${DUNE_SIETCH_OVERRIDE_FORWARD_POLL_SECONDS:-5}"
 ROUTE_REFRESH_SECONDS="${DUNE_SIETCH_OVERRIDE_ROUTE_REFRESH_SECONDS:-300}"
 SNAPSHOT_REFRESH_SECONDS="${DUNE_SIETCH_OVERRIDE_SNAPSHOT_REFRESH_SECONDS:-10}"
 SPICEFIELD_RECONCILE_SECONDS="${DUNE_SIETCH_SPICEFIELD_RECONCILE_SECONDS:-60}"
+CREDENTIAL_LOG_TAIL_LINES="${DUNE_SIETCH_OVERRIDE_CREDENTIAL_LOG_TAIL_LINES:-20000}"
+DOCKER_LOG_TIMEOUT_SECONDS="${DUNE_SIETCH_OVERRIDE_DOCKER_LOG_TIMEOUT_SECONDS:-12}"
 
 SOURCE_EXCHANGE="completions"
 SOURCE_ROUTING_KEY="server_state.Survival_1"
@@ -155,8 +158,9 @@ load_rmq_admin_creds() {
   fi
 
   ensure_text_router_log
-  creds="$(python3 - <<'PY'
+  creds="$(CREDENTIAL_LOG_TAIL_LINES="$CREDENTIAL_LOG_TAIL_LINES" DOCKER_LOG_TIMEOUT_SECONDS="$DOCKER_LOG_TIMEOUT_SECONDS" python3 - <<'PY'
 from pathlib import Path
+import os
 import re
 import subprocess
 import sys
@@ -167,6 +171,8 @@ patterns = [
     re.compile(r'(bgd\.[^/\s]+\.admin)/([A-Za-z0-9+/=]+) => allow administrator'),
 ]
 text = ""
+log_tail_lines = max(1, int(os.environ.get("CREDENTIAL_LOG_TAIL_LINES", "20000")))
+docker_log_timeout = max(1, int(os.environ.get("DOCKER_LOG_TIMEOUT_SECONDS", "12")))
 if log_path.exists():
     text = log_path.read_text(errors="ignore")
 matches = []
@@ -180,9 +186,10 @@ if not matches:
         for container in ("dune-director", "dune-text-router"):
             try:
                 logs.append(subprocess.check_output(
-                    ["docker", "logs", container],
+                    ["docker", "logs", "--tail", str(log_tail_lines), container],
                     text=True,
                     stderr=subprocess.STDOUT,
+                    timeout=docker_log_timeout,
                 ))
             except Exception:
                 pass
@@ -328,10 +335,8 @@ publish_snapshot_once() {
     return 1
   }
   heal_survival_alive_state
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-server-survival-1; then
-    if docker logs dune-server-survival-1 2>&1 | grep -Eq 'Server farm is READY .*partition 1'; then
-      survival_log_ready="true"
-    fi
+  if survival_farm_is_ready; then
+    survival_log_ready="true"
   fi
   rows="$(TIMESTAMP_LEAD_SECONDS="$TIMESTAMP_LEAD_SECONDS" SURVIVAL_LOG_READY="$survival_log_ready" python3 - <<'PY'
 import json
@@ -483,10 +488,8 @@ forward_batch_once() {
   [ "$messages" != "[]" ] || return 1
 
   local survival_log_ready="false"
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-server-survival-1; then
-    if docker logs dune-server-survival-1 2>&1 | grep -Eq 'Server farm is READY .*partition 1'; then
-      survival_log_ready="true"
-    fi
+  if survival_farm_is_ready; then
+    survival_log_ready="true"
   fi
 
   FILTER_MESSAGES="$messages" FILTER_CONFIG_PATH="$CONFIG_FILE" SURVIVAL_LOG_READY="$survival_log_ready" python3 - <<'PY'
