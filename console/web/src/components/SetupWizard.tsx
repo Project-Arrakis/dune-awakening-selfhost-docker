@@ -32,6 +32,7 @@ const completionRedirectSeconds = 10;
 const deploymentSuccessHoldMs = 3000;
 const defaultSetupConfig: SetupConfig = { SERVER_TITLE: "My Dune Server", SERVER_REGION: "Europe", SERVER_IP: "auto", SERVER_IP_MODE: "public", HOST_DATACENTER_ID: "dune-docker", STEAM_APP_ID: "4754530" };
 const datacenterIdPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+export const DATACENTER_ID_GUIDANCE = "Recommended for server-browser ping: enter a hostname whose IPv4 A record points directly to the Server IP. Enter only the hostname—without https://, a port, or a path. Short IDs remain supported, but may not give Funcom a resolvable ping target. A Battlegroup restart applies this change; Funcom may still display ping intermittently.";
 
 export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy", onSetupComplete }: { initialStep?: number; jumpNonce?: number; mode?: "first-run" | "redeploy"; onSetupComplete?: () => void }) {
   const steps = mode === "first-run" ? firstRunSteps : redeploySteps;
@@ -205,10 +206,10 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
             <label>Region<select value={config.SERVER_REGION} onChange={(event) => setConfig({ ...config, SERVER_REGION: event.target.value })}>{regions.map((region) => <option key={region} value={region}>{region}</option>)}</select></label>
             <label>Install mode<select value={config.SERVER_IP_MODE} onChange={(event) => setConfig({ ...config, SERVER_IP_MODE: event.target.value })}><option value="public">Public</option><option value="local">Local</option></select></label>
             <label>Server IP<input value={config.SERVER_IP} onChange={(event) => setConfig({ ...config, SERVER_IP: event.target.value })} /></label>
-            <label>Datacenter ID<input value={config.HOST_DATACENTER_ID} onChange={(event) => setConfig({ ...config, HOST_DATACENTER_ID: event.target.value })} /></label>
+            <label>Server Hostname (Datacenter ID)<input placeholder="game.example.com" value={config.HOST_DATACENTER_ID} onChange={(event) => setConfig({ ...config, HOST_DATACENTER_ID: event.target.value })} /></label>
             <label>Steam app ID<input value={config.STEAM_APP_ID} onChange={(event) => setConfig({ ...config, STEAM_APP_ID: event.target.value })} /></label>
           </div>
-          <p className="muted">Advanced: This identity is sent by the Director, Gateway, and Text Router. Changing it is not proven to fix server-browser ping, so keep the default unless Funcom or your hosting provider gives you another value.</p>
+          <p className="muted">{DATACENTER_ID_GUIDANCE}</p>
           {!datacenterIdValid && <p className="danger-note">Enter a valid hostname or short ID using only letters, numbers, dots, and hyphens.</p>}
         </>}
         {activeStep === "token" && <>
@@ -259,7 +260,7 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
                 ["Region", config.SERVER_REGION],
                 ["Mode", titleCase(config.SERVER_IP_MODE)],
                 ["Server IP", config.SERVER_IP],
-                ["Datacenter ID", config.HOST_DATACENTER_ID],
+                ["Server Hostname (Datacenter ID)", config.HOST_DATACENTER_ID],
                 ["Steam App ID", config.STEAM_APP_ID]
               ]} />
             </section>

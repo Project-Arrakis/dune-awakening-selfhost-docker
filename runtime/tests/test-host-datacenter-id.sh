@@ -35,4 +35,8 @@ for script in start-director.sh start-server-gateway.sh start-text-router.sh; do
   grep -Fq -- '-e "HOST_DATACENTER_ID=$HOST_DATACENTER_ID_VALUE"' "runtime/scripts/$script"
 done
 
+grep -Fq 'use a hostname whose' .env.example
+grep -Fq 'IPv4 A record points directly to SERVER_IP' .env.example
+grep -Fq 'A Datacenter ID hostname resolving to the advertised public IP gives FLS a concrete ping target.' runtime/scripts/ping-diagnostics.sh
+
 echo "Host Datacenter ID tests passed."

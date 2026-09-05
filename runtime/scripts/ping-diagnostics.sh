@@ -177,7 +177,7 @@ if [ -z "$datacenter_id" ]; then
   fail_msg "HOST_DATACENTER_ID is invalid. Use a hostname or short ID containing only letters, numbers, dots, and hyphens."
 elif is_ipv4 "$datacenter_id"; then
   if [ "$datacenter_id" = "$server_ip" ]; then
-    ok "Datacenter ID is the advertised server IP"
+    warn_msg "Datacenter ID is the advertised server IP. A DNS hostname resolving to this IP is recommended for server-browser ping."
   else
     warn_msg "Datacenter ID $datacenter_id differs from advertised IP $server_ip."
   fi
@@ -189,13 +189,13 @@ elif [[ "$datacenter_id" == *.* ]]; then
     if [ -z "$datacenter_addresses" ]; then
       warn_msg "Datacenter ID $datacenter_id does not resolve to an IPv4 address."
     elif printf '%s\n' "$datacenter_addresses" | tr ' ' '\n' | grep -Fxq "$server_ip"; then
-      ok "Datacenter ID $datacenter_id resolves to advertised IP $server_ip"
+      ok "Datacenter ID $datacenter_id resolves to advertised IP $server_ip and is suitable as an FLS ping target"
     else
       warn_msg "Datacenter ID $datacenter_id resolves to $datacenter_addresses, not advertised IP $server_ip."
     fi
   fi
 else
-  warn_msg "Datacenter ID $datacenter_id is a short ID, so its relationship to server-browser ping cannot be verified through DNS."
+  warn_msg "Datacenter ID $datacenter_id is not publicly resolvable. For server-browser ping, use a hostname whose IPv4 A record points to advertised IP $server_ip."
 fi
 
 echo
@@ -470,7 +470,7 @@ if [ "$mode" = "public" ]; then
   echo "IGW/server-to-server traffic stays on the local bind IP:"
   echo "  ${igw_advertised_ip}:${survival_igw_port}/udp"
   echo "  ${igw_advertised_ip}:${overmap_igw_port}/udp"
-  echo "Funcom's in-game browser ping is not proven to be controlled by HOST_DATACENTER_ID or these gameplay ports."
+  echo "A Datacenter ID hostname resolving to the advertised public IP gives FLS a concrete ping target. Funcom controls the final ping measurement and may display it intermittently."
 else
   echo "Local/LAN mode advertises a private IP. Clients outside the LAN should not be expected to ping or join it."
 fi
