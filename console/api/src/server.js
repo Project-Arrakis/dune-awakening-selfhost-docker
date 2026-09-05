@@ -77,6 +77,7 @@ import { parseEffectivePermissionLimit } from "./services/permissionSettings.js"
 import { createSharedDeleteBackup, flushBaseRefillQueues } from "./services/baseRefillFlush.js";
 import { verifyBaseBackupState } from "./services/baseBackupSafety.js";
 import { createSingleFlight } from "./services/singleFlight.js";
+import { createReadCommandCache } from "./services/readCommandCache.js";
 import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
@@ -87,6 +88,7 @@ import { SETUP_CONFIG_KEYS, validHostDatacenterId } from "./services/setupConfig
 
 const config = loadConfig();
 const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
+const readCommandCache = createReadCommandCache();
 const CONSOLE_PROCESS_STARTED_AT = Date.now();
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
 try {
@@ -1613,7 +1615,7 @@ async function liveMapTeleportPlayerRoute(req, res) {
 async function commandJson(res, operation, payload = {}) {
   if (config.mockMode) return json(res, 200, mockCommand(operation));
   const args = buildDuneArgs(operation, payload);
-  const result = await runDune(config, args);
+  const result = await readCommandCache.run(JSON.stringify(args), () => runDune(config, args));
   return json(res, 200, { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code });
 }
 
@@ -2035,7 +2037,7 @@ async function marketItemsSaveRoute(req, res) {
 async function safeCommand(operation, payload = {}) {
   try {
     const args = buildDuneArgs(operation, payload);
-    const result = await runDune(config, args);
+    const result = await readCommandCache.run(JSON.stringify(args), () => runDune(config, args));
     return { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code };
   } catch (error) {
     return { operation, stdout: redact(error.stdout || ""), stderr: redact(error.stderr || error?.message || "Unexpected error."), exitCode: error.code || 1 };
