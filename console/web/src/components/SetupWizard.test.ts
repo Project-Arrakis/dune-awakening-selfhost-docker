@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { configFromSetupState, validDatacenterId } from "./SetupWizard";
+import { configFromSetupState, DATACENTER_ID_GUIDANCE, validDatacenterId } from "./SetupWizard";
 
 describe("SetupWizard Datacenter ID", () => {
   it("loads the dedicated value when configured", () => {
@@ -17,5 +17,11 @@ describe("SetupWizard Datacenter ID", () => {
     expect(validDatacenterId("ping.example.com")).toBe(true);
     expect(validDatacenterId("dune-docker")).toBe(true);
     expect(validDatacenterId("https://example.com")).toBe(false);
+  });
+
+  it("explains the recommended resolvable hostname without promising Funcom ping", () => {
+    expect(DATACENTER_ID_GUIDANCE).toContain("IPv4 A record points directly to the Server IP");
+    expect(DATACENTER_ID_GUIDANCE).toContain("without https://, a port, or a path");
+    expect(DATACENTER_ID_GUIDANCE).toContain("Funcom may still display ping intermittently");
   });
 });
