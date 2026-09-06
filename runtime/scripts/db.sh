@@ -696,6 +696,18 @@ backup_db() {
     echo "Backup was not created because its file permissions could not be secured." >&2
     return 1
   fi
+  # System timers run as root, but the Console runs as the installation owner.
+  # Keep the dump private while making it readable by that same owner.
+  if [ "$(id -u)" = "0" ]; then
+    source runtime/scripts/host-file-ownership.sh
+    local backup_owner
+    backup_owner="$(dune_resolve_host_owner)"
+    if ! chown -h "$backup_owner" "$out_dir" "$staged_backup_file" "$staged_sidecar_file"; then
+      command rm -f -- "$staged_backup_file" "$staged_sidecar_file"
+      echo "Backup was not created because its ownership could not be assigned to the installation owner." >&2
+      return 1
+    fi
+  fi
   if ! mv -f -- "$staged_backup_file" "$backup_file"; then
     command rm -f -- "$staged_backup_file" "$staged_sidecar_file"
     echo "Backup was not created because the validated archive could not be published." >&2

@@ -9,6 +9,7 @@ trap 'rm -rf "$test_root"' EXIT
 bin_dir="$test_root/bin"
 mkdir -p "$bin_dir" "$test_root/runtime/scripts"
 cp runtime/scripts/env-file.sh "$test_root/runtime/scripts/env-file.sh"
+cp runtime/scripts/host-file-ownership.sh "$test_root/runtime/scripts/host-file-ownership.sh"
 
 cat > "$bin_dir/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -135,7 +136,7 @@ echo "PASS invalid-restore-aborts-before-database-changes"
 
 identity_root="$test_root/identity-choice"
 mkdir -p "$identity_root/runtime/scripts" "$identity_root/runtime/generated" "$identity_root/runtime/secrets"
-cp runtime/scripts/db.sh runtime/scripts/env-file.sh "$identity_root/runtime/scripts/"
+cp runtime/scripts/db.sh runtime/scripts/env-file.sh runtime/scripts/host-file-ownership.sh "$identity_root/runtime/scripts/"
 printf '%s\n' mock-valid-archive > "$identity_root/manual.backup"
 cat > "$identity_root/manual.backup.yaml" <<'EOF'
 backup_origin: manual
