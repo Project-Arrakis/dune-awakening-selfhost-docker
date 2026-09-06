@@ -296,14 +296,22 @@ export async function playerFactionProvider(db, { discordUserId }) {
   };
 }
 
-// Guild-wide real-faction tally (issue #699) -- lets the bot auto-derive
-// its own per-guild cosmetic themed-embed faction from real membership
-// instead of a manual setting. discordUserIds is the CALLER's own
-// determination of guild membership (Core has no concept of Discord
-// guilds at all); this only ever returns aggregate counts, never a
-// per-user mapping, so it cannot be used to learn any individual
-// member's faction beyond what that member's own /dune player faction
-// call already discloses.
+// Guild-wide IN-GAME-GUILD faction tally (issue #699) -- lets the bot
+// auto-derive its own per-Discord-server cosmetic themed-embed faction
+// from real membership instead of a manual setting. Tallies each linked
+// player's real in-game GUILD's faction (dune.guilds.guild_faction, a
+// small player-run organization, max 32 members, at most one per
+// player) -- a genuinely different game concept from a player's own
+// personal faction (dune.player_faction, which can have thousands of
+// members; see /dune player faction above). discordUserIds is the
+// CALLER's own determination of Discord server membership (Core has no
+// concept of Discord servers at all); this only ever returns aggregate
+// counts, never a per-user mapping or an in-game guild name, so no
+// caller can learn which specific in-game guild (or its faction) any
+// individual member belongs to from this route alone -- only a bucketed
+// count. This IS a genuinely new category of aggregate disclosure (no
+// other Discord-facing route exposes anything about in-game guild
+// membership today), gated at GUILD_READ (moderator-and-up) accordingly.
 export async function guildFactionSummaryProvider(db, { discordUserIds }) {
   const { tally, consideredCount } = await getGuildFactionTally(db, discordUserIds);
   return { ok: true, tally, consideredCount };

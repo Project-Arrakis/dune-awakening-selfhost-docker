@@ -553,7 +553,7 @@ export const COMMAND_METADATA = Object.freeze({
   // guild-membership knowledge.
   [DISCORD_ADAPTER_ROUTES.GUILD_FACTION_SUMMARY]: {
     group: "guild", subcommand: "faction-summary",
-    description: "Real-faction tally across many Discord users at once (aggregate counts only, never per-user).",
+    description: "Tally of each linked player's real in-game GUILD's faction across many Discord users at once (aggregate counts only, never per-user or per-guild-name).",
     capability: DISCORD_CAPABILITIES.GUILD_READ,
     params: []
   },

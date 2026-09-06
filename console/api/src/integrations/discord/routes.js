@@ -566,9 +566,11 @@ export async function handleDiscordAdapterRoute({
       }));
     }
 
-    // Guild faction summary (issue #699) -- real-faction tally across many
-    // Discord users at once, for the bot's own per-guild themed-embed
-    // faction auto-sync. Same GUILD_READ tier as guild storage/find above.
+    // Guild faction summary (issue #699) -- tallies each linked player's
+    // real IN-GAME GUILD's faction (not their own personal faction -- see
+    // getGuildFactionTally()'s own comment in duneDb.js), for the bot's
+    // own per-Discord-server themed-embed faction auto-sync. Same
+    // GUILD_READ tier as guild storage/find above.
     if (path === DISCORD_ADAPTER_ROUTES.GUILD_FACTION_SUMMARY && req.method === "POST") {
       const body = await readJsonWithActorSignature(req);
       const actor = validateDiscordActor(body.actor);

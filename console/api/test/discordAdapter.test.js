@@ -1639,7 +1639,7 @@ test("guild-character-grants/* routes dispatch through the real HTTP path, scope
 
 // guilds/faction-summary (issue #699) -- real HTTP dispatch path for the
 // bot's own per-guild themed-embed faction auto-sync aggregate.
-test("guilds/faction-summary route dispatches to guildFactionSummaryProvider through the real HTTP path, tallies real factions, and enforces GUILD_READ (moderator-and-up)", async () => {
+test("guilds/faction-summary route dispatches to guildFactionSummaryProvider through the real HTTP path, tallies each linked player's real IN-GAME GUILD's faction, and enforces GUILD_READ (moderator-and-up)", async () => {
   const tokenFile = "/tmp/discord-adapter-guild-faction-summary-test-token.txt";
   writeFileSync(tokenFile, "server-test-token");
   const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-guild-faction-summary-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-guild-faction-summary-test-generated" };
@@ -1648,7 +1648,16 @@ test("guilds/faction-summary route dispatches to guildFactionSummaryProvider thr
     transaction: (fn) => fn(db),
     async query(text, values = []) {
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from information_schema.columns")) {
+        const [, table] = values;
+        if (table === "guild_members") return { rows: [{ column_name: "player_id" }, { column_name: "guild_id" }] };
+        if (table === "guilds") return { rows: [{ column_name: "guild_id" }, { column_name: "guild_faction" }] };
+        return { rows: [] };
+      }
       if (text.includes("with resolved as")) {
+        // discord-1/discord-2's characters are in real in-game guilds
+        // whose faction is House Atreides -- NOT a claim about either
+        // player's own personal faction.
         const links = { "discord-1": "42", "discord-2": "43" };
         const factions = { "42": "House Atreides", "43": "House Atreides" };
         const tally = {};

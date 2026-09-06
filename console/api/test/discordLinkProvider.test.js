@@ -470,15 +470,27 @@ test("playerFactionProvider reports hasFaction: false when this deployment has n
 // file -- this mock distinguishes the two source tables specifically to
 // confirm the batched query's COALESCE(dpl..., dal...) didn't accidentally
 // invert that precedence, not to re-prove the precedence rule itself.
-function createGuildFactionDb({ singleLink = {}, multiAccountDefault = {}, factions = {}, factionTablesExist = true } = {}) {
+function createGuildFactionDb({
+  singleLink = {}, multiAccountDefault = {}, factions = {}, factionTablesExist = true,
+  guildTablesExist = true, memberColumns = ["player_id", "guild_id"], guildColumns = ["guild_id", "guild_faction"]
+} = {}) {
   return {
     async query(text, values = []) {
       if (text.includes("select to_regclass($1) is not null as exists")) {
         const target = values[0];
-        if (target === "dune.player_faction" || target === "dune.factions") {
+        if (target === "dune.guild_members" || target === "dune.guilds") {
+          return { rows: [{ exists: guildTablesExist }], rowCount: 1 };
+        }
+        if (target === "dune.factions") {
           return { rows: [{ exists: factionTablesExist }], rowCount: 1 };
         }
         throw new Error(`Unexpected tableExists check: ${target}`);
+      }
+      if (text.includes("from information_schema.columns")) {
+        const [, table] = values;
+        if (table === "guild_members") return { rows: memberColumns.map((column_name) => ({ column_name })) };
+        if (table === "guilds") return { rows: guildColumns.map((column_name) => ({ column_name })) };
+        throw new Error(`Unexpected columnsFor table: ${table}`);
       }
       if (text.includes("with resolved as")) {
         const ids = values[0] || [];
@@ -507,7 +519,7 @@ test("guildFactionSummaryProvider returns an empty tally for an empty discordUse
   assert.equal(result.consideredCount, 0);
 });
 
-test("guildFactionSummaryProvider tallies real factions across multiple Discord users, single-link table precedence", async () => {
+test("guildFactionSummaryProvider tallies each player's real IN-GAME GUILD's faction (not their own personal faction) across multiple Discord users, single-link table precedence", async () => {
   const db = createGuildFactionDb({
     singleLink: { "discord-1": "42" },
     multiAccountDefault: { "discord-2": "43", "discord-3": "44" },
@@ -519,13 +531,13 @@ test("guildFactionSummaryProvider tallies real factions across multiple Discord 
   assert.equal(result.consideredCount, 3);
 });
 
-test("guildFactionSummaryProvider excludes a Discord user with no linked character, and one whose character has no faction row, from the tally", async () => {
+test("guildFactionSummaryProvider excludes a Discord user with no linked character, and one whose character is not in any in-game guild, from the tally", async () => {
   const db = createGuildFactionDb({
     singleLink: { "discord-1": "42" },
     factions: { "42": "House Fremen" }
     // discord-2 (never linked) and discord-3 (linked to "43", which has no
-    // entry in `factions`, i.e. no dune.player_faction row) are both
-    // absent from any tally bucket.
+    // entry in `factions`, i.e. no dune.guild_members row -- not in any
+    // in-game guild) are both absent from any tally bucket.
   });
   const result = await guildFactionSummaryProvider(db, { discordUserIds: ["discord-1", "discord-2", "discord-3"] });
   assert.deepEqual(result.tally, { "House Fremen": 1 });
@@ -541,8 +553,16 @@ test("guildFactionSummaryProvider never returns a per-user mapping -- only aggre
   assert.deepEqual(Object.keys(result).sort(), ["consideredCount", "ok", "tally"]);
 });
 
-test("guildFactionSummaryProvider returns an empty tally when this deployment has no player_faction table at all", async () => {
-  const db = createGuildFactionDb({ singleLink: { "discord-1": "42" }, factionTablesExist: false });
+test("guildFactionSummaryProvider returns an empty tally when this deployment has no guild_members/guilds tables at all", async () => {
+  const db = createGuildFactionDb({ singleLink: { "discord-1": "42" }, guildTablesExist: false });
+  const result = await guildFactionSummaryProvider(db, { discordUserIds: ["discord-1"] });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.tally, {});
+  assert.equal(result.consideredCount, 0);
+});
+
+test("guildFactionSummaryProvider returns an empty tally when the guilds table has no faction-shaped column (defensive column resolution)", async () => {
+  const db = createGuildFactionDb({ singleLink: { "discord-1": "42" }, guildColumns: ["guild_id", "guild_name"] });
   const result = await guildFactionSummaryProvider(db, { discordUserIds: ["discord-1"] });
   assert.equal(result.ok, true);
   assert.deepEqual(result.tally, {});

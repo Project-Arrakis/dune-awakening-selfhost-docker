@@ -60,12 +60,16 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   PLAYERS_INVENTORY_SEARCH: "/api/integrations/discord/players/inventory-search",
   GUILD_STORAGE: "/api/integrations/discord/guilds/storage",
   GUILD_FIND: "/api/integrations/discord/guilds/find",
-  // GUILD_FACTION_SUMMARY (issue #699): a real-faction tally across many
-  // Discord users at once, for the bot to auto-derive its own per-guild
-  // cosmetic themed-embed faction from real membership. Takes
-  // discordUserIds (the caller's own determination of guild membership --
-  // Core has no concept of Discord guilds at all) and returns aggregate
-  // counts only, never a per-user mapping.
+  // GUILD_FACTION_SUMMARY (issue #699): tallies each linked player's real
+  // IN-GAME GUILD's faction (dune.guilds.guild_faction) -- NOT their own
+  // personal dune.player_faction, a different game concept (a faction can
+  // have thousands of members; an in-game guild is a much smaller
+  // player-run organization, max 32, at most one per player). Lets the
+  // bot auto-derive its own per-Discord-server cosmetic themed-embed
+  // faction from real membership. Takes discordUserIds (the caller's own
+  // determination of Discord server membership -- Core has no concept of
+  // Discord servers at all) and returns aggregate counts only, never a
+  // per-user mapping.
   GUILD_FACTION_SUMMARY: "/api/integrations/discord/guilds/faction-summary",
   VERSION: "/api/integrations/discord/version",
   SERVERS: "/api/integrations/discord/servers",
