@@ -122,22 +122,37 @@ export function normalizeDiscordActor(value) {
   return actor;
 }
 
+// isRealGuildOwner: named, reusable predicate (mirroring mentat's own
+// rbac.js isGuildOwner() naming/shape exactly, per code-review finding) --
+// true when actor.guildOwnerId names the same Discord user as
+// actor.userId. Both are required to be non-empty so a doubly-absent claim
+// (e.g. two independently-normalized "" values) can never match.
+function isRealGuildOwner(actor) {
+  return Boolean(actor?.userId) && Boolean(actor?.guildOwnerId) && String(actor.userId) === String(actor.guildOwnerId);
+}
+
 // Issue #691: owner-tier is checked FIRST against real Discord guild
-// ownership (actor.userId === actor.guildOwnerId), before falling back to
-// the role-based mapping.ownerRoleIds -- mirroring mentat's own rbac.js
+// ownership (isRealGuildOwner), before falling back to the role-based
+// mapping.ownerRoleIds -- mirroring mentat's own rbac.js
 // isGuildOwner()/resolveActorAuthTier(), so the bot and this adapter cannot
 // disagree about who holds owner-tier access for the same Discord member.
+//
 // `guildOwnerId` is NOT part of actorSignature.js's HMAC-signed field set
 // (a deliberate, tracked deferral -- see issue #691's own body for why
-// expanding that set is a separate, coordinated, versioned change) -- it is
-// trusted at exactly the same level `roleIds` already is today for any
-// deployment that has not opted into DUNE_DISCORD_ACTOR_SECRET signing.
-// Absent (older bot, or a bot that hasn't been updated for this field)
-// falls through to the pre-existing role-based check unchanged.
+// expanding that set is a separate, coordinated, versioned change). This
+// is safe ONLY because routes.js's readJsonWithActorSignature() strips
+// actor.guildOwnerId whenever this deployment has DUNE_DISCORD_ACTOR_SECRET
+// configured at all -- a code review confirmed that without that strip, a
+// party able to capture/replay one legitimately-signed low-privilege
+// envelope could inject an unsigned guildOwnerId matching their own
+// (signed) userId and self-escalate to owner tier, since the signature
+// never covers that field. discordActorTier() itself has no way to know
+// whether the caller stripped it -- it trusts whatever `actor` it's given,
+// same as it already trusts roleIds -- so that strip is load-bearing and
+// must not be removed without also adding guildOwnerId to
+// SIGNED_ACTOR_FIELDS in a coordinated rollout.
 export function discordActorTier(actor, mapping) {
-  if (actor?.userId != null && actor?.guildOwnerId && String(actor.userId) === String(actor.guildOwnerId)) {
-    return "owner";
-  }
+  if (isRealGuildOwner(actor)) return "owner";
   const roleIds = new Set(normalizeStringList(actor?.roleIds));
   const normalized = normalizeRoleMapping(mapping);
   if (normalized.ownerRoleIds.some((roleId) => roleIds.has(roleId))) return "owner";

@@ -139,6 +139,27 @@ export async function handleDiscordAdapterRoute({
   // When `required` is true, the actor signature MUST be present and valid
   // regardless of whether DUNE_DISCORD_ACTOR_SECRET is configured. Used for
   // mutation routes (link, verify, unlink, steam-link).
+  //
+  // Issue #691 code-review finding (confirmed by 3 independent review
+  // passes): actor.guildOwnerId is NOT part of actorSignature.js's
+  // SIGNED_ACTOR_FIELDS -- a real, non-hypothetical gap, not just a
+  // theoretical one: once DUNE_DISCORD_ACTOR_SECRET is configured, a party
+  // able to capture/replay one legitimately-signed low-privilege envelope
+  // (the freshness window already tolerates same-body/same-route replay --
+  // see actorSignature.js's own "Known Limitations") could inject or alter
+  // the UNSIGNED guildOwnerId field to match their own (signed) userId and
+  // self-escalate to owner tier, since the signature never covers that
+  // field. Strip it here, in the one place every route already passes
+  // through, whenever this deployment has signing configured at all --
+  // "trusted at the same level roleIds already is" is only true when
+  // NOTHING is signed (nothing is worse off); the moment signing is on,
+  // roleIds/userId gain real integrity and guildOwnerId must not silently
+  // ride along with a weaker guarantee. Real guild-ownership recognition
+  // for a signed deployment needs guildOwnerId properly added to
+  // SIGNED_ACTOR_FIELDS (a separate, coordinated, versioned rollout across
+  // both repos -- tracked, not done here); until then, signed deployments
+  // fall back to the pre-existing DISCORD_OWNER_ROLE_IDS role mapping,
+  // exactly as they did before this PR.
   async function readJsonWithActorSignature(request, { requireActorSignature = false } = {}) {
     const body = await readJson(request);
     try {
@@ -147,6 +168,9 @@ export async function handleDiscordAdapterRoute({
       // When a secret is configured: always throw (even for read routes).
       // When no secret: only throw for mutation routes (requireActorSignature).
       if (requireActorSignature || actorSignatureRequired(config)) throw error;
+    }
+    if (actorSignatureRequired(config) && body?.actor && typeof body.actor === "object") {
+      delete body.actor.guildOwnerId;
     }
     return body;
   }

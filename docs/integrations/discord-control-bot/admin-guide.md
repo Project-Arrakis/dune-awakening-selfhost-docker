@@ -26,12 +26,22 @@ The bot cannot:
 
 Configure Discord role IDs in both the Console adapter runtime and the bot runtime.
 
+**Owner tier is always reachable without any role configuration (issue #691).**
+The real Discord server owner (whoever Discord itself reports as the guild's
+owner) always has owner-tier access, independent of `DISCORD_OWNER_ROLE_IDS` --
+mirroring the console's own Discord OAuth sign-in, which has derived owner
+the same way since tier1-upstream. `DISCORD_OWNER_ROLE_IDS` remains as an
+*additional* way to grant owner-tier access to other role holders, not the
+only way. Don't assume "no `DISCORD_OWNER_ROLE_IDS` configured" means "no one
+can reach owner tier here" -- check `GET /api/integrations/discord/health`'s
+`rolePolicy.ownerReachableViaGuildOwnership` field, which is always `true`.
+
 | Tier | Environment variable | Intended access |
 |---|---|---|
 | Observer | `DISCORD_OBSERVER_ROLE_IDS` | Readiness and services |
 | Moderator | `DISCORD_MODERATOR_ROLE_IDS` | Future population, map state, backup metadata |
 | Admin | `DISCORD_ADMIN_ROLE_IDS` | Detailed Status and future redacted logs |
-| Owner | `DISCORD_OWNER_ROLE_IDS` | Same read-only access as admin in the experimental phase |
+| Owner | `DISCORD_OWNER_ROLE_IDS`, or automatically the real Discord server owner | Same read-only access as admin in the experimental phase |
 
 For local smoke tests, placeholder values are acceptable as long as both processes use the same values.
 

@@ -127,7 +127,16 @@ export function discordRolePolicyHealth(mapping = discordRoleMappingFromEnv()) {
     observerConfigured: mapping.observerRoleIds.length > 0,
     moderatorConfigured: mapping.moderatorRoleIds.length > 0,
     adminConfigured: mapping.adminRoleIds.length > 0,
-    ownerConfigured: mapping.ownerRoleIds.length > 0
+    // ownerConfigured strictly reflects DISCORD_OWNER_ROLE_IDS -- kept
+    // meaning unchanged for back-compat. Issue #691 code-review finding:
+    // this field alone is misleading now that owner tier is ALSO reachable
+    // unconditionally via real Discord guild ownership (discordActorTier())
+    // -- an operator reading `ownerConfigured: false` could reasonably but
+    // wrongly conclude no one can reach owner tier here. The extra field
+    // below makes that explicit rather than silently changing what
+    // ownerConfigured itself means.
+    ownerConfigured: mapping.ownerRoleIds.length > 0,
+    ownerReachableViaGuildOwnership: true
   };
 }
 

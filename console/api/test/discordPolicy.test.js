@@ -19,8 +19,8 @@ const mapping = {
   ownerRoleIds: ["role-owner"]
 };
 
-function actor(roleIds = []) {
-  return { userId: "user-1", guildId: "guild-1", channelId: "channel-1", roleIds, username: "tester" };
+function actor(roleIds = [], overrides = {}) {
+  return { userId: "user-1", guildId: "guild-1", channelId: "channel-1", roleIds, username: "tester", ...overrides };
 }
 
 // Issue #691: owner-tier is derived from real Discord guild ownership
@@ -29,23 +29,27 @@ function actor(roleIds = []) {
 // access for the same Discord member.
 
 test("discordActorTier grants owner via real guild ownership, with zero configured roles", () => {
-  const realOwner = { userId: "the-owner", guildId: "guild-1", channelId: "channel-1", roleIds: [], guildOwnerId: "the-owner", username: "tester" };
+  const realOwner = actor([], { userId: "the-owner", guildOwnerId: "the-owner" });
   assert.equal(discordActorTier(realOwner, mapping), "owner");
 });
 
 test("discordActorTier: real guild ownership outranks and short-circuits any role mapping", () => {
-  const realOwnerWithObserverRole = { userId: "the-owner", guildId: "guild-1", channelId: "channel-1", roleIds: ["role-observer"], guildOwnerId: "the-owner", username: "tester" };
+  const realOwnerWithObserverRole = actor(["role-observer"], { userId: "the-owner", guildOwnerId: "the-owner" });
   assert.equal(discordActorTier(realOwnerWithObserverRole, mapping), "owner");
 });
 
 test("discordActorTier: a non-owner does not get owner tier merely because SOME actor in the guild owns it", () => {
-  const notTheOwner = { userId: "user-1", guildId: "guild-1", channelId: "channel-1", roleIds: ["role-admin"], guildOwnerId: "someone-else", username: "tester" };
+  const notTheOwner = actor(["role-admin"], { guildOwnerId: "someone-else" });
   assert.equal(discordActorTier(notTheOwner, mapping), "admin", "falls through to the role-based mapping normally");
 });
 
 test("discordActorTier: absent guildOwnerId (older bot) falls through to the pre-existing role-based check unchanged", () => {
   assert.equal(discordActorTier(actor(["role-owner"]), mapping), "owner", "role-based owner mapping is still honored as a fallback");
   assert.equal(discordActorTier(actor([]), mapping), "public");
+});
+
+test("discordActorTier: an actor with an empty-string guildOwnerId never matches (defensive, even if userId were also empty)", () => {
+  assert.equal(discordActorTier(actor([], { userId: "", guildOwnerId: "" }), mapping), "public");
 });
 
 test("normalizeDiscordActor accepts and passes through an optional guildOwnerId, defaulting to empty when absent", () => {
