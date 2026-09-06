@@ -13663,6 +13663,53 @@ export async function getPlayerRealFaction(db, playerControllerId) {
   return { factionId: row.faction_id, factionName: factionDisplayName(row) };
 }
 
+// Real-faction tally across many Discord users at once (issue #699) --
+// used by the guild-wide faction-summary route to auto-derive a Discord
+// guild's cosmetic themed-embed faction from its real membership, rather
+// than a manually set value. One batched query resolving each
+// discordUserId to a character (same single-link-then-multi-account-
+// default precedence as getLinkedPlayer(), but for many users in one
+// round trip instead of N), then one query tallying real factions for
+// the resolved set. Deliberately does NOT consult per-guild
+// discord_account_link_guild_state overrides -- no other player-facing
+// route does either today (see issue #699's own scope note); this
+// matches existing behavior rather than introducing a new inconsistency.
+// Returns counts only, never a discordUserId -> faction mapping, so this
+// route cannot be used to learn any individual member's faction beyond
+// what /dune player faction already discloses for their own account.
+export async function getGuildFactionTally(db, discordUserIds) {
+  const ids = Array.isArray(discordUserIds)
+    ? [...new Set(discordUserIds.map((id) => String(id || "").trim()).filter(Boolean))].slice(0, 1000)
+    : [];
+  if (!ids.length) return { tally: {}, consideredCount: 0 };
+  if (!(await tableExists(db, "player_faction"))) return { tally: {}, consideredCount: 0 };
+  const hasFactions = await tableExists(db, "factions");
+  const result = await db.query(`
+    with resolved as (
+      select coalesce(dpl.player_controller_id, dal.player_controller_id) as player_controller_id
+      from unnest($1::text[]) as input(discord_user_id)
+      left join console.discord_player_links dpl on dpl.discord_user_id = input.discord_user_id
+      left join console.discord_account_links dal
+        on dal.discord_user_id = input.discord_user_id and dal.is_default = true
+      where coalesce(dpl.player_controller_id, dal.player_controller_id) is not null
+    )
+    select ${hasFactions ? "coalesce(f.name, '')" : "''"} as faction_name,
+           count(*)::int as tally_count
+    from resolved r
+    join dune.player_faction pf on pf.actor_id::text = r.player_controller_id
+    ${hasFactions ? "left join dune.factions f on f.id = pf.faction_id" : ""}
+    group by ${hasFactions ? "coalesce(f.name, '')" : "''"}`,
+    [ids]);
+  const tally = {};
+  let consideredCount = 0;
+  for (const row of result.rows) {
+    const name = factionDisplayName({ faction_id: "", faction_name: row.faction_name });
+    tally[name] = row.tally_count;
+    consideredCount += row.tally_count;
+  }
+  return { tally, consideredCount };
+}
+
 // Checks the given discord_*_links table (in the console schema — see
 // migrateDiscordAdapterSchema()'s comment for why this project's own
 // state lives there, not in dune) for a row that would conflict with

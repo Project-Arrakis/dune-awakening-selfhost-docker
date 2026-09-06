@@ -63,6 +63,7 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/guild-character-grants/default",
     "/api/integrations/discord/guild-character-grants/disable",
     "/api/integrations/discord/guild-character-grants/enable",
+    "/api/integrations/discord/guilds/faction-summary",
     "/api/integrations/discord/guilds/find",
     "/api/integrations/discord/guilds/storage",
     "/api/integrations/discord/health",
@@ -145,6 +146,7 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/guild-character-grants/default",
     "/api/integrations/discord/guild-character-grants/disable",
     "/api/integrations/discord/guild-character-grants/enable",
+    "/api/integrations/discord/guilds/faction-summary",
     "/api/integrations/discord/guilds/find",
     "/api/integrations/discord/guilds/storage",
     "/api/integrations/discord/health",
@@ -1632,5 +1634,89 @@ test("guild-character-grants/* routes dispatch through the real HTTP path, scope
     try { unlinkSync(tokenFile); } catch {}
     if (OLD_SECRET === undefined) delete process.env.DUNE_DISCORD_ACTOR_SECRET;
     else process.env.DUNE_DISCORD_ACTOR_SECRET = OLD_SECRET;
+  }
+});
+
+// guilds/faction-summary (issue #699) -- real HTTP dispatch path for the
+// bot's own per-guild themed-embed faction auto-sync aggregate.
+test("guilds/faction-summary route dispatches to guildFactionSummaryProvider through the real HTTP path, tallies real factions, and enforces GUILD_READ (moderator-and-up)", async () => {
+  const tokenFile = "/tmp/discord-adapter-guild-faction-summary-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-guild-faction-summary-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-guild-faction-summary-test-generated" };
+
+  const db = {
+    transaction: (fn) => fn(db),
+    async query(text, values = []) {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("with resolved as")) {
+        const links = { "discord-1": "42", "discord-2": "43" };
+        const factions = { "42": "House Atreides", "43": "House Atreides" };
+        const tally = {};
+        for (const id of values[0] || []) {
+          const pcId = links[id];
+          const name = pcId && factions[pcId];
+          if (name) tally[name] = (tally[name] || 0) + 1;
+        }
+        return { rows: Object.entries(tally).map(([faction_name, tally_count]) => ({ faction_name, tally_count })) };
+      }
+      return { rows: [] };
+    }
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+
+          const response = await fetch(`${base}/api/integrations/discord/guilds/faction-summary`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-moderator"]), discordUserIds: ["discord-1", "discord-2", "discord-3"] })
+          });
+          assert.equal(response.status, 200);
+          const body = await response.json();
+          assert.equal(body.ok, true);
+          assert.deepEqual(body.tally, { "House Atreides": 2 });
+          assert.equal(body.consideredCount, 2, "discord-3 (never linked) must not be counted");
+          assert.deepEqual(Object.keys(body).sort(), ["consideredCount", "ok", "tally"], "must never echo back per-user identity alongside the tally");
+
+          // Observer tier (below GUILD_READ's moderator floor) is rejected.
+          const observerResponse = await fetch(`${base}/api/integrations/discord/guilds/faction-summary`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-observer"]), discordUserIds: ["discord-1"] })
+          });
+          assert.equal(observerResponse.status, 403);
+
+          // A non-array discordUserIds is a real 400, not a crash or a
+          // silently-empty tally.
+          const badResponse = await fetch(`${base}/api/integrations/discord/guilds/faction-summary`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-moderator"]), discordUserIds: "discord-1" })
+          });
+          assert.equal(badResponse.status, 400);
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
   }
 });

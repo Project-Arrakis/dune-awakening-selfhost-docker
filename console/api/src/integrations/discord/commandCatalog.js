@@ -545,6 +545,18 @@ export const COMMAND_METADATA = Object.freeze({
       { name: "query", type: "STRING", required: true, description: "Item name to search for." }
     ]
   },
+  // Issue #699: an internal aggregate the bot calls as a side effect of
+  // "/dune player faction" (to auto-derive its own per-guild cosmetic
+  // themed-embed faction), not a dedicated user-facing subcommand of its
+  // own -- there is no Discord-facing "discordUserIds" option, since the
+  // bot supplies that list itself from its own Discord client's real
+  // guild-membership knowledge.
+  [DISCORD_ADAPTER_ROUTES.GUILD_FACTION_SUMMARY]: {
+    group: "guild", subcommand: "faction-summary",
+    description: "Real-faction tally across many Discord users at once (aggregate counts only, never per-user).",
+    capability: DISCORD_CAPABILITIES.GUILD_READ,
+    params: []
+  },
   // Fan-out pair (shared with upstream PR #171/issue #358): one real
   // "inventory" subcommand under group "player" with an optional "search"
   // string option. The bot calls PLAYERS_INVENTORY_SEARCH when search is

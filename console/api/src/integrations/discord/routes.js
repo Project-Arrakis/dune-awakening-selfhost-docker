@@ -24,6 +24,7 @@ import {
   unlinkProvider,
   whoamiProvider,
   playerFactionProvider,
+  guildFactionSummaryProvider,
   requireLinkedPlayer
 } from "./linkProvider.js";
 import {
@@ -562,6 +563,21 @@ export async function handleDiscordAdapterRoute({
         playerControllerId: linked.player_controller_id,
         query: body.query,
         scope: "guild"
+      }));
+    }
+
+    // Guild faction summary (issue #699) -- real-faction tally across many
+    // Discord users at once, for the bot's own per-guild themed-embed
+    // faction auto-sync. Same GUILD_READ tier as guild storage/find above.
+    if (path === DISCORD_ADAPTER_ROUTES.GUILD_FACTION_SUMMARY && req.method === "POST") {
+      const body = await readJsonWithActorSignature(req);
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.GUILD_READ);
+      if (!Array.isArray(body.discordUserIds)) {
+        throw policyError("invalid_request", "discordUserIds must be an array.");
+      }
+      return json(res, 200, await guildFactionSummaryProvider(db, {
+        discordUserIds: body.discordUserIds
       }));
     }
 

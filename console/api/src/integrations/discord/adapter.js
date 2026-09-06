@@ -60,6 +60,13 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   PLAYERS_INVENTORY_SEARCH: "/api/integrations/discord/players/inventory-search",
   GUILD_STORAGE: "/api/integrations/discord/guilds/storage",
   GUILD_FIND: "/api/integrations/discord/guilds/find",
+  // GUILD_FACTION_SUMMARY (issue #699): a real-faction tally across many
+  // Discord users at once, for the bot to auto-derive its own per-guild
+  // cosmetic themed-embed faction from real membership. Takes
+  // discordUserIds (the caller's own determination of guild membership --
+  // Core has no concept of Discord guilds at all) and returns aggregate
+  // counts only, never a per-user mapping.
+  GUILD_FACTION_SUMMARY: "/api/integrations/discord/guilds/faction-summary",
   VERSION: "/api/integrations/discord/version",
   SERVERS: "/api/integrations/discord/servers",
   PORTS: "/api/integrations/discord/ports",
@@ -115,6 +122,7 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.PLAYERS_INVENTORY_SEARCH,
   DISCORD_ADAPTER_ROUTES.GUILD_STORAGE,
   DISCORD_ADAPTER_ROUTES.GUILD_FIND,
+  DISCORD_ADAPTER_ROUTES.GUILD_FACTION_SUMMARY,
   DISCORD_ADAPTER_ROUTES.VERSION,
   DISCORD_ADAPTER_ROUTES.SERVERS,
   DISCORD_ADAPTER_ROUTES.PORTS,

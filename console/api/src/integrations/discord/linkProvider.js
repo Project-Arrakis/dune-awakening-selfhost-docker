@@ -8,7 +8,8 @@ import {
   deletePendingLink,
   consumePendingLink,
   characterHasSteamId,
-  getPlayerRealFaction
+  getPlayerRealFaction,
+  getGuildFactionTally
 } from "../../duneDb.js";
 import { policyError } from "./policy.js";
 import { publishCarePackageWhisper } from "../../rmq.js";
@@ -293,6 +294,19 @@ export async function playerFactionProvider(db, { discordUserId }) {
     factionId: faction.factionId,
     factionName: faction.factionName
   };
+}
+
+// Guild-wide real-faction tally (issue #699) -- lets the bot auto-derive
+// its own per-guild cosmetic themed-embed faction from real membership
+// instead of a manual setting. discordUserIds is the CALLER's own
+// determination of guild membership (Core has no concept of Discord
+// guilds at all); this only ever returns aggregate counts, never a
+// per-user mapping, so it cannot be used to learn any individual
+// member's faction beyond what that member's own /dune player faction
+// call already discloses.
+export async function guildFactionSummaryProvider(db, { discordUserIds }) {
+  const { tally, consideredCount } = await getGuildFactionTally(db, discordUserIds);
+  return { ok: true, tally, consideredCount };
 }
 
 export async function requireLinkedPlayer(db, discordUserId) {
