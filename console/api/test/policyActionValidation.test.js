@@ -232,12 +232,7 @@ test("the policy test endpoint reports whether the action is real", () => {
 test("the policies endpoint hands back the vocabulary", () => {
   const handler = serverSrc.slice(serverSrc.indexOf('path === "/api/settings/iam/policies"'));
   const body = handler.slice(0, handler.indexOf("\n  }\n"));
-  // Fork-specific note: this fork's Access Control editor needs the route
-  // catalog and namespaces too, not just the action vocabulary -- the
-  // complete allKnownActions() list ships under `allActions` here, not the
-  // bare `actions` key upstream uses (that key holds ROUTE_ACTIONS' route
-  // keys instead, for the editor's route-centric view).
-  assert.match(body, /allActions: \[\.\.\.allKnownActions\(\)\]\.sort\(\)/);
+  assert.match(body, /actions: \[\.\.\.allKnownActions\(\)\]\.sort\(\)/);
 });
 
 // ---- Removed action aliases ----

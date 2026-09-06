@@ -74,7 +74,7 @@ This exists because the failure is asymmetric. A misspelled action in an **Allow
 
 No route resolves to `players:reset-progression` — the route resolves to `players:reset` — so that statement denies nothing at all. It was this document's own example.
 
-`GET /api/settings/iam/policies` returns an `allActions` array alongside the policies: the full catalog, sorted -- `actions` is a separate, narrower array of literal `ROUTE_ACTIONS` route keys for the Access Control editor's route-centric view, not the complete vocabulary. Policies are hand-authored JSON with no editor UI otherwise, so `allActions` is the vocabulary to author against.
+`GET /api/settings/iam/policies` returns an `actions` array alongside the policies: the full catalog, sorted (also duplicated under `allActions`, for the Access Control editor -- see below). Policies are hand-authored JSON with no editor UI otherwise, so that response is the vocabulary to author against.
 
 A file at `runtime/generated/iam-policies.json` that already names a dead action is **loaded, not discarded** — the Console logs one warning per pattern at startup and keeps the operator's policy in force. Rejecting the document would silently revert their whole policy to defaults, a bigger surprise than the dead pattern.
 
@@ -82,7 +82,7 @@ A file at `runtime/generated/iam-policies.json` that already names a dead action
 
 The policy API is owner-only under the default policy:
 
-- `GET /api/settings/iam/policies` returns the active policy store plus `allActions`, the full catalog of valid action names (`actions`/`actionMap`/`namespaces` are the Access Control editor's route-centric view, not the vocabulary itself).
+- `GET /api/settings/iam/policies` returns the active policy store plus `actions`, the full catalog of valid action names (also `actionMap`/`allActions`/`namespaces`, which the Access Control editor uses for its route-centric view).
 - `PUT /api/settings/iam/policy` validates and atomically saves the complete policy store to `runtime/generated/iam-policies.json`.
 - `POST /api/settings/iam/policy/test` evaluates an action for a tier without changing policy, and reports whether the action exists (`known`).
 
