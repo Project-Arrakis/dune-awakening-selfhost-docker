@@ -113,6 +113,12 @@ const policyLoad = loadPolicies(config.repoRoot);
 if (policyLoad.invalid) {
   console.warn(`IAM policy file at ${policyLoad.path} is not a valid policy store; using built-in defaults.`);
 }
+for (const tier of policyLoad.migratedTiers || []) {
+  // Every OTHER tier's stored policy loaded and applied as-authored -- see
+  // migrateObsoleteTiers() in policy.js for why this is a notice, not a
+  // warning that access changed for anything but the removed tier itself.
+  console.warn(`IAM policy notice: removed the obsolete "${tier}" tier document from ${policyLoad.path} (folded into "player" previously; this document was never dropped from the file). Every other tier's stored policy was preserved unchanged.`);
+}
 for (const { tier, pattern, successors } of policyLoad.deprecatedActions || []) {
   // Still enforced with its original meaning (see REMOVED_ACTION_ALIASES), so
   // this is a migration notice, not a warning that access changed.

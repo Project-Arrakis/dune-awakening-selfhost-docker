@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { actionForRoute } from "../src/actions.js";
@@ -554,6 +554,81 @@ test("loadPolicies() loads a valid stored file silently (no warning)", () => {
     // warning, same as a fresh boot.
     loadPolicies(join(tmpdir(), "policy-reset-no-such-dir"));
   }
+  assert.equal(warnings.length, 0);
+});
+
+// Regression test for the exact scenario Red-Blink reported on upstream PR
+// #202 (2026-09-06): a stored policy file that still carries a leftover
+// "observer" document (from before that tier was folded into "player") used
+// to fail validPolicyStore() OUTRIGHT, discarding the ENTIRE file and
+// silently reverting every tier -- including a genuinely hand-restricted
+// admin -- to the hardcoded (more permissive) defaults. Reproduced exactly:
+// an admin restricted to server:read regained server:stop after "upgrade".
+test("loadPolicies() migrates an obsolete observer tier document, preserving every other tier's stored policy", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "policy-load-observer-migrate-"));
+  const dir = join(repoRoot, "runtime", "generated");
+  mkdirSync(dir, { recursive: true });
+  const filePath = join(dir, "iam-policies.json");
+  writeFileSync(filePath, JSON.stringify({
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["server:read"] }] },
+    observer: { version: 1, tier: "observer", statements: [{ Effect: "Allow", Action: ["server:read"] }] },
+  }));
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (msg) => warnings.push(msg);
+  let result;
+  try {
+    result = loadPolicies(repoRoot);
+  } finally {
+    console.warn = originalWarn;
+  }
+  try {
+    assert.deepEqual(result.migratedTiers, ["observer"]);
+    // The whole document was NOT discarded: owner/admin loaded exactly as
+    // authored, not silently replaced by hardcoded defaults.
+    assert.deepEqual(Object.keys(getAllPolicies()).sort(), ["admin", "owner"]);
+    assert.equal(evaluate({ tier: "admin" }, "server:read"), true);
+    assert.equal(
+      evaluate({ tier: "admin" }, "server:stop"),
+      false,
+      "the admin's hand-authored restriction to server:read must survive the upgrade, not silently widen to the default admin policy"
+    );
+    // The obsolete tier itself behaves like any other unrecognized tier.
+    assert.equal(evaluate({ tier: "observer" }, "server:read"), false);
+    // Migration is durable: the file on disk no longer carries the obsolete
+    // document, so this doesn't re-happen (and re-warn) on the next restart.
+    const onDisk = JSON.parse(readFileSync(filePath, "utf8"));
+    assert.deepEqual(Object.keys(onDisk).sort(), ["admin", "owner"]);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    // Restore the real default policies -- see the teardown note on the
+    // "loads a valid stored file silently" test above for why this is needed.
+    loadPolicies(join(tmpdir(), "policy-reset-no-such-dir"));
+  }
+});
+
+test("loadPolicies() leaves a file with no obsolete tier untouched (no disk write, no migration notice)", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "policy-load-no-migration-needed-"));
+  const dir = join(repoRoot, "runtime", "generated");
+  mkdirSync(dir, { recursive: true });
+  const filePath = join(dir, "iam-policies.json");
+  const original = JSON.stringify({
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+  });
+  writeFileSync(filePath, original);
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (msg) => warnings.push(msg);
+  let result;
+  try {
+    result = loadPolicies(repoRoot);
+  } finally {
+    console.warn = originalWarn;
+    rmSync(repoRoot, { recursive: true, force: true });
+    loadPolicies(join(tmpdir(), "policy-reset-no-such-dir"));
+  }
+  assert.deepEqual(result.migratedTiers, []);
   assert.equal(warnings.length, 0);
 });
 

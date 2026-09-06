@@ -134,6 +134,37 @@ export function resolveSessionTier(session) {
   return VALID_TIERS.has(tier) ? tier : "";
 }
 
+// Tier names this console used to support but has since retired -- "observer"
+// was folded into "player" (ce5c44a2, folding decision: Player already
+// covered everything Observer could reach). validPolicyStore() rejects ANY
+// unrecognized tier key in the WHOLE document, so a policy file written
+// before the fold still carrying its own "observer" document used to make
+// the entire file fail validation, silently reverting EVERY tier -- including
+// an operator's genuinely customized admin/moderator/player restrictions --
+// to the (more permissive) hardcoded defaults on the next boot. Reproduced
+// live by the upstream maintainer (review finding, PR #202, 2026-09-06): an
+// admin hand-restricted to server:read regained server:stop purely because
+// the same file also still had a leftover "observer" document.
+// migrateObsoleteTiers() strips just the obsolete document before validation,
+// so every OTHER tier's real, operator-authored policy survives the upgrade
+// unchanged.
+const OBSOLETE_TIERS = new Set(["observer"]);
+
+// Returns { migrated, removedTiers }: a shallow copy of `value` with any
+// obsolete tier document removed (removedTiers lists which), or `value`
+// itself unchanged when nothing needed migrating. Never mutates the input.
+// Deliberately tolerant of a non-object/array `value` here -- validPolicyStore
+// still rejects those; this function only needs to not throw on them so it
+// can sit unconditionally in front of that check.
+function migrateObsoleteTiers(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { migrated: value, removedTiers: [] };
+  const removedTiers = Object.keys(value).filter((tier) => OBSOLETE_TIERS.has(tier));
+  if (!removedTiers.length) return { migrated: value, removedTiers };
+  const migrated = { ...value };
+  for (const tier of removedTiers) delete migrated[tier];
+  return { migrated, removedTiers };
+}
+
 // ---- Policy store ----
 
 let _policies = null;
@@ -148,14 +179,24 @@ export function loadPolicies(repoRoot = null) {
   if (existsSync(filePath)) {
     try {
       const raw = readFileSync(filePath, "utf8");
-      const parsed = JSON.parse(raw);
+      const { migrated: parsed, removedTiers: migratedTiers } = migrateObsoleteTiers(JSON.parse(raw));
       if (validPolicyStore(parsed)) {
         _policies = parsed;
+        if (migratedTiers.length) {
+          // Fixed on disk too, not just in memory -- otherwise the same
+          // stale document reappears (and re-logs this notice) on every
+          // restart until an operator happens to re-save via Access Control.
+          // Best-effort: if the write fails, this boot is still correct
+          // (parsed already has the tier removed), just not yet durable.
+          try { writeJsonAtomic(filePath, parsed, 0o600); } catch (err) {
+            console.warn(`Could not persist the migrated IAM policy at ${filePath}: ${err instanceof Error ? err.message : "unknown error"}. It will be re-migrated (harmlessly) on the next restart.`);
+          }
+        }
         // Reported, not rejected: discarding the document would silently
         // revert the operator's whole policy to defaults, a bigger surprise
         // than the dead pattern. setPolicies refuses these on save, so a stored
         // file can only acquire one by hand-editing. The caller logs this.
-        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed) };
+        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed), migratedTiers };
       }
       _policies = DEFAULT_POLICIES;
       // A stored file that fails validation (e.g. an action pattern that
@@ -170,7 +211,7 @@ export function loadPolicies(repoRoot = null) {
         "in the file predates a schema change (only lowercase letters, digits, ':', " +
         "'-' and '*' are valid). Check Access Control after this restart."
       );
-      return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [] };
+      return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [], migratedTiers: [] };
     } catch (err) {
       _policies = DEFAULT_POLICIES;
       const reason = err instanceof Error ? err.message : "unreadable or malformed";
@@ -178,13 +219,13 @@ export function loadPolicies(repoRoot = null) {
         `Stored IAM policy at ${filePath} could not be read (${reason}) -- ` +
         "falling back to the default policies. Check Access Control after this restart."
       );
-      return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [] };
+      return { source: "defaults", path: filePath, invalid: true, unknownActions: [], deprecatedActions: [], migratedTiers: [] };
     }
   }
 
   // Hardcoded fallback defaults
   _policies = DEFAULT_POLICIES;
-  return { source: "defaults", unknownActions: [], deprecatedActions: [] };
+  return { source: "defaults", unknownActions: [], deprecatedActions: [], migratedTiers: [] };
 }
 
 let _allowedActions = {};
