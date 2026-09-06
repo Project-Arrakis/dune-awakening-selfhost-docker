@@ -294,6 +294,84 @@ test("commit overwrites live state: new secret + codes, counter reset, old codes
   } finally { cleanup(dir); }
 });
 
+// ---- concurrent recovery sessions must not clobber each other (review
+// finding, upstream PR #201, 2026-09-06) ----
+
+test("consumeRecoveryCode reports the current factorVersion, unchanged by the consumption itself", async () => {
+  const { store, dir } = freshStore();
+  try {
+    const { codes } = await store.commit(SECRET); // factorVersion 0
+    const result = await store.consumeRecoveryCode(codes[0]);
+    assert.equal(result.ok, true);
+    assert.equal(result.factorVersion, 0, "consuming a code doesn't change the factor, so factorVersion doesn't move");
+    // a second, independent consumption (a second recovery session) reports
+    // the SAME factorVersion -- unlike epoch, which advances on every
+    // consumption regardless of whether the factor itself changed.
+    const secondResult = await store.consumeRecoveryCode(codes[1]);
+    assert.equal(secondResult.ok, true);
+    assert.equal(secondResult.factorVersion, 0);
+  } finally { cleanup(dir); }
+});
+
+test("commit rejects a stale expectedFactorVersion instead of overwriting a newer factor", async () => {
+  const { store, dir } = freshStore();
+  try {
+    const { codes } = await store.commit(SECRET); // factorVersion 0
+    const { factorVersion: snapshotA } = await store.consumeRecoveryCode(codes[0]); // session A snapshots 0
+    const { factorVersion: snapshotB } = await store.consumeRecoveryCode(codes[1]); // session B also snapshots 0
+    assert.equal(snapshotA, snapshotB);
+
+    // Session A confirms first -- legitimate, must succeed even though it's
+    // not the most-recently-minted session.
+    const NEW_A = Buffer.alloc(20, 0x5a);
+    const committedA = await store.commit(NEW_A, { expectedFactorVersion: snapshotA });
+    assert.equal(committedA.ok, true);
+
+    // Session B (stale) confirms next, using the SAME snapshot -- must be
+    // refused, and must NOT touch the store A just wrote.
+    const NEW_B = Buffer.alloc(20, 0x42);
+    const committedB = await store.commit(NEW_B, { expectedFactorVersion: snapshotB });
+    assert.deepEqual(committedB, { ok: false, reason: "stale_generation" });
+
+    // A's secret is still the live one; B's was never persisted.
+    assert.deepEqual(await store.verifyTotpToken(totpCode(NEW_A, T), T), { ok: true });
+    assert.deepEqual(await store.verifyTotpToken(totpCode(NEW_B, T + TOTP_PERIOD_SECONDS), T + TOTP_PERIOD_SECONDS), { ok: false, reason: "invalid" });
+  } finally { cleanup(dir); }
+});
+
+test("commit's expectedFactorVersion check is unaffected by epoch-only mutations (recovery-code consumption/regeneration)", async () => {
+  const { store, dir } = freshStore();
+  try {
+    const { codes } = await store.commit(SECRET); // factorVersion 0, epoch 0
+    const { factorVersion: snapshot } = await store.consumeRecoveryCode(codes[0]); // epoch 1, factorVersion still 0
+    await store.regenerateRecoveryCodes(); // epoch 2, factorVersion still 0 -- must NOT trip the check below
+    const NEW = Buffer.alloc(20, 0x5a);
+    const committed = await store.commit(NEW, { expectedFactorVersion: snapshot });
+    assert.equal(committed.ok, true, "epoch moving on its own must not be mistaken for the factor itself having changed");
+  } finally { cleanup(dir); }
+});
+
+test("commit with expectedFactorVersion rejects a re-key onto a deleted store rather than treating absence as version 0", async () => {
+  const { store, dir } = freshStore();
+  try {
+    const { codes } = await store.commit(SECRET);
+    const { factorVersion: snapshot } = await store.consumeRecoveryCode(codes[0]);
+    await store.clear();
+    const committed = await store.commit(SECRET, { expectedFactorVersion: snapshot });
+    assert.deepEqual(committed, { ok: false, reason: "stale_generation" });
+  } finally { cleanup(dir); }
+});
+
+test("commit without expectedFactorVersion remains unconditional (existing rotation callers are unaffected)", async () => {
+  const { store, dir } = freshStore();
+  try {
+    await store.commit(SECRET);
+    const NEW = Buffer.alloc(20, 0x5a);
+    const committed = await store.commit(NEW); // no expectedFactorVersion -- same as before this fix
+    assert.equal(committed.ok, true);
+  } finally { cleanup(dir); }
+});
+
 // ---- input guards ----
 
 test("enroll/commit reject a non-Buffer or wrong-length secret", async () => {
