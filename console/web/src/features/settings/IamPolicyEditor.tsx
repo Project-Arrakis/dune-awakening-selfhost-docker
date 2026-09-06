@@ -143,8 +143,6 @@ export function IamPolicyEditor() {
     }).catch(() => { setLoadError(true); });
   }, []);
 
-  if (!catalog && loadError) return <section className="iam-editor-error"><h3>Failed to load IAM policies</h3><button onClick={() => { setLoadError(false); window.location.reload(); }}>Retry</button></section>;
-
   const selectTier = (tier: string) => {
     setSelectedTier(tier);
     setSaved(false);
@@ -238,6 +236,24 @@ export function IamPolicyEditor() {
     }
     return result;
   }, [groupedActions, search]);
+
+  // Both early returns live here, AFTER every Hook above (review finding,
+  // upstream PR #202, 2026-09-06): this function previously returned the
+  // "Failed to load" error section immediately after the load effect, before
+  // the six useMemo calls below it -- fine on the very FIRST render (which
+  // always starts with catalog/loadError both false-ish and falls through to
+  // all the Hooks), but the moment the fetch actually failed and re-rendered
+  // with loadError:true, this same function call now returned after only its
+  // useState/useEffect Hooks, calling FEWER Hooks than the initial render did.
+  // React detects exactly that mismatch and throws "Rendered fewer hooks than
+  // expected" -- so the one render meant to show "Retry" crashed instead.
+  // Hooks must run in the same order on every render (the Rules of Hooks);
+  // every Hook above already tolerates catalog being null (distinctActions()
+  // and groupedActions's own guard both do), so keeping them unconditional
+  // and moving ONLY the conditional JSX returns down here fixes this without
+  // changing what either branch renders.
+  if (!catalog && loadError) return <section className="iam-editor-error"><h3>Failed to load IAM policies</h3><button onClick={() => { setLoadError(false); window.location.reload(); }}>Retry</button></section>;
+  if (!catalog) return <section className="iam-editor-loading"><p className="loading-dots">Loading policies</p></section>;
 
   // Reads the live jsonText via a functional setJsonText update rather than
   // the value captured in this closure (review finding): two toggles fired
@@ -359,8 +375,6 @@ export function IamPolicyEditor() {
     }
     setTestResults(results);
   };
-
-  if (!catalog) return <section className="iam-editor-loading"><p className="loading-dots">Loading policies</p></section>;
 
   return (
     <section className="iam-policy-editor">
