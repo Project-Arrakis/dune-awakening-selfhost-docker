@@ -398,21 +398,24 @@ export const COMMAND_METADATA = Object.freeze({
     params: []
   },
   // routeHasNoCurrentBotCaller (issue #342): unlike PLAYERS_ACCOUNTS_LINK/
-  // LINK_VERIFY above, this one is not merely uncalled -- the bot's real,
-  // live "/dune player default" command (commands.js, key "player:default")
-  // calls a DIFFERENT route entirely: guildGrantsDefault() ->
-  // "guild-grants-default" -> /api/integrations/discord/guild-character-grants/default,
-  // which does not exist anywhere in Core today (see linkProvider.js's own
-  // comment: "Core's currently-nonexistent guild-character-grants
-  // feature"). An earlier version of this entry's description was
-  // verbatim-identical to that unrelated bot command's real description
-  // ("Set your default character for this guild"), which would have made
-  // a future Phase 2 generator conflate this uncalled multi-account route
-  // with the bot's real, differently-routed default-character command.
-  // Corrected to describe only what THIS route actually does.
+  // LINK_VERIFY above, this route's stale-doc history is worth keeping.
+  // The bot's real, live "/dune player default" command (commands.js, key
+  // "player:default") calls a DIFFERENT route: guildGrantsDefault() ->
+  // "guild-grants-default" -> GUILD_GRANTS_DEFAULT (see that entry below) --
+  // which, when this comment was first written, did not exist anywhere on
+  // Core. It does now (issue #696): GUILD_GRANTS_DEFAULT is wired and live.
+  // That means this route and GUILD_GRANTS_DEFAULT would otherwise collide
+  // on the same (group, subcommand) pair ("player"/"default") -- but unlike
+  // the genuine fan-out pairs elsewhere in this file (storage/find/
+  // inventory), there is no real bot-side branching logic choosing between
+  // them; GUILD_GRANTS_DEFAULT is simply THE live route now, and this one
+  // remains uncalled by any bot command. Renamed to "set-default-account"
+  // (same precedent as PLAYERS_ACCOUNTS_LINK's "link-account" rename above)
+  // to keep them as two distinct, non-colliding catalog entries rather than
+  // force a `selector` onto a pair that has no real selection behavior.
   [DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_SET_DEFAULT]: {
-    group: "player", subcommand: "default",
-    description: "(Not yet exposed as a bot command -- do not confuse with the live \"/dune player default\" command, which calls a separate, currently-nonexistent-on-Core guild-character-grants route.) Core route to change which linked character is the default for a Discord account.",
+    group: "player", subcommand: "set-default-account",
+    description: "(Not yet exposed as a bot command -- do not confuse with the live \"/dune player default\" command, which calls the separate GUILD_GRANTS_DEFAULT route.) Core route to change which linked character is the global (all-guilds) default for a Discord account.",
     capability: DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE,
     selfScoped: true,
     routeHasNoCurrentBotCaller: true,
@@ -433,9 +436,61 @@ export const COMMAND_METADATA = Object.freeze({
     disabledPendingSecurityReview: true,
     params: []
   },
+  // Guild grants (issue #696): per-(Discord guild, linked character)
+  // enable/disable/default, real live routes behind the bot's real
+  // "/dune player enable|disable|default" commands (commands.js, keys
+  // "player:enable"/"player:disable"/"player:default"). All three send
+  // the Discord-facing "character" option as body.characterLinkId (the
+  // bot's own field name -- see adapterClient.js's guildGrants*()
+  // methods), which Core's routes.js reads verbatim into
+  // playerControllerId internally. Distinct from
+  // PLAYERS_ACCOUNTS_SET_DEFAULT above (global, all-guilds default);
+  // these are scoped to actor.guildId, not a body field, so a caller
+  // cannot claim to act for a guild it isn't actually in.
+  [DISCORD_ADAPTER_ROUTES.GUILD_GRANTS_ENABLE]: {
+    group: "player", subcommand: "enable",
+    description: "Enable a linked character in this Discord server.",
+    capability: DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE,
+    selfScoped: true,
+    params: [
+      { name: "character", bodyField: "characterLinkId", type: "STRING", required: true, description: "Character link ID." }
+    ]
+  },
+  [DISCORD_ADAPTER_ROUTES.GUILD_GRANTS_DISABLE]: {
+    group: "player", subcommand: "disable",
+    description: "Disable a linked character in this Discord server.",
+    capability: DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE,
+    selfScoped: true,
+    params: [
+      { name: "character", bodyField: "characterLinkId", type: "STRING", required: true, description: "Character link ID." }
+    ]
+  },
+  [DISCORD_ADAPTER_ROUTES.GUILD_GRANTS_DEFAULT]: {
+    group: "player", subcommand: "default",
+    description: "Set your default linked character for this Discord server.",
+    capability: DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE,
+    selfScoped: true,
+    params: [
+      { name: "character", bodyField: "characterLinkId", type: "STRING", required: true, description: "Character link ID." }
+    ]
+  },
   [DISCORD_ADAPTER_ROUTES.PLAYERS_ME]: {
     group: "player", subcommand: "whoami",
     description: "Show your linked game character info.",
+    capability: DISCORD_CAPABILITIES.INVENTORY_READ,
+    params: []
+  },
+  // issue #696: the bot's real "/dune player faction" command (commands.js,
+  // key "player:faction") is registered with a "name" option and a stale
+  // description ("Set your faction for themed embeds.") left over from
+  // before this route existed -- Core's real playerFactionProvider() never
+  // reads that value at all and is read-only, auto-detected from
+  // dune.player_faction. Described here as what the route actually does,
+  // not what the bot's own (not-yet-updated) command copy still claims; see
+  // the bot-side follow-up this finding produced.
+  [DISCORD_ADAPTER_ROUTES.PLAYERS_FACTION]: {
+    group: "player", subcommand: "faction",
+    description: "Show your real, auto-detected in-game faction (read-only -- does not accept or set a value).",
     capability: DISCORD_CAPABILITIES.INVENTORY_READ,
     params: []
   },

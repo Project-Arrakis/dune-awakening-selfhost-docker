@@ -26,6 +26,8 @@ import {
   linkAdditionalAccount,
   unlinkAdditionalAccount,
   setDefaultLinkedAccount,
+  setGuildCharacterEnabled,
+  setDefaultLinkedAccountForGuild,
   resolvePlayerByName,
   createPendingAccountLink,
   deletePendingAccountLink,
@@ -350,6 +352,53 @@ export async function setDefaultAccountProvider(db, { discordUserId, playerContr
     return { ok: false, error: "That character is not linked to your Discord account. Link it first with /dune data link." };
   }
   return { ok: true, message: "Default character updated." };
+}
+
+// Guild grants (issue #696): per-Discord-guild enable/disable/default,
+// distinct from setDefaultAccountProvider's global-across-all-guilds
+// default above. requireGuildId mirrors the required-field validation
+// every other provider in this file already does for playerControllerId.
+function requireGuildId(guildId) {
+  if (!guildId || !String(guildId).trim()) {
+    throw policyError("invalid_request", "guildId is required.");
+  }
+  return String(guildId).trim();
+}
+
+export async function guildGrantsEnableProvider(db, { discordUserId, playerControllerId, guildId }) {
+  if (!playerControllerId || !String(playerControllerId).trim()) {
+    throw policyError("invalid_request", "playerControllerId is required.");
+  }
+  const safeGuildId = requireGuildId(guildId);
+  const found = await setGuildCharacterEnabled(db, discordUserId, safeGuildId, String(playerControllerId).trim(), true);
+  if (!found) {
+    return { ok: false, error: "That character is not linked to your Discord account. Link it first with /dune data link." };
+  }
+  return { ok: true, message: "Character enabled in this server." };
+}
+
+export async function guildGrantsDisableProvider(db, { discordUserId, playerControllerId, guildId }) {
+  if (!playerControllerId || !String(playerControllerId).trim()) {
+    throw policyError("invalid_request", "playerControllerId is required.");
+  }
+  const safeGuildId = requireGuildId(guildId);
+  const found = await setGuildCharacterEnabled(db, discordUserId, safeGuildId, String(playerControllerId).trim(), false);
+  if (!found) {
+    return { ok: false, error: "That character is not linked to your Discord account. Link it first with /dune data link." };
+  }
+  return { ok: true, message: "Character disabled in this server. (If it was your default here, that's been cleared too.)" };
+}
+
+export async function guildGrantsDefaultProvider(db, { discordUserId, playerControllerId, guildId }) {
+  if (!playerControllerId || !String(playerControllerId).trim()) {
+    throw policyError("invalid_request", "playerControllerId is required.");
+  }
+  const safeGuildId = requireGuildId(guildId);
+  const found = await setDefaultLinkedAccountForGuild(db, discordUserId, safeGuildId, String(playerControllerId).trim());
+  if (!found) {
+    return { ok: false, error: "That character is not linked to your Discord account. Link it first with /dune data link." };
+  }
+  return { ok: true, message: "Default character for this server updated." };
 }
 
 function publicAccountView(account) {

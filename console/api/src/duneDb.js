@@ -13439,6 +13439,43 @@ export async function migrateDiscordAdapterSchema(db) {
     await tx.query(`
       create unique index if not exists discord_pending_account_links_player_uidx
       on console.discord_pending_account_links (player_controller_id)`);
+
+    // Guild grants (issue #696): per-(Discord guild, linked character) enable
+    // state and default, distinct from discord_account_links' own is_default
+    // (global across all guilds a user shares this bot with). A user active
+    // in multiple Discord servers may want a different character "active"
+    // (and a different one "default" for commands that resolve "your
+    // character" with no argument) in each. Additive, new table -- does not
+    // touch or migrate discord_account_links. No row here for a given
+    // (discord_user_id, guild_id, player_controller_id) means "enabled,
+    // no default" (the same as an explicit enabled=true/is_default=false
+    // row) -- see resolveGuildCharacterState()'s own comment for why a
+    // missing row and an explicit enabled row must read identically.
+    await tx.query(`
+      create table if not exists console.discord_account_link_guild_state (
+        discord_user_id text not null,
+        player_controller_id text not null,
+        guild_id text not null,
+        enabled boolean not null default true,
+        is_default boolean not null default false,
+        updated_at timestamp with time zone not null default now(),
+        primary key (discord_user_id, guild_id, player_controller_id)
+      )`);
+    // Partial unique index: at most one default row per (discord_user_id,
+    // guild_id) -- mirrors discord_account_links' own
+    // discord_account_links_default_uidx pattern, scoped one level deeper.
+    await tx.query(`
+      create unique index if not exists discord_account_link_guild_state_default_uidx
+      on console.discord_account_link_guild_state (discord_user_id, guild_id) where is_default`);
+    // Clean up stale rows where the underlying account link no longer
+    // exists (character unlinked) -- mirrors the discord_account_links /
+    // discord_player_links cleanup immediately below.
+    await tx.query(`
+      delete from console.discord_account_link_guild_state gs
+      where not exists (
+        select 1 from console.discord_account_links dal
+        where dal.discord_user_id = gs.discord_user_id and dal.player_controller_id = gs.player_controller_id
+      )`);
     // Clean up stale link rows where the game character was deleted (M5, #183).
     await tx.query(`delete from console.discord_account_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id)`);
     await tx.query(`delete from console.discord_player_links where not exists (select 1 from dune.player_state ps where ps.player_controller_id::text = player_controller_id)`);
@@ -13602,6 +13639,28 @@ export async function getAllLinkedPlayers(db, discordUserId) {
     join dune.player_state ps2 on ps2.player_controller_id::text = dpl.player_controller_id
     where dpl.discord_user_id = $1`, [String(discordUserId)]);
   return result.rows;
+}
+
+// Real, live in-game faction for one character (issue #696's
+// players-faction route) -- deliberately reads dune.player_faction
+// directly rather than caching or accepting a caller-supplied value,
+// same guard pattern as leadershipCurrentFactions() above. Returns
+// null if the character has no faction row (e.g. never joined one) or
+// if this deployment doesn't have the player_faction table at all.
+export async function getPlayerRealFaction(db, playerControllerId) {
+  if (!(await tableExists(db, "player_faction"))) return null;
+  const hasFactions = await tableExists(db, "factions");
+  const result = await db.query(`
+    select pf.actor_id::text as actor_id,
+           pf.faction_id::text as faction_id,
+           ${hasFactions ? "coalesce(f.name, '')" : "''"} as faction_name
+    from dune.player_faction pf
+    ${hasFactions ? "left join dune.factions f on f.id = pf.faction_id" : ""}
+    where pf.actor_id::text = $1
+    limit 1`, [String(playerControllerId)]);
+  const row = result.rows[0];
+  if (!row) return null;
+  return { factionId: row.faction_id, factionName: factionDisplayName(row) };
 }
 
 // Checks the given discord_*_links table (in the console schema — see
@@ -13862,6 +13921,77 @@ export async function setDefaultLinkedAccount(db, discordUserId, playerControlle
       update console.discord_account_links set is_default = true
       where discord_user_id = $1 and player_controller_id = $2`,
       [String(discordUserId), playerControllerId]);
+    return { found: true };
+  };
+  const result = typeof db.transaction === "function" ? await db.transaction(setDefault) : await setDefault(db);
+  return result.found;
+}
+
+// Guild grants (issue #696) -- enable/disable a linked character in one
+// specific Discord guild, independent of every other guild that character
+// link is also visible in. Returns { found: false } if the character isn't
+// linked to this Discord user at all (caller must link it first via
+// linkAdditionalAccount()); a row in discord_account_link_guild_state is
+// only ever created for an EXPLICIT enable/disable/default call -- a
+// character with no row is implicitly enabled (see the migration's own
+// comment for why a missing row and enabled=true must read identically).
+//
+// Disabling a character that is currently this guild's default clears the
+// default too -- a disabled character silently remaining "the" default for
+// commands that resolve "your character" with no argument would be a real,
+// confusing bug: those commands would keep resolving to a character the
+// user explicitly turned off in this guild.
+export async function setGuildCharacterEnabled(db, discordUserId, guildId, playerControllerId, enabled) {
+  const setEnabled = async (tx) => {
+    const existingLink = await tx.query(`
+      select 1 from console.discord_account_links
+      where discord_user_id = $1 and player_controller_id = $2`,
+      [String(discordUserId), playerControllerId]);
+    if (!existingLink.rowCount) return { found: false };
+    await tx.query(`
+      insert into console.discord_account_link_guild_state
+        (discord_user_id, guild_id, player_controller_id, enabled, updated_at)
+      values ($1, $2, $3, $4, now())
+      on conflict (discord_user_id, guild_id, player_controller_id)
+      do update set enabled = excluded.enabled, updated_at = excluded.updated_at`,
+      [String(discordUserId), String(guildId), playerControllerId, Boolean(enabled)]);
+    if (!enabled) {
+      await tx.query(`
+        update console.discord_account_link_guild_state
+        set is_default = false, updated_at = now()
+        where discord_user_id = $1 and guild_id = $2 and player_controller_id = $3 and is_default`,
+        [String(discordUserId), String(guildId), playerControllerId]);
+    }
+    return { found: true };
+  };
+  const result = typeof db.transaction === "function" ? await db.transaction(setEnabled) : await setEnabled(db);
+  return result.found;
+}
+
+// Setting a character as this guild's default also enables it here --
+// a disabled default would be self-contradictory (nothing could ever
+// resolve "your character" to it while also correctly excluding it from
+// "your enabled characters in this guild" listings), so this is the one
+// path allowed to silently flip enabled back to true rather than requiring
+// a separate /dune player enable call first.
+export async function setDefaultLinkedAccountForGuild(db, discordUserId, guildId, playerControllerId) {
+  const setDefault = async (tx) => {
+    const existingLink = await tx.query(`
+      select 1 from console.discord_account_links
+      where discord_user_id = $1 and player_controller_id = $2`,
+      [String(discordUserId), playerControllerId]);
+    if (!existingLink.rowCount) return { found: false };
+    await tx.query(`
+      update console.discord_account_link_guild_state set is_default = false, updated_at = now()
+      where discord_user_id = $1 and guild_id = $2 and is_default`,
+      [String(discordUserId), String(guildId)]);
+    await tx.query(`
+      insert into console.discord_account_link_guild_state
+        (discord_user_id, guild_id, player_controller_id, enabled, is_default, updated_at)
+      values ($1, $2, $3, true, true, now())
+      on conflict (discord_user_id, guild_id, player_controller_id)
+      do update set enabled = true, is_default = true, updated_at = excluded.updated_at`,
+      [String(discordUserId), String(guildId), playerControllerId]);
     return { found: true };
   };
   const result = typeof db.transaction === "function" ? await db.transaction(setDefault) : await setDefault(db);

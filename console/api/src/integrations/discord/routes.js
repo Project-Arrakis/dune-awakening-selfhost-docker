@@ -23,6 +23,7 @@ import {
   verifyPlayerLinkProvider,
   unlinkProvider,
   whoamiProvider,
+  playerFactionProvider,
   requireLinkedPlayer
 } from "./linkProvider.js";
 import {
@@ -31,7 +32,10 @@ import {
   unlinkAccountProvider,
   listAccountsProvider,
   setDefaultAccountProvider,
-  linkAccountViaSteamProvider
+  linkAccountViaSteamProvider,
+  guildGrantsEnableProvider,
+  guildGrantsDisableProvider,
+  guildGrantsDefaultProvider
 } from "./multiAccountLinkProvider.js";
 import { verifyActorSignature, actorSignatureRequired } from "./actorSignature.js";
 import {
@@ -392,6 +396,48 @@ export async function handleDiscordAdapterRoute({
       }));
     }
 
+    // Guild grants (issue #696): per-(Discord guild, linked character)
+    // enable/disable/default -- distinct from PLAYERS_ACCOUNTS_SET_DEFAULT
+    // above, which sets a global-across-all-guilds default. A user who
+    // shares this bot with multiple guilds/communities may want a
+    // different active character per guild (e.g. one house's alt vs.
+    // another's). guildId comes from actor.guildId (already required and
+    // signature-verified by validateDiscordActor/actorSignature.js), not
+    // a separate body field -- a caller cannot claim to be acting on
+    // behalf of a guild it isn't actually in.
+    if (path === DISCORD_ADAPTER_ROUTES.GUILD_GRANTS_ENABLE && req.method === "POST") {
+      const body = await readJsonWithActorSignature(req, { requireActorSignature: true });
+      const actor = validateDiscordActor(body.actor);
+      requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE);
+      return json(res, 200, await guildGrantsEnableProvider(db, {
+        discordUserId: actor.userId,
+        guildId: actor.guildId,
+        playerControllerId: body.characterLinkId
+      }));
+    }
+
+    if (path === DISCORD_ADAPTER_ROUTES.GUILD_GRANTS_DISABLE && req.method === "POST") {
+      const body = await readJsonWithActorSignature(req, { requireActorSignature: true });
+      const actor = validateDiscordActor(body.actor);
+      requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE);
+      return json(res, 200, await guildGrantsDisableProvider(db, {
+        discordUserId: actor.userId,
+        guildId: actor.guildId,
+        playerControllerId: body.characterLinkId
+      }));
+    }
+
+    if (path === DISCORD_ADAPTER_ROUTES.GUILD_GRANTS_DEFAULT && req.method === "POST") {
+      const body = await readJsonWithActorSignature(req, { requireActorSignature: true });
+      const actor = validateDiscordActor(body.actor);
+      requireSelfScopedCapability(actor, mapping, DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE);
+      return json(res, 200, await guildGrantsDefaultProvider(db, {
+        discordUserId: actor.userId,
+        guildId: actor.guildId,
+        playerControllerId: body.characterLinkId
+      }));
+    }
+
     // Multi-account, Steam-OAuth-based: match a character's on-file Steam
     // ID against the caller's already-completed Discord OAuth connections
     // list, and link if it matches -- see linkAccountViaSteamProvider()'s
@@ -412,6 +458,19 @@ export async function handleDiscordAdapterRoute({
       const actor = validateDiscordActor(body.actor);
       requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.INVENTORY_READ);
       return json(res, 200, await whoamiProvider(db, {
+        discordUserId: actor.userId
+      }));
+    }
+
+    // Players faction (issue #696) -- read-only, auto-detected from the
+    // caller's linked character's real dune.player_faction row. There is
+    // deliberately no argument to set/pick a faction; this route only
+    // ever reflects real game state, never writes to it.
+    if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_FACTION && req.method === "POST") {
+      const body = await readJsonWithActorSignature(req);
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.INVENTORY_READ);
+      return json(res, 200, await playerFactionProvider(db, {
         discordUserId: actor.userId
       }));
     }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { linkPlayerProvider, verifyPlayerLinkProvider, resetVerifyRateLimiterForTests } from "../src/integrations/discord/linkProvider.js";
+import { linkPlayerProvider, verifyPlayerLinkProvider, resetVerifyRateLimiterForTests, playerFactionProvider } from "../src/integrations/discord/linkProvider.js";
 import { discordPlayerLink } from "../src/duneDb.js";
 import { createLoginRateLimiter } from "../src/rateLimit.js";
 
@@ -30,6 +30,10 @@ function createLinkDb(playerOverrides = {}) {
   const state = {
     pending: null,
     link: null,
+    // faction/factionTablesExist: playerFactionProvider() fixtures (issue
+    // #696). null faction = character has no faction row; set per-test.
+    faction: null,
+    factionTablesExist: true,
     player: {
       player_controller_id: "42",
       player_pawn_id: "84",
@@ -145,6 +149,24 @@ function createLinkDb(playerOverrides = {}) {
       // discordMultiAccountLinkProvider.test.js.
       if (text.includes("from console.discord_account_links dal") && text.includes("is_default = true")) {
         return { rows: [], rowCount: 0 };
+      }
+      // getPlayerRealFaction() (issue #696) -- tableExists()'s to_regclass
+      // check, then the real dune.player_faction/dune.factions join. This
+      // fixture defaults to "both tables exist, no faction row" so every
+      // pre-existing test in this file (none of which touch faction data)
+      // is unaffected; state.faction is populated per-test below to
+      // exercise the has-a-faction and no-faction-table cases.
+      if (text.includes("select to_regclass($1) is not null as exists")) {
+        const target = values[0];
+        if (target === "dune.player_faction") return { rows: [{ exists: state.factionTablesExist !== false }], rowCount: 1 };
+        if (target === "dune.factions") return { rows: [{ exists: state.factionTablesExist !== false }], rowCount: 1 };
+        throw new Error(`Unexpected tableExists check: ${target}`);
+      }
+      if (text.includes("from dune.player_faction pf")) {
+        const row = state.faction && state.faction.actorId === values[0]
+          ? { actor_id: state.faction.actorId, faction_id: state.faction.factionId, faction_name: state.faction.factionName || "" }
+          : null;
+        return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
       }
       throw new Error(`Unexpected query: ${text}`);
     }
@@ -384,4 +406,58 @@ test("re-running /dune player link for the SAME already-linked character short-c
   assert.equal(result.ok, true);
   assert.equal(result.alreadyLinked, true);
   assert.equal("hasSteam" in result, false, "must short-circuit BEFORE the hasSteam check, not offer Steam-link and then reject at the end");
+});
+
+// playerFactionProvider (issue #696) -- read-only, auto-detected from the
+// caller's real dune.player_faction row. Deliberately never accepts a
+// caller-supplied faction value (there is no such param); these tests
+// only ever assert on what the provider REPORTS, matching the design
+// decision that this route reflects real game state rather than a
+// user preference.
+test("playerFactionProvider reports not-linked when the caller has no linked character", async () => {
+  const db = createLinkDb();
+  const result = await playerFactionProvider(db, { discordUserId: "discord-1" });
+  assert.equal(result.ok, true);
+  assert.equal(result.linked, false);
+});
+
+test("playerFactionProvider reports hasFaction: false for a linked character with no faction row", async () => {
+  const db = createLinkDb();
+  db.state.link = { discordUserId: "discord-1", playerControllerId: "42" };
+  const result = await playerFactionProvider(db, { discordUserId: "discord-1" });
+  assert.equal(result.ok, true);
+  assert.equal(result.linked, true);
+  assert.equal(result.hasFaction, false);
+  assert.equal(result.characterName, "Chani");
+});
+
+test("playerFactionProvider reports the caller's real faction from dune.player_faction, not a caller-supplied value", async () => {
+  const db = createLinkDb();
+  db.state.link = { discordUserId: "discord-1", playerControllerId: "42" };
+  db.state.faction = { actorId: "42", factionId: "7", factionName: "House Atreides" };
+  const result = await playerFactionProvider(db, { discordUserId: "discord-1" });
+  assert.equal(result.ok, true);
+  assert.equal(result.linked, true);
+  assert.equal(result.hasFaction, true);
+  assert.equal(result.factionId, "7");
+  assert.equal(result.factionName, "House Atreides");
+});
+
+test("playerFactionProvider only reports the faction for the caller's OWN linked character, never another actor's", async () => {
+  const db = createLinkDb();
+  db.state.link = { discordUserId: "discord-1", playerControllerId: "42" };
+  // A faction row exists, but for a DIFFERENT actor_id -- must not leak.
+  db.state.faction = { actorId: "99", factionId: "7", factionName: "House Atreides" };
+  const result = await playerFactionProvider(db, { discordUserId: "discord-1" });
+  assert.equal(result.hasFaction, false);
+});
+
+test("playerFactionProvider reports hasFaction: false when this deployment has no player_faction table at all", async () => {
+  const db = createLinkDb();
+  db.state.link = { discordUserId: "discord-1", playerControllerId: "42" };
+  db.state.factionTablesExist = false;
+  const result = await playerFactionProvider(db, { discordUserId: "discord-1" });
+  assert.equal(result.ok, true);
+  assert.equal(result.linked, true);
+  assert.equal(result.hasFaction, false);
 });
