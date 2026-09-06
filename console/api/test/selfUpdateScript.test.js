@@ -30,6 +30,8 @@ test("local-state backup snapshots active audit files and keeps archive failures
     mkdirSync(generated, { recursive: true }); mkdirSync(bin); mkdirSync(backup);
     const audit = join(generated, "care-package-grants.jsonl");
     writeFileSync(audit, '{"id":1}\n{"partial":', { mode: 0o600 });
+    writeFileSync(join(generated, "care-package-grant-receipts.json"), '[{"kitId":"starter"}]', { mode: 0o600 });
+    writeFileSync(join(generated, "care-package-first-online-claims.json"), '{"version":1,"players":{},"aliases":{}}', { mode: 0o600 });
     writeFileSync(join(root, ".env"), "TEST_SETTING=preserved\n", { mode: 0o600 });
     const realTar = spawnSync("which", ["tar"], { encoding: "utf8" }).stdout.trim();
     // Start an active writer only once tar is invoked: the snapshot must be isolated.
@@ -49,6 +51,8 @@ sleep .05
     const extract = path => spawnSync(realTar, ["-xOzf", archive, path], { encoding: "utf8" });
     assert.equal(extract("runtime/generated/care-package-grants.jsonl").stdout, '{"id":1}\n');
     assert.equal(extract(".env").stdout, "TEST_SETTING=preserved\n");
+    assert.equal(extract("runtime/generated/care-package-grant-receipts.json").stdout, '[{"kitId":"starter"}]');
+    assert.equal(extract("runtime/generated/care-package-first-online-claims.json").stdout, '{"version":1,"players":{},"aliases":{}}');
     assert.equal(statSync(archive).mode & 0o777, 0o600);
     assert.ok(readFileSync(audit,"utf8").includes('{"id":2}'));
     assert.equal(readdirSync(backup).some(name=>name.startsWith(".local-state")), false);

@@ -1,4 +1,78 @@
 import test from "node:test";
+import { maintainCarePackageHistory } from "../src/carePackage.js";
+import { statSync } from "node:fs";
+
+test("automatic ineligible scans return skips without growing audit history", async () => {
+  const config = tempConfig();
+  try {
+    saveCarePackageConfig(config, { enabled: true, activeKitId: "starter", kits: [{ id: "starter", name: "Starter", xp: 10, items: [] }], autoGrantRules: [{ id: "online", enabled: true, kitId: "starter", grantWhen: "first_online" }] });
+    for (let i=0;i<20;i++) {
+      const result = await runCarePackageAutoScan(config, [{ action_player_id: "Offline#1", online_status: "offline" }]);
+      assert.equal(result.skipped, 1);
+    }
+    assert.equal(existsSync(resolve(config.generatedDir, "care-package-grants.jsonl")), false);
+  } finally { rmSync(config.repoRoot, { recursive: true, force: true }); }
+});
+
+test("oversized history is compacted without forgetting old successful or partial grants", async () => {
+  const config = tempConfig();
+  try {
+    saveCarePackageConfig(config, { enabled: true, activeKitId: "starter", autoGrantKitId: "starter", kits: [{ id: "starter", name: "Starter", xp: 10, items: [] }], autoGrantRules: [{ id: "online", enabled: true, kitId: "starter", grantWhen: "first_online" }] });
+    const file = resolve(config.generatedDir, "care-package-grants.jsonl");
+    const rows = [
+      { status: "granted", action_player_id: "Old#1", kitId: "old-kit", grantWhen: "first_online" },
+      { status: "partial", action_player_id: "Partial#1", kitId: "starter", grantWhen: "last_seen", results: [{ ok: true, operation: "adminAddXp" }] }
+    ];
+    writeFileSync(file, rows.map(row=>JSON.stringify(row)+"\n").join(""));
+    const skipped = JSON.stringify({ status: "skipped", source: "auto", padding: "x".repeat(1000) })+"\n";
+    appendFileSync(file, skipped.repeat(8500));
+    for(let i=0;i<600;i++) appendFileSync(file, JSON.stringify({id:`failure-${i}`,status:"failed",results:[]})+"\n");
+    let yielded = false; setImmediate(()=>{yielded=true;});
+    await Promise.all([maintainCarePackageHistory(config), maintainCarePackageHistory(config)]);
+    assert.ok(yielded, "large migrations must yield to the event loop");
+    assert.ok(statSync(file).size < 4*1024*1024);
+    assert.equal(carePackageHistory(config,500).rows.length,500);
+    assert.equal(carePackageHistory(config,500).rows[0].id,"failure-599");
+    const receiptFile=resolve(config.generatedDir,"care-package-grant-receipts.json");
+    assert.equal(JSON.parse(readFileSync(receiptFile,"utf8")).length,2);
+    assert.equal(statSync(receiptFile).mode & 0o777,0o600);
+    const result=carePackageEligiblePlayers(config,[{action_player_id:"Old#1",online_status:"online"},{action_player_id:"Partial#1",online_status:"online"}]);
+    assert.ok(result.rows.every(row=>!row.eligible));
+    const scan=await runCarePackageAutoScan(config,[{action_player_id:"Old#1",online_status:"online"}]);
+    assert.equal(scan.skipped,1);
+    clearCarePackageHistory(config);
+    assert.equal(carePackageEligiblePlayers(config,[{action_player_id:"Old#1",online_status:"online"}]).rows[0].eligible,false);
+  } finally { rmSync(config.repoRoot, { recursive: true, force: true }); }
+});
+
+test("history maintenance preserves external appends and fails closed on invalid receipts", async () => {
+  const config=tempConfig();
+  try {
+    mkdirSync(config.generatedDir,{recursive:true});
+    const file=resolve(config.generatedDir,"care-package-grants.jsonl"),data=(JSON.stringify({status:"skipped",padding:"x".repeat(1000)})+"\n").repeat(8500);
+    writeFileSync(file,data);
+    const pending=maintainCarePackageHistory(config);
+    appendFileSync(file,'{"id":"external","status":"granted"}\n');
+    await assert.rejects(pending,/changed outside/);
+    assert.equal(readFileSync(file,"utf8"),data+'{"id":"external","status":"granted"}\n');
+    writeFileSync(resolve(config.generatedDir,"care-package-grant-receipts.json"),"broken");
+    await assert.rejects(maintainCarePackageHistory(config));
+    assert.ok(statSync(file).size>8*1024*1024);
+  } finally { rmSync(config.repoRoot, { recursive: true, force: true }); }
+});
+
+test("clearing history during maintenance cannot resurrect cleared history", async () => {
+  const config=tempConfig();
+  try {
+    mkdirSync(config.generatedDir,{recursive:true});
+    const file=resolve(config.generatedDir,"care-package-grants.jsonl");
+    writeFileSync(file,(JSON.stringify({status:"skipped",padding:"x".repeat(1000)})+"\n").repeat(8500));
+    const pending=maintainCarePackageHistory(config);
+    clearCarePackageHistory(config);
+    await pending;
+    assert.equal(readFileSync(file,"utf8"),"");
+  } finally { rmSync(config.repoRoot, { recursive: true, force: true }); }
+});
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

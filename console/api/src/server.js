@@ -26,7 +26,7 @@ import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishServerCommand } from "./rmq.js";
-import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
+import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, maintainCarePackageHistory, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
 import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
 import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon } from "./addons.js";
@@ -5634,6 +5634,7 @@ async function carePackageAutoTick() {
   if (Date.now() < carePackageAutoNextAllowedRun) return;
   let kit;
   try {
+    await maintainCarePackageHistory(config);
     kit = carePackageConfig(config);
   } catch (error) {
     console.error(`Care Package auto-grant config read failed: ${redact(error?.message || "Unexpected error.")}`);

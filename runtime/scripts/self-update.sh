@@ -692,6 +692,8 @@ backup_local_state() {
     runtime/generated/gameplay-profile.ini \
     runtime/generated/care-package.json \
     runtime/generated/care-package-grants.jsonl \
+    runtime/generated/care-package-grant-receipts.json \
+    runtime/generated/care-package-first-online-claims.json \
     runtime/generated/care-package-pending-returns.json \
     runtime/addons/state.json \
     runtime/secrets/funcom-token.txt \
@@ -879,6 +881,8 @@ restore_local_state_after_install() {
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/gameplay-profile.ini
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/care-package.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/care-package-grants.jsonl
+  restore_local_state_file_if_needed "$backup_dir" runtime/generated/care-package-grant-receipts.json
+  restore_local_state_file_if_needed "$backup_dir" runtime/generated/care-package-first-online-claims.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/care-package-pending-returns.json
   restore_local_state_file_if_needed "$backup_dir" runtime/addons/state.json
   restore_local_state_file_if_needed "$backup_dir" runtime/secrets/funcom-token.txt
@@ -1100,6 +1104,8 @@ restore_local_state_ownership() {
     runtime/generated/gameplay-profile.ini \
     runtime/generated/care-package.json \
     runtime/generated/care-package-grants.jsonl \
+    runtime/generated/care-package-grant-receipts.json \
+    runtime/generated/care-package-first-online-claims.json \
     runtime/generated/care-package-pending-returns.json \
     runtime/addons \
     runtime/addons/downloads \
