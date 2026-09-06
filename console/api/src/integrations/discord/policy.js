@@ -18,6 +18,7 @@ export const DISCORD_CAPABILITIES = Object.freeze({
   OPS_INVENTORY_READ: "ops:inventory:read",
   OPS_SOC_READ: "ops:soc:read",
   OPS_PROMETHEUS_READ: "ops:prometheus:read",
+  OPS_DASHBOARD_READ: "ops:dashboard:read",
   // PLAYER_LINK_WRITE is intentionally NOT part of the observer/moderator/
   // admin/owner tier ladder (see requireSelfScopedCapability() below /
   // docs/security/discord-player-link-hardening.md FINDING-LINK-2). It is a
