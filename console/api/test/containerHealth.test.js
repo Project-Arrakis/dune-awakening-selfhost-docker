@@ -18,31 +18,42 @@ test("container health parses and joins Docker stats with real status output", (
   }]);
 });
 
-test("container health scopes Docker stats to explicit containers from the configured Compose project", async () => {
+test("container health includes Compose and host-mounted Dune services but excludes unrelated installations", async () => {
   const calls = [];
   const result = await collectContainerHealth({
     projectName: "dune-test",
+    hostRoot: "/srv/dune",
     run: async (command, args) => {
       calls.push({ command, args });
       if (args[0] === "ps") {
         return [
-          '{"ID":"abc123","Names":"dune-postgres","Status":"Up 2 hours (healthy)"}',
-          '{"ID":"def456","Names":"dune-console","Status":"Up 1 hour"}'
+          '{"ID":"abc123","Names":"dune-postgres","State":"running","Status":"Up 2 hours (healthy)"}',
+          '{"ID":"def456","Names":"dune-director","State":"running","Status":"Up 1 hour"}',
+          '{"ID":"stopped","Names":"dune-server-deepdesert-1-35","State":"exited","Status":"Exited (1) 2 hours ago"}',
+          '{"ID":"other","Names":"dune-unrelated","State":"running","Status":"Up 1 hour"}'
         ].join("\n");
       }
+      if (args[0] === "inspect") return [
+        { id: "abc123", labels: { "com.docker.compose.project": "dune-test" } },
+        { id: "def456", mounts: [{ Type: "bind", Source: "/srv/dune/runtime/director" }] },
+        { id: "stopped", mounts: [{ Type: "bind", Source: "/srv/dune/runtime/game/dd/Saved" }] },
+        { id: "other", labels: { "com.docker.compose.project": "other" }, mounts: [{ Type: "bind", Source: "/srv/dune-other/runtime" }] }
+      ].map(row => JSON.stringify(row)).join("\n");
       return [
         '{"Name":"dune-postgres","CPUPerc":"1.2%","MemUsage":"100MiB / 1GiB"}',
-        '{"Name":"dune-console","CPUPerc":"0.2%","MemUsage":"50MiB / 1GiB"}'
+        '{"Name":"dune-director","CPUPerc":"0.2%","MemUsage":"50MiB / 1GiB"}'
       ].join("\n");
     }
   });
-  assert.equal(result.containers.length, 2);
-  assert.equal(calls.length, 2);
+  assert.equal(result.containers.length, 3);
+  assert.equal(result.containers.find(row => row.name.includes("deepdesert")).status, "Exited (1) 2 hours ago");
+  assert.equal(result.containers.find(row => row.name.includes("deepdesert")).cpu, "N/A");
+  assert.equal(calls.length, 3);
   assert.deepEqual(calls[0], {
     command: "docker",
-    args: ["ps", "--filter", "label=com.docker.compose.project=dune-test", "--format", "{{json .}}"]
+    args: ["ps", "--all", "--no-trunc", "--format", "{{json .}}"]
   });
-  assert.deepEqual(calls[1], {
+  assert.deepEqual(calls[2], {
     command: "docker",
     args: ["stats", "--no-stream", "--format", "{{json .}}", "abc123", "def456"]
   });
@@ -68,4 +79,27 @@ test("container health fails closed instead of exposing every host container", a
   assert.equal(called, false);
   assert.deepEqual(result.containers, []);
   assert.match(result.error, /project name/i);
+});
+
+test("stopped installation volumes are listed without requesting statistics", async () => {
+  const calls = [];
+  const result = await collectContainerHealth({
+    projectName: "dune-test", hostRoot: "",
+    run: async (_command, args) => {
+      calls.push(args[0]);
+      if (args[0] === "ps") return JSON.stringify({ ID: "a", Names: "dune-server", State: "exited", Status: "Exited (0)" });
+      if (args[0] === "inspect") return JSON.stringify({ id: "a", mounts: [{ Type: "volume", Name: "dune-test_dune-server" }] });
+      throw new Error("Stopped containers must not receive a stats request");
+    }
+  });
+  assert.deepEqual(calls, ["ps", "inspect"]);
+  assert.equal(result.containers[0].status, "Exited (0)");
+  assert.equal(result.containers[0].memory, "N/A");
+});
+
+test("running containers remain visible if Docker stats omits them", () => {
+  const result = mergeContainerHealth("", JSON.stringify({ Names: "dune-director", State: "running", Status: "Up 1 minute" }));
+  assert.equal(result.length, 1);
+  assert.equal(result[0].status, "Up 1 minute");
+  assert.equal(result[0].cpu, "N/A");
 });
