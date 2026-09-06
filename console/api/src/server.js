@@ -947,7 +947,11 @@ async function handleApi(req, res) {
         return json(res, 401, { recoveryFailed: true, error: "That recovery code was not accepted. Check for typos, or use a different unused code." });
       }
       loginRateLimiter.recordSuccess(rateKey);
-      const session = auth.makeSession({ tier: "enroll", scope: "resetup", ttlMs: config.enrollmentSessionTtlMs, renewable: false });
+      // expectedFactorVersion snapshots the factor this resetup session is
+      // allowed to replace -- see auth.js's makeSession doc and
+      // secondFactorStore.js's commit() for why this must be factorVersion,
+      // not epoch (review finding, upstream PR #201, 2026-09-06).
+      const session = auth.makeSession({ tier: "enroll", scope: "resetup", ttlMs: config.enrollmentSessionTtlMs, renewable: false, expectedFactorVersion: consumed.factorVersion });
       setSessionCookie(res, session, config, { maxAgeSeconds: Math.floor(config.enrollmentSessionTtlMs / 1000) });
       audit(config, loginUrl, "auth.recovery-code-consumed", { ok: true });
       return json(res, 200, { resetupRequired: true, csrfToken: session.csrf });
@@ -1054,7 +1058,7 @@ async function handleApi(req, res) {
     let result;
     try {
       result = isResetup
-        ? await secondFactor.commit(session.pendingTotpSecret, { initialCounter: confirmMatch.counter })
+        ? await secondFactor.commit(session.pendingTotpSecret, { initialCounter: confirmMatch.counter, expectedFactorVersion: session.expectedFactorVersion })
         : await secondFactor.enroll(session.pendingTotpSecret, { initialCounter: confirmMatch.counter });
     } catch (err) {
       // A corrupt or newer-than-supported store surfacing here must fail closed
@@ -1065,17 +1069,32 @@ async function handleApi(req, res) {
       return secondFactorUnavailable(res, sanitizedUrl(req, "/api/auth/2fa/confirm"), req, err);
     }
     if (!result.ok) {
-      // enroll() only: already_configured -- another session enrolled first. End
-      // this one; the operator logs in with the factor that won.
+      // enroll() only: already_configured -- another session enrolled first.
+      // commit() only: stale_generation -- a DIFFERENT recovery (resetup)
+      // session already replaced the authenticator since this one started
+      // (review finding, upstream PR #201, 2026-09-06) -- this session's
+      // pendingTotpSecret is discarded, never written. Either way, end this
+      // session; the operator signs in with the factor that actually won.
       auth.invalidateSession(session.id);
       clearSessionCookie(res, config);
       audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: result.reason });
-      return json(res, 409, { error: "Two-factor was already set up on this console. Sign in again with your authenticator." });
+      const message = result.reason === "stale_generation"
+        ? "This authenticator was already replaced from a different recovery session. Sign in with the new authenticator, or start recovery again if you no longer have it."
+        : "Two-factor was already set up on this console. Sign in again with your authenticator.";
+      return json(res, 409, { error: message });
     }
     // Succeeded: show the recovery codes ONCE, end the setup session, and require
     // a fresh password+TOTP login.
     auth.invalidateSession(session.id);
     clearSessionCookie(res, config);
+    if (isResetup) {
+      // Any OTHER outstanding recovery session is now definitely stale -- its
+      // own confirm would be caught by commit()'s expectedFactorVersion check
+      // regardless, but ending it here surfaces a clean "sign in again"
+      // instead of a generation-mismatch error at the end of a full
+      // re-enrollment attempt (review finding, upstream PR #201, 2026-09-06).
+      auth.invalidateResetupSessions(session.id);
+    }
     audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: true, resetup: isResetup });
     audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), isResetup ? "settings.totp-regenerated" : "settings.totp-setup", { ok: true });
     return json(res, 200, { [isResetup ? "reconfigured" : "enrolled"]: true, recoveryCodes: result.codes }, { "cache-control": "no-cache, no-store, must-revalidate", pragma: "no-cache", expires: "0" });

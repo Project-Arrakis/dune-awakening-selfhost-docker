@@ -56,11 +56,17 @@ export function createAuth(config) {
   // second-factor enrollment session (RFC §4) that the route gate restricts to
   // the enrollment endpoints only. renewable:false keeps the enrollment window
   // fixed so it can't be extended by activity.
-  function makeSession({ tier = "owner", userId = "", username = "", displayName = "", guildId = "", scope = null, ttlMs = DEFAULT_TTL_MS, renewable = true } = {}) {
+  // expectedFactorVersion: only set on a recovery-login resetup session
+  // (scope:"resetup") -- the second-factor store's factorVersion (see
+  // secondFactorStore.js) as of the recovery code that minted this session,
+  // re-checked by commit() at confirm time so a stale/concurrent resetup
+  // session can't overwrite an authenticator a different session already
+  // replaced (review finding, upstream PR #201, 2026-09-06).
+  function makeSession({ tier = "owner", userId = "", username = "", displayName = "", guildId = "", scope = null, ttlMs = DEFAULT_TTL_MS, renewable = true, expectedFactorVersion = null } = {}) {
     const id = randomBytes(32).toString("base64url");
     const csrf = randomBytes(24).toString("base64url");
     const expiresAt = now() + ttlMs;
-    const session = { id, csrf, expiresAt, tier, userId, username, displayName, guildId, scope, renewable };
+    const session = { id, csrf, expiresAt, tier, userId, username, displayName, guildId, scope, renewable, expectedFactorVersion };
     sessions.set(id, session);
     return { ...session, cookie: `${id}.${sign(id)}` };
   }
@@ -110,6 +116,26 @@ export function createAuth(config) {
     return count;
   }
 
+  // Invalidate every OTHER outstanding recovery (resetup-scope) session --
+  // called when one resetup session successfully replaces the authenticator
+  // (review finding, upstream PR #201, 2026-09-06). commit()'s
+  // expectedFactorVersion check already stops a stale sibling from
+  // overwriting the newly-committed factor; this additionally ends the
+  // sibling's session outright so returning to it surfaces an immediate,
+  // unambiguous "your session expired, sign in again" via the normal
+  // readSession() expiry path, rather than a confusing generation-mismatch
+  // error at the very end of a full re-enrollment flow. Returns the number of
+  // sessions invalidated.
+  function invalidateResetupSessions(exceptId) {
+    let count = 0;
+    for (const [id, session] of sessions) {
+      if (id === exceptId || session.scope !== "resetup") continue;
+      sessions.delete(id);
+      count++;
+    }
+    return count;
+  }
+
   function passwordMatches(value) {
     const left = Buffer.from(String(value || ""));
     const right = Buffer.from(config.adminPassword);
@@ -132,7 +158,7 @@ export function createAuth(config) {
     return session;
   }
 
-  return { makeSession, readSession, readSessionById, passwordMatches, requireAuth, invalidateSession, invalidatePasswordSessions };
+  return { makeSession, readSession, readSessionById, passwordMatches, requireAuth, invalidateSession, invalidatePasswordSessions, invalidateResetupSessions };
 }
 
 export function setSessionCookie(res, session, config = {}, { maxAgeSeconds = 43200 } = {}) {
