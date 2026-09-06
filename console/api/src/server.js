@@ -7343,6 +7343,25 @@ async function handleOAuthCallback(req, res) {
     audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "not_authorized", userId: identity.userId });
     return html(res, 403, oauthErrorPage("Discord sign-in succeeded, but this account is not authorized to sign in to this console. If you believe it should be, contact this server's administrator."));
   }
+  // Re-check disable/forget state ONE MORE TIME, immediately before minting a
+  // session (review finding, upstream PR #202, 2026-09-06). The route-dispatch
+  // gate above (`/api/auth/discord/callback`'s entry check) only reflects
+  // discordOAuthSoftDisabledInProcess as of the moment THIS request first
+  // arrived -- everything between that gate and here (the rate limiter, the
+  // handoff/role-mapping checks, and above all the two real network round
+  // trips in exchangeDiscordAuthCode()/fetchDiscordIdentity()) can take long
+  // enough for a concurrent Disable or Forget to complete in between. Without
+  // this second check, a callback that was already in flight when Disable/
+  // Forget was requested could still reach here and issue a real owner/admin/
+  // moderator/player session AFTER the operator had already been told
+  // Discord sign-in was off -- exactly the sequence Red-Blink reproduced.
+  // Checked the same way makeSession's public /api/auth/state does (line
+  // ~846): the in-process flag, not just the boot-time-stale config value.
+  if (config.discordOAuthDisabled || discordOAuthSoftDisabledInProcess) {
+    oauthCallbackRateLimiter.recordFailure(rateKey);
+    audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, reason: "disabled_in_flight", userId: identity.userId });
+    return html(res, 403, oauthErrorPage("Discord sign-in was disabled while this sign-in was in progress. Return to the console and sign in with the admin password, or ask an administrator to re-enable Discord sign-in."));
+  }
   // A successful Discord sign-in relieves this client's OAuth rate-limit
   // bucket (symmetric with the password-login route), so transient denials
   // during the flow do not linger against a user who ultimately succeeds.
