@@ -69,6 +69,7 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/backups/list",
     "/api/integrations/discord/ops/activity",
     "/api/integrations/discord/ops/combat",
+    "/api/integrations/discord/ops/dashboard",
     "/api/integrations/discord/ops/economy",
     "/api/integrations/discord/ops/inventory",
     "/api/integrations/discord/ops/prometheus",
@@ -1301,6 +1302,91 @@ test("ops/activity, ops/inventory, ops/soc, and ops/prometheus routes return rea
             body: JSON.stringify({ actor: observerActor })
           });
           assert.equal(locationResponse.status, 404);
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
+// ops/dashboard regression: this route was genuinely live through the
+// 2026-08-06 baseline, silently dropped from routes.js's opsRoutes
+// dispatch table by an unrelated upstream refactor, and 404'd for a real,
+// unnoticed period before being caught (see dune-awakening-selfhost-docker#695).
+// opsDashboardProvider() itself was never touched by that regression --
+// only the dispatch wiring was missing -- so this exercises the actual
+// HTTP route path end to end, the same way the sibling OPS routes above
+// are tested, rather than calling the provider function directly.
+test("ops/dashboard route dispatches to opsDashboardProvider through the real HTTP path, and enforces admin/owner-only capability", async () => {
+  const tokenFile = "/tmp/discord-adapter-ops-dashboard-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-ops-dashboard-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-ops-dashboard-test-generated" };
+
+  const db = {
+    transaction: (fn) => fn(db),
+    async query(text) {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [] };
+      if (text.includes("from dune.player_state") && text.includes("count(*)::int as total_players")) {
+        return { rows: [{ total_players: 9, online_players: 4, players_dead: 1, active_last_1h: 0, active_last_24h: 0, active_last_7d: 0, inactive_players: 0, returning_players: 0, new_players: 0 }] };
+      }
+      return { rows: [] };
+    }
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+
+          // Admin (and, by the same admin/owner-only OPS_* pattern every
+          // other OPS capability follows, owner) can reach it.
+          const adminResponse = await fetch(`${base}/api/integrations/discord/ops/dashboard`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-admin"]) })
+          });
+          assert.equal(adminResponse.status, 200);
+          const adminBody = await adminResponse.json();
+          assert.equal(adminBody.ok, true);
+          // Aggregates all eight sub-providers, including the always-a-
+          // placeholder location one -- same mixed-shape contract
+          // opsDashboardProvider's own comment describes.
+          assert.deepEqual(
+            Object.keys(adminBody.dashboard).sort(),
+            ["activity", "combat", "economy", "inventory", "location", "prometheus", "resources", "soc"]
+          );
+          assert.equal(adminBody.dashboard.activity.result.totalPlayers, 9, "real data reaches the aggregate through the actual dispatch path, not a stub");
+          assert.equal(adminBody.dashboard.location.status, "planned");
+
+          // Moderator and observer are correctly rejected -- OPS_DASHBOARD_READ
+          // follows the same admin/owner-only pattern as every other OPS_*
+          // capability (see discordPolicy.test.js's "OPS capabilities are
+          // granted only to admin and owner tiers").
+          const moderatorResponse = await fetch(`${base}/api/integrations/discord/ops/dashboard`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-moderator"]) })
+          });
+          assert.equal(moderatorResponse.status, 403);
 
           server.close();
           resolve();

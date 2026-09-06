@@ -165,7 +165,7 @@ test("OPS capabilities are granted only to admin and owner tiers", () => {
     .filter(([name]) => name.startsWith("OPS_"))
     .map(([, capability]) => capability);
 
-  assert.equal(opsCapabilities.length, 7);
+  assert.equal(opsCapabilities.length, 8);
   for (const capability of opsCapabilities) {
     assert.equal(discordActorCan(actor(["role-observer"]), mapping, capability), false);
     assert.equal(discordActorCan(actor(["role-moderator"]), mapping, capability), false);

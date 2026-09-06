@@ -285,6 +285,12 @@ export const COMMAND_METADATA = Object.freeze({
     capability: DISCORD_CAPABILITIES.OPS_PROMETHEUS_READ,
     params: []
   },
+  [DISCORD_ADAPTER_ROUTES.OPS_DASHBOARD]: {
+    group: "ops", subcommand: "dashboard",
+    description: "Combined summary aggregating all other ops providers.",
+    capability: DISCORD_CAPABILITIES.OPS_DASHBOARD_READ,
+    params: []
+  },
   [DISCORD_ADAPTER_ROUTES.BROADCAST]: {
     group: "admin", subcommand: "broadcast",
     description: "Send a message to all in-game players.",
