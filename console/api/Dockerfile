@@ -59,7 +59,7 @@ RUN apt-get update \
     && chmod +x /usr/local/bin/docker \
     && rm -rf /tmp/docker /tmp/docker.tgz \
     && mkdir -p /usr/local/lib/docker/cli-plugins \
-    && curl -fsSL "https://github.com/docker/compose/releases/download/v5.5.0/docker-compose-linux-${compose_arch}" \
+    && curl -fsSL "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-${compose_arch}" \
         -o /usr/local/lib/docker/cli-plugins/docker-compose \
     && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
     && docker --version \

@@ -33,7 +33,16 @@
     "Nu6VmPWUMvdPMeB7qErr",
     "123456789012345678",
     "143064109775060993",
-    "abcdefghijklmnopqrstuvwxyzABCDEFG123456"
+    "abcdefghijklmnopqrstuvwxyzABCDEFG123456",
+    # docs/integrations/discord-control-bot/admin-guide.md's curl example
+    # ("Authorization: Bearer local-dev-bot-api") -- pre-existing on main,
+    # confirmed via `git show origin/main:...`, not introduced by PR #692.
+    # Its own repo-wide scan (`gitleaks detect --source .`) never flagged
+    # it; only surfaced when a changed-file scan re-scanned the whole file
+    # because an unrelated part of it was edited. Added here (checked
+    # 2026-09-06) so the next PR touching this doc doesn't hit the same
+    # false positive.
+    "local-dev-bot-api"
   ]
 
 # NOTE: tests/db-system-backup-test.sh's synthetic secret fixtures

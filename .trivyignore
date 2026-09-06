@@ -154,3 +154,33 @@ CVE-2026-56865  # golang.org/x/mod
 # Re-check whenever a newer Compose release ships, and drop this line once
 # one does.
 CVE-2026-56854  # golang.org/x/crypto/ssh -- see note above; fixed upstream on main, not yet released
+
+# Added 2026-09-06 (issue #691, PR #692). Per this file's policy a version
+# bump was checked FIRST: Docker Compose v5.5.1 (published after v5.5.0) is
+# now the latest tagged release -- confirmed via
+# `gh api repos/docker/compose/releases/latest` -- and IS being applied
+# (see the Dockerfile's compose_arch curl line, bumped v5.5.0 -> v5.5.1 in
+# the same PR): the one real-fix-available finding from this batch,
+# CVE-2026-84304 (google.golang.org/grpc, fixed 1.83.0 -> 1.83.1), is
+# resolved by that bump, not suppressed here. The CVE-2026-56854 entry
+# directly above should be re-checked against v5.5.1 next time this section
+# is touched -- not verified in this pass whether v5.5.1 actually carries
+# the x/crypto fix.
+#
+# The remaining findings below have no fix bump available: Debian security
+# has not published fixes for these util-linux-family CVEs yet (same
+# package group as CVE-2026-53612/-53613/-53614/-53615 above --
+# bsdutils/libblkid1/liblastlog2-2/libmount1/libsmartcols1/libuuid1/login/
+# mount/util-linux -- just a newer round). Re-check on the next apt-get
+# update layer rebuild.
+CVE-2026-76642  # util-linux family -- failed external mount helper still runs privileged X-mount post-hooks
+CVE-2026-78408  # util-linux family -- nsenter --join-cgroup leaks root cgroup migration authority
+CVE-2026-78409  # util-linux family -- X-mount.subdir detached-tree resolution can escape via intermediate symlinks
+CVE-2026-78410  # util-linux family -- restricted bind mounts do not pin the source, allowing X-mount.owner/group/mode changes
+# libsystemd0's CVE-2026-16742 (systemd-homed local privilege escalation via
+# missing home-record signature verification) does not apply to this image:
+# systemd itself never runs in this container (no init system, no PID 1
+# systemd, no systemd-homed service) -- libsystemd0 is a linked shared
+# library pulled in transitively, never an active daemon. No Debian fix
+# available at triage time regardless.
+CVE-2026-16742  # libsystemd0 -- systemd-homed privesc; systemd-homed never runs in this container

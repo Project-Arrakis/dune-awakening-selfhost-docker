@@ -522,6 +522,88 @@ test("adapter route rejects an unsigned or spoofed actor when DUNE_DISCORD_ACTOR
   }
 });
 
+// Issue #691 code-review finding: guildOwnerId is NOT part of
+// actorSignature.js's SIGNED_ACTOR_FIELDS, so once DUNE_DISCORD_ACTOR_SECRET
+// is configured, a party able to obtain one validly-signed low-privilege
+// envelope could inject an unsigned guildOwnerId matching their own (signed)
+// userId to self-escalate to owner tier -- the signature never covers that
+// field, so it still verifies. routes.js strips actor.guildOwnerId whenever
+// signing is configured, closing this: prove it end-to-end through the real
+// HTTP path, not just at the policy.js unit level (a prior review pass
+// flagged that the unit tests alone didn't exercise this).
+test("adapter route strips an unsigned guildOwnerId self-escalation attempt when DUNE_DISCORD_ACTOR_SECRET is configured", async () => {
+  const tokenFile = "/tmp/discord-adapter-owner-strip-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const OLD_SECRET = process.env.DUNE_DISCORD_ACTOR_SECRET;
+  process.env.DUNE_DISCORD_ACTOR_SECRET = "owner-strip-test-actor-secret";
+  // Deliberately no DISCORD_ADMIN_ROLE_IDS/DISCORD_OWNER_ROLE_IDS configured
+  // -- the only way this actor could reach the admin/owner-only OPS
+  // capability is via the guildOwnerId claim.
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-owner-strip-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-owner-strip-test-generated" };
+
+  const { signActorPayload, ACTOR_SIGNATURE_HEADER, ACTOR_TIMESTAMP_HEADER } = await import("../src/integrations/discord/actorSignature.js");
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+          // No admin/owner role -- only what a real observer-tier member
+          // would legitimately hold.
+          const lowPrivActor = actor(["role-observer"]);
+          const timestamp = Math.floor(Date.now() / 1000);
+          const route = "/api/integrations/discord/ops/activity";
+          // Signature covers ONLY the 5 real SIGNED_ACTOR_FIELDS -- it is
+          // computed exactly as a legitimate signer would for this actor.
+          const { signature } = signActorPayload(lowPrivActor, "owner-strip-test-actor-secret", timestamp, route);
+          // The self-escalation attempt: guildOwnerId is added on top of the
+          // validly-signed actor, claiming this same user owns the guild.
+          // Since guildOwnerId isn't hashed, the signature above still
+          // matches this modified body.
+          const escalatedActor = { ...lowPrivActor, guildOwnerId: lowPrivActor.userId };
+
+          const response = await fetch(`${base}${route}`, {
+            method: "POST",
+            headers: {
+              ...auth,
+              "content-type": "application/json",
+              [ACTOR_SIGNATURE_HEADER]: signature,
+              [ACTOR_TIMESTAMP_HEADER]: String(timestamp)
+            },
+            body: JSON.stringify({ actor: escalatedActor })
+          });
+          // If guildOwnerId were honored here, this would be 200 (OPS_*
+          // capabilities are admin/owner only) -- it must be 403, proving
+          // the unsigned claim was stripped before discordActorTier() ran.
+          assert.equal(response.status, 403);
+          const body = await response.json();
+          assert.equal(body.code, "not_authorized");
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+    if (OLD_SECRET === undefined) delete process.env.DUNE_DISCORD_ACTOR_SECRET;
+    else process.env.DUNE_DISCORD_ACTOR_SECRET = OLD_SECRET;
+  }
+});
+
 // Cross-route replay rejection — FINDING-LINK-1 hardening. A signature that
 // covered only actor identity fields (not the route) could be captured from
 // one legitimate request (e.g. a routine "status" call, which requires no
