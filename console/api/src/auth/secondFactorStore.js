@@ -25,7 +25,13 @@
 // On-disk shape (runtime/generated/console-second-factor.json, mode 0600):
 //   { "version": 1,
 //     "totp": { "secret": "<base64 raw bytes>", "lastUsedCounter": <int> },
-//     "recoveryCodes": ["<64-hex digest>", ...] }
+//     "recoveryCodes": ["<64-hex digest>", ...],
+//     "epoch": <int>, "factorVersion": <int> }
+// factorVersion is distinct from epoch (below): epoch advances on every
+// mutating op (including recovery-code consumption/regeneration, for
+// rollback detection); factorVersion advances ONLY when the TOTP secret
+// itself is replaced (enroll()/commit()), which is what lets commit() detect
+// a stale concurrent recovery session -- see commit()'s own comment.
 // The TOTP secret is stored as base64 of the RAW bytes and decoded to a Buffer
 // at the verify boundary -- verifyTotpMatch is never handed base32.
 // The secret is stored reversibly (base64 is encoding, not encryption) in a 0600
@@ -209,6 +215,20 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
       throw new SecondFactorCorruptError("second-factor store epoch is malformed");
     }
     parsed.epoch = Number.isInteger(parsed.epoch) ? parsed.epoch : 0;
+    // factorVersion: bumped ONLY when the TOTP secret itself is replaced
+    // (enroll()/commit()), unlike epoch above which also advances on every
+    // recovery-code consumption/regeneration. This is what a resetup session
+    // (recovery login) snapshots and re-checks at confirm time (review finding,
+    // upstream PR #201, 2026-09-06): two outstanding recovery sessions both
+    // bump epoch merely by being minted, so epoch alone can't tell "the factor
+    // I'm about to replace is still the one I started from" from "someone else
+    // also just logged in via recovery" -- factorVersion can, since only an
+    // actual secret replacement moves it. Same missing-field-means-0 backward
+    // compatibility as epoch.
+    if (parsed.factorVersion !== undefined && !Number.isInteger(parsed.factorVersion)) {
+      throw new SecondFactorCorruptError("second-factor store factorVersion is malformed");
+    }
+    parsed.factorVersion = Number.isInteger(parsed.factorVersion) ? parsed.factorVersion : 0;
     return parsed;
   }
 
@@ -228,7 +248,7 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
   // enroll() always starts a fresh install at 0; commit() carries the prior
   // state's epoch forward (or starts at 0 if none existed) so a legitimate
   // rotation is never mistaken for the backward jump it's meant to catch.
-  function makeState(secretBytes, digests, initialCounter = NO_COUNTER, epoch = 0) {
+  function makeState(secretBytes, digests, initialCounter = NO_COUNTER, epoch = 0, factorVersion = 0) {
     if (!Number.isInteger(initialCounter) || initialCounter < NO_COUNTER) {
       throw new RangeError(`initialCounter must be an integer >= ${NO_COUNTER}, got ${initialCounter}`);
     }
@@ -237,6 +257,7 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
       totp: { secret: Buffer.from(secretBytes).toString("base64"), lastUsedCounter: initialCounter },
       recoveryCodes: digests,
       epoch,
+      factorVersion,
     };
   }
 
@@ -300,15 +321,35 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
       // false) and resurrected its already-spent recovery codes. W+1 puts the
       // old file strictly behind, so the restore is detected.
       const seedWatermark = await loadWatermarkEpoch();
-      await persistAndBumpWatermark(makeState(secretBytes, digests, initialCounter, seedWatermark > 0 ? seedWatermark + 1 : 0));
+      await persistAndBumpWatermark(makeState(secretBytes, digests, initialCounter, seedWatermark > 0 ? seedWatermark + 1 : 0, 0));
       return { ok: true, codes };
     });
   }
 
   // Overwrite the second factor with a fresh TOTP secret + recovery-code set
-  // (deliberate rotation / re-key). Unconditional -- callers wanting
-  // enroll-if-absent must use enroll(). Returns { ok:true, codes }.
-  function commit(secretBytes, { count, initialCounter } = {}) {
+  // (deliberate rotation / re-key). Unconditional UNLESS the caller passes
+  // expectedFactorVersion -- callers wanting enroll-if-absent must use
+  // enroll(). Returns { ok:true, codes } or, when expectedFactorVersion is
+  // given and stale, { ok:false, reason:"stale_generation" } without touching
+  // the current (newer) factor.
+  //
+  // expectedFactorVersion closes a real gap (review finding, upstream PR
+  // #201, 2026-09-06): a recovery login snapshots factorVersion at the moment
+  // its recovery code is consumed and carries it on the resulting resetup
+  // session (see server.js). Two resetup sessions opened from two different
+  // recovery codes both start from the SAME factorVersion; the first one to
+  // confirm legitimately replaces the factor and bumps it. Without this
+  // check, the second (now-stale) session's confirm would still unconditionally
+  // overwrite via the same commit() call, silently reverting the operator's
+  // just-replaced authenticator to one the operator never actually finished
+  // setting up in that browser tab -- both confirms returning 200, and the
+  // authenticator that "won" depending only on which HTTP request happened to
+  // be handled last. Checked against factorVersion, not epoch: epoch also
+  // advances on every recovery-code consumption (including the second
+  // session's own), so an epoch-based check would have wrongly rejected the
+  // FIRST (legitimate) confirm too, since epoch had already moved once
+  // between the two sessions being minted.
+  function commit(secretBytes, { count, initialCounter, expectedFactorVersion } = {}) {
     return runExclusive(async () => {
       assertSecretBytes(secretBytes);
       // loadRaw() returns null ONLY for a genuinely-absent store; it THROWS
@@ -318,6 +359,9 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
       // re-key overwrite a newer store with a fresh v1 and destroy exactly the
       // state the version guard exists to protect.
       const previous = await loadRaw();
+      if (expectedFactorVersion !== undefined && (previous === null || previous.factorVersion !== expectedFactorVersion)) {
+        return { ok: false, reason: "stale_generation" };
+      }
       // Never land at or below the watermark -- same break-glass reasoning as
       // enroll() above. `previous` is null when the store was deleted and this
       // is a re-key rather than a rotation, which is exactly when (-1)+1 = 0
@@ -328,8 +372,9 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
       // detected as a rollback rather than silently accepted at the same epoch.
       const commitWatermark = await loadWatermarkEpoch();
       const epoch = Math.max((previous?.epoch ?? -1) + 1, commitWatermark > 0 ? commitWatermark + 1 : 0);
+      const factorVersion = (previous?.factorVersion ?? -1) + 1;
       const { codes, digests } = count ? generateRecoveryCodes(count) : generateRecoveryCodes();
-      await persistAndBumpWatermark(makeState(secretBytes, digests, initialCounter, epoch));
+      await persistAndBumpWatermark(makeState(secretBytes, digests, initialCounter, epoch, factorVersion));
       return { ok: true, codes };
     });
   }
@@ -379,7 +424,12 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
       state.recoveryCodes = result.remaining;
       state.epoch += 1;
       await persistAndBumpWatermark(state);
-      return { ok: true, remaining: result.remaining.length };
+      // factorVersion is returned (not advanced -- consuming a code doesn't
+      // change the factor) so the caller can snapshot "the factor I'm
+      // starting a resetup session against" and hand it back to commit() as
+      // expectedFactorVersion, closing the concurrent-recovery-session gap
+      // described on commit() above.
+      return { ok: true, remaining: result.remaining.length, factorVersion: state.factorVersion };
     });
   }
 
