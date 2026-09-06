@@ -113,12 +113,31 @@ export function normalizeDiscordActor(value) {
     username: requiredString(value.username, "actor.username"),
     roleIds: normalizeStringList(value.roleIds),
     interactionId: optionalString(value.interactionId),
-    commandName: optionalString(value.commandName)
+    commandName: optionalString(value.commandName),
+    // Issue #691: optional, unsigned claim of who Discord itself reports as
+    // this guild's real owner -- see discordActorTier()'s own comment for
+    // why it's trusted at the same level roleIds already is today.
+    guildOwnerId: optionalString(value.guildOwnerId)
   };
   return actor;
 }
 
+// Issue #691: owner-tier is checked FIRST against real Discord guild
+// ownership (actor.userId === actor.guildOwnerId), before falling back to
+// the role-based mapping.ownerRoleIds -- mirroring mentat's own rbac.js
+// isGuildOwner()/resolveActorAuthTier(), so the bot and this adapter cannot
+// disagree about who holds owner-tier access for the same Discord member.
+// `guildOwnerId` is NOT part of actorSignature.js's HMAC-signed field set
+// (a deliberate, tracked deferral -- see issue #691's own body for why
+// expanding that set is a separate, coordinated, versioned change) -- it is
+// trusted at exactly the same level `roleIds` already is today for any
+// deployment that has not opted into DUNE_DISCORD_ACTOR_SECRET signing.
+// Absent (older bot, or a bot that hasn't been updated for this field)
+// falls through to the pre-existing role-based check unchanged.
 export function discordActorTier(actor, mapping) {
+  if (actor?.userId != null && actor?.guildOwnerId && String(actor.userId) === String(actor.guildOwnerId)) {
+    return "owner";
+  }
   const roleIds = new Set(normalizeStringList(actor?.roleIds));
   const normalized = normalizeRoleMapping(mapping);
   if (normalized.ownerRoleIds.some((roleId) => roleIds.has(roleId))) return "owner";
