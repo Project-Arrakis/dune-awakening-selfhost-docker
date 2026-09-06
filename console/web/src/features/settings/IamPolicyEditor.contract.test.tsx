@@ -49,6 +49,30 @@ function mockLoad() {
   });
 }
 
+// Regression test for the exact bug Red-Blink reported on upstream PR #202
+// (2026-09-06): when the initial GET /api/settings/iam/policies request
+// fails, the component used to `return` its "Failed to load" error section
+// immediately after the load effect -- BEFORE the several useMemo Hooks
+// declared further down the component body. The very first render (catalog
+// and loadError both still their initial falsy values) always fell through
+// past that early return and called every Hook; the RE-render triggered by
+// the failed fetch's setLoadError(true) then hit the early return and
+// called fewer Hooks than the first render did, which React detects and
+// throws "Rendered fewer hooks than expected" for -- crashing the one render
+// that was supposed to show Retry, instead of showing it.
+describe("IamPolicyEditor: a failed initial load shows Retry instead of crashing (review finding)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("renders the Failed-to-load / Retry section, without throwing a hooks-order error, when the policy fetch rejects", async () => {
+    mockApi.mockImplementation(() => Promise.reject(new Error("network error")));
+    render(<IamPolicyEditor />);
+    // Before the fix, this render throws ("Rendered fewer hooks than
+    // expected") instead of ever reaching this text.
+    expect(await screen.findByText("Failed to load IAM policies")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  });
+});
+
 describe("IamPolicyEditor server contracts", () => {
   beforeEach(() => vi.clearAllMocks());
 
