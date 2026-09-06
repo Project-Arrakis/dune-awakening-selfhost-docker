@@ -164,15 +164,20 @@ describe("IamPolicyEditor server contracts", () => {
 describe("IamPolicyEditor: ambiguous action labels get a plain-language explanation (live-testing finding)", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("relabels the Deny-locked, jargon action players:mutate to something meaningful, with a description tooltip too", async () => {
+  it("gives the Deny-locked, jargon-adjacent action players:give-item a description tooltip", async () => {
+    // players:give-item is one of the players:mutate economy successors
+    // (policy.js's CROWN_JEWEL_DENY_ACTIONS) -- its bare mechanical label
+    // ("Give Item") is clear enough on its own that it isn't relabeled the
+    // way the old, un-split "Mutate" was, but it still gets a tooltip so an
+    // operator can see why it's blocked without leaving the grid.
     const dup = structuredClone(CATALOG) as { policies: typeof CATALOG.policies; actions: string[]; actionMap: Record<string, string>; allActions: string[]; namespaces: Record<string, unknown> };
     dup.policies.admin = {
       version: 1, tier: "admin",
-      statements: [{ Effect: "Allow", Action: ["players:*"] }, { Effect: "Deny", Action: ["players:mutate"] }],
+      statements: [{ Effect: "Allow", Action: ["players:*"] }, { Effect: "Deny", Action: ["players:give-item"] }],
     };
     dup.actions = ["POST /api/players/give-item"];
-    dup.actionMap = { "POST /api/players/give-item": "players:mutate" };
-    dup.allActions = ["players:mutate"];
+    dup.actionMap = { "POST /api/players/give-item": "players:give-item" };
+    dup.allActions = ["players:give-item"];
     mockApi.mockImplementation((path: string, opts?: RequestInit) => {
       if (path === "/api/settings/iam/policies" && (!opts || opts.method === undefined)) return Promise.resolve(dup as never);
       return Promise.reject(new Error("unexpected"));
@@ -180,13 +185,10 @@ describe("IamPolicyEditor: ambiguous action labels get a plain-language explanat
     render(<IamPolicyEditor />);
     fireEvent.click(await screen.findByText("Admin"));
 
-    // The bare mechanical label ("Mutate") is overridden entirely -- an
-    // operator shouldn't have to hover to learn what an action does.
-    expect(screen.queryByText("Mutate")).toBeNull();
-    const label = await screen.findByText("Give Items / Currency");
-    expect(label.getAttribute("title")).toMatch(/give items, add currency/i);
+    const label = await screen.findByText("Give Item");
+    expect(label.getAttribute("title")).toMatch(/economy-inflation/i);
     const row = label.closest("label")!;
-    expect(row.getAttribute("title")).toMatch(/give items, add currency/i);
+    expect(row.getAttribute("title")).toMatch(/economy-inflation/i);
     expect(row.getAttribute("title")).toMatch(/blocked by a deny rule/i);
   });
 

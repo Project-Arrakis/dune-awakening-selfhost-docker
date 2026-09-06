@@ -55,7 +55,13 @@ function actionLabel(action: string): string {
 // why they can't grant. Not exhaustive: only actions where the bare label is
 // genuinely ambiguous get an entry.
 const ACTION_DESCRIPTIONS: Record<string, string> = {
-  "players:mutate": "Give items, add currency, or reset a player's progression (economy).",
+  "players:give-item": "Gives items, vehicles, or augments into the world (economy-inflation risk).",
+  "players:grant": "Grants currency, XP, reputation, unlocks, or skill points -- progression handed out rather than earned.",
+  "players:reset": "Destroys a player's progression (full reset, journey, keystones) -- irreversible from their side.",
+  "players:delete-item": "Destroys one row of a player's inventory.",
+  "players:edit-item": "Edits one row of a player's inventory in place.",
+  "players:repair": "Repairs gear, decayed vehicles, a stuck login queue, or refills water/fuel.",
+  "players:recover": "Restores or rewrites a player character.",
   "settings:*": "IAM policies, the admin password, the console port, and 2FA recovery codes.",
   "server:write-credentials": "The Funcom game-server token and the server's public IP.",
   "database:write-config": "The database password.",
@@ -84,14 +90,15 @@ const ACTION_DESCRIPTIONS: Record<string, string> = {
 // its own, and a hover tooltip alone doesn't fix that: an operator scanning
 // the grid shouldn't have to hover every row to find the ones that matter.
 // Override the VISIBLE label for exactly these -- the admin:*:read catalog
-// lookups (which also collide in name with unrelated live-data namespaces,
-// vehicles especially) and players:mutate (the economy-mutation bucket,
-// which "Mutate" alone gives no hint of).
+// lookups, which also collide in name with unrelated live-data namespaces
+// (vehicles especially). The players:mutate economy successors below
+// (give-item, grant, reset, delete-item, edit-item, repair, recover) don't
+// need an override: their mechanical labels are already self-explanatory,
+// unlike the bare "Mutate" the old, un-split action used to render as.
 const ACTION_LABEL_OVERRIDES: Record<string, string> = {
   "admin:items:read": "Item Catalog",
   "admin:vehicles:read": "Vehicle Catalog",
   "admin:skills:read": "Skill Catalog",
-  "players:mutate": "Give Items / Currency",
 };
 
 function actionDescription(action: string): string {
