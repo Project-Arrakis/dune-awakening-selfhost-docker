@@ -1489,11 +1489,19 @@ async function handleApi(req, res) {
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
   if (path === "/api/settings/iam/policies" && req.method === "GET") {
     // The Access Control editor needs the action catalog, not just the policy
-    // documents: `actions` (route keys), `actionMap` (route -> IAM action) and
-    // `namespaces`. Returning only { policies } crashed the tab on load.
+    // documents: `actionMap` (route -> IAM action), `allActions` (the
+    // complete vocabulary) and `namespaces`. Returning only { policies }
+    // crashed the tab on load.
+    //
+    // `actions` matches upstream's real main shape (the action-name
+    // vocabulary, same as allActions), not this fork's own older route-keys
+    // contract -- pinned by policyActionValidation.test.js's "the policies
+    // endpoint hands back the vocabulary" test. The editor itself doesn't
+    // read `actions` either way (it reads allActions/actionMap; see
+    // IamPolicyEditor.tsx).
     return json(res, 200, {
       policies: getAllPolicies(),
-      actions: Object.keys(ROUTE_ACTIONS).sort(),
+      actions: [...allKnownActions()].sort(),
       actionMap: ROUTE_ACTIONS,
       // The COMPLETE IAM action vocabulary, including parameterized-route
       // actions (players:moderate/teleport, bases:delete, vehicles:delete-item)
