@@ -434,14 +434,14 @@ export const REGEX_ACTIONS_BY_METHOD = {
   "PUT /api/settings/api-keys/":    "settings:write",
   "DELETE /api/settings/api-keys/": "settings:write",
 
-  "POST /api/players/":    "players:mutate",
-  "DELETE /api/players/":  "players:mutate",
-  "PATCH /api/players/":   "players:mutate",
   // PUT included for parity with the /api/bases/ bucket: without it a future
   // PUT /api/players/* route with no explicit entry would fall through to the
   // method-agnostic REGEX_ACTIONS "/api/players/" -> players:read fallback and
-  // be authorized for every read-holding tier instead of owner-only mutate.
-  "PUT /api/players/":     "players:mutate",
+  // be authorized for every read-holding tier instead of failing closed.
+  // Upstream has no PUT /api/players/* route today and carries no equivalent
+  // entry; kept here as this fork's own defense-in-depth, pointed at the same
+  // players:unclassified sentinel the other three methods use below.
+  "PUT /api/players/":     "players:unclassified",
 
   // ---- *:unclassified sentinels ----
   //
@@ -452,9 +452,11 @@ export const REGEX_ACTIONS_BY_METHOD = {
   // DELETE with no sentinel here resolves to a READ action and runs under a
   // read-only grant. Same trap the vehicles:system-custodian entry documents.
   //
-  // Coverage is per method and currently uneven: guilds/addons/blueprints have
-  // POST/DELETE, and no namespace has PUT (players is now fully classified
-  // above, not a sentinel).
+  // Coverage is per method and currently uneven: players has POST/DELETE/PATCH/PUT,
+  // guilds/addons/blueprints have POST/DELETE, and no namespace has PUT.
+  "POST /api/players/":    "players:unclassified",
+  "DELETE /api/players/":  "players:unclassified",
+  "PATCH /api/players/":   "players:unclassified",
 
   // Sentinel; see *:unclassified above.
   "POST /api/guilds/":     "guilds:unclassified",
@@ -492,16 +494,6 @@ export const REGEX_ACTIONS_BY_METHOD = {
 // the part that would distinguish them. Routes that need that distinction
 // go here instead, tested as a real regex before the prefix fallback.
 export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
-  // --- Player MODERATION, split out of the players:mutate economy bucket so a
-  //     moderator/admin can act on an individual griefer (kick/ban/teleport)
-  //     WITHOUT holding give-item / add-currency / reset-progression. Every
-  //     other POST/DELETE/PATCH /api/players/* route still falls through to the
-  //     "POST /api/players/" -> players:mutate prefix rule below. These are
-  //     checked first (patterns run before the prefix fallback). ---
-  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/kick$/,     action: "players:kick" },
-  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/ban$/,      action: "players:ban" },
-  { method: "DELETE", pattern: /^\/api\/players\/[^/]+\/ban$/,      action: "players:ban" },
-  { method: "POST",   pattern: /^\/api\/players\/[^/]+\/teleport$/, action: "players:teleport" },
   // DELETE /api/bases/{baseId} — the actual, irreversible base delete.
   // Deliberately its own action rather than the shared bases:mutate bucket
   // every other base mutation uses (refills, permission edits, cancelling

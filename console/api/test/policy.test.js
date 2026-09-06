@@ -423,15 +423,20 @@ test("setPolicies refuses to save a crown-jewel action reaching a non-owner tier
 test("setPolicies refuses to save a crown-jewel action reaching a non-owner tier via a removed Deny", () => {
   const docs = {
     owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
-    // moderator's own Allow uses a namespace wildcard that reaches players:mutate,
-    // with no Deny at all to stop it (the mistake: assuming "players:*" is safe
-    // because the default moderator policy never included the economy action).
+    // moderator's own Allow uses a namespace wildcard that reaches the
+    // players:mutate economy successors (players:give-item and friends) and
+    // the players:unclassified sentinel, with no Deny at all to stop it (the
+    // mistake: assuming "players:*" is safe because the default moderator
+    // policy never included them). setPolicies reports whichever of those
+    // crownJewelActions() finds first (allKnownActions()'s own build order,
+    // not CROWN_JEWEL_DENY_ACTIONS' declaration order) -- either is a valid
+    // catch, so this only pins that SOME players crown jewel is caught.
     moderator: { version: 1, tier: "moderator", statements: [{ Effect: "Allow", Action: ["players:*"] }] },
   };
   const result = setPolicies(docs);
   assert.equal(result.ok, false);
   assert.match(result.error, /moderator/);
-  assert.match(result.error, /players:mutate/);
+  assert.match(result.error, /players:(give-item|grant|reset|delete-item|edit-item|repair|recover|unclassified)/);
 });
 
 test("setPolicies still saves a non-owner tier whose Deny keeps every crown-jewel action blocked", () => {
@@ -439,7 +444,12 @@ test("setPolicies still saves a non-owner tier whose Deny keeps every crown-jewe
     owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
     admin: { version: 1, tier: "admin", statements: [
       { Effect: "Allow", Action: ["*"] },
-      { Effect: "Deny", Action: ["settings:*", "players:mutate", "database:mutate", "database:export", "database:write-config", "server:write-credentials", "admin:transfer-settings:write", "updates:apply", "updates:fix", "updates:repair", "backups:restore", "backups:import", "addons:install", "addons:update", "setup:write", "carepackage:grant", "carepackage:write-config", "exchange:market", "exchange:market-write"] },
+      // The players:mutate economy successors named individually, not the
+      // bare "players:mutate" alias itself -- setPolicies' deprecatedActions
+      // guard refuses any save naming a removed action outright (a separate,
+      // earlier check than this one), so a Deny using the removed alias
+      // would never reach the crown-jewel check this test exercises.
+      { Effect: "Deny", Action: ["settings:*", "players:give-item", "players:grant", "players:reset", "players:delete-item", "players:edit-item", "players:repair", "players:recover", "players:unclassified", "database:mutate", "database:execute", "database:export", "database:write-config", "server:write-credentials", "admin:transfer-settings:write", "updates:apply", "updates:fix", "updates:repair", "backups:restore", "backups:import", "addons:install", "addons:update", "setup:write", "carepackage:grant", "carepackage:write-config", "exchange:market", "exchange:market-write"] },
     ] },
   };
   assert.equal(setPolicies(docs).ok, true);

@@ -354,31 +354,6 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       setTotpDisableSaving(false);
     }
   }
-  async function saveDiscordOAuth() {
-    setDiscordOAuthSaving(true);
-    setDiscordOAuthResult({ status: "running", title: "Saving Discord OAuth config..." });
-    try {
-      await post<{ ok: boolean }>("/api/setup/write-oauth-config", {
-        DISCORD_OAUTH_CLIENT_ID: discordClientId,
-        DISCORD_OAUTH_REDIRECT_URI: discordRedirectUri,
-        DISCORD_HOME_GUILD_ID: discordHomeGuildId,
-        DISCORD_CONSOLE_ADMIN_ROLE_IDS: discordAdminRoleIds,
-        DISCORD_CONSOLE_MODERATOR_ROLE_IDS: discordModeratorRoleIds,
-        DISCORD_CONSOLE_PLAYER_ROLE_IDS: discordPlayerRoleIds,
-        DISCORD_OAUTH_REQUIRE_MFA_TIERS: discordRequireMfaTiers
-      });
-      if (discordClientSecret) {
-        await post<{ ok: boolean }>("/api/setup/save-oauth-secret", { secret: discordClientSecret, overwrite: discordSecretSaved });
-        setDiscordClientSecret("");
-        setDiscordSecretSaved(true);
-      }
-      setDiscordOAuthResult({ status: "succeeded", title: "Discord OAuth config saved. Restart the console for changes to take effect." });
-    } catch (error) {
-      setDiscordOAuthResult({ status: "failed", title: "Save failed", message: error instanceof Error ? error.message : String(error) });
-    } finally {
-      setDiscordOAuthSaving(false);
-    }
-  }
   // #676 §6: soft-disable. Requires fresh Tier-3 proof (self-lockout guard,
   // not credential integrity -- see server.js's own comment on this route)
   // and restarts immediately and non-skippably (§6.3): showing "disabled" in

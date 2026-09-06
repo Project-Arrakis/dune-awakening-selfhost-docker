@@ -476,16 +476,16 @@ has no two-factor enabled (and names the Discord setting to fix it).
   single source of truth; the role fields are ignored while the handoff is
   configured.
 - **Upgrading a *hand-authored* IAM policy?** Player moderation was split into
-  its own permissions: `players:kick`, `players:ban`, and `players:teleport`
+  its own permissions: `players:moderate` (kick/ban) and `players:teleport`
   are now separate from `players:mutate` (give-item / add-currency /
   reset-progression), so a moderator can police a griefer without touching the
-  economy. The default Admin and Moderator policies already grant all of these,
-  so a normal upgrade needs no action. **But if you wrote a custom policy that
+  economy. The default Admin and Moderator policies already grant both, so a
+  normal upgrade needs no action. **But if you wrote a custom policy that
   granted `players:mutate` to a tier expecting it to cover kick/ban/teleport,
-  add `players:kick`, `players:ban`, and `players:teleport` to that tier after
+  add `players:moderate` and `players:teleport` to that tier after
   upgrading** — otherwise that tier keeps the economy actions but loses
   kick/ban/teleport. Open **Access Control** (sidebar, owner only), pick the
-  tier, and tick those three (or add them to the tier's `Allow` in the JSON
+  tier, and tick those two (or add them to the tier's `Allow` in the JSON
   tab).
 - **Never customized the Admin policy? Its *default* just got much narrower.**
   Before this release, Admin's shipped default granted broad namespace
@@ -517,8 +517,8 @@ has no two-factor enabled (and names the Discord setting to fix it).
   this upgrade — it now only blocks the economy actions (give-item /
   add-currency / reset-progression) `players:mutate` still means. A tier that
   relied on that Deny to block moderation actions gains the ability to
-  kick/ban/teleport unless you also add an explicit `Deny` on `players:kick`,
-  `players:ban`, and `players:teleport` to that tier.
+  kick/ban/teleport unless you also add an explicit `Deny` on
+  `players:moderate` and `players:teleport` to that tier.
 
 ## Questions operators ask
 

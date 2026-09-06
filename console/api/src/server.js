@@ -1496,7 +1496,7 @@ async function handleApi(req, res) {
       actions: Object.keys(ROUTE_ACTIONS).sort(),
       actionMap: ROUTE_ACTIONS,
       // The COMPLETE IAM action vocabulary, including parameterized-route
-      // actions (players:kick/ban/teleport, bases:delete, vehicles:delete-item)
+      // actions (players:moderate/teleport, bases:delete, vehicles:delete-item)
       // that live only in the regex/pattern tables and have no literal
       // ROUTE_ACTIONS key. The action-centric editor iterates this so those
       // actions get a real checkbox instead of being editable only via raw JSON.

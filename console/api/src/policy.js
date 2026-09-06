@@ -392,7 +392,17 @@ const CROWN_JEWEL_DENY_ACTIONS = [
   "backups:restore", "backups:import",              // irreversible DB overwrite / untrusted import
   "addons:install", "addons:update",                // third-party code into the console process
   "setup:write",                                    // first-run provisioning
-  "players:mutate",                                 // give-item / add-currency / reset-progression (economy)
+  // The economy/progression successors of the old players:mutate bucket --
+  // NOT the bare "players:mutate" alias itself, which would also catch
+  // players:moderate/players:teleport via REMOVED_ACTION_ALIASES successor
+  // matching (matchAction()) and deny admin/moderator the individual-player
+  // moderation both are explicitly granted above.
+  "players:give-item", "players:grant", "players:reset",
+  "players:delete-item", "players:edit-item", "players:repair", "players:recover",
+  // The fail-closed catch-all sentinel itself (see actions.js's *:unclassified
+  // sentinels) -- also a crown jewel: an unnamed future players route must
+  // stay owner-only even if a lower tier's Allow is later widened.
+  "players:unclassified",
   "carepackage:grant", "carepackage:write-config",  // minting in-game value
   "exchange:market", "exchange:market-write",       // seeding the market economy
 ];
@@ -423,7 +433,7 @@ const DEFAULT_POLICIES = {
         "server:read", "server:start", "server:stop", "server:restart",
         "server:restart-service", "server:network-fix", "server:storage-cleanup",
         // Player moderation -- act on an individual griefer + mass kick
-        "players:read", "players:kick-all", "players:kick", "players:ban", "players:teleport",
+        "players:read", "players:kick-all", "players:moderate", "players:teleport",
         // Live-ops -- bring a map shard up/down + in-world moderation movement
         "maps:read", "maps:spawn", "maps:despawn", "maps:teleport", "maps:restart", "maps:reconcile",
         // Communications / moderation tooling
@@ -456,7 +466,7 @@ const DEFAULT_POLICIES = {
     statements: [
       { Effect: "Allow", Action: [
         "server:read", "maps:read", "sietches:read", "deepdesert:read",
-        "players:read", "players:kick-all", "players:kick", "players:ban", "players:teleport",
+        "players:read", "players:kick-all", "players:moderate", "players:teleport",
         "guilds:read", "bases:read", "storage:read", "blueprints:read",
         "vehicles:read", "exchange:read", "logs:read", "landsraad:read",
         "admin:broadcast", "admin:map-chat",
