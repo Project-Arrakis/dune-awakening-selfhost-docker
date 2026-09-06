@@ -308,6 +308,28 @@ export function setPolicies(docs, repoRoot = null) {
   if (badPattern !== null) {
     return { ok: false, error: `Action pattern "${badPattern}" is not valid: use lowercase letters, digits, ':' and '-', with '*' as the only wildcard.` };
   }
+  // Checked BEFORE validPolicyStore() (adversarial review finding, upstream
+  // PR #202 follow-up, 2026-09-06): loadPolicies() migrates an obsolete tier
+  // out of a STORED file automatically (an operator never asked for that
+  // load to happen, so silently dropping the dead document is the least
+  // surprising behavior) -- but setPolicies() is a deliberate, operator-
+  // initiated SAVE, most plausibly reached by pasting raw JSON from an old
+  // export/backup into the IAM editor's JSON tab. Silently stripping data
+  // out from under an explicit save would be its own surprise; instead,
+  // refuse with a specific, actionable message -- mirroring the existing
+  // deprecatedActions() pattern below -- instead of validPolicyStore()'s
+  // generic "must contain valid tier documents", which names nothing an
+  // operator could act on.
+  const obsoleteTiers = docs && typeof docs === "object" && !Array.isArray(docs)
+    ? Object.keys(docs).filter((tier) => OBSOLETE_TIERS.has(tier))
+    : [];
+  if (obsoleteTiers.length) {
+    return {
+      ok: false,
+      error: `The "${obsoleteTiers.join('", "')}" tier is no longer recognized (folded into "player"). Remove it from the document before saving.`,
+      obsoleteTiers,
+    };
+  }
   if (!validPolicyStore(docs)) {
     return { ok: false, error: "Policies must contain valid tier documents and Allow/Deny statements." };
   }
