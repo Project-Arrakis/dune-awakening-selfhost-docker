@@ -38,6 +38,22 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   // (match-check + link together) rather than a separate match-only route.
   PLAYERS_ACCOUNTS_LINK_STEAM: "/api/integrations/discord/players/accounts/link-steam",
   PLAYERS_ME: "/api/integrations/discord/players/me",
+  // PLAYERS_FACTION: read-only, self-scoped (issue #696) -- reports the
+  // caller's own real in-game faction (dune.player_faction), for the bot's
+  // themed-embed rendering. Deliberately does not accept a caller-chosen
+  // faction value: this is auto-detected, not user-selected, so a player
+  // cannot claim a faction they don't actually belong to. Matches
+  // Project-Arrakis/mentat's DEFAULT_PATHS["players-faction"] exactly.
+  PLAYERS_FACTION: "/api/integrations/discord/players/faction",
+  // GUILD_GRANTS_*: per-Discord-guild enable/disable/default for an
+  // already-linked character (issue #696) -- distinct from
+  // PLAYERS_ACCOUNTS_SET_DEFAULT's global-across-all-guilds default. Paths
+  // match Project-Arrakis/mentat's DEFAULT_PATHS["guild-grants-*"] exactly
+  // ("guild-character-grants", not "guild-grants", in the URL itself --
+  // the bot's own internal route-key naming is shorter than its wire path).
+  GUILD_GRANTS_ENABLE: "/api/integrations/discord/guild-character-grants/enable",
+  GUILD_GRANTS_DISABLE: "/api/integrations/discord/guild-character-grants/disable",
+  GUILD_GRANTS_DEFAULT: "/api/integrations/discord/guild-character-grants/default",
   PLAYERS_INVENTORY: "/api/integrations/discord/players/inventory",
   PLAYERS_STORAGE: "/api/integrations/discord/players/storage",
   PLAYERS_FIND: "/api/integrations/discord/players/find",
@@ -89,6 +105,10 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_SET_DEFAULT,
   DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_STEAM,
   DISCORD_ADAPTER_ROUTES.PLAYERS_ME,
+  DISCORD_ADAPTER_ROUTES.PLAYERS_FACTION,
+  DISCORD_ADAPTER_ROUTES.GUILD_GRANTS_ENABLE,
+  DISCORD_ADAPTER_ROUTES.GUILD_GRANTS_DISABLE,
+  DISCORD_ADAPTER_ROUTES.GUILD_GRANTS_DEFAULT,
   DISCORD_ADAPTER_ROUTES.PLAYERS_INVENTORY,
   DISCORD_ADAPTER_ROUTES.PLAYERS_STORAGE,
   DISCORD_ADAPTER_ROUTES.PLAYERS_FIND,

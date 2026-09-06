@@ -60,6 +60,9 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/announcements",
     "/api/integrations/discord/broadcast",
     "/api/integrations/discord/db",
+    "/api/integrations/discord/guild-character-grants/default",
+    "/api/integrations/discord/guild-character-grants/disable",
+    "/api/integrations/discord/guild-character-grants/enable",
     "/api/integrations/discord/guilds/find",
     "/api/integrations/discord/guilds/storage",
     "/api/integrations/discord/health",
@@ -81,6 +84,7 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/players/accounts/list",
     "/api/integrations/discord/players/accounts/set-default",
     "/api/integrations/discord/players/accounts/unlink",
+    "/api/integrations/discord/players/faction",
     "/api/integrations/discord/players/find",
     "/api/integrations/discord/players/inventory",
     "/api/integrations/discord/players/inventory-search",
@@ -138,6 +142,9 @@ test("exposes only allowlisted adapter route names", () => {
     // a real, allowlisted route constant here.
     "/api/integrations/discord/catalog",
     "/api/integrations/discord/db",
+    "/api/integrations/discord/guild-character-grants/default",
+    "/api/integrations/discord/guild-character-grants/disable",
+    "/api/integrations/discord/guild-character-grants/enable",
     "/api/integrations/discord/guilds/find",
     "/api/integrations/discord/guilds/storage",
     "/api/integrations/discord/health",
@@ -159,6 +166,7 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/players/accounts/list",
     "/api/integrations/discord/players/accounts/set-default",
     "/api/integrations/discord/players/accounts/unlink",
+    "/api/integrations/discord/players/faction",
     "/api/integrations/discord/players/find",
     "/api/integrations/discord/players/inventory",
     "/api/integrations/discord/players/inventory-search",
@@ -175,7 +183,27 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/status",
     "/api/integrations/discord/version"
   ].sort());
+  // guild-character-grants/* (issue #696) is a deliberate, narrow
+  // exception to this naming lint's "grant" term. The URL itself is a
+  // fixed external wire contract: Project-Arrakis/mentat's own
+  // config.js DEFAULT_PATHS already hardcodes
+  // "/api/integrations/discord/guild-character-grants/{enable,disable,default}"
+  // as the path it calls (shipped before this route existed on Core),
+  // so renaming the path to dodge this lint would break the live bot,
+  // not just this test. It is not a privilege-grant in the RBAC sense
+  // this lint's other terms guard against (admin, elevation, teleport,
+  // kick) -- it's a self-scoped per-guild enable/disable toggle on a
+  // character the caller already linked to their own Discord account
+  // (requireSelfScopedCapability(ACCOUNT_LINK_WRITE), same gate as the
+  // already-allowlisted players/accounts/unlink and players/link
+  // routes), never granting access to anyone else's data or tier.
+  const GUILD_CHARACTER_GRANTS_ALLOWLIST = new Set([
+    "/api/integrations/discord/guild-character-grants/enable",
+    "/api/integrations/discord/guild-character-grants/disable",
+    "/api/integrations/discord/guild-character-grants/default"
+  ]);
   for (const route of routes) {
+    if (GUILD_CHARACTER_GRANTS_ALLOWLIST.has(route)) continue;
     assert.doesNotMatch(route, /write|execute|delete|restore|kick|grant|teleport|reset|admin/i);
   }
 });
@@ -1395,5 +1423,214 @@ test("ops/dashboard route dispatches to opsDashboardProvider through the real HT
     });
   } finally {
     try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
+// players/faction and guild-character-grants/* (issue #696) -- real HTTP
+// dispatch path, not just the provider-level unit coverage in
+// discordLinkProvider.test.js / discordMultiAccountLinkProvider.test.js.
+test("players/faction route dispatches to playerFactionProvider through the real HTTP path, and enforces tier-gated capability", async () => {
+  const tokenFile = "/tmp/discord-adapter-players-faction-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-players-faction-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-players-faction-test-generated" };
+
+  const db = {
+    transaction: (fn) => fn(db),
+    async query(text, values = []) {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from console.discord_player_links dpl")) {
+        return {
+          rows: [{ discord_user_id: values[0], player_controller_id: "42", character_name: "Chani", player_pawn_id: "84", online_status: "Online" }],
+          rowCount: 1
+        };
+      }
+      if (text.includes("from dune.player_faction pf")) {
+        return { rows: [{ actor_id: "42", faction_id: "7", faction_name: "House Atreides" }], rowCount: 1 };
+      }
+      return { rows: [] };
+    }
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+
+          // INVENTORY_READ (the same capability PLAYERS_ME/whoami uses) is
+          // moderator-tier-and-above, not observer -- see discordPolicy.js's
+          // CAPABILITY_BY_TIER. A caller-supplied "faction" body field, if
+          // any were sent, must be ignored entirely -- this route is
+          // read-only/auto-detected.
+          const response = await fetch(`${base}/api/integrations/discord/players/faction`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-moderator"]), faction: "House Harkonnen" })
+          });
+          assert.equal(response.status, 200);
+          const body = await response.json();
+          assert.equal(body.ok, true);
+          assert.equal(body.linked, true);
+          assert.equal(body.hasFaction, true);
+          assert.equal(body.factionName, "House Atreides", "must report the real dune.player_faction value, never the caller-supplied one");
+
+          // Observer tier (below INVENTORY_READ's moderator floor) is rejected.
+          const observerResponse = await fetch(`${base}/api/integrations/discord/players/faction`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-observer"]) })
+          });
+          assert.equal(observerResponse.status, 403);
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
+test("guild-character-grants/* routes dispatch through the real HTTP path, scope guildId from the signed actor (not the request body), and enforce self-scoped capability", async () => {
+  const tokenFile = "/tmp/discord-adapter-guild-grants-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+
+  // GUILD_GRANTS_* use requireActorSignature: true (same as
+  // PLAYERS_ACCOUNTS_LINK/UNLINK) -- verifyActorSignature() throws
+  // actor_signing_disabled (403) for any mutation route when no secret is
+  // configured, before the tier/capability check this test means to
+  // exercise ever runs. Same fix as the "adapter route rejects an
+  // unsigned or spoofed actor..." / PLAYERS_LINK tests above: configure
+  // the secret and sign every request.
+  const OLD_SECRET = process.env.DUNE_DISCORD_ACTOR_SECRET;
+  process.env.DUNE_DISCORD_ACTOR_SECRET = "guild-grants-test-actor-secret";
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-guild-grants-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-guild-grants-test-generated" };
+
+  const { signActorPayload, ACTOR_SIGNATURE_HEADER, ACTOR_TIMESTAMP_HEADER } = await import("../src/integrations/discord/actorSignature.js");
+  function signedHeaders(actorPayload, route) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const { signature } = signActorPayload(actorPayload, "guild-grants-test-actor-secret", timestamp, route);
+    return { [ACTOR_SIGNATURE_HEADER]: signature, [ACTOR_TIMESTAMP_HEADER]: String(timestamp) };
+  }
+
+  const guildState = [];
+  const db = {
+    transaction: (fn) => fn(db),
+    async query(text, values = []) {
+      if (text.includes("select 1 from console.discord_account_links")) {
+        const linked = values[1] === "42";
+        return { rows: linked ? [{}] : [], rowCount: linked ? 1 : 0 };
+      }
+      if (text.includes("insert into console.discord_account_link_guild_state")) {
+        const [discordUserId, guildId, playerControllerId] = values;
+        const enabled = text.includes("is_default") ? true : Boolean(values[3]);
+        const isDefault = text.includes("is_default");
+        let row = guildState.find((g) => g.discordUserId === discordUserId && g.guildId === guildId && g.playerControllerId === playerControllerId);
+        if (!row) { row = { discordUserId, guildId, playerControllerId }; guildState.push(row); }
+        row.enabled = enabled;
+        if (isDefault) row.isDefault = true;
+        return { rows: [], rowCount: 1 };
+      }
+      if (text.includes("update console.discord_account_link_guild_state")) {
+        return { rows: [], rowCount: 1 };
+      }
+      return { rows: [] };
+    }
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+          const enableRoute = "/api/integrations/discord/guild-character-grants/enable";
+          const defaultRoute = "/api/integrations/discord/guild-character-grants/default";
+          const disableRoute = "/api/integrations/discord/guild-character-grants/disable";
+
+          // Any recognized principal can enable their OWN character
+          // (self-scoped ACCOUNT_LINK_WRITE, same gate as
+          // players/accounts/unlink) -- observer tier is enough.
+          const observerActor = actor(["role-observer"]);
+          const enableResponse = await fetch(`${base}${enableRoute}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, enableRoute) },
+            // guildId is deliberately NOT sent here -- it must come from
+            // the signed actor object (actor().guildId === "guild-1"),
+            // never a body field a caller could forge to act on a guild
+            // they aren't actually in.
+            body: JSON.stringify({ actor: observerActor, characterLinkId: "42" })
+          });
+          assert.equal(enableResponse.status, 200);
+          const enableBody = await enableResponse.json();
+          assert.equal(enableBody.ok, true);
+          assert.equal(guildState[0].guildId, "guild-1", "guildId must be taken from actor.guildId, not a body field");
+          assert.equal(guildState[0].playerControllerId, "42");
+          assert.equal(guildState[0].enabled, true);
+
+          const defaultResponse = await fetch(`${base}${defaultRoute}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, defaultRoute) },
+            body: JSON.stringify({ actor: observerActor, characterLinkId: "42" })
+          });
+          assert.equal(defaultResponse.status, 200);
+          assert.equal(guildState[0].isDefault, true);
+
+          // A character not linked to the caller is a business error
+          // (found: false), not a crash or a silent success.
+          const notLinkedResponse = await fetch(`${base}${disableRoute}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, disableRoute) },
+            body: JSON.stringify({ actor: observerActor, characterLinkId: "999" })
+          });
+          assert.equal(notLinkedResponse.status, 200);
+          const notLinkedBody = await notLinkedResponse.json();
+          assert.equal(notLinkedBody.ok, false);
+
+          // Public tier (no recognized role) is rejected -- self-scoped
+          // capabilities still require SOME recognized principal.
+          const publicActor = actor([]);
+          const publicResponse = await fetch(`${base}${enableRoute}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json", ...signedHeaders(publicActor, enableRoute) },
+            body: JSON.stringify({ actor: publicActor, characterLinkId: "42" })
+          });
+          assert.equal(publicResponse.status, 403);
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+    if (OLD_SECRET === undefined) delete process.env.DUNE_DISCORD_ACTOR_SECRET;
+    else process.env.DUNE_DISCORD_ACTOR_SECRET = OLD_SECRET;
   }
 });

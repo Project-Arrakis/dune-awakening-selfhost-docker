@@ -8,7 +8,10 @@ import {
   setDefaultAccountProvider,
   linkAccountViaSteamProvider,
   resetAccountLinkVerifyRateLimiterForTests,
-  resetSteamLinkRateLimiterForTests
+  resetSteamLinkRateLimiterForTests,
+  guildGrantsEnableProvider,
+  guildGrantsDisableProvider,
+  guildGrantsDefaultProvider
 } from "../src/integrations/discord/multiAccountLinkProvider.js";
 import { linkAdditionalAccount } from "../src/duneDb.js";
 import { createLoginRateLimiter } from "../src/rateLimit.js";
@@ -27,6 +30,9 @@ function createMultiAccountDb(players = []) {
   const state = {
     accounts: [], // { discordUserId, playerControllerId, isDefault, linkedAt }
     pending: [], // { code, discordUserId, playerControllerId, characterName, expiresAt }
+    // guildState: setGuildCharacterEnabled/setDefaultLinkedAccountForGuild
+    // fixtures (issue #696) -- { discordUserId, guildId, playerControllerId, enabled, isDefault }
+    guildState: [],
     players: players.length ? players : [
       { player_controller_id: "42", player_pawn_id: "84", character_name: "Chani", online_status: "Online", funcom_id: "Chani#1234", steam_id: "76561198000000042" },
       { player_controller_id: "43", player_pawn_id: "85", character_name: "Paul", online_status: "Online", funcom_id: "Paul#5678", steam_id: null }
@@ -200,6 +206,71 @@ function createMultiAccountDb(players = []) {
         const remaining = state.accounts.filter((a) => a.discordUserId === values[0]).sort((a, b) => a.linkedAt - b.linkedAt);
         if (remaining.length) remaining[0].isDefault = true;
         return { rows: [], rowCount: remaining.length ? 1 : 0 };
+      }
+
+      // setGuildCharacterEnabled/setDefaultLinkedAccountForGuild (issue
+      // #696): the "existing link?" guard both functions share is the
+      // exact same query shape as the already-linked-to-this-account
+      // check above ("select 1 from console.discord_account_links" +
+      // "player_controller_id = $2"), so it's already handled by that
+      // branch -- no new branch needed for it here. These branches must
+      // come BEFORE the generic single-account "set is_default = false"/
+      // "set is_default = true" branches just below -- both are scoped to
+      // console.discord_account_links (no table qualifier in the actual
+      // text match), so a guild_state query's SQL text, which does not
+      // mention discord_account_links at all, would otherwise never even
+      // reach these more specific checks if they came after.
+
+      // setGuildCharacterEnabled: upsert enabled state
+      if (text.includes("insert into console.discord_account_link_guild_state")
+        && text.includes("on conflict (discord_user_id, guild_id, player_controller_id)")
+        && !text.includes("is_default")) {
+        const [discordUserId, guildId, playerControllerId, enabled] = values;
+        let row = state.guildState.find((g) => g.discordUserId === discordUserId && g.guildId === guildId && g.playerControllerId === playerControllerId);
+        if (!row) {
+          row = { discordUserId, guildId, playerControllerId, enabled: false, isDefault: false };
+          state.guildState.push(row);
+        }
+        row.enabled = Boolean(enabled);
+        return { rows: [], rowCount: 1 };
+      }
+
+      // setGuildCharacterEnabled: clear this character's own default when disabling it
+      if (text.includes("update console.discord_account_link_guild_state")
+        && text.includes("set is_default = false")
+        && text.includes("player_controller_id = $3")) {
+        const [discordUserId, guildId, playerControllerId] = values;
+        const row = state.guildState.find((g) => g.discordUserId === discordUserId && g.guildId === guildId && g.playerControllerId === playerControllerId && g.isDefault);
+        if (row) row.isDefault = false;
+        return { rows: [], rowCount: row ? 1 : 0 };
+      }
+
+      // setDefaultLinkedAccountForGuild: clear whichever character was
+      // previously default in this guild (no player_controller_id filter --
+      // distinct from the per-character clear above).
+      if (text.includes("update console.discord_account_link_guild_state")
+        && text.includes("set is_default = false")
+        && !text.includes("player_controller_id = $3")) {
+        const [discordUserId, guildId] = values;
+        state.guildState
+          .filter((g) => g.discordUserId === discordUserId && g.guildId === guildId && g.isDefault)
+          .forEach((g) => { g.isDefault = false; });
+        return { rows: [], rowCount: 1 };
+      }
+
+      // setDefaultLinkedAccountForGuild: upsert enabled+default together
+      if (text.includes("insert into console.discord_account_link_guild_state")
+        && text.includes("on conflict (discord_user_id, guild_id, player_controller_id)")
+        && text.includes("is_default")) {
+        const [discordUserId, guildId, playerControllerId] = values;
+        let row = state.guildState.find((g) => g.discordUserId === discordUserId && g.guildId === guildId && g.playerControllerId === playerControllerId);
+        if (!row) {
+          row = { discordUserId, guildId, playerControllerId, enabled: false, isDefault: false };
+          state.guildState.push(row);
+        }
+        row.enabled = true;
+        row.isDefault = true;
+        return { rows: [], rowCount: 1 };
       }
 
       // setDefaultLinkedAccount: clear existing default
@@ -674,4 +745,90 @@ test("a successful Steam-link clears any prior rate-limit lockout for that disco
   assert.equal(success.matched, false);
   const cleared = await linkAccountViaSteamProvider(db, { discordUserId: "discord-1", playerControllerId: "42", steamId64List: ["76561198000000042"] });
   assert.equal(cleared.matched, true);
+});
+
+// Guild grants (issue #696): per-(Discord guild, linked character)
+// enable/disable/default, distinct from setDefaultAccountProvider's own
+// global-across-all-guilds default tested above.
+test("guildGrantsEnableProvider rejects a character not linked to the caller", async () => {
+  const db = createMultiAccountDb();
+  const result = await guildGrantsEnableProvider(db, { discordUserId: "discord-1", playerControllerId: "42", guildId: "guild-1" });
+  assert.equal(result.ok, false);
+});
+
+test("guildGrantsEnableProvider enables a linked character in the given guild", async () => {
+  const db = createMultiAccountDb();
+  db.state.accounts.push({ discordUserId: "discord-1", playerControllerId: "42", isDefault: true, linkedAt: 0 });
+  const result = await guildGrantsEnableProvider(db, { discordUserId: "discord-1", playerControllerId: "42", guildId: "guild-1" });
+  assert.equal(result.ok, true);
+  const row = db.state.guildState.find((g) => g.discordUserId === "discord-1" && g.guildId === "guild-1" && g.playerControllerId === "42");
+  assert.equal(row.enabled, true);
+});
+
+test("guildGrantsDisableProvider disables a linked character in the given guild, and clears its default status in that guild", async () => {
+  const db = createMultiAccountDb();
+  db.state.accounts.push({ discordUserId: "discord-1", playerControllerId: "42", isDefault: true, linkedAt: 0 });
+  await guildGrantsDefaultProvider(db, { discordUserId: "discord-1", playerControllerId: "42", guildId: "guild-1" });
+
+  const result = await guildGrantsDisableProvider(db, { discordUserId: "discord-1", playerControllerId: "42", guildId: "guild-1" });
+  assert.equal(result.ok, true);
+  const row = db.state.guildState.find((g) => g.discordUserId === "discord-1" && g.guildId === "guild-1" && g.playerControllerId === "42");
+  assert.equal(row.enabled, false, "disabling must actually flip enabled to false");
+  assert.equal(row.isDefault, false, "disabling a character that was this guild's default must clear the default too");
+});
+
+test("guildGrantsDisableProvider does not touch default status in a DIFFERENT guild", async () => {
+  const db = createMultiAccountDb();
+  db.state.accounts.push({ discordUserId: "discord-1", playerControllerId: "42", isDefault: true, linkedAt: 0 });
+  await guildGrantsDefaultProvider(db, { discordUserId: "discord-1", playerControllerId: "42", guildId: "guild-1" });
+
+  await guildGrantsDisableProvider(db, { discordUserId: "discord-1", playerControllerId: "42", guildId: "guild-2" });
+  const guild1Row = db.state.guildState.find((g) => g.guildId === "guild-1" && g.playerControllerId === "42");
+  assert.equal(guild1Row.isDefault, true, "disabling in guild-2 must not clear the default set in guild-1");
+});
+
+test("guildGrantsDefaultProvider rejects a character not linked to the caller", async () => {
+  const db = createMultiAccountDb();
+  const result = await guildGrantsDefaultProvider(db, { discordUserId: "discord-1", playerControllerId: "42", guildId: "guild-1" });
+  assert.equal(result.ok, false);
+});
+
+test("guildGrantsDefaultProvider sets a linked character as default in this guild, force-enabling it even if it was previously disabled", async () => {
+  const db = createMultiAccountDb();
+  db.state.accounts.push({ discordUserId: "discord-1", playerControllerId: "42", isDefault: true, linkedAt: 0 });
+  await guildGrantsDisableProvider(db, { discordUserId: "discord-1", playerControllerId: "42", guildId: "guild-1" });
+
+  const result = await guildGrantsDefaultProvider(db, { discordUserId: "discord-1", playerControllerId: "42", guildId: "guild-1" });
+  assert.equal(result.ok, true);
+  const row = db.state.guildState.find((g) => g.guildId === "guild-1" && g.playerControllerId === "42");
+  assert.equal(row.enabled, true, "setting default must force-enable, per setDefaultLinkedAccountForGuild's own documented contract");
+  assert.equal(row.isDefault, true);
+});
+
+test("guildGrantsDefaultProvider switches the default between two linked characters within one guild", async () => {
+  const db = createMultiAccountDb();
+  db.state.accounts.push({ discordUserId: "discord-1", playerControllerId: "42", isDefault: true, linkedAt: 0 });
+  db.state.accounts.push({ discordUserId: "discord-1", playerControllerId: "43", isDefault: false, linkedAt: 1 });
+  await guildGrantsDefaultProvider(db, { discordUserId: "discord-1", playerControllerId: "42", guildId: "guild-1" });
+
+  await guildGrantsDefaultProvider(db, { discordUserId: "discord-1", playerControllerId: "43", guildId: "guild-1" });
+  const rows = db.state.guildState.filter((g) => g.guildId === "guild-1");
+  assert.equal(rows.find((g) => g.playerControllerId === "42").isDefault, false);
+  assert.equal(rows.find((g) => g.playerControllerId === "43").isDefault, true);
+});
+
+test("guild grants are per-guild -- enabling in one guild does not create a row in another guild", async () => {
+  const db = createMultiAccountDb();
+  db.state.accounts.push({ discordUserId: "discord-1", playerControllerId: "42", isDefault: true, linkedAt: 0 });
+  await guildGrantsEnableProvider(db, { discordUserId: "discord-1", playerControllerId: "42", guildId: "guild-1" });
+  assert.equal(db.state.guildState.some((g) => g.guildId === "guild-2"), false);
+});
+
+test("guildGrantsEnableProvider rejects a missing guildId", async () => {
+  const db = createMultiAccountDb();
+  db.state.accounts.push({ discordUserId: "discord-1", playerControllerId: "42", isDefault: true, linkedAt: 0 });
+  await assert.rejects(
+    () => guildGrantsEnableProvider(db, { discordUserId: "discord-1", playerControllerId: "42", guildId: "" }),
+    (error) => error.code === "invalid_request"
+  );
 });

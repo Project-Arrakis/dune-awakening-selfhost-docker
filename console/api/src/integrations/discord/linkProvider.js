@@ -7,7 +7,8 @@ import {
   createPendingLink,
   deletePendingLink,
   consumePendingLink,
-  characterHasSteamId
+  characterHasSteamId,
+  getPlayerRealFaction
 } from "../../duneDb.js";
 import { policyError } from "./policy.js";
 import { publishCarePackageWhisper } from "../../rmq.js";
@@ -262,6 +263,35 @@ export async function whoamiProvider(db, { discordUserId }) {
     controllerId: linked.player_controller_id,
     pawnId: linked.player_pawn_id,
     onlineStatus: linked.online_status
+  };
+}
+
+// Read-only, auto-detected real in-game faction (issue #696) -- there is
+// deliberately no argument to pick/set a faction here. The bot's own
+// /dune player faction command reflects whatever dune.player_faction
+// says for the caller's linked character; it never writes to it.
+export async function playerFactionProvider(db, { discordUserId }) {
+  const linked = await getLinkedPlayer(db, discordUserId);
+  if (!linked) {
+    return { ok: true, linked: false, message: "Not linked. Use /dune data link <character-name>" };
+  }
+  const faction = await getPlayerRealFaction(db, linked.player_controller_id);
+  if (!faction) {
+    return {
+      ok: true,
+      linked: true,
+      hasFaction: false,
+      characterName: linked.character_name,
+      message: "Your character hasn't joined a faction yet."
+    };
+  }
+  return {
+    ok: true,
+    linked: true,
+    hasFaction: true,
+    characterName: linked.character_name,
+    factionId: faction.factionId,
+    factionName: faction.factionName
   };
 }
 
