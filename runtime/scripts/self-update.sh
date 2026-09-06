@@ -702,7 +702,54 @@ backup_local_state() {
   done
 
   if [ -s "$manifest" ]; then
-    tar -czf "$backup_dir/local-state.tgz" -T "$manifest"
+    # Writers stay online. Archive private, bounded copies instead of live files.
+    python3 - "$backup_dir" "$manifest" <<'PY'
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+
+backup = Path(sys.argv[1]).resolve()
+paths = Path(sys.argv[2]).read_text().splitlines()
+with tempfile.TemporaryDirectory(prefix=".local-state-", dir=backup) as staging:
+    for name in paths:
+        target = Path(staging) / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(name, "rb") as source, open(target, "xb") as output:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                raise RuntimeError(f"Local state is not a regular file: {name}")
+            os.fchmod(output.fileno(), stat.S_IMODE(info.st_mode))
+            remaining = info.st_size
+            while remaining:
+                chunk = source.read(min(remaining, 1024 * 1024))
+                if not chunk:
+                    raise RuntimeError(f"Local state truncated during snapshot: {name}")
+                output.write(chunk)
+                remaining -= len(chunk)
+        # An append may have been in progress: preserve only complete audit rows.
+        if name.endswith(".jsonl"):
+            with open(target, "r+b") as snapshot:
+                end = snapshot.seek(0, os.SEEK_END)
+                while end:
+                    start = max(0, end - 65536)
+                    snapshot.seek(start)
+                    chunk = snapshot.read(end - start)
+                    newline = chunk.rfind(b"\n")
+                    if newline >= 0:
+                        end = start + newline + 1
+                        break
+                    end = start
+                snapshot.truncate(end)
+    archive = backup / ".local-state.tgz.tmp"
+    try:
+        subprocess.run(["tar", "-czf", str(archive), "-C", staging, "--", *paths], check=True, umask=0o077)
+        os.replace(archive, backup / "local-state.tgz")
+    finally:
+        archive.unlink(missing_ok=True)
+PY
   else
     rm -f "$manifest"
   fi
