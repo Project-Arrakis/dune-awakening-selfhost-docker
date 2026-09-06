@@ -13663,6 +13663,82 @@ export async function getPlayerRealFaction(db, playerControllerId) {
   return { factionId: row.faction_id, factionName: factionDisplayName(row) };
 }
 
+// Real-faction tally across many Discord users at once (issue #699) --
+// used by the guild-wide faction-summary route to auto-derive a Discord
+// guild's cosmetic themed-embed faction from its real membership, rather
+// than a manually set value. One batched query resolving each
+// discordUserId to a character (same single-link-then-multi-account-
+// default precedence as getLinkedPlayer(), but for many users in one
+// round trip instead of N), then one query tallying real factions for
+// the resolved set. Deliberately does NOT consult per-guild
+// discord_account_link_guild_state overrides -- no other player-facing
+// route does either today (see issue #699's own scope note); this
+// matches existing behavior rather than introducing a new inconsistency.
+// Returns counts only, never a discordUserId -> faction mapping, so this
+// route cannot be used to learn any individual member's faction beyond
+// what /dune player faction already discloses for their own account.
+// Corrected (before this route ever merged): this tallies each linked
+// player's real IN-GAME GUILD's faction (dune.guilds.guild_faction), NOT
+// their own personal dune.player_faction. These are two genuinely
+// different game concepts -- a faction (Atreides/Harkonnen/Fremen) can
+// have thousands of members; an in-game guild is a much smaller
+// player-run organization (max 32 members, at most one per player,
+// MAX_GUILD_COUNT_PER_PLAYER below) with its own faction affiliation,
+// independent of any individual member's own personal faction. A Discord
+// server's cosmetic theme is meant to reflect "which in-game guild does
+// this community belong to," which is this second concept, not the
+// first -- see the guild-faction-summary route's own comment for the
+// full reasoning. Same column-resolution defensiveness as
+// leadershipGuildFactions() above (this repo's existing precedent for
+// reading dune.guilds/dune.guild_members, whose exact column names can
+// vary by deployment/schema version).
+export async function getGuildFactionTally(db, discordUserIds) {
+  const ids = Array.isArray(discordUserIds)
+    ? [...new Set(discordUserIds.map((id) => String(id || "").trim()).filter(Boolean))].slice(0, 1000)
+    : [];
+  if (!ids.length) return { tally: {}, consideredCount: 0 };
+  if (!(await tableExists(db, "guild_members")) || !(await tableExists(db, "guilds"))) {
+    return { tally: {}, consideredCount: 0 };
+  }
+  const memberColumns = await columnsFor(db, "guild_members");
+  const guildColumns = await columnsFor(db, "guilds");
+  const memberPlayerColumn = firstExistingColumn(memberColumns, ["player_id", "player_controller_id", "actor_id", "account_id", "player_pawn_id"]);
+  const memberGuildColumn = firstExistingColumn(memberColumns, ["guild_id", "id"]);
+  const guildIdColumn = firstExistingColumn(guildColumns, ["guild_id", "id"]);
+  const guildFactionColumn = firstExistingColumn(guildColumns, ["guild_faction", "faction_id", "faction"]);
+  if (!memberPlayerColumn || !memberGuildColumn || !guildIdColumn || !guildFactionColumn) {
+    return { tally: {}, consideredCount: 0 };
+  }
+  const hasFactions = await tableExists(db, "factions");
+  const result = await db.query(`
+    with resolved as (
+      select coalesce(dpl.player_controller_id, dal.player_controller_id) as player_controller_id
+      from unnest($1::text[]) as input(discord_user_id)
+      left join console.discord_player_links dpl on dpl.discord_user_id = input.discord_user_id
+      left join console.discord_account_links dal
+        on dal.discord_user_id = input.discord_user_id and dal.is_default = true
+      where coalesce(dpl.player_controller_id, dal.player_controller_id) is not null
+    )
+    select ${hasFactions ? "coalesce(f.name, '')" : "''"} as faction_name,
+           count(distinct r.player_controller_id)::int as tally_count
+    from resolved r
+    join dune.guild_members gm on gm.${quoteIdentifier(memberPlayerColumn)}::text = r.player_controller_id
+    join dune.guilds g on g.${quoteIdentifier(guildIdColumn)} = gm.${quoteIdentifier(memberGuildColumn)}
+    ${hasFactions ? `left join dune.factions f on f.id = g.${quoteIdentifier(guildFactionColumn)}` : ""}
+    where g.${quoteIdentifier(guildFactionColumn)} is not null
+      and g.${quoteIdentifier(guildFactionColumn)} <> ${NEUTRAL_GUILD_FACTION_ID}
+    group by ${hasFactions ? "coalesce(f.name, '')" : "''"}`,
+    [ids]);
+  const tally = {};
+  let consideredCount = 0;
+  for (const row of result.rows) {
+    const name = factionDisplayName({ faction_id: "", faction_name: row.faction_name });
+    tally[name] = row.tally_count;
+    consideredCount += row.tally_count;
+  }
+  return { tally, consideredCount };
+}
+
 // Checks the given discord_*_links table (in the console schema — see
 // migrateDiscordAdapterSchema()'s comment for why this project's own
 // state lives there, not in dune) for a row that would conflict with
