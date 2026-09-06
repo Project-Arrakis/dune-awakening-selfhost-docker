@@ -937,6 +937,106 @@ test("guided setup: a half-configured bot handoff does not block the setup-mode 
 // the exact wiring in the source is the precedent this codebase already
 // uses for gate-composition correctness (see rbacParity.test.js's ENROLL_ALLOWED
 // text scan) and is what mutation-tests here. ----
+// ---- review finding (upstream PR #202, 2026-09-06): a callback already
+// waiting on Discord could still issue a session after Disable/Forget
+// succeeded ----
+
+// Same shape as startFakeDiscord() above, but the token exchange for a code
+// containing "slow" is held open for `delayMs` before responding -- long
+// enough for a concurrent Disable/Forget request to complete server-side
+// while this callback is still in flight, without relying on real network
+// jitter to create the race window.
+function startSlowFakeDiscord(port, delayMs) {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://localhost");
+    if (url.pathname === "/oauth2/token") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        const code = new URLSearchParams(body).get("code") || "";
+        const respond = () => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ access_token: `token-${code}`, token_type: "Bearer", expires_in: 604800 }));
+        };
+        if (code.includes("slow")) setTimeout(respond, delayMs);
+        else respond();
+      });
+      return;
+    }
+    if (url.pathname === "/users/@me") {
+      const auth = String(req.headers.authorization || "");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: USER_ID, username: "fleetyard-operator", mfa_enabled: false }));
+      return;
+    }
+    if (url.pathname === `/users/@me/guilds/${HOME_GUILD}/member`) {
+      const auth = String(req.headers.authorization || "");
+      const roles = auth.includes("token-admin") ? [ADMIN_ROLE, PLAYER_ROLE] : [];
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ user: { id: USER_ID }, roles }));
+      return;
+    }
+    if (url.pathname === "/users/@me/guilds") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify([{ id: HOME_GUILD, name: "Fleetyard", owner: false }]));
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+  return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve(server)));
+}
+
+test("a callback already waiting on Discord cannot issue a session after Disable succeeds in the meantime", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-inflight-disable-"));
+  const console = startConsole(consolePort, discordPort, tempDir);
+  const discordServer = await startSlowFakeDiscord(discordPort, 400);
+  try {
+    await waitForHealth(consolePort);
+
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" });
+    const pendingStateValue = sessionCookieValue(start.headers.getSetCookie() || [], "discord_oauth_state");
+
+    // Fire the callback but do NOT await it yet -- its token exchange is
+    // being held open by the fake Discord server above.
+    const callbackPromise = fetch(
+      `http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=admin-slow&state=${encodeURIComponent(pendingStateValue)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${pendingStateValue}` } }
+    );
+
+    // While that callback is still in flight, disable Discord sign-in via a
+    // completely separate, already-authenticated owner session -- exactly
+    // Red-Blink's reported sequence ("a callback already waiting on Discord").
+    await new Promise((r) => setTimeout(r, 100)); // let the callback pass its entry gate and start the (slow) token exchange
+    const owner = await passwordOwnerSession(consolePort);
+    const disable = await fetch(`http://127.0.0.1:${consolePort}/api/settings/discord-oauth/disable`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: owner.cookie, "x-csrf-token": owner.csrfToken },
+      body: JSON.stringify({ currentPassword: "correct-password" }),
+    });
+    assert.equal(disable.status, 200, "disable itself must succeed");
+
+    // NOW the in-flight callback's (slow) token exchange finally resolves.
+    const callback = await callbackPromise;
+    assert.notEqual(callback.status, 200, "an in-flight callback must not succeed once Discord sign-in was disabled during its own request");
+    assert.ok(
+      !(callback.headers.getSetCookie() || []).some((c) => c.startsWith("asc_session=")),
+      "an in-flight callback must not issue a session after a concurrent Disable succeeded"
+    );
+
+    // Confirm Discord sign-in is genuinely, immediately off -- not just that
+    // this one callback happened to lose a race.
+    const state = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/state`)).json();
+    assert.equal(state.config.discordOAuthDisabled, true);
+  } finally {
+    await stopProcess(console.child);
+    await closeDiscordServer(discordServer);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("the silent-auth interactive retry attributes its pending state to an owner, like every other issue() call site", () => {
   const source = readFileSync(join(apiRoot, "server.js"), "utf8");
   const retryLine = source.split("\n").find((line) => line.includes("purpose: consumed.purpose, sessionId: consumed.sessionId"));
