@@ -74,7 +74,7 @@ This exists because the failure is asymmetric. A misspelled action in an **Allow
 
 No route resolves to `players:reset-progression` — the route resolves to `players:reset` — so that statement denies nothing at all. It was this document's own example.
 
-`GET /api/settings/iam/policies` returns an `actions` array alongside the policies: the full catalog, sorted. Policies are hand-authored JSON with no editor UI, so that response is the vocabulary to author against.
+`GET /api/settings/iam/policies` returns an `allActions` array alongside the policies: the full catalog, sorted -- `actions` is a separate, narrower array of literal `ROUTE_ACTIONS` route keys for the Access Control editor's route-centric view, not the complete vocabulary. Policies are hand-authored JSON with no editor UI otherwise, so `allActions` is the vocabulary to author against.
 
 A file at `runtime/generated/iam-policies.json` that already names a dead action is **loaded, not discarded** — the Console logs one warning per pattern at startup and keeps the operator's policy in force. Rejecting the document would silently revert their whole policy to defaults, a bigger surprise than the dead pattern.
 
@@ -82,7 +82,7 @@ A file at `runtime/generated/iam-policies.json` that already names a dead action
 
 The policy API is owner-only under the default policy:
 
-- `GET /api/settings/iam/policies` returns the active policy store plus `actions`, the full catalog of valid action names.
+- `GET /api/settings/iam/policies` returns the active policy store plus `allActions`, the full catalog of valid action names (`actions`/`actionMap`/`namespaces` are the Access Control editor's route-centric view, not the vocabulary itself).
 - `PUT /api/settings/iam/policy` validates and atomically saves the complete policy store to `runtime/generated/iam-policies.json`.
 - `POST /api/settings/iam/policy/test` evaluates an action for a tier without changing policy, and reports whether the action exists (`known`).
 
@@ -104,7 +104,7 @@ Updates that remove the owner's `settings:write` access are rejected so the loca
 | `players:repair` | gear, faction reputation, landsraad quests, login queue, vehicle decay, refuel, refill water |
 | `players:recover` | character recovery |
 
-**`players:mutate` is no longer in the catalog, but it still means what it meant.** See [Upgrading a policy that names a removed action](#upgrading-a-policy-that-names-a-removed-action) below. Shipped defaults are unchanged — `owner` (`*`) and `admin` (`players:*`) still reach everything, and `moderator`/`player`/`observer` are untouched.
+**`players:mutate` is no longer in the catalog, but it still means what it meant.** See [Upgrading a policy that names a removed action](#upgrading-a-policy-that-names-a-removed-action) below. `owner` (`*`) still reaches everything. **Fork-specific note:** unlike upstream's default (`admin`: `players:*`, reaching everything), this fork's Tier 1 `admin` is deliberately narrowed to an explicit allow list plus a crown-jewel `Deny` -- see the Tier model below for exactly what `admin`/`moderator`/`player` reach.
 
 `guilds:mutate` was split for the same reason. `DELETE /api/guilds/{guildId}` is **disband** — it destroys the guild — and it shared one action with promoting a member, so a roster fix and a deletion were the same grant.
 
@@ -198,8 +198,10 @@ moderator and player; the observer tier is editable only through
   (not restoring) backups. A Deny block keeps the crown jewels
   `execute`/`export`, `admin:transfer-settings:write`,
   `updates:apply/fix/repair`, `backups:restore/import`, `addons:install/update`,
-  `setup:write`, `players:mutate`, and the economy actions) unreachable even if
-  a future edit widens the allow-list.
+  `setup:write`, and the `players:mutate` economy successors (`give-item`,
+  `grant`, `reset`, `delete-item`, `edit-item`, `repair`, `recover` -- not the
+  bare alias itself, which would also catch `players:moderate`/`teleport`)
+  unreachable even if a future edit widens the allow-list.
 - **moderator** — live moderation only: read the live game world (server
   status, players, guilds, bases, storage, blueprints, vehicles, exchange,
   landsraad, sietches, deep desert, maps, logs), broadcast/map-chat, and act on
@@ -213,7 +215,7 @@ moderator and player; the observer tier is editable only through
 Two catalog details make the admin/moderator line enforceable rather than
 all-or-nothing:
 
-- **`players:kick` / `players:ban` / `players:teleport`** are split out of the
+- **`players:moderate` / `players:teleport`** are split out of the
   `players:mutate` economy bucket (`REGEX_ACTIONS_BY_METHOD_PATTERN`), so a
   moderator/admin can act on an individual player without gaining give-item /
   add-currency / reset-progression.
