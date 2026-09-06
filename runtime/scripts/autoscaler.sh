@@ -1021,6 +1021,7 @@ PY
     local origin_server_id target_json response_json
     origin_server_id="$(origin_server_id_for_origin_id "$origin_id" 2>/dev/null || true)"
     [ -n "$origin_server_id" ] || continue
+    map_is_disabled "DeepDesert_1" && continue
     if [ -n "${target_partition:-}" ]; then
       target_json="$(deepdesert_target_json "$target_partition" 2>/dev/null || true)"
     else
@@ -1035,6 +1036,9 @@ PY
       target_json="$(deepdesert_target_json "$target_partition" 2>/dev/null || true)"
     fi
     if [ -z "$target_json" ] && [ -z "${target_partition:-}" ]; then
+      # Older responses omit the destination. Only this response handler may
+      # choose a fallback; generic map demand cannot identify the right dimension.
+      runtime/scripts/spawn-server.sh DeepDesert_1 || continue
       target_json="$(deepdesert_target_json 2>/dev/null || true)"
     fi
     [ -n "$target_json" ] || continue
@@ -1627,25 +1631,10 @@ handle_demand() {
   running="$(container_count_for_map "$map")"
 
   if [ "$map" = "DeepDesert_1" ]; then
-    local desired_active current_active
-    desired_active="$(active_dimensions_for_map "$map" | tr -d '[:space:]')"
-    [ -n "$desired_active" ] || desired_active=1
-    current_active="$assigned"
-    if [ "${running:-0}" -gt "${current_active:-0}" ] 2>/dev/null; then
-      current_active="$running"
-    fi
-    if [ "$current_active" -gt 0 ] 2>/dev/null; then
-      echo "OK   demand map=$map num=$num target=existing assigned=$assigned containers=$running"
-      remember_demand_event "$event_id" "$map" "$now"
-      return 0
-    fi
-
-    echo "SPAWN demand map=$map num=$num target=single assigned=$assigned containers=$running"
-
-    runtime/scripts/spawn-server.sh "$map" || {
-      echo "ERROR failed to spawn $map"
-      return 0
-    }
+    # A Dimension request may target any configured Deep Desert partition.
+    # Spawning by map here races the response handler and starts the first
+    # unassigned dimension even when the player requested a different one.
+    echo "WAIT demand map=$map num=$num target=travel-response"
     remember_demand_event "$event_id" "$map" "$now"
     return 0
   fi
