@@ -382,6 +382,28 @@ test("setPolicies refuses an action pattern outside the IAM vocabulary and names
   assert.equal(ok.ok, true);
 });
 
+// Adversarial code-review finding on the loadPolicies() observer-migration
+// fix above (2026-09-06): that fix only covers the LOAD path -- an operator
+// pasting raw JSON from an old export/backup into the IAM editor's JSON tab
+// reaches setPolicies() (the SAVE path) instead, which must not either (a)
+// silently strip data out from under an explicit save the way the load path
+// does, or (b) refuse with validPolicyStore()'s generic, non-actionable
+// "must contain valid tier documents" message.
+test("setPolicies refuses a document containing the obsolete observer tier, with an actionable message", () => {
+  const docs = {
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    admin: { version: 1, tier: "admin", statements: [{ Effect: "Allow", Action: ["server:read"] }] },
+    observer: { version: 1, tier: "observer", statements: [{ Effect: "Allow", Action: ["server:read"] }] },
+  };
+  const result = setPolicies(docs);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /observer/);
+  assert.match(result.error, /no longer recognized/);
+  assert.deepEqual(result.obsoleteTiers, ["observer"]);
+  // Nothing was saved -- the refused document must never reach live policy.
+  assert.ok(!("observer" in getAllPolicies()), "a refused save must not apply any part of the document");
+});
+
 // Review finding: the owner-lockout guard checked only settings:write, so an
 // owner policy that kept write but lost read passed setPolicies() yet could
 // never load /api/settings or /api/settings/iam/policies to undo the mistake.
