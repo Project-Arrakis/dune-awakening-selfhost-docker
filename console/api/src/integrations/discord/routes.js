@@ -16,7 +16,7 @@ import { discordReadinessProvider, discordServicesProvider } from "./readOnlyPro
 import {
   opsActivityProvider, opsCombatProvider, opsResourcesProvider,
   opsEconomyProvider, opsInventoryProvider,
-  opsSocProvider, opsPrometheusProvider
+  opsSocProvider, opsPrometheusProvider, opsDashboardProvider
 } from "./opsProvider.js";
 import {
   linkPlayerProvider,
@@ -241,7 +241,15 @@ export async function handleDiscordAdapterRoute({
       [DISCORD_ADAPTER_ROUTES.OPS_ECONOMY]: { capability: DISCORD_CAPABILITIES.OPS_ECONOMY_READ, provider: opsEconomyProvider },
       [DISCORD_ADAPTER_ROUTES.OPS_INVENTORY]: { capability: DISCORD_CAPABILITIES.OPS_INVENTORY_READ, provider: opsInventoryProvider },
       [DISCORD_ADAPTER_ROUTES.OPS_SOC]: { capability: DISCORD_CAPABILITIES.OPS_SOC_READ, provider: opsSocProvider, queryBound: false },
-      [DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS]: { capability: DISCORD_CAPABILITIES.OPS_PROMETHEUS_READ, provider: opsPrometheusProvider, queryBound: false }
+      [DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS]: { capability: DISCORD_CAPABILITIES.OPS_PROMETHEUS_READ, provider: opsPrometheusProvider, queryBound: false },
+      // queryBound defaults to true (real transaction + statement_timeout) --
+      // matches activity/combat/resources/economy/inventory above, not
+      // soc/prometheus. opsDashboardProvider aggregates all eight sub-providers
+      // internally, including soc/prometheus, which ignore the db/tx argument
+      // they're handed regardless (see their own signatures) -- passing them a
+      // transaction-scoped client instead of the raw pool has no effect, and
+      // the six DB-backed sub-providers need the timeout protection.
+      [DISCORD_ADAPTER_ROUTES.OPS_DASHBOARD]: { capability: DISCORD_CAPABILITIES.OPS_DASHBOARD_READ, provider: opsDashboardProvider }
     };
 
     if (opsRoutes[path] && req.method === "POST") {
