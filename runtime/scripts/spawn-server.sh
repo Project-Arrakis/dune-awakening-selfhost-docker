@@ -307,16 +307,27 @@ bind_partition_to_live_server() {
     " | tr -d '\r[:space:]')"
 
     if [ -n "$live_server_id" ]; then
-      docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+      if live_server_id="$(docker exec dune-postgres psql -U postgres -d dune -Atq -v ON_ERROR_STOP=1 -c "
 begin;
-update dune.world_partition
+set local lock_timeout = '5s';
+lock table dune.world_partition in share row exclusive mode;
+update dune.world_partition wp
 set server_id = '$live_server_id'
-where partition_id = $partition_id
-  and coalesce(server_id, '') = '';
+where wp.partition_id = $partition_id
+  and wp.map = '${map_name//\'/\'\'}'
+  and (coalesce(wp.server_id, '') = '' or wp.server_id = '$live_server_id')
+  and not exists (
+    select 1 from dune.world_partition assigned
+    where assigned.server_id = '$live_server_id'
+      and assigned.map = wp.map
+      and assigned.partition_id <> wp.partition_id
+  )
+returning wp.server_id;
 commit;
-" >/dev/null
-      printf '%s' "$live_server_id"
-      return 0
+" )" && [ -n "$live_server_id" ]; then
+        printf '%s' "$live_server_id"
+        return 0
+      fi
     fi
 
     sleep "$sleep_seconds"
