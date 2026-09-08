@@ -1,6 +1,8 @@
 # Unify the two Discord role→tier mappings — L1 Design
 
-**Status:** Revision 1 — design only, not implemented. Eight Hats Layer 1 audit **not yet run** (§13); this document is not ready to leave draft until it has been.
+**Status:** Revision 2 — design only, not implemented. Eight Hats Layer 1 audit **not yet run** (§13); this document is not ready to leave draft until it has been.
+
+**Revision 2 (maintainer feedback on PR #715):** confirmed `player` as the surviving unified-tier name (§3, §11 decision 3 — no change needed, now confirmed rather than assumed). **Corrected §2.4/§3/§4/§7/§11:** revision 1 proposed silently migrating a `DISCORD_OWNER_ROLE_IDS` role to `admin` on the strength of their identical bot capability sets. Maintainer correction: **owner is not admin** — capability equivalence is not identity equivalence, and collapsing them for migration convenience would erase what "owner is never a role" is supposed to mean once the console's stricter model becomes authoritative for the bot side too. A legacy owner-role mapping is now a **refused, operator-visible configuration**, exactly like any other role mapped to a forbidden tier — never auto-reassigned. See the revised §2.4, §3, §4, §7 and decision 2 for the corrected mechanism; §2.4's capability-identity observation is kept only as evidence that an operator who *chooses* to remap such a role to `admin` loses nothing by doing so — not as license to do it for them.
 **Tracking issue:** dune-awakening-selfhost-docker#620 (`#628` was filed independently for the same finding and closed as its duplicate — `#628`'s "suggested direction" section is the origin of this design)
 **Related:** #607 (design-debt bundle: parallel authz mechanisms), #632 (duplicated Discord helpers/constants), #610/#710 (API-key scopes vs. the crown-jewel deny list — a *different* parallel-authz drift, deliberately not folded in here), #676 (Settings consolidation — shares the Settings surface this design touches)
 
@@ -49,7 +51,7 @@ Verified directly against `tier1-upstream`@`bacbd99d` (PR #578's head), by readi
 
 **This design deletes it.** That deletion is independently correct and does not depend on the rest of this design landing.
 
-### 2.4 The fact that makes unification tractable
+### 2.4 A fact worth recording, but not a license to auto-migrate
 
 In `policy.js`'s `CAPABILITY_BY_TIER`:
 
@@ -60,7 +62,9 @@ owner: new Set(Object.values(DISCORD_CAPABILITIES))
 
 **Bot `owner` and bot `admin` have byte-identical capability sets.** Every capability one grants, the other grants.
 
-This resolves what looks like the hardest conflict in the whole design — the console forbidding role→owner while the bot permits it — at zero cost. A role currently listed in `DISCORD_OWNER_ROLE_IDS` can be migrated to `admin` **with no change whatsoever to what its holders can do through the bot**, and the console's stronger "owner is never a role" invariant survives unification intact rather than being weakened to accommodate the bot.
+Revision 1 of this design read that as permission to silently migrate a `DISCORD_OWNER_ROLE_IDS` role to `admin` — "no capability change, so no harm." **Maintainer correction: owner is not admin.** Capability equivalence is not identity equivalence. Owner is the console's derived, non-role-mappable identity concept (Discord guild ownership) — that is true on the console side today, and unification's whole point is to make it true for the bot side as well, not to find a capability-preserving loophole around it the first time it is inconvenient.
+
+So this fact is kept only as evidence for what §4 relies on: an operator who is shown their `DISCORD_OWNER_ROLE_IDS` roles at migration time and *chooses* to remap them to `admin` loses no bot capability by doing so. It is not, and must not become, a reason for the migration to make that choice on the operator's behalf.
 
 ## 3. The unified model
 
@@ -68,21 +72,21 @@ One mapping, one vocabulary, consumed by both paths.
 
 | Unified tier | Role-mappable | Console sign-in grants | Bot capability grants |
 |---|---|---|---|
-| `owner` | **no** — derived from Discord guild ownership | owner | (unreachable by role; a signed-in owner is a console concept) |
-| `admin` | yes | admin | `admin` capability set (= the former bot `owner` set) |
+| `owner` | **no** — derived from Discord guild ownership, on both paths | owner | full capability set (unreachable by role — a bot command from a non-owner, non-admin actor can never resolve to it) |
+| `admin` | yes | admin | full capability set (today's bot `admin`, and today's bot `owner` role holders, once the operator has explicitly remapped them — see §4) |
 | `moderator` | yes | moderator | `moderator` capability set |
 | `player` | yes | player | the former `observer` capability set |
 | — (no mapped role) | — | denied | `public` |
 
-Env keys, one family: `DISCORD_ROLE_IDS_ADMIN`, `DISCORD_ROLE_IDS_MODERATOR`, `DISCORD_ROLE_IDS_PLAYER`.
+Env keys, one family: `DISCORD_ROLE_IDS_ADMIN`, `DISCORD_ROLE_IDS_MODERATOR`, `DISCORD_ROLE_IDS_PLAYER`. **No `DISCORD_ROLE_IDS_OWNER`** — owner is derived, never configured, on either path, once unified.
 
 The console side's rules become the unified rules, because they are strictly the safer set:
 
 - **Snowflake validation** (`parseRoleIdList`) applies to both paths. A malformed entry is dropped, never fatal.
 - **One role → exactly one tier**, refused at save and warned at boot, applies to both paths.
-- **Owner is never role-mappable**, for both paths.
+- **Owner is never role-mappable**, for both paths — including a legacy `DISCORD_OWNER_ROLE_IDS` entry on the bot side, which the console model has no slot for at all (§4).
 
-`player` is the retained name for the lowest signed-in tier; bot `observer` becomes an alias that maps onto it. The console already folded observer into player once (`roleTiers.test.js`: "it was unreachable via Discord role mapping and a strict subset of player"), so this continues an existing decision rather than inventing one.
+`player` is the retained name for the lowest signed-in tier (confirmed by the maintainer); bot `observer` becomes an alias that maps onto it. The console already folded observer into player once (`roleTiers.test.js`: "it was unreachable via Discord role mapping and a strict subset of player"), so this continues an existing decision rather than inventing one.
 
 ## 4. The one real behavior change, and why it needs staging
 
@@ -90,16 +94,17 @@ Unification is **not** capability-neutral in one direction, and this is the desi
 
 - A role in `DISCORD_OBSERVER_ROLE_IDS` today has bot read capability and **cannot sign in to the console**. Under a naive union it becomes `player` and **gains console sign-in**.
 - A role in `DISCORD_CONSOLE_PLAYER_ROLE_IDS` today can sign in to the console and has **no bot capability**. Under a naive union it **gains bot observer capability**.
+- A role in `DISCORD_OWNER_ROLE_IDS` today has full bot capability with **no console counterpart at all** — the unified model has no owner-role slot for it to land in (§2.4, §3, corrected in revision 2). This is not a gain/loss asymmetry like the first two; it is a mapping with **no valid unified target**, and treating "the capabilities happen to match `admin`'s" as an implicit answer is exactly the shortcut the maintainer rejected in revision 1. It must surface as a **refusal**, the same way the console already refuses a role mapped to two tiers at once — never a silent reassignment to `admin`, however capability-preserving that reassignment would be.
 
-Both directions grant access nobody asked for, at upgrade time, silently. That is the exact class of failure this whole issue is about, so the migration must not perform a union.
+All three directions grant, lose, or reinterpret access nobody asked for, at upgrade time, silently. That is the exact class of failure this whole issue is about, so the migration must not perform a union, and must not resolve the owner case by inference either.
 
 **Migration is opt-in and explicit, in three stages:**
 
 **Stage 1 — detect and warn (no behavior change).** Ship drift detection against the legacy variables. Both mappings keep working exactly as today. At boot the console reports every role whose bot tier outranks its console tier, and the same report is surfaced in Settings. Nothing is auto-resolved. This alone closes `#620`'s reported hazard — the operator can no longer be unaware of the drift — and is safe to ship immediately, independently of stages 2 and 3.
 
-**Stage 2 — the unified variables become authoritative when present.** If any `DISCORD_ROLE_IDS_*` key is set, it is the single source of truth for both paths and the legacy keys are ignored, with a boot warning naming each ignored legacy key. If none is set, behavior is byte-identical to today plus stage 1's warnings. No deployment changes behavior without the operator setting a new key.
+**Stage 2 — the unified variables become authoritative when present.** If any `DISCORD_ROLE_IDS_*` key is set, it is the single source of truth for both paths and the legacy keys are ignored, with a boot warning naming each ignored legacy key. If `DISCORD_OWNER_ROLE_IDS` is still non-empty at that point, stage 2 **refuses to activate** the unified mapping — mirroring the console's own "sign-in disabled until the mapping is sound" precedent exactly — with a message naming the role(s) and telling the operator to either remap them to `admin` themselves or drop them, not a message that does it for them. If none of the unified keys is set, behavior is byte-identical to today plus stage 1's warnings. No deployment changes behavior without the operator setting a new key.
 
-**Stage 3 — assisted migration + deprecation.** Settings offers a one-click migration that shows the operator exactly what the merged mapping would be, per role, with every access *gain* called out explicitly and requiring acknowledgement, and writes the unified keys only on confirmation. Legacy keys warn as deprecated for one release, then are removed.
+**Stage 3 — assisted migration + deprecation.** Settings offers a one-click migration that shows the operator exactly what the merged mapping would be, per role, with every access *gain* called out explicitly, **and every legacy `DISCORD_OWNER_ROLE_IDS` role listed separately as "needs your decision: map to Admin, or remove"** — never pre-selected — requiring acknowledgement before writing the unified keys. Legacy keys warn as deprecated for one release, then are removed.
 
 Stage 1 is drafted already (§9). Stages 2 and 3 are this design's actual implementation scope.
 
@@ -125,9 +130,11 @@ The mitigation is labelling, not a second confirmation dialog: the section is ti
 ## 7. Testing
 
 - `roleTiers.test.js` — unified resolution, snowflake filtering on both paths, the conflict invariant on both paths, and the legacy-drift detector (drafted, §9).
-- `discordPolicy.test.js` — capability sets unchanged for `admin`/`moderator`; `player` grants exactly what `observer` granted; a former `DISCORD_OWNER_ROLE_IDS` role migrated to `admin` resolves to an identical capability set (the §2.4 claim, asserted rather than assumed).
+- `discordPolicy.test.js` — capability sets unchanged for `admin`/`moderator`; `player` grants exactly what `observer` granted.
+- **Stage 2 refuses to activate, at boot, while any `DISCORD_OWNER_ROLE_IDS` entry remains** — asserted as a refusal test, not a migration test. A companion test proves the refusal message names the specific role(s) and offers no default.
+- **Stage 3's migration preview never pre-selects a target for a legacy owner role** — asserted directly against the preview payload, not inferred from the UI.
 - Precedence tests: unified keys present → legacy ignored; unified keys absent → byte-identical to today.
-- A migration test that asserts the **gain** list is complete for a mapping exercising every observer/player asymmetry in §4.
+- A migration test that asserts the **gain** list is complete for a mapping exercising every observer/player asymmetry in §4, and that the owner-role list is reported separately from (never merged into) that gain list.
 - Mutation-test each new gate, per this project's convention.
 
 ## 8. Documentation to update
@@ -150,14 +157,18 @@ Stage 1's detector exists on this branch: `roleTierDrift()` / `describeRoleTierD
 | # | Decision | Rationale |
 |---|---|---|
 | 1 | Console rules win where the two differ | Strictly safer: snowflake validation, the one-role-one-tier refusal, and owner-never-mappable all exist only on the console side. |
-| 2 | Bot `owner` collapses into `admin` | Their capability sets are byte-identical (§2.4), so this costs nothing and preserves "no role confers owner." |
-| 3 | `player` is the surviving name; `observer` maps onto it | Continues the console's existing fold, rather than reintroducing a tier it deliberately removed. |
+| 2 | A legacy `DISCORD_OWNER_ROLE_IDS` role is **refused at stage 2, and requires an explicit operator choice at stage 3** — never auto-remapped to `admin` | **Revised in revision 2** (was: auto-collapse into `admin`, on the strength of identical capability sets — maintainer correction: owner is not admin; capability equivalence is not identity equivalence, and inferring the operator's intent defeats the point of making owner non-role-mappable at all). §2.4's capability-identity fact survives only as evidence that the operator's own choice to remap costs nothing, not as the mechanism that makes the choice for them. |
+| 3 | `player` is the surviving name; `observer` maps onto it | Continues the console's existing fold, rather than reintroducing a tier it deliberately removed. **Confirmed by the maintainer in revision 2.** |
 | 4 | Migration is opt-in, never a union at upgrade | A union silently grants access in both directions (§4) — the same class of failure as #620 itself. |
 | 5 | Delete `services/discordAdapter.js` rather than fix it | Zero references repo-wide; it is a fail-open authorization check waiting to be imported by name. |
 | 6 | Acknowledgement gate on migration, not on routine saves | A prompt on every save trains click-through; the real access change happens once. |
 | 7 | Stage 1 ships independently | It closes #620's actual reported hazard without changing any behavior, so it need not wait on stages 2–3. |
 
 ## 12. Open questions for the maintainer
+
+Resolved in revision 2: `player` as the surviving tier name (confirmed), and owner-vs-admin (owner stays non-role-mappable on both paths; a legacy owner-role mapping is refused and requires an explicit operator choice, never auto-remapped — §2.4, §3, §4, §11 decision 2).
+
+Still open:
 
 1. **Stage 1 alone, or all three?** Stage 1 closes the reported hazard with zero behavior change. Stages 2–3 deliver the single source of truth `#628` asked for but require a migration every existing deployment must consciously perform.
 2. **Deprecation window** for the legacy keys — one release, or longer given this is a fork tracking an upstream that does not have these keys at all?
