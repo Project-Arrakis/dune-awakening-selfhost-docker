@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, statSync, chownSync } from "node:fs";
-import { parseRoleIdList, parseTierList, roleTierConflicts } from "./integrations/discord/roleTiers.js";
+import { parseRoleIdList, parseTierList, roleTierConflicts, roleTierDrift } from "./integrations/discord/roleTiers.js";
+import { discordRoleMappingFromEnv } from "./integrations/discord/adapter.js";
 import { dirname, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
@@ -336,6 +337,13 @@ export function loadConfig() {
     // Separation of duties (rfc-console-auth.md §2.1.1): non-empty means the
     // mapping is unsound and Discord sign-in is refused until it is fixed.
     discordConsoleRoleTierConflicts: roleTierConflicts(discordConsoleRoleTiers),
+    // Roles whose Discord-BOT capability outranks the console access the same
+    // role grants (#620). The two mappings are configured separately and only
+    // the console one has a Settings UI, so cutting a departed admin out of
+    // DISCORD_CONSOLE_ADMIN_ROLE_IDS leaves their bot capability untouched.
+    // Reported, never auto-resolved -- see roleTiers.js for why neither
+    // mapping is derived from the other.
+    discordRoleMappingDrift: roleTierDrift(discordConsoleRoleTiers, discordRoleMappingFromEnv(process.env)),
     // Tiers that require the Discord ACCOUNT to have 2FA enabled (§2.1.1 item 4).
     // Unset or empty -> gate off (opt-in). A value like "owner,admin" enables it.
     // Opt-in: an existing operator whose Discord account has no
