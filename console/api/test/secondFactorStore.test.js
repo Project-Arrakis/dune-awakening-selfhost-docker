@@ -231,8 +231,25 @@ test("a NEWER-version file throws SecondFactorVersionError, NOT corrupt (do not 
 test("a corrupt-but-string TOTP secret (not valid base64 of a key) fails closed as corrupt", async () => {
   const { store, filePath, dir } = freshStore();
   try {
-    // valid shape, but the secret string is not base64 of a 10-64 byte key
+    // valid shape, but the secret string is not base64 at all
     writeFileSync(filePath, JSON.stringify({ version: 1, totp: { secret: "!!!not-base64!!!", lastUsedCounter: -1 }, recoveryCodes: [] }), { mode: 0o600 });
+    await assert.rejects(() => store.isConfigured(), SecondFactorCorruptError);
+  } finally { cleanup(dir); }
+});
+
+// #616: the corrupt-state length check used to accept ANY decoded length in
+// [10,64] bytes, while the write path (assertSecretBytes) only ever produces
+// exactly TOTP_SECRET_BYTES (20). A secret partially corrupted (or
+// hand-edited) to some OTHER length inside that permissive range -- valid
+// base64, round-trips cleanly -- was accepted as non-corrupt, so
+// verifyTotpToken would compute codes against the wrong-length secret and
+// every code from the operator's real authenticator would be silently and
+// permanently rejected, with this exact guard never firing to explain why.
+test("a TOTP secret that is valid base64 but decodes to a length other than TOTP_SECRET_BYTES fails closed as corrupt", async () => {
+  const { store, filePath, dir } = freshStore();
+  try {
+    const wrongLengthSecret = Buffer.alloc(32, 0x41).toString("base64"); // 32 bytes, inside the old permissive [10,64] range
+    writeFileSync(filePath, JSON.stringify({ version: 1, totp: { secret: wrongLengthSecret, lastUsedCounter: -1 }, recoveryCodes: [] }), { mode: 0o600 });
     await assert.rejects(() => store.isConfigured(), SecondFactorCorruptError);
   } finally { cleanup(dir); }
 });
