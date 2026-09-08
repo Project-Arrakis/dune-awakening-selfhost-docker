@@ -1,7 +1,7 @@
 # Bot/Console Authorization Decoupling — L1 Design
 
 **Date:** 2026-09-07
-**Status:** L1 design, drafted through direct human-AI brainstorming dialogue (not a dispatched eight-hats review — the operator drove every key decision directly; see Decision Log). Ready for operator review before any implementation.
+**Status:** L1 design, drafted through direct human-AI brainstorming dialogue (not a dispatched eight-hats review — the operator drove every key decision directly; see Decision Log). Reviewed by a full Layer 2 eight-hats pass after the fact (see the companion PR's audit trail) — HIGH/MEDIUM findings from that pass are incorporated inline. This document describes verified-current code behavior as of 2026-09-07/08 (commit `c80a647b`) — re-verify §3's code excerpt and §2's matrix against `console/api/src/integrations/discord/policy.js`/`oauth.js` directly before relying on this if significant time has passed, rather than trusting this snapshot indefinitely.
 **Scope:** clarifies where Discord-role-based authorization decisions live across the Discord bot ("Sahir Venn," repos `mentat`/`mentat-link`) and the game console ("Core," this repo) — two independent systems that can each be present, absent, or differently configured in a given deployment.
 **Explicitly out of scope:** the terminology/documentation-clarity work covering *what the 4 Discord-named things are* (bot identity, bot setup-portal OAuth, console adapter, console's own OAuth login) — that's tracked separately (`mentat-link` issue #132/PR #133, companion work planned in this repo and `mentat`). This document is the authorization-architecture decision that work needs to reference, not a replacement for it.
 
@@ -25,13 +25,16 @@ The operator's own initial instinct ("core should be the source of truth, but wh
 
 Three independent dimensions, not two: whether a bot is present, whether Console has its own Discord OAuth Application configured, and whether Console's own role-ID mapping is populated. A fourth, `DUNE_DISCORD_ADAPTER_ENABLED`, gates whether the bot can reach the console for *anything* — confirmed via `console/api/src/integrations/discord/routes.js:183`, this is all-or-nothing: disabled means every bot→console route (read-only status checks included, not just privileged actions) returns `adapter_disabled`.
 
-| # | Bot Present | Console OAuth | Console Roles | Adapter Enabled | Bot Command Gating | Adapter/Privileged-Action Authority |
+**Note on the "Console Roles" column:** it does double duty and means two different, independently-configured things depending on the row — for rows 1-3 (no bot) it means the console **login-OAuth** role mapping (§4's gap: not yet implemented); for rows 4-6 (bot present) it means the **adapter's own** `DISCORD_*_ROLE_IDS` mapping, which is configured independently of whether console login-OAuth is enabled at all. Row 4 is split below (4b-i/4b-ii) the same way rows 5 and 6 already are, to make this explicit rather than implicit — an earlier draft of this table only showed row 4b as "unconfigured → owner-only" without acknowledging the adapter's role mapping can just as easily be populated in that row too, independent of console OAuth.
+
+| # | Bot Present | Console OAuth (login) | Console Roles | Adapter Enabled | Bot Command Gating | Adapter/Privileged-Action Authority |
 |---|---|---|---|---|---|---|
 | 1 | No | False | — | — | N/A (no bot) | Console (single implicit Owner, password-only, no tiers) |
 | 2 | No | True | False | — | N/A | Console (Owner-only via allowlist) |
 | 3 | No | True | True | — | N/A | Console (own role-ID mapping, full tiers) — **not yet implemented, see §4** |
 | 4a | Yes | False | — | False | Bot (own `guild_roles`) | N/A — no privileged-action channel exists; even read-only console commands fail |
-| 4b | Yes | False | — | True | Bot (own `guild_roles`) | **Console** (own adapter role-ID mapping; unconfigured → owner-only, automatic) |
+| 4b-i | Yes | False | Adapter roles unconfigured | True | Bot (own `guild_roles`) | **Console** (owner-only, automatic — the empty-mapping fallback) |
+| 4b-ii | Yes | False | Adapter roles configured | True | Bot (own `guild_roles`) | **Console** (own adapter role-ID mapping, full tiers — independent of console OAuth being off) |
 | 5a | Yes | True | False | False | Bot (own `guild_roles`) | N/A — no channel |
 | 5b | Yes | True | False | True | Bot (own `guild_roles`) | Console (owner-only, unconfigured) |
 | 6a | Yes | True | True | False | Bot (own `guild_roles`) | N/A — no channel |
@@ -100,6 +103,11 @@ Captured because this was a direct dialogue, not a dispatched review — the rea
 2. **Standalone console-OAuth (no bot) confirmed as a real, valid deployment** — not just a bootstrap-to-owner-then-abandon flow. This is what surfaced the §4 gap.
 3. **Initial proposal rejected:** making the bot authoritative for adapter decisions specifically when it's "the only OAuth" (row 4b as a special case). Operator's counter-principle — "authorization falls to console; if it has roles adhere to them, if no roles then owner only; the code lives in console and all calls are checked console-side" — was adopted instead, as a single uniform rule with no special-casing, and confirmed to already match existing code with zero changes needed.
 4. **Bot command gating and adapter authority are always two separate decisions**, established early and held throughout — Console never overrides which commands the bot shows in Discord; the bot never overrides whether Console honors a privileged action.
+
+**Layer 2 audit findings, incorporated 2026-09-08** (retroactive eight-hats pass against this doc + the 3 companion PRs; see the tracking issue for the full findings register):
+5. **Architect hat (HIGH):** the companion `operator-guide.md` PR initially claimed console login (#4) "works the same way" as the adapter (#3) — implying it, too, could be configured with role IDs. False: §4's gap means #4 has no role-mapping path at all today, only owner-or-deny. Fixed in `operator-guide.md`.
+6. **Architect hat (MEDIUM):** §2's matrix "Console Roles" column conflated two independently-configured things (console login-OAuth roles for rows 1-3; the adapter's own roles for rows 4-6) and didn't show that the adapter's role config varies independently of console OAuth even in row 4. Fixed by splitting row 4b into 4b-i/4b-ii and adding an explanatory note.
+7. **GRC hat:** flagged a real merge-order risk — the companion `operator-guide.md` PR links to this file by path; if it merges first, the link is briefly dead. Resolved by merging this PR first.
 
 ---
 
