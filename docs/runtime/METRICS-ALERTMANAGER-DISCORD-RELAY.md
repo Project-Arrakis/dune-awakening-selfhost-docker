@@ -10,7 +10,7 @@ resolved Prometheus alerts to a Discord channel via the external Mentat
 ## Background
 
 `POST /api/alerts/relay` previously had zero authentication --
-[`Project-Arrakis/sentinel#167`](https://github.com/Project-Arrakis/sentinel/issues/167) found that anyone who discovered its
+[`Project-Arrakis/mentat#167`](https://github.com/Project-Arrakis/mentat/issues/167) found that anyone who discovered its
 URL could inject arbitrary-looking alert payloads and have them relayed
 to the real, configured Discord channel as if genuine. The fix spans two
 repositories:

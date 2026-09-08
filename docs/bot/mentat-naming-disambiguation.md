@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-31 (implementation completed 2026-09-01)
 **Status:** Current
-**Companion repository:** [Project-Arrakis/sentinel](https://github.com/Project-Arrakis/sentinel) *(GitHub repo rename to `mentat` still pending — see Project-Arrakis/meta#56; the bot's own product branding is already "Mentat" as of `sentinel#234`)*
+**Companion repository:** [Project-Arrakis/mentat](https://github.com/Project-Arrakis/mentat) *(GitHub repo rename from `sentinel` completed 2026-09-02 — see Project-Arrakis/meta#56; this document's own body text below, describing the state as of 2026-08-31/09-01, still says the rename was "still pending" and "not yet renamed" in several places. That was accurate when written; left as historical narrative rather than rewritten, per this repo's own documentation-currency convention — read every `Project-Arrakis/sentinel` reference below as `Project-Arrakis/mentat`.)*
 **Tracking issue:** [Project-Arrakis/meta#56](https://github.com/Project-Arrakis/meta/issues/56)
 
 ## Summary

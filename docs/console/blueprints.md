@@ -362,11 +362,11 @@ node --test test/blueprints*.test.js test/httpSafety.test.js
 ### OWASP Top 10 Security Tests
 
 Additional security tests live in the
-[ops-observability addon](https://github.com/yacketrj/dune-ops-observability-addon/tree/main/pipeline/tests)
-and can be injected into any repo:
+[ops-observability addon](https://github.com/Project-Arrakis/dune-ops-observability-addon/tree/main/tools/cross-repo-security-tests)
+(moved from `pipeline/tests/`) and run against a local checkout of this repo:
 
 ```bash
-bash pipeline/run-security-tests.sh <path-to-repo>
+bash tools/cross-repo-security-tests/run-security-tests.sh <path-to-this-repo-checkout>
 ```
 
 Covers A01-A10 static analysis checks for the blueprint API surface.
