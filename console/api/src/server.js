@@ -130,6 +130,20 @@ for (const { tier, pattern } of policyLoad.unknownActions) {
   // nothing. Silence here is how a policy comes to look safer than it is.
   console.warn(`IAM policy warning: ${tier} names "${pattern}", which matches no known action and has no effect.`);
 }
+// #627 (Requirement 24): a secret supplied as a plain env var is visible to
+// any process on the host that can read `ps`/`/proc/<pid>/environ`, which a
+// file under runtime/secrets/ (mode 0600, `_FILE` convention) is not. Neither
+// of these had any startup warning at all before this -- warn once, loudly,
+// so an operator choosing between the two ways to supply a secret knows the
+// env-var path leaves it more exposed, without refusing to start (both are
+// supported, deliberately -- this is a visibility improvement, not a new
+// requirement).
+if (config.discordOAuthClientSecretEnvManaged) {
+  console.warn("Security notice: DISCORD_OAUTH_CLIENT_SECRET is set as a plain environment variable, visible to any process on this host that can read this process's environment (ps, /proc/<pid>/environ). Prefer runtime/secrets/discord-oauth-client-secret.txt instead.");
+}
+if (config.discordBotHandoffSecretEnvManaged) {
+  console.warn("Security notice: DISCORD_BOT_HANDOFF_SECRET is set as a plain environment variable, visible to any process on this host that can read this process's environment (ps, /proc/<pid>/environ). Prefer runtime/secrets/discord-bot-handoff-secret.txt instead.");
+}
 // Discord setup took effect on this boot: drop the "restart pending" marker.
 if (config.discordOAuthConfigured) {
   try { const m = resolve(config.generatedDir, "discord-setup-pending-restart"); if (existsSync(m)) unlinkSync(m); } catch { /* ignore */ }
@@ -6815,7 +6829,7 @@ async function writeOAuthConfig(req, res) {
   // validation collapses null -> "" (a valid empty), so the write/merge paths
   // must do the same or they persist DISCORD_OAUTH_REDIRECT_URI=null (non-empty,
   // so OAuth reads as configured while every sign-in fails at Discord).
-  const merged = (key) => body[key] !== undefined ? (body[key] == null ? "" : String(body[key])) : (current[key] || "");
+  const merged = (key) => body[key] !== undefined ? (body[key] == null ? "" : String(body[key]).trim()) : (current[key] || "");
   const conflicts = roleTierConflicts({
     admin: parseRoleIdList(merged("DISCORD_CONSOLE_ADMIN_ROLE_IDS")),
     moderator: parseRoleIdList(merged("DISCORD_CONSOLE_MODERATOR_ROLE_IDS")),
@@ -6829,7 +6843,14 @@ async function writeOAuthConfig(req, res) {
   const oauthFields = {};
   for (const key of allowed) {
     if (body[key] === undefined) continue;
-    oauthFields[key] = body[key] == null ? "" : String(body[key]);
+    // #587: validateOAuthWriteConfigKey() validates a TRIMMED copy
+    // (`String(value || "").trim()`), but this persisted the raw,
+    // untrimmed value -- trailing/leading whitespace in a submitted guild/
+    // client ID (or any other field) passed validation yet was written
+    // verbatim to .env, silently disabling Discord OAuth after the next
+    // restart (a snowflake with trailing whitespace never equals Discord's
+    // real one). Trim here too, matching what was actually validated.
+    oauthFields[key] = body[key] == null ? "" : String(body[key]).trim();
     changes.push(key);
   }
   if (changes.length) await updateEnvFileValues(oauthFields);
@@ -7452,7 +7473,12 @@ async function handleOAuthCallback(req, res) {
   oauthCallbackRateLimiter.recordSuccess(rateKey);
   const session = auth.makeSession({ tier: resolved.tier, userId: identity.userId, username: identity.username, displayName: identity.displayName, guildId: config.discordHomeGuildId });
   res.setHeader("Set-Cookie", [sessionCookieValue(session, config), clearOAuthStateCookie()]);
-  audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: resolved.tier });
+  // #584: every OTHER branch of this callback (failure or denial) already
+  // audits userId; only the success row omitted it -- a granted session
+  // could not be attributed to who actually signed in. username/source
+  // added alongside for the same reason every failure branch names what it
+  // can (deniedTier, reason): more to go on than "someone signed in."
+  audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: true, tier: resolved.tier, userId: identity.userId, username: identity.username, source: resolved.source });
   return html(res, 200, oauthReturnPage());
 }
 

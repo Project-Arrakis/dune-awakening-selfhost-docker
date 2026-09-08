@@ -222,6 +222,12 @@ export function loadConfig() {
   // outright when this is true, matching adminPasswordEnvManaged's own
   // precedent exactly rather than inventing a second convention.
   const discordOAuthClientSecretEnvManaged = Boolean(process.env.DISCORD_OAUTH_CLIENT_SECRET);
+  // #627 (Requirement 24): DISCORD_BOT_HANDOFF_SECRET has no Settings-UI
+  // rotate/forget route to guard the way the two flags above do -- it is
+  // read-only, `readInlineOrFile()`-sourced config -- so this flag exists
+  // purely to drive the boot-time warning below (env-var secrets are visible
+  // via `ps`/`/proc/<pid>/environ`; `_FILE`/runtime/secrets/ is preferred).
+  const discordBotHandoffSecretEnvManaged = Boolean(process.env.DISCORD_BOT_HANDOFF_SECRET);
   const oauthHomeGuildId = /^\d{17,19}$/.test(process.env.DISCORD_HOME_GUILD_ID || "") ? process.env.DISCORD_HOME_GUILD_ID : "";
   // Console-native role -> tier mapping (rfc-console-auth.md §2.1.1). Each key is
   // a comma-separated list of Discord role IDs; malformed entries are dropped,
@@ -292,6 +298,7 @@ export function loadConfig() {
     enrollmentSessionTtlMs: 10 * 60 * 1000, // §4: short-lived, non-renewable enrollment session
     adminPasswordEnvManaged,
     discordOAuthClientSecretEnvManaged,
+    discordBotHandoffSecretEnvManaged,
     // ---- Discord OAuth sign-in (Tier 1, rfc-console-auth.md §2.1 / §2.1.1) ----
     // "App configured" = the console can start an OAuth round-trip (setup mode
     // uses this); "configured" additionally has a home guild, i.e. sign-in can
