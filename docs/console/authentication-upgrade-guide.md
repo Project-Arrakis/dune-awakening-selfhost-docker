@@ -376,6 +376,13 @@ DISCORD_OAUTH_CLIENT_SECRET=<its Client Secret>   # or put it in runtime/secrets
 DISCORD_OAUTH_REDIRECT_URI=https://<your-console-host>/api/auth/discord/callback
 ```
 
+**Pick one, not both.** `DISCORD_OAUTH_CLIENT_SECRET` in `.env` always takes
+precedence over the file — if you set the env var, Settings' rotate and
+"Forget this configuration entirely" both refuse with an actionable error
+instead of silently touching a file that would never be authoritative
+anyway. If you want to manage the secret from Settings, leave the env var
+unset and use the file (Settings writes it for you on first save).
+
 The setup screen shows you the exact redirect URI to register (with a copy
 button) if you have not done it yet. The first-run sign-in flow never asks for
 the client ID or secret — the application is deployment config. (Once set up,
