@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { actionForRoute } from "../src/actions.js";
-import { evaluate, loadPolicies, getAllPolicies, matchAction, resolveAllowedActions, setPolicies } from "../src/policy.js";
+import { evaluate, loadPolicies, getAllPolicies, isCrownJewelAction, matchAction, resolveAllowedActions, setPolicies } from "../src/policy.js";
 
 test("policy matching supports exact and namespace wildcards", () => {
   assert.equal(matchAction("players:read", "players:read"), true);
@@ -471,7 +471,7 @@ test("setPolicies still saves a non-owner tier whose Deny keeps every crown-jewe
       // guard refuses any save naming a removed action outright (a separate,
       // earlier check than this one), so a Deny using the removed alias
       // would never reach the crown-jewel check this test exercises.
-      { Effect: "Deny", Action: ["settings:*", "players:give-item", "players:grant", "players:reset", "players:delete-item", "players:edit-item", "players:repair", "players:recover", "players:unclassified", "database:mutate", "database:execute", "database:export", "database:write-config", "server:write-credentials", "admin:transfer-settings:write", "updates:apply", "updates:fix", "updates:repair", "backups:restore", "backups:import", "addons:install", "addons:update", "setup:write", "carepackage:grant", "carepackage:write-config", "exchange:market", "exchange:market-write"] },
+      { Effect: "Deny", Action: ["settings:*", "players:give-item", "players:grant", "players:reset", "players:delete-item", "players:edit-item", "players:repair", "players:recover", "players:unclassified", "database:mutate", "database:execute", "database:export", "database:write-config", "server:write-credentials", "admin:transfer-settings:write", "updates:apply", "updates:fix", "updates:repair", "backups:restore", "backups:import", "backups:delete", "addons:install", "addons:update", "setup:write", "carepackage:grant", "carepackage:write-config", "exchange:market-write"] },
     ] },
   };
   assert.equal(setPolicies(docs).ok, true);
@@ -652,6 +652,59 @@ test("loadPolicies() leaves a file with no obsolete tier untouched (no disk writ
   }
   assert.deepEqual(result.migratedTiers, []);
   assert.equal(warnings.length, 0);
+});
+
+// #711 follow-up: found by a separate L3 finder angle after the two tests
+// below were written -- apiKeyScopes.js's parallel KEY_DENIED_ACTIONS
+// already treats backups:restore/import/delete as owner-only-equivalent for
+// API keys, but CROWN_JEWEL_DENY_ACTIONS (the tiered-session equivalent)
+// omitted backups:delete. Pinned directly rather than only indirectly via
+// the crown-jewel-leak tests below, so a future edit that narrows the
+// pattern list is caught even if it happens to not touch a policy document.
+test("backups:delete is a crown-jewel action, matching apiKeyScopes.js's KEY_DENIED_ACTIONS treatment of it", () => {
+  assert.equal(isCrownJewelAction("backups:delete"), true);
+});
+
+// #711: setPolicies() has always refused to SAVE a crown-jewel leak (see the
+// tests above), but loadPolicies() trusted a stored file with no equivalent
+// check at all -- a pre-existing iam-policies.json written before
+// crown-jewel protection existed (or hand-edited around it) silently revived
+// its old wildcard grants at every boot, with no warning, until an operator
+// happened to diff the file or attempt a save (which would then be blocked,
+// surfacing the drift only after the fact).
+test("loadPolicies() warns and falls back to defaults when the stored file grants a crown-jewel action to a non-owner tier", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "policy-load-crown-jewel-leak-"));
+  const dir = join(repoRoot, "runtime", "generated");
+  mkdirSync(dir, { recursive: true });
+  const filePath = join(dir, "iam-policies.json");
+  // A pre-crown-jewel-protection admin document: broad wildcards with no
+  // Deny block at all, exactly the shape an operator's real, older file
+  // would have (see CROWN_JEWEL_DENY_ACTIONS's own history comment).
+  writeFileSync(filePath, JSON.stringify({
+    owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
+    admin: { version: 1, tier: "admin", statements: [
+      { Effect: "Allow", Action: ["server:read", "backups:*"] },
+    ] },
+  }));
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (msg) => warnings.push(msg);
+  let result;
+  try {
+    result = loadPolicies(repoRoot);
+  } finally {
+    console.warn = originalWarn;
+    rmSync(repoRoot, { recursive: true, force: true });
+    loadPolicies(join(tmpdir(), "policy-reset-no-such-dir"));
+  }
+  assert.equal(warnings.length, 1, "a discarded stored policy must warn exactly once");
+  assert.match(warnings[0], /crown-jewel/);
+  assert.match(warnings[0], /admin/);
+  assert.equal(result.source, "defaults");
+  assert.equal(result.crownJewelLeak.tier, "admin");
+  // Must actually have fallen back to the real, safe defaults, not left the
+  // leaking document (or _policies stale) in effect for this boot.
+  assert.equal(evaluate({ tier: "admin" }, "backups:restore"), false);
 });
 
 // Guards the teardown above: without it, this test (appended AFTER the

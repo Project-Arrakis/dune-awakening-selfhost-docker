@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { allKnownActions } from "../src/policy.js";
+import { allKnownActions, isCrownJewelAction } from "../src/policy.js";
 import {
   EXTRA_READ_ACTIONS,
   KEY_DENIED_NAMESPACES,
@@ -18,6 +18,7 @@ import {
   namespaceHasWriteActions,
   namespaceOf,
   normalizeScopes,
+  scopeAllowsAction,
   scopeCatalog,
   KEY_DENIED_ACTIONS,
   selectableNamespaces
@@ -109,6 +110,34 @@ test("setup is denied outright, not merely write-denied", () => {
   assert.equal(keyAllows({ scopes: { setup: "write" } }, "setup:write"), false);
 });
 
+// #710: KEY_DENIED_ACTIONS/KEY_DENIED_NAMESPACES were never reconciled with
+// policy.js's CROWN_JEWEL_DENY_ACTIONS (the owner-only backstop for tiered/
+// Discord sessions) -- a key scoped e.g. players:"write" could reach
+// players:give-item/reset/recover, denied even to a human admin session.
+// Mirrors this file's own "every catalog action classifies" style: iterate
+// the real catalog, not a hardcoded sample, so a future crown-jewel addition
+// is covered automatically.
+test("every crown-jewel action is absent from the API-key scope catalog", () => {
+  for (const action of allKnownActions()) {
+    if (!isCrownJewelAction(action)) continue;
+    const namespace = namespaceOf(action);
+    const entry = actionsByNamespace().get(namespace);
+    if (!entry) continue; // whole namespace already denied -- see KEY_DENIED_NAMESPACES
+    assert.ok(!entry.read.includes(action) && !entry.write.includes(action), `${action} is crown-jewel but still appears in the key-scope catalog`);
+    assert.ok(!grantableActions(namespace).includes(action), `${action} is crown-jewel but grantableActions(${namespace}) still offers it`);
+  }
+});
+
+test("scopeAllowsAction refuses a crown-jewel action even via a hand-edited explicit action list naming it directly", () => {
+  // normalizeScopes() would already drop this on save (it filters against
+  // grantableActions, which the test above pins as crown-jewel-free) -- this
+  // is the defensive check for a stored api-keys.json edited around that,
+  // the same class of gap KEY_WRITE_DENIED_NAMESPACES already guards against
+  // a few lines below in the real scopeAllowsAction() implementation.
+  assert.equal(scopeAllowsAction("players", ["players:give-item"], "players:give-item"), false);
+  assert.equal(scopeAllowsAction("backups", ["backups:delete"], "backups:delete"), false);
+});
+
 test("denied namespaces are absent from the selectable catalog entirely", () => {
   const namespaces = selectableNamespaces();
   for (const denied of KEY_DENIED_NAMESPACES) {
@@ -130,14 +159,19 @@ test("scopeCatalog reports write support for the UI", () => {
   assert.equal(byName.get("setup"), undefined);
   assert.ok(byName.get("players").readActions.includes("players:read"));
   // players:mutate was split by consequence (see actionSplits.test.js):
-  // an individual kick now resolves to players:moderate, and players:unclassified
-  // is all that remains of the "POST /api/players/" prefix rule.
-  for (const action of ["players:moderate", "players:teleport", "players:give-item", "players:grant",
-                        "players:reset", "players:delete-item", "players:edit-item",
-                        "players:repair", "players:recover", "players:unclassified"]) {
+  // an individual kick now resolves to players:moderate. The economy/
+  // destructive successors (give-item, grant, reset, delete-item, edit-item,
+  // repair, recover) and the players:unclassified sentinel are crown-jewel
+  // actions (#710) -- owner-only for a tiered session, and (as of #710's fix)
+  // excluded from the key-scope catalog for the same reason, not offerable
+  // at any level.
+  for (const action of ["players:moderate", "players:teleport", "players:kick-all"]) {
     assert.ok(byName.get("players").writeActions.includes(action), `missing ${action}`);
   }
-  assert.ok(byName.get("players").writeActions.includes("players:kick-all"));
+  for (const action of ["players:give-item", "players:grant", "players:reset", "players:delete-item",
+                        "players:edit-item", "players:repair", "players:recover", "players:unclassified"]) {
+    assert.ok(!byName.get("players").writeActions.includes(action), `${action} is crown-jewel but still offered to keys`);
+  }
   assert.ok(!byName.get("players").writeActions.includes("players:mutate"));
 });
 
@@ -298,8 +332,13 @@ test("a list does not imply the read actions of its namespace", () => {
 
 test("levels keep working exactly as before", () => {
   // The stored form is not migrated, so every existing key must behave
-  // identically. This is the compatibility guarantee.
-  assert.equal(keyAllows({ scopes: { players: "write" } }, "players:reset"), true);
+  // identically -- EXCEPT for a crown-jewel action (#710): players:reset was
+  // reachable via players:"write" before that fix and no longer is, which is
+  // the fix working as intended, not a compatibility break. players:moderate
+  // (not crown-jewel) pins that a plain write grant still reaches everything
+  // else in the namespace unchanged.
+  assert.equal(keyAllows({ scopes: { players: "write" } }, "players:reset"), false);
+  assert.equal(keyAllows({ scopes: { players: "write" } }, "players:moderate"), true);
   assert.equal(keyAllows({ scopes: { players: "write" } }, "players:read"), true);
   assert.equal(keyAllows({ scopes: { players: "read" } }, "players:read"), true);
   assert.equal(keyAllows({ scopes: { players: "read" } }, "players:reset"), false);

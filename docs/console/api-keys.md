@@ -37,11 +37,18 @@ Each key carries one access level per namespace:
 |---|---|
 | **None** (default) | Nothing. This is what every namespace starts at. |
 | **Read** | Every read-shaped action in the namespace. |
-| **Read+write** | Every action in the namespace, including destructive ones. |
+| **Read+write** | Every action in the namespace, including destructive ones, EXCEPT a small set of "crown-jewel" actions (below) that stay owner-only for any key, at any level. |
 
 A new key is created with **no scopes at all** and can reach nothing until permissions are
 deliberately granted, one namespace at a time. There is no bulk-grant control — that is a
 deliberate omission, not a missing feature.
+
+A handful of actions never appear in any key's reach, no matter how broadly a namespace is
+scoped: the same "crown-jewel" actions that stay owner-only for a Discord admin/moderator
+session (character/inventory wipes and item grants under `players`, an in-game currency grant
+under `carepackage`, the market-seeding half of `exchange`, credential/identity writes, and a
+handful of others — see [console-iam.md](../console-iam.md)). They are simply absent from the
+Read+write column below; there is no key scope, level or explicit action list that reaches them.
 
 The level is stored, not an expanded list of actions, so a read-shaped route added in a later
 release is covered by an existing Read grant without every key needing to be re-saved.
@@ -49,9 +56,10 @@ release is covered by an existing Read grant without every key needing to be re-
 ### Per-action scopes
 
 A namespace may hold an **explicit list of actions** instead of a level. `players: "write"` grants
-all twelve player actions at once — kicking, banning, wiping progression, deleting inventory —
-which is exactly what the per-consequence action split was meant to make separable. A list grants
-only what it names:
+every non-crown-jewel player write action at once — kicking, banning, teleporting — which is
+exactly what the per-consequence action split was meant to make separable (wiping progression and
+deleting inventory are crown-jewel and stay unreachable regardless — see above). A list grants
+only what it names, and can never name a crown-jewel action either:
 
 ```json
 {
@@ -63,8 +71,8 @@ only what it names:
 }
 ```
 
-That key can kick and ban, and cannot reset progression, delete an inventory row, grant currency
-or spawn a vehicle. The two forms mix freely across namespaces.
+That key can kick and ban. It could not reset progression or delete an inventory row even with
+`"players": "write"` instead of this list. The two forms mix freely across namespaces.
 
 A list carries no implicit floor: listing only `players:moderate` does **not** also grant
 `players:read`. Name every action you want.
@@ -94,13 +102,13 @@ namespace" rule, so Create stays disabled until something is selected.
 
 | Namespace | Read grants | Read+write additionally grants |
 |---|---|---|
-| `players` | `players:read` | `delete-item`, `edit-item`, `give-item`, `grant`, `kick-all`, `moderate`, `recover`, `repair`, `reset`, `teleport`, `unclassified` |
+| `players` | `players:read` | `kick-all`, `moderate`, `teleport` |
 | `bases` | `bases:read` | `add-item`, `bulk-delete-items`, `delete`, `delete-item`, `fill-item`, `give-item`, `mutate`, `write-config` |
 | `vehicles` | `vehicles:read` | `bulk-delete-items`, `delete`, `delete-item`, `mutate` |
 | `guilds` | `guilds:read` | `disband`, `membership`, `rank`, `unclassified` |
 | `storage` | `storage:read` | `mutate` |
 | `blueprints` | `blueprints:read` | `delete`, `export`, `import`, `unclassified` |
-| `exchange` | `exchange:market`, `exchange:read` | `market-write`, `write-config` |
+| `exchange` | `exchange:market`, `exchange:read` | `write-config` |
 | `maps` | `maps:read` | `despawn`, `reconcile`, `restart`, `spawn`, `teleport`, `write-config` |
 | `sietches` | `sietches:read` | `write` |
 | `deepdesert` | `deepdesert:read` | `write` |
@@ -109,9 +117,9 @@ namespace" rule, so Create stays disabled until something is selected.
 | `logs` | `logs:read` | *nothing — no write action exists* |
 | `backups` | `backups:read` | `create`, `write-config` |
 | `updates` | `updates:check`, `updates:read` | *nothing — write actions are denied to keys* |
-| `carepackage` | `carepackage:read` | `clear-history`, `grant`, `scan`, `write-config` |
+| `carepackage` | `carepackage:read` | `clear-history`, `scan` |
 | `addons` | `addons:read` | *nothing — write actions are denied to keys* |
-| `admin` | `admin:announcements:read`, `admin:history:read`, `admin:items:read`, `admin:motd:read`, `admin:skills:read`, `admin:transfer-settings:read`, `admin:vehicles:read` | `announcements:write`, `broadcast`, `broadcast-shutdown`, `history:clear`, `map-chat`, `motd:write`, `transfer-settings:write` |
+| `admin` | `admin:announcements:read`, `admin:history:read`, `admin:items:read`, `admin:motd:read`, `admin:skills:read`, `admin:transfer-settings:read`, `admin:vehicles:read` | `announcements:write`, `broadcast`, `broadcast-shutdown`, `history:clear`, `map-chat`, `motd:write` |
 
 `logs`, `updates` and `addons` render a two-segment control (None / Read), not three. `logs`
 has no write action at all; the other two have several, but they are denied to keys — see

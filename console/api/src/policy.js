@@ -181,6 +181,23 @@ export function loadPolicies(repoRoot = null) {
       const raw = readFileSync(filePath, "utf8");
       const { migrated: parsed, removedTiers: migratedTiers } = migrateObsoleteTiers(JSON.parse(raw));
       if (validPolicyStore(parsed)) {
+        // #711: setPolicies() refuses to ever SAVE a crown-jewel leak, but a
+        // file written before that backstop existed (or hand-edited around
+        // it) was trusted here with no check at all. Apply the identical
+        // backstop at load time -- fail loud and fall back to the safe
+        // defaults, the same "fail loud, not silent" precedent the invalid/
+        // unreadable branches below already follow, rather than silently
+        // reviving a stale wildcard grant for the life of this boot.
+        const leak = crownJewelLeak(parsed);
+        if (leak) {
+          _policies = DEFAULT_POLICIES;
+          console.warn(
+            `Stored IAM policy at ${filePath} grants "${leak.action}" to the "${leak.tier}" tier, a crown-jewel action reserved for owner -- ` +
+            "falling back to the default policies. This file likely predates crown-jewel protection (or was hand-edited around it) and " +
+            "still carries a wildcard/legacy grant. Review Access Control and re-save after this restart to restore your customizations."
+          );
+          return { source: "defaults", path: filePath, crownJewelLeak: leak, unknownActions: [], deprecatedActions: [], migratedTiers: [] };
+        }
         _policies = parsed;
         if (migratedTiers.length) {
           // Fixed on disk too, not just in memory -- otherwise the same
@@ -393,15 +410,9 @@ export function setPolicies(docs, repoRoot = null) {
   // Fix: expand every crown-jewel PATTERN against the real action catalog
   // first, then evaluate() each matched CONCRETE action -- mirroring the
   // same expand-then-evaluate shape resolveAllowedActions() already uses.
-  const crownJewelActions = [...allKnownActions()].filter((action) =>
-    CROWN_JEWEL_DENY_ACTIONS.some((pattern) => matchAction(pattern, action))
-  );
-  for (const tier of ["admin", "moderator", "player"]) {
-    if (!docs[tier]) continue;
-    const leaked = crownJewelActions.find((action) => evaluate({ tier }, action, docs));
-    if (leaked) {
-      return { ok: false, error: `The ${tier} policy would grant "${leaked}", a crown-jewel action reserved for owner. Add an explicit Deny for it, or remove the Allow that reaches it.` };
-    }
+  const leak = crownJewelLeak(docs);
+  if (leak) {
+    return { ok: false, error: `The ${leak.tier} policy would grant "${leak.action}", a crown-jewel action reserved for owner. Add an explicit Deny for it, or remove the Allow that reaches it.` };
   }
   _policies = docs;
   _allowedActions = {};
@@ -467,8 +478,69 @@ const CROWN_JEWEL_DENY_ACTIONS = [
   // stay owner-only even if a lower tier's Allow is later widened.
   "players:unclassified",
   "carepackage:grant", "carepackage:write-config",  // minting in-game value
-  "exchange:market", "exchange:market-write",       // seeding the market economy
+  // #710 follow-up: this used to also list the bare "exchange:market" pattern
+  // alongside "exchange:market-write" under one "seeding the market economy"
+  // comment -- but exchange:market is read-only (actions.js: every route it
+  // resolves is a GET, plus one explicitly read-only POST .../buyback/probe;
+  // apiKeyScopes.js's own EXTRA_READ_ACTIONS already documents this and grants
+  // it to a key's exchange:"read" scope). Found when reconciling this list
+  // with apiKeyScopes.js for #710: enforcing the (until-then-latent) crown-jewel
+  // check universally broke exchange:market's own documented, tested,
+  // deliberately-read-reachable design. Only the actual write/economy-seeding
+  // half stays owner-only.
+  "exchange:market-write",
+  // #711 follow-up: omitted despite apiKeyScopes.js's parallel KEY_DENIED_ACTIONS
+  // already treating backups:restore/import/delete as owner-only-equivalent for
+  // API keys. Without it, an owner who later widens a non-owner tier's Allow to
+  // "backups:*" (a plausible tidy-up this file's own comments warn against for
+  // other entries) would silently gain mass-deletion of every backup.
+  "backups:delete",
 ];
+
+let _crownJewelActionSet = null;
+
+// The real, concrete actions from the catalog that CROWN_JEWEL_DENY_ACTIONS'
+// patterns match. Memoized like apiKeyScopes.js's actionsByNamespace() cache
+// -- the catalog is static for the life of the process, and every caller
+// below needs this same expand-then-evaluate result (see setPolicies()'s own
+// comment for why a pattern cannot be checked directly).
+function crownJewelActionSet() {
+  if (_crownJewelActionSet) return _crownJewelActionSet;
+  _crownJewelActionSet = new Set(
+    [...allKnownActions()].filter((action) =>
+      CROWN_JEWEL_DENY_ACTIONS.some((pattern) => matchAction(pattern, action))
+    )
+  );
+  return _crownJewelActionSet;
+}
+
+// Exported so any OTHER principal type with its own deny list -- API keys
+// (apiKeyScopes.js's KEY_DENIED_ACTIONS) are the current example -- can be
+// checked against this same authoritative catalog instead of maintaining an
+// independently-drifting copy. #710 found API-key scopes had never been
+// reconciled with this list at all: a key scoped `players: "write"` could
+// reach players:give-item/reset/recover, denied even to a human admin session.
+export function isCrownJewelAction(action) {
+  return crownJewelActionSet().has(action);
+}
+
+// The first crown-jewel action a non-owner tier's OWN statements resolve to
+// allowed, or null. Shared by setPolicies() (an operator-initiated save) and
+// loadPolicies() (an operator-authored file trusted as-is at boot) so the two
+// checks cannot drift -- #711 found loadPolicies() skipping this entirely: a
+// pre-existing iam-policies.json written before crown-jewel protection
+// existed was trusted at boot with zero check, silently reviving old
+// wildcard admin grants (backups:restore, players:give-item, etc.) on every
+// restart until an operator happened to diff the file or attempt a save.
+function crownJewelLeak(docs) {
+  for (const tier of ["admin", "moderator", "player"]) {
+    if (!docs[tier]) continue;
+    for (const action of crownJewelActionSet()) {
+      if (evaluate({ tier }, action, docs)) return { tier, action };
+    }
+  }
+  return null;
+}
 
 const DEFAULT_POLICIES = {
   owner: {
