@@ -154,6 +154,12 @@ test("full enrollment: password login -> enroll -> TOTP login, with replay rejec
     const confirmStepCode = codeFor(secret);
     const replayConfirm = await api(port, "/api/auth/login", { body: { password: PASSWORD, totpCode: confirmStepCode } });
     assert.equal(replayConfirm.status, 401, "the confirm-time code is rejected as a replay at first login");
+    // #596: this IS the RFC-mandated forced first login right after
+    // enrollment reusing the still-displayed confirm code -- a genuine
+    // replay, not a wrong/expired code, so the message must say so (matching
+    // requireFreshTier3Proof's own reason->message split) rather than sending
+    // the operator hunting a clock problem they don't have.
+    assert.match((await replayConfirm.json()).error, /already used/i);
 
     // 6. Password + the NEXT step's TOTP -> authenticated.
     const theCode = codeFor(secret, 1);
@@ -164,7 +170,10 @@ test("full enrollment: password login -> enroll -> TOTP login, with replay rejec
     // 7. Replay: the SAME code cannot be reused within its step.
     const login4 = await api(port, "/api/auth/login", { body: { password: PASSWORD, totpCode: theCode } });
     assert.equal(login4.status, 401, "a TOTP code cannot be replayed");
-    assert.equal((await login4.json()).totpRequired, true);
+    const login4Body = await login4.json();
+    assert.equal(login4Body.totpRequired, true);
+    // #596: same message split as the confirm-time replay above.
+    assert.match(login4Body.error, /already used/i);
   } finally {
     await stopProcess(console.child);
     rmSync(tempDir, { recursive: true, force: true });
@@ -278,6 +287,49 @@ test("login fails closed (503, no session) when the second-factor state file is 
     assert.equal(body.authenticated, undefined);
     assert.equal(body.enrollmentRequired, undefined);
     assert.ok(!cookieFrom(res), "no session cookie on the fail-closed path");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// #594: this store-failure path used to audit TWICE -- an explicit
+// "auth.2fa.confirm"/"store_unavailable" row written by the route itself,
+// then a SECOND row from secondFactorUnavailable() called with no action
+// argument (defaults to "auth.login") -- a phantom login failure for anyone
+// filtering auth.login, and the real, more specific
+// second_factor_unavailable/second_factor_version reason invisible to
+// anyone filtering auth.2fa.confirm. Exactly one row, correctly named.
+test("POST /api/auth/2fa/confirm's store-failure path audits exactly once, under auth.2fa.confirm", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "enroll-e2e-confirm-corrupt-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const enroll = await beginEnrollment(port);
+    const cookie = cookieFrom(enroll);
+    const { csrfToken } = await enroll.json();
+    const setup = await (await api(port, "/api/auth/2fa/setup", { cookie, csrf: csrfToken })).json();
+
+    // Corrupt the store AFTER the enrollment session exists (with its secret
+    // held in memory) but BEFORE confirm reads the on-disk state to decide
+    // create-vs-already-configured.
+    const statePath = join(tempDir, "runtime", "generated", "console-second-factor.json");
+    writeFileSync(statePath, "{ not valid json", { mode: 0o600 });
+
+    const confirm = await api(port, "/api/auth/2fa/confirm", { cookie, csrf: csrfToken, body: { code: codeFor(setup.secret) } });
+    assert.equal(confirm.status, 503, "a corrupt store on confirm must fail closed");
+
+    const auditLogPath = join(tempDir, "runtime", "generated", "web-admin-audit.jsonl");
+    const auditLines = readFileSync(auditLogPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const confirmRows = auditLines.filter((l) => l.action === "auth.2fa.confirm" && l.detail?.ok === false);
+    // beginEnrollment() itself performs one real, successful password login
+    // first -- that legitimately writes one auth.login (ok:true) row. The bug
+    // this test guards against is a phantom auth.login FAILURE row.
+    const phantomLoginFailures = auditLines.filter((l) => l.action === "auth.login" && l.detail?.ok === false);
+    assert.equal(confirmRows.length, 1, "exactly one auth.2fa.confirm failure row, not a duplicate");
+    assert.equal(phantomLoginFailures.length, 0, "no phantom auth.login FAILURE row for a confirm-route failure");
+    assert.equal(confirmRows[0].detail.reason, "second_factor_unavailable");
   } finally {
     await stopProcess(console.child);
     rmSync(tempDir, { recursive: true, force: true });
