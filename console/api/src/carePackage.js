@@ -1,4 +1,5 @@
-import { appendFileSync, chmodSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, createReadStream, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildDuneArgs, runDune } from "./runner.js";
@@ -35,6 +36,73 @@ const DEFAULT_CONFIG = {
 };
 const firstOnlineClaimLocks = new Map();
 const HISTORY_READ_CHUNK_BYTES = 64 * 1024;
+const HISTORY_MAX_BYTES = 8 * 1024 * 1024;
+const historyMaintenance = new Map();
+
+// Receipts are eligibility state, not display history. Never expire them with logs.
+function receiptsPath(config) { return resolve(config.generatedDir, "care-package-grant-receipts.json"); }
+function readGrantReceipts(config) {
+  const file = receiptsPath(config);
+  if (!existsSync(file)) return [];
+  const rows = JSON.parse(readFileSync(file, "utf8"));
+  if (!Array.isArray(rows)) throw new Error("Invalid Care Package grant receipts");
+  return rows;
+}
+function eligibilityHistory(config) { return [...readGrantReceipts(config), ...carePackageHistory(config, 500).rows]; }
+
+export async function maintainCarePackageHistory(config) {
+  const file = grantsPath(config);
+  if (historyMaintenance.has(file)) return historyMaintenance.get(file).promise;
+  if (!existsSync(file) || statSync(file).size < HISTORY_MAX_BYTES) return;
+  const state = { pending: [], cancelled: false };
+  state.promise = (async () => {
+    const info = statSync(file), receipts = new Map(), recent = [];
+    let recentBytes = 0;
+    const remember = row => {
+      if (!isSuccessfulGrant(row)) return;
+      const receipt = { ...firstOnlineClaimIdentity(row), kitId: row.kitId || row.version || "", grantWhen: isFirstOnlineGrantRow(row) ? "first_online" : "", status: "granted" };
+      receipts.set(JSON.stringify(receipt), receipt);
+    };
+    const retain = row => {
+      remember(row);
+      if (row.status === "skipped") return;
+      const line = `${JSON.stringify(row)}\n`;
+      recent.push(line); recentBytes += Buffer.byteLength(line);
+      while (recent.length > 500 || recentBytes > HISTORY_MAX_BYTES / 2) recentBytes -= Buffer.byteLength(recent.shift());
+    };
+    for (const row of readGrantReceipts(config)) remember(row);
+    const input = createReadStream(file, { end: info.size - 1 });
+    const lines = createInterface({ input, crlfDelay: Infinity });
+    try {
+      for await (const line of lines) {
+        if (state.cancelled) return;
+        if (!line.trim()) continue;
+        let row;
+        try { row = JSON.parse(line); } catch { continue; }
+        if (row && typeof row === "object") retain(row);
+      }
+    } finally { lines.close(); input.destroy(); }
+    if (state.cancelled) return;
+    const current = statSync(file);
+    const appendedBytes = state.pending.reduce((total, row) => total + Buffer.byteLength(`${JSON.stringify(row)}\n`), 0);
+    if (current.ino !== info.ino || current.size !== info.size + appendedBytes) throw new Error("Care Package history changed outside the Console during maintenance; history was preserved");
+    for (const row of state.pending) retain(row);
+    // Publish durable receipts before removing their original history records.
+    // No await here: appends/clear cannot interleave with the atomic replacements.
+    atomicCarePackageJson(receiptsPath(config), JSON.stringify([...receipts.values()]));
+    atomicCarePackageJson(file, recent.join(""));
+  })();
+  historyMaintenance.set(file, state);
+  try { await state.promise; } finally { historyMaintenance.delete(file); }
+}
+
+function atomicCarePackageJson(file, content) {
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, content, { mode: 0o600, flag: "wx" });
+    renameSync(temporary, file);
+  } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+}
 
 class FirstOnlineAlreadyClaimedError extends Error {
   constructor(message, claim) {
@@ -130,6 +198,8 @@ function collectHistoryRows(buffer, start, rows, limit) {
 
 export function clearCarePackageHistory(config) {
   const file = grantsPath(config);
+  const maintenance = historyMaintenance.get(file);
+  if (maintenance) maintenance.cancelled = true;
   const removed = existsSync(file) ? countNonEmptyLines(file) : 0;
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, "", { mode: 0o600 });
@@ -198,7 +268,7 @@ export function carePackageEligiblePlayers(config, players = [], options = {}) {
   const kitConfig = readConfig(config);
   const rule = options.ruleId ? kitConfig.autoGrantRules.find((entry) => entry.id === options.ruleId) : null;
   const kit = rule ? selectedKit(kitConfig, rule.kitId, rule.grantWhen, rule.lastSeenDays) : selectedKit(kitConfig, kitConfig.autoGrantKitId);
-  const history = carePackageHistory(config, 500).rows;
+  const history = eligibilityHistory(config);
   const claims = readFirstOnlineClaims(config);
   const rows = players.map((player) => eligibilityForPlayer(kit, history, normalizePlayer(player), { claims }));
   return {
@@ -244,6 +314,7 @@ export async function grantEligibleCarePackages(config, players = [], body = {},
 }
 
 export async function runCarePackageAutoScan(config, players = [], source = "auto", context = {}) {
+  await maintainCarePackageHistory(config);
   const kitConfig = readConfig(config);
   if (!kitConfig.enabled) return { ok: true, skipped: true, reason: "Care Package is disabled", results: [] };
   const rules = kitConfig.autoGrantRules.filter((rule) => rule.enabled);
@@ -257,7 +328,7 @@ export async function runCarePackageAutoScan(config, players = [], source = "aut
       results.push(failedGrant(config, kit, { action_player_id: "", actor_id: "", character_name: "" }, "Care Package has no configured items or XP", source));
       continue;
     }
-    const history = carePackageHistory(config, 500).rows;
+    const history = eligibilityHistory(config);
     const claims = readFirstOnlineClaims(config);
     const rows = players.map((player) => {
       const normalized = normalizePlayer(player);
@@ -268,7 +339,7 @@ export async function runCarePackageAutoScan(config, players = [], source = "aut
       if (!player.eligible) {
         if (player.markPending) pendingChanged = markPendingReturn(pendingReturns, kit, rule, player) || pendingChanged;
         if (player.clearPending) pendingChanged = clearPendingReturn(pendingReturns, kit, rule, player) || pendingChanged;
-        results.push(skippedGrant(config, kit, player, player.reason || "not eligible", source));
+        results.push(skippedGrant(config, kit, player, player.reason || "not eligible", source, false));
         continue;
       }
       try {
@@ -297,6 +368,7 @@ export async function runCarePackageAutoScan(config, players = [], source = "aut
 export async function grantCarePackage(config, playerId, body = {}, context = {}) {
   const phrase = "GRANT CARE PACKAGE";
   if (body.confirmation !== phrase) throw new Error(`Confirmation phrase required: ${phrase}`);
+  await maintainCarePackageHistory(config);
   const kitConfig = readConfig(config);
   const source = body.source || "manual";
   const kit = selectedKit(kitConfig, body.kitId || (source === "manual" ? kitConfig.activeKitId : kitConfig.autoGrantKitId));
@@ -325,7 +397,7 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
       online_status: body.onlineStatus || body.online_status || ""
     }, "Already received first-online Care Package", source);
   }
-  if (source !== "manual" && useFirstOnlineClaim && hasSuccessfulFirstOnlineGrant(carePackageHistory(config, 500).rows, {
+  if (source !== "manual" && useFirstOnlineClaim && hasSuccessfulFirstOnlineGrant(eligibilityHistory(config), {
     action_player_id: playerId,
     actor_id: grantIdentity.actor_id,
     account_id: grantIdentity.account_id,
@@ -738,7 +810,7 @@ function normalizePlayer(player = {}) {
 }
 
 function hasSuccessfulGrant(config, playerId, kitId, actorId = "", identity = {}) {
-  return carePackageHistory(config, 500).rows.some((row) => isSuccessfulGrant(row) && (row.kitId || row.version) === kitId && grantMatchesPlayer(row, {
+  return eligibilityHistory(config).some((row) => isSuccessfulGrant(row) && (row.kitId || row.version) === kitId && grantMatchesPlayer(row, {
     action_player_id: playerId,
     actor_id: actorId,
     account_id: identity.account_id || identity.accountId || "",
@@ -756,10 +828,10 @@ function hasDeliveredCarePackageContent(row = {}) {
   return row.results.some((result) => result?.ok === true && result.operation !== "carePackageWelcomeWhisper");
 }
 
-function skippedGrant(config, kit, player, reason, source) {
+function skippedGrant(config, kit, player, reason, source, persist = true) {
   const now = new Date().toISOString();
   const row = { id: randomUUID(), playerId: player.action_player_id || "", action_player_id: player.action_player_id || "", actor_id: player.actor_id || "", account_id: player.account_id || "", funcom_id: player.funcom_id || "", fls_id: player.fls_id || "", character_name: player.character_name || "", online_status: player.online_status || "", source, version: kit.id, kitId: kit.id, kitName: kit.name, status: "skipped", ok: true, summary: `Skipped: ${reason}`, startedAt: now, finishedAt: now, reason, results: [] };
-  appendGrant(config, row);
+  if (persist) appendGrant(config, row);
   return row;
 }
 
@@ -1178,6 +1250,7 @@ function appendGrant(config, row) {
   const file = grantsPath(config);
   mkdirSync(dirname(file), { recursive: true });
   appendFileSync(file, `${JSON.stringify(row)}\n`, { mode: 0o600 });
+  historyMaintenance.get(file)?.pending.push(row);
   try { chmodSync(file, 0o600); } catch {}
 }
 

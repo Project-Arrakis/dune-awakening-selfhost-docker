@@ -229,6 +229,15 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
       throw new SecondFactorCorruptError("second-factor store factorVersion is malformed");
     }
     parsed.factorVersion = Number.isInteger(parsed.factorVersion) ? parsed.factorVersion : 0;
+    // recoveryPending (review finding, upstream PR #201, 2026-09-08): set the
+    // instant a recovery code is consumed, cleared only by a successful
+    // commit() (a fresh makeState() never carries it forward). Missing field
+    // means false, same backward-compatibility pattern as epoch/factorVersion
+    // -- a file written before this existed has no in-progress recovery.
+    if (parsed.recoveryPending !== undefined && typeof parsed.recoveryPending !== "boolean") {
+      throw new SecondFactorCorruptError("second-factor store recoveryPending is malformed");
+    }
+    parsed.recoveryPending = Boolean(parsed.recoveryPending);
     return parsed;
   }
 
@@ -387,6 +396,11 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
     return runExclusive(async () => {
       const state = await loadRaw();
       if (state === null) return { ok: false, reason: "not_configured" };
+      // The old authenticator must not still log in normally once a recovery
+      // has been started against it (review finding, upstream PR #201,
+      // 2026-09-08) -- checked before even attempting to verify the token, so
+      // a still-valid old code can never succeed during the pending window.
+      if (state.recoveryPending) return { ok: false, reason: "recovery_pending" };
       const secretBytes = Buffer.from(state.totp.secret, "base64");
       const { valid, counter } = verifyTotpMatch(secretBytes, token, timeSeconds, options);
       if (!valid) return { ok: false, reason: "invalid" };
@@ -419,9 +433,26 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
         await persistAndBumpWatermark(state);
         return { ok: false, reason: "reset_detected", remaining: 0 };
       }
+      // A recovery already in progress (review finding, upstream PR #201,
+      // 2026-09-08): the first successful consumption below already wiped
+      // every sibling code, so any further code would fail as "unknown"
+      // regardless -- checked explicitly here only so the caller can give an
+      // accurate "recovery already started" message instead of "wrong code".
+      if (state.recoveryPending) return { ok: false, reason: "recovery_pending" };
       const result = consumeRecoveryCodePure(code, state.recoveryCodes);
       if (!result.ok) return { ok: false, reason: result.reason };
-      state.recoveryCodes = result.remaining;
+      // Atomic invalidation on the FIRST successful consumption (review
+      // finding, upstream PR #201, 2026-09-08 -- docs/rfc-console-auth.md's
+      // "atomically invalidates the entire old recovery-code set" promise was
+      // previously only honored at commit() time, leaving a window where
+      // sibling codes could start a second resetup session and the old TOTP
+      // secret still logged in normally). Rather than keep `result.remaining`
+      // (only the submitted code removed), wipe the WHOLE set and mark the
+      // existing factor recovery-pending in the same persisted write --
+      // durable across a restart, since this is the same JSON file/write path
+      // every other mutation here already uses.
+      state.recoveryCodes = [];
+      state.recoveryPending = true;
       state.epoch += 1;
       await persistAndBumpWatermark(state);
       // factorVersion is returned (not advanced -- consuming a code doesn't
@@ -429,7 +460,7 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
       // starting a resetup session against" and hand it back to commit() as
       // expectedFactorVersion, closing the concurrent-recovery-session gap
       // described on commit() above.
-      return { ok: true, remaining: result.remaining.length, factorVersion: state.factorVersion };
+      return { ok: true, remaining: 0, factorVersion: state.factorVersion };
     });
   }
 
