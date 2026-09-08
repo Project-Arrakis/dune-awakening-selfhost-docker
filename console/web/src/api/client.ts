@@ -22,6 +22,21 @@ export class ApiError extends Error {
   }
 }
 
+// Shared by apiRequest() and loginRequest() for a non-JSON response body --
+// most commonly a reverse proxy's own error page (a Cloudflare/nginx 502/504)
+// standing in for the console's real JSON response. Strips markup so the
+// proxy's own message (however plain) surfaces instead of being replaced
+// wholesale by the generic fallback, which reads as a client-side data
+// problem rather than the actual upstream outage it is. `response.ok` with
+// invalid JSON is a different, console-side bug (a success response that
+// isn't JSON) and keeps the generic message -- there is no useful upstream
+// text to surface in that case.
+function nonJsonResponseMessage(text: string, ok: boolean) {
+  if (ok) return INVALID_RESPONSE_MESSAGE;
+  const fallback = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240);
+  return friendlyApiError(fallback || INVALID_RESPONSE_MESSAGE);
+}
+
 export function setCsrfToken(value: string | null) {
   csrfToken = value;
 }
@@ -130,8 +145,7 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
       data = JSON.parse(text);
     } catch {
       invalidJsonResponse = true;
-      const fallback = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240);
-      data = { error: response.ok ? INVALID_RESPONSE_MESSAGE : friendlyApiError(fallback || INVALID_RESPONSE_MESSAGE) };
+      data = { error: nonJsonResponseMessage(text, response.ok) };
     }
   }
   const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
@@ -225,7 +239,11 @@ export async function loginRequest(body: unknown): Promise<LoginResponse> {
     try {
       data = JSON.parse(text) as Record<string, unknown>;
     } catch {
-      data = { error: INVALID_RESPONSE_MESSAGE };
+      // #598: used to always substitute the generic INVALID_RESPONSE_MESSAGE
+      // here, unlike apiRequest()'s fallback (below) -- so a reverse proxy's
+      // own 502/504 error page at sign-in read as a client-side data problem
+      // instead of surfacing the proxy's actual text.
+      data = { error: nonJsonResponseMessage(text, response.ok) };
     }
   }
   return { status: response.status, body: data };
