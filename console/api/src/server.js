@@ -27,7 +27,7 @@ import { createSecondFactorStore } from "./auth/secondFactorStore.js";
 import { generateTotpSecret, provisioningUri, provisioningQrDataUri, verifyTotpMatch } from "./auth/totp.js";
 import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
-import { roleTiersConfigured, roleTierConflicts, describeRoleTierConflicts, parseRoleIdList } from "./integrations/discord/roleTiers.js";
+import { roleTiersConfigured, roleTierConflicts, describeRoleTierConflicts, describeRoleTierDrift, parseRoleIdList } from "./integrations/discord/roleTiers.js";
 import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishServerCommand } from "./rmq.js";
@@ -323,6 +323,21 @@ if (config.discordConsoleRoleTierConflicts.length) {
   console.warn(
     `Discord role mapping is unsound (${describeRoleTierConflicts(config.discordConsoleRoleTierConflicts)}) -- ` +
     "Discord sign-in is disabled until each role maps to exactly one tier. Fix DISCORD_CONSOLE_*_ROLE_IDS in .env (or Settings -> Discord OAuth) and restart. Password sign-in is unaffected."
+  );
+}
+// Stale authorization after an intended demotion (#620). The console mapping
+// (DISCORD_CONSOLE_*_ROLE_IDS, editable in Settings) and the Discord bot's
+// capability mapping (DISCORD_OBSERVER/MODERATOR/ADMIN/OWNER_ROLE_IDS, .env
+// only) are separate by design, so cutting a role out of the first leaves the
+// second granting bot admin to whoever still holds it. Warned about, never
+// auto-resolved: deriving one from the other would change live authorization
+// on upgrade. Sign-in is deliberately NOT disabled -- unlike an unsound
+// mapping, this is a configuration the operator may have chosen on purpose.
+if (config.discordRoleMappingDrift.length) {
+  console.warn(
+    `Discord role mappings have drifted (${describeRoleTierDrift(config.discordRoleMappingDrift)}) -- ` +
+    "console sign-in and Discord-bot capability are configured separately, and revoking one does not revoke the other. " +
+    "Review DISCORD_OBSERVER/MODERATOR/ADMIN/OWNER_ROLE_IDS in .env against Settings -> Discord OAuth's role mapping and restart."
   );
 }
 const roleMappingUnsound = () => config.discordConsoleRoleTierConflicts.length > 0;
