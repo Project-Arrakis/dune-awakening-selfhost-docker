@@ -212,6 +212,16 @@ export function loadConfig() {
 
   const adminPasswordFile = resolve(secretsDir, "admin-web-password.txt");
   const adminPasswordEnvManaged = Boolean(process.env.ADMIN_PASSWORD);
+  // Same "env managed = read-only from Settings" contract as
+  // adminPasswordEnvManaged above (review finding, upstream PR #202,
+  // 2026-09-08): readInlineOrFile() below gives DISCORD_OAUTH_CLIENT_SECRET
+  // precedence over runtime/secrets/discord-oauth-client-secret.txt, but
+  // Settings' rotate/forget routes used to only ever touch the file --
+  // reporting success while the inline value stayed authoritative after a
+  // restart, and Forget leaving it fully live. Both routes now refuse
+  // outright when this is true, matching adminPasswordEnvManaged's own
+  // precedent exactly rather than inventing a second convention.
+  const discordOAuthClientSecretEnvManaged = Boolean(process.env.DISCORD_OAUTH_CLIENT_SECRET);
   const oauthHomeGuildId = /^\d{17,19}$/.test(process.env.DISCORD_HOME_GUILD_ID || "") ? process.env.DISCORD_HOME_GUILD_ID : "";
   // Console-native role -> tier mapping (rfc-console-auth.md §2.1.1). Each key is
   // a comma-separated list of Discord role IDs; malformed entries are dropped,
@@ -281,6 +291,7 @@ export function loadConfig() {
     totpIssuer: APP_NAME,
     enrollmentSessionTtlMs: 10 * 60 * 1000, // §4: short-lived, non-renewable enrollment session
     adminPasswordEnvManaged,
+    discordOAuthClientSecretEnvManaged,
     // ---- Discord OAuth sign-in (Tier 1, rfc-console-auth.md §2.1 / §2.1.1) ----
     // "App configured" = the console can start an OAuth round-trip (setup mode
     // uses this); "configured" additionally has a home guild, i.e. sign-in can
@@ -540,6 +551,7 @@ export function publicConfig(config) {
     ports: config.ports,
     authDisabled: config.authDisabled,
     adminPasswordEnvManaged: config.adminPasswordEnvManaged,
+    discordOAuthClientSecretEnvManaged: config.discordOAuthClientSecretEnvManaged,
     secureCookies: config.secureCookies,
     allowHostBootstrap: config.allowHostBootstrap,
     mockMode: config.mockMode,

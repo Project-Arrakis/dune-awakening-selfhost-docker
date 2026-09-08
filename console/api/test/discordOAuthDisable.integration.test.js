@@ -1,6 +1,6 @@
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -30,6 +30,14 @@ const DISCORD_ENV = {
   DISCORD_CONSOLE_ADMIN_ROLE_IDS: "400000000000000002",
 };
 
+// Forget/rotate-specific tests below need the Client Secret to live in the
+// FILE, not the inline env var (review finding, upstream PR #202,
+// 2026-09-08): DISCORD_OAUTH_CLIENT_SECRET now makes it env-managed, and
+// env-managed forget/rotate refuse outright, same contract as
+// adminPasswordEnvManaged. This omits just that one field -- every other
+// DISCORD_ENV field is unaffected by that gate.
+const { DISCORD_OAUTH_CLIENT_SECRET: _omitted, ...DISCORD_ENV_FILE_SECRET } = DISCORD_ENV;
+
 function readAuditEntries(tempDir) {
   if (!existsSync(auditLogPath(tempDir))) return [];
   return readFileSync(auditLogPath(tempDir), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
@@ -51,6 +59,17 @@ function writeDiscordEnvFile(tempDir) {
     `DISCORD_HOME_GUILD_ID=${DISCORD_ENV.DISCORD_HOME_GUILD_ID}`,
     `DISCORD_CONSOLE_ADMIN_ROLE_IDS=${DISCORD_ENV.DISCORD_CONSOLE_ADMIN_ROLE_IDS}`,
   ].join("\n") + "\n");
+}
+
+// Pre-seeds the Client Secret as a FILE, before the console boots -- needed
+// by every DISCORD_ENV_FILE_SECRET test below so discordOAuthAppConfigured
+// is true at boot without an inline env var (readInlineOrFile() prefers the
+// env var when both exist, which is exactly the precedence bug this whole
+// suite update is closing).
+function writeDiscordSecretFile(tempDir, value = DISCORD_ENV.DISCORD_OAUTH_CLIENT_SECRET) {
+  const dir = join(tempDir, "runtime", "secrets");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "discord-oauth-client-secret.txt"), `${value}\n`, { mode: 0o600 });
 }
 
 describe("Discord OAuth disable / enable / forget (#676 §6)", { concurrency: 4 }, () => {
@@ -185,21 +204,28 @@ describe("Discord OAuth disable / enable / forget (#676 §6)", { concurrency: 4 
     const port = await getFreePort();
     const tempDir = mkdtempSync(join(tmpdir(), "discord-forget-"));
     writeDiscordEnvFile(tempDir);
-    const consoleProc = startConsole(port, tempDir, DISCORD_ENV);
+    // File-based secret, no inline env var (review finding, upstream PR
+    // #202, 2026-09-08): env-managed forget now refuses outright, so this
+    // test -- which is specifically about forget deleting the FILE -- must
+    // not also set the env var, or it never reaches that code at all.
+    writeDiscordSecretFile(tempDir, "a-real-saved-secret-value");
+    const consoleProc = startConsole(port, tempDir, DISCORD_ENV_FILE_SECRET);
     try {
       await waitForHealth(port, 20000, consoleProc.logs);
       const password = readGeneratedPassword(tempDir);
       const session = await login(port, { password });
 
-      // Save a secret via the real route first, so there is a real file on
-      // disk to prove gets deleted (DISCORD_OAUTH_CLIENT_SECRET as an env var
-      // alone never creates runtime/secrets/discord-oauth-client-secret.txt).
-      const saveSecret = await api(port, "/api/setup/save-oauth-secret", {
-        cookie: session.cookie, csrf: session.csrf, body: { secret: "a-real-saved-secret-value", overwrite: true },
-      });
-      assert.equal(saveSecret.status, 200);
       const secretPath = join(tempDir, "runtime", "secrets", "discord-oauth-client-secret.txt");
       assert.ok(existsSync(secretPath), "test setup: the secret file must exist before forget is exercised");
+
+      // Rotating it via the real route also still works when NOT env-managed
+      // (the positive-path complement to saveOAuthClientSecret's new refusal
+      // above).
+      const saveSecret = await api(port, "/api/setup/save-oauth-secret", {
+        cookie: session.cookie, csrf: session.csrf, body: { secret: "a-rotated-secret-value", overwrite: true },
+      });
+      assert.equal(saveSecret.status, 200, JSON.stringify(await saveSecret.json()));
+      assert.equal(readFileSync(secretPath, "utf8").trim(), "a-rotated-secret-value", "the rotation actually took effect on disk");
 
       const noProof = await api(port, "/api/settings/discord-oauth/forget", { cookie: session.cookie, csrf: session.csrf, body: {} });
       assert.equal(noProof.status, 400, "forget must demand the current password, same as disable");
@@ -224,6 +250,7 @@ describe("Discord OAuth disable / enable / forget (#676 §6)", { concurrency: 4 
       assert.equal(entry.detail.recoverable.adminRoleIds, "400000000000000002");
       // Never the secret itself.
       assert.equal(JSON.stringify(entry).includes("a-real-saved-secret-value"), false);
+      assert.equal(JSON.stringify(entry).includes("a-rotated-secret-value"), false);
     } finally {
       await stopProcess(consoleProc.child);
       rmSync(tempDir, { recursive: true, force: true });
@@ -468,10 +495,11 @@ describe("Discord OAuth disable / enable / forget (#676 §6)", { concurrency: 4 
     test("forget: the start route also refuses immediately, in-process", async () => {
       const port = await getFreePort();
       const tempDir = mkdtempSync(join(tmpdir(), "discord-forget-immediate-"));
-      const consoleProc = startConsole(port, tempDir, DISCORD_ENV);
+      writeDiscordEnvFile(tempDir);
+      writeDiscordSecretFile(tempDir);
+      const consoleProc = startConsole(port, tempDir, DISCORD_ENV_FILE_SECRET);
       try {
         await waitForHealth(port, 20000, consoleProc.logs);
-        writeDiscordEnvFile(tempDir);
         const password = readGeneratedPassword(tempDir);
         const session = await login(port, { password });
 
@@ -555,10 +583,11 @@ describe("Discord OAuth disable / enable / forget (#676 §6)", { concurrency: 4 
     test("enable cannot reverse a forget -- a real forget can only be undone by setting Discord OAuth up again", async () => {
       const port = await getFreePort();
       const tempDir = mkdtempSync(join(tmpdir(), "discord-forget-enable-"));
-      const consoleProc = startConsole(port, tempDir, DISCORD_ENV);
+      writeDiscordEnvFile(tempDir);
+      writeDiscordSecretFile(tempDir);
+      const consoleProc = startConsole(port, tempDir, DISCORD_ENV_FILE_SECRET);
       try {
         await waitForHealth(port, 20000, consoleProc.logs);
-        writeDiscordEnvFile(tempDir);
         const password = readGeneratedPassword(tempDir);
         const session = await login(port, { password });
 
@@ -575,6 +604,137 @@ describe("Discord OAuth disable / enable / forget (#676 §6)", { concurrency: 4 
 
         const after = await api(port, "/api/auth/discord/start", { method: "GET" });
         assert.equal(after.status, 404, "Discord sign-in must stay cut off -- enable must not have silently reversed the forget");
+      } finally {
+        await stopProcess(consoleProc.child);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // Discord Client Secret precedence (review finding, upstream PR #202,
+  // 2026-09-08): readInlineOrFile() gives DISCORD_OAUTH_CLIENT_SECRET
+  // precedence over the file, but Settings' rotate/forget routes used to
+  // only ever touch the file -- reporting success while the inline value
+  // stayed authoritative. Fixed with the same env-managed refusal contract
+  // adminPasswordEnvManaged already uses.
+  describe("Discord Client Secret precedence -- env-managed rotate/forget refusal (upstream PR #202)", () => {
+    test("saveOAuthClientSecret refuses when DISCORD_OAUTH_CLIENT_SECRET is set inline, and does not touch the file", async () => {
+      const port = await getFreePort();
+      const tempDir = mkdtempSync(join(tmpdir(), "discord-secret-env-managed-rotate-"));
+      // Both present at once, on purpose: an operator who set the inline var
+      // AFTER previously using Settings-managed rotation would have a stale
+      // file sitting there too -- the fix must not silently accept a rotate
+      // that can never actually take effect while the env var wins.
+      writeDiscordSecretFile(tempDir, "stale-file-secret-from-before-env-var-was-set");
+      const consoleProc = startConsole(port, tempDir, DISCORD_ENV);
+      try {
+        await waitForHealth(port, 20000, consoleProc.logs);
+        const state = await (await api(port, "/api/auth/state", { method: "GET" })).json();
+        assert.equal(state.config.discordOAuthClientSecretEnvManaged, true, "publicConfig must expose the env-managed state so the UI can reflect it");
+
+        const password = readGeneratedPassword(tempDir);
+        const session = await login(port, { password });
+        const secretPath = join(tempDir, "runtime", "secrets", "discord-oauth-client-secret.txt");
+        const before = readFileSync(secretPath, "utf8");
+
+        const res = await api(port, "/api/setup/save-oauth-secret", {
+          cookie: session.cookie, csrf: session.csrf, body: { secret: "x".repeat(30), overwrite: true },
+        });
+        const body = await res.json();
+        assert.equal(res.status, 400, JSON.stringify(body));
+        assert.match(body.error, /DISCORD_OAUTH_CLIENT_SECRET/, "the refusal must name the actual authoritative source, not a generic error");
+        assert.equal(readFileSync(secretPath, "utf8"), before, "the file must be completely untouched by a refused rotation");
+      } finally {
+        await stopProcess(consoleProc.child);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test("the inline secret stays authoritative across a restart, even with a differing file present", async () => {
+      // Restart-time precedence: proves this isn't just a same-process-cache
+      // artifact -- a fresh process, reading the same on-disk state, must
+      // reach the identical conclusion every time.
+      const tempDir = mkdtempSync(join(tmpdir(), "discord-secret-env-managed-restart-"));
+      writeDiscordSecretFile(tempDir, "a-different-file-value-that-must-lose");
+      let port = await getFreePort();
+      let consoleProc = startConsole(port, tempDir, DISCORD_ENV);
+      try {
+        await waitForHealth(port, 20000, consoleProc.logs);
+        let state = await (await api(port, "/api/auth/state", { method: "GET" })).json();
+        assert.equal(state.config.discordOAuthClientSecretEnvManaged, true);
+        await stopProcess(consoleProc.child);
+
+        port = await getFreePort();
+        consoleProc = startConsole(port, tempDir, DISCORD_ENV);
+        await waitForHealth(port, 20000, consoleProc.logs);
+        state = await (await api(port, "/api/auth/state", { method: "GET" })).json();
+        assert.equal(state.config.discordOAuthClientSecretEnvManaged, true, "env-managed precedence must survive a restart, not just persist within one process's lifetime");
+      } finally {
+        await stopProcess(consoleProc.child);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test("forget refuses when DISCORD_OAUTH_CLIENT_SECRET is set inline, and leaves the .env fields untouched", async () => {
+      const port = await getFreePort();
+      const tempDir = mkdtempSync(join(tmpdir(), "discord-secret-env-managed-forget-"));
+      writeDiscordEnvFile(tempDir);
+      const consoleProc = startConsole(port, tempDir, DISCORD_ENV);
+      try {
+        await waitForHealth(port, 20000, consoleProc.logs);
+        const password = readGeneratedPassword(tempDir);
+        const session = await login(port, { password });
+        const envBefore = readFileSync(join(tempDir, ".env"), "utf8");
+
+        const res = await api(port, "/api/settings/discord-oauth/forget", {
+          cookie: session.cookie, csrf: session.csrf, body: { currentPassword: password },
+        });
+        const body = await res.json();
+        assert.equal(res.status, 400, JSON.stringify(body));
+        assert.match(body.error, /DISCORD_OAUTH_CLIENT_SECRET/, "the refusal must name the actual authoritative source, not a generic error");
+
+        // All-or-nothing: no partial forget. If forget can't clear the
+        // secret, it must not clear anything else either.
+        assert.equal(readFileSync(join(tempDir, ".env"), "utf8"), envBefore, "the .env fields must be completely untouched by a refused forget");
+        const after = await api(port, "/api/auth/discord/start", { method: "GET" });
+        assert.equal(after.status, 302, "Discord sign-in must still be fully live -- forget must not have half-applied");
+      } finally {
+        await stopProcess(consoleProc.child);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    test("forget returns a real error (not false success) when the secret file cannot be deleted", async () => {
+      const port = await getFreePort();
+      const tempDir = mkdtempSync(join(tmpdir(), "discord-secret-delete-failure-"));
+      writeDiscordEnvFile(tempDir);
+      writeDiscordSecretFile(tempDir);
+      const consoleProc = startConsole(port, tempDir, DISCORD_ENV_FILE_SECRET);
+      try {
+        await waitForHealth(port, 20000, consoleProc.logs);
+        const password = readGeneratedPassword(tempDir);
+        const session = await login(port, { password });
+
+        // Force a real, privilege-independent unlinkSync() failure: replace
+        // the secret FILE with a DIRECTORY of the same name. unlinkSync()
+        // always fails with EISDIR on a directory, root included -- a chmod
+        // trick would not, since this suite runs as root (confirmed
+        // elsewhere in this repo's own tests, e.g.
+        // marketBotBackupPrune.test.js's uid-gated skip), and root bypasses
+        // ordinary Unix permission checks entirely.
+        const secretPath = join(tempDir, "runtime", "secrets", "discord-oauth-client-secret.txt");
+        rmSync(secretPath, { force: true });
+        mkdirSync(secretPath);
+        try {
+          const res = await api(port, "/api/settings/discord-oauth/forget", {
+            cookie: session.cookie, csrf: session.csrf, body: { currentPassword: password },
+          });
+          const body = await res.json();
+          assert.equal(res.status, 500, JSON.stringify(body));
+          assert.match(body.error, /Discord Client Secret file|permissions/i, "a real deletion failure must be reported as an error, not silently treated as already-absent success");
+        } finally {
+          rmSync(secretPath, { recursive: true, force: true });
+        }
       } finally {
         await stopProcess(consoleProc.child);
         rmSync(tempDir, { recursive: true, force: true });

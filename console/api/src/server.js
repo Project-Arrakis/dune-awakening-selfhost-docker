@@ -3232,6 +3232,17 @@ async function discordOAuthForgetRoute(req, res) {
   if (!config.discordOAuthAppConfigured && !config.discordOAuthDisabled) {
     return deny(400, { error: "Discord sign-in is not currently configured, so there is nothing to forget." }, { reason: "not_configured" });
   }
+  // Same env-managed refusal as saveOAuthClientSecret above (review finding,
+  // upstream PR #202, 2026-09-08): Forget used to delete only the FILE,
+  // leaving an inline DISCORD_OAUTH_CLIENT_SECRET fully active and Discord
+  // sign-in still genuinely configured -- the opposite of what "Forget this
+  // configuration entirely" promises. All-or-nothing, matching
+  // adminPasswordEnvManaged's own precedent: this route does not do a
+  // partial forget, since a partial success here is exactly the kind of
+  // silent half-state this whole fix exists to close.
+  if (config.discordOAuthClientSecretEnvManaged) {
+    return deny(400, { error: "The Discord Client Secret is managed by DISCORD_OAUTH_CLIENT_SECRET, which this console cannot clear from Settings. Remove it from the environment (and restart) before using Forget." }, { reason: "secret_env_managed" });
+  }
   const body = await readJson(req);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return deny(400, { error: "Request body must be a JSON object." }, { reason: "malformed_body" });
@@ -3272,7 +3283,17 @@ async function discordOAuthForgetRoute(req, res) {
   // one genuinely sensitive artifact on disk after the operator believes
   // it's gone. Deleted outright, not blanked, since there is no .env key
   // referencing it to blank.
-  try { unlinkSync(discordOAuthSecretFile()); } catch { /* already absent -- fine */ }
+  // ENOENT only (review finding, upstream PR #202, 2026-09-08): the previous
+  // bare catch swallowed EVERY error, including a real permission or
+  // filesystem failure, as "already absent" -- reporting 200 while the
+  // secret file was still genuinely sitting on disk.
+  try {
+    unlinkSync(discordOAuthSecretFile());
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      return deny(500, { error: "Failed to delete the stored Discord Client Secret file. Discord OAuth configuration was not cleared -- check the console's filesystem permissions and try again." }, { reason: "secret_file_delete_failed" });
+    }
+  }
   audit(config, auditUrl, ACTION, { ok: true, ...actor, recoverable });
   return json(res, 200, { ok: true, restartRequired: true });
 }
@@ -6698,6 +6719,16 @@ async function discordSetupFinalize(req, res, session) {
 }
 
 async function saveOAuthClientSecret(req, res) {
+  // Env-managed = read-only from Settings, same contract as
+  // adminPasswordEnvManaged (review finding, upstream PR #202, 2026-09-08):
+  // readInlineOrFile() gives DISCORD_OAUTH_CLIENT_SECRET precedence over the
+  // file this route writes, so writing the file here used to silently do
+  // nothing useful -- the inline value stayed authoritative after the next
+  // restart, while this route still reported 200. Refuse outright instead of
+  // writing a file that would just be shadowed.
+  if (config.discordOAuthClientSecretEnvManaged) {
+    return json(res, 400, { error: "The Discord Client Secret is managed by DISCORD_OAUTH_CLIENT_SECRET. Update the environment value instead." });
+  }
   const body = (await readJson(req)) || {}; // guard: readJson returns null for a literal `null` body
   const secret = body.secret;
   if (!secret || String(secret).length < 20) {
