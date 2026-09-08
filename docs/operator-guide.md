@@ -203,16 +203,40 @@ summary — treat those two as the complete current documentation for it.
 
 ## 8. Discord integration
 
-Two separate things exist under the "Discord" name — use the right one:
+Four separate things exist under the "Discord" name across this console and
+its companion bot. Confusing any two of them has caused real operator
+confusion — use the right one:
 
-- **The Discord adapter** (current, operator-facing) — lets you connect a
-  companion Discord bot,
-  [`yacketrj/dune-awakening-selfhost-discordbot`](https://github.com/yacketrj/dune-awakening-selfhost-discordbot),
-  for server monitoring; its slash commands are organized into 6 groups
-  (`core`, `server`, `data`, `ops`, `admin`, `infra`) — see the linked
-  README below for the current, authoritative command list and count. The
-  adapter is disabled by default, read-only unless you separately enable
-  write commands, bearer-token protected, and role-gated. Start with
+1. **The bot's own Discord identity** ("Sahir Venn") — a Discord Application
+   that responds to slash commands in your server. Hosted (the maintainer
+   runs it; you just invite it, no Discord Application to create) or
+   self-hosted (you create and run your own). Start at
+   [mentat-link.darkdante.org](https://mentat-link.darkdante.org).
+2. **The bot's own setup-portal sign-in** ("Sign in with Discord" during
+   bot setup) — OAuth using the bot's identity (#1) to verify which
+   Discord server you manage, before you connect your console. Nothing to
+   do with this console.
+3. **This console's Discord adapter** (`DUNE_DISCORD_ADAPTER_ENABLED`) — a
+   bearer-token REST API on the console that the bot calls to fetch data
+   and, if you enable write commands, perform privileged actions
+   (restarts, backups, broadcasts). Disabled by default. Not OAuth, and
+   not just a read-only data-fetch toggle — see **Authorization**, below,
+   for what it actually gates.
+4. **This console's own, separate, optional "Sign in with Discord" admin
+   login** (`DISCORD_OAUTH_CLIENT_ID` etc., offered during first-run setup
+   as "Discord Authentication (Optional)") — an alternative to the default
+   password login for logging into *this console's own web UI*. Has
+   nothing to do with the bot: you can use the bot with this fully
+   disabled, and you can enable this without ever installing the bot.
+
+### Setting up the bot
+
+- **The bot's own Discord identity** (#1) — hosted (recommended, no
+  Discord Application to create) or self-hosted: see
+  [mentat-link.darkdante.org](https://mentat-link.darkdante.org)'s own
+  Setup Guide and FAQ.
+- **This console's adapter** (#3, what the bot actually talks to) — start
+  with
   [`docs/integrations/discord-integration/README.md`](integrations/discord-integration/README.md);
   the guided, screenshot-illustrated walkthrough is
   [`docs/integrations/discord-integration/admin-guide.md`](integrations/discord-integration/admin-guide.md);
@@ -220,11 +244,45 @@ Two separate things exist under the "Discord" name — use the right one:
   [`docs/integrations/discord-integration/troubleshooting.md`](integrations/discord-integration/troubleshooting.md)
   and [`docs/integrations/discord-integration/faq.md`](integrations/discord-integration/faq.md).
 - **The `discord-control-bot`** — a separate, **experimental, internal,
-  read-only** companion project. It cannot write to your database, mutate
-  players/maps/addons, or send broadcasts — the console remains the sole
-  authority for any action it triggers. Only use this if you specifically
-  need it; start with
+  read-only** companion project, unrelated to the bot above. It cannot
+  write to your database, mutate players/maps/addons, or send broadcasts —
+  the console remains the sole authority for any action it triggers. Only
+  use this if you specifically need it; start with
   [`docs/integrations/discord-control-bot/admin-guide.md`](integrations/discord-control-bot/admin-guide.md).
+
+### Authorization: which system decides what
+
+**This console always decides whether a privileged action actually
+happens, using its own configuration, checked on the console itself —
+never the bot's opinion.** The bot always decides which slash commands a
+Discord user sees, using its own, entirely separate configuration. These
+are two different decisions that happen to use the same tier names
+(Player/Moderator/Admin/Owner) — they are not automatically synchronized.
+
+Concretely: this console's adapter (#3) checks a Discord user's role IDs
+against **this console's own** `DISCORD_OBSERVER_ROLE_IDS`/
+`_MODERATOR_ROLE_IDS`/`_ADMIN_ROLE_IDS`/`_OWNER_ROLE_IDS` — not the bot's
+role configuration. **If you never set these, every privileged action the
+bot asks for is denied for everyone except the real Discord server owner**
+(Owner is always derived from actual Discord guild ownership, on both
+sides, never from a role) — this is the automatic, safe default, not a
+bug. If you want a bot-side Moderator or Admin to actually be able to
+trigger privileged console actions (not just see the command listed), you
+must separately configure these same env vars on the console to match
+whatever role IDs you gave the bot. Nothing keeps the two in sync
+automatically today — see
+[`docs/design/bot-console-authorization-l1-design-2026-09-07.md`](design/bot-console-authorization-l1-design-2026-09-07.md)
+for the full authorization design and reasoning, including why this is a
+deliberate choice, not an oversight.
+
+This console's own separate OAuth login (#4) answers a different question
+— not whether an action succeeds, but whether you can log into this
+console's web UI at all — and, unlike the adapter, **has no role-mapping
+path today**: without a bot handoff configured, it can only ever grant
+the real Discord server owner access or deny everyone else. There is
+currently no way to configure Moderator/Admin-level console login via
+role IDs, regardless of whether a bot is installed — see the design
+doc's §4 for this known, tracked gap.
 
 ---
 

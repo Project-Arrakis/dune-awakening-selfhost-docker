@@ -100,25 +100,38 @@ match the roles configured on the Discord bot side.
 - **Bearer token required** — every request must include `Authorization: Bearer <token>`
 - **Constant-time token comparison** — prevents timing attacks
 - **Output sanitization** — removes internal IPs, credentials, connection strings
-- **No write access** — all routes are read-only
+- **Read-only by default** — write operations (broadcasts, maintenance actions) require `DUNE_DISCORD_WRITES_ENABLED` set explicitly, in addition to the requesting user meeting the required role tier (see Authorization, below)
+
+## Authorization
+
+This adapter decides whether to honor every request using **its own**
+`DISCORD_OBSERVER_ROLE_IDS`/`_MODERATOR_ROLE_IDS`/`_ADMIN_ROLE_IDS`/
+`_OWNER_ROLE_IDS` — never the bot's own role configuration. The bot sends
+the requesting Discord user's role IDs (tamper-proof, HMAC-signed when
+`DUNE_DISCORD_ACTOR_SECRET` is configured); this console independently
+decides what those role IDs mean. If you never configure these env vars,
+every non-owner request is denied automatically (Owner is always real
+Discord guild ownership, never a role) — this is the safe default, not a
+bug, and requires no action if you only want the real server owner to
+trigger privileged bot actions. If you want a bot-side Moderator/Admin to
+actually be able to trigger privileged actions (not just see the command
+in Discord), configure these same env vars here to match whatever role
+IDs you gave the bot — nothing keeps the two in sync automatically. See
+[`docs/operator-guide.md`](../../operator-guide.md)'s Discord integration
+section and
+[`docs/design/bot-console-authorization-l1-design-2026-09-07.md`](../../design/bot-console-authorization-l1-design-2026-09-07.md)
+for the full reasoning.
 
 ## Companion Bot
 
-This adapter is designed to work with the [Dune Discord Bot](https://github.com/yacketrj/dune-awakening-selfhost-discordbot),
-which provides 25 slash commands organized into 6 groups:
-
-| Group | Commands |
-|-------|----------|
-| `core` | about, ping, help |
-| `server` | health, status, summary, readiness, services |
-| `data` | population, backups, maps |
-| `ops` | activity, combat, resources, economy, inventory, location, soc, prometheus, dashboard |
-| `admin` | doctor, cooldowns, latency, events, broadcast |
-| `infra` | version, servers, ports, db |
-
-See the bot's [User Guide](https://github.com/yacketrj/dune-awakening-selfhost-discordbot/blob/main/docs/user-guide.md)
-and [Admin Guide](https://github.com/yacketrj/dune-awakening-selfhost-discordbot/blob/main/docs/admin-guide.md)
-for setup instructions.
+This adapter is designed to work with the Discord bot, "Sahir Venn" —
+hosted or self-hosted, see [mentat-link.darkdante.org](https://mentat-link.darkdante.org)
+for setup instructions and its own User Guide/Admin Guide. Its full,
+current command list (which changes over time) is always available live
+at [mentat-link.darkdante.org/api/commands](https://mentat-link.darkdante.org/api/commands)
+(the same endpoint the bot's own site uses to render its command
+reference, so it can never drift from what the bot actually implements) —
+this document intentionally does not hardcode a copy of that list.
 
 ## Troubleshooting
 
@@ -128,10 +141,12 @@ for setup instructions.
 | Adapter returns 401 | Token mismatch between console and bot |
 | Adapter returns 503 | Token file not found or empty |
 | Status returns empty | Console can't reach Docker (check socket mount) |
-| "not authorized" | Role IDs don't match between console and bot config |
+| Write commands return 403 "Write operations are not enabled." | `DUNE_DISCORD_WRITES_ENABLED` not set |
+| "not authorized" for a role the bot itself allows | This console's own `DISCORD_*_ROLE_IDS` don't include that role ID — see Authorization, above. Not configuring them at all means only the real Discord server owner is ever authorized, by design. |
 
 ## Sources
 
-- [Bot Repository](https://github.com/yacketrj/dune-awakening-selfhost-discordbot)
+- [Bot site and setup guide](https://mentat-link.darkdante.org)
+- [Live command reference](https://mentat-link.darkdante.org/api/commands)
 - [Adapter Contract](../discord-control-bot/api-adapter-contract.md)
 - [Discord Developer Portal](https://discord.com/developers/applications)
