@@ -96,11 +96,23 @@ export function createAuth(config) {
   // non-empty userId and are left untouched; this fork has not yet adopted
   // upstream's explicit `local-owner` principal for the password/TOTP tier
   // (deferred, meta), so an empty userId is what currently marks
-  // this credential type. Returns the number of sessions invalidated.
+  // this credential type.
+  //
+  // `session.scope` must ALSO be excluded (review finding, upstream PR #201,
+  // 2026-09-08): an enroll/resetup-scope session (RFC §4) carries no userId
+  // either -- the same marker a normal password/TOTP session uses -- so
+  // without this check, calling this from inside the 2FA confirm route to
+  // fix the finding above would kill a DIFFERENT, still-legitimate concurrent
+  // enrollment session's cookie before it ever gets to make its own request,
+  // turning its expected 409 (already_configured) into an opaque 403
+  // (session/CSRF invalid). Caught by the existing
+  // "a second enrollment that loses the race gets 409" test going red on the
+  // very first version of that fix. Returns the number of sessions
+  // invalidated.
   function invalidatePasswordSessions(exceptId) {
     let count = 0;
     for (const [id, session] of sessions) {
-      if (id === exceptId || session.userId) continue;
+      if (id === exceptId || session.userId || session.scope) continue;
       sessions.delete(id);
       count++;
     }

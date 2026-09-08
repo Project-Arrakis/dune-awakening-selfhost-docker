@@ -849,6 +849,16 @@ async function handleApi(req, res) {
             error: "The recovery-code state on this console appears to have been restored from an older backup, so all existing recovery codes have been invalidated for safety. Sign in with your authenticator app instead, then regenerate recovery codes from Settings.",
           });
         }
+        if (consumed.reason === "recovery_pending") {
+          // A recovery was already started from a different code (review
+          // finding, upstream PR #201, 2026-09-08) -- every sibling code was
+          // wiped atomically the moment the first one was consumed, so this
+          // is never "wrong code", it's "recovery already in progress
+          // elsewhere". Named separately so the operator isn't told to
+          // "check for typos" against a code that can never work again.
+          audit(config, loginUrl, "auth.login", { ok: false, reason: "recovery_pending" });
+          return json(res, 401, { recoveryFailed: true, error: "A recovery was already started with a different code. Finish that reset, or if it expired, see the recovery guide to reset from the host." });
+        }
         audit(config, loginUrl, "auth.login", { ok: false, reason: `recovery_${consumed.reason}` });
         return json(res, 401, { recoveryFailed: true, error: "That recovery code was not accepted. Check for typos, or use a different unused code." });
       }
@@ -872,6 +882,13 @@ async function handleApi(req, res) {
     if (!verify.ok) {
       loginRateLimiter.recordFailure(rateKey);
       audit(config, loginUrl, "auth.login", { ok: false, reason: `totp_${verify.reason}` });
+      if (verify.reason === "recovery_pending") {
+        // The old authenticator is dead and every recovery code was already
+        // spent starting this reset -- offering "recoveryAvailable" here
+        // would send the operator into a dead end (review finding, upstream
+        // PR #201, 2026-09-08).
+        return json(res, 401, { totpRequired: true, recoveryAvailable: false, error: "This console is mid-recovery. Finish the two-factor reset you started, or if that session expired, see the recovery guide to reset from the host." });
+      }
       return json(res, 401, { totpRequired: true, recoveryAvailable: true, error: "That authenticator code was not accepted. Check your device's clock and enter the current code." });
     }
     return grantPasswordSession();
@@ -991,6 +1008,21 @@ async function handleApi(req, res) {
     }
     // Succeeded: show the recovery codes ONCE, end the setup session, and require
     // a fresh password+TOTP login.
+    //
+    // Every OTHER standing password/TOTP session is revoked here too (review
+    // finding, upstream PR #201, 2026-09-08): a session created under the OLD
+    // factor is not a Tier-3-credential-holder's session created under the
+    // NEW one, for both enrollment (a session that predates 2FA existing at
+    // all should not survive it turning on) and resetup (an attacker holding
+    // a stolen pre-recovery cookie must not stay logged in once the operator
+    // has replaced the compromised authenticator). Scoped the same way
+    // password rotation already scopes it -- every OTHER password/TOTP
+    // session, Discord/passkey sessions untouched -- since this endpoint
+    // itself never authenticates via a normal password/TOTP session (it's
+    // reached only through an enroll/resetup-scope session, which
+    // invalidateSession() below already ends), there is no "acting session"
+    // to except.
+    const sessionsRevoked = auth.invalidatePasswordSessions();
     auth.invalidateSession(session.id);
     clearSessionCookie(res, config);
     if (isResetup) {
@@ -1002,6 +1034,7 @@ async function handleApi(req, res) {
       auth.invalidateResetupSessions(session.id);
     }
     audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: true, resetup: isResetup });
+    audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa-confirmed.sessions-revoked", { resetup: isResetup, count: sessionsRevoked });
     audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), isResetup ? "settings.totp-regenerated" : "settings.totp-setup", { ok: true });
     return json(res, 200, { [isResetup ? "reconfigured" : "enrolled"]: true, recoveryCodes: result.codes }, { "cache-control": "no-cache, no-store, must-revalidate", pragma: "no-cache", expires: "0" });
   }
