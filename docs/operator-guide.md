@@ -229,6 +229,27 @@ confusion — use the right one:
    nothing to do with the bot: you can use the bot with this fully
    disabled, and you can enable this without ever installing the bot.
 
+### Setting up the bot
+
+- **The bot's own Discord identity** (#1) — hosted (recommended, no
+  Discord Application to create) or self-hosted: see
+  [mentat-link.darkdante.org](https://mentat-link.darkdante.org)'s own
+  Setup Guide and FAQ.
+- **This console's adapter** (#3, what the bot actually talks to) — start
+  with
+  [`docs/integrations/discord-integration/README.md`](integrations/discord-integration/README.md);
+  the guided, screenshot-illustrated walkthrough is
+  [`docs/integrations/discord-integration/admin-guide.md`](integrations/discord-integration/admin-guide.md);
+  common problems are in
+  [`docs/integrations/discord-integration/troubleshooting.md`](integrations/discord-integration/troubleshooting.md)
+  and [`docs/integrations/discord-integration/faq.md`](integrations/discord-integration/faq.md).
+- **The `discord-control-bot`** — a separate, **experimental, internal,
+  read-only** companion project, unrelated to the bot above. It cannot
+  write to your database, mutate players/maps/addons, or send broadcasts —
+  the console remains the sole authority for any action it triggers. Only
+  use this if you specifically need it; start with
+  [`docs/integrations/discord-control-bot/admin-guide.md`](integrations/discord-control-bot/admin-guide.md).
+
 ### Authorization: which system decides what
 
 **This console always decides whether a privileged action actually
@@ -254,30 +275,14 @@ automatically today — see
 for the full authorization design and reasoning, including why this is a
 deliberate choice, not an oversight.
 
-This console's own separate OAuth login (#4) works the same way — its own
-configuration, checked independently, defaulting to owner-only until you
-configure it — regardless of whether a bot is installed at all.
-
-### Setting up the bot
-
-- **The bot's own Discord identity** (#1) — hosted (recommended, no
-  Discord Application to create) or self-hosted: see
-  [mentat-link.darkdante.org](https://mentat-link.darkdante.org)'s own
-  Setup Guide and FAQ.
-- **This console's adapter** (#3, what the bot actually talks to) — start
-  with
-  [`docs/integrations/discord-integration/README.md`](integrations/discord-integration/README.md);
-  the guided, screenshot-illustrated walkthrough is
-  [`docs/integrations/discord-integration/admin-guide.md`](integrations/discord-integration/admin-guide.md);
-  common problems are in
-  [`docs/integrations/discord-integration/troubleshooting.md`](integrations/discord-integration/troubleshooting.md)
-  and [`docs/integrations/discord-integration/faq.md`](integrations/discord-integration/faq.md).
-- **The `discord-control-bot`** — a separate, **experimental, internal,
-  read-only** companion project, unrelated to the bot above. It cannot
-  write to your database, mutate players/maps/addons, or send broadcasts —
-  the console remains the sole authority for any action it triggers. Only
-  use this if you specifically need it; start with
-  [`docs/integrations/discord-control-bot/admin-guide.md`](integrations/discord-control-bot/admin-guide.md).
+This console's own separate OAuth login (#4) answers a different question
+— not whether an action succeeds, but whether you can log into this
+console's web UI at all — and, unlike the adapter, **has no role-mapping
+path today**: without a bot handoff configured, it can only ever grant
+the real Discord server owner access or deny everyone else. There is
+currently no way to configure Moderator/Admin-level console login via
+role IDs, regardless of whether a bot is installed — see the design
+doc's §4 for this known, tracked gap.
 
 ---
 

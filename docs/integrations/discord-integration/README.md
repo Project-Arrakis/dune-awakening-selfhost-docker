@@ -141,7 +141,7 @@ this document intentionally does not hardcode a copy of that list.
 | Adapter returns 401 | Token mismatch between console and bot |
 | Adapter returns 503 | Token file not found or empty |
 | Status returns empty | Console can't reach Docker (check socket mount) |
-| Write commands return 403 "writes not enabled" | `DUNE_DISCORD_WRITES_ENABLED` not set |
+| Write commands return 403 "Write operations are not enabled." | `DUNE_DISCORD_WRITES_ENABLED` not set |
 | "not authorized" for a role the bot itself allows | This console's own `DISCORD_*_ROLE_IDS` don't include that role ID — see Authorization, above. Not configuring them at all means only the real Discord server owner is ever authorized, by design. |
 
 ## Sources
