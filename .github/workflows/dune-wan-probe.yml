@@ -2,6 +2,21 @@ name: Dune Sustained WAN Probe
 
 on:
   workflow_dispatch:
+    inputs:
+      host:
+        description: "Public IP or hostname of the Dune server to probe. No default -- every operator running this fork has a different one; leaving one hardcoded here would only ever probe a single specific host and would publish its address in a public fork (dune-awakening-selfhost-docker#143)."
+        required: true
+        type: string
+      tcp_port:
+        description: "Web Console TCP port to test."
+        required: false
+        type: string
+        default: "31982"
+      udp_ports:
+        description: "Comma-separated game-server UDP ports to send test traffic to."
+        required: false
+        type: string
+        default: "7777,7778,7779"
 
 permissions:
   contents: read
@@ -14,14 +29,19 @@ jobs:
     steps:
       - name: Test TCP and repeatedly send UDP
         shell: python
+        env:
+          PROBE_HOST: ${{ inputs.host }}
+          PROBE_TCP_PORT: ${{ inputs.tcp_port }}
+          PROBE_UDP_PORTS: ${{ inputs.udp_ports }}
         run: |
+          import os
           import socket
           import time
           import urllib.request
 
-          host = "50.123.64.61"
-          tcp_port = 31982
-          udp_ports = [7777, 7778, 7779]
+          host = os.environ["PROBE_HOST"]
+          tcp_port = int(os.environ["PROBE_TCP_PORT"])
+          udp_ports = [int(p) for p in os.environ["PROBE_UDP_PORTS"].split(",") if p.strip()]
 
           runner_ip = urllib.request.urlopen(
               "https://api.ipify.org",
