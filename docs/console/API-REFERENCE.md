@@ -791,6 +791,10 @@ pre-write backup before the query is rejected.
 
 ## Care Package System
 
+Automatic scans return skipped-player results without adding routine skips to grant history. When history reaches 8 MiB, background maintenance compacts it to the latest 500 non-skip records within a 4 MiB budget. Existing oversized files are streamed rather than loaded into memory in full. Older display records are removed, not rotated into additional archives.
+
+Successful and partially delivered grants are preserved as compact eligibility receipts independently of display history. These receipts and first-online claims are included in self-update backups; history cleanup does not reset eligibility or authorize duplicate rewards.
+
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | GET | `/api/care-package/capabilities` | Get care package capabilities | None |
