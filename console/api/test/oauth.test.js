@@ -264,6 +264,33 @@ test("fetchDiscordIdentity reads member roles and mfa_enabled; a 404 member is s
   assert.deepEqual(id2.roleIds, []);
 });
 
+// #622: a transient failure from the member endpoint specifically (5xx or a
+// network error) used to re-throw and abort fetchDiscordIdentity ENTIRELY,
+// even though user/guilds identity had already been fetched successfully --
+// denying sign-in outright instead of degrading to "no roles" the same way a
+// genuine non-member (403/404, above) already does, which still lets
+// bootstrap/allowlist resolution decide the tier.
+test("fetchDiscordIdentity degrades to no roles, not a thrown error, when the member endpoint 5xx's or the network fails", async () => {
+  const identityOnly = async (url) => {
+    if (String(url).endsWith("/users/@me")) return new Response(JSON.stringify({ id: "200000000000000001", username: "op", mfa_enabled: true }), { status: 200, headers: { "content-type": "application/json" } });
+    if (String(url).endsWith("/users/@me/guilds")) return new Response(JSON.stringify([{ id: HOME }]), { status: 200, headers: { "content-type": "application/json" } });
+    throw new Error("unexpected fetch");
+  };
+
+  const fetch500 = async (url) => String(url).endsWith("/member")
+    ? new Response(JSON.stringify({ message: "Internal Server Error" }), { status: 500, headers: { "content-type": "application/json" } })
+    : identityOnly(url);
+  const id500 = await fetchDiscordIdentity({ accessToken: "t", homeGuildId: HOME, apiBaseUrl: "https://api.test", fetchImpl: fetch500 });
+  assert.deepEqual(id500.roleIds, [], "a 5xx from the member endpoint degrades to no roles, not a thrown error");
+  assert.equal(id500.userId, "200000000000000001", "identity already fetched successfully is still returned");
+
+  const fetchNetworkError = async (url) => String(url).endsWith("/member")
+    ? Promise.reject(new Error("ECONNRESET"))
+    : identityOnly(url);
+  const idNetworkError = await fetchDiscordIdentity({ accessToken: "t", homeGuildId: HOME, apiBaseUrl: "https://api.test", fetchImpl: fetchNetworkError });
+  assert.deepEqual(idNetworkError.roleIds, [], "a network error on the member endpoint degrades to no roles, not a thrown error");
+});
+
 
 test("owner is the Discord server's owner: derived from the guild list, above any role", async () => {
   const resolve = createOAuthTierResolver({ bootstrap: { homeGuildId: HOME }, roleTiers: ROLES });
