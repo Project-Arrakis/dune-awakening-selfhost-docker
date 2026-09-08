@@ -33,6 +33,21 @@ Configure Discord role IDs in both the Console adapter runtime and the bot runti
 | Admin | `DISCORD_ADMIN_ROLE_IDS` | Detailed Status and future redacted logs |
 | Owner | `DISCORD_OWNER_ROLE_IDS` | Same read-only access as admin in the experimental phase |
 
+**This mapping is completely independent of the web console's own Discord
+sign-in role mapping** (`DISCORD_CONSOLE_ADMIN_ROLE_IDS` /
+`DISCORD_CONSOLE_MODERATOR_ROLE_IDS` / `DISCORD_CONSOLE_PLAYER_ROLE_IDS`,
+[docs/rfc-console-auth.md §2.1.1](../../rfc-console-auth.md)). There is no
+shared source of truth between the two, and no automatic sync in either
+direction: a role listed here can use the bot's Discord slash commands
+regardless of whether that same role can sign into the console, and vice
+versa. Concretely, if you revoke someone's *console* admin access by removing
+their role from `DISCORD_CONSOLE_ADMIN_ROLE_IDS`, they keep whatever access
+this table's mapping still grants them until you *also* update it here — and
+the reverse holds too. If an operator's role assignments change (someone is
+demoted, someone leaves), update **both** mappings, not just the one you
+happen to be looking at. (Tracked as
+[dune-awakening-selfhost-docker#620](https://github.com/Project-Arrakis/dune-awakening-selfhost-docker/issues/620).)
+
 For local smoke tests, placeholder values are acceptable as long as both processes use the same values.
 
 Example:

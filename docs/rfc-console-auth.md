@@ -104,6 +104,17 @@ This is the entire authorization fix — no cache, no grace window, no new persi
 
 Each role field accepts one or more Discord role IDs (17–19-digit snowflakes, comma-separated); the operator copies them from Discord with Developer Mode on, exactly as for the bot. Nothing is fetched from Discord to populate the form — listing a guild's roles requires a bot token, which the console deliberately does not hold.
 
+**This mapping is independent of the console's separate, experimental
+read-only Discord adapter** (`DISCORD_OBSERVER_ROLE_IDS`/`DISCORD_MODERATOR_ROLE_IDS`/
+`DISCORD_ADMIN_ROLE_IDS`/`DISCORD_OWNER_ROLE_IDS`, see
+[docs/integrations/discord-control-bot/admin-guide.md](integrations/discord-control-bot/admin-guide.md#role-mapping))
+— they answer different questions (who can sign into the console vs. who can
+use the adapter's read-only Discord slash commands) and there is no shared
+source of truth or automatic sync between them. An operator running both
+must update both mappings by hand when a role assignment changes; revoking a
+role from one does not revoke it from the other
+([#620](https://github.com/Project-Arrakis/dune-awakening-selfhost-docker/issues/620)).
+
 **What changes at sign-in.**
 
 1. The authorization request adds the `guilds.members.read` scope. Operators who already authorized the application under the old `identify guilds` scope are asked by Discord to re-authorize once; no other operator-visible change.
