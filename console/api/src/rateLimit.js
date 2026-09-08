@@ -1,3 +1,5 @@
+import net from "node:net";
+
 // Resolves the address used to key the login rate limiter.
 // prerequisite 3). Deliberately generic, not Cloudflare-specific -- an
 // earlier RFC draft's CF-Connecting-IP mechanism was rejected because most
@@ -17,7 +19,17 @@
 // scope (see docs/rfc-console-auth.md's "generic proxy-aware fix... deferred").
 export function resolveClientIp(req, trustedProxyIps = []) {
   const socketIp = normalizeIp(req.socket?.remoteAddress);
-  if (!trustedProxyIps.length || !socketIp || !trustedProxyIps.includes(socketIp)) {
+  // #599: trustedProxyIps is normalized through the exact same function as
+  // socketIp/forwarded below, not just trimmed -- otherwise the comparison
+  // silently no-ops the moment either side's textual form differs from the
+  // other's, even though both name the same address. This was a real,
+  // confirmed gap: with a dual-stack bind (ADMIN_BIND_HOST=::), Node reports
+  // an IPv4 peer as `::ffff:10.0.0.1`; an operator who copied that exact
+  // string from logs into CONSOLE_TRUSTED_PROXY_IPS never matched a `10.0.0.1`
+  // socket address once THAT side was stripped, and separately, IPv6 textual
+  // variants (`0:0:0:0:0:0:0:1` vs `::1`, mixed case) never matched at all.
+  const normalizedTrustedProxyIps = trustedProxyIps.map(normalizeIp).filter(Boolean);
+  if (!normalizedTrustedProxyIps.length || !socketIp || !normalizedTrustedProxyIps.includes(socketIp)) {
     return socketIp || "unknown";
   }
   const header = req.headers?.["x-forwarded-for"];
@@ -32,8 +44,27 @@ export function resolveClientIp(req, trustedProxyIps = []) {
   return forwarded || socketIp;
 }
 
-function normalizeIp(ip) {
-  return ip ? ip.replace(/^::ffff:/, "") : "";
+// Canonicalizes an address for comparison, used identically on both the
+// socket/forwarded-header side and the operator's configured
+// CONSOLE_TRUSTED_PROXY_IPS entries (see resolveClientIp above) so the two
+// can never drift into comparing textually-different-but-equal addresses.
+// The IPv4-mapped-IPv6 prefix is stripped BEFORE any IPv6 canonicalization --
+// canonicalizing first would rewrite the embedded dotted-decimal suffix into
+// hex groups (::ffff:10.0.0.1 -> ::ffff:a00:1), which no operator would ever
+// type and would then fail to match a plain "10.0.0.1" entry, the opposite of
+// what this function exists to fix.
+export function normalizeIp(ip) {
+  if (!ip) return "";
+  const stripped = String(ip).trim().replace(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i, "$1");
+  if (net.isIP(stripped) !== 6) return stripped;
+  // WHATWG URL parsing canonicalizes an IPv6 literal (compresses zero runs,
+  // lowercases hex) as a side effect of accepting it as a bracketed host --
+  // no separate IPv6-canonicalization dependency needed for this.
+  try {
+    return new URL(`http://[${stripped}]/`).hostname.slice(1, -1);
+  } catch {
+    return stripped.toLowerCase();
+  }
 }
 
 export function createLoginRateLimiter(options = {}) {
