@@ -72,7 +72,16 @@ export function updateEnvFileValues(repoRoot, entries) {
     // rename, breaking anything that previously relied on it being readable
     // at 0644. chmodSync explicitly re-asserts the intended mode regardless
     // of umask.
-    chmodSync(tempPath, 0o644);
+    // #713: guarded like the function this replaced -- a chmod failure
+    // (a restrictive filesystem/container mount) must not abort the write.
+    // Unguarded, it rejected BEFORE renameSync ran, so a caller whose write
+    // followed an already-completed side effect (databasePasswordRoute
+    // rotates the live DB password first) could 500 with that side effect
+    // never reflected in .env, silently breaking reconnection after the next
+    // restart. The temp file was already created at 0o644 via the `mode`
+    // option above; this is only a defensive re-assertion against umask
+    // masking it (see the comment above), not the sole source of the mode.
+    try { chmodSync(tempPath, 0o644); } catch { /* best-effort re-assert; the write still completes */ }
     renameSync(tempPath, envPath);
   });
 }
