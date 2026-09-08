@@ -1681,11 +1681,12 @@ handle_demand() {
 
 handle_idle_row() {
   local map="$1"
-  local server_id="$2"
-  local connected_players="$3"
-  local effective_players="$4"
-  local ready="$5"
-  local alive="$6"
+  local partition_id="$2"
+  local server_id="$3"
+  local connected_players="$4"
+  local effective_players="$5"
+  local ready="$6"
+  local alive="$7"
 
   case "$map" in
     Survival_1|Overmap)
@@ -1696,6 +1697,14 @@ handle_idle_row() {
   local key idle_seconds
   key="$(state_key "$map" "$server_id")"
   idle_seconds="$(idle_seconds_for_map "$map")"
+
+  # Always On maps are owned by the reconciler, not the idle lifecycle.  The
+  # old path allowed the idle scanner to tear down empty Always On dimensions
+  # after the grace period while the reconciler tried to put them back.
+  if ! map_is_dynamic "$map" && ! map_is_overmap_active "$map"; then
+    clear_idle_since "$key"
+    return 0
+  fi
 
   if [ "$connected_players" != "0" ] || [ "$effective_players" != "0" ] || ! [[ "${ready,,}" =~ ^(t|true|1|yes|y)$ ]] || ! [[ "${alive,,}" =~ ^(t|true|1|yes|y)$ ]]; then
     # Once the destination has observed its player, the inbound allocation
@@ -1714,11 +1723,20 @@ handle_idle_row() {
     return 0
   fi
 
+  local now since age
+  now="$(date +%s)"
+
   if ! map_requires_fresh_process "$map"; then
-    local remaining
+    local remaining mode_elapsed
     remaining="$(map_dynamic_grace_remaining "$map" | tr -d '[:space:]')"
     if [ "${remaining:-0}" -gt 0 ] 2>/dev/null; then
-      clear_idle_since "$key"
+      # Count an already-empty map's idle time from the mode change.  Clearing
+      # this state here made an Always On -> Dynamic transition wait the mode
+      # grace and then a second full idle grace before it could despawn.
+      if ! get_idle_since "$key" >/dev/null 2>&1; then
+        mode_elapsed=$((DESPAWN_GRACE_SECONDS - remaining))
+        set_idle_since "$key" $((now - mode_elapsed))
+      fi
       return 0
     fi
   fi
@@ -1727,9 +1745,6 @@ handle_idle_row() {
     clear_idle_since "$key"
     return 0
   fi
-
-  local now since age
-  now="$(date +%s)"
 
   if since="$(get_idle_since "$key" 2>/dev/null)"; then
     age=$((now - since))
@@ -1742,7 +1757,7 @@ handle_idle_row() {
 
   if [ "$age" -ge "$idle_seconds" ]; then
     echo "DESPAWN idle map=$map server=$server_id idle=${age}s"
-    runtime/scripts/despawn-server.sh "$map" || true
+    runtime/scripts/despawn-server.sh "$partition_id" || true
     clear_idle_since "$key"
   fi
 }
@@ -1977,6 +1992,7 @@ scan_idle_servers() {
   docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
     select
       fs.map,
+      wp.partition_id,
       fs.server_id,
       fs.connected_players,
       coalesce(ep.effective_players, 0) as effective_players,
@@ -2016,10 +2032,11 @@ scan_idle_servers() {
       $map_filter
       and coalesce(fs.server_id, '') <> ''
     order by map;
-  " | while IFS='|' read -r map server_id connected_players effective_players ready alive; do
+  " | while IFS='|' read -r map partition_id server_id connected_players effective_players ready alive; do
     [ -z "${map:-}" ] && continue
+    [ -z "${partition_id:-}" ] && continue
     remember_server_id_map "$map" "$server_id"
-    handle_idle_row "$map" "$server_id" "$connected_players" "$effective_players" "$ready" "$alive"
+    handle_idle_row "$map" "$partition_id" "$server_id" "$connected_players" "$effective_players" "$ready" "$alive"
   done
 }
 
