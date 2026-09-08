@@ -115,16 +115,22 @@ test("CONCURRENCY: N simultaneous verifications of the same code -> exactly one 
 
 // ---- recovery-code single use ----
 
-test("consumeRecoveryCode accepts a code once and rejects its reuse", async () => {
+test("consumeRecoveryCode accepts a code once, atomically wipes every sibling, and rejects reuse", async () => {
+  // Atomic invalidation (review finding, upstream PR #201, 2026-09-08): the
+  // FIRST successful consumption wipes the WHOLE set, not just the submitted
+  // code, and marks the factor recovery-pending -- see the assertions below.
   const { store, dir } = freshStore();
   try {
     const { codes } = await store.commit(SECRET);
     const r1 = await store.consumeRecoveryCode(codes[3]);
     assert.equal(r1.ok, true);
-    assert.equal(r1.remaining, 9);
-    assert.equal(await store.remainingRecoveryCodes(), 9);
+    assert.equal(r1.remaining, 0, "every sibling code is wiped in the same atomic write, not just the submitted one");
+    assert.equal(await store.remainingRecoveryCodes(), 0);
+    // Reusing the very code just consumed is rejected the same as any other
+    // now-invalid code -- but with reason recovery_pending, not "unknown",
+    // since a recovery is already in progress against this factor.
     const r2 = await store.consumeRecoveryCode(codes[3]);
-    assert.deepEqual(r2, { ok: false, reason: "unknown" });
+    assert.deepEqual(r2, { ok: false, reason: "recovery_pending" });
   } finally { cleanup(dir); }
 });
 
@@ -150,16 +156,22 @@ test("CONCURRENCY: N simultaneous consumptions of the same recovery code -> exac
     const results = await Promise.all(Array.from({ length: 8 }, () => store.consumeRecoveryCode(codes[0])));
     const ok = results.filter((r) => r.ok).length;
     assert.equal(ok, 1, "a single-use code cannot be spent twice under concurrency");
-    assert.equal(await store.remainingRecoveryCodes(), 9, "exactly one code consumed");
+    assert.equal(await store.remainingRecoveryCodes(), 0, "the winning consumption already wipes every sibling too");
   } finally { cleanup(dir); }
 });
 
-test("CONCURRENCY: consuming all distinct codes at once removes exactly all of them", async () => {
+test("CONCURRENCY: consuming N DISTINCT codes at once still only ever lets exactly one succeed", async () => {
+  // Renamed and inverted from the pre-atomic-invalidation version (review
+  // finding, upstream PR #201, 2026-09-08): it used to be a FEATURE that
+  // distinct codes could all be consumed independently. Under atomic
+  // invalidation that is exactly the bug Red-Blink reported -- a sibling
+  // code must never succeed once the first one has. This proves that holds
+  // even under real concurrency, not just sequential calls.
   const { store, dir } = freshStore();
   try {
     const { codes } = await store.commit(SECRET);
     const results = await Promise.all(codes.map((c) => store.consumeRecoveryCode(c)));
-    assert.equal(results.filter((r) => r.ok).length, 10);
+    assert.equal(results.filter((r) => r.ok).length, 1, "only the first distinct code to land can ever succeed");
     assert.equal(await store.remainingRecoveryCodes(), 0);
   } finally { cleanup(dir); }
 });
@@ -284,13 +296,19 @@ test("commit overwrites live state: new secret + codes, counter reset, old codes
     // rotate to a different secret
     const NEW = Buffer.alloc(20, 0x5a);
     const { codes: newCodes } = await store.commit(NEW);
-    // old recovery codes no longer work; new ones do
-    assert.deepEqual(await store.consumeRecoveryCode(oldCodes[0]), { ok: false, reason: "unknown" });
-    assert.equal((await store.consumeRecoveryCode(newCodes[0])).ok, true);
     // counter was reset: a code for the NEW secret at the same step T is accepted
     assert.deepEqual(await store.verifyTotpToken(totpCode(NEW, T), T), { ok: true });
     // a code for the OLD secret is now invalid
     assert.deepEqual(await store.verifyTotpToken(totpCode(SECRET, T + TOTP_PERIOD_SECONDS), T + TOTP_PERIOD_SECONDS), { ok: false, reason: "invalid" });
+    // old recovery codes no longer work; new ones do. Checked LAST, not
+    // interleaved with the TOTP checks above (review finding, upstream PR
+    // #201, 2026-09-08): consuming a recovery code now atomically marks the
+    // factor recovery-pending, which would correctly reject a subsequent
+    // normal-TOTP check on this same factor -- that's the fix working as
+    // designed, not something this test should trip over by ordering its
+    // own assertions around it.
+    assert.deepEqual(await store.consumeRecoveryCode(oldCodes[0]), { ok: false, reason: "unknown" });
+    assert.equal((await store.consumeRecoveryCode(newCodes[0])).ok, true);
   } finally { cleanup(dir); }
 });
 
@@ -304,33 +322,40 @@ test("consumeRecoveryCode reports the current factorVersion, unchanged by the co
     const result = await store.consumeRecoveryCode(codes[0]);
     assert.equal(result.ok, true);
     assert.equal(result.factorVersion, 0, "consuming a code doesn't change the factor, so factorVersion doesn't move");
-    // a second, independent consumption (a second recovery session) reports
-    // the SAME factorVersion -- unlike epoch, which advances on every
-    // consumption regardless of whether the factor itself changed.
+    // A second, independent consumption (a second recovery session) is no
+    // longer possible at all -- atomic invalidation (review finding,
+    // upstream PR #201, 2026-09-08) wipes every sibling code the moment the
+    // first one is consumed, so this now proves the REJECTION instead of the
+    // old (pre-fix) "both succeed with the same factorVersion" behavior.
     const secondResult = await store.consumeRecoveryCode(codes[1]);
-    assert.equal(secondResult.ok, true);
-    assert.equal(secondResult.factorVersion, 0);
+    assert.deepEqual(secondResult, { ok: false, reason: "recovery_pending" });
   } finally { cleanup(dir); }
 });
 
 test("commit rejects a stale expectedFactorVersion instead of overwriting a newer factor", async () => {
+  // Rewritten (review finding, upstream PR #201, 2026-09-08): the old version
+  // derived "two sessions, same snapshot" from two DIFFERENT recovery codes,
+  // which atomic invalidation now makes impossible (the second code is
+  // rejected outright -- see the consumeRecoveryCode tests above). The
+  // scenario this check actually guards -- a stale/duplicate confirm reusing
+  // an expectedFactorVersion snapshot that's no longer current -- is
+  // simulated directly here instead, since it can still arise from a
+  // replayed or duplicate request against the one legitimate resetup
+  // session, and the defense-in-depth check is worth keeping regardless.
   const { store, dir } = freshStore();
   try {
     const { codes } = await store.commit(SECRET); // factorVersion 0
-    const { factorVersion: snapshotA } = await store.consumeRecoveryCode(codes[0]); // session A snapshots 0
-    const { factorVersion: snapshotB } = await store.consumeRecoveryCode(codes[1]); // session B also snapshots 0
-    assert.equal(snapshotA, snapshotB);
+    const { factorVersion: snapshot } = await store.consumeRecoveryCode(codes[0]); // the one resetup session's snapshot
 
-    // Session A confirms first -- legitimate, must succeed even though it's
-    // not the most-recently-minted session.
+    // The legitimate confirm succeeds.
     const NEW_A = Buffer.alloc(20, 0x5a);
-    const committedA = await store.commit(NEW_A, { expectedFactorVersion: snapshotA });
+    const committedA = await store.commit(NEW_A, { expectedFactorVersion: snapshot });
     assert.equal(committedA.ok, true);
 
-    // Session B (stale) confirms next, using the SAME snapshot -- must be
-    // refused, and must NOT touch the store A just wrote.
+    // A replayed/duplicate confirm reusing the SAME snapshot -- must be
+    // refused, and must NOT touch the store the first confirm just wrote.
     const NEW_B = Buffer.alloc(20, 0x42);
-    const committedB = await store.commit(NEW_B, { expectedFactorVersion: snapshotB });
+    const committedB = await store.commit(NEW_B, { expectedFactorVersion: snapshot });
     assert.deepEqual(committedB, { ok: false, reason: "stale_generation" });
 
     // A's secret is still the live one; B's was never persisted.
@@ -598,7 +623,7 @@ test("break-glass: codes issued by a re-enroll after the store was deleted are u
 
     const rescue = await store.consumeRecoveryCode(second.codes[0]);
     assert.equal(rescue.ok, true, `fresh break-glass code rejected: ${rescue.reason}`);
-    assert.equal(rescue.remaining, 9);
+    assert.equal(rescue.remaining, 0, "atomic invalidation wipes every sibling too, not just the one consumed");
   } finally { cleanup(dir); }
 });
 

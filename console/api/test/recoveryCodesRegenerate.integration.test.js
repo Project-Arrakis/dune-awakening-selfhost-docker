@@ -412,13 +412,23 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
       // one greater than a stale value.
       assert.ok(JSON.parse(readFileSync(filePath, "utf8")).epoch > 1, "regeneration lifts the epoch past the watermark");
 
-      // The real assertion: a brand-new code logs in instead of being wiped unread.
+      // The real assertion: a brand-new code logs in instead of being wiped
+      // unread. Success here (200, resetupRequired) IS the proof the healed
+      // store is no longer in a rollback-detected state -- a rollback-wipe
+      // returns 401 with reset_detected instead, a distinct, already-covered
+      // failure path (see the "restored older store" tests elsewhere in this
+      // suite/secondFactorStore.test.js).
+      //
+      // Checking `recoveryCodes.length !== 0` afterward as a SEPARATE signal
+      // of "consumed normally, not wiped" is no longer meaningful (review
+      // finding, upstream PR #201, 2026-09-08): atomic invalidation now wipes
+      // the whole set to 0 on every real consumption, rollback or not -- see
+      // secondFactorStore.js's consumeRecoveryCode(). The 200 status and
+      // resetupRequired flag are what actually distinguish "healed, consumed
+      // normally" from "still poisoned, wiped without consuming."
       const useNew = await login(port, { password, recoveryCode: newCodes[0] });
       assert.equal(useNew.status, 200, "a freshly regenerated code works after a healed rollback");
-      assert.notEqual(
-        JSON.parse(readFileSync(filePath, "utf8")).recoveryCodes.length, 0,
-        "the set was consumed normally, not wiped as a rollback"
-      );
+      assert.equal(useNew.body.resetupRequired, true, "a real consumption, not a rollback rejection, occurred");
     } finally {
       await stopProcess(consoleProc.child);
       rmSync(tempDir, { recursive: true, force: true });
