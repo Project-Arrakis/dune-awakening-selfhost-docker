@@ -78,7 +78,7 @@ grep -q 'Fresh-process maps: immediate deallocation once empty' runtime/scripts/
 grep -q "printf '0\\\\n'" runtime/scripts/autoscaler.sh
 grep -q 'idle_seconds="$(idle_seconds_for_map "$map")"' runtime/scripts/autoscaler.sh
 grep -q 'if ! map_requires_fresh_process "$map"; then' runtime/scripts/autoscaler.sh
-grep -q 'runtime/scripts/despawn-server.sh "$map"' runtime/scripts/autoscaler.sh
+grep -q 'runtime/scripts/despawn-server.sh "$partition_id"' runtime/scripts/autoscaler.sh
 grep -q 'const requiresFreshProcess = isFreshProcessMap(rowName);' \
   console/web/src/features/maps/MapsPanel.tsx
 grep -q 'retired as soon as it becomes empty' console/web/src/features/maps/MapsPanel.tsx
@@ -111,7 +111,7 @@ guards = [
     'if [ "$connected_players" != "0" ] || [ "$effective_players" != "0" ]',
     'if map_has_recent_demand "$map"; then',
     'if [ "$age" -ge "$idle_seconds" ]; then',
-    'runtime/scripts/despawn-server.sh "$map"',
+    'runtime/scripts/despawn-server.sh "$partition_id"',
 ]
 positions = [body.index(guard) for guard in guards]
 if positions != sorted(positions):

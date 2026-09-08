@@ -14,6 +14,9 @@ Examples:
   dune despawn SH_Arrakeen
   dune despawn 23
   dune despawn dune-server-sh-arrakeen-23
+
+A map name despawns every running dimension of that map. A partition ID or
+container name despawns only that specific dimension.
 EOF
 }
 
@@ -152,9 +155,9 @@ container_from_partition() {
   echo "dune-server-$safe_name"
 }
 
-container_from_map() {
+containers_from_map() {
   local map="$1"
-  local safe_map rows row partition safe_name container
+  local rows partition safe_name container known_containers found=0
 
   rows="$(docker exec dune-postgres psql -U postgres -d dune -Atc "
     select partition_id
@@ -167,28 +170,31 @@ container_from_map() {
     return 1
   fi
 
+  known_containers="$(docker ps -a --format '{{.Names}}')"
   while read -r partition; do
     [ -z "$partition" ] && continue
     safe_name="$(echo "$map-$partition" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')"
     container="dune-server-$safe_name"
-    if docker ps -a --format '{{.Names}}' | grep -qx "$container"; then
+    if grep -qx "$container" <<<"$known_containers"; then
       echo "$container"
-      return 0
+      found=1
     fi
   done <<< "$rows"
 
-  return 1
+  [ "$found" = "1" ]
 }
 
+declare -a CONTAINERS=()
 if docker ps -a --format '{{.Names}}' | grep -qx "$TARGET"; then
-  CONTAINER="$TARGET"
+  CONTAINERS=("$TARGET")
 elif [[ "$TARGET" =~ ^[0-9]+$ ]]; then
   CONTAINER="$(container_from_partition "$TARGET" || true)"
+  [ -n "$CONTAINER" ] && CONTAINERS=("$CONTAINER")
 else
-  CONTAINER="$(container_from_map "$TARGET" || true)"
+  mapfile -t CONTAINERS < <(containers_from_map "$TARGET" || true)
 fi
 
-if [ -z "${CONTAINER:-}" ]; then
+if [ "${#CONTAINERS[@]}" -eq 0 ]; then
   echo "Could not find a matching spawned container for: $TARGET"
   echo
   echo "Currently known Dune server containers:"
@@ -196,65 +202,72 @@ if [ -z "${CONTAINER:-}" ]; then
   exit 1
 fi
 
-case "$CONTAINER" in
-  dune-server-survival-1|dune-server-overmap)
-    echo "Refusing to despawn always-on server: $CONTAINER"
-    echo "Use dune restart/stop for always-on services."
-    exit 1
-    ;;
-esac
+despawn_container() {
+  local container="$1"
+  local container_map="" partition_from_name="" partition_id="" server_id=""
 
-CONTAINER_MAP=""
-if [[ "$CONTAINER" =~ ^dune-server-(.*)-([0-9]+)$ ]]; then
-  PARTITION_FROM_NAME="${BASH_REMATCH[2]}"
-  CONTAINER_MAP="$(psql_value "select coalesce(map, '') from dune.world_partition where partition_id = $PARTITION_FROM_NAME limit 1;")"
-fi
+  case "$container" in
+    dune-server-survival-1|dune-server-overmap)
+      echo "Refusing to despawn always-on server: $container"
+      echo "Use dune restart/stop for always-on services."
+      return 1
+      ;;
+  esac
 
-if [ -n "$CONTAINER_MAP" ] && [ "$FORCE" != "1" ] && runtime/scripts/map-modes.sh is-always-on "$CONTAINER_MAP" >/dev/null 2>&1; then
-  echo "Refusing to despawn Always On map: $CONTAINER_MAP"
-  echo "Set it back to Dynamic first, or rerun with --force. The autoscaler will respawn Always On maps."
-  exit 1
-fi
+  if [[ "$container" =~ ^dune-server-(.*)-([0-9]+)$ ]]; then
+    partition_from_name="${BASH_REMATCH[2]}"
+    container_map="$(psql_value "select coalesce(map, '') from dune.world_partition where partition_id = $partition_from_name limit 1;")"
+    partition_id="$partition_from_name"
+  fi
 
-PARTITION_ID=""
-if [[ "$CONTAINER" =~ -([0-9]+)$ ]]; then
-  PARTITION_ID="${BASH_REMATCH[1]}"
-fi
+  if [ -n "$container_map" ] && [ "$FORCE" != "1" ] && runtime/scripts/map-modes.sh is-always-on "$container_map" >/dev/null 2>&1; then
+    echo "Refusing to despawn Always On map: $container_map"
+    echo "Set it back to Dynamic first, or rerun with --force. The autoscaler will respawn Always On maps."
+    return 1
+  fi
 
-SERVER_ID=""
-if [ -n "$PARTITION_ID" ]; then
-  SERVER_ID="$(psql_value "select coalesce(server_id, '') from dune.world_partition where partition_id = $PARTITION_ID limit 1;")"
-fi
+  if [ -n "$partition_id" ]; then
+    server_id="$(psql_value "select coalesce(server_id, '') from dune.world_partition where partition_id = $partition_id limit 1;")"
+  fi
 
-echo "Despawning: $CONTAINER"
-docker rm -f "$CONTAINER"
-ensure_runtime_state_file "$PORT_LOCK_FILE" "spawn port reservation lock"
-exec 9>"$PORT_LOCK_FILE"
-flock 9
-ensure_runtime_state_file "$PORT_RESERVATION_FILE" "spawn port reservation state"
-release_port_reservation "$CONTAINER"
+  echo "Despawning: $container"
+  docker rm -f "$container"
+  ensure_runtime_state_file "$PORT_LOCK_FILE" "spawn port reservation lock"
+  exec 9>"$PORT_LOCK_FILE"
+  flock 9
+  ensure_runtime_state_file "$PORT_RESERVATION_FILE" "spawn port reservation state"
+  release_port_reservation "$container"
 
-if [ -n "$SERVER_ID" ]; then
-  echo
-  echo "Cleaning DB assignment for server_id: $SERVER_ID"
-  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+  if [ -n "$server_id" ]; then
+    echo
+    echo "Cleaning DB assignment for server_id: $server_id"
+    docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
 begin;
 
 update dune.world_partition
 set server_id = null
-where server_id = '$SERVER_ID';
+where server_id = '$server_id';
 
 delete from dune.farm_state
-where server_id = '$SERVER_ID';
+where server_id = '$server_id';
 
 commit;
 "
+  fi
+
+  if [ "$container_map" = "Survival_1" ]; then
+    runtime/scripts/sietches.sh sync >/dev/null 2>&1 || true
+    runtime/scripts/publish-sietch-overrides.sh once >/dev/null 2>&1 || true
+  fi
+}
+
+if [ "${#CONTAINERS[@]}" -gt 1 ]; then
+  echo "Despawning all ${#CONTAINERS[@]} running dimensions for map: $TARGET"
 fi
 
-if [ "$CONTAINER_MAP" = "Survival_1" ]; then
-  runtime/scripts/sietches.sh sync >/dev/null 2>&1 || true
-  runtime/scripts/publish-sietch-overrides.sh once >/dev/null 2>&1 || true
-fi
+for CONTAINER in "${CONTAINERS[@]}"; do
+  despawn_container "$CONTAINER"
+done
 
 echo
 echo "Remaining Dune server containers:"
