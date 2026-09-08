@@ -198,11 +198,19 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
     if (!totp || typeof totp.secret !== "string" || !Number.isInteger(totp.lastUsedCounter)) {
       throw new SecondFactorCorruptError("second-factor store TOTP section is malformed");
     }
-    // The secret must be valid base64 decoding to a plausible key length; a
-    // corrupt-but-string secret would otherwise silently self-lock the operator
-    // (every code invalid) instead of surfacing as corruption.
+    // The secret must be valid base64 decoding to EXACTLY the length the
+    // write path ever produces (assertSecretBytes/TOTP_SECRET_BYTES below) --
+    // a corrupt-but-string secret would otherwise silently self-lock the
+    // operator (every code invalid) instead of surfacing as corruption.
+    // #616: this used to accept a permissive [10,64]-byte range instead of
+    // matching the write-side constant exactly -- a secret partially
+    // corrupted (or hand-edited) to some OTHER length inside that range was
+    // accepted as non-corrupt, so verifyTotpToken computed codes against the
+    // wrong-length secret and every code from the operator's real
+    // authenticator was silently and permanently rejected, with the very
+    // guard meant to explain why never firing.
     const secretBytes = Buffer.from(totp.secret, "base64");
-    if (secretBytes.length < 10 || secretBytes.length > 64 || secretBytes.toString("base64") !== totp.secret) {
+    if (secretBytes.length !== TOTP_SECRET_BYTES || secretBytes.toString("base64") !== totp.secret) {
       throw new SecondFactorCorruptError("second-factor store TOTP secret is not valid base64 of a key");
     }
     if (!Array.isArray(parsed.recoveryCodes) || parsed.recoveryCodes.some((d) => typeof d !== "string")) {
