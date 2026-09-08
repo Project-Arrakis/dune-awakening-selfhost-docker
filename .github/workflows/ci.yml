@@ -314,7 +314,11 @@ jobs:
       # mentat, mentat-link, and meta are private repos -- GitHub 404s a
       # correct cross-repo link into any of them for an anonymous request,
       # so exclude the pattern rather than eat permanent false positives.
-      exclude: 'github\.com/Project-Arrakis/(mentat|mentat-link|meta)(/|$)'
+      # www.gnu.org intermittently times out from GitHub-hosted runners
+      # (observed twice in this repo's own CI, independently confirmed
+      # live via direct curl both times) -- excluded as a known-flaky
+      # external domain rather than a real dead link.
+      exclude: 'github\.com/Project-Arrakis/(mentat|mentat-link|meta)(/|$)|www\.gnu\.org'
 
   docs-review:
     if: github.event_name == 'pull_request'
