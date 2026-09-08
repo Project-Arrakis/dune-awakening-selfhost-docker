@@ -26,7 +26,7 @@ bot with Discord so it can connect to your server.
 3. Name your bot (e.g., "Arrakis Control Plane" or "Dune Server Status")
 4. Click **Create**
 
-![New Application](https://cdn.discordapp.com/attachments/1207782128457228348/1524202981606690916/content.png?ex=6a4ee425&is=6a4d92a5&hm=3f9f844d477990536c3ae4f19abfd45a55a351ed965ea67128355c6ae301686e&width=600)
+*(Screenshot placeholder — a real capture of Discord's "New Application" dialog was never added here; see issue tracker for this doc.)*
 
 ---
 
@@ -47,7 +47,7 @@ Under **Privileged Gateway Intents**, turn all three OFF:
 
 Your bot uses slash commands only — it doesn't need to read messages.
 
-![Bot Settings](https://cdn.discordapp.com/attachments/1207782128457228348/1524202981606690916/content.png?ex=6a4ee425&is=6a4d92a5&hm=3f9f844d477990536c3ae4f19abfd45a55a351ed965ea67128355c6ae301686e&width=600)
+*(Screenshot placeholder — a real capture of Discord's Bot Settings page, with all three Privileged Gateway Intents shown off, was never added here; see issue tracker for this doc.)*
 
 ---
 
@@ -245,4 +245,4 @@ Test these commands in your Discord server:
 
 - [Discord Developer Portal](https://discord.com/developers/applications)
 - [Discord OAuth2 Documentation](https://docs.discord.com/developers/platform/oauth2-and-permissions)
-- [Discord Slash Commands](https://support.discord.com/hc/en-us/articles/1500000368501-Slash-Commands-FAQ)
+- [Discord Slash Commands](https://discord.com/developers/docs/interactions/application-commands)
