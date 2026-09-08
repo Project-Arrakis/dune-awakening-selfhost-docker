@@ -182,14 +182,26 @@ export function provisioningUri({
     throw new Error("provisioningUri requires secretBase32, accountName, and issuer");
   }
   const label = `${encodeURIComponent(issuer)}:${encodeURIComponent(accountName)}`;
-  const params = new URLSearchParams({
-    secret: secretBase32,
-    issuer,
-    algorithm,
-    digits: String(digits),
-    period: String(period),
-  });
-  return `otpauth://totp/${label}?${params.toString()}`;
+  // #601: the Key URI Format spec (google-authenticator/wiki) expects RFC
+  // 3986 percent-encoding throughout, matching the label above -- but
+  // URLSearchParams encodes application/x-www-form-urlencoded, where a
+  // space becomes "+" instead of "%20". A "+" is only special to a decoder
+  // that treats it as form-encoded (WHATWG's own URLSearchParams does, and
+  // so does application/x-www-form-urlencoded generally); an RFC-3986-strict
+  // parser (e.g. iOS's URLComponents-based authenticator apps) reads it as a
+  // literal "+" character, so "Dune Console" round-trips through the label
+  // correctly but shows as "Dune+Console" in the issuer param -- the two
+  // halves the spec says must be equal then visibly disagree. Built by hand
+  // with encodeURIComponent per field instead, so both halves use the same
+  // encoding.
+  const query = [
+    ["secret", secretBase32],
+    ["issuer", issuer],
+    ["algorithm", algorithm],
+    ["digits", String(digits)],
+    ["period", String(period)],
+  ].map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join("&");
+  return `otpauth://totp/${label}?${query}`;
 }
 
 // Render an otpauth:// URI as a QR code the setup screen can show inline (an
