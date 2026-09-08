@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as fsModule from "node:fs";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -193,5 +194,49 @@ test("updateEnvFileValues: a write that fails before the rename step leaves the 
   mkdirSync(tempPath);
   await assert.rejects(() => updateEnvFileValues(dir, { DUNE_DB_PASSWORD: "new-secret" }));
   assert.equal(readFileSync(envPath, "utf8"), "DUNE_DB_PASSWORD=original-secret\n");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// #713 (real regression introduced by the temp-file rewrite above): the old
+// updateEnvFileValue tolerated a chmodSync failure (`try { chmodSync(...) }
+// catch {}`); the rewrite called chmodSync on the temp path unguarded, which
+// rejects BEFORE renameSync runs -- so a restrictive filesystem/container
+// mount aborts the write entirely instead of just skipping the best-effort
+// permission re-assertion. Concretely dangerous for databasePasswordRoute:
+// it rotates the LIVE DB password first, then writes .env second, so an
+// unguarded chmod failure here would leave .env silently pointing at the old
+// password after the live password had already changed.
+//
+// node:fs's chmodSync is a non-configurable built-in export -- t.mock.method
+// cannot redefine it directly (Node throws "Cannot redefine property"). Uses
+// t.mock.module instead, which intercepts resolution of the "node:fs"
+// specifier -- so envFile.js must be re-imported (cache-busted) AFTER the
+// mock is registered; the module-level import at the top of this file was
+// already bound to the real node:fs before this test runs. t.mock.module
+// itself only exists behind the (Node >=22.3) --experimental-test-module-
+// mocks flag -- CI's api-tests job passes it explicitly (ci.yml); a plain
+// local `npm test` (package.json intentionally stays flag-free, matching
+// this package's engines: >=18.19.0 promise) skips this one test rather
+// than crashing the whole suite on an older/unflagged Node.
+test("updateEnvFileValues: a chmodSync failure on the temp file does not prevent the write from completing", async (t) => {
+  if (typeof t.mock.module !== "function") {
+    t.skip("requires node --experimental-test-module-mocks (Node >=22.3); CI's api-tests job runs it, a plain local `npm test` does not");
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "envfile-"));
+  const envPath = join(dir, ".env");
+  writeFileSync(envPath, "EXISTING=1\n");
+  t.mock.module("node:fs", {
+    namedExports: {
+      ...fsModule,
+      chmodSync: () => { throw new Error("EPERM: simulated restrictive filesystem/container mount"); },
+    },
+  });
+  const isolated = await import(`../src/services/envFile.js?chmod-failure-test=${Date.now()}`);
+  await isolated.updateEnvFileValues(dir, { NEW_KEY: "2" });
+  const lines = readEnvLines(envPath);
+  assert.deepEqual(lines, ["EXISTING=1", "NEW_KEY=2", ""]);
+  const leftoverTempFiles = readdirSync(dir).filter((name) => name.includes(".tmp"));
+  assert.deepEqual(leftoverTempFiles, [], "the rename must still have run, leaving no orphaned temp file");
   rmSync(dir, { recursive: true, force: true });
 });
