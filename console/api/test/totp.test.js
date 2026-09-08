@@ -222,6 +222,25 @@ test("provisioningUri builds a valid otpauth URL with issuer/label/params", () =
   assert.equal(u.searchParams.get("period"), String(TOTP_PERIOD_SECONDS));
 });
 
+// #601: URLSearchParams form-encodes a space as "+", not "%20" -- correct
+// for application/x-www-form-urlencoded, but the Key URI Format spec expects
+// RFC 3986 percent-encoding, matching the label's own encodeURIComponent.
+// u.searchParams.get() (the test above) can't catch this: WHATWG's own
+// URLSearchParams parser always treats "+" as a space when READING a query
+// string, regardless of how it was written, so it reports the same decoded
+// value either way. Only inspecting the raw, un-parsed URI string proves
+// which encoding was actually used on the wire.
+test("provisioningUri percent-encodes a space in the issuer as %20, not +, in the raw query string", () => {
+  const secretBase32 = base32Encode(Buffer.alloc(TOTP_SECRET_BYTES, 0x41));
+  const uri = provisioningUri({
+    secretBase32,
+    accountName: "operator@example.com",
+    issuer: "Dune Console",
+  });
+  assert.match(uri, /issuer=Dune%20Console/);
+  assert.doesNotMatch(uri, /issuer=Dune\+Console/);
+});
+
 test("provisioningUri requires secret, account, and issuer", () => {
   assert.throws(() => provisioningUri({ accountName: "a", issuer: "b" }), /requires/);
   assert.throws(() => provisioningUri({ secretBase32: "X", issuer: "b" }), /requires/);
