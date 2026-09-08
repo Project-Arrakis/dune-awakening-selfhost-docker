@@ -229,7 +229,16 @@ export async function fetchDiscordIdentity({ accessToken, homeGuildId = "", apiB
       }, { fetchImpl, label: "member" });
       roleIds = Array.isArray(member?.roles) ? member.roles.map((id) => String(id)).filter((id) => /^\d{17,19}$/.test(id)) : [];
     } catch (error) {
-      if (error?.upstreamStatus !== 403 && error?.upstreamStatus !== 404) throw error;
+      // #622: this used to re-throw (aborting the WHOLE identity fetch, even
+      // though user/guilds already succeeded) for anything other than a
+      // 403/404 -- a transient 5xx, a timeout, or a malformed response from
+      // Discord's own member endpoint denied sign-in entirely instead of
+      // degrading to "no roles," which still lets bootstrap/allowlist
+      // resolution decide the tier the same way a genuine non-member
+      // (403/404) already does. Every failure shape here is equally
+      // recoverable this way, so catch broadly rather than re-narrowing the
+      // condition.
+      console.warn(`Discord member-role lookup failed (${error?.upstreamStatus || "network/response error"}), degrading to no roles for this sign-in: ${error instanceof Error ? error.message : "unknown error"}`);
     }
   }
   return { userId, username, displayName, guildIds, guilds: guildList, ownedGuildIds, roleIds, mfaEnabled };
