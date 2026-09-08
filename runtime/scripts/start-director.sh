@@ -140,9 +140,11 @@ NumExtraServers=0
 
 [CB_Overland_S_07]
 NumExtraServers=0
+MaxParties=1
 
 [CB_Overland_S_08]
 NumExtraServers=0
+MaxParties=1
 
 [CB_Story_BanditFortress01]
 NumExtraServers=0
