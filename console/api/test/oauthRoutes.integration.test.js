@@ -457,6 +457,14 @@ test("roles: the highest mapped role wins (admin + player -> admin)", async () =
     assert.equal(r.status, 200, r.body.slice(0, 200));
     const me = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, { headers: { cookie: `asc_session=${r.sessionValue}` } })).json();
     assert.equal(me.user.tier, "admin");
+    // #584: a successful sign-in's audit row used to omit userId entirely --
+    // every OTHER branch of this callback (denials/failures) already named
+    // it, so a granted session could not be attributed to who actually
+    // signed in.
+    const auditLines = readFileSync(join(tempDir, "runtime", "generated", "web-admin-audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const success = auditLines.find((l) => l.action === "auth.oauth.callback" && l.detail?.ok === true);
+    assert.equal(success?.detail?.userId, USER_ID, "the successful sign-in's audit row must name who signed in");
+    assert.equal(success?.detail?.tier, "admin");
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
 
@@ -557,6 +565,34 @@ test("SoD: the settings API refuses to save a mapping that gives one role two ti
 
     // A distinct moderator role is fine; an owner-role key is simply not a thing.
     assert.equal((await post({ DISCORD_CONSOLE_MODERATOR_ROLE_IDS: "400000000000000009" })).status, 200);
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+// #587: validateOAuthWriteConfigKey() validates a TRIMMED copy of every
+// submitted value, but the write path used to persist the raw, untrimmed
+// value to .env -- a value that passed validation (trailing whitespace
+// doesn't fail the snowflake regex against a TRIMMED copy) could then be
+// written padded, silently disabling Discord OAuth after the next restart
+// (a snowflake with trailing whitespace never equals Discord's real one).
+test("writeOAuthConfig persists the trimmed value, not the raw submitted one", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-write-trim-"));
+  const console = startConsole(consolePort, discordPort, tempDir, ROLE_ENV);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    const login = await fetch(`http://127.0.0.1:${consolePort}/api/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "correct-password" }) });
+    const { csrfToken } = await login.json();
+    const cookie = `asc_session=${sessionCookieValue(login.headers.getSetCookie(), "asc_session")}`;
+    const post = (payload) => fetch(`http://127.0.0.1:${consolePort}/api/setup/write-oauth-config`, { method: "POST", headers: { "content-type": "application/json", cookie, "x-csrf-token": csrfToken }, body: JSON.stringify(payload) });
+
+    const paddedGuildId = "300000000000000007  "; // valid snowflake, trailing whitespace
+    const res = await post({ DISCORD_HOME_GUILD_ID: paddedGuildId });
+    assert.equal(res.status, 200, "a value that trims to a valid snowflake must be accepted");
+
+    const env = readFileSync(join(tempDir, ".env"), "utf8");
+    assert.match(env, /^DISCORD_HOME_GUILD_ID="?300000000000000007"?$/m, "the persisted value must be trimmed");
+    assert.doesNotMatch(env, /300000000000000007  /, "the padded, untrimmed value must never reach .env");
   } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
 
@@ -1042,4 +1078,32 @@ test("the silent-auth interactive retry attributes its pending state to an owner
   const retryLine = source.split("\n").find((line) => line.includes("purpose: consumed.purpose, sessionId: consumed.sessionId"));
   assert.ok(retryLine, "the silent-auth retry's issue() call was not found where expected");
   assert.match(retryLine, /owner:\s*\w/, "the retry must pass an owner key, or a flood of retries pools into one shared, unattributed bucket");
+});
+
+// #627 (Requirement 24): DISCORD_OAUTH_CLIENT_SECRET and
+// DISCORD_BOT_HANDOFF_SECRET as plain env vars used to get no startup
+// warning at all -- an env var is visible to any process on the host that
+// can read this process's environment (ps, /proc/<pid>/environ), unlike a
+// runtime/secrets/ file. The default startConsole() env already sets
+// DISCORD_OAUTH_CLIENT_SECRET as a plain env var.
+test("DISCORD_OAUTH_CLIENT_SECRET set as a plain env var produces a startup security warning", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-secret-warning-"));
+  const console = startConsole(consolePort, discordPort, tempDir);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    assert.match(console.logs(), /DISCORD_OAUTH_CLIENT_SECRET is set as a plain environment variable/);
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
+});
+
+test("DISCORD_BOT_HANDOFF_SECRET set as a plain env var produces a startup security warning", async () => {
+  const consolePort = await getFreePort(); const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-handoff-warning-"));
+  const console = startConsole(consolePort, discordPort, tempDir, { DISCORD_BOT_HANDOFF_SECRET: "a-handoff-secret", DISCORD_BOT_HANDOFF_URL: "http://127.0.0.1:1/handoff" });
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    assert.match(console.logs(), /DISCORD_BOT_HANDOFF_SECRET is set as a plain environment variable/);
+  } finally { await stopProcess(console.child); await closeDiscordServer(discordServer); rmSync(tempDir, { recursive: true, force: true }); }
 });
