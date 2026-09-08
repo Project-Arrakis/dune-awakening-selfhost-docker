@@ -254,6 +254,57 @@ test("rotating the password requires fresh TOTP proof when TOTP is enrolled, and
   }
 });
 
+// #595: newPassword is validated BEFORE requireFreshTier3Proof runs, not
+// after -- validation is pure (no state change), while the proof step
+// consumes the current TOTP code (recordSuccess burns it for the step). If
+// validation ran after, a rejected newPassword would burn a code the
+// operator would otherwise need to wait a full 30s step to reuse.
+test("a rejected newPassword does not consume the TOTP code, which still works on immediate retry", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "pw-rotation-e2e-validate-order-"));
+  const console = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+  try {
+    await waitForHealth(port);
+    const password = readGeneratedPassword(tempDir);
+    const firstLogin = await beginEnrollment(port, password);
+    const setup = await (await api(port, "/api/auth/2fa/setup", { cookie: firstLogin.cookie, csrf: firstLogin.csrf })).json();
+    let step = currentTotpStep();
+    const confirm = await api(port, "/api/auth/2fa/confirm", { cookie: firstLogin.cookie, csrf: firstLogin.csrf, body: { code: codeFor(setup.secret, 0) } });
+    assert.equal(confirm.status, 200);
+
+    await waitForStepAfter(step);
+    step = currentTotpStep();
+    const session = await api(port, "/api/auth/login", { body: { password, totpCode: codeFor(setup.secret, 0) } });
+    const sessionCookie = cookieFrom(session);
+    const sessionBody = await session.json();
+    assert.equal(sessionBody.authenticated, true);
+
+    await waitForStepAfter(step);
+    const totpCode = codeFor(setup.secret, 0);
+
+    // Correct password proof + a fresh, valid TOTP code, but a newPassword
+    // that fails the character-class/length policy.
+    const rejected = await api(port, "/api/settings/admin-password", {
+      cookie: sessionCookie, csrf: sessionBody.csrfToken,
+      body: { currentPassword: password, newPassword: "too-short", totpCode },
+    });
+    assert.equal(rejected.status, 400, "the weak new password is refused");
+
+    // Retrying immediately with the SAME TOTP code (now with a valid
+    // newPassword) must still succeed -- if requireFreshTier3Proof had
+    // already run and recorded success on the rejected attempt, this would
+    // fail as a replay.
+    const retried = await api(port, "/api/settings/admin-password", {
+      cookie: sessionCookie, csrf: sessionBody.csrfToken,
+      body: { currentPassword: password, newPassword: NEW_PASSWORD, totpCode },
+    });
+    assert.equal(retried.status, 200, "the same TOTP code still works on retry -- the rejected attempt never consumed it");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("rotation fails closed (503) and revokes nothing when the second-factor state file is corrupt", async () => {
   const port = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "pw-rotation-e2e-corrupt-"));
