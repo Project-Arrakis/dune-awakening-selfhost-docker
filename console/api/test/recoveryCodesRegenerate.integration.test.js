@@ -543,6 +543,47 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
     }
   });
 
+  // #617: before this fix, requireFreshTier3Proof's rate-limit bucket was
+  // keyed by client IP alone, shared across EVERY caller (password rotation,
+  // recovery-code regeneration, TOTP enable, TOTP disable). Exhausting it on
+  // one action from a browser -- a mistyped code while rotating a password,
+  // say -- then refused an entirely untouched action from the same session
+  // moments later. Proves the two real operator-facing routes are now
+  // isolated: exhaust the regenerate-recovery-codes bucket, then confirm
+  // password rotation (with a CORRECT credential) from the same session/IP
+  // still succeeds.
+  test("exhausting the recovery-codes-regenerate credential-proof bucket does not block an unrelated password rotation", async () => {
+    const port = await getFreePort();
+    const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-limiter-isolation-"));
+    const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
+    try {
+      await waitForHealth(port, 20000, consoleProc.logs);
+      const { password, secret, step: confirmStep } = await enroll(port, tempDir, { assert });
+      const nextCode = totpChain(secret, confirmStep);
+      const actor = await login(port, { password, totpCode: await nextCode() });
+      assert.equal(actor.body.authenticated, true);
+
+      let sawBlock = false;
+      for (let i = 0; i < 12; i++) {
+        const res = await api(port, REGENERATE_PATH, {
+          cookie: actor.cookie, csrf: actor.csrf,
+          body: { currentPassword: "wrong-password", totpCode: "123456" },
+        });
+        if (res.status === 429) { sawBlock = true; break; }
+      }
+      assert.ok(sawBlock, "the recovery-codes-regenerate bucket is exhausted");
+
+      const rotate = await api(port, "/api/settings/admin-password", {
+        cookie: actor.cookie, csrf: actor.csrf,
+        body: { currentPassword: password, totpCode: await nextCode(), newPassword: "New-Correct-Horse-9!Battery" },
+      });
+      assert.equal(rotate.status, 200, "an unrelated action's own bucket must not be affected by exhausting a different action's bucket");
+    } finally {
+      await stopProcess(consoleProc.child);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   // Pins requireFreshTier3Proof's `requireEnrolled` parameter -- the one real
   // behavioural difference between the two credential routes. Password
   // rotation skips TOTP when no factor exists (nothing to prove yet); this

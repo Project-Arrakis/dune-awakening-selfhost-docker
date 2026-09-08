@@ -218,7 +218,16 @@ async function requireFreshTier3Proof(req, res, body, { auditUrl, action, actor 
     json(res, status, payload, headers || {});
     return { ok: false };
   };
-  const rateKey = loginRateLimitKey(req);
+  // #617: keyed by action too, not just client IP -- previously every
+  // requireFreshTier3Proof caller (password rotation, recovery-code
+  // regeneration, TOTP enable, TOTP disable) shared ONE bucket per IP, so a
+  // mistyped code on one action could 429 an unrelated action from the same
+  // browser (e.g. rotating a password trips the shared bucket, then
+  // regenerating recovery codes moments later is refused even though it was
+  // never attempted). Same shape as the existing `2fa-confirm:${session.id}`
+  // key a few lines below in this file -- action-scoped, still IP-scoped
+  // within that.
+  const rateKey = `${action}:${loginRateLimitKey(req)}`;
   const rate = credentialProofRateLimiter.check(rateKey);
   if (!rate.allowed) {
     return deny(429, { error: "Too many attempts. Please wait a few minutes, then try again." }, "rate_limited", { "retry-after": String(rate.retryAfterSeconds) });
@@ -997,6 +1006,15 @@ async function handleApi(req, res) {
         // PR #201, 2026-09-08).
         return json(res, 401, { totpRequired: true, recoveryAvailable: false, error: "This console is mid-recovery. Finish the two-factor reset you started, or if that session expired, see the recovery guide to reset from the host." });
       }
+      if (verify.reason === "replay") {
+        // #596: the sibling requireFreshTier3Proof already splits this reason
+        // out with its own message -- login didn't, so a replay here (the
+        // RFC-mandated forced first login right after enrollment reuses the
+        // still-displayed confirm code, which IS a replay) sent the operator
+        // hunting a clock problem they don't have, and charged the limiter
+        // for a mistake that was never made.
+        return json(res, 401, { totpRequired: true, recoveryAvailable: true, error: "That code was already used. Wait for your authenticator to show the next one, then try again." });
+      }
       return json(res, 401, { totpRequired: true, recoveryAvailable: true, error: "That authenticator code was not accepted. Check your device's clock and enter the current code." });
     }
     return grantPasswordSession();
@@ -1096,8 +1114,16 @@ async function handleApi(req, res) {
       // (never "healed" by overwriting), exactly as the login path does -- not
       // fall through to a generic 500. commit() re-throws these now; enroll()
       // always did.
-      audit(config, sanitizedUrl(req, "/api/auth/2fa/confirm"), "auth.2fa.confirm", { ok: false, reason: "store_unavailable" });
-      return secondFactorUnavailable(res, sanitizedUrl(req, "/api/auth/2fa/confirm"), req, err);
+      //
+      // #594: this used to ALSO audit manually right here (a generic
+      // "store_unavailable" reason under "auth.2fa.confirm") before calling
+      // secondFactorUnavailable() below with no action argument, which
+      // defaults to "auth.login" and audits a SECOND row -- a phantom login
+      // failure for anyone filtering auth.login, and the real
+      // second_factor_unavailable/second_factor_version reason invisible to
+      // anyone filtering auth.2fa.confirm. Passing the action through gives
+      // exactly one, correctly-named, more specific row.
+      return secondFactorUnavailable(res, sanitizedUrl(req, "/api/auth/2fa/confirm"), req, err, "auth.2fa.confirm");
     }
     if (!result.ok) {
       // enroll() only: already_configured -- another session enrolled first.
@@ -2886,6 +2912,12 @@ async function adminPasswordRoute(req, res) {
   if (config.adminPasswordEnvManaged) {
     return deny(400, { error: "The login password is managed by ADMIN_PASSWORD. Update the environment value instead." }, "env_managed");
   }
+  // #595: validated BEFORE requireFreshTier3Proof, not after -- validation is
+  // pure (no state change), while the proof step consumes the current TOTP
+  // code (recordSuccess burns it for the 30s step). Validating first means a
+  // rejected newPassword (13-char/character-class failure) never burns a
+  // code the operator would otherwise need to wait a full step to reuse.
+  const password = validateAdminPassword(body.newPassword);
   // RFC §2.3/§5 ( phase 6): rotation requires fresh proof of the CURRENT
   // Tier 3 credential from the acting session, not just the existing cookie.
   // requireEnrolled:false -- with no factor yet there is nothing to prove, so
@@ -2894,7 +2926,6 @@ async function adminPasswordRoute(req, res) {
     auditUrl, action: ACTION, actor, requireEnrolled: false,
   });
   if (!proof.ok) return;
-  const password = validateAdminPassword(body.newPassword);
   writeFileSync(config.adminPasswordFile, `${password}\n`, { mode: 0o600 });
   try {
     chmodSync(config.adminPasswordFile, 0o600);
