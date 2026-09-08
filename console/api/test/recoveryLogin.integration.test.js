@@ -189,16 +189,24 @@ test("a malformed recovery code is rejected without a server error", async () =>
 // silently overwrite it. Before the fix both confirms returned 200 and the
 // first replacement authenticator stopped working; a resurrected/older
 // session effectively "won" by confirming last.
-test("a stale recovery (resetup) session cannot overwrite an authenticator a different recovery session already replaced", async () => {
+test("a second recovery code is rejected once one is already pending, and the old authenticator is dead in the meantime", async () => {
+  // Rewritten for the atomic-invalidation fix (review finding, upstream PR
+  // #201, 2026-09-08): the OLD version of this test opened two resetup
+  // sessions from two different recovery codes and only caught the second at
+  // commit() time (stale_generation). That whole scenario is now
+  // structurally impossible -- the first successful recovery-code
+  // consumption wipes every sibling code atomically, so a second code is
+  // rejected immediately, never mints a session at all. This test covers
+  // both halves of the RFC's atomic-invalidation promise Red-Blink's report
+  // named directly: sibling-code rejection, and the old TOTP being dead for
+  // normal login during the pending window (not just after commit()).
   const port = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "recovery-e2e-concurrent-"));
   const console = startConsole(port, tempDir);
   try {
     await waitForHealth(port);
-    const { recoveryCodes } = await enrollFresh(port);
+    const { secret: oldSecret, recoveryCodes } = await enrollFresh(port);
 
-    // Open TWO recovery (resetup) sessions with two DIFFERENT recovery codes,
-    // as if from two browser tabs / a resurrected old tab.
     const recA = await api(port, "/api/auth/login", { body: { password: PASSWORD, recoveryCode: recoveryCodes[0] } });
     assert.equal(recA.status, 200);
     const recABody = await recA.json();
@@ -206,53 +214,120 @@ test("a stale recovery (resetup) session cannot overwrite an authenticator a dif
     const cookieA = cookieFrom(recA);
     const csrfA = recABody.csrfToken;
 
+    // A DIFFERENT, still-unused sibling code must be rejected outright --
+    // Red-Blink's exact repro: "another recovery code can create a second
+    // resetup session."
     const recB = await api(port, "/api/auth/login", { body: { password: PASSWORD, recoveryCode: recoveryCodes[1] } });
-    assert.equal(recB.status, 200);
+    assert.equal(recB.status, 401, "a sibling recovery code must be rejected once a recovery is already pending");
     const recBBody = await recB.json();
-    assert.equal(recBBody.resetupRequired, true);
-    const cookieB = cookieFrom(recB);
-    const csrfB = recBBody.csrfToken;
+    assert.equal(recBBody.resetupRequired, undefined, "no second resetup session may be minted");
+    assert.equal(cookieFrom(recB), null, "no session cookie may be issued for the rejected sibling code");
 
-    // Both sessions run "setup" (generate a pending secret/QR) -- as far as
-    // either browser tab knows, it's mid-way through a normal re-enrollment.
+    // The OLD authenticator's TOTP must also be dead for normal login RIGHT
+    // NOW -- before session A ever confirms a replacement -- not just after.
+    // Red-Blink's exact repro: "the old authenticator can still perform a
+    // normal login during recovery."
+    const loginWithOldMidRecovery = await api(port, "/api/auth/login", { body: { password: PASSWORD, totpCode: codeFor(oldSecret) } });
+    assert.notEqual(loginWithOldMidRecovery.status, 200, "the old authenticator must not log in normally while a recovery is pending");
+
+    // Session A completes its replacement -- the legitimate path.
     const setupA = await (await api(port, "/api/auth/2fa/setup", { cookie: cookieA, csrf: csrfA })).json();
-    const setupB = await (await api(port, "/api/auth/2fa/setup", { cookie: cookieB, csrf: csrfB })).json();
-
-    // Session A (opened first) completes replacement first -- this is the
-    // legitimate, "winning" re-enrollment and MUST succeed even though
-    // session B was minted after A and has already consumed its own
-    // recovery code (epoch has moved since A's own consumption -- factorVersion,
-    // not epoch, is what must gate this, see secondFactorStore.js commit()).
     const confirmA = await api(port, "/api/auth/2fa/confirm", { cookie: cookieA, csrf: csrfA, body: { code: codeFor(setupA.secret) } });
-    assert.equal(confirmA.status, 200, "the first session to confirm must succeed");
+    assert.equal(confirmA.status, 200, "the recovery session must succeed");
     const confirmABody = await confirmA.json();
     assert.equal(confirmABody.reconfigured, true);
 
-    // Returning to the OLDER, now-stale session B (per Red-Blink's exact
-    // report: "complete authenticator replacement in the first, then return
-    // to the second") and completing ITS confirm (using the secret it
-    // already generated before A won) must be REJECTED, not silently
-    // overwrite A's brand-new authenticator.
-    const confirmB = await api(port, "/api/auth/2fa/confirm", { cookie: cookieB, csrf: csrfB, body: { code: codeFor(setupB.secret) } });
-    assert.notEqual(confirmB.status, 200, "a stale recovery session must not be able to replace an already-replaced authenticator");
-
-    // The authenticator A actually set up must still work...
+    // The new authenticator works...
     const loginWithA = await api(port, "/api/auth/login", { body: { password: PASSWORD, totpCode: codeFor(setupA.secret, 1) } });
     assert.equal(loginWithA.status, 200);
     assert.equal((await loginWithA.json()).authenticated, true);
 
-    // ...and B's rejected secret must NOT have taken over.
-    const loginWithB = await api(port, "/api/auth/login", { body: { password: PASSWORD, totpCode: codeFor(setupB.secret) } });
-    assert.notEqual(loginWithB.status, 200, "session B's confirm must not have overwritten the authenticator");
+    // ...and the old one is still dead afterward too (different code path --
+    // "invalid" now that a real, different secret is live, rather than
+    // "recovery_pending" -- but still never a login).
+    const loginWithOldAfter = await api(port, "/api/auth/login", { body: { password: PASSWORD, totpCode: codeFor(oldSecret) } });
+    assert.notEqual(loginWithOldAfter.status, 200, "the old authenticator must not work after replacement either");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
 
-    // Session B must also now be dead outright (proactive invalidation on A's
-    // success), not merely rejected at the confirm step: a fresh attempt to
-    // restart setup on it is refused with the same message a nonexistent
-    // session gets, not the normal "start setup" response a still-live
-    // resetup session would give.
-    const setupAgainB = await api(port, "/api/auth/2fa/setup", { cookie: cookieB, csrf: csrfB });
-    assert.equal(setupAgainB.status, 403);
-    assert.match((await setupAgainB.json()).error, /Sign in to begin two-factor setup/, "session B should have been invalidated once session A replaced the factor");
+test("the recovery-pending state persists across a process restart", async () => {
+  // Red-Blink explicitly asked for this: the atomic invalidation must be a
+  // real, persisted store write, not in-memory-only state a restart would
+  // silently lose (which would resurrect the old TOTP secret and let a
+  // second sibling code succeed again).
+  const port1 = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "recovery-e2e-restart-"));
+  let running = startConsole(port1, tempDir);
+  try {
+    await waitForHealth(port1);
+    const { secret: oldSecret, recoveryCodes } = await enrollFresh(port1);
+
+    const rec = await api(port1, "/api/auth/login", { body: { password: PASSWORD, recoveryCode: recoveryCodes[0] } });
+    assert.equal(rec.status, 200);
+
+    await stopProcess(running.child);
+    running = null;
+
+    const port2 = await getFreePort();
+    running = startConsole(port2, tempDir);
+    await waitForHealth(port2);
+
+    // After the restart, on a fresh in-memory session store: the old
+    // authenticator is still dead...
+    const loginWithOld = await api(port2, "/api/auth/login", { body: { password: PASSWORD, totpCode: codeFor(oldSecret) } });
+    assert.notEqual(loginWithOld.status, 200, "recovery-pending must survive a restart, not reset to a working old authenticator");
+
+    // ...and a second sibling code is still rejected.
+    const recB = await api(port2, "/api/auth/login", { body: { password: PASSWORD, recoveryCode: recoveryCodes[1] } });
+    assert.equal(recB.status, 401, "sibling-code rejection must survive a restart too");
+  } finally {
+    await stopProcess(running.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("a normal session created BEFORE recovery re-setup is revoked once the re-setup completes", async () => {
+  // The resetup half of Red-Blink's session-lifecycle report (review
+  // finding, upstream PR #201, 2026-09-08) -- the enrollment half is covered
+  // in enrollmentFlow.integration.test.js.
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "recovery-e2e-session-revoke-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const { secret, recoveryCodes } = await enrollFresh(port);
+
+    // A normal, already-authenticated session using the real (soon-to-be-
+    // replaced) authenticator -- e.g. a different browser tab, present
+    // before the recovery flow even starts. Offset by one step: enrollFresh()
+    // already consumed the current step's code to confirm enrollment, and
+    // replay prevention forbids reusing it (same reasoning as the offset used
+    // elsewhere in this suite after a confirm).
+    const preLogin = await api(port, "/api/auth/login", { body: { password: PASSWORD, totpCode: codeFor(secret, 1) } });
+    assert.equal(preLogin.status, 200);
+    const preCookie = cookieFrom(preLogin);
+    const meBefore = await api(port, "/api/auth/me", { method: "GET", cookie: preCookie });
+    assert.equal(meBefore.status, 200, "the pre-recovery session must be genuinely valid before this test proceeds");
+
+    // A separate recovery-code login opens a resetup session and completes
+    // authenticator replacement, entirely independent of the cookie above.
+    const rec = await api(port, "/api/auth/login", { body: { password: PASSWORD, recoveryCode: recoveryCodes[0] } });
+    assert.equal(rec.status, 200);
+    const recBody = await rec.json();
+    const resetupCookie = cookieFrom(rec);
+    const setup = await (await api(port, "/api/auth/2fa/setup", { cookie: resetupCookie, csrf: recBody.csrfToken })).json();
+    const confirm = await api(port, "/api/auth/2fa/confirm", { cookie: resetupCookie, csrf: recBody.csrfToken, body: { code: codeFor(setup.secret) } });
+    assert.equal(confirm.status, 200);
+    assert.equal((await confirm.json()).reconfigured, true);
+
+    // The cookie from BEFORE the recovery must now be dead -- this is
+    // exactly the attack Red-Blink described: a session hijacked before the
+    // operator noticed and recovered must not survive the recovery.
+    const meAfter = await api(port, "/api/auth/me", { method: "GET", cookie: preCookie });
+    assert.equal(meAfter.status, 401, "a session that predates the authenticator replacement must not survive it");
   } finally {
     await stopProcess(console.child);
     rmSync(tempDir, { recursive: true, force: true });

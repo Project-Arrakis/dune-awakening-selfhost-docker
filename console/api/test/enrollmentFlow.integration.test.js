@@ -171,6 +171,46 @@ test("full enrollment: password login -> enroll -> TOTP login, with replay rejec
   }
 });
 
+test("a normal session created BEFORE enrollment is revoked once enrollment completes", async () => {
+  // Red-Blink's exact report: "Existing sessions remain valid after TOTP
+  // enrollment or recovery re-setup... I reproduced this by retaining the
+  // original owner-session cookie, completing enrollment through the new
+  // enrollment cookie, and then successfully using the original cookie
+  // afterward." (review finding, upstream PR #201, 2026-09-08)
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "enroll-e2e-session-revoke-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+
+    // A normal, single-factor session, minted BEFORE any enrollment exists.
+    const preLogin = await api(port, "/api/auth/login", { body: { password: PASSWORD } });
+    assert.equal(preLogin.status, 200);
+    const preCookie = cookieFrom(preLogin);
+    assert.ok(preCookie);
+    // Proven live before enrollment: /api/auth/me succeeds.
+    const meBefore = await api(port, "/api/auth/me", { method: "GET", cookie: preCookie });
+    assert.equal(meBefore.status, 200, "the pre-enrollment session must be genuinely valid before this test proceeds");
+
+    // A SEPARATE login opts into 2FA and completes enrollment, entirely
+    // independent of the cookie above.
+    const enable = await beginEnrollment(port);
+    const enrollCookie = cookieFrom(enable);
+    const enrollCsrf = (await enable.json()).csrfToken;
+    const setup = await (await api(port, "/api/auth/2fa/setup", { cookie: enrollCookie, csrf: enrollCsrf })).json();
+    const confirm = await api(port, "/api/auth/2fa/confirm", { cookie: enrollCookie, csrf: enrollCsrf, body: { code: codeFor(setup.secret) } });
+    assert.equal(confirm.status, 200);
+    assert.equal((await confirm.json()).enrolled, true);
+
+    // The cookie from BEFORE enrollment must now be dead.
+    const meAfter = await api(port, "/api/auth/me", { method: "GET", cookie: preCookie });
+    assert.equal(meAfter.status, 401, "a session that predates 2FA existing at all must not survive it turning on");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("wrong password is rejected before any second-factor step", async () => {
   const port = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "enroll-e2e-badpw-"));
