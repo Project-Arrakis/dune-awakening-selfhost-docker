@@ -251,6 +251,13 @@ print("0")
 PY
 }
 
+map_requires_isolated_party_dimension() {
+  case "$1" in
+    CB_Overland_S_07|CB_Overland_S_08) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 map_exists() {
   local map="$1"
   local safe
@@ -269,6 +276,43 @@ map_assigned_count() {
     from dune.world_partition
     where lower(map) = lower('$safe')
       and coalesce(server_id, '') <> '';
+  "
+}
+
+occupied_dimensions_for_map() {
+  local map="$1"
+  local safe
+  safe="${map//\'/\'\'}"
+
+  psql_value "
+    select count(distinct fs.server_id)
+    from dune.farm_state fs
+    where fs.map = '$safe'
+      and coalesce(fs.server_id, '') <> ''
+      and exists (
+        select 1
+        from dune.player_state ps
+        left join dune.world_partition previous_wp
+          on previous_wp.partition_id = ps.previous_server_partition_id
+        where (
+          ps.server_id = fs.server_id
+          or (
+            previous_wp.server_id = fs.server_id
+            and coalesce(ps.server_id, '') <> fs.server_id
+          )
+        )
+          and (
+            ps.online_status <> 'Offline'
+            or (
+              ps.reconnect_grace_period_end is not null
+              and ps.reconnect_grace_period_end > (current_timestamp at time zone 'UTC')
+            )
+            or (
+              ps.last_avatar_activity is not null
+              and ps.last_avatar_activity > (current_timestamp - make_interval(secs => ${IDLE_SECONDS}))
+            )
+          )
+      );
   "
 }
 
@@ -1595,6 +1639,7 @@ handle_demand() {
   local map="$1"
   local num="$2"
   local event_id="${3:-}"
+  local demand_source="${4:-request}"
   local dedicated_scaling
   local now
 
@@ -1646,6 +1691,36 @@ handle_demand() {
   dedicated_scaling="$(map_uses_dedicated_scaling "$map")"
 
   if [ "$dedicated_scaling" = "1" ]; then
+    if map_requires_isolated_party_dimension "$map"; then
+      local occupied max_dimensions desired capacity
+      occupied="$(occupied_dimensions_for_map "$map")"
+      max_dimensions="$(max_dimensions_for_map "$map")"
+      [[ "$occupied" =~ ^[0-9]+$ ]] || occupied=0
+      [[ "$max_dimensions" =~ ^[1-9][0-9]*$ ]] || max_dimensions=1
+
+      # These Landsraad activity maps admit one party per dimension. A new
+      # request needs one dimension in addition to those already occupied;
+      # a queue summary reports every solo player still waiting. Count
+      # warming containers as capacity so repeated summaries cannot fill all
+      # configured dimensions while the requested server is starting.
+      desired=$((occupied + num))
+      [ "$desired" -le "$max_dimensions" ] || desired="$max_dimensions"
+      capacity="$assigned"
+      [ "$running" -le "$capacity" ] || capacity="$running"
+
+      if [ "$capacity" -ge "$desired" ]; then
+        echo "OK   demand map=$map num=$num source=$demand_source capacity=$capacity desired=$desired occupied=$occupied"
+        return 0
+      fi
+
+      echo "SPAWN demand map=$map num=$num source=$demand_source capacity=$capacity desired=$desired occupied=$occupied"
+      runtime/scripts/spawn-server.sh "$map" || {
+        echo "ERROR failed to spawn $map"
+        return 0
+      }
+      return 0
+    fi
+
     if [ "$assigned" != "0" ] || [ "$running" != "0" ]; then
       echo "OK   demand map=$map num=$num already running/assigned assigned=$assigned containers=$running"
       return 0
@@ -2181,7 +2256,9 @@ scan_travel_demand() {
   local demand_rows
 
   demand_rows="$(
-    docker logs --since "$SINCE" dune-director 2>&1 | python3 -c '
+    # Timestamps make otherwise identical player requests distinct while
+    # keeping the same log occurrence stable across overlapping scan windows.
+    docker logs --timestamps --since "$SINCE" dune-director 2>&1 | python3 -c '
 import hashlib
 import re
 import sys
@@ -2225,13 +2302,14 @@ for line in sys.stdin:
         continue
 
     seen.add(key)
-    print(f"{event_id}|{map_name}|{num}")
+    source = "queue" if classical_pattern.search(line) else "request"
+    print(f"{event_id}|{map_name}|{num}|{source}")
 '
   )"
 
-  while IFS='|' read -r event_id map num; do
+  while IFS='|' read -r event_id map num demand_source; do
     [ -n "${map:-}" ] || continue
-    handle_demand "$map" "$num" "$event_id"
+    handle_demand "$map" "$num" "$event_id" "$demand_source"
   done <<< "$demand_rows"
 }
 
