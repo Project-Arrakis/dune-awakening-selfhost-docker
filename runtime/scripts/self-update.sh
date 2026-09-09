@@ -118,6 +118,12 @@ self_update_write_status() {
   local percent="$3"
   local message="$4"
   local finished_at="${5:-}"
+  # Optional extra "key=value" line(s), written into the SAME atomic
+  # tmp-file+mv as every other field below -- e.g. Discord adapter health's
+  # discord_health_ok=<0|1> must land in the exact write that also sets
+  # state=succeeded, not a separate later append, or a poller can observe
+  # state=succeeded with no discord_health_ok yet (audit finding #2, HIGH).
+  local extra_line="${6:-}"
   local status_file tmp_file updated_at
 
   self_update_status_enabled || return 0
@@ -139,6 +145,7 @@ self_update_write_status() {
     printf 'started_at=%s\n' "$SELF_UPDATE_STATUS_STARTED_AT"
     printf 'updated_at=%s\n' "$updated_at"
     printf 'finished_at=%s\n' "$finished_at"
+    [ -z "$extra_line" ] || printf '%s\n' "$extra_line"
   } > "$tmp_file"
   chmod 600 "$tmp_file"
   mv -f "$tmp_file" "$status_file"
@@ -1100,12 +1107,11 @@ verify_discord_adapter_health() {
     sleep 2
   done
 
-  self_update_write_status succeeded complete 100 "Discord adapter settings applied." "$(date -Is)"
-  if self_update_status_enabled; then
-    {
-      printf 'discord_health_ok=%s\n' "$health_ok"
-    } >> "$SELF_UPDATE_STATUS_DIR/$SELF_UPDATE_RUN_ID.env"
-  fi
+  # discord_health_ok must land in the SAME atomic write as state=succeeded
+  # (audit finding #2, HIGH) -- a poller that ever observes state:
+  # "succeeded" must already be able to read this field in that same
+  # response, never in a subsequent, separately-timed write.
+  self_update_write_status succeeded complete 100 "Discord adapter settings applied." "$(date -Is)" "discord_health_ok=${health_ok}"
   SELF_UPDATE_STATUS_FINALIZED=1
 }
 
