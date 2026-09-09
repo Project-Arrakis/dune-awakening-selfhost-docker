@@ -55,7 +55,14 @@ export function resolveClientIp(req, trustedProxyIps = []) {
 // what this function exists to fix.
 export function normalizeIp(ip) {
   if (!ip) return "";
-  const stripped = String(ip).trim().replace(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i, "$1");
+  // #578 review finding: net.isIP() (and everything below that depends on
+  // it) returns 0 for a bracketed literal like "[::1]" -- a common form an
+  // operator copies from nginx/URL configs -- so it fell through unchanged
+  // and never matched the unbracketed socket-address form ("::1"). Strip
+  // brackets before anything else; they carry no information net.isIP()
+  // itself needs.
+  const unbracketed = String(ip).trim().replace(/^\[(.+)\]$/, "$1");
+  const stripped = unbracketed.replace(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i, "$1");
   if (net.isIP(stripped) !== 6) return stripped;
   // WHATWG URL parsing canonicalizes an IPv6 literal (compresses zero runs,
   // lowercases hex) as a side effect of accepting it as a bracketed host --

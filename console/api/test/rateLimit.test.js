@@ -180,6 +180,19 @@ test("normalizeIp: canonicalizes IPv6 without corrupting an IPv4-mapped address'
   assert.equal(normalizeIp(null), "");
 });
 
+// #578 review finding: a bracketed IPv6 literal ("[::1]", the form an
+// operator commonly copies from nginx/URL configs) made net.isIP() return 0
+// and fell through unchanged, never matching the unbracketed socket-address
+// form Node actually reports.
+test("normalizeIp: strips brackets from a bracketed IPv6 literal before canonicalizing", () => {
+  assert.equal(normalizeIp("[::1]"), "::1");
+  assert.equal(normalizeIp("[FE80:0:0:0:0:0:0:1]"), "fe80::1");
+});
+
+test("resolveClientIp: a bracketed IPv6 trusted-proxy entry matches Node's unbracketed socket peer", () => {
+  assert.equal(resolveClientIp(fakeReq("::1", "203.0.113.9"), ["[::1]"]), "203.0.113.9");
+});
+
 test("api key rate limiter grants exactly the configured number of requests", () => {
   // Regression: record() used to increment before checking `count >= max`, so a
   // key counted the in-flight request against its own limit and got max-1. At
