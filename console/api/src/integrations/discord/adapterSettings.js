@@ -24,8 +24,22 @@ const MANAGED_ENV_KEYS = Object.freeze({
   directToken: "DUNE_DISCORD_ADAPTER_TOKEN",
   player: "DISCORD_PLAYER_ROLE_IDS",
   moderator: "DISCORD_MODERATOR_ROLE_IDS",
-  admin: "DISCORD_ADMIN_ROLE_IDS"
+  admin: "DISCORD_ADMIN_ROLE_IDS",
+  // Task 2 (hosted-bot console-initiated OAuth registration plan): the
+  // console's hosted/self-hosted `choice` toggle previously lived only in
+  // browser localStorage -- never sent to or read from the backend. This is
+  // the real, persisted, server-readable source of truth Task 6's /register
+  // route gates against.
+  deploymentChoice: "DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE"
 });
+
+// Server-side allowlist for the persisted deployment choice -- never trust
+// a request-body value verbatim into .env (same discipline as
+// MANAGED_ENV_KEYS itself: the set of values this key can ever hold is
+// fixed here, not derived from arbitrary caller input).
+function normalizeDeploymentChoice(value) {
+  return value === "hosted" || value === "self-hosted" ? value : null;
+}
 
 export function validateDiscordRoleIds(rawValue) {
   const trimmed = String(rawValue || "").trim();
@@ -46,7 +60,8 @@ export function readDiscordBotSettingsState(config) {
       moderator: mapping.moderatorRoleIds,
       admin: mapping.adminRoleIds
     },
-    tokenConfigured: Boolean(token)
+    tokenConfigured: Boolean(token),
+    deploymentChoice: normalizeDeploymentChoice(process.env[MANAGED_ENV_KEYS.deploymentChoice] || null)
   };
 }
 
@@ -62,7 +77,7 @@ export function readDiscordBotSettingsState(config) {
 // after generation (Design §3.1's "masked, with reveal/copy" requirement)
 // -- readDiscordBotSettingsState() never returns it on subsequent reads,
 // since the token file's own content is the only persistent copy.
-export function enableDiscordBotAdapter(config, roleIdsByTier = {}) {
+export function enableDiscordBotAdapter(config, roleIdsByTier = {}, options = {}) {
   const repoRoot = config.repoRoot;
   const tokenFile = resolve(repoRoot, DEFAULT_TOKEN_FILE);
   const token = randomBytes(32).toString("hex");
@@ -70,7 +85,7 @@ export function enableDiscordBotAdapter(config, roleIdsByTier = {}) {
   writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
   try { chmodSync(tokenFile, 0o600); } catch {}
 
-  updateEnvFileValues(repoRoot, [
+  const entries = [
     [MANAGED_ENV_KEYS.enabled, "true"],
     [MANAGED_ENV_KEYS.tokenFile, DEFAULT_TOKEN_FILE],
     // Clear any direct manual-setup token -- see MANAGED_ENV_KEYS.directToken's
@@ -79,7 +94,13 @@ export function enableDiscordBotAdapter(config, roleIdsByTier = {}) {
     [MANAGED_ENV_KEYS.player, (roleIdsByTier.player || []).join(",")],
     [MANAGED_ENV_KEYS.moderator, (roleIdsByTier.moderator || []).join(",")],
     [MANAGED_ENV_KEYS.admin, (roleIdsByTier.admin || []).join(",")]
-  ]);
+  ];
+  // Task 2: only persist deploymentChoice when a valid value was actually
+  // supplied -- an omitted/invalid value leaves whatever was already
+  // persisted untouched, rather than clobbering it with an empty string.
+  const normalizedChoice = normalizeDeploymentChoice(options.deploymentChoice);
+  if (normalizedChoice) entries.push([MANAGED_ENV_KEYS.deploymentChoice, normalizedChoice]);
+  updateEnvFileValues(repoRoot, entries);
 
   // Mirror the two values every other part of this feature reads directly
   // from process.env into the RUNNING process too. Writing .env on disk
@@ -126,6 +147,7 @@ export function enableDiscordBotAdapter(config, roleIdsByTier = {}) {
   process.env[MANAGED_ENV_KEYS.player] = (roleIdsByTier.player || []).join(",");
   process.env[MANAGED_ENV_KEYS.moderator] = (roleIdsByTier.moderator || []).join(",");
   process.env[MANAGED_ENV_KEYS.admin] = (roleIdsByTier.admin || []).join(",");
+  if (normalizedChoice) process.env[MANAGED_ENV_KEYS.deploymentChoice] = normalizedChoice;
 
   return { ok: true, tokenFile: DEFAULT_TOKEN_FILE, token };
 }
@@ -141,12 +163,17 @@ export function enableDiscordBotAdapter(config, roleIdsByTier = {}) {
 // token on every role-ID edit). Still triggers the recreate helper (the
 // caller does that, same as enableDiscordBotAdapter) because role IDs are
 // only read from the environment at container start.
-export function updateDiscordBotRoleIds(config, roleIdsByTier = {}) {
-  updateEnvFileValues(config.repoRoot, [
+export function updateDiscordBotRoleIds(config, roleIdsByTier = {}, options = {}) {
+  const entries = [
     [MANAGED_ENV_KEYS.player, (roleIdsByTier.player || []).join(",")],
     [MANAGED_ENV_KEYS.moderator, (roleIdsByTier.moderator || []).join(",")],
     [MANAGED_ENV_KEYS.admin, (roleIdsByTier.admin || []).join(",")]
-  ]);
+  ];
+  // Task 2: same allowlist/only-write-when-valid discipline as
+  // enableDiscordBotAdapter() above.
+  const normalizedChoice = normalizeDeploymentChoice(options.deploymentChoice);
+  if (normalizedChoice) entries.push([MANAGED_ENV_KEYS.deploymentChoice, normalizedChoice]);
+  updateEnvFileValues(config.repoRoot, entries);
   // Mirror into the RUNNING process too, for the same reason
   // enableDiscordBotAdapter() does -- discordRoleMappingFromEnv() reads
   // process.env directly, so without this a GET of the settings state in
@@ -157,6 +184,7 @@ export function updateDiscordBotRoleIds(config, roleIdsByTier = {}) {
   process.env[MANAGED_ENV_KEYS.player] = (roleIdsByTier.player || []).join(",");
   process.env[MANAGED_ENV_KEYS.moderator] = (roleIdsByTier.moderator || []).join(",");
   process.env[MANAGED_ENV_KEYS.admin] = (roleIdsByTier.admin || []).join(",");
+  if (normalizedChoice) process.env[MANAGED_ENV_KEYS.deploymentChoice] = normalizedChoice;
   return { ok: true };
 }
 
@@ -241,12 +269,12 @@ export function regenerateDiscordBotToken(config) {
 // (from disabled) still goes through enableDiscordBotAdapter() and
 // mints a token. tokenMinted tells the route handler whether to include
 // `token` in its response.
-export function applyDiscordBotEnableRequest(config, roleIdsByTier = {}) {
+export function applyDiscordBotEnableRequest(config, roleIdsByTier = {}, options = {}) {
   if (discordAdapterEnabled(config)) {
-    const result = updateDiscordBotRoleIds(config, roleIdsByTier);
+    const result = updateDiscordBotRoleIds(config, roleIdsByTier, options);
     return { ok: result.ok, tokenMinted: false };
   }
-  const result = enableDiscordBotAdapter(config, roleIdsByTier);
+  const result = enableDiscordBotAdapter(config, roleIdsByTier, options);
   return { ok: result.ok, tokenMinted: true, token: result.token, tokenFile: result.tokenFile };
 }
 

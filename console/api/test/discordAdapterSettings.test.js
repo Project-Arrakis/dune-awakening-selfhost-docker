@@ -406,6 +406,40 @@ test("updateDiscordBotRoleIds mirrors the role-ID env keys into the RUNNING proc
   assert.deepEqual(state.roleIds.moderator, ["444444444444444444"]);
 });
 
+// Task 2 (hosted-bot console-initiated OAuth registration plan): the
+// hosted/self-hosted `choice` toggle in DiscordBotSection.tsx previously
+// lived only in browser localStorage -- never sent to or read from the
+// backend. Task 6's /register route needs a real, persisted,
+// server-readable value to gate against, so this is the one env key this
+// feature is allowed to write for it.
+test("readDiscordBotSettingsState reports deploymentChoice as null when never set", () => {
+  delete process.env.DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE;
+  const state = readDiscordBotSettingsState({});
+  assert.equal(state.deploymentChoice, null);
+});
+
+test("enableDiscordBotAdapter persists deploymentChoice, and readDiscordBotSettingsState reflects it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-choice-"));
+  const result = enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "hosted" });
+  assert.equal(result.ok, true);
+  process.env.DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE = "hosted";
+  const state = readDiscordBotSettingsState({});
+  assert.equal(state.deploymentChoice, "hosted");
+  delete process.env.DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE;
+});
+
+test("updateDiscordBotRoleIds persists an updated deploymentChoice without touching the token", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-choice-update-"));
+  const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
+  mkdirSync(join(dir, "runtime", "secrets"), { recursive: true });
+  writeFileSync(join(dir, ".env"), "DUNE_DISCORD_ADAPTER_ENABLED=true\n");
+  writeFileSync(tokenFile, "existing-token\n");
+  updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "self-hosted" });
+  const envContent = readFileSync(join(dir, ".env"), "utf8");
+  assert.match(envContent, /^DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE=self-hosted$/m);
+  assert.equal(readFileSync(tokenFile, "utf8").trim(), "existing-token", "role-ID/choice updates must never touch the token file");
+});
+
 // Audit finding #2 (HIGH): admin must not be able to grant Discord
 // "admin" bot-command tier to an arbitrary role via /enable or
 // /role-ids -- the route handler uses this comparison to decide whether

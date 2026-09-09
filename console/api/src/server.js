@@ -1494,7 +1494,7 @@ async function handleApi(req, res) {
     // /role-ids (token-safe, idempotent), so an admin (updates:apply)
     // can never silently re-mint the live token, which the owner-only
     // settings:discord-bot-regenerate-token action exists to reserve.
-    const result = applyDiscordBotEnableRequest(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds });
+    const result = applyDiscordBotEnableRequest(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds }, { deploymentChoice: body.deploymentChoice });
     audit(config, req, "settings.discord-bot.enable", { playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length, tokenMinted: result.tokenMinted });
     const responseBody = { task: tasks.create("settings", "discordAdapterApply", {}) };
     if (result.tokenMinted) responseBody.token = result.token;
@@ -1516,7 +1516,7 @@ async function handleApi(req, res) {
       return json(res, 403, { error: "Changing admin-tier Discord role mappings requires owner access." });
     }
 
-    updateDiscordBotRoleIds(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds });
+    updateDiscordBotRoleIds(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds }, { deploymentChoice: body.deploymentChoice });
     audit(config, req, "settings.discord-bot.role-ids-updated", { playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length });
     return json(res, 202, { task: tasks.create("settings", "discordAdapterApply", {}) });
   }

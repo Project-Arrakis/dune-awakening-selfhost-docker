@@ -328,6 +328,18 @@ describe("DiscordBotSection", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("the-plaintext-token"));
   });
 
+  it("sends the current choice to the backend when enabling", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false, deploymentChoice: null } as never);
+    mockPost.mockResolvedValue({ task: { id: "t1", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null }, token: "abc" } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
+    await screen.findByText(/restart/i);
+    fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/enable", expect.objectContaining({ deploymentChoice: "hosted" })));
+  });
+
   it("exposes the hosted/self-hosted toggle's selected state to assistive tech via aria-pressed (finding 8)", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     render(<DiscordBotSection />);

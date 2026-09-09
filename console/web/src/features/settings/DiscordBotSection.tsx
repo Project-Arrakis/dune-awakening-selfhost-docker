@@ -87,6 +87,13 @@ export function DiscordBotSection() {
   async function refresh(options?: { preserveInputs?: boolean }) {
     const nextState = await discordAdapterSettingsApi.getState();
     setState(nextState);
+    // The backend's persisted deploymentChoice (Task 2) is now authoritative
+    // once available -- but only overwrite the localStorage-seeded choice
+    // when the backend actually has a value; a null/undefined response
+    // (nothing ever persisted server-side yet) must not clobber a value an
+    // operator already set before this change shipped, or one already
+    // selected in this session that hasn't been submitted yet.
+    if (nextState.deploymentChoice) setChoice(nextState.deploymentChoice);
     // On a failed-attempt Retry, don't clobber role IDs the operator already
     // typed with the (still-disabled) server's stale values (finding #4,
     // Layer 3 review) -- only a genuine fresh mount-time load, or a refresh
@@ -178,7 +185,8 @@ export function DiscordBotSection() {
       const { task, token } = await discordAdapterSettingsApi.enable({
         playerRoleIds,
         moderatorRoleIds,
-        adminRoleIds
+        adminRoleIds,
+        deploymentChoice: choice
       });
       // token is absent (not just falsy) on the already-enabled/role-ids-
       // only path -- see the type's own comment in discordAdapterSettings.ts.
@@ -227,7 +235,8 @@ export function DiscordBotSection() {
       const { task } = await discordAdapterSettingsApi.updateRoleIds({
         playerRoleIds,
         moderatorRoleIds,
-        adminRoleIds
+        adminRoleIds,
+        deploymentChoice: choice
       });
       persistUpdateTask(TASK_KEY, task);
       setRunId(task.id);
