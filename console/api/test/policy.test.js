@@ -672,7 +672,7 @@ test("backups:delete is a crown-jewel action, matching apiKeyScopes.js's KEY_DEN
 // its old wildcard grants at every boot, with no warning, until an operator
 // happened to diff the file or attempt a save (which would then be blocked,
 // surfacing the drift only after the fact).
-test("loadPolicies() warns and falls back to defaults when the stored file grants a crown-jewel action to a non-owner tier", () => {
+test("loadPolicies() warns and resets ONLY the leaking tier when the stored file grants a crown-jewel action to a non-owner tier", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "policy-load-crown-jewel-leak-"));
   const dir = join(repoRoot, "runtime", "generated");
   mkdirSync(dir, { recursive: true });
@@ -680,11 +680,17 @@ test("loadPolicies() warns and falls back to defaults when the stored file grant
   // A pre-crown-jewel-protection admin document: broad wildcards with no
   // Deny block at all, exactly the shape an operator's real, older file
   // would have (see CROWN_JEWEL_DENY_ACTIONS's own history comment).
+  // moderator carries a genuine, intentional customization (read-only,
+  // narrower than the shipped default) that must survive untouched --
+  // review finding: an earlier version of this fix wiped ALL tiers to
+  // DEFAULT_POLICIES the moment ANY ONE tier leaked, discarding exactly
+  // this kind of unrelated, non-leaking customization.
   writeFileSync(filePath, JSON.stringify({
     owner: { version: 1, tier: "owner", statements: [{ Effect: "Allow", Action: "*" }] },
     admin: { version: 1, tier: "admin", statements: [
       { Effect: "Allow", Action: ["server:read", "backups:*"] },
     ] },
+    moderator: { version: 1, tier: "moderator", statements: [{ Effect: "Allow", Action: ["server:read"] }] },
   }));
   const warnings = [];
   const originalWarn = console.warn;
@@ -694,17 +700,24 @@ test("loadPolicies() warns and falls back to defaults when the stored file grant
     result = loadPolicies(repoRoot);
   } finally {
     console.warn = originalWarn;
+  }
+  try {
+    assert.equal(warnings.length, 1, "one leaking tier must warn exactly once");
+    assert.match(warnings[0], /crown-jewel/);
+    assert.match(warnings[0], /admin/);
+    assert.equal(result.source, "file", "the document is still loaded from the file, not wholesale replaced");
+    assert.deepEqual(result.crownJewelLeaks.map((l) => l.tier), ["admin"]);
+    // The leaking tier is reset -- its dangerous grant is gone.
+    assert.equal(evaluate({ tier: "admin" }, "backups:restore"), false);
+    // The NON-leaking tier's genuine customization survives untouched -- it
+    // must NOT have been swept into a wholesale reset to DEFAULT_POLICIES
+    // (whose moderator default reaches more than just server:read).
+    assert.equal(evaluate({ tier: "moderator" }, "server:read"), true);
+    assert.equal(evaluate({ tier: "moderator" }, "players:read"), false, "moderator's narrower stored customization must be preserved, not widened to the shipped default");
+  } finally {
     rmSync(repoRoot, { recursive: true, force: true });
     loadPolicies(join(tmpdir(), "policy-reset-no-such-dir"));
   }
-  assert.equal(warnings.length, 1, "a discarded stored policy must warn exactly once");
-  assert.match(warnings[0], /crown-jewel/);
-  assert.match(warnings[0], /admin/);
-  assert.equal(result.source, "defaults");
-  assert.equal(result.crownJewelLeak.tier, "admin");
-  // Must actually have fallen back to the real, safe defaults, not left the
-  // leaking document (or _policies stale) in effect for this boot.
-  assert.equal(evaluate({ tier: "admin" }, "backups:restore"), false);
 });
 
 // Guards the teardown above: without it, this test (appended AFTER the

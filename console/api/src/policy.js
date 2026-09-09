@@ -184,36 +184,50 @@ export function loadPolicies(repoRoot = null) {
         // #711: setPolicies() refuses to ever SAVE a crown-jewel leak, but a
         // file written before that backstop existed (or hand-edited around
         // it) was trusted here with no check at all. Apply the identical
-        // backstop at load time -- fail loud and fall back to the safe
-        // defaults, the same "fail loud, not silent" precedent the invalid/
-        // unreadable branches below already follow, rather than silently
-        // reviving a stale wildcard grant for the life of this boot.
-        const leak = crownJewelLeak(parsed);
-        if (leak) {
-          _policies = DEFAULT_POLICIES;
+        // backstop at load time.
+        //
+        // SURGICAL, not wholesale (review finding, before this ever shipped):
+        // an earlier version of this fix fell back to DEFAULT_POLICIES
+        // entirely the moment ANY ONE tier leaked -- silently discarding
+        // EVERY tier's stored customization, including tiers with no leak at
+        // all. That is exactly the "whole document destroyed by one bad
+        // tier" failure mode migrateObsoleteTiers() above already exists to
+        // avoid for a different cause (an obsolete tier document), and the
+        // same "discarding the document is a bigger surprise than the
+        // narrow problem" reasoning the unknownActions() report below
+        // already follows. An operator who saved policies under older,
+        // pre-crown-jewel-protection defaults (this fork's own upgrade
+        // guide documents that the shipped Admin default used to grant
+        // server:*/backups:*/players:* wildcards) would have lost their
+        // moderator/player customizations too, not just admin's. Reset ONLY
+        // the leaking tier(s) to their default document; every other tier's
+        // stored policy is preserved exactly as authored.
+        const crownJewelLeaks = crownJewelLeakingTiers(parsed);
+        for (const { tier } of crownJewelLeaks) parsed[tier] = DEFAULT_POLICIES[tier];
+        for (const { tier, action } of crownJewelLeaks) {
           console.warn(
-            `Stored IAM policy at ${filePath} grants "${leak.action}" to the "${leak.tier}" tier, a crown-jewel action reserved for owner -- ` +
-            "falling back to the default policies. This file likely predates crown-jewel protection (or was hand-edited around it) and " +
-            "still carries a wildcard/legacy grant. Review Access Control and re-save after this restart to restore your customizations."
+            `Stored IAM policy at ${filePath} grants "${action}" to the "${tier}" tier, a crown-jewel action reserved for owner -- ` +
+            `resetting ONLY the "${tier}" tier to its default policy (every other tier's stored policy is unaffected). This tier's document likely ` +
+            "predates crown-jewel protection (or was hand-edited around it) and still carries a wildcard/legacy grant. Review Access Control and " +
+            `re-save the "${tier}" tier after this restart if it had intentional customizations.`
           );
-          return { source: "defaults", path: filePath, crownJewelLeak: leak, unknownActions: [], deprecatedActions: [], migratedTiers: [] };
         }
         _policies = parsed;
-        if (migratedTiers.length) {
+        if (migratedTiers.length || crownJewelLeaks.length) {
           // Fixed on disk too, not just in memory -- otherwise the same
           // stale document reappears (and re-logs this notice) on every
           // restart until an operator happens to re-save via Access Control.
           // Best-effort: if the write fails, this boot is still correct
-          // (parsed already has the tier removed), just not yet durable.
+          // (parsed already has the fix applied), just not yet durable.
           try { writeJsonAtomic(filePath, parsed, 0o600); } catch (err) {
-            console.warn(`Could not persist the migrated IAM policy at ${filePath}: ${err instanceof Error ? err.message : "unknown error"}. It will be re-migrated (harmlessly) on the next restart.`);
+            console.warn(`Could not persist the fixed IAM policy at ${filePath}: ${err instanceof Error ? err.message : "unknown error"}. It will be re-fixed (harmlessly) on the next restart.`);
           }
         }
         // Reported, not rejected: discarding the document would silently
         // revert the operator's whole policy to defaults, a bigger surprise
         // than the dead pattern. setPolicies refuses these on save, so a stored
         // file can only acquire one by hand-editing. The caller logs this.
-        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed), migratedTiers };
+        return { source: "file", path: filePath, unknownActions: unknownActions(parsed), deprecatedActions: deprecatedActions(parsed), migratedTiers, crownJewelLeaks };
       }
       _policies = DEFAULT_POLICIES;
       // A stored file that fails validation (e.g. an action pattern that
@@ -540,6 +554,24 @@ function crownJewelLeak(docs) {
     }
   }
   return null;
+}
+
+// Every tier with at least one crown-jewel leak, as [{ tier, action }] (one
+// example action per tier, not every leaking action). Used by loadPolicies()
+// to reset ONLY the affected tier(s) -- see its own comment for why a leak in
+// one tier must not discard every other tier's genuine customization.
+function crownJewelLeakingTiers(docs) {
+  const leaks = [];
+  for (const tier of ["admin", "moderator", "player"]) {
+    if (!docs[tier]) continue;
+    for (const action of crownJewelActionSet()) {
+      if (evaluate({ tier }, action, docs)) {
+        leaks.push({ tier, action });
+        break;
+      }
+    }
+  }
+  return leaks;
 }
 
 const DEFAULT_POLICIES = {
