@@ -3,6 +3,7 @@ import { discordAdapterSettingsApi, type DiscordBotSettingsState } from "../../a
 import { updatesApi } from "../../api/updates";
 import { persistUpdateTask, loadPersistedUpdateTask } from "../updates/updateUtils";
 import { ConfirmDialog, type ConfirmDialogRequest, type ConfirmDialogOutcome } from "../../components/common/ConfirmDialog";
+import { copyText } from "../../lib/clipboard";
 
 const TASK_KEY = "arrakis.discordAdapterEnableTask";
 const CHOICE_KEY = "arrakis.discordAdapterChoice";
@@ -70,6 +71,13 @@ export function DiscordBotSection() {
   // after Enable/Regenerate, since the backend never returns it again on
   // a later GET (Design §3.1's "masked, with reveal/copy" requirement).
   const [revealedToken, setRevealedToken] = useState<string | null>(null);
+  const [tokenCopyResult, setTokenCopyResult] = useState("");
+  // Shared "any action in flight" guard (finding #5, Layer 3 review) --
+  // Enable/Save Role IDs/Regenerate Token never render at the same time as
+  // each other except Save Role IDs and Regenerate Token, which is fine to
+  // share since both mutate the same adapter config and shouldn't overlap
+  // anyway.
+  const [submitting, setSubmitting] = useState(false);
 
   function updateChoice(value: Choice) {
     setChoice(value);
@@ -145,42 +153,71 @@ export function DiscordBotSection() {
   }, [phase, runId]);
 
   async function handleEnable() {
+    // In-flight guard (finding #5, Layer 3 review): a rapid double-click
+    // could otherwise fire two overlapping /enable calls, each independently
+    // minting a token / queuing a task. Guard the whole handler, including
+    // the confirm-dialog wait, not just the API call, so the trigger button
+    // is disabled from the very first click.
+    if (submitting) return;
+    setSubmitting(true);
     setError("");
-    const outcome = await new Promise<ConfirmDialogOutcome>((resolve) => {
-      setConfirmRequest({
-        title: "Enable Discord Bot Integration",
-        message: "The console will restart to apply this change. It will be briefly unreachable.",
-        confirmLabel: "Enable",
-        cancelLabel: "Cancel",
-        danger: false,
-        resolve
-      });
-    });
-    setConfirmRequest(null);
-    if (outcome !== "confirm") return;
-
     try {
+      const outcome = await new Promise<ConfirmDialogOutcome>((resolve) => {
+        setConfirmRequest({
+          title: "Enable Discord Bot Integration",
+          message: "The console will restart to apply this change. It will be briefly unreachable.",
+          confirmLabel: "Enable",
+          cancelLabel: "Cancel",
+          danger: false,
+          resolve
+        });
+      });
+      setConfirmRequest(null);
+      if (outcome !== "confirm") return;
+
       const { task, token } = await discordAdapterSettingsApi.enable({
         playerRoleIds,
         moderatorRoleIds,
         adminRoleIds
       });
       setRevealedToken(token);
+      setTokenCopyResult("");
       persistUpdateTask(TASK_KEY, task);
       setRunId(task.id);
       setPhase("enabling");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
     }
   }
 
   // Save Role IDs, for an already-enabled adapter: a distinct handler and
   // route from handleEnable/enable() above -- see updateDiscordBotRoleIds()
   // in Task 8 for why sharing the enable path here would be a real bug
-  // (silently rotating the live token on every role-ID edit).
+  // (silently rotating the live token on every role-ID edit). Now routed
+  // through the same restart-warning ConfirmDialog Enable already uses
+  // (finding #3, Layer 3 review) -- this also recreates/restarts the
+  // console exactly like Enable does, and previously did so with zero
+  // warning.
   async function handleUpdateRoleIds() {
+    if (submitting) return;
+    setSubmitting(true);
     setError("");
     try {
+      const outcome = await new Promise<ConfirmDialogOutcome>((resolve) => {
+        setConfirmRequest({
+          title: "Save Discord Bot Role IDs",
+          message: "The console will restart to apply this change. It will be briefly unreachable.",
+          confirmLabel: "Save",
+          cancelLabel: "Cancel",
+          danger: false,
+          resolve
+        });
+      });
+      setConfirmRequest(null);
+      if (outcome !== "confirm") return;
+
       const { task } = await discordAdapterSettingsApi.updateRoleIds({
         playerRoleIds,
         moderatorRoleIds,
@@ -191,30 +228,47 @@ export function DiscordBotSection() {
       setPhase("enabling");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
     }
   }
 
   async function handleRegenerate() {
+    if (submitting) return;
+    setSubmitting(true);
     setError("");
-    const outcome = await new Promise<ConfirmDialogOutcome>((resolve) => {
-      setConfirmRequest({
-        title: "Regenerate Discord Bot Token",
-        message: "This immediately invalidates the current token. Your bot will stop working until you paste the new token wherever it's configured. This cannot be undone.",
-        confirmLabel: "Regenerate",
-        cancelLabel: "Cancel",
-        danger: true,
-        resolve
-      });
-    });
-    setConfirmRequest(null);
-    if (outcome !== "confirm") return;
-
     try {
+      const outcome = await new Promise<ConfirmDialogOutcome>((resolve) => {
+        setConfirmRequest({
+          title: "Regenerate Discord Bot Token",
+          message: "This immediately invalidates the current token. Your bot will stop working until you paste the new token wherever it's configured. This cannot be undone.",
+          confirmLabel: "Regenerate",
+          cancelLabel: "Cancel",
+          danger: true,
+          resolve
+        });
+      });
+      setConfirmRequest(null);
+      if (outcome !== "confirm") return;
+
       const { token } = await discordAdapterSettingsApi.regenerateToken();
       setRevealedToken(token);
+      setTokenCopyResult("");
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function copyRevealedToken() {
+    if (!revealedToken) return;
+    try {
+      await copyText(revealedToken);
+      setTokenCopyResult("Copied");
+    } catch {
+      setTokenCopyResult("Copy failed. Select the token manually.");
     }
   }
 
@@ -233,7 +287,7 @@ export function DiscordBotSection() {
           <label>Player role IDs<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
           <label>Moderator role IDs<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
           <label>Admin role IDs<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
-          <button disabled={!choice} onClick={() => { void handleEnable(); }}>Enable Discord Bot Integration</button>
+          <button disabled={!choice || submitting} onClick={() => { void handleEnable(); }}>Enable Discord Bot Integration</button>
         </>
       )}
 
@@ -258,13 +312,15 @@ export function DiscordBotSection() {
                 revealedToken holds the plaintext. A plain input, switched to type="text" only
                 while a real value is present, is the correct one-time-reveal control here. */}
             <input readOnly type={revealedToken ? "text" : "password"} value={revealedToken ?? "••••••••••••••••••••••••••••••••"} />
+            {revealedToken && <button type="button" onClick={() => { void copyRevealedToken(); }}>Copy</button>}
           </label>
           {revealedToken && <p className="muted">Copy this now — it won't be shown again. Use Regenerate Token to get a new one if you lose it.</p>}
+          {tokenCopyResult && <span className="muted" role="status">{tokenCopyResult}</span>}
           <label>Player role IDs<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} /></label>
           <label>Moderator role IDs<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} /></label>
           <label>Admin role IDs<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} /></label>
-          <button onClick={() => { void handleUpdateRoleIds(); }}>Save Role IDs</button>
-          <button onClick={() => { void handleRegenerate(); }}>Regenerate Token</button>
+          <button disabled={submitting} onClick={() => { void handleUpdateRoleIds(); }}>Save Role IDs</button>
+          <button disabled={submitting} onClick={() => { void handleRegenerate(); }}>Regenerate Token</button>
           {choice === "hosted" && <p>Paste the token into <a href="https://mentat-link.darkdante.org/setup">mentat-link's setup form</a>.</p>}
           {choice === "self-hosted" && <p>Put the token in your bot's <code>.env</code> — see the <a href="https://github.com/Project-Arrakis/mentat/blob/main/docs/installation-guide.md">installation guide</a>.</p>}
         </>

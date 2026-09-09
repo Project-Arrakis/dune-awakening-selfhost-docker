@@ -178,6 +178,62 @@ describe("DiscordBotSection", () => {
     expect(screen.queryByText(/see discord oauth below/i)).toBeNull();
   });
 
+  it("asks for confirmation before Save Role IDs restarts the console (finding 3)", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true } as never);
+    mockPost.mockResolvedValue({
+      task: { id: "role-task", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null }
+    } as never);
+
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+    fireEvent.click(screen.getByRole("button", { name: /Save Role IDs/i }));
+    await screen.findByText(/restart/i);
+    expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/role-ids", expect.anything());
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/role-ids", expect.anything()));
+  });
+
+  it("disables the Enable button while its confirm dialog is open, guarding against a rapid double-click (finding 5)", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+
+    const enableButton = screen.getByRole("button", { name: /Enable Discord Bot Integration/i });
+    fireEvent.click(enableButton);
+    await screen.findByText(/restart/i);
+    expect(enableButton).toBeDisabled();
+  });
+
+  it("disables Save Role IDs and Regenerate Token while one action's confirm dialog is open (finding 5)", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+    const saveButton = screen.getByRole("button", { name: /Save Role IDs/i });
+    const regenButton = screen.getByRole("button", { name: /Regenerate Token/i });
+    fireEvent.click(saveButton);
+    await screen.findByText(/restart/i);
+    expect(saveButton).toBeDisabled();
+    expect(regenButton).toBeDisabled();
+  });
+
+  it("offers a Copy button for the one-time revealed token (finding 7)", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true } as never);
+    mockPost.mockResolvedValue({ ok: true, token: "the-plaintext-token" } as never);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+    fireEvent.click(screen.getByRole("button", { name: /Regenerate Token/i }));
+    await screen.findByText(/cannot be undone/i);
+    fireEvent.click(screen.getByRole("button", { name: /Regenerate$/i }));
+    await screen.findByDisplayValue("the-plaintext-token");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Copy$/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("the-plaintext-token"));
+  });
+
   it("exposes the hosted/self-hosted toggle's selected state to assistive tech via aria-pressed (finding 8)", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     render(<DiscordBotSection />);
