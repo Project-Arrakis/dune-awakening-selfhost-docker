@@ -852,6 +852,14 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | GET | `/api/integrations/discord/guilds/find` | Find guild | `guilds:read` |
 | POST | `/api/integrations/discord/db` | Database query (planned) | `database:read` / `database:write` |
 
+### Hosted Bot Registration
+
+| Method | Route | Description | IAM Action | Tier |
+|--------|-------|-------------|-----------|------|
+| GET | `/api/integrations/discord/hosted-bot/oauth/start` | Begin hosted bot registration OAuth flow (Discord login) | `updates:read` | admin+ |
+| GET | `/api/integrations/discord/hosted-bot/oauth/callback` | OAuth callback handler for hosted bot registration | `updates:read` | admin+ |
+| POST | `/api/integrations/discord/hosted-bot/register` | Complete hosted bot registration with OAuth token and adapter secret | `settings:discord-bot-hosted-register` | owner |
+
 ---
 
 ## Implementation Details

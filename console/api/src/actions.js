@@ -161,6 +161,21 @@ export const ROUTE_ACTIONS = {
   "POST /api/settings/discord-bot/role-ids":    "updates:apply",
   "POST /api/settings/discord-bot/regenerate-token": "settings:discord-bot-regenerate-token",
 
+  // --- Hosted Bot Registration ---
+  // start/callback use updates:read (the same real precedent as
+  // GET /api/settings/discord-bot -- NOT settings:read, which does not
+  // exist as a mapped action for this section and would strand every
+  // admin-tier operator; verified against the sibling feature's own
+  // ROUTE_ACTIONS entries during this plan's own research).
+  "GET /api/integrations/discord/hosted-bot/oauth/start":    "updates:read",
+  "GET /api/integrations/discord/hosted-bot/oauth/callback": "updates:read",
+  // register is a new, dedicated, owner-only action -- this route forwards
+  // a live external OAuth credential and the local adapter secret across
+  // an organizational trust boundary, at least as sensitive as this
+  // codebase's own existing settings:discord-bot-regenerate-token
+  // precedent (also owner-only via the same settings:* Deny wildcard).
+  "POST /api/integrations/discord/hosted-bot/register":      "settings:discord-bot-hosted-register",
+
   // --- Players (read) ---
   "GET /api/players":                          "players:read",
   "GET /api/players/online":                   "players:read",
