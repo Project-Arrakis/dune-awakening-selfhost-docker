@@ -123,4 +123,24 @@ describe("DiscordBotSection", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument(), { timeout: 5000 });
   });
+
+  it("points the OAuth disambiguation note in the correct direction (finding 6)", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/not console admin sign-in/i);
+    expect(screen.queryByText(/see discord oauth below/i)).toBeNull();
+  });
+
+  it("exposes the hosted/self-hosted toggle's selected state to assistive tech via aria-pressed (finding 8)", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    const hostedButton = screen.getByRole("button", { name: /Hosted bot/i });
+    const selfHostedButton = screen.getByRole("button", { name: /Self-hosting/i });
+    expect(hostedButton).toHaveAttribute("aria-pressed", "false");
+    expect(selfHostedButton).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(hostedButton);
+    expect(hostedButton).toHaveAttribute("aria-pressed", "true");
+    expect(selfHostedButton).toHaveAttribute("aria-pressed", "false");
+  });
 });

@@ -169,15 +169,15 @@ export function DiscordBotSection() {
 
   return (
     <div className="playerAdmin_toggleBody">
-      <p className="muted">For bot commands and in-game data access — not console admin sign-in, see Discord OAuth below.</p>
+      <p className="muted">For bot commands and in-game data access — not console admin sign-in, see the Discord OAuth section above.</p>
       {error && <div className="confirm-modal-warning">{error}</div>}
 
       {phase === "disabled" && (
         <>
           <div className="settings-choice">
             <p>Which are you using?</p>
-            <button className={choice === "hosted" ? "active" : ""} onClick={() => setChoice("hosted")}>Hosted bot</button>
-            <button className={choice === "self-hosted" ? "active" : ""} onClick={() => setChoice("self-hosted")}>Self-hosting</button>
+            <button className={choice === "hosted" ? "active" : ""} aria-pressed={choice === "hosted"} onClick={() => setChoice("hosted")}>Hosted bot</button>
+            <button className={choice === "self-hosted" ? "active" : ""} aria-pressed={choice === "self-hosted"} onClick={() => setChoice("self-hosted")}>Self-hosting</button>
           </div>
           <label>Player role IDs<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
           <label>Moderator role IDs<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
