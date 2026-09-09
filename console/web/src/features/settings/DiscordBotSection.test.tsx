@@ -226,6 +226,12 @@ describe("DiscordBotSection", () => {
     expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/role-ids", expect.anything());
     fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/role-ids", expect.anything()));
+    // Save Role IDs must call updateRoleIds (/role-ids), never enable
+    // (/enable) -- sharing the enable path here would silently rotate the
+    // live token on every role-ID edit (see updateDiscordBotRoleIds()'s own
+    // comment in adapterSettings.js for why these are deliberately separate
+    // functions/routes).
+    expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/enable", expect.anything());
   });
 
   it("disables the Enable button while its confirm dialog is open, guarding against a rapid double-click (finding 5)", async () => {
