@@ -422,10 +422,40 @@ test("enableDiscordBotAdapter persists deploymentChoice, and readDiscordBotSetti
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-choice-"));
   const result = enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "hosted" });
   assert.equal(result.ok, true);
-  process.env.DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE = "hosted";
+  // No manual process.env write needed here -- enableDiscordBotAdapter()
+  // already mirrors the normalized choice into process.env itself (the
+  // same in-process-staleness mirroring it does for enabled/token/role-ID
+  // keys), so readDiscordBotSettingsState() below sees it immediately.
   const state = readDiscordBotSettingsState({});
   assert.equal(state.deploymentChoice, "hosted");
   delete process.env.DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE;
+});
+
+// Fix round 1 (reviewer finding, Minor): lock in the silently-ignored-not-
+// written behavior for an invalid deploymentChoice, through both mutators
+// -- normalizeDeploymentChoice() itself isn't exported, so this exercises
+// it via its two real callers.
+test("enableDiscordBotAdapter silently ignores an invalid deploymentChoice instead of writing it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-choice-invalid-enable-"));
+  const result = enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "HOSTED" });
+  assert.equal(result.ok, true);
+  const envContent = readFileSync(join(dir, ".env"), "utf8");
+  assert.doesNotMatch(envContent, /DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE/, "an invalid deploymentChoice value must never be written to .env");
+  const state = readDiscordBotSettingsState({ repoRoot: dir });
+  assert.equal(state.deploymentChoice, null);
+});
+
+test("updateDiscordBotRoleIds silently ignores an invalid or empty deploymentChoice instead of writing it, and never clobbers an existing valid value", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-choice-invalid-update-"));
+  writeFileSync(join(dir, ".env"), "DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE=self-hosted\n");
+
+  updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "" });
+  let envContent = readFileSync(join(dir, ".env"), "utf8");
+  assert.match(envContent, /^DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE=self-hosted$/m, "an empty deploymentChoice must not overwrite the existing persisted value");
+
+  updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: 123 });
+  envContent = readFileSync(join(dir, ".env"), "utf8");
+  assert.match(envContent, /^DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE=self-hosted$/m, "a non-string deploymentChoice must not overwrite the existing persisted value either");
 });
 
 test("updateDiscordBotRoleIds persists an updated deploymentChoice without touching the token", () => {

@@ -229,6 +229,78 @@ test("POST /api/settings/discord-bot/enable returns a real 400 over the wire for
   }
 });
 
+// Task 2 (hosted-bot console-initiated OAuth registration plan), fix round
+// 1: the reviewer's finding was that everything verifying the new
+// deploymentChoice persistence path was either a direct-function-call unit
+// test (discordAdapterSettings.test.js, which bypasses server.js entirely)
+// or a manual code trace -- nothing exercised the real /enable and
+// /role-ids route handlers (server.js) over an actual HTTP request. This
+// closes that gap for both routes, in this file's own real-server pattern.
+test("POST /api/settings/discord-bot/enable persists deploymentChoice over the real HTTP route, reflected by a subsequent GET", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-choice-enable-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+    assert.equal(session.status, 200);
+
+    const enable = await api(port, "/api/settings/discord-bot/enable", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "", deploymentChoice: "hosted" }
+    });
+    assert.equal(enable.status, 202);
+
+    const after = await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie });
+    const afterBody = await after.json();
+    assert.equal(afterBody.deploymentChoice, "hosted", "a real POST /enable with deploymentChoice must be reflected by a subsequent GET, not just by direct function calls");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/settings/discord-bot/role-ids persists a changed deploymentChoice over the real HTTP route, without touching the live token", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-choice-roleids-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+
+    // First enable (self-hosted), same as the main end-to-end test above.
+    const enable = await api(port, "/api/settings/discord-bot/enable", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "", deploymentChoice: "self-hosted" }
+    });
+    assert.equal(enable.status, 202);
+
+    // Now switch the choice to hosted via /role-ids -- this route must
+    // never rotate the live token (see updateDiscordBotRoleIds()'s own
+    // comment in adapterSettings.js).
+    const roleIds = await api(port, "/api/settings/discord-bot/role-ids", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "", deploymentChoice: "hosted" }
+    });
+    assert.equal(roleIds.status, 202);
+    assert.equal((await roleIds.json()).token, undefined, "role-ids updates must never carry a token field");
+
+    const after = await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie });
+    const afterBody = await after.json();
+    assert.equal(afterBody.deploymentChoice, "hosted", "a real POST /role-ids with deploymentChoice must be reflected by a subsequent GET");
+    assert.equal(afterBody.tokenConfigured, true, "changing deploymentChoice via /role-ids must not disturb the already-configured token");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("a successful POST /api/settings/discord-bot/enable is recorded in the real audit log", async () => {
   const port = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-audit-"));
