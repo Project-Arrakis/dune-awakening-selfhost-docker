@@ -10,6 +10,37 @@
 
 export type PolicyStatement = { Effect: "Allow" | "Deny"; Action: string[] };
 
+// Mirror of console/api/src/actions.js's REMOVED_ACTION_ALIASES, character-
+// for-character (review finding: this file's matchPattern() previously had
+// NO fallback for these at all, despite claiming a full mirror of the
+// server's matchAction()). A name the catalog used to have still means
+// something server-side -- see actions.js's own header for why a split
+// cannot simply delete the old name. Without this, a stored policy from
+// before a split (e.g. `Deny players:mutate` + `Allow players:*`) is
+// correctly enforced server-side (the Deny still blocks every successor
+// action) but the grid/Test tab UNDER-reports it: matchPattern("players:mutate",
+// "players:give-item") returned false, so the grid fell through to the
+// wildcard Allow and showed the action as GRANTED when the server actually
+// denies it -- the inverse of the escalation risk the wildcard/`-*` fix
+// above already guards against, but just as misleading to an operator
+// reading the grid.
+const REMOVED_ACTION_ALIASES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  "players:mutate": Object.freeze([
+    "players:moderate", "players:teleport", "players:give-item", "players:grant",
+    "players:reset", "players:delete-item", "players:edit-item", "players:repair",
+    "players:recover", "players:unclassified"
+  ]),
+  "guilds:mutate": Object.freeze([
+    "guilds:disband", "guilds:membership", "guilds:rank", "guilds:unclassified"
+  ]),
+  "blueprints:mutate": Object.freeze([
+    "blueprints:export", "blueprints:import", "blueprints:delete", "blueprints:unclassified"
+  ]),
+  "addons:mutate": Object.freeze([
+    "addons:remove", "addons:toggle", "addons:bridge", "addons:unclassified"
+  ])
+});
+
 // Mirror of console/api/src/policy.js matchAction, character-for-character, so
 // the builder/Test grid never shows a checkbox state the server would refuse.
 // The earlier version handled only `*`, exact, and a partial `:*`, so a
@@ -33,6 +64,10 @@ function matchPattern(pattern: string, action: string): boolean {
     const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
     return new RegExp("^" + escaped + "$").test(action);
   }
+  // A name the catalog used to have. Checked LAST, matching the server's own
+  // matchAction() ordering exactly, so it can never shadow a live action.
+  const successors = REMOVED_ACTION_ALIASES[pattern];
+  if (successors) return successors.includes(action);
   return false;
 }
 
