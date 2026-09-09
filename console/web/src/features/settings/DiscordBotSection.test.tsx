@@ -113,6 +113,49 @@ describe("DiscordBotSection", () => {
     expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/enable", expect.anything());
   });
 
+  // Fix round 2 (final-review re-review, Priority 2): before this fix,
+  // adapterSettings.js persisted the hosted-bot connection but never
+  // cleared it, and this component's own refresh() only ever SET
+  // connectedGuildName from the server, never cleared it back to null --
+  // so regenerating the token (which invalidates the very adapter token
+  // mentat's registration is keyed to) left "Connected to hosted bot for
+  // X" showing forever, with the only button that could start a fresh
+  // registration permanently hidden behind it. This drives the real
+  // handleRegenerate() -> refresh() sequence with the backend's SECOND
+  // response reporting the connection already cleared (matching what
+  // regenerateDiscordBotToken()/clearHostedBotConnectedGuild() now do
+  // server-side) and asserts the UI actually reflects that.
+  it("regenerating the token clears a persisted hosted-bot connection and re-shows Connect to hosted bot", async () => {
+    mockApi
+      .mockResolvedValueOnce({
+        enabled: true,
+        roleIds: { player: [], moderator: [], admin: [] },
+        tokenConfigured: true,
+        deploymentChoice: "hosted",
+        hostedBotConnectedGuildId: "111111111111111111",
+        hostedBotConnectedGuildName: "My Test Guild"
+      } as never)
+      .mockResolvedValueOnce({
+        enabled: true,
+        roleIds: { player: [], moderator: [], admin: [] },
+        tokenConfigured: true,
+        deploymentChoice: "hosted",
+        hostedBotConnectedGuildId: null,
+        hostedBotConnectedGuildName: null
+      } as never);
+    mockPost.mockResolvedValue({ ok: true, token: "new-token-value" } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Connected to hosted bot for My Test Guild/i);
+    expect(screen.queryByRole("button", { name: /Connect to hosted bot/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Regenerate Token/i }));
+    await screen.findByText(/cannot be undone/i);
+    fireEvent.click(screen.getByRole("button", { name: /Regenerate$/i }));
+
+    await waitFor(() => expect(screen.queryByText(/Connected to hosted bot for My Test Guild/i)).toBeNull());
+    expect(screen.getByRole("button", { name: /Connect to hosted bot/i })).toBeInTheDocument();
+  });
+
   it("recovers a persisted in-flight enable across a reload: shows the enabling/restarting UI immediately (not the live-fetched Disabled state) and polls stack-progress -- reproduces the mount-time race fixed in this component (audit finding #9)", async () => {
     const persistedTask = {
       id: "task-recover-1",

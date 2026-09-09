@@ -112,6 +112,30 @@ export function persistHostedBotConnectedGuild(config, { guildId, guildName } = 
   return { ok: true };
 }
 
+// clearHostedBotConnectedGuild: fix round 2 (final-review re-review,
+// Priority 2) -- persistHostedBotConnectedGuild() above had no
+// corresponding clear path, so once set, "Connected to hosted bot for {name}"
+// could never stop being shown, even after an event that makes it a real
+// lie: regenerating the adapter token (mentat's registration is keyed to
+// the OLD token, which is now invalid) or the operator explicitly switching
+// back to "self-hosted" (they've said they're not using the hosted bot
+// anymore). Both callers below are the only two places this needs calling
+// from -- see their own comments for why. Writes empty strings (matching
+// this file's existing directToken-clearing convention), which
+// readDiscordBotSettingsState()'s `|| null` reads treat identically to
+// never having been set.
+export function clearHostedBotConnectedGuild(config) {
+  updateEnvFileValues(config.repoRoot, [
+    [MANAGED_ENV_KEYS.hostedBotConnectedGuildId, ""],
+    [MANAGED_ENV_KEYS.hostedBotConnectedGuildName, ""]
+  ]);
+  // Mirror into the RUNNING process too -- same reasoning as every other
+  // mirror in this file.
+  process.env[MANAGED_ENV_KEYS.hostedBotConnectedGuildId] = "";
+  process.env[MANAGED_ENV_KEYS.hostedBotConnectedGuildName] = "";
+  return { ok: true };
+}
+
 // enableDiscordBotAdapter: validates role IDs, generates a fresh token
 // (Layer 1 Security Architect audit finding -- "Enable" always overwrites,
 // never conditionally reuses an abandoned manual attempt's file), writes
@@ -195,6 +219,16 @@ export function enableDiscordBotAdapter(config, roleIdsByTier = {}, options = {}
   process.env[MANAGED_ENV_KEYS.moderator] = (roleIdsByTier.moderator || []).join(",");
   process.env[MANAGED_ENV_KEYS.admin] = (roleIdsByTier.admin || []).join(",");
   if (normalizedChoice) process.env[MANAGED_ENV_KEYS.deploymentChoice] = normalizedChoice;
+  // Fix round 2, Priority 2: an operator explicitly choosing "self-hosted"
+  // here has said they're not using the hosted bot -- any previously
+  // persisted "Connected to hosted bot for {name}" status is now a lie and
+  // must be cleared so "Connect to hosted bot" can reappear if they ever
+  // switch back to "hosted" and register again. In practice this branch
+  // (a genuine first-time enable) can rarely have an existing connection to
+  // clear, but it's included for the same reason updateDiscordBotRoleIds
+  // below needs it -- both functions persist deploymentChoice, and neither
+  // should be a hole this fix misses.
+  if (normalizedChoice === "self-hosted") clearHostedBotConnectedGuild(config);
 
   return { ok: true, tokenFile: DEFAULT_TOKEN_FILE, token };
 }
@@ -232,6 +266,15 @@ export function updateDiscordBotRoleIds(config, roleIdsByTier = {}, options = {}
   process.env[MANAGED_ENV_KEYS.moderator] = (roleIdsByTier.moderator || []).join(",");
   process.env[MANAGED_ENV_KEYS.admin] = (roleIdsByTier.admin || []).join(",");
   if (normalizedChoice) process.env[MANAGED_ENV_KEYS.deploymentChoice] = normalizedChoice;
+  // Fix round 2, Priority 2: this is the function the frontend's Save Role
+  // IDs button actually calls (see DiscordBotSection.tsx's
+  // handleUpdateRoleIds), i.e. the real path an operator takes to switch an
+  // already-connected console back to "self-hosted" -- they've explicitly
+  // said they're not using the hosted bot anymore, so any previously
+  // persisted "Connected to hosted bot for {name}" status is now a lie.
+  // Clear it so "Connect to hosted bot" can reappear if they ever switch
+  // back to "hosted".
+  if (normalizedChoice === "self-hosted") clearHostedBotConnectedGuild(config);
   return { ok: true };
 }
 
@@ -294,6 +337,15 @@ export function regenerateDiscordBotToken(config) {
   // work by accident of the process's current working directory.
   process.env[MANAGED_ENV_KEYS.directToken] = "";
   process.env[MANAGED_ENV_KEYS.tokenFile] = tokenFile;
+  // Fix round 2, Priority 2: mentat's own registration for this console is
+  // keyed to the OLD token, which just became permanently invalid above --
+  // any previously persisted "Connected to hosted bot for {name}" status is
+  // now a lie (mentat will reject the next call it makes against this
+  // console using the stale token), and it's the ONLY thing gating the
+  // "Connect to hosted bot" button back into view. Without this, an
+  // operator who regenerates their token has no way back into the
+  // registration flow at all.
+  clearHostedBotConnectedGuild(config);
   return { ok: true, token };
 }
 

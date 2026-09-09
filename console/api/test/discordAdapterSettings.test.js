@@ -11,7 +11,8 @@ import {
   regenerateDiscordBotToken,
   applyDiscordBotEnableRequest,
   discordAdminRoleIdsChanged,
-  persistHostedBotConnectedGuild
+  persistHostedBotConnectedGuild,
+  clearHostedBotConnectedGuild
 } from "../src/integrations/discord/adapterSettings.js";
 import { readDiscordBotApiToken } from "../src/integrations/discord/routes.js";
 
@@ -543,4 +544,79 @@ test("persistHostedBotConnectedGuild is a no-op (does not write) when guildId is
   const result = persistHostedBotConnectedGuild({ repoRoot: dir }, { guildName: "Fleetyard" });
   assert.equal(result.ok, false);
   assert.ok(!existsSync(join(dir, ".env")), "no .env file should be created when there is no real guildId to persist");
+});
+
+// Fix round 2 (final-review re-review, Priority 2): persistHostedBotConnectedGuild()
+// had no corresponding clear path, so "Connected to hosted bot for {name}"
+// could never stop being shown -- not even after regenerating the adapter
+// token (which mentat's registration is keyed to) or switching back to
+// self-hosted. These lock in the new clearHostedBotConnectedGuild() and its
+// two real call sites.
+test("clearHostedBotConnectedGuild clears both the persisted guild id and name, mirrored into the running process", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-clear-"));
+  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
+  assert.equal(readDiscordBotSettingsState({}).hostedBotConnectedGuildName, "Fleetyard", "sanity check: the connection is really persisted before clearing it");
+
+  const result = clearHostedBotConnectedGuild({ repoRoot: dir });
+  assert.equal(result.ok, true);
+  const state = readDiscordBotSettingsState({});
+  assert.equal(state.hostedBotConnectedGuildId, null);
+  assert.equal(state.hostedBotConnectedGuildName, null);
+  const envContent = readFileSync(join(dir, ".env"), "utf8");
+  // quoteEnv() (envFile.js) JSON-quotes an empty string (it doesn't match
+  // the bare-word allowlist pattern), so the persisted value on disk is
+  // `=""`, not a bare `=` -- readDiscordBotSettingsState() reads it back
+  // through process.env, which already strips the quoting, so the
+  // assertions above (via readDiscordBotSettingsState) are the real
+  // behavioral check; this just confirms what actually landed on disk.
+  assert.match(envContent, /^DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID=""$/m);
+  assert.match(envContent, /^DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME=""$/m);
+
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID;
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
+});
+
+test("regenerateDiscordBotToken clears a previously-persisted hosted-bot connection -- mentat's registration is keyed to the now-invalid old token", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-regen-clears-"));
+  const enableResult = enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
+  assert.equal(enableResult.ok, true);
+  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
+  assert.equal(readDiscordBotSettingsState({}).hostedBotConnectedGuildName, "Fleetyard", "sanity check: the connection is really persisted before regenerating");
+
+  const result = regenerateDiscordBotToken({ repoRoot: dir });
+  assert.equal(result.ok, true);
+  const state = readDiscordBotSettingsState({});
+  assert.equal(state.hostedBotConnectedGuildId, null, "regenerating the adapter token must clear the persisted hosted-bot connection");
+  assert.equal(state.hostedBotConnectedGuildName, null);
+
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID;
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
+});
+
+test("updateDiscordBotRoleIds clears a previously-persisted hosted-bot connection when deploymentChoice is saved as self-hosted", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-selfhosted-clears-"));
+  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
+  assert.equal(readDiscordBotSettingsState({}).hostedBotConnectedGuildName, "Fleetyard", "sanity check: the connection is really persisted before switching to self-hosted");
+
+  updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "self-hosted" });
+  const state = readDiscordBotSettingsState({});
+  assert.equal(state.hostedBotConnectedGuildId, null, "switching back to self-hosted must clear the persisted hosted-bot connection");
+  assert.equal(state.hostedBotConnectedGuildName, null);
+
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID;
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
+});
+
+test("updateDiscordBotRoleIds does NOT clear a persisted hosted-bot connection when deploymentChoice is saved as hosted (or omitted)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-hosted-nostrip-"));
+  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
+
+  updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "hosted" });
+  assert.equal(readDiscordBotSettingsState({}).hostedBotConnectedGuildName, "Fleetyard", "saving deploymentChoice as \"hosted\" again must not clear a real, still-valid connection");
+
+  updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, {});
+  assert.equal(readDiscordBotSettingsState({}).hostedBotConnectedGuildName, "Fleetyard", "an ordinary role-ID-only save (no deploymentChoice) must not clear a real, still-valid connection");
+
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID;
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
 });

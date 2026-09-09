@@ -145,11 +145,23 @@ export function DiscordBotSection() {
     // now the source of truth for "Connected to hosted bot for {name}"
     // across a page reload -- previously this was pure in-memory React
     // state, so a reload silently showed "Connect to hosted bot" again as
-    // if the registration had never happened. Only set it when the server
-    // actually has a value; don't clobber an in-session value that hasn't
-    // round-tripped through a refresh() yet (same discipline as
-    // deploymentChoice above).
-    if (nextState.hostedBotConnectedGuildName) setConnectedGuildName(nextState.hostedBotConnectedGuildName);
+    // if the registration had never happened.
+    //
+    // Fix round 2 (Priority 2): unlike deploymentChoice/role IDs above,
+    // this is unconditionally synced from the server on every refresh(),
+    // not just set-when-truthy. handleRegisterGuild() sets it directly and
+    // never goes through refresh() itself, so there's no "unsubmitted local
+    // draft" here to protect the way there is for a text input or an
+    // as-yet-unsaved choice toggle -- the server's value (persisted-or-
+    // cleared) is always authoritative wherever refresh() IS called. This
+    // matters concretely for handleRegenerate()'s own refresh() call: the
+    // backend now clears the persisted connection when the token is
+    // regenerated (adapterSettings.js's clearHostedBotConnectedGuild()),
+    // and without syncing the "now empty" case here too, this component
+    // would keep showing "Connected to hosted bot for {name}" using a
+    // stale local value forever, with the Connect button permanently
+    // hidden behind it.
+    setConnectedGuildName(nextState.hostedBotConnectedGuildName || null);
     // On a failed-attempt Retry, don't clobber role IDs the operator already
     // typed with the (still-disabled) server's stale values (finding #4,
     // Layer 3 review) -- only a genuine fresh mount-time load, or a refresh
