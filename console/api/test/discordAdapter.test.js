@@ -138,6 +138,19 @@ test("discordRoleMappingFromEnv prefers DISCORD_PLAYER_ROLE_IDS over the legacy 
   delete process.env.DISCORD_OBSERVER_ROLE_IDS;
 });
 
+// Audit finding #3 (HIGH): an operator who explicitly clears
+// DISCORD_PLAYER_ROLE_IDS (writes "") via the new Settings UI must see
+// access actually revoked -- not silently fall back to a stale, non-empty
+// legacy DISCORD_OBSERVER_ROLE_IDS just because "" is falsy under `||`.
+test("discordRoleMappingFromEnv does NOT fall back to the legacy var when DISCORD_PLAYER_ROLE_IDS is explicitly set to empty -- clearing role IDs must actually revoke access", () => {
+  process.env.DISCORD_PLAYER_ROLE_IDS = "";
+  process.env.DISCORD_OBSERVER_ROLE_IDS = "111111111111111111";
+  const mapping = discordRoleMappingFromEnv();
+  assert.deepEqual(mapping.playerRoleIds, [], "an explicitly-cleared DISCORD_PLAYER_ROLE_IDS must not fall back to the legacy var");
+  delete process.env.DISCORD_PLAYER_ROLE_IDS;
+  delete process.env.DISCORD_OBSERVER_ROLE_IDS;
+});
+
 test("keeps writes disabled by default and accepts explicit opt-in values", () => {
   delete process.env.DUNE_DISCORD_WRITES_ENABLED;
   assert.equal(discordWritesEnabled({}), false);
