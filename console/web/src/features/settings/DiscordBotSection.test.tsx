@@ -104,4 +104,23 @@ describe("DiscordBotSection", () => {
     expect(screen.queryByText(/Which are you using/i)).toBeNull();
     expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
   });
+
+  it("shows a Retry action when the applied recreate reports a failed health check, not a dead end", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings/discord-bot") {
+        return Promise.resolve({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+      }
+      return Promise.resolve({ runId: "test-run", state: "succeeded", stage: "complete", percent: 100, message: "", discordHealthOk: false } as never);
+    });
+    mockPost.mockResolvedValue({ task: { id: "test-run", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null } } as never);
+
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
+    await screen.findByText(/restart/i);
+    fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument(), { timeout: 5000 });
+  });
 });
