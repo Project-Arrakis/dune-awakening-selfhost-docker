@@ -1027,11 +1027,18 @@ rebuild_web_console_now() {
 recreate_discord_adapter_env() {
   local service="$1"
   local web_compose_project="${DUNE_WEB_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
+  local up_rc=0
   prepare_web_console_rebuild_env
   self_update_running restarting 60 "Applying Discord adapter settings and restarting the console."
   docker rm -f "$service" >/dev/null 2>&1 || true
-  COMPOSE_PROJECT_NAME="$web_compose_project" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d --force-recreate "$service"
-  verify_discord_adapter_health "$service"
+  if COMPOSE_PROJECT_NAME="$web_compose_project" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d --force-recreate "$service"; then
+    verify_discord_adapter_health "$service"
+  else
+    up_rc=$?
+    self_update_write_status failed restarting 60 "Container recreation failed (exit ${up_rc}). Review runtime/generated/web-self-update.log for details." "$(date -Is)"
+    SELF_UPDATE_STATUS_FINALIZED=1
+    return "$up_rc"
+  fi
 }
 
 # verify_discord_adapter_health: after the recreate above, waits briefly for
