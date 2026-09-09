@@ -4,6 +4,7 @@ import { api, post } from "../../api/client";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill } from "../../components/common/DisplayPrimitives";
 import { RecoveryCodesPanel } from "../auth/RecoveryCodesPanel";
+import { DiscordBotSection } from "./DiscordBotSection";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
 
 // Authenticator apps display codes as "123 456" and the server strips whitespace
@@ -51,6 +52,7 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
   const [webPortOpen, setWebPortOpen] = useState(false);
   const [discordOAuthOpen, setDiscordOAuthOpen] = useState(false);
   const [discordOAuthSaving, setDiscordOAuthSaving] = useState(false);
+  const [discordBotOpen, setDiscordBotOpen] = useState(false);
   const [discordOAuthResult, setDiscordOAuthResult] = useState<SettingsTaskResult | null>(null);
   const [discordClientId, setDiscordClientId] = useState("");
   const [discordRedirectUri, setDiscordRedirectUri] = useState("");
@@ -539,6 +541,11 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl }: SettingsP
             </span>}
           </div>
         </div>}
+      </div>
+
+      <div className={`playerAdmin_toggle ${discordBotOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={discordBotOpen ? "Collapse Discord Bot" : "Expand Discord Bot"} onClick={() => setDiscordBotOpen(!discordBotOpen)}>{discordBotOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Discord Bot</span></button>
+        {discordBotOpen && <DiscordBotSection />}
       </div>
     </div>
   </section>;
