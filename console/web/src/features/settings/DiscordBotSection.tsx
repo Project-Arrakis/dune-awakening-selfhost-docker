@@ -12,7 +12,22 @@ type Phase = "loading" | "disabled" | "enabling" | "enabled" | "failed";
 
 export function DiscordBotSection() {
   const [state, setState] = useState<DiscordBotSettingsState | null>(null);
-  const [phase, setPhase] = useState<Phase>("loading");
+  // Seed runId/phase synchronously from localStorage, the same way
+  // UpdatesPanel.tsx's gameUpdateTask/stackUpdateTask state does
+  // (`useState<Task | null>(() => loadPersistedUpdateTask(...))`), instead of
+  // setting them from inside the mount effect below. This closes a real
+  // mount-time race (Layer 2 review finding, 2026-09-08): refresh() suspends
+  // at its first await, yields back to the effect body, and its continuation
+  // used to land *after* the effect body had already set phase="enabling",
+  // unconditionally overwriting it with whatever the live GET reported at
+  // that instant -- silently dropping reload-recovery (audit finding #9)
+  // whenever the initial GET happened to succeed before the persisted task
+  // finished. Seeding here means a persisted in-flight task is already
+  // reflected in state before refresh() is even called (see the mount
+  // effect below, which now skips refresh() entirely when runId is already
+  // set on the first render).
+  const [runId, setRunId] = useState<string | null>(() => loadPersistedUpdateTask(TASK_KEY)?.id ?? null);
+  const [phase, setPhase] = useState<Phase>(() => (loadPersistedUpdateTask(TASK_KEY)?.id ? "enabling" : "loading"));
   const [choice, setChoice] = useState<Choice>(null);
   const [playerRoleIds, setPlayerRoleIds] = useState("");
   const [moderatorRoleIds, setModeratorRoleIds] = useState("");
@@ -24,7 +39,6 @@ export function DiscordBotSection() {
   // after Enable/Regenerate, since the backend never returns it again on
   // a later GET (Design §3.1's "masked, with reveal/copy" requirement).
   const [revealedToken, setRevealedToken] = useState<string | null>(null);
-  const [runId, setRunId] = useState<string | null>(null);
 
   async function refresh() {
     const nextState = await discordAdapterSettingsApi.getState();
@@ -38,13 +52,15 @@ export function DiscordBotSection() {
   }
 
   useEffect(() => {
-    refresh().catch(() => setError("Could not load Discord Bot settings."));
-    // Recover an in-flight enable across a page reload, the same way the
-    // Updates panel already does (audit finding #9).
-    const persisted = loadPersistedUpdateTask(TASK_KEY);
-    if (persisted?.id) {
-      setRunId(persisted.id);
-      setPhase("enabling");
+    // A persisted in-flight task is already reflected in phase/runId via the
+    // useState initializers above -- don't call refresh() here too, or its
+    // async continuation would overwrite "enabling" with a stale
+    // disabled/enabled snapshot the moment the initial GET resolves (see the
+    // comment on the runId/phase state above). The polling effect below owns
+    // this task from here: only its own completion handler clears the
+    // persisted entry and calls refresh().
+    if (!runId) {
+      refresh().catch(() => setError("Could not load Discord Bot settings."));
     }
   }, []);
 
