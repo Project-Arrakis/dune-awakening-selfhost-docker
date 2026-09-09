@@ -18,6 +18,13 @@ Checks classes of bugs that hat-based review has repeatedly missed:
 3. Tier column in Section 2 vs Section 3.3a's WRITE_ACTION_MIN_TIER
 4. IAM Action citations in Section 2 vs real console/api/src/actions.js
 5. Section 1's "Can do" column vs commands actually defined in Section 2/7
+6. Core Adapter Endpoint (method + path) in Section 2 vs real routes dispatched
+   in console/api/src/server.js -- added after finding the "ban"/"unban"
+   CRITICAL #730-class inversion had regressed (Section 2's table said
+   `ban` used DELETE, identical to `unban`'s row, while Section 3.5's real
+   WRITE_ACTION_ROUTES -- the actual source of truth -- had always been
+   correct). The two tables can drift independently; this check catches it
+   mechanically instead of by chance.
 
 Any new finding this script surfaces must still go through the normal
 Requirement 20 discipline: file a GitHub issue, add to the board, fix,
@@ -232,6 +239,76 @@ if actions_src:
             continue
         if f'"{act}"' not in actions_src and f"'{act}'" not in actions_src:
             report("IAM-ACTION-NOT-FOUND", f"'{base}': cited IAM Action {act!r} not found verbatim in actions.js (may be constructed dynamically -- needs human check)")
+
+# ---------------------------------------------------------------------------
+# 6. Core Adapter Endpoint (method + path) vs real routes in server.js
+# ---------------------------------------------------------------------------
+SERVER_JS = os.path.join(REPO_ROOT, "console", "api", "src", "server.js")
+try:
+    server_src = open(SERVER_JS).read()
+except FileNotFoundError:
+    server_src = None
+
+real_routes = []  # list of (method_or_None, compiled_regex)
+if server_src:
+    # Dynamic-segment routes: path.match(/^...$/) [&& req.method === "X"]
+    route_pattern = re.compile(
+        r'path\.match\(/(\^[^$]*\$)/\)(?:\s*&&\s*req\.method\s*===\s*"([A-Z]+)")?'
+    )
+    for m in route_pattern.finditer(server_src):
+        js_regex, method = m.groups()
+        # Translate the JS regex source directly -- it already uses [^/]+ for
+        # dynamic segments and is anchored with ^...$, which Python's re
+        # understands identically for this pattern shape.
+        try:
+            compiled = re.compile(js_regex)
+        except re.error:
+            continue
+        real_routes.append((method, compiled))
+
+    # Static routes (no dynamic segment): path === "literal" [&& req.method === "X"]
+    static_pattern = re.compile(
+        r'path\s*===\s*"(/api/[^"]+)"(?:\s*&&\s*req\.method\s*===\s*"([A-Z]+)")?'
+    )
+    static_count = 0
+    for m in static_pattern.finditer(server_src):
+        literal, method = m.groups()
+        real_routes.append((method, re.compile("^" + re.escape(literal) + "$")))
+        static_count += 1
+
+print(f"Extracted {len(real_routes)} real route patterns from server.js ({static_count} static, {len(real_routes) - static_count} dynamic)")
+
+endpoint_pattern = re.compile(r"`(GET|POST|PUT|DELETE|PATCH)\s+(/api/[^`]+)`")
+
+if server_src:
+    for base, info in commands.items():
+        if info["group"] == "broadcast":
+            # Documented, deliberate exception (Section 2 Group F's own note):
+            # broadcast/broadcast-shutdown are handled in-process by
+            # broadcastProvider() in integrations/discord/routes.js, never
+            # dispatched through server.js's own route table at all.
+            continue
+        em = endpoint_pattern.search(info["endpoint"])
+        if not em:
+            continue
+        doc_method, doc_path = em.groups()
+        # "..." is this doc's placeholder for a dynamic segment (player id, etc).
+        test_path = doc_path.replace("...", "TESTSEGMENT123")
+        matches = [(method, rx) for (method, rx) in real_routes if rx.match(test_path)]
+        if not matches:
+            report("ENDPOINT-NOT-FOUND", f"'{base}': cited endpoint {doc_method} {doc_path!r} matches no route pattern in server.js at all")
+            continue
+        exact_method_matches = [(method, rx) for (method, rx) in matches if method == doc_method]
+        unrestricted_matches = [(method, rx) for (method, rx) in matches if method is None]
+        wrong_method_matches = [(method, rx) for (method, rx) in matches if method and method != doc_method]
+
+        if exact_method_matches:
+            pass  # confirmed: a route with this exact method exists at this path
+        elif unrestricted_matches:
+            report("ENDPOINT-METHOD-UNVERIFIED", f"'{base}': path {doc_path!r} only matches route(s) with NO explicit req.method check in server.js (method dispatch happens inside the handler function itself) -- doc's claimed method {doc_method!r} could not be mechanically verified, needs a human read of the handler")
+        elif wrong_method_matches:
+            found_methods = sorted({method for method, _ in wrong_method_matches})
+            report("ENDPOINT-METHOD-MISMATCH", f"'{base}': cited as {doc_method} {doc_path!r}, but the matching real route(s) only accept method(s) {found_methods} (per an explicit req.method check in server.js)")
 
 # ---------------------------------------------------------------------------
 # Report
