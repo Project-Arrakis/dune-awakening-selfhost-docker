@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { discordAdapterSettingsApi, type DiscordBotSettingsState } from "../../api/discordAdapterSettings";
+import { discordHostedBotApi, type OwnedDiscordGuild } from "../../api/discordHostedBotApi";
 import { updatesApi } from "../../api/updates";
 import { persistUpdateTask, loadPersistedUpdateTask } from "../updates/updateUtils";
 import { ConfirmDialog, type ConfirmDialogRequest, type ConfirmDialogOutcome } from "../../components/common/ConfirmDialog";
@@ -78,6 +79,19 @@ export function DiscordBotSection() {
   // share since both mutate the same adapter config and shouldn't overlap
   // anyway.
   const [submitting, setSubmitting] = useState(false);
+  // Task 8 (hosted-bot console-initiated OAuth registration): seeded once,
+  // synchronously, from window.__hostedBotOwnedGuilds__ -- the OAuth
+  // callback redirect back to this page is expected to have stashed the
+  // operator's owned-guild list there before this component mounts.
+  // readOwnedGuildsFromWindow() deletes the window property as it reads it
+  // (Task 7), so this must run exactly once, not on every render -- the
+  // useState initializer form guarantees that.
+  const [ownedGuilds, setOwnedGuilds] = useState<OwnedDiscordGuild[] | null>(() => {
+    const fromWindow = discordHostedBotApi.readOwnedGuildsFromWindow();
+    return fromWindow.length > 0 ? fromWindow : null;
+  });
+  const [pickedGuild, setPickedGuild] = useState<OwnedDiscordGuild | null>(null);
+  const [connectedGuildName, setConnectedGuildName] = useState<string | null>(null);
 
   function updateChoice(value: Choice) {
     setChoice(value);
@@ -287,6 +301,51 @@ export function DiscordBotSection() {
     }
   }
 
+  // Same in-flight guard and ConfirmDialog promise pattern as
+  // handleEnable/handleUpdateRoleIds/handleRegenerate above -- a real
+  // confirm-before-navigate step, not an instant redirect, since this
+  // hands the operator's Discord authorization off to an external OAuth
+  // flow and there's no way back from that click short of the browser's
+  // own back button.
+  async function handleConnectToHostedBot() {
+    if (submitting) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const outcome = await new Promise<ConfirmDialogOutcome>((resolve) => {
+        setConfirmRequest({
+          title: "Connect to hosted bot",
+          message: "Your Discord authorization will be used once to verify you own this server, then sent to and independently verified by the hosted bot service (mentat), and discarded -- it is never stored.",
+          confirmLabel: "Connect",
+          cancelLabel: "Cancel",
+          danger: false,
+          resolve
+        });
+      });
+      setConfirmRequest(null);
+      if (outcome !== "confirm") return;
+      window.location.href = discordHostedBotApi.startOAuthUrl();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleRegisterGuild() {
+    if (!pickedGuild || submitting) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      await discordHostedBotApi.register(pickedGuild.id, window.location.origin);
+      setConnectedGuildName(pickedGuild.name);
+      setOwnedGuilds(null);
+      setPickedGuild(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <div className="playerAdmin_toggleBody">
       <p className="muted">For bot commands and in-game data access — not console admin sign-in, see the Discord OAuth section above.</p>
@@ -357,7 +416,29 @@ export function DiscordBotSection() {
           <label>Admin role IDs<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} /></label>
           <button disabled={submitting} onClick={() => { void handleUpdateRoleIds(); }}>Save Role IDs</button>
           <button disabled={submitting} onClick={() => { void handleRegenerate(); }}>Regenerate Token</button>
-          {choice === "hosted" && <p>Paste the token into <a href="https://mentat-link.darkdante.org/setup">mentat-link's setup form</a>.</p>}
+          {choice === "hosted" && !ownedGuilds && !connectedGuildName && (
+            <button disabled={submitting} onClick={() => { void handleConnectToHostedBot(); }}>Connect to hosted bot</button>
+          )}
+          {choice === "hosted" && connectedGuildName && <p>Connected to hosted bot for {connectedGuildName}.</p>}
+          {choice === "hosted" && ownedGuilds && (
+            <div className="settings-hosted-guild-picker">
+              <p>Which server is this for?</p>
+              <ul>
+                {ownedGuilds.map((guild) => (
+                  <li key={guild.id}>
+                    <button
+                      className={pickedGuild?.id === guild.id ? "active" : ""}
+                      aria-pressed={pickedGuild?.id === guild.id}
+                      onClick={() => setPickedGuild(guild)}
+                    >
+                      {guild.name}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {pickedGuild && <button disabled={submitting} onClick={() => { void handleRegisterGuild(); }}>Register</button>}
+            </div>
+          )}
           {choice === "self-hosted" && <p>Put the token in your bot's <code>.env</code> — see the <a href="https://github.com/Project-Arrakis/mentat/blob/main/docs/installation-guide.md">installation guide</a>.</p>}
         </>
       )}

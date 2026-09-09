@@ -161,7 +161,7 @@ describe("DiscordBotSection", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("freshly-minted-token-shown-once"));
   });
 
-  it("persists the hosted/self-hosted choice to localStorage so token-destination instructions survive a reload (finding 1)", async () => {
+  it("persists the hosted/self-hosted choice to localStorage so the hosted-bot connect affordance survives a reload (finding 1)", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     const { unmount } = render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
@@ -172,7 +172,7 @@ describe("DiscordBotSection", () => {
     mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true } as never);
     render(<DiscordBotSection />);
     await screen.findByText(/Enabled/i);
-    expect(screen.getByText(/mentat-link's setup form/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Connect to hosted bot/i })).toBeInTheDocument();
   });
 
   it("shows a Retry action (not a permanent stuck loading screen) when the initial settings fetch fails (finding 2)", async () => {
@@ -351,5 +351,49 @@ describe("DiscordBotSection", () => {
     fireEvent.click(hostedButton);
     expect(hostedButton).toHaveAttribute("aria-pressed", "true");
     expect(selfHostedButton).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("shows Connect to hosted bot only when choice is hosted, never for self-hosted", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "self-hosted" } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+    expect(screen.queryByRole("button", { name: /Connect to hosted bot/i })).toBeNull();
+  });
+
+  it("clicking Connect to hosted bot navigates to the OAuth start route after an explicit disclosure confirm", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
+    const originalLocation = window.location;
+    // @ts-expect-error -- test-only reassignment
+    delete window.location;
+    // @ts-expect-error -- test-only reassignment
+    window.location = { ...originalLocation, href: "" };
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+    fireEvent.click(screen.getByRole("button", { name: /Connect to hosted bot/i }));
+    await screen.findByText(/independently verified/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Connect$/i }));
+    await waitFor(() => expect(window.location.href).toBe("/api/integrations/discord/hosted-bot/oauth/start"));
+    // @ts-expect-error -- test-only restoration, same reassignment pattern as above
+    window.location = originalLocation;
+  });
+
+  it("renders the owned-guilds picker from window.__hostedBotOwnedGuilds__ on mount when present", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
+    (window as any).__hostedBotOwnedGuilds__ = [{ id: "111111111111111111", name: "My Test Guild", owner: true }];
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which server is this for/i);
+    expect(screen.getByText("My Test Guild")).toBeInTheDocument();
+  });
+
+  it("registering a picked guild calls discordHostedBotApi.register and shows the persisted Connected status", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
+    (window as any).__hostedBotOwnedGuilds__ = [{ id: "111111111111111111", name: "My Test Guild", owner: true }];
+    mockPost.mockResolvedValue({ ok: true } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which server is this for/i);
+    fireEvent.click(screen.getByText("My Test Guild"));
+    fireEvent.click(screen.getByRole("button", { name: /^Register$/i }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/integrations/discord/hosted-bot/register", expect.objectContaining({ guildId: "111111111111111111" })));
+    await screen.findByText(/Connected to hosted bot for My Test Guild/i);
   });
 });
