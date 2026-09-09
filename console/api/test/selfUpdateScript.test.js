@@ -370,6 +370,131 @@ test("resolve_discord_adapter_token falls back to the direct env var when no usa
   }
 });
 
+// Finding 3 (IMPORTANT, final review): resolve_discord_adapter_token() was
+// missing the same DUNE_BOT_API_TOKEN_FILE legacy-file fallback
+// readDiscordBotApiToken() (routes.js) has. An operator using only
+// DUNE_BOT_API_TOKEN_FILE (no DUNE_DISCORD_ADAPTER_TOKEN_FILE at all) would
+// have both of the shell side's checked vars come back empty, sending an
+// empty bearer token, getting a real 401, and this script reporting
+// discord_health_ok=0 even though the adapter is actually fine.
+test("resolve_discord_adapter_token falls back to the legacy DUNE_BOT_API_TOKEN_FILE when DUNE_DISCORD_ADAPTER_TOKEN_FILE is not set (Finding 3)", () => {
+  const source = readFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), "utf8");
+  const functionsSource = [
+    extractShellFunction(source, "read_env_file_value"),
+    extractShellFunction(source, "resolve_discord_adapter_token")
+  ].join("\n");
+
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-token-resolution-legacy-file-"));
+  try {
+    const legacyTokenFile = join(dir, "legacy-bot-api-token.txt");
+    writeFileSync(legacyTokenFile, "legacy-file-token\n");
+    writeFileSync(join(dir, ".env"), `DUNE_BOT_API_TOKEN_FILE=${legacyTokenFile}\n`);
+
+    const output = runShellFunction(functionsSource, "resolve_discord_adapter_token", dir);
+    assert.equal(output, "legacy-file-token", "an operator with only the legacy DUNE_BOT_API_TOKEN_FILE set must still resolve the real token, not an empty bearer token");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolve_discord_adapter_token still prefers DUNE_DISCORD_ADAPTER_TOKEN_FILE over the legacy DUNE_BOT_API_TOKEN_FILE when both are set (Finding 3)", () => {
+  const source = readFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), "utf8");
+  const functionsSource = [
+    extractShellFunction(source, "read_env_file_value"),
+    extractShellFunction(source, "resolve_discord_adapter_token")
+  ].join("\n");
+
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-token-resolution-precedence-"));
+  try {
+    const newTokenFile = join(dir, "new-token.txt");
+    const legacyTokenFile = join(dir, "legacy-token.txt");
+    writeFileSync(newTokenFile, "new-file-token\n");
+    writeFileSync(legacyTokenFile, "legacy-file-token\n");
+    writeFileSync(join(dir, ".env"), [
+      `DUNE_DISCORD_ADAPTER_TOKEN_FILE=${newTokenFile}`,
+      `DUNE_BOT_API_TOKEN_FILE=${legacyTokenFile}`,
+      ""
+    ].join("\n"));
+
+    const output = runShellFunction(functionsSource, "resolve_discord_adapter_token", dir);
+    assert.equal(output, "new-file-token", "DUNE_DISCORD_ADAPTER_TOKEN_FILE must still win over the legacy DUNE_BOT_API_TOKEN_FILE when both are set, matching readDiscordBotApiToken()'s real precedence");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Finding 1 (CRITICAL, final review): migrate_discord_role_ids_env() must
+// copy a legacy-only DISCORD_OBSERVER_ROLE_IDS value into the new
+// DISCORD_PLAYER_ROLE_IDS key in .env, once, so an existing operator who
+// upgrades does not silently lose that role mapping (docker-compose.web.yml's
+// own interpolated environment: entry always sets DISCORD_PLAYER_ROLE_IDS in
+// the container -- even as an empty string -- so the JS-side
+// `!== undefined` legacy fallback in discordRoleMappingFromEnv() can never
+// fire inside a real deployed container without this migration).
+test("migrate_discord_role_ids_env copies a legacy-only DISCORD_OBSERVER_ROLE_IDS value into DISCORD_PLAYER_ROLE_IDS (Finding 1)", () => {
+  const source = readFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), "utf8");
+  const functionsSource = [
+    extractShellFunction(source, "read_env_file_value"),
+    extractShellFunction(source, "persist_env_file_value"),
+    extractShellFunction(source, "migrate_discord_role_ids_env")
+  ].join("\n");
+
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-role-migration-"));
+  try {
+    writeFileSync(join(dir, ".env"), "DISCORD_OBSERVER_ROLE_IDS=123456789012345678\n");
+
+    runShellFunction(functionsSource, "migrate_discord_role_ids_env", dir);
+
+    const envContent = readFileSync(join(dir, ".env"), "utf8");
+    assert.match(envContent, /^DISCORD_PLAYER_ROLE_IDS=123456789012345678$/m, "the legacy role IDs must be copied into the new key so the container sees them regardless of Compose interpolation behavior");
+    assert.match(envContent, /^DISCORD_OBSERVER_ROLE_IDS=123456789012345678$/m, "the legacy key itself must be left untouched, not deleted");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("migrate_discord_role_ids_env never overwrites an already-present DISCORD_PLAYER_ROLE_IDS -- including a deliberately-cleared empty value (Finding 1)", () => {
+  const source = readFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), "utf8");
+  const functionsSource = [
+    extractShellFunction(source, "read_env_file_value"),
+    extractShellFunction(source, "persist_env_file_value"),
+    extractShellFunction(source, "migrate_discord_role_ids_env")
+  ].join("\n");
+
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-role-migration-noop-"));
+  try {
+    writeFileSync(join(dir, ".env"), "DISCORD_OBSERVER_ROLE_IDS=999999999999999999\nDISCORD_PLAYER_ROLE_IDS=\n");
+
+    runShellFunction(functionsSource, "migrate_discord_role_ids_env", dir);
+
+    const envContent = readFileSync(join(dir, ".env"), "utf8");
+    assert.match(envContent, /^DISCORD_PLAYER_ROLE_IDS=$/m, "an operator who deliberately cleared DISCORD_PLAYER_ROLE_IDS to revoke access must not have it silently repopulated from the stale legacy value");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("migrate_discord_role_ids_env is a no-op when there is no legacy value to migrate (Finding 1)", () => {
+  const source = readFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), "utf8");
+  const functionsSource = [
+    extractShellFunction(source, "read_env_file_value"),
+    extractShellFunction(source, "persist_env_file_value"),
+    extractShellFunction(source, "migrate_discord_role_ids_env")
+  ].join("\n");
+
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-role-migration-nothing-"));
+  try {
+    writeFileSync(join(dir, ".env"), "SOME_OTHER_KEY=untouched\n");
+
+    runShellFunction(functionsSource, "migrate_discord_role_ids_env", dir);
+
+    const envContent = readFileSync(join(dir, ".env"), "utf8");
+    assert.doesNotMatch(envContent, /DISCORD_PLAYER_ROLE_IDS/, "nothing to migrate means no new key should be written at all");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function runProcess(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const { timeout = 15000, ...spawnOptions } = options;

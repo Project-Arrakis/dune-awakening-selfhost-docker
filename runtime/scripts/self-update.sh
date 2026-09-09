@@ -880,6 +880,40 @@ persist_env_file_value() {
   fi
 }
 
+# migrate_discord_role_ids_env: one-time .env migration for Finding 1
+# (CRITICAL, final review). DISCORD_PLAYER_ROLE_IDS superseded the legacy
+# DISCORD_OBSERVER_ROLE_IDS var when this feature shipped, and
+# discordRoleMappingFromEnv() (console/api/src/integrations/discord/adapter.js)
+# correctly falls back to the legacy var ONLY when DISCORD_PLAYER_ROLE_IDS
+# is genuinely `undefined` in process.env -- but docker-compose.web.yml's
+# own interpolated map-form `environment:` entry for DISCORD_PLAYER_ROLE_IDS
+# ALWAYS sets it in the container (empty string when unset in .env, never
+# actually omitted), so that JS fallback could never fire inside a real
+# deployed container. An existing operator who has DISCORD_OBSERVER_ROLE_IDS
+# set (and no DISCORD_PLAYER_ROLE_IDS, since it didn't exist before this
+# feature) would silently lose that role mapping's bot access on their next
+# `docker compose up`/self-update, with no warning (Requirement 0
+# violation). Copy the legacy value into the new key, once, directly in
+# .env -- a durable, testable-without-Docker belt-and-braces layer
+# alongside docker-compose.web.yml's own nested-default fix
+# ("${DISCORD_PLAYER_ROLE_IDS:-${DISCORD_OBSERVER_ROLE_IDS:-}}"), which
+# closes the same gap at the Compose-interpolation layer.
+#
+# Deliberately conservative: only acts when DISCORD_PLAYER_ROLE_IDS is
+# genuinely ABSENT from .env (never overwrites an operator's explicit,
+# already-migrated value -- including a deliberately-cleared empty string,
+# which must stay empty per adapter.js's own `!== undefined` distinction)
+# and DISCORD_OBSERVER_ROLE_IDS has a real, non-empty value to migrate.
+migrate_discord_role_ids_env() {
+  [ -f .env ] || return 0
+  grep -q '^DISCORD_PLAYER_ROLE_IDS=' .env && return 0
+  local legacy_value
+  legacy_value="$(read_env_file_value DISCORD_OBSERVER_ROLE_IDS || true)"
+  [ -n "$legacy_value" ] || return 0
+  persist_env_file_value DISCORD_PLAYER_ROLE_IDS "$legacy_value"
+  echo "Migrated legacy DISCORD_OBSERVER_ROLE_IDS into DISCORD_PLAYER_ROLE_IDS in .env."
+}
+
 running_console_env_value() {
   local key="$1"
   command -v docker >/dev/null 2>&1 || return 1
@@ -1401,6 +1435,11 @@ case "$cmd" in
     ensure_self_update_preflight
     install_release_tag "$tag"
     install_cli_command_after_update
+    # Finding 1 (CRITICAL, final review): run before the console recreate
+    # below, so a legacy-only DISCORD_OBSERVER_ROLE_IDS config is already
+    # migrated into DISCORD_PLAYER_ROLE_IDS in .env by the time the new
+    # container reads it.
+    migrate_discord_role_ids_env
     rebuild_web_console_after_update
     self_update_finish_success
     ;;

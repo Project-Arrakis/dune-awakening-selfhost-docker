@@ -83,7 +83,31 @@ services:
       ATRIUM_ALLOWED_DISCORD_USER_ID: "${ATRIUM_ALLOWED_DISCORD_USER_ID:-}"
       DUNE_BOT_API_TOKEN_FILE: "${DUNE_BOT_API_TOKEN_FILE:-}"
       DISCORD_OBSERVER_ROLE_IDS: "${DISCORD_OBSERVER_ROLE_IDS:-}"
-      DISCORD_PLAYER_ROLE_IDS: "${DISCORD_PLAYER_ROLE_IDS:-}"
+      # Finding 1 (CRITICAL, final review): a bare map-form interpolated
+      # entry here (the previous "${DISCORD_PLAYER_ROLE_IDS:-}") ALWAYS sets
+      # this var in the container -- as an empty string when unset in .env,
+      # never actually omitted. That means process.env.DISCORD_PLAYER_ROLE_IDS
+      # is never `undefined` inside a real deployed container, so
+      # discordRoleMappingFromEnv()'s `!== undefined` legacy-fallback branch
+      # (adapter.js) can never fire there -- only in a bare Node test
+      # process. An existing operator with DISCORD_OBSERVER_ROLE_IDS set (and
+      # no DISCORD_PLAYER_ROLE_IDS, since it didn't exist before this
+      # feature) would silently lose that role mapping's bot access on their
+      # next `docker compose up`, with no warning (Requirement 0 violation).
+      # Nested `${VAR:-${OTHER:-default}}` interpolation is valid per the
+      # Compose Specification and supported by Compose V2 (compose-go, what
+      # `docker compose` uses) -- verified against Compose's own
+      # interpolation docs; NOT verified against a live `docker compose
+      # config` run in this environment (Docker is unavailable here), so
+      # confirm with `docker compose -f docker-compose.web.yml config` (only
+      # DISCORD_OBSERVER_ROLE_IDS set in .env) before relying on this alone.
+      # runtime/scripts/self-update.sh's migrate_discord_role_ids_env() is a
+      # second, independently-testable layer for the same gap -- it copies
+      # the legacy value into .env's own DISCORD_PLAYER_ROLE_IDS key
+      # directly, so the correct value reaches the container even if this
+      # nested-interpolation fallback were ever unsupported by some Compose
+      # version.
+      DISCORD_PLAYER_ROLE_IDS: "${DISCORD_PLAYER_ROLE_IDS:-${DISCORD_OBSERVER_ROLE_IDS:-}}"
       DISCORD_MODERATOR_ROLE_IDS: "${DISCORD_MODERATOR_ROLE_IDS:-}"
       DISCORD_ADMIN_ROLE_IDS: "${DISCORD_ADMIN_ROLE_IDS:-}"
       DISCORD_OWNER_ROLE_IDS: "${DISCORD_OWNER_ROLE_IDS:-}"

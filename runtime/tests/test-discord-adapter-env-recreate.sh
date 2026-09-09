@@ -39,3 +39,23 @@ echo "$resolved" | grep -q "DUNE_DISCORD_ADAPTER_TOKEN_FILE" || fail "resolved c
 echo "$resolved" | grep -q "DISCORD_PLAYER_ROLE_IDS" || fail "resolved compose config did not include DISCORD_PLAYER_ROLE_IDS -- Step 0 of this task must add this line to docker-compose.web.yml's environment: block, or player role IDs never reach the running container"
 
 echo "OK: docker-compose.web.yml resolves correctly with Discord adapter env vars set"
+
+# Finding 1 (CRITICAL, final review): an existing operator who has ONLY the
+# legacy DISCORD_OBSERVER_ROLE_IDS set (no DISCORD_PLAYER_ROLE_IDS at all --
+# it didn't exist before this feature) must not silently lose that role
+# mapping. docker-compose.web.yml's DISCORD_PLAYER_ROLE_IDS entry now uses
+# nested interpolation ("${DISCORD_PLAYER_ROLE_IDS:-${DISCORD_OBSERVER_ROLE_IDS:-}}")
+# so the resolved container env falls back to the legacy value when the new
+# key is genuinely absent from .env.
+legacy_only_env="$(mktemp)"
+trap 'rm -f "$tmp_env" "$legacy_only_env"' EXIT
+cp .env "$legacy_only_env" 2>/dev/null || touch "$legacy_only_env"
+{
+  echo "DISCORD_OBSERVER_ROLE_IDS=999999999999999999"
+} >> "$legacy_only_env"
+# shellcheck disable=SC2046
+legacy_resolved="$(env $(grep -v '^#' "$legacy_only_env" | xargs -d '\n' -I{} echo {}) docker compose -f docker-compose.web.yml config 2>/dev/null || true)"
+[ -n "$legacy_resolved" ] || fail "docker compose config produced no output with only the legacy DISCORD_OBSERVER_ROLE_IDS set"
+echo "$legacy_resolved" | grep -q "DISCORD_PLAYER_ROLE_IDS: \"999999999999999999\"" || fail "Finding 1 regression: DISCORD_PLAYER_ROLE_IDS did not fall back to the legacy DISCORD_OBSERVER_ROLE_IDS value when only the legacy var was set -- an existing operator would silently lose that role mapping on update"
+
+echo "OK: DISCORD_PLAYER_ROLE_IDS falls back to legacy DISCORD_OBSERVER_ROLE_IDS when only the legacy var is set (Finding 1)"
