@@ -138,6 +138,39 @@ describe("DiscordBotSection", () => {
     expect(screen.getByText(/mentat-link's setup form/i)).toBeInTheDocument();
   });
 
+  it("shows a Retry action (not a permanent stuck loading screen) when the initial settings fetch fails (finding 2)", async () => {
+    mockApi.mockRejectedValue(new Error("network down"));
+    render(<DiscordBotSection />);
+    await screen.findByText(/Could not load Discord Bot settings/i);
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
+  });
+
+  it("does not clobber typed role IDs when Retry is clicked after a failed enable task (finding 4)", async () => {
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/api/settings/discord-bot") {
+        return Promise.resolve({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+      }
+      return Promise.resolve({ runId: "test-run", state: "failed", stage: "failed", percent: 100, message: "boom" } as never);
+    });
+    mockPost.mockResolvedValue({
+      task: { id: "test-run", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null },
+      token: "abc"
+    } as never);
+
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+    fireEvent.change(screen.getByLabelText(/Player role IDs/i), { target: { value: "999999999999999999" } });
+    fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
+    await screen.findByText(/restart/i);
+    fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument(), { timeout: 5000 });
+    fireEvent.click(screen.getByRole("button", { name: /Retry/i }));
+
+    await waitFor(() => expect(screen.getByDisplayValue("999999999999999999")).toBeInTheDocument());
+  });
+
   it("points the OAuth disambiguation note in the correct direction (finding 6)", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     render(<DiscordBotSection />);

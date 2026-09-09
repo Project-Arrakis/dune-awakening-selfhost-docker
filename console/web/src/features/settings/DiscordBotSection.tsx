@@ -76,12 +76,18 @@ export function DiscordBotSection() {
     persistChoice(value);
   }
 
-  async function refresh() {
+  async function refresh(options?: { preserveInputs?: boolean }) {
     const nextState = await discordAdapterSettingsApi.getState();
     setState(nextState);
-    setPlayerRoleIds(nextState.roleIds.player.join(", "));
-    setModeratorRoleIds(nextState.roleIds.moderator.join(", "));
-    setAdminRoleIds(nextState.roleIds.admin.join(", "));
+    // On a failed-attempt Retry, don't clobber role IDs the operator already
+    // typed with the (still-disabled) server's stale values (finding #4,
+    // Layer 3 review) -- only a genuine fresh mount-time load, or a refresh
+    // after a confirmed success, should repopulate these fields.
+    if (!options?.preserveInputs) {
+      setPlayerRoleIds(nextState.roleIds.player.join(", "));
+      setModeratorRoleIds(nextState.roleIds.moderator.join(", "));
+      setAdminRoleIds(nextState.roleIds.admin.join(", "));
+    }
     // Never assume "never configured" -- always reflect real state
     // (Layer 1 audit finding #7, converged on by 3 independent hats).
     setPhase(nextState.enabled ? "enabled" : "disabled");
@@ -96,7 +102,16 @@ export function DiscordBotSection() {
     // this task from here: only its own completion handler clears the
     // persisted entry and calls refresh().
     if (!runId) {
-      refresh().catch(() => setError("Could not load Discord Bot settings."));
+      refresh().catch(() => {
+        setError("Could not load Discord Bot settings.");
+        // Without this, phase stays stuck at "loading" forever -- there is
+        // no render branch for it and no way forward short of a full page
+        // reload (finding #2, Layer 3 review). Scoped to this specific
+        // initial-mount-load failure only: the persisted-in-flight-task
+        // recovery path above skips this call entirely (runId is already
+        // set), so it can never be overridden to "failed" by this catch.
+        setPhase("failed");
+      });
     }
   }, []);
 
@@ -224,7 +239,13 @@ export function DiscordBotSection() {
 
       {phase === "enabling" && <p>Applying settings and restarting the console…</p>}
 
-      {phase === "failed" && <button onClick={() => { void refresh(); }}>Retry</button>}
+      {/* On a failed-attempt Retry (task/enable failure), state is already
+          non-null from an earlier successful load -- preserve whatever the
+          operator typed rather than re-fetching stale server values over it
+          (finding #4). On a genuine initial-mount-load failure, state is
+          still null and there's nothing typed yet to preserve, so this
+          Retry does a real fresh load (finding #2). */}
+      {phase === "failed" && <button onClick={() => { void refresh({ preserveInputs: state !== null }); }}>Retry</button>}
 
       {phase === "enabled" && state && (
         <>
