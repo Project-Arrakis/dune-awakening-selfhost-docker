@@ -183,6 +183,18 @@ test("self-update helper age recognizes both current and legacy helper names", (
   assert.equal(selfUpdateHelperAgeMs("redblink-dune-docker-console", now), 0);
 });
 
+// Audit finding #5 (MEDIUM): the Discord Bot settings "Enable"/"Save role
+// IDs" flow launches a helper named dune-discord-adapter-apply-<ms>
+// (runDiscordAdapterApplyTask() in this file), which the shared
+// cleanup/mutual-exclusion guard must recognize the same way it already
+// recognizes dune-web-self-update-<ms> -- otherwise stale helpers of this
+// type are never reaped, and the "another operation running" pre-flight
+// check never fires for a genuine race against this helper type.
+test("self-update helper age recognizes the discord-adapter-apply helper name", () => {
+  const now = 2_000_000_000_000;
+  assert.equal(selfUpdateHelperAgeMs("dune-discord-adapter-apply-1999999880000", now), 120_000);
+});
+
 test("self-update helper cleanup removes stale or stopped helpers and blocks a live one", async () => {
   const now = Date.now();
   const stale = `dune-web-self-update-${now - 3_000_000}`;
@@ -201,6 +213,31 @@ test("self-update helper cleanup removes stale or stopped helpers and blocks a l
     stdout: `${active}\trunning\n`,
     stderr: ""
   })), /Another console update is already running/);
+});
+
+// Audit finding #5 (MEDIUM): the discord-adapter-apply helper family must
+// participate in the exact same stale-reap / mutual-exclusion guard as the
+// web-self-update family -- a `flock`-based backstop elsewhere prevents
+// real corruption, but without this the friendly pre-flight rejection
+// never fires and leaked/hung containers of this type are never cleaned up.
+test("self-update helper cleanup recognizes and manages dune-discord-adapter-apply-* helpers the same way", async () => {
+  const now = Date.now();
+  const stale = `dune-discord-adapter-apply-${now - 3_000_000}`;
+  const active = `dune-discord-adapter-apply-${now}`;
+
+  const calls = [];
+  await cleanupStaleSelfUpdateHelpers("/repo", async (args) => {
+    calls.push(args);
+    if (args[0] === "ps") return { code: 0, stdout: `${stale}\trunning\n`, stderr: "" };
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  assert.deepEqual(calls[1], ["rm", "-f", stale], "a stale discord-adapter-apply helper must be reaped just like a stale web-self-update helper");
+
+  await assert.rejects(cleanupStaleSelfUpdateHelpers("/repo", async () => ({
+    code: 0,
+    stdout: `${active}\trunning\n`,
+    stderr: ""
+  })), /Another console update is already running/, "an active discord-adapter-apply helper must block a concurrent operation just like an active web-self-update helper");
 });
 
 test("detached self-update stays running until durable helper status completes it", async () => {

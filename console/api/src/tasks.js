@@ -369,7 +369,7 @@ export async function cleanupStaleSelfUpdateHelpers(cwd, runCommand) {
   const helpers = listed.stdout.split(/\r?\n/).map((line) => {
     const [name = "", state = ""] = line.trim().split(/\s+/, 2);
     return { name, state };
-  }).filter(({ name }) => /^(?:dune-web-self-update-\d+|dune-console-self-update-\d+)$/.test(name));
+  }).filter(({ name }) => /^(?:dune-web-self-update-\d+|dune-console-self-update-\d+|dune-discord-adapter-apply-\d+)$/.test(name));
   const staleAfterMs = (boundedBuildTimeoutSeconds(process.env.DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS) + 300) * 1000;
   const now = Date.now();
   const stale = helpers.filter(({ name, state }) => state !== "running" || selfUpdateHelperAgeMs(name, now) > staleAfterMs);
@@ -379,7 +379,7 @@ export async function cleanupStaleSelfUpdateHelpers(cwd, runCommand) {
 }
 
 export function selfUpdateHelperAgeMs(name, now = Date.now()) {
-  const milliseconds = String(name || "").match(/^dune-web-self-update-(\d{13})$/)?.[1];
+  const milliseconds = String(name || "").match(/^(?:dune-web-self-update|dune-discord-adapter-apply)-(\d{13})$/)?.[1];
   if (milliseconds) return Math.max(0, now - Number(milliseconds));
   const seconds = String(name || "").match(/^dune-console-self-update-(\d{10})$/)?.[1];
   if (seconds) return Math.max(0, now - Number(seconds) * 1000);
