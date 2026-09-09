@@ -7598,6 +7598,15 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
     }
   }
 
+  // actor_state is absent from some older schemas, so keep it optional. When
+  // present it is the authoritative explanation for vehicle rows that are not
+  // currently deployed in a world partition (Travel / VehicleBackup /
+  // VehicleRecovery). Without this, the UI used to invent "Partition 0" for
+  // a NULL partition and make Funcom's stored recovery records look spawned.
+  const vehicleLifecycleStateSql = await tableExists(db, "actor_state")
+    ? `coalesce((select ast.state::text from dune.actor_state ast where ast.actor_id=v.id limit 1), 'Default')`
+    : `'Default'::text`;
+
   const safePageSize = intParam(pageSize, "pageSize", 1, 200);
   const safePage = intParam(page, "page", 0);
   const offset = safePage * safePageSize;
@@ -7654,7 +7663,8 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
           ${VEHICLE_TYPE_SQL} as type,
           ${VEHICLE_CUSTOM_NAME_SQL} as clean_name,
           coalesce(a.map, '') as map,
-          coalesce(a.partition_id, 0)::int as partition_id,
+          a.partition_id::int as partition_id,
+          ${vehicleLifecycleStateSql} as lifecycle_state,
           a.transform,
           a.owner_account_id
         from dune.vehicles v
@@ -7676,6 +7686,7 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
             greatest(0, least(100, floor(100 * fuel.current_fuel / nullif(cap.max_fuel, 0))))::int
           else null end fuel_percent,
           vc.map, vc.partition_id,
+          vc.lifecycle_state,
           ((vc.transform).location).x::numeric x,
           ((vc.transform).location).y::numeric y,
           ((vc.transform).location).z::numeric z,
@@ -7708,7 +7719,7 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
         left join fuel_capacity cap on cap.generator_template=fuel.generator_template
         left join module_durability md on md.vehicle_id=vc.id
         ${filterClause}
-        group by vc.id, vc.type, vc.clean_name, vc.map, vc.partition_id, vc.transform,
+        group by vc.id, vc.type, vc.clean_name, vc.map, vc.partition_id, vc.lifecycle_state, vc.transform,
           vc.owner_account_id, own.owner, ${player ? "viewer.rank," : ""} fuel.current_fuel, cap.max_fuel, cap.fuel_samples
       ), totals as (
         select count(*)::int as total_count from matched
@@ -8310,7 +8321,7 @@ export async function portalVehicles(db, playerIds) {
       case when capacity.fuel_samples >= 2 then
         greatest(0, least(100, floor(100 * fuel.current_fuel / nullif(capacity.max_fuel, 0))))::int
       else null end fuel_percent,
-      coalesce(a.map, '') map, coalesce(a.partition_id, 0)::int partition_id,
+      coalesce(a.map, '') map, a.partition_id::int partition_id,
       ((a.transform).location).x::numeric x,
       ((a.transform).location).y::numeric y,
       ((a.transform).location).z::numeric z,

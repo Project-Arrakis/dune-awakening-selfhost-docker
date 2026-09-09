@@ -1987,6 +1987,33 @@ test("listVehicles returns vehicles with mapped modules and shared_with", async 
   assert.equal(result.rows[0].total_count, undefined);
 });
 
+test("listVehicles preserves an undeployed vehicle's null partition and exposes its Funcom lifecycle", async () => {
+  const calls = [];
+  const db = {
+    query: async (text) => {
+      calls.push(text);
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 1 }] };
+      if (text.includes("module_durability")) return { rows: [{
+        id: "5002", name: "Recovered Buggy", type: "Buggy", owner: "",
+        condition_percent: null, condition_estimated: false,
+        current_fuel: null, max_fuel: null, fuel_percent: null,
+        map: "HaggaBasin", partition_id: null, lifecycle_state: "VehicleRecovery",
+        x: null, y: null, z: null, total_count: 1, modules: [], shared_with: []
+      }] };
+      return { rows: [] };
+    }
+  };
+
+  const result = await listVehicles(db, {});
+  const mainQuery = calls.find((text) => text.includes("module_durability"));
+  assert.equal(result.rows[0].partition_id, null);
+  assert.equal(result.rows[0].lifecycle_state, "VehicleRecovery");
+  assert.match(mainQuery, /a\.partition_id::int as partition_id/);
+  assert.match(mainQuery, /from dune\.actor_state ast/);
+  assert.doesNotMatch(mainQuery, /coalesce\(a\.partition_id, 0\)/);
+});
+
 test("listVehicles filters a player's owned and shared vehicles and labels access", async () => {
   const calls = [];
   const db = {

@@ -126,7 +126,10 @@ export type VehicleRow = {
   max_fuel: number | string | null;
   fuel_percent: number | null;
   map: string;
-  partition_id: number;
+  partition_id: number | null;
+  // Funcom's actor lifecycle. Non-default states explain vehicles that are
+  // stored or in transit rather than deployed in the map shown by `map`.
+  lifecycle_state?: "Default" | "Travel" | "VehicleBackup" | "VehicleRecovery" | "AbortedAuthorityTransfer" | string;
   x: number | string | null;
   y: number | string | null;
   z: number | string | null;
