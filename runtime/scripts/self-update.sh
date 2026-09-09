@@ -1014,6 +1014,67 @@ rebuild_web_console_now() {
   COMPOSE_PROJECT_NAME="$web_compose_project" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d --force-recreate "$service"
 }
 
+# recreate_discord_adapter_env: recreates the web console container with its
+# CURRENT image and CURRENT .env -- no build, no pull. Used by the Discord
+# Bot Settings "Enable"/role-ID-change flow, which only needs new
+# environment variables to take effect, never a version change. Deliberately
+# a separate function from rebuild_web_console_now() (which always builds
+# first) rather than a conditional branch inside it -- self-update.sh's own
+# install/apply flow must never be able to accidentally skip its build step.
+recreate_discord_adapter_env() {
+  local service="$1"
+  local web_compose_project="${DUNE_WEB_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
+  prepare_web_console_rebuild_env
+  self_update_running restarting 60 "Applying Discord adapter settings and restarting the console."
+  docker rm -f "$service" >/dev/null 2>&1 || true
+  COMPOSE_PROJECT_NAME="$web_compose_project" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d --force-recreate "$service"
+  verify_discord_adapter_health "$service"
+}
+
+# verify_discord_adapter_health: after the recreate above, waits briefly for
+# the new container to accept connections, then calls its own
+# /api/integrations/discord/health with the freshly-written bearer token --
+# proving the adapter actually came up working, not just that the container
+# process exists. Both initializeDiscordAdapterSchema()'s promise rejection
+# and a missing/corrupt token file are fail-soft at the container level
+# (Layer 1 DBA audit finding), so "the container is up" alone cannot answer
+# this question -- only a real request through the same bearer-token check a
+# real bot would use can. Records the result in the run's own status file
+# (discord_health_ok=1/0) rather than failing the script outright: a health
+# check failure here is a genuinely new, actionable state ("Enabled, but
+# the adapter isn't responding") the frontend surfaces distinctly (§4 of the
+# design doc), not a reason to make the whole recreate report as failed --
+# the container recreate itself did succeed.
+verify_discord_adapter_health() {
+  local service="$1"
+  local port token health_ok=0
+
+  port="$(read_env_file_value ADMIN_WEB_PORT || true)"
+  [ -n "$port" ] || port="$(read_env_file_value ADMIN_BIND_PORT || true)"
+  [ -n "$port" ] || port="8088"
+
+  token="$(read_env_file_value DUNE_DISCORD_ADAPTER_TOKEN || true)"
+  if [ -z "$token" ]; then
+    local token_file
+    token_file="$(read_env_file_value DUNE_DISCORD_ADAPTER_TOKEN_FILE || true)"
+    [ -n "$token_file" ] && [ -f "$token_file" ] && token="$(tr -d '[:space:]' < "$token_file")"
+  fi
+
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -fsS -m 5 -H "Authorization: Bearer $token" "http://127.0.0.1:${port}/api/integrations/discord/health" >/dev/null 2>&1; then
+      health_ok=1
+      break
+    fi
+    sleep 2
+  done
+
+  self_update_write_status succeeded complete 100 "Discord adapter settings applied." "$(date -Is)"
+  {
+    printf 'discord_health_ok=%s\n' "$health_ok"
+  } >> "$SELF_UPDATE_STATUS_DIR/$SELF_UPDATE_RUN_ID.env"
+  SELF_UPDATE_STATUS_FINALIZED=1
+}
+
 rebuild_web_console_with_helper() {
   local service="$1"
   local helper_name
@@ -1195,6 +1256,21 @@ cmd="${1:-check}"
 tag="${2:-}"
 
 case "$cmd" in
+  apply-discord-adapter-env)
+    acquire_self_update_lock
+    dune_persist_compose_project_name "$ROOT_DIR" "$DUNE_COMPOSE_PROJECT_NAME"
+    service="${tag:-}"
+    if [ -z "$service" ]; then
+      service="$(web_console_service_name 2>/dev/null || true)"
+    fi
+    if [ -z "$service" ]; then
+      echo "Dune Docker Console service was not found in docker-compose.web.yml."
+      exit 2
+    fi
+    ensure_docker_access_for_console_rebuild
+    recreate_discord_adapter_env "$service"
+    ;;
+
   rebuild-web-console)
     dune_persist_compose_project_name "$ROOT_DIR" "$DUNE_COMPOSE_PROJECT_NAME"
     service="${tag:-}"
