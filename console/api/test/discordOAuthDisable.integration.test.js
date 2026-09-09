@@ -402,6 +402,40 @@ describe("Discord OAuth disable / enable / forget (#676 §6)", { concurrency: 4 
       }
     });
 
+    // #578 review finding: this guard read config.discordOAuthConfigured
+    // directly, unlike every OTHER real gate on Discord OAuth's live state
+    // (/api/auth/state, the start/callback routes), which also check
+    // discordOAuthSoftDisabledInProcess. Not a security gap (the in-process
+    // flag only narrows availability further, so the omission could only
+    // ever show the warning when it shouldn't, never hide it) but a real,
+    // confusing inconsistency: naming a credential source that is no longer
+    // actually live in this process.
+    test("does not warn when Discord OAuth was just disabled in-process, before any restart", async () => {
+      const port = await getFreePort();
+      const tempDir = mkdtempSync(join(tmpdir(), "discord-zerofa-inprocess-disabled-"));
+      const consoleProc = startConsole(port, tempDir, { ...DISCORD_ENV, CONSOLE_TOTP_ENABLED: "1", DISCORD_OAUTH_REQUIRE_MFA_TIERS: "" });
+      try {
+        await waitForHealth(port, 20000, consoleProc.logs);
+        const password = readGeneratedPassword(tempDir);
+        const session = await login(port, { password });
+
+        const disableDiscord = await api(port, "/api/settings/discord-oauth/disable", {
+          cookie: session.cookie, csrf: session.csrf, body: { currentPassword: password },
+        });
+        assert.equal(disableDiscord.status, 200, JSON.stringify(await disableDiscord.json()));
+
+        const disableTotp = await api(port, "/api/auth/2fa/disable", { cookie: session.cookie, csrf: session.csrf, body: { currentPassword: password } });
+        const body = await disableTotp.json();
+        // Falls through to requireFreshTier3Proof's own "not enrolled" 400,
+        // never the zero-factor warning (409).
+        assert.equal(disableTotp.status, 400, JSON.stringify(body));
+        assert.notEqual(body.zeroFactorWarning, true, JSON.stringify(body));
+      } finally {
+        await stopProcess(consoleProc.child);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     test("does not warn when Discord OAuth is not configured at all -- password-only 2FA-off is the ordinary state", async () => {
       const port = await getFreePort();
       const tempDir = mkdtempSync(join(tmpdir(), "discord-zerofa-none-"));
