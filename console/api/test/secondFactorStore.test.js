@@ -192,6 +192,34 @@ test("regenerateRecoveryCodes issues a new set and invalidates the old", async (
   } finally { cleanup(dir); }
 });
 
+// #578 review finding: regenerateRecoveryCodes() never checked recoveryPending,
+// even though verifyTotpToken()/consumeRecoveryCode() both refuse outright
+// while it's set. A caller's own requireFreshTier3Proof.verifyTotpToken()
+// check and its later regenerateRecoveryCodes() call are two SEPARATE
+// runExclusive() critical sections, not one atomic transaction -- a
+// concurrent consumeRecoveryCode() (a resetup already in progress against
+// this factor) can set recoveryPending in between, and without this check
+// regenerateRecoveryCodes() would still persist a fresh code set that
+// verifyTotpToken()/consumeRecoveryCode() immediately refuse, handing the
+// operator ten plaintext codes that can never work.
+test("regenerateRecoveryCodes refuses while a recovery is already pending against this factor", async () => {
+  const { store, dir } = freshStore();
+  try {
+    const { codes } = await store.commit(SECRET);
+    // Start a recovery (wipes all codes, sets recoveryPending) via a
+    // DIFFERENT, concurrent actor -- simulates the race directly, since the
+    // real race is timing-dependent and this is the deterministic shape of
+    // its outcome.
+    const consumed = await store.consumeRecoveryCode(codes[0]);
+    assert.equal(consumed.ok, true);
+    const result = await store.regenerateRecoveryCodes();
+    assert.deepEqual(result, { ok: false, reason: "recovery_pending" });
+    // Confirms this isn't a no-op that happens to look refused: no new codes
+    // were ever issued or persisted.
+    assert.equal(await store.remainingRecoveryCodes(), 0);
+  } finally { cleanup(dir); }
+});
+
 // ---- corruption fails closed ----
 
 test("a corrupt store file throws SecondFactorCorruptError -- never silently 'not configured'", async () => {
