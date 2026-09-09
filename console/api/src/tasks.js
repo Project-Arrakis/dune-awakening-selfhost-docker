@@ -89,6 +89,10 @@ export class TaskManager {
         await this.runSelfUpdateHelperTask(task, payload);
         return;
       }
+      if (isDiscordAdapterApplyOperation(task.operation)) {
+        await this.runDiscordAdapterApplyTask(task, payload);
+        return;
+      }
 
       const operations = taskOperations(task.operation, payload);
       let lastCode = 0;
@@ -156,6 +160,51 @@ export class TaskManager {
 
     task.currentStep = "Starting update helper";
     this.emit(task, "Starting detached update helper");
+    await cleanupStaleSelfUpdateHelpers(this.config.repoRoot, this.runDockerCommand);
+    const result = await this.runDockerCommand(buildSelfUpdateHelperDockerArgs({
+      helperName,
+      hostRepoRoot,
+      composeProjectName,
+      helperImage,
+      hostUid,
+      hostGid,
+      dockerSocketGid,
+      extraEnv,
+      command
+    }), this.config.repoRoot);
+
+    this.append(task, `Update helper started: ${result.stdout.trim() || helperName}`, "stdout");
+    this.append(task, `Update log: ${logFile}`, "stdout");
+    task.currentStep = "Update helper running";
+    this.emit(task, "Update helper is running. The Web UI may reconnect while the console restarts.");
+  }
+
+  async runDiscordAdapterApplyTask(task, payload) {
+    const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME;
+    if (!composeProjectName) throw new Error("Main Dune Compose project name was not provided to the Console.");
+    const helperImage = process.env.DUNE_SYSTEMD_HELPER_IMAGE || "redblink-dune-docker-console:dev";
+    const hostRepoRoot = process.env.DUNE_HOST_REPO_ROOT || this.config.hostRepoRoot || this.config.repoRoot;
+    const hostUid = process.env.DUNE_HOST_UID || String(process.getuid?.() ?? 0);
+    const hostGid = process.env.DUNE_HOST_GID || String(process.getgid?.() ?? 0);
+    const dockerSocketGid = process.env.DOCKER_SOCKET_GID || detectDockerSocketGid();
+    const extraEnv = [`DUNE_SELF_UPDATE_RUN_ID=${task.id}`];
+    const logFile = "runtime/generated/discord-adapter-apply.log";
+    // Fixed, non-parameterized command -- see this plan's Global
+    // Constraints. Never interpolate `payload` (which carries the
+    // admin-supplied role IDs) into this string; those values only ever
+    // reach the system via .env, written before this task is created (see
+    // Task 8), and are read back from .env by the shell script itself.
+    const command = [
+      "set -eu",
+      "mkdir -p runtime/generated",
+      `echo "Starting Discord adapter settings apply" > ${shellQuote(logFile)}`,
+      `DUNE_WEB_SELF_UPDATE_HELPER=1 runtime/scripts/dune console apply-discord-adapter-env >> ${shellQuote(logFile)} 2>&1`,
+      `echo "Discord adapter settings apply finished" >> ${shellQuote(logFile)}`
+    ].join("\n");
+    const helperName = `dune-discord-adapter-apply-${Date.now()}`;
+
+    task.currentStep = "Starting update helper";
+    this.emit(task, "Starting detached Discord adapter apply helper");
     await cleanupStaleSelfUpdateHelpers(this.config.repoRoot, this.runDockerCommand);
     const result = await this.runDockerCommand(buildSelfUpdateHelperDockerArgs({
       helperName,
@@ -282,6 +331,10 @@ export function buildSelfUpdateHelperDockerArgs({
 
 function isSelfUpdateApplyOperation(operation) {
   return operation === "selfUpdateApply";
+}
+
+function isDiscordAdapterApplyOperation(operation) {
+  return operation === "discordAdapterApply";
 }
 
 export function detectDockerSocketGid() {

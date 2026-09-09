@@ -239,6 +239,46 @@ test("detached self-update stays running until durable helper status completes i
   }
 });
 
+test("discordAdapterApply launches a distinctly-named helper and stays running until durable status completes it", async () => {
+  const previousProject = process.env.DUNE_COMPOSE_PROJECT_NAME;
+  process.env.DUNE_COMPOSE_PROJECT_NAME = "dune-test";
+  const calls = [];
+  const manager = new TaskManager({
+    repoRoot: "/repo",
+    hostRepoRoot: "/host/repo",
+    taskRetention: 20,
+    commandTimeoutMs: 5000
+  }, {
+    runDockerCommand: async (args) => {
+      calls.push(args);
+      if (args[0] === "ps") return { code: 0, stdout: "", stderr: "" };
+      return { code: 0, stdout: "helper-id\n", stderr: "" };
+    }
+  });
+
+  try {
+    const created = manager.create("settings", "discordAdapterApply", {});
+    let current = manager.get(created.id);
+    for (let attempt = 0; attempt < 100 && current?.currentStep !== "Update helper running"; attempt += 1) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+      current = manager.get(created.id);
+    }
+    assert.equal(current?.status, "running");
+    const dockerRunArgs = calls.find((c) => c[0] === "run");
+    assert.ok(dockerRunArgs, "expected a docker run invocation");
+    const nameIndex = dockerRunArgs.indexOf("--name");
+    assert.match(dockerRunArgs[nameIndex + 1], /^dune-discord-adapter-apply-\d+$/);
+    const command = dockerRunArgs[dockerRunArgs.length - 1];
+    assert.match(command, /runtime\/scripts\/dune console apply-discord-adapter-env/);
+    // Global Constraint: no admin-supplied value is ever part of this
+    // command string -- it is always this exact fixed invocation.
+    assert.doesNotMatch(command, /DISCORD_[A-Z_]*ROLE/);
+  } finally {
+    if (previousProject === undefined) delete process.env.DUNE_COMPOSE_PROJECT_NAME;
+    else process.env.DUNE_COMPOSE_PROJECT_NAME = previousProject;
+  }
+});
+
 test("repeated updateCheck tasks within the cache window reuse one SteamCMD invocation", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-task-cache-"));
   let collectCount = 0;
