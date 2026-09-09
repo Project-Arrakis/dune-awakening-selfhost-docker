@@ -1114,6 +1114,16 @@ recreate_discord_adapter_env() {
 resolve_discord_adapter_token() {
   local token="" token_file
   token_file="$(read_env_file_value DUNE_DISCORD_ADAPTER_TOKEN_FILE || true)"
+  # Finding 3 (IMPORTANT, final review): readDiscordBotApiToken() (routes.js)
+  # falls back to the legacy DUNE_BOT_API_TOKEN_FILE var when
+  # DUNE_DISCORD_ADAPTER_TOKEN_FILE is not set. This shell-side resolver was
+  # missing that same fallback -- an operator using only DUNE_BOT_API_TOKEN_FILE
+  # had both checked vars come back empty here, so this health check sent an
+  # empty bearer token, got a real 401, and reported discord_health_ok=0 even
+  # though the adapter was actually fine.
+  if [ -z "$token_file" ]; then
+    token_file="$(read_env_file_value DUNE_BOT_API_TOKEN_FILE || true)"
+  fi
   if [ -n "$token_file" ] && [ -f "$token_file" ]; then
     token="$(tr -d '[:space:]' < "$token_file")"
   fi
