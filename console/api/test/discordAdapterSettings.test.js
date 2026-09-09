@@ -96,3 +96,30 @@ test("regenerateDiscordBotToken overwrites the token file with fresh random byte
   assert.match(envContent, /^SOME_OTHER_KEY=untouched$/m);
   assert.doesNotMatch(envContent, /DUNE_DISCORD_ADAPTER_TOKEN_FILE/, "regenerating must not rewrite .env -- the file path doesn't change, only its contents");
 });
+
+test("readDiscordBotSettingsState: enabled flag true but token file missing reports enabled with tokenConfigured false", () => {
+  process.env.DUNE_DISCORD_ADAPTER_ENABLED = "true";
+  process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE = "/nonexistent/path/discord-adapter-token.txt";
+  const state = readDiscordBotSettingsState({});
+  assert.equal(state.enabled, true);
+  assert.equal(state.tokenConfigured, false);
+});
+
+test("readDiscordBotSettingsState: token file present but enabled flag false/unset reports disabled -- an abandoned manual attempt, not a live config", () => {
+  delete process.env.DUNE_DISCORD_ADAPTER_ENABLED;
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-abandoned-"));
+  const tokenFile = join(dir, "discord-adapter-token.txt");
+  writeFileSync(tokenFile, "leftover-from-a-manual-attempt\n");
+  process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE = tokenFile;
+  const state = readDiscordBotSettingsState({});
+  assert.equal(state.enabled, false, "an abandoned token file with the enabled flag off must still report disabled -- enabled comes from the flag, not file presence");
+  assert.equal(state.tokenConfigured, true, "but tokenConfigured should still reflect the file's real presence, since Enable must not blindly overwrite it without the operator seeing it exists");
+});
+
+test("readDiscordBotSettingsState: role IDs set independently of the enabled flag are still reported", () => {
+  delete process.env.DUNE_DISCORD_ADAPTER_ENABLED;
+  process.env.DISCORD_ADMIN_ROLE_IDS = "333333333333333333";
+  const state = readDiscordBotSettingsState({});
+  assert.equal(state.enabled, false);
+  assert.deepEqual(state.roleIds.admin, ["333333333333333333"]);
+});
