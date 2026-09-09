@@ -71,6 +71,14 @@ for gm in group_pattern.finditer(sec2_text):
             "confirmation": confirmation,
         }
 
+assert len(commands) >= 20, (
+    f"Only parsed {len(commands)} commands from Section 2 -- expected at least 20. "
+    "This almost certainly means the doc's table markup changed and the parser silently "
+    "stopped matching most of it, which would make every downstream check below run against "
+    "a near-empty command set and report a false-clean pass. Fix the parser before trusting "
+    "'TOTAL ISSUES FOUND: 0' below. (Added after round-7 audit, LOW, batch #791, GRC hat.)"
+)
+
 print(f"Parsed {len(commands)} commands from Section 2:")
 for k, v in commands.items():
     print(f"  {k!r:25s} tier={v['tier']:10s} iam={v['iam_action']:30s} conf={v['confirmation'][:60]}")
