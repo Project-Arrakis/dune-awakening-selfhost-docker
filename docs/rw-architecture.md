@@ -200,12 +200,14 @@ existing IAM system already does this.
 | Subcommand | Core Adapter Endpoint | IAM Action | Tier | Confirmation |
 |------------|----------------------|------------|------|-------------|
 | `kick <name> [reason]` | write/execute → `POST /api/players/.../kick` | `players:mutate` | admin | Yes (shows player name) |
-| `ban <name> [reason]` | write/execute → `DELETE /api/players/.../ban` | `players:mutate` | admin | Yes (shows player name + reason; requires typing `"BAN PLAYER"` — added by the mechanical cross-reference script (issue #777, run after round 6), this cell previously omitted the real phrase requirement stated only in a separate paragraph below) |
+| `ban <name> [reason]` | write/execute → `POST /api/players/.../ban` | `players:mutate` | admin | Yes (shows player name + reason; requires typing `"BAN PLAYER"` — added by the mechanical cross-reference script (issue #777, run after round 6), this cell previously omitted the real phrase requirement stated only in a separate paragraph below) |
 | `warn <name> <message>` | write/execute → `POST /api/admin/map-chat` | `admin:map-chat` | moderator | No (non-destructive) |
 | `give-item <player> <item> [qty]` | write/execute → `POST /api/players/.../give-item` | `players:mutate` | **owner** | Yes (shows item name, quantity, recipient) |
 | `clear-backpack <player>` | write/execute → `POST /api/players/.../clean-inventory` | `players:mutate` | **owner** | Yes (Discord-side confirmation only — user types `"CLEAN INVENTORY"`; this is a UX safeguard against misclicks, not independently verified against the typed text server-side — see Section 3.5's clarification. Wording corrected after round-4 audit, batch #755, UI/UX hat: a prior revision's "server-required phrase" wording implied server-side verification of the typed text, which is inaccurate) |
 | `unban <player>` | write/execute → `DELETE /api/players/.../ban` | `players:mutate` | admin | Yes (shows player name + original ban reason/date) |
 | `fill-water <player>` | write/execute → `POST /api/players/.../refill-water` | `players:mutate` | admin | No (non-destructive) |
+
+**Corrected during Layer-1 gap-closure work (found while extending the mechanical consistency script to verify endpoints against real code, not just IAM actions/tiers): this table's `ban` row had regressed to the exact CRITICAL #730-class bug ("ban/unban inverted") this document's round-2 audit already fixed once.** The row showed `DELETE /api/players/.../ban` — identical to the `unban` row directly below it — while the real, currently-correct source of truth (Section 3.5's `WRITE_ACTION_ROUTES`, never itself wrong) has always specified `ban` as `POST` and `unban` as `DELETE`, confirmed directly against `playerBanRoute()`'s real method-dispatch logic in `server.js` (`req.method === "POST"` → `banPlayer()`; `req.method === "DELETE"` → `unbanPlayer()`). Only Section 2's human-readable table cell had drifted; Section 3.5's machine-readable table (what Layer 2 actually builds from) was correct throughout, so this was never live-exploitable — but it's the same "a reader of the human-readable table alone gets the wrong answer" pattern this document has now hit for `history-clear`, `clear-backpack`, `warn`, and `fill-water`. Fixed above.
 
 **Corrected after round-2 audit (was CRITICAL #730):** `give-item`'s adapter
 endpoint was originally mapped to a *storage-container* route
@@ -345,9 +347,11 @@ table.
 | Subcommand | Core Adapter Endpoint | IAM Action | Tier | Confirmation |
 |------------|----------------------|------------|------|-------------|
 | `add <player> <guild>` | write/execute → `POST /api/guilds/.../members` | `guilds:mutate` | admin | Yes |
-| `remove <player>` | write/execute → `DELETE /api/guilds/.../members` | `guilds:mutate` | admin | Yes |
+| `remove <player>` | write/execute → `DELETE /api/guilds/.../members/...` | `guilds:mutate` | admin | Yes |
 
 **Note**: `create` and `rename` deferred until Core `POST /api/guilds` and `PUT /api/guilds/:id` endpoints are implemented (#216).
+
+**Corrected during Layer-1 gap-closure work (found by the same endpoint-verification script extension that caught the `ban`/`unban` regression above): `remove`'s table row had regressed to the exact HIGH #743 bug ("guild.remove route entry missing the target member path segment") this document's round-3 audit already fixed once.** The row showed `DELETE /api/guilds/.../members` with no segment for the target member, while Section 3.5's `WRITE_ACTION_ROUTES` (the real source of truth, never itself wrong here) has always correctly included both the `guildId` and `playerId` segments. Only Section 2's human-readable table cell had drifted. Fixed above.
 
 ---
 
