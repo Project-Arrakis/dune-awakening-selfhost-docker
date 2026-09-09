@@ -249,6 +249,15 @@ async function requireFreshTier3Proof(req, res, body, { auditUrl, action, actor 
   }
   if (!verify.ok) {
     credentialProofRateLimiter.recordFailure(rateKey);
+    // #578 review finding: a "recovery_pending" result (the old
+    // authenticator is dead, a recovery is already in progress against this
+    // factor -- see the login route's own identical branch) fell through to
+    // the generic clock-skew message below, sending the operator down a
+    // futile troubleshooting path instead of toward the actual situation
+    // (finish the resetup they started, or use the host-level reset).
+    if (verify.reason === "recovery_pending") {
+      return deny(400, { totpRequired: true, error: "This console is mid-recovery. Finish the two-factor reset you started, or if that session expired, see the recovery guide to reset from the host." }, "totp_recovery_pending");
+    }
     // A replay is the code you just signed in with -- the default first attempt
     // from the settings form. "Check your clock" sent operators hunting a
     // problem they did not have.
