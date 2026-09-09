@@ -9,6 +9,10 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 ## Unreleased (on top of upstream v1.3.95)
 
+### Documentation
+
+- **`docs/rw-architecture.md` Layer 1 design revised, then corrected after a round-2 Eight-Hat audit found the first revision unsafe** (`meta`#728-737, #740, tracked on #215). The write adapter bridge (#215) and item-catalog endpoint (#222) got a real technical design for the first time. That first pass had fundamental, independently-cross-corroborated flaws caught before any code was written: an internal credential with no verified binding to loopback traffic and no scoping to the bridge's own routes (4 of 8 hats), a tier ladder the existing IAM machinery cannot actually enforce (2 of 8 hats), and two real functional bugs already in the route table (`ban`/`unban` inverted; `give-item` targeting the wrong Core endpoint — 2 of 8 hats each). All CRITICAL/HIGH findings resolved in this revision: a new per-action minimum-tier table, mandatory source-IP + timing-safe credential verification, the two routing bugs fixed, the idempotency cache changed from in-memory to persisted, per-actor rate-limit isolation fixed, and Section 6's test plan rewritten to cover every new mechanism (it had previously been left entirely unchanged despite the design's scope). A round-3 audit against this corrected version is still required before Layer 2 begins.
+
 ### Added
 
 - **`link-check` and `docs-review` CI jobs** (issue #705, `.github`#3). A dead link (a genuine 404) survived undetected in `docs/` for a long time because this repo had zero markdown link validation — `link-check` (lychee, no credentials needed) closes that gap mechanically. `docs-review` adds an automated "tech writer"-style review of doc changes (accuracy, staleness, clarity, completeness) via the org's shared `reusable-docs-review.yml`; it skips cleanly until an `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN` org secret is configured (see `Project-Arrakis/.github`'s `docs/anthropic-api-key-setup.md`). Neither job is wired into `release-gate`'s required-checks list yet — deliberately, so this doesn't newly block releases before the docs-review secret exists.
