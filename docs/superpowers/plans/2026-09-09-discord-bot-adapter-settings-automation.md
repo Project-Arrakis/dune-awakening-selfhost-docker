@@ -252,11 +252,12 @@ git commit -m "feat(settings): add atomic multi-key .env writer"
 
 **Files:**
 - Modify: `console/api/src/services/selfUpdateStatus.js`
+- Modify: `console/web/src/api/updates.ts`
 - Test: `console/api/test/selfUpdateStatus.test.js`
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: `readSelfUpdateStatus(repoRoot, runId)` now returns an object that may include `discordHealthOk: boolean | null` in addition to its existing fields (`null` when the field is absent from the status file — i.e. for every existing self-update status file, and for a discord-adapter status file before the health-check line has been written).
+- Produces: `readSelfUpdateStatus(repoRoot, runId)` now returns an object that may include `discordHealthOk: boolean | null` in addition to its existing fields (`null` when the field is absent from the status file — i.e. for every existing self-update status file, and for a discord-adapter status file before the health-check line has been written). The frontend `StackUpdateProgress` type (`console/web/src/api/updates.ts`) is extended to match — Task 11's polling code reads `progress.discordHealthOk`, and without this the property does not exist on the type and `tsc --noEmit` fails.
 
 Audit finding #14 (HIGH): the console container coming back up doesn't prove the Discord adapter's schema init or token read actually succeeded (both are fail-soft inside the process). Task 4's shell script will write this field after directly verifying `GET /api/integrations/discord/health` against the recreated container; this task makes the reader understand it.
 
@@ -344,10 +345,31 @@ function parseOptionalBool(value) {
 Run: `cd console/api && node --test test/selfUpdateStatus.test.js`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Update the matching frontend type**
+
+In `console/web/src/api/updates.ts`, add the new optional field to `StackUpdateProgress`:
+
+```ts
+export type StackUpdateProgress = {
+  runId: string;
+  state: "pending" | "running" | "succeeded" | "failed";
+  stage: string;
+  percent: number;
+  message: string;
+  startedAt?: string | null;
+  updatedAt?: string | null;
+  finishedAt?: string | null;
+  discordHealthOk?: boolean | null;
+};
+```
+
+Run: `cd console/web && npx tsc --noEmit`
+Expected: 0 errors (this type change alone has no consumers yet — Task 11 is the first to read `discordHealthOk`).
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add console/api/src/services/selfUpdateStatus.js console/api/test/selfUpdateStatus.test.js
+git add console/api/src/services/selfUpdateStatus.js console/api/test/selfUpdateStatus.test.js console/web/src/api/updates.ts
 git commit -m "feat(settings): extend self-update status schema with an optional discordHealthOk field"
 ```
 
@@ -1480,7 +1502,6 @@ import { discordAdapterSettingsApi, type DiscordBotSettingsState } from "../../a
 import { updatesApi } from "../../api/updates";
 import { persistUpdateTask, loadPersistedUpdateTask } from "../updates/updateUtils";
 import { ConfirmDialog, type ConfirmDialogRequest, type ConfirmDialogOutcome } from "../../components/common/ConfirmDialog";
-import { SecretInput } from "../../components/SecretInput";
 
 const TASK_KEY = "arrakis.discordAdapterEnableTask";
 const POLL_INTERVAL_MS = 2000;
@@ -1657,7 +1678,12 @@ export function DiscordBotSection() {
           <p>Enabled.</p>
           <label>
             Token
-            <SecretInput readOnly value={revealedToken ?? "••••••••••••••••••••••••••••••••"} />
+            {/* Not SecretInput: that component hardcodes type="password" (verified against
+                every existing usage in this codebase, all write-only secret-entry fields) and
+                would keep the real, freshly-generated token permanently dot-masked even when
+                revealedToken holds the plaintext. A plain input, switched to type="text" only
+                while a real value is present, is the correct one-time-reveal control here. */}
+            <input readOnly type={revealedToken ? "text" : "password"} value={revealedToken ?? "••••••••••••••••••••••••••••••••"} />
           </label>
           {revealedToken && <p className="muted">Copy this now — it won't be shown again. Use Regenerate Token to get a new one if you lose it.</p>}
           <label>Player role IDs<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} /></label>
