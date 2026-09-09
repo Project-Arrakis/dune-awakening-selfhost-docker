@@ -164,12 +164,62 @@ test("self-update helper log line is safe even if an arg contained shell metacha
     await new Promise((resolveWait) => setTimeout(resolveWait, 20));
     const dockerArgs = calls.find((c) => c[0] === "run");
     const command = dockerArgs[dockerArgs.length - 1];
-    // The log-echo line must be a single-quoted literal (no unescaped `"`
-    // wrapping args individually) -- assert the vulnerable pattern is gone:
-    // a raw, unescaped `$(` must never appear outside the two intentional,
-    // static `$(date -Is)` uses.
-    const suspiciousSubstitutions = (command.match(/\$\(/g) || []).length;
-    assert.equal(suspiciousSubstitutions, 1, "only the static 'finished' timestamp should use a live $(date -Is); the start line must use a precomputed JS timestamp");
+    // The vulnerable pattern (individually-shellQuote()-wrapped args
+    // interpolated INTO an outer double-quoted echo string, where the
+    // nested single quotes provide no real protection against $() living
+    // inside the double-quoted context) must never come back. The load-
+    // bearing property of the original fix is that the entire args-
+    // inclusive message is exactly ONE shellQuote()-wrapped (single-quoted)
+    // literal -- not that the timestamp is computed in JS (see the
+    // "Starting"/"finished" timestamp-consistency test below for why the
+    // timestamp itself is back to a live shell $(date -Is)).
+    assert.match(
+      command,
+      /echo "\[\$\(date -Is\)\]" '[^']*self-update install latest[^']*' > 'runtime\/generated\/web-self-update\.log'/,
+      "the Starting line's args-inclusive message must be a single, standalone single-quoted literal argument to echo, separate from the live $(date -Is) timestamp"
+    );
+  } finally {
+    if (previousProject === undefined) delete process.env.DUNE_COMPOSE_PROJECT_NAME;
+    else process.env.DUNE_COMPOSE_PROJECT_NAME = previousProject;
+  }
+});
+
+test("self-update helper 'Starting' and 'finished' log lines use the same timestamp source/format", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-ts-"));
+  const calls = [];
+  const previousProject = process.env.DUNE_COMPOSE_PROJECT_NAME;
+  process.env.DUNE_COMPOSE_PROJECT_NAME = "dune-test";
+  const manager = new TaskManager({
+    repoRoot: dir,
+    hostRepoRoot: "/host/repo",
+    taskRetention: 20,
+    commandTimeoutMs: 5000
+  }, {
+    runDockerCommand: async (args) => {
+      calls.push(args);
+      if (args[0] === "ps") return { code: 0, stdout: "", stderr: "" };
+      return { code: 0, stdout: "helper-id\n", stderr: "" };
+    }
+  });
+
+  try {
+    manager.create("updates", "selfUpdateApply", {});
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    const dockerArgs = calls.find((c) => c[0] === "run");
+    const command = dockerArgs[dockerArgs.length - 1];
+    // Both the "Starting" and "finished" echo lines must derive their
+    // timestamp from the exact same source/format -- a JS
+    // new Date().toISOString() (UTC, milliseconds, literal "Z") and a shell
+    // `$(date -Is)` (local offset, no milliseconds) produce visibly
+    // different formats, which breaks an operator's ability to compute
+    // elapsed time between the two lines in
+    // runtime/generated/web-self-update.log. Both lines must use the live
+    // shell `$(date -Is)` -- exactly two occurrences in the whole command.
+    const dateIsOccurrences = (command.match(/\$\(date -Is\)/g) || []).length;
+    assert.equal(dateIsOccurrences, 2, `expected exactly 2 live $(date -Is) timestamps (one for Starting, one for finished), got ${dateIsOccurrences}. Command:\n${command}`);
+    assert.doesNotMatch(command, /new Date\(\)\.toISOString\(\)/, "the command string itself should never contain JS source -- this just guards against an accidental literal leaking through");
+    assert.match(command, /echo "\[\$\(date -Is\)\]" '/, "the Starting line must use a live $(date -Is) timestamp");
+    assert.match(command, /echo "\[\$\(date -Is\)\] Web UI stack update finished" >>/, "the finished line must use a live $(date -Is) timestamp");
   } finally {
     if (previousProject === undefined) delete process.env.DUNE_COMPOSE_PROJECT_NAME;
     else process.env.DUNE_COMPOSE_PROJECT_NAME = previousProject;

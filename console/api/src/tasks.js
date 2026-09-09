@@ -148,12 +148,24 @@ export class TaskManager {
       ...(process.env.DUNE_SELF_UPDATE_TOKEN ? ["DUNE_SELF_UPDATE_TOKEN"] : [])
     ];
     const logFile = "runtime/generated/web-self-update.log";
-    const startedAtIso = new Date().toISOString();
-    const startLine = `[${startedAtIso}] Starting Web UI stack update: runtime/scripts/dune ${args.join(" ")}`;
+    // The "Starting" and "finished" lines must share one timestamp
+    // source/format so an operator reading this log can compute elapsed
+    // time between them. Both use a live shell $(date -Is), evaluated at
+    // actual execution time inside the helper container -- NOT a
+    // JS-precomputed value, which would show queue time, not real
+    // start/finish time, and would use a different format besides (JS
+    // toISOString() vs. shell date -Is). The security-load-bearing part of
+    // the earlier shell-injection-adjacent fix is preserved here: the
+    // args-inclusive message is still exactly ONE shellQuote()-wrapped
+    // (single-quoted) literal, passed to `echo` as a SEPARATE argument from
+    // the live, unquoted "[$(date -Is)]" prefix -- never nested inside an
+    // outer double-quoted string the way the original vulnerable version
+    // was.
+    const startMessage = `Starting Web UI stack update: runtime/scripts/dune ${args.join(" ")}`;
     const command = [
       "set -eu",
       "mkdir -p runtime/generated",
-      `echo ${shellQuote(startLine)} > ${shellQuote(logFile)}`,
+      `echo "[$(date -Is)]" ${shellQuote(startMessage)} > ${shellQuote(logFile)}`,
       `DUNE_WEB_SELF_UPDATE_HELPER=1 runtime/scripts/dune ${args.map(shellQuote).join(" ")} >> ${shellQuote(logFile)} 2>&1`,
       `echo "[$(date -Is)] Web UI stack update finished" >> ${shellQuote(logFile)}`
     ].join("\n");
