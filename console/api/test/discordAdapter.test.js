@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DISCORD_ADAPTER_ROUTES, DISCORD_CATALOG_PROTOCOL_VERSION, discordAdapterErrorResponse, discordAdapterHealth, discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices, discordAdapterStatus, discordWritesEnabled } from "../src/integrations/discord/adapter.js";
+import { DISCORD_ADAPTER_ROUTES, DISCORD_CATALOG_PROTOCOL_VERSION, discordAdapterErrorResponse, discordAdapterHealth, discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices, discordAdapterStatus, discordRoleMappingFromEnv, discordWritesEnabled } from "../src/integrations/discord/adapter.js";
 
 const OLD_ENV = { ...process.env };
 
@@ -119,6 +119,23 @@ test("reports adapter health with isolated link-state writes", async () => {
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/prometheus"));
   assert.ok(!result.plannedRoutes.includes("/api/integrations/discord/logs"));
   assert.ok(!result.plannedRoutes.includes("/api/integrations/discord/ops/activity"));
+});
+
+test("discordRoleMappingFromEnv falls back to the legacy DISCORD_OBSERVER_ROLE_IDS env var when DISCORD_PLAYER_ROLE_IDS is not set", () => {
+  delete process.env.DISCORD_PLAYER_ROLE_IDS;
+  process.env.DISCORD_OBSERVER_ROLE_IDS = "111111111111111111";
+  const mapping = discordRoleMappingFromEnv();
+  assert.deepEqual(mapping.playerRoleIds, ["111111111111111111"]);
+  delete process.env.DISCORD_OBSERVER_ROLE_IDS;
+});
+
+test("discordRoleMappingFromEnv prefers DISCORD_PLAYER_ROLE_IDS over the legacy var when both are set", () => {
+  process.env.DISCORD_PLAYER_ROLE_IDS = "222222222222222222";
+  process.env.DISCORD_OBSERVER_ROLE_IDS = "111111111111111111";
+  const mapping = discordRoleMappingFromEnv();
+  assert.deepEqual(mapping.playerRoleIds, ["222222222222222222"]);
+  delete process.env.DISCORD_PLAYER_ROLE_IDS;
+  delete process.env.DISCORD_OBSERVER_ROLE_IDS;
 });
 
 test("keeps writes disabled by default and accepts explicit opt-in values", () => {
