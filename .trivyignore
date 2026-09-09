@@ -72,6 +72,22 @@ CVE-2026-9538   # perl-base
 # image rebuild and drop this line when Debian publishes a fixed libexpat1.
 CVE-2026-66046  # libexpat1 -- expat storeAtts() quadratic DoS; no fix in Debian
 
+# Added 2026-09-09 (issue #802). Two more libexpat1 HIGH advisories,
+# published after main's last passing run of this gate (2026-09-08T23:43:10Z,
+# run 34291890004) -- first surfaced on PR #748, whose diff is not the cause.
+# Same package/version already tracked above for CVE-2026-66046
+# (libexpat1 2.8.3-1~deb13u1); per this file's policy a version bump was
+# checked FIRST and none exists -- trivy reports `Fixed Version: (none)` for
+# both. Exposure is nil for the same reason already established above:
+# libexpat1 is a transitive dependency of python3.13-stdlib's pyexpat
+# (issue #489), and nothing in this codebase parses XML -- the same
+# `git grep -iE "expat|xml2js|fast-xml|xmldom|DOMParser|import xml|from xml|
+# xml\.etree" -- console/api/src console/web runtime/scripts` check is still
+# empty. Re-check on every image rebuild and drop these when Debian ships a
+# fixed libexpat1.
+CVE-2026-76956  # libexpat1 -- hash-flooding denial of service; no fix in Debian
+CVE-2026-76957  # libexpat1 -- memory corruption allows RCE or DoS; no fix in Debian
+
 # Debian 13.6 (trixie) python3.13, added 2026-08-25 alongside issue #489's fix
 # (console/api/Dockerfile now installs python3 explicitly -- see that file's
 # comment for why the console cannot function without it). Per this file's own
