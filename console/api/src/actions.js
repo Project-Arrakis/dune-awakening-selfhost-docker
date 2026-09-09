@@ -147,6 +147,11 @@ export const ROUTE_ACTIONS = {
   "POST /api/auth/2fa/recovery-codes/regenerate": "settings:regenerate-recovery-codes",
   "POST /api/settings/public-directory":       "settings:write",
   "POST /api/settings/public-directory/claim": "settings:write",
+  // --- Discord Bot Adapter Settings ---
+  "GET /api/settings/discord-bot":              "settings:read",
+  "POST /api/settings/discord-bot/enable":      "updates:apply",
+  "POST /api/settings/discord-bot/role-ids":    "updates:apply",
+  "POST /api/settings/discord-bot/regenerate-token": "settings:discord-bot-regenerate-token",
 
   // --- Players (read) ---
   "GET /api/players":                          "players:read",
