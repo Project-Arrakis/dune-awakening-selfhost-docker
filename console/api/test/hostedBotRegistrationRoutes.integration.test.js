@@ -385,12 +385,21 @@ test("GET .../hosted-bot/oauth/start and .../oauth/callback also fail closed on 
       headers: { cookie: `asc_session=${session.cookie}` }
     });
     assert.equal(start.status, 403, "oauth/start must fail closed on deploymentChoice, before checking Discord OAuth configuration at all");
+    // Fix round 2, Priority 4 (regression lock for Important #3): the
+    // status-only assertion above passed both before and after the
+    // Important #3 fix (json(res,403,...) vs html(res,403,oauthErrorPage(...))
+    // are both real 403s), so it never actually locked in that fix. This
+    // route is reached by a top-level browser navigation, so its failure
+    // response must be real HTML the operator sees, not a JSON body
+    // rendered as raw text.
+    assert.match(start.headers.get("content-type") || "", /text\/html/, "oauth/start's deploymentChoice-gate failure must be HTML, not JSON -- this is a top-level browser navigation, not an AJAX call");
 
     const callback = await fetch(`http://127.0.0.1:${port}/api/integrations/discord/hosted-bot/oauth/callback?code=x&state=y`, {
       redirect: "manual",
       headers: { cookie: `asc_session=${session.cookie}; hosted_bot_oauth_state=y` }
     });
     assert.equal(callback.status, 403, "oauth/callback must fail closed on deploymentChoice, before checking the state cookie at all");
+    assert.match(callback.headers.get("content-type") || "", /text\/html/, "oauth/callback's deploymentChoice-gate failure must be HTML, not JSON -- same reasoning as oauth/start above");
   } finally {
     await stopProcess(console_.child);
     rmSync(tempDir, { recursive: true, force: true });
@@ -421,8 +430,115 @@ test("GET .../hosted-bot/oauth/callback rejects a state/cookie mismatch with 400
     assert.equal(res.status, 400, "an unrecognized state must be rejected with 400, before any Discord token exchange is attempted");
     const text = await res.text();
     assert.match(text, /invalid or expired/i);
+    // Fix round 2, Priority 4 (regression lock for the state-mismatch
+    // cookie-hygiene fix): mirrors how the /register tests already assert
+    // the cleared handle cookie -- the state cookie is either already used,
+    // expired, or never matched a real pending entry either way, so it
+    // must not be left in the browser for its remaining Max-Age.
+    const clearedState = (res.headers.getSetCookie() || []).some((c) => c.startsWith("hosted_bot_oauth_state=;"));
+    assert.ok(clearedState, "the hosted_bot_oauth_state cookie must be cleared on a state/cookie mismatch");
   } finally {
     await stopProcess(console_.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("GET .../hosted-bot/oauth/callback clears hosted_bot_oauth_state when the Discord token exchange itself fails", async () => {
+  const port = await getFreePort();
+  const unreachablePort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "hosted-bot-routes-e2e-exchangefail-"));
+  const console_ = startConsole(port, tempDir, {
+    DISCORD_OAUTH_CLIENT_ID: "client-id",
+    DISCORD_OAUTH_CLIENT_SECRET: "client-secret",
+    DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: `http://127.0.0.1:${port}/api/integrations/discord/hosted-bot/oauth/callback`,
+    // Deliberately nothing listening on this port -- exchangeDiscordAuthCode's
+    // own fetch to Discord's token endpoint must fail at the connection
+    // level, driving the callback route into its exchange-error catch
+    // block (fix round 2, Priority 4 -- this failure path was previously
+    // untested).
+    DISCORD_OAUTH_BASE_URL: `http://127.0.0.1:${unreachablePort}`
+  });
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+    await enableHostedDeployment(port, session);
+
+    const start = await fetch(`http://127.0.0.1:${port}/api/integrations/discord/hosted-bot/oauth/start`, {
+      redirect: "manual",
+      headers: { cookie: `asc_session=${session.cookie}` }
+    });
+    const oauthStateValue = cookieFrom(start.headers.getSetCookie() || [], "hosted_bot_oauth_state");
+    assert.ok(oauthStateValue, "start must still succeed -- the unreachable Discord endpoint only affects the callback's own token exchange");
+
+    const callback = await fetch(
+      `http://127.0.0.1:${port}/api/integrations/discord/hosted-bot/oauth/callback?code=validcode&state=${encodeURIComponent(oauthStateValue)}`,
+      { redirect: "manual", headers: { cookie: `asc_session=${session.cookie}; hosted_bot_oauth_state=${oauthStateValue}` } }
+    );
+    assert.equal(callback.status, 400, "a Discord token-exchange failure must be surfaced as a real failure to the browser");
+    const text = await callback.text();
+    assert.match(text, /connecting to discord failed/i);
+    const clearedState = (callback.headers.getSetCookie() || []).some((c) => c.startsWith("hosted_bot_oauth_state=;"));
+    assert.ok(clearedState, "the hosted_bot_oauth_state cookie must be cleared on a Discord token-exchange failure -- the state was already successfully consumed to reach this point");
+  } finally {
+    await stopProcess(console_.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("GET .../hosted-bot/oauth/callback clears hosted_bot_oauth_state when the pending-registration store is at capacity", async () => {
+  const port = await getFreePort();
+  const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "hosted-bot-routes-e2e-toomanypending-"));
+  const console_ = startConsole(port, tempDir, {
+    DISCORD_OAUTH_CLIENT_ID: "client-id",
+    DISCORD_OAUTH_CLIENT_SECRET: "client-secret",
+    DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: `http://127.0.0.1:${port}/api/integrations/discord/hosted-bot/oauth/callback`,
+    DISCORD_OAUTH_BASE_URL: `http://127.0.0.1:${discordPort}`
+  });
+  const discordServer = await startHostedBotFakeDiscord(discordPort);
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+    await enableHostedDeployment(port, session);
+
+    // hostedBotPendingRegistrations (hostedBotOAuth.js,
+    // HOSTED_BOT_MAX_PENDING_REGISTRATIONS = 256) never proactively evicts
+    // -- an entry is only ever removed by a matching /register consuming
+    // it. Fill it to exactly capacity with real, completed OAuth round
+    // trips (never calling /register), then confirm the NEXT callback is
+    // rejected with 429 and its own state cookie cleared. This is real
+    // (not simulated) exhaustion of the actual module-scope store the
+    // route uses, matching this file's own "no outbound call was made" /
+    // real-listener discipline elsewhere -- see the file-level comment.
+    async function completeOneOAuthRoundTrip() {
+      const start = await fetch(`http://127.0.0.1:${port}/api/integrations/discord/hosted-bot/oauth/start`, {
+        redirect: "manual",
+        headers: { cookie: `asc_session=${session.cookie}` }
+      });
+      const oauthStateValue = cookieFrom(start.headers.getSetCookie() || [], "hosted_bot_oauth_state");
+      return fetch(
+        `http://127.0.0.1:${port}/api/integrations/discord/hosted-bot/oauth/callback?code=validcode&state=${encodeURIComponent(oauthStateValue)}`,
+        { redirect: "manual", headers: { cookie: `asc_session=${session.cookie}; hosted_bot_oauth_state=${oauthStateValue}` } }
+      );
+    }
+
+    for (let i = 0; i < 256; i += 1) {
+      // eslint-disable-next-line no-await-in-loop -- must be sequential: each
+      // iteration needs its own freshly-issued oauth_state cookie value from
+      // the previous iteration's /start response.
+      const res = await completeOneOAuthRoundTrip();
+      assert.equal(res.status, 200, `round trip ${i + 1}/256 must succeed while the registration store still has room`);
+    }
+
+    const overflow = await completeOneOAuthRoundTrip();
+    assert.equal(overflow.status, 429, "the 257th completed callback must be rejected once the registration store is genuinely at capacity");
+    const overflowText = await overflow.text();
+    assert.match(overflowText, /too many connection attempts/i);
+    const clearedState = (overflow.headers.getSetCookie() || []).some((c) => c.startsWith("hosted_bot_oauth_state=;"));
+    assert.ok(clearedState, "the hosted_bot_oauth_state cookie must be cleared on a too-many-pending rejection -- the state was already successfully consumed to reach this point");
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(discordServer);
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
