@@ -44,7 +44,7 @@ test("Discord Bot settings routes are still dispatched from handleApi", () => {
 test("the /enable route calls applyDiscordBotEnableRequest, not enableDiscordBotAdapter directly", () => {
   const body = enableRoute();
   assert.match(body, /applyDiscordBotEnableRequest\(/, "/enable must use the token-safe wrapper");
-  assert.doesNotMatch(body, /[^y]enableDiscordBotAdapter\(/, "/enable must not call enableDiscordBotAdapter() directly -- that always mints a fresh token");
+  assert.doesNotMatch(body, /enableDiscordBotAdapter\(/, "/enable must not call enableDiscordBotAdapter() directly -- that always mints a fresh token");
 });
 
 // Audit finding #1 (CRITICAL): the response must only include `token` when
