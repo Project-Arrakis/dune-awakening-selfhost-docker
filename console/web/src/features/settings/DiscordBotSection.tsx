@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { discordAdapterSettingsApi, type DiscordBotSettingsState } from "../../api/discordAdapterSettings";
 import { discordHostedBotApi, type OwnedDiscordGuild } from "../../api/discordHostedBotApi";
 import { updatesApi } from "../../api/updates";
@@ -84,11 +84,37 @@ export function DiscordBotSection() {
   // callback redirect back to this page is expected to have stashed the
   // operator's owned-guild list there before this component mounts.
   // readOwnedGuildsFromWindow() deletes the window property as it reads it
-  // (Task 7), so this must run exactly once, not on every render -- the
-  // useState initializer form guarantees that.
+  // (Task 7), which makes the useState initializer below impure --
+  // React.StrictMode (main.tsx) deliberately double-invokes an impure
+  // lazy-initializer function to surface exactly this hazard. Verified
+  // directly (fix-round-1 review): a naive
+  // `useState(() => readOwnedGuildsFromWindow())` genuinely calls
+  // readOwnedGuildsFromWindow() TWICE per mount under StrictMode -- in the
+  // installed React 19 build the DOM still happened to render the real
+  // guild list either way (which call's result React keeps turned out to
+  // be an unspecified implementation detail this component must not rely
+  // on), but the destructive window-read/delete itself still fired twice,
+  // which is the real defect: a second, silent, no-op read of a resource
+  // that's supposed to be consumed exactly once. Cache the outcome of the
+  // *first* call in a ref (created once; empirically confirmed to keep its
+  // mutated value across both StrictMode invocations of this fiber's
+  // render) so the underlying read only ever happens once, and every
+  // invocation of the initializer -- however many times React makes it --
+  // returns the same, cached value. Same hazard class BaseWaterTab.tsx/
+  // BaseInventoryTab.tsx guard against for their load effects (a ref-guard
+  // against StrictMode's double-invoke), adapted here for a lazy
+  // initializer rather than an effect. Covered by the
+  // "reads window.__hostedBotOwnedGuilds__ exactly once under a StrictMode
+  // double-invoke" test below, which asserts the call count directly
+  // rather than relying on the DOM output that happens to look correct
+  // either way.
+  const ownedGuildsFromWindowRef = useRef<OwnedDiscordGuild[] | null | undefined>(undefined);
   const [ownedGuilds, setOwnedGuilds] = useState<OwnedDiscordGuild[] | null>(() => {
-    const fromWindow = discordHostedBotApi.readOwnedGuildsFromWindow();
-    return fromWindow.length > 0 ? fromWindow : null;
+    if (ownedGuildsFromWindowRef.current === undefined) {
+      const fromWindow = discordHostedBotApi.readOwnedGuildsFromWindow();
+      ownedGuildsFromWindowRef.current = fromWindow.length > 0 ? fromWindow : null;
+    }
+    return ownedGuildsFromWindowRef.current;
   });
   const [pickedGuild, setPickedGuild] = useState<OwnedDiscordGuild | null>(null);
   const [connectedGuildName, setConnectedGuildName] = useState<string | null>(null);

@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { api, post } from "../../api/client";
+import { discordHostedBotApi } from "../../api/discordHostedBotApi";
 import { DiscordBotSection } from "./DiscordBotSection";
 
 vi.mock("../../api/client", () => ({
@@ -383,6 +385,71 @@ describe("DiscordBotSection", () => {
     render(<DiscordBotSection />);
     await screen.findByText(/Which server is this for/i);
     expect(screen.getByText("My Test Guild")).toBeInTheDocument();
+  });
+
+  // discordHostedBotApi.readOwnedGuildsFromWindow() (Task 7) deletes
+  // window.__hostedBotOwnedGuilds__ as a side effect of reading it, which
+  // makes the ownedGuilds useState lazy initializer impure.
+  // React.StrictMode (main.tsx) deliberately double-invokes an impure
+  // initializer to surface exactly this hazard -- a naive implementation's
+  // first invocation would read and delete the real list, and a second
+  // invocation would read nothing, silently losing the guild list. Same
+  // hazard class BaseWaterTab.test.tsx/BaseInventoryTab.test.tsx guard
+  // against for their load effects via a StrictMode-wrapped render.
+  it("survives a StrictMode double-invoke of the owned-guilds lazy initializer without losing the real guild list", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
+    (window as any).__hostedBotOwnedGuilds__ = [{ id: "111111111111111111", name: "My Test Guild", owner: true }];
+    render(<StrictMode><DiscordBotSection /></StrictMode>);
+    await screen.findByText(/Which server is this for/i);
+    expect(screen.getByText("My Test Guild")).toBeInTheDocument();
+  });
+
+  // The DOM-only assertion above is not, by itself, reliable RED/GREEN
+  // evidence for this hazard: verified directly (a throwaway diagnostic
+  // build against the pre-fix code, since removed) that in this specific
+  // React 19 build, StrictMode's double-invoke of the lazy initializer
+  // happens to keep the *first* call's result -- so a naive, unguarded
+  // `useState(() => readOwnedGuildsFromWindow())` still renders the real
+  // guild list here, purely by call-order luck that is an implementation
+  // detail, not a documented guarantee. What IS guaranteed, and what this
+  // asserts directly: readOwnedGuildsFromWindow() -- which deletes
+  // window.__hostedBotOwnedGuilds__ as it reads it (Task 7) -- must be
+  // invoked exactly once per mount, never twice, regardless of how many
+  // times React calls the surrounding initializer. A naive implementation
+  // fails this (calls it twice -- confirmed against the pre-fix code
+  // during this fix round); the ref-cache guard passes it.
+  it("reads window.__hostedBotOwnedGuilds__ exactly once under a StrictMode double-invoke, even though the DOM would look correct either way", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
+    (window as any).__hostedBotOwnedGuilds__ = [{ id: "111111111111111111", name: "My Test Guild", owner: true }];
+    const readSpy = vi.spyOn(discordHostedBotApi, "readOwnedGuildsFromWindow");
+    render(<StrictMode><DiscordBotSection /></StrictMode>);
+    await screen.findByText(/Which server is this for/i);
+    expect(readSpy).toHaveBeenCalledTimes(1);
+    readSpy.mockRestore();
+  });
+
+  it("does not navigate when the Connect to hosted bot disclosure is cancelled, and re-enables the button afterward", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
+    const originalLocation = window.location;
+    // @ts-expect-error -- test-only reassignment
+    delete window.location;
+    // @ts-expect-error -- test-only reassignment
+    window.location = { ...originalLocation, href: "" };
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+
+    const connectButton = screen.getByRole("button", { name: /Connect to hosted bot/i });
+    fireEvent.click(connectButton);
+    await screen.findByText(/independently verified/i);
+    expect(connectButton).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
+    await waitFor(() => expect(connectButton).not.toBeDisabled());
+    expect(window.location.href).toBe("");
+    expect(mockPost).not.toHaveBeenCalled();
+
+    // @ts-expect-error -- test-only restoration, same reassignment pattern as above
+    window.location = originalLocation;
   });
 
   it("registering a picked guild calls discordHostedBotApi.register and shows the persisted Connected status", async () => {
