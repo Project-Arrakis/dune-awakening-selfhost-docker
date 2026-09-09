@@ -46,7 +46,8 @@ test("self-update status validates and normalizes a durable helper result", () =
       message: "npm ci timed out",
       startedAt: "2026-08-18T07:00:00+00:00",
       updatedAt: null,
-      finishedAt: "2026-08-18T07:30:00+00:00"
+      finishedAt: "2026-08-18T07:30:00+00:00",
+      discordHealthOk: null
     });
     assert.throws(() => readSelfUpdateStatus(root, "../../etc/passwd"), /Invalid console update run ID/);
   } finally {
@@ -66,4 +67,45 @@ test("self-update status rejects mismatched or corrupt helper state", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("readSelfUpdateStatus surfaces an optional discordHealthOk field when present", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-selfupdate-status-"));
+  const runId = "123e4567-e89b-42d3-a456-426614174000";
+  const statusDir = join(dir, "runtime", "generated", "self-update-status");
+  mkdirSync(statusDir, { recursive: true });
+  writeFileSync(join(statusDir, `${runId}.env`), [
+    `run_id=${runId}`,
+    "state=succeeded",
+    "stage=complete",
+    "percent=100",
+    "message=Discord adapter enabled.",
+    "started_at=2026-09-09T00:00:00Z",
+    "updated_at=2026-09-09T00:01:00Z",
+    "finished_at=2026-09-09T00:01:00Z",
+    "discord_health_ok=1"
+  ].join("\n"));
+
+  const result = readSelfUpdateStatus(dir, runId);
+  assert.equal(result.discordHealthOk, true);
+});
+
+test("readSelfUpdateStatus reports discordHealthOk as null when the field is absent (ordinary self-update status files)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-selfupdate-status-plain-"));
+  const runId = "223e4567-e89b-42d3-a456-426614174000";
+  const statusDir = join(dir, "runtime", "generated", "self-update-status");
+  mkdirSync(statusDir, { recursive: true });
+  writeFileSync(join(statusDir, `${runId}.env`), [
+    `run_id=${runId}`,
+    "state=succeeded",
+    "stage=complete",
+    "percent=100",
+    "message=Console update completed successfully.",
+    "started_at=2026-09-09T00:00:00Z",
+    "updated_at=2026-09-09T00:01:00Z",
+    "finished_at=2026-09-09T00:01:00Z"
+  ].join("\n"));
+
+  const result = readSelfUpdateStatus(dir, runId);
+  assert.equal(result.discordHealthOk, null);
 });

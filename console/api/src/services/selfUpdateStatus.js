@@ -30,7 +30,8 @@ export function readSelfUpdateStatus(repoRoot, runId) {
     message: safeText(fields.message, 500),
     startedAt: safeTimestamp(fields.started_at),
     updatedAt: safeTimestamp(fields.updated_at),
-    finishedAt: safeTimestamp(fields.finished_at)
+    finishedAt: safeTimestamp(fields.finished_at),
+    discordHealthOk: parseOptionalBool(fields.discord_health_ok)
   };
 }
 
@@ -59,4 +60,10 @@ function safeText(value, maxLength) {
 function safeTimestamp(value) {
   const clean = safeText(value, 64);
   return clean && Number.isFinite(Date.parse(clean)) ? clean : null;
+}
+
+function parseOptionalBool(value) {
+  if (value === "1") return true;
+  if (value === "0") return false;
+  return null;
 }
