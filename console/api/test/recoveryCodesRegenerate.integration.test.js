@@ -543,18 +543,22 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
     }
   });
 
-  // #617: before this fix, requireFreshTier3Proof's rate-limit bucket was
-  // keyed by client IP alone, shared across EVERY caller (password rotation,
-  // recovery-code regeneration, TOTP enable, TOTP disable). Exhausting it on
-  // one action from a browser -- a mistyped code while rotating a password,
-  // say -- then refused an entirely untouched action from the same session
-  // moments later. Proves the two real operator-facing routes are now
-  // isolated: exhaust the regenerate-recovery-codes bucket, then confirm
-  // password rotation (with a CORRECT credential) from the same session/IP
-  // still succeeds.
-  test("exhausting the recovery-codes-regenerate credential-proof bucket does not block an unrelated password rotation", async () => {
+  // #617 CORRECTION: an earlier session filed #617 claiming this sharing was
+  // a bug and "fixed" it by keying the bucket per-action -- that directly
+  // contradicted a deliberate, already-tested design decision from an
+  // earlier real DoS fix (see this repo's own
+  // discordOAuthDisable.integration.test.js, "disable shares its rate-limit
+  // bucket with password rotation -- exhausting one blocks the other", #676
+  // §10). Reverted before it reached a released branch. This test pins the
+  // CORRECT, intentional behavior from the recovery-code-regenerate side:
+  // every requireFreshTier3Proof caller is deliberately ONE shared bucket per
+  // IP (they all require a valid session AND CSRF token -- the same threat
+  // model, a compromised/stolen session grinding credentials), so exhausting
+  // it via recovery-code regeneration attempts must ALSO block an otherwise-
+  // valid password rotation from the same session.
+  test("exhausting the credential-proof bucket via recovery-code regeneration also blocks password rotation (shared bucket is intentional)", async () => {
     const port = await getFreePort();
-    const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-limiter-isolation-"));
+    const tempDir = mkdtempSync(join(tmpdir(), "recovery-regen-e2e-shared-bucket-"));
     const consoleProc = startConsole(port, tempDir, { CONSOLE_TOTP_ENABLED: "1" });
     try {
       await waitForHealth(port, 20000, consoleProc.logs);
@@ -571,13 +575,13 @@ describe("recovery-code regeneration", { concurrency: 4 }, () => {
         });
         if (res.status === 429) { sawBlock = true; break; }
       }
-      assert.ok(sawBlock, "the recovery-codes-regenerate bucket is exhausted");
+      assert.ok(sawBlock, "the shared credential-proof bucket is exhausted");
 
       const rotate = await api(port, "/api/settings/admin-password", {
         cookie: actor.cookie, csrf: actor.csrf,
         body: { currentPassword: password, totpCode: await nextCode(), newPassword: "New-Correct-Horse-9!Battery" },
       });
-      assert.equal(rotate.status, 200, "an unrelated action's own bucket must not be affected by exhausting a different action's bucket");
+      assert.equal(rotate.status, 429, "the shared bucket must also block password rotation -- this is the site of a previously-fixed real DoS bug (#676 §10)");
     } finally {
       await stopProcess(consoleProc.child);
       rmSync(tempDir, { recursive: true, force: true });
