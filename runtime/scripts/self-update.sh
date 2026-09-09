@@ -1091,7 +1091,7 @@ resolve_discord_adapter_token() {
 
 verify_discord_adapter_health() {
   local service="$1"
-  local port token health_ok=0
+  local port token health_ok=0 curl_config
 
   port="$(read_env_file_value ADMIN_WEB_PORT || true)"
   [ -n "$port" ] || port="$(read_env_file_value ADMIN_BIND_PORT || true)"
@@ -1099,13 +1099,25 @@ verify_discord_adapter_health() {
 
   token="$(resolve_discord_adapter_token)"
 
+  # Pass the bearer token via a short-lived curl config file (-K) instead of
+  # a literal -H argument -- an argv value is visible to any other process
+  # on the host for the duration of the request via `ps aux`/
+  # /proc/<pid>/cmdline, which is exactly what Requirement 24 (secrets must
+  # not appear in process listings) exists to prevent (audit finding #3,
+  # LOW). curl's config-file format takes `header = "..."` on its own line;
+  # written 0600 and removed immediately after the health-check loop.
+  curl_config="$(mktemp)"
+  chmod 600 "$curl_config"
+  printf 'header = "Authorization: Bearer %s"\n' "$token" > "$curl_config"
+
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if curl -fsS -m 5 -H "Authorization: Bearer $token" "http://127.0.0.1:${port}/api/integrations/discord/health" >/dev/null 2>&1; then
+    if curl -fsS -m 5 -K "$curl_config" "http://127.0.0.1:${port}/api/integrations/discord/health" >/dev/null 2>&1; then
       health_ok=1
       break
     fi
     sleep 2
   done
+  rm -f "$curl_config"
 
   # discord_health_ok must land in the SAME atomic write as state=succeeded
   # (audit finding #2, HIGH) -- a poller that ever observes state:
