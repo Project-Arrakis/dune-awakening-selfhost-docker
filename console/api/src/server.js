@@ -72,7 +72,7 @@ import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPl
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
 import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
-import { validateDiscordRoleIds, readDiscordBotSettingsState, applyDiscordBotEnableRequest, discordAdminRoleIdsChanged, updateDiscordBotRoleIds, regenerateDiscordBotToken } from "./integrations/discord/adapterSettings.js";
+import { validateDiscordRoleIds, readDiscordBotSettingsState, applyDiscordBotEnableRequest, discordAdminRoleIdsChanged, updateDiscordBotRoleIds, regenerateDiscordBotToken, persistHostedBotConnectedGuild } from "./integrations/discord/adapterSettings.js";
 
 const config = loadConfig();
 // #141: ADMIN_AUTH_DISABLED bypasses both password auth (auth.js requireAuth)
@@ -1556,7 +1556,13 @@ async function handleApi(req, res) {
     const botSettingsState = readDiscordBotSettingsState(config);
     if (botSettingsState.deploymentChoice !== "hosted") {
       audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/start"), "hosted-bot.oauth.start", { ok: false, reason: "not_hosted_choice" });
-      return json(res, 403, { error: "This console isn't configured for the hosted bot." });
+      // Final integration review (Important #3): this route is reached by
+      // a top-level browser navigation, not an AJAX call -- every other
+      // failure in this handler (and in /oauth/callback below) renders
+      // oauthErrorPage() as HTML the operator actually sees; a bare JSON
+      // body here used to render as raw text replacing the whole console
+      // UI, inconsistent with the rest of this handler's own convention.
+      return html(res, 403, oauthErrorPage("This console isn't configured for the hosted bot."));
     }
     if (!config.discordOAuthClientId || !config.discordOAuthClientSecret || !config.discordHostedBotOAuthRedirectUri) {
       return html(res, 200, oauthErrorPage("Connecting to the hosted bot isn't configured for this console yet. Set up Discord sign-in (Settings -> Discord OAuth) and register the hosted-bot redirect URI first, then try connecting to the hosted bot again."));
@@ -1590,7 +1596,12 @@ async function handleApi(req, res) {
     const botSettingsState = readDiscordBotSettingsState(config);
     if (botSettingsState.deploymentChoice !== "hosted") {
       audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/callback"), "hosted-bot.oauth.callback", { ok: false, reason: "not_hosted_choice" });
-      return json(res, 403, { error: "This console isn't configured for the hosted bot." });
+      // Final integration review (Important #3) -- same reasoning as
+      // /oauth/start above: this route is a top-level browser navigation
+      // target, so its failure response must be HTML like every other
+      // failure path here, not bare JSON the operator would see as raw
+      // text.
+      return html(res, 403, oauthErrorPage("This console isn't configured for the hosted bot."));
     }
     const callbackUrl = new URL(req.url || "", "http://localhost");
     const code = callbackUrl.searchParams.get("code") || "";
@@ -1601,6 +1612,12 @@ async function handleApi(req, res) {
     // flow's own /start above issued into, PKCE verifier included.
     const consumedState = hostedBotOAuthPendingStates.consume(oauthState, cookieState);
     if (!consumedState.ok) {
+      // Minor fix (final integration review): clear the state cookie here
+      // too, matching the hygiene fix already applied to the registration-
+      // handle cookie in Task 6's fix round -- the state has already been
+      // consumed/rejected either way, so leaving the cookie in the browser
+      // for its remaining Max-Age serves no purpose.
+      res.setHeader("Set-Cookie", clearHostedBotOAuthStateCookie(config.secureCookies));
       audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/callback"), "hosted-bot.oauth.callback", { ok: false, reason: consumedState.reason });
       return html(res, 400, oauthErrorPage("This request was invalid or expired. Go back to Settings and try connecting to the hosted bot again."));
     }
@@ -1617,6 +1634,10 @@ async function handleApi(req, res) {
       });
       owned = await fetchOwnedDiscordGuilds({ accessToken: token.access_token, apiBaseUrl: config.discordOAuthApiBaseUrl });
     } catch (error) {
+      // Same cookie-hygiene fix as above -- the state was already
+      // successfully consumed to reach this catch block, so only the
+      // cookie remains to clear.
+      res.setHeader("Set-Cookie", clearHostedBotOAuthStateCookie(config.secureCookies));
       audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/callback"), "hosted-bot.oauth.callback", { ok: false, reason: error.code || "oauth_error" });
       return html(res, 400, oauthErrorPage("Connecting to Discord failed. Go back to Settings and try again."));
     }
@@ -1626,6 +1647,8 @@ async function handleApi(req, res) {
       userId: owned.userId
     });
     if (!pending) {
+      // Same cookie-hygiene fix as above.
+      res.setHeader("Set-Cookie", clearHostedBotOAuthStateCookie(config.secureCookies));
       audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/callback"), "hosted-bot.oauth.callback", { ok: false, reason: "too_many_pending" });
       return html(res, 429, oauthErrorPage("Too many connection attempts in progress. Try again in a moment."));
     }
@@ -1707,6 +1730,14 @@ async function handleApi(req, res) {
       audit(config, req, "hosted-bot.register", { ok: false, reason: "mentat_rejected", status: mentatResponse.status });
       return json(res, 502, { error: "Could not verify you own that Discord server -- please try connecting again." });
     }
+    // Final integration review (Important #5): persist which guild this
+    // console is now connected to, so "Connected to hosted bot for {name}"
+    // survives a page reload instead of being pure in-memory React state.
+    // guildId here is already OAuth-verified (checked against
+    // consumed.entry.ownedGuildIds above) -- guildName is a caller-
+    // supplied display label only, never itself used for authorization
+    // (see persistHostedBotConnectedGuild's own comment).
+    persistHostedBotConnectedGuild(config, { guildId, guildName: body.guildName });
     res.setHeader("Set-Cookie", clearHostedBotRegistrationHandleCookie(config.secureCookies));
     audit(config, req, "hosted-bot.register", { ok: true, guildId });
     return json(res, 200, { ok: true });

@@ -27,6 +27,14 @@ export async function fetchWithTimeoutAndRetry(url, init = {}, { timeoutMs = DEF
     if (first.ok || (first.status >= 400 && first.status < 500)) return first;
     return await attemptOnce(url, init, fetchImpl, timeoutMs);
   } catch (firstError) {
-    return await attemptOnce(url, init, fetchImpl, timeoutMs);
+    try {
+      return await attemptOnce(url, init, fetchImpl, timeoutMs);
+    } catch (secondError) {
+      // Minor fix (final integration review): `firstError` was caught and
+      // silently discarded -- if the retry also fails, attach the first
+      // attempt's failure as `cause` so a caller/log sees both failures
+      // instead of only the second, identical-looking one.
+      throw new Error(secondError.message, { cause: firstError });
+    }
   }
 }

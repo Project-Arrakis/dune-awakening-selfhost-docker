@@ -139,18 +139,29 @@ function startHostedBotFakeDiscord(port, { userId = USER_ID, guilds = [{ id: HOM
 // MENTAT_BACKEND_REGISTER_URL test-only env override. Every test that needs
 // to prove "no outbound call was made" asserts against `hits()` here,
 // rather than arguing absence in a comment.
-function startFakeMentatBackend(port, { status = 200, body = { ok: true } } = {}) {
+// `statuses`, when given, overrides `status` per-hit (1st hit gets
+// statuses[0], 2nd gets statuses[1], etc., holding the last entry for any
+// further hit) -- used by the retry test below to return 503 then 200 from
+// the SAME listener, so the route's own retry-on-5xx path
+// (fetchWithTimeoutAndRetry) is exercised through the real route, not just
+// the standalone helper's unit tests. `requests()` exposes every parsed
+// JSON body this listener has received, in order, so a test can assert
+// exactly what Core forwarded -- not just that it forwarded something.
+function startFakeMentatBackend(port, { status = 200, body = { ok: true }, statuses } = {}) {
   let hitCount = 0;
+  const requests = [];
   const server = createServer((req, res) => {
     hitCount += 1;
     let raw = "";
     req.on("data", (chunk) => { raw += chunk; });
     req.on("end", () => {
-      res.writeHead(status, { "content-type": "application/json" });
+      requests.push(JSON.parse(raw || "{}"));
+      const responseStatus = Array.isArray(statuses) ? (statuses[hitCount - 1] ?? statuses[statuses.length - 1]) : status;
+      res.writeHead(responseStatus, { "content-type": "application/json" });
       res.end(JSON.stringify(body));
     });
   });
-  return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve({ server, hits: () => hitCount })));
+  return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve({ server, hits: () => hitCount, requests: () => requests })));
 }
 
 function startConsole(port, tempDir, extraEnv = {}) {
@@ -533,6 +544,138 @@ test("hosted-bot/register rejects a guildId the caller does not own with 403, an
 
     const clearedHandle = (register.headers.getSetCookie() || []).some((c) => c.startsWith("hosted_bot_registration_handle=;"));
     assert.ok(clearedHandle, "the now-consumed registration-handle cookie must be cleared even on a guild_not_owned rejection");
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(discordServer);
+    await closeServer(mentat.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// Runs the real /oauth/start -> /oauth/callback round trip and returns the
+// registration-handle cookie the next /register call needs -- factored out
+// for the two success-path tests below (final integration review, I4),
+// which otherwise duplicate every line of this already-covered-elsewhere
+// round trip.
+async function completeHostedBotOAuth(consolePort, session) {
+  const start = await fetch(`http://127.0.0.1:${consolePort}/api/integrations/discord/hosted-bot/oauth/start`, {
+    redirect: "manual",
+    headers: { cookie: `asc_session=${session.cookie}` }
+  });
+  const oauthStateValue = cookieFrom(start.headers.getSetCookie() || [], "hosted_bot_oauth_state");
+  const callback = await fetch(
+    `http://127.0.0.1:${consolePort}/api/integrations/discord/hosted-bot/oauth/callback?code=validcode&state=${encodeURIComponent(oauthStateValue)}`,
+    { redirect: "manual", headers: { cookie: `asc_session=${session.cookie}; hosted_bot_oauth_state=${oauthStateValue}` } }
+  );
+  assert.equal(callback.status, 200, "the OAuth round trip itself must succeed before a /register test can proceed");
+  const handleCookie = cookieFrom(callback.headers.getSetCookie() || [], "hosted_bot_registration_handle");
+  assert.ok(handleCookie, "callback must set a real registration-handle cookie");
+  return handleCookie;
+}
+
+// Final integration review, Important I4: every existing /register test
+// above is negative (403/429/502) except the OAuth round-trip test, which
+// never actually reaches /register's own outbound call -- so the real
+// Core -> mentat wire contract (exactly which fields get forwarded, and
+// that a real 200 makes it back to the browser as {ok:true}) was
+// completely unverified. This closes that gap.
+test("hosted-bot/register succeeds end-to-end: mentat-backend receives exactly the 4 expected fields (no roleMappings), and a 200 response returns {ok:true} to the browser", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const mentatPort = await getFreePort();
+  const OWNED_GUILD = "333333333333333333";
+  const tempDir = mkdtempSync(join(tmpdir(), "hosted-bot-routes-e2e-register-success-"));
+  const console_ = startConsole(consolePort, tempDir, {
+    DISCORD_OAUTH_CLIENT_ID: "client-id",
+    DISCORD_OAUTH_CLIENT_SECRET: "client-secret",
+    DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: `http://127.0.0.1:${consolePort}/api/integrations/discord/hosted-bot/oauth/callback`,
+    DISCORD_OAUTH_BASE_URL: `http://127.0.0.1:${discordPort}`,
+    MENTAT_BACKEND_REGISTER_URL: `http://127.0.0.1:${mentatPort}/api/consoles/register`
+  });
+  const discordServer = await startHostedBotFakeDiscord(discordPort, {
+    guilds: [{ id: OWNED_GUILD, name: "Owned Alpha", owner: true }]
+  });
+  const mentat = await startFakeMentatBackend(mentatPort, { status: 200, body: { ok: true } });
+  try {
+    await waitForHealth(consolePort);
+    const session = await loginAsOwner(consolePort);
+    await enableHostedDeployment(consolePort, session);
+    const handleCookie = await completeHostedBotOAuth(consolePort, session);
+
+    const consoleUrl = `http://127.0.0.1:${consolePort}`;
+    const register = await fetch(`http://127.0.0.1:${consolePort}/api/integrations/discord/hosted-bot/register`, {
+      method: "POST",
+      headers: {
+        cookie: `asc_session=${session.cookie}; hosted_bot_registration_handle=${handleCookie}`,
+        "x-csrf-token": session.csrf,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ guildId: OWNED_GUILD, guildName: "Owned Alpha", consoleUrl })
+    });
+    assert.equal(register.status, 200, "a successful mentat response must return 200 to the browser");
+    assert.deepEqual(await register.json(), { ok: true });
+
+    assert.equal(mentat.hits(), 1, "exactly one outbound call to mentat-backend on a clean success");
+    const [forwarded] = mentat.requests();
+    assert.ok(forwarded, "mentat-backend must have received a request body");
+    assert.deepEqual(
+      Object.keys(forwarded).sort(),
+      ["adapterToken", "consoleUrl", "discordAccessToken", "guildId"].sort(),
+      "the outbound body must carry exactly these 4 fields -- nothing more, nothing less"
+    );
+    assert.equal(forwarded.guildId, OWNED_GUILD);
+    assert.equal(forwarded.consoleUrl, consoleUrl);
+    assert.ok(forwarded.discordAccessToken, "must forward the real Discord access token obtained during the OAuth round trip");
+    assert.ok(forwarded.adapterToken, "must forward the console's real adapter token");
+    assert.equal(forwarded.roleMappings, undefined, "roleMappings must never be sent to mentat -- global plan constraint");
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(discordServer);
+    await closeServer(mentat.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// Final integration review, Important I4 (retry path): exercises
+// fetchWithTimeoutAndRetry's retry-on-5xx behavior through this ACTUAL
+// route -- not just the helper's own standalone unit tests
+// (httpWithRetry.test.js) -- by making the fake mentat-backend listener
+// itself return 503 on the first hit and 200 on the second.
+test("hosted-bot/register retries exactly once against mentat-backend on a 503, then succeeds", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const mentatPort = await getFreePort();
+  const OWNED_GUILD = "333333333333333333";
+  const tempDir = mkdtempSync(join(tmpdir(), "hosted-bot-routes-e2e-register-retry-"));
+  const console_ = startConsole(consolePort, tempDir, {
+    DISCORD_OAUTH_CLIENT_ID: "client-id",
+    DISCORD_OAUTH_CLIENT_SECRET: "client-secret",
+    DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: `http://127.0.0.1:${consolePort}/api/integrations/discord/hosted-bot/oauth/callback`,
+    DISCORD_OAUTH_BASE_URL: `http://127.0.0.1:${discordPort}`,
+    MENTAT_BACKEND_REGISTER_URL: `http://127.0.0.1:${mentatPort}/api/consoles/register`
+  });
+  const discordServer = await startHostedBotFakeDiscord(discordPort, {
+    guilds: [{ id: OWNED_GUILD, name: "Owned Alpha", owner: true }]
+  });
+  const mentat = await startFakeMentatBackend(mentatPort, { statuses: [503, 200], body: { ok: true } });
+  try {
+    await waitForHealth(consolePort);
+    const session = await loginAsOwner(consolePort);
+    await enableHostedDeployment(consolePort, session);
+    const handleCookie = await completeHostedBotOAuth(consolePort, session);
+
+    const register = await fetch(`http://127.0.0.1:${consolePort}/api/integrations/discord/hosted-bot/register`, {
+      method: "POST",
+      headers: {
+        cookie: `asc_session=${session.cookie}; hosted_bot_registration_handle=${handleCookie}`,
+        "x-csrf-token": session.csrf,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ guildId: OWNED_GUILD, guildName: "Owned Alpha", consoleUrl: `http://127.0.0.1:${consolePort}` })
+    });
+    assert.equal(register.status, 200, "the route must succeed once the retry gets a 200, not surface the first 503 to the browser");
+    assert.deepEqual(await register.json(), { ok: true });
+    assert.equal(mentat.hits(), 2, "must have retried exactly once after the initial 503 -- one failed attempt, one successful retry");
   } finally {
     await stopProcess(console_.child);
     await closeServer(discordServer);

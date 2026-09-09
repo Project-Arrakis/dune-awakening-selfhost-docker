@@ -10,6 +10,14 @@ export type DiscordBotSettingsState = {
   // self-hosted `choice` toggle -- null when never set. Superset of what
   // the frontend used to hold only in localStorage.
   deploymentChoice?: "hosted" | "self-hosted" | null;
+  // Final integration review (Important #5): persisted by the /register
+  // route (server.js) on a successful mentat response, via
+  // adapterSettings.js's persistHostedBotConnectedGuild() -- lets
+  // DiscordBotSection show a real "Connected to hosted bot for {name}"
+  // across a page reload instead of losing that state the moment the
+  // in-memory React state is gone.
+  hostedBotConnectedGuildId?: string | null;
+  hostedBotConnectedGuildName?: string | null;
 };
 
 export const discordAdapterSettingsApi = {

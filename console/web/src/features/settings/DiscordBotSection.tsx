@@ -80,41 +80,46 @@ export function DiscordBotSection() {
   // anyway.
   const [submitting, setSubmitting] = useState(false);
   // Task 8 (hosted-bot console-initiated OAuth registration): seeded once,
-  // synchronously, from window.__hostedBotOwnedGuilds__ -- the OAuth
-  // callback redirect back to this page is expected to have stashed the
-  // operator's owned-guild list there before this component mounts.
-  // readOwnedGuildsFromWindow() deletes the window property as it reads it
-  // (Task 7), which makes the useState initializer below impure --
-  // React.StrictMode (main.tsx) deliberately double-invokes an impure
-  // lazy-initializer function to surface exactly this hazard. Verified
-  // directly (fix-round-1 review): a naive
-  // `useState(() => readOwnedGuildsFromWindow())` genuinely calls
-  // readOwnedGuildsFromWindow() TWICE per mount under StrictMode -- in the
-  // installed React 19 build the DOM still happened to render the real
-  // guild list either way (which call's result React keeps turned out to
-  // be an unspecified implementation detail this component must not rely
-  // on), but the destructive window-read/delete itself still fired twice,
-  // which is the real defect: a second, silent, no-op read of a resource
-  // that's supposed to be consumed exactly once. Cache the outcome of the
-  // *first* call in a ref (created once; empirically confirmed to keep its
-  // mutated value across both StrictMode invocations of this fiber's
-  // render) so the underlying read only ever happens once, and every
-  // invocation of the initializer -- however many times React makes it --
-  // returns the same, cached value. Same hazard class BaseWaterTab.tsx/
-  // BaseInventoryTab.tsx guard against for their load effects (a ref-guard
-  // against StrictMode's double-invoke), adapted here for a lazy
-  // initializer rather than an effect. Covered by the
-  // "reads window.__hostedBotOwnedGuilds__ exactly once under a StrictMode
-  // double-invoke" test below, which asserts the call count directly
-  // rather than relying on the DOM output that happens to look correct
-  // either way.
-  const ownedGuildsFromWindowRef = useRef<OwnedDiscordGuild[] | null | undefined>(undefined);
+  // synchronously, from sessionStorage -- the OAuth callback redirect back
+  // to this page is expected to have stashed the operator's owned-guild
+  // list there before this component mounts (see hostedBotOAuth.js's
+  // hostedBotOAuthReturnPage(), and discordHostedBotApi.readOwnedGuilds(),
+  // renamed from readOwnedGuildsFromWindow -- final integration review,
+  // CRITICAL -- since a plain `window` property never actually survives the
+  // callback page's own full-document `window.location.replace("/")`
+  // navigation into this SPA's brand-new window; sessionStorage is scoped
+  // to the origin, not to a `window` instance, so it does).
+  // readOwnedGuilds() deletes the sessionStorage key as it reads it, which
+  // makes the useState initializer below impure -- React.StrictMode
+  // (main.tsx) deliberately double-invokes an impure lazy-initializer
+  // function to surface exactly this hazard. Verified directly (fix-round-1
+  // review, when this still read from `window`): a naive
+  // `useState(() => readOwnedGuildsFromWindow())` genuinely calls the reader
+  // TWICE per mount under StrictMode -- in the installed React 19 build the
+  // DOM still happened to render the real guild list either way (which
+  // call's result React keeps turned out to be an unspecified
+  // implementation detail this component must not rely on), but the
+  // destructive read/delete itself still fired twice, which is the real
+  // defect: a second, silent, no-op read of a resource that's supposed to
+  // be consumed exactly once. Cache the outcome of the *first* call in a
+  // ref (created once; empirically confirmed to keep its mutated value
+  // across both StrictMode invocations of this fiber's render) so the
+  // underlying read only ever happens once, and every invocation of the
+  // initializer -- however many times React makes it -- returns the same,
+  // cached value. Same hazard class BaseWaterTab.tsx/BaseInventoryTab.tsx
+  // guard against for their load effects (a ref-guard against StrictMode's
+  // double-invoke), adapted here for a lazy initializer rather than an
+  // effect. Covered by the "reads owned guilds exactly once under a
+  // StrictMode double-invoke" test below, which asserts the call count
+  // directly rather than relying on the DOM output that happens to look
+  // correct either way.
+  const ownedGuildsFromStorageRef = useRef<OwnedDiscordGuild[] | null | undefined>(undefined);
   const [ownedGuilds, setOwnedGuilds] = useState<OwnedDiscordGuild[] | null>(() => {
-    if (ownedGuildsFromWindowRef.current === undefined) {
-      const fromWindow = discordHostedBotApi.readOwnedGuildsFromWindow();
-      ownedGuildsFromWindowRef.current = fromWindow.length > 0 ? fromWindow : null;
+    if (ownedGuildsFromStorageRef.current === undefined) {
+      const fromStorage = discordHostedBotApi.readOwnedGuilds();
+      ownedGuildsFromStorageRef.current = fromStorage.length > 0 ? fromStorage : null;
     }
-    return ownedGuildsFromWindowRef.current;
+    return ownedGuildsFromStorageRef.current;
   });
   const [pickedGuild, setPickedGuild] = useState<OwnedDiscordGuild | null>(null);
   const [connectedGuildName, setConnectedGuildName] = useState<string | null>(null);
@@ -134,6 +139,17 @@ export function DiscordBotSection() {
     // operator already set before this change shipped, or one already
     // selected in this session that hasn't been submitted yet.
     if (nextState.deploymentChoice) setChoice(nextState.deploymentChoice);
+    // Final integration review (Important #5): the persisted hosted-bot
+    // connection (adapterSettings.js's persistHostedBotConnectedGuild(),
+    // written by the /register route on a successful mentat response) is
+    // now the source of truth for "Connected to hosted bot for {name}"
+    // across a page reload -- previously this was pure in-memory React
+    // state, so a reload silently showed "Connect to hosted bot" again as
+    // if the registration had never happened. Only set it when the server
+    // actually has a value; don't clobber an in-session value that hasn't
+    // round-tripped through a refresh() yet (same discipline as
+    // deploymentChoice above).
+    if (nextState.hostedBotConnectedGuildName) setConnectedGuildName(nextState.hostedBotConnectedGuildName);
     // On a failed-attempt Retry, don't clobber role IDs the operator already
     // typed with the (still-disabled) server's stale values (finding #4,
     // Layer 3 review) -- only a genuine fresh mount-time load, or a refresh
@@ -361,12 +377,20 @@ export function DiscordBotSection() {
     setSubmitting(true);
     setError("");
     try {
-      await discordHostedBotApi.register(pickedGuild.id, window.location.origin);
+      await discordHostedBotApi.register(pickedGuild.id, pickedGuild.name, window.location.origin);
       setConnectedGuildName(pickedGuild.name);
       setOwnedGuilds(null);
       setPickedGuild(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      // Final integration review (Important #6): on failure (needsReauth,
+      // a 502 from mentat, etc.), clear the picker too -- otherwise the
+      // operator is stuck looking at a guild picker with an error message
+      // telling them to "connect again," with no way to actually restart
+      // the flow, since the "Connect to hosted bot" button only renders
+      // when ownedGuilds is null.
+      setOwnedGuilds(null);
+      setPickedGuild(null);
     } finally {
       setSubmitting(false);
     }
@@ -425,6 +449,24 @@ export function DiscordBotSection() {
       {phase === "enabled" && state && (
         <>
           <p>Enabled.</p>
+          {/* Final integration review (Important #2): this toggle used to
+              render only in phase === "disabled", so a console that was
+              already enabled before this branch shipped had no UI to ever
+              set deploymentChoice server-side -- the client's `choice`
+              state fell back to localStorage (which may be empty), and the
+              server-side /oauth/start, /oauth/callback, and /register gates
+              stayed closed forever unless the operator happened to also
+              touch "Save Role IDs" with a `choice` already set some other
+              way. Rendering it here too, wired to the same Save Role IDs
+              submit (handleUpdateRoleIds already sends `deploymentChoice:
+              choice`), lets an already-enabled operator set it
+              retroactively and immediately see "Connect to hosted bot"
+              appear once it's persisted as "hosted". */}
+          <div className="settings-choice">
+            <p>Which are you using?</p>
+            <button className={choice === "hosted" ? "active" : ""} aria-pressed={choice === "hosted"} onClick={() => updateChoice("hosted")}>Hosted bot</button>
+            <button className={choice === "self-hosted" ? "active" : ""} aria-pressed={choice === "self-hosted"} onClick={() => updateChoice("self-hosted")}>Self-hosting</button>
+          </div>
           {/* The real, one-time reveal (plaintext value + Copy button) now
               lives in the hoisted block above, so it also survives a
               transition into phase === "failed" (Finding 4). This masked

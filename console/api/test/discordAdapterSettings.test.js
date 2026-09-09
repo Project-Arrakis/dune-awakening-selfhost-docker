@@ -10,7 +10,8 @@ import {
   updateDiscordBotRoleIds,
   regenerateDiscordBotToken,
   applyDiscordBotEnableRequest,
-  discordAdminRoleIdsChanged
+  discordAdminRoleIdsChanged,
+  persistHostedBotConnectedGuild
 } from "../src/integrations/discord/adapterSettings.js";
 import { readDiscordBotApiToken } from "../src/integrations/discord/routes.js";
 
@@ -492,4 +493,54 @@ test("discordAdminRoleIdsChanged reports true when an admin role ID is removed",
 
 test("discordAdminRoleIdsChanged reports true when the admin role ID set is swapped for a different one of the same size", () => {
   assert.equal(discordAdminRoleIdsChanged(["111111111111111111"], ["222222222222222222"]), true);
+});
+
+// Final integration review (Important #5): persistHostedBotConnectedGuild()
+// is what makes "Connected to hosted bot for {name}" survive a page reload
+// instead of being pure in-memory React state -- these lock in its
+// persist-and-mirror contract, matching the same discipline every other
+// mutator in this file already has its own tests for.
+test("persistHostedBotConnectedGuild persists both the guild id and name, and readDiscordBotSettingsState reflects them immediately in this process", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-connected-"));
+  const result = persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
+  assert.equal(result.ok, true);
+  const envContent = readFileSync(join(dir, ".env"), "utf8");
+  assert.match(envContent, /^DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID=111111111111111111$/m);
+  assert.match(envContent, /^DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME=Fleetyard$/m);
+  // No manual process.env write needed -- persistHostedBotConnectedGuild()
+  // mirrors into the running process itself, same as every other mutator
+  // in this file.
+  const state = readDiscordBotSettingsState({});
+  assert.equal(state.hostedBotConnectedGuildId, "111111111111111111");
+  assert.equal(state.hostedBotConnectedGuildName, "Fleetyard");
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID;
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
+});
+
+test("readDiscordBotSettingsState reports the hosted-bot connected guild fields as null when never set", () => {
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID;
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
+  const state = readDiscordBotSettingsState({});
+  assert.equal(state.hostedBotConnectedGuildId, null);
+  assert.equal(state.hostedBotConnectedGuildName, null);
+});
+
+test("persistHostedBotConnectedGuild trims and length-caps a free-text guild name, and falls back to the guild id when the name is blank", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-connected-sanitize-"));
+  const longName = "x".repeat(200);
+  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "222222222222222222", guildName: `  ${longName}  ` });
+  assert.equal(process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME.length, 100, "a free-text guild name must be capped, matching Discord's own 100-character guild-name limit");
+
+  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "333333333333333333", guildName: "   " });
+  assert.equal(process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME, "333333333333333333", "a blank guild name must fall back to the guild id rather than persisting an empty label");
+
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID;
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
+});
+
+test("persistHostedBotConnectedGuild is a no-op (does not write) when guildId is missing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-connected-noop-"));
+  const result = persistHostedBotConnectedGuild({ repoRoot: dir }, { guildName: "Fleetyard" });
+  assert.equal(result.ok, false);
+  assert.ok(!existsSync(join(dir, ".env")), "no .env file should be created when there is no real guildId to persist");
 });

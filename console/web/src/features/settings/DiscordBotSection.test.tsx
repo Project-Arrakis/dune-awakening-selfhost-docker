@@ -14,15 +14,29 @@ const mockApi = vi.mocked(api);
 const mockPost = vi.mocked(post);
 const TASK_KEY = "arrakis.discordAdapterEnableTask";
 
+// Final integration review (CRITICAL): seeds the owned-guilds list the way
+// the REAL OAuth callback page now does -- via sessionStorage, under the
+// exact key discordHostedBotApi.readOwnedGuilds() reads -- instead of the
+// old, broken `window.__hostedBotOwnedGuilds__` property, which a real
+// browser navigation would have already destroyed by the time this
+// component mounts. See discordHostedBotApi.test.ts for the test that
+// exercises the real hostedBotOAuthReturnPage() -> readOwnedGuilds()
+// round trip across an actual navigation boundary.
+function seedOwnedGuilds(guilds: Array<{ id: string; name: string; owner: true }>) {
+  window.sessionStorage.setItem("hostedBotOwnedGuilds", JSON.stringify(guilds));
+}
+
 describe("DiscordBotSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
+    window.sessionStorage.clear();
   });
 
   afterEach(() => {
     vi.useRealTimers();
     window.localStorage.clear();
+    window.sessionStorage.clear();
   });
 
   it("renders the Disabled state and asks hosted-or-self-hosted before enabling, when nothing is configured yet", async () => {
@@ -40,8 +54,45 @@ describe("DiscordBotSection", () => {
     } as never);
     render(<DiscordBotSection />);
     await screen.findByText(/Enabled/i);
-    expect(screen.queryByText(/Which are you using/i)).toBeNull();
+    // The Disabled-phase-only "Enable Discord Bot Integration" action must
+    // never appear once genuinely enabled -- that's the real finding #7
+    // guarantee this test exists for. It no longer also asserts "Which are
+    // you using?" is absent: the final integration review (Important #2)
+    // deliberately made that hosted/self-hosted toggle render in the
+    // Enabled phase too (wired to Save Role IDs), so an already-enabled
+    // console has a way to set deploymentChoice retroactively -- see the
+    // dedicated test for that below.
+    expect(screen.queryByRole("button", { name: /Enable Discord Bot Integration/i })).toBeNull();
     expect(screen.getByDisplayValue("111111111111111111")).toBeInTheDocument();
+  });
+
+  // Final integration review (Important #2): an operator whose console was
+  // already enabled before this branch shipped previously had NO UI to
+  // ever set deploymentChoice server-side once past the Disabled phase --
+  // the toggle only rendered there. Confirms it now renders in Enabled
+  // too, and that picking "Hosted bot" there and saving persists it the
+  // same way the Disabled-phase toggle already does (via
+  // handleUpdateRoleIds' own deploymentChoice: choice payload).
+  it("renders the hosted/self-hosted toggle in the Enabled phase too, and Save Role IDs persists a choice made there", async () => {
+    mockApi.mockResolvedValue({
+      enabled: true,
+      roleIds: { player: [], moderator: [], admin: [] },
+      tokenConfigured: true,
+      deploymentChoice: null
+    } as never);
+    mockPost.mockResolvedValue({ task: { id: "task-1", state: "running" } } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+    expect(screen.getByText(/Which are you using/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Save Role IDs/i }));
+    await screen.findByText(/restart to apply this change/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
+      "/api/settings/discord-bot/role-ids",
+      expect.objectContaining({ deploymentChoice: "hosted" })
+    ));
   });
 
   it("shows a disambiguating note distinguishing this section from Discord OAuth", async () => {
@@ -379,17 +430,18 @@ describe("DiscordBotSection", () => {
     window.location = originalLocation;
   });
 
-  it("renders the owned-guilds picker from window.__hostedBotOwnedGuilds__ on mount when present", async () => {
+  it("renders the owned-guilds picker from sessionStorage on mount when present", async () => {
     mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
-    (window as any).__hostedBotOwnedGuilds__ = [{ id: "111111111111111111", name: "My Test Guild", owner: true }];
+    seedOwnedGuilds([{ id: "111111111111111111", name: "My Test Guild", owner: true }]);
     render(<DiscordBotSection />);
     await screen.findByText(/Which server is this for/i);
     expect(screen.getByText("My Test Guild")).toBeInTheDocument();
   });
 
-  // discordHostedBotApi.readOwnedGuildsFromWindow() (Task 7) deletes
-  // window.__hostedBotOwnedGuilds__ as a side effect of reading it, which
-  // makes the ownedGuilds useState lazy initializer impure.
+  // discordHostedBotApi.readOwnedGuilds() (Task 7; renamed from
+  // readOwnedGuildsFromWindow in the final integration review's CRITICAL
+  // fix) deletes the sessionStorage key as a side effect of reading it,
+  // which makes the ownedGuilds useState lazy initializer impure.
   // React.StrictMode (main.tsx) deliberately double-invokes an impure
   // initializer to surface exactly this hazard -- a naive implementation's
   // first invocation would read and delete the real list, and a second
@@ -398,7 +450,7 @@ describe("DiscordBotSection", () => {
   // against for their load effects via a StrictMode-wrapped render.
   it("survives a StrictMode double-invoke of the owned-guilds lazy initializer without losing the real guild list", async () => {
     mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
-    (window as any).__hostedBotOwnedGuilds__ = [{ id: "111111111111111111", name: "My Test Guild", owner: true }];
+    seedOwnedGuilds([{ id: "111111111111111111", name: "My Test Guild", owner: true }]);
     render(<StrictMode><DiscordBotSection /></StrictMode>);
     await screen.findByText(/Which server is this for/i);
     expect(screen.getByText("My Test Guild")).toBeInTheDocument();
@@ -409,19 +461,19 @@ describe("DiscordBotSection", () => {
   // build against the pre-fix code, since removed) that in this specific
   // React 19 build, StrictMode's double-invoke of the lazy initializer
   // happens to keep the *first* call's result -- so a naive, unguarded
-  // `useState(() => readOwnedGuildsFromWindow())` still renders the real
-  // guild list here, purely by call-order luck that is an implementation
-  // detail, not a documented guarantee. What IS guaranteed, and what this
-  // asserts directly: readOwnedGuildsFromWindow() -- which deletes
-  // window.__hostedBotOwnedGuilds__ as it reads it (Task 7) -- must be
-  // invoked exactly once per mount, never twice, regardless of how many
-  // times React calls the surrounding initializer. A naive implementation
-  // fails this (calls it twice -- confirmed against the pre-fix code
-  // during this fix round); the ref-cache guard passes it.
-  it("reads window.__hostedBotOwnedGuilds__ exactly once under a StrictMode double-invoke, even though the DOM would look correct either way", async () => {
+  // `useState(() => readOwnedGuilds())` still renders the real guild list
+  // here, purely by call-order luck that is an implementation detail, not
+  // a documented guarantee. What IS guaranteed, and what this asserts
+  // directly: readOwnedGuilds() -- which deletes the sessionStorage key as
+  // it reads it (Task 7) -- must be invoked exactly once per mount, never
+  // twice, regardless of how many times React calls the surrounding
+  // initializer. A naive implementation fails this (calls it twice --
+  // confirmed against the pre-fix code during this fix round); the
+  // ref-cache guard passes it.
+  it("reads the owned-guilds sessionStorage key exactly once under a StrictMode double-invoke, even though the DOM would look correct either way", async () => {
     mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
-    (window as any).__hostedBotOwnedGuilds__ = [{ id: "111111111111111111", name: "My Test Guild", owner: true }];
-    const readSpy = vi.spyOn(discordHostedBotApi, "readOwnedGuildsFromWindow");
+    seedOwnedGuilds([{ id: "111111111111111111", name: "My Test Guild", owner: true }]);
+    const readSpy = vi.spyOn(discordHostedBotApi, "readOwnedGuilds");
     render(<StrictMode><DiscordBotSection /></StrictMode>);
     await screen.findByText(/Which server is this for/i);
     expect(readSpy).toHaveBeenCalledTimes(1);
@@ -452,15 +504,57 @@ describe("DiscordBotSection", () => {
     window.location = originalLocation;
   });
 
-  it("registering a picked guild calls discordHostedBotApi.register and shows the persisted Connected status", async () => {
+  it("registering a picked guild calls discordHostedBotApi.register (including the guild name for Core's own persisted-display record) and shows Connected status immediately", async () => {
     mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
-    (window as any).__hostedBotOwnedGuilds__ = [{ id: "111111111111111111", name: "My Test Guild", owner: true }];
+    seedOwnedGuilds([{ id: "111111111111111111", name: "My Test Guild", owner: true }]);
     mockPost.mockResolvedValue({ ok: true } as never);
     render(<DiscordBotSection />);
     await screen.findByText(/Which server is this for/i);
     fireEvent.click(screen.getByText("My Test Guild"));
     fireEvent.click(screen.getByRole("button", { name: /^Register$/i }));
-    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/integrations/discord/hosted-bot/register", expect.objectContaining({ guildId: "111111111111111111" })));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
+      "/api/integrations/discord/hosted-bot/register",
+      expect.objectContaining({ guildId: "111111111111111111", guildName: "My Test Guild" })
+    ));
     await screen.findByText(/Connected to hosted bot for My Test Guild/i);
+  });
+
+  // Final integration review (Important #5): the "Connected" status must be
+  // real across a page reload, not just immediately after a successful
+  // Register click above -- this simulates a fresh mount (a reload) where
+  // the backend's own GET already reports a previously-persisted
+  // connection (adapterSettings.js's persistHostedBotConnectedGuild(),
+  // written by a PRIOR successful /register call in an earlier session),
+  // with no register interaction in this test at all.
+  it("shows Connected status on a fresh mount when the backend reports a previously-persisted hosted-bot connection", async () => {
+    mockApi.mockResolvedValue({
+      enabled: true,
+      roleIds: { player: [], moderator: [], admin: [] },
+      tokenConfigured: true,
+      deploymentChoice: "hosted",
+      hostedBotConnectedGuildId: "111111111111111111",
+      hostedBotConnectedGuildName: "My Test Guild"
+    } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Connected to hosted bot for My Test Guild/i);
+    expect(screen.queryByRole("button", { name: /Connect to hosted bot/i })).toBeNull();
+  });
+
+  // Final integration review (Important #6): after a /register failure
+  // (needsReauth, a 502 from mentat, etc.), the guild picker used to stay
+  // rendered forever with only an error message and no way to restart the
+  // flow, since "Connect to hosted bot" only renders when ownedGuilds is
+  // null. A failure must clear it so the operator can try again.
+  it("clears the guild picker and re-shows Connect to hosted bot after a /register failure", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
+    seedOwnedGuilds([{ id: "111111111111111111", name: "My Test Guild", owner: true }]);
+    mockPost.mockRejectedValue(new Error("Reconnecting to Discord to confirm this is still you -- go back to Settings and connect to the hosted bot again."));
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which server is this for/i);
+    fireEvent.click(screen.getByText("My Test Guild"));
+    fireEvent.click(screen.getByRole("button", { name: /^Register$/i }));
+    await screen.findByText(/Reconnecting to Discord/i);
+    expect(screen.queryByText(/Which server is this for/i)).toBeNull();
+    expect(screen.getByRole("button", { name: /Connect to hosted bot/i })).toBeInTheDocument();
   });
 });

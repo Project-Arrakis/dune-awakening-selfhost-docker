@@ -30,7 +30,13 @@ const MANAGED_ENV_KEYS = Object.freeze({
   // browser localStorage -- never sent to or read from the backend. This is
   // the real, persisted, server-readable source of truth Task 6's /register
   // route gates against.
-  deploymentChoice: "DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE"
+  deploymentChoice: "DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE",
+  // Final integration review (Important #5): which guild the hosted-bot
+  // /register route last successfully registered, so the "Connected to
+  // hosted bot for {name}" status survives a page reload instead of being
+  // pure in-memory React state (see persistHostedBotConnectedGuild below).
+  hostedBotConnectedGuildId: "DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID",
+  hostedBotConnectedGuildName: "DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME"
 });
 
 // Server-side allowlist for the persisted deployment choice -- never trust
@@ -61,8 +67,49 @@ export function readDiscordBotSettingsState(config) {
       admin: mapping.adminRoleIds
     },
     tokenConfigured: Boolean(token),
-    deploymentChoice: normalizeDeploymentChoice(process.env[MANAGED_ENV_KEYS.deploymentChoice] || null)
+    deploymentChoice: normalizeDeploymentChoice(process.env[MANAGED_ENV_KEYS.deploymentChoice] || null),
+    hostedBotConnectedGuildId: process.env[MANAGED_ENV_KEYS.hostedBotConnectedGuildId] || null,
+    hostedBotConnectedGuildName: process.env[MANAGED_ENV_KEYS.hostedBotConnectedGuildName] || null
   };
+}
+
+// persistHostedBotConnectedGuild: the fix for Important #5 from the final
+// integration review -- "Connected to hosted bot for {name}" was pure
+// in-memory React state, so a page reload after a genuinely successful
+// registration showed "Connect to hosted bot" again as if nothing had
+// happened. Called by the /register route handler (server.js) only after
+// mentat-backend's own response confirms the registration succeeded.
+//
+// guildId is the OAuth-verified id already checked against the caller's
+// owned-guild set by the route handler before this is ever called --
+// nothing here re-derives authorization from it. guildName is a caller-
+// supplied display label ONLY (the request body's `guildName`, sent by
+// DiscordBotSection's own guild picker, which got it from the same
+// OAuth-verified owned-guilds list) -- it is never used for any
+// authorization decision, only rendered back as plain text, so this
+// deliberately does not attempt to independently re-verify it against
+// Discord. Trimmed and length-capped (Discord's own guild-name limit is
+// 100 characters) before being written, same defensive-input discipline as
+// validateDiscordRoleIds() above -- free text from an external service
+// should never be written to .env unbounded.
+export function persistHostedBotConnectedGuild(config, { guildId, guildName } = {}) {
+  const safeGuildId = String(guildId || "").trim();
+  const safeGuildName = String(guildName || "").trim().slice(0, 100) || safeGuildId;
+  if (!safeGuildId) return { ok: false };
+  updateEnvFileValues(config.repoRoot, [
+    [MANAGED_ENV_KEYS.hostedBotConnectedGuildId, safeGuildId],
+    [MANAGED_ENV_KEYS.hostedBotConnectedGuildName, safeGuildName]
+  ]);
+  // Mirror into the RUNNING process too -- same reasoning as every other
+  // mirror in this file: readDiscordBotSettingsState() reads process.env
+  // directly, and this write deliberately never triggers a container
+  // recreate (registering a guild with the hosted bot doesn't need one),
+  // so without this a GET immediately after registering, in this same
+  // process, would still report the previous value (or none) until a
+  // restart that may never happen.
+  process.env[MANAGED_ENV_KEYS.hostedBotConnectedGuildId] = safeGuildId;
+  process.env[MANAGED_ENV_KEYS.hostedBotConnectedGuildName] = safeGuildName;
+  return { ok: true };
 }
 
 // enableDiscordBotAdapter: validates role IDs, generates a fresh token
