@@ -123,7 +123,21 @@ export function clearHostedBotRegistrationHandleCookie(secure = true) {
 // trip. JSON.stringify + a basic HTML-escape on the whole blob defends
 // against a guild name containing `</script>` (Discord guild names are
 // free text, not snowflakes).
+//
+// Final integration review (CRITICAL): this used to stash the list on a
+// plain `window.__hostedBotOwnedGuilds__` property before calling
+// `window.location.replace("/")`. That's a full document navigation -- the
+// SPA loads into a brand-new `window`, so a property set on THIS window is
+// already gone before the SPA's own reader ever runs. `sessionStorage` is
+// the fix: it's keyed by origin, not by `window`, so it survives a
+// same-origin navigation like this one. It still never carries the Discord
+// access token or the registration handle -- only the same safe
+// {id,name,owner} list the old mechanism carried. The value is assigned to
+// a local variable first and re-serialized via the browser's own
+// JSON.stringify before being handed to sessionStorage.setItem (which only
+// accepts strings) -- this avoids manually double-escaping `safeJson`
+// (already a JSON string) into a second string literal.
 export function hostedBotOAuthReturnPage(ownedGuilds) {
   const safeJson = JSON.stringify(ownedGuilds || []).replace(/</g, "\\u003c");
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Connect to hosted bot</title></head><body><noscript><a href="/">Return to the console</a></noscript><script>window.__hostedBotOwnedGuilds__ = ${safeJson}; window.location.replace("/");</script></body></html>`;
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Connect to hosted bot</title></head><body><noscript><a href="/">Return to the console</a></noscript><script>var hostedBotOwnedGuilds = ${safeJson}; sessionStorage.setItem("hostedBotOwnedGuilds", JSON.stringify(hostedBotOwnedGuilds)); window.location.replace("/");</script></body></html>`;
 }

@@ -70,10 +70,18 @@ test("hostedBotOAuthStateCookie and hostedBotRegistrationHandleCookie use distin
   assert.notEqual(stateCookie.split("=")[0], handleCookie.split("=")[0], "the two cookies must have distinct names");
 });
 
-test("hostedBotOAuthReturnPage embeds the owned-guilds list as JSON the SPA can read, and never embeds a token", () => {
+test("hostedBotOAuthReturnPage embeds the owned-guilds list as JSON the SPA can read via sessionStorage, and never embeds a token", () => {
   const guilds = [{ id: "111111111111111111", name: "Test Guild", owner: true }];
   const page = hostedBotOAuthReturnPage(guilds);
-  assert.match(page, /window\.__hostedBotOwnedGuilds__\s*=\s*\[/);
+  // Final integration review (CRITICAL): must write to sessionStorage, not
+  // a plain `window` property -- a plain property is lost the instant the
+  // page's own `window.location.replace("/")` (below) performs a real,
+  // full-document navigation into a brand-new window. See
+  // discordHostedBotApi.test.ts (console/web) for the test that actually
+  // crosses that navigation boundary end to end.
+  assert.match(page, /sessionStorage\.setItem\(\s*["']hostedBotOwnedGuilds["']/);
+  assert.match(page, /window\.location\.replace\(\s*["']\/["']\s*\)/);
+  assert.doesNotMatch(page, /window\.__hostedBotOwnedGuilds__/, "must not use the old, broken window-property mechanism");
   assert.match(page, /Test Guild/);
   assert.doesNotMatch(page, /accessToken|access_token/i, "the return page must never embed the raw Discord token");
 });
