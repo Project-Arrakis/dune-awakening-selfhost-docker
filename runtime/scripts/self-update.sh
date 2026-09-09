@@ -1069,9 +1069,11 @@ verify_discord_adapter_health() {
   done
 
   self_update_write_status succeeded complete 100 "Discord adapter settings applied." "$(date -Is)"
-  {
-    printf 'discord_health_ok=%s\n' "$health_ok"
-  } >> "$SELF_UPDATE_STATUS_DIR/$SELF_UPDATE_RUN_ID.env"
+  if self_update_status_enabled; then
+    {
+      printf 'discord_health_ok=%s\n' "$health_ok"
+    } >> "$SELF_UPDATE_STATUS_DIR/$SELF_UPDATE_RUN_ID.env"
+  fi
   SELF_UPDATE_STATUS_FINALIZED=1
 }
 
