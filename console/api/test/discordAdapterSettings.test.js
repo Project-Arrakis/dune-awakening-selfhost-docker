@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -244,6 +244,36 @@ test("applyDiscordBotEnableRequest: a second call before the container recreate 
 // readDiscordBotApiToken() -- which reads process.env directly -- still
 // returning the stale direct value forever, in the exact same process,
 // with no restart to ever fix it.
+// Finding 5 (LOW, Layer 3 test-coverage audit): enableDiscordBotAdapter()
+// and regenerateDiscordBotToken() both write the token file with
+// { mode: 0o600 } plus a belt-and-braces chmodSync -- but nothing asserted
+// this. A future refactor that accidentally dropped the mode option would
+// silently regress to a more permissive default (whatever the process
+// umask allows) with nothing catching it.
+test("enableDiscordBotAdapter writes the token file with mode 0600", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-enable-mode-"));
+
+  const result = enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
+
+  const stat = statSync(join(dir, "runtime", "secrets", "discord-adapter-token.txt"));
+  assert.equal(stat.mode & 0o777, 0o600, "the freshly minted token file must be owner-read/write only");
+  assert.equal(result.ok, true);
+});
+
+test("regenerateDiscordBotToken writes the token file with mode 0600", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-regen-mode-"));
+  const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
+  process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE = tokenFile;
+  mkdirSync(join(dir, "runtime", "secrets"), { recursive: true });
+  writeFileSync(tokenFile, "old-token-value\n", { mode: 0o644 });
+
+  const result = regenerateDiscordBotToken({ repoRoot: dir });
+
+  const stat = statSync(tokenFile);
+  assert.equal(stat.mode & 0o777, 0o600, "the regenerated token file must be owner-read/write only, even if the pre-existing file had a looser mode");
+  assert.equal(result.ok, true);
+});
+
 test("regenerateDiscordBotToken clears the direct token in the RUNNING process too, so readDiscordBotApiToken() immediately returns the new file token in the same process", () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-regen-inprocess-"));
   const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
@@ -273,6 +303,69 @@ test("enableDiscordBotAdapter also clears DUNE_DISCORD_ADAPTER_TOKEN in the RUNN
   enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
 
   assert.equal(process.env.DUNE_DISCORD_ADAPTER_TOKEN, "", "the running process's own env var must be cleared immediately, not just the .env file on disk");
+});
+
+// Found while adding Layer 3 route-level integration coverage
+// (discordAdapterSettingsRoutes.integration.test.js): enableDiscordBotAdapter()
+// already mirrors `enabled` and the cleared direct token into the RUNNING
+// process's env (see the two tests above) for the exact same reason --
+// writing .env to disk does not change what an already-running process sees.
+// It never mirrored DUNE_DISCORD_ADAPTER_TOKEN_FILE the same way, so
+// readDiscordBotSettingsState() -> readDiscordBotApiToken() (which reads
+// process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE directly) kept reporting
+// tokenConfigured:false in the SAME process immediately after a genuine
+// first enable, even though the token file had just been written to disk --
+// an operator viewing the settings page right after enabling would see "no
+// token configured" until the console itself restarted.
+test("enableDiscordBotAdapter mirrors the token file path into the RUNNING process too, so a read immediately after enable in the same process reports tokenConfigured:true", () => {
+  delete process.env.DUNE_DISCORD_ADAPTER_ENABLED;
+  delete process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE;
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-enable-mirrors-tokenfile-"));
+
+  const result = enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
+  assert.equal(result.ok, true);
+
+  const state = readDiscordBotSettingsState({ repoRoot: dir });
+  assert.equal(state.tokenConfigured, true, "the freshly minted token must be visible in this same process immediately, not only after a restart");
+});
+
+// Same class of gap as the token-file mirroring test above, for the 3
+// role-ID env keys: discordRoleMappingFromEnv() (adapter.js) reads
+// DISCORD_PLAYER_ROLE_IDS/DISCORD_MODERATOR_ROLE_IDS/DISCORD_ADMIN_ROLE_IDS
+// from process.env directly. enableDiscordBotAdapter() writes them to .env
+// on disk but, before this fix, never mirrored them into the RUNNING
+// process -- a GET of the settings state in the same process, in the window
+// before the queued console restart completes, would report the role IDs
+// that were configured BEFORE this enable call, not what was just submitted.
+test("enableDiscordBotAdapter mirrors the role-ID env keys into the RUNNING process too, so a read immediately after enable reflects what was just submitted", () => {
+  delete process.env.DUNE_DISCORD_ADAPTER_ENABLED;
+  delete process.env.DISCORD_PLAYER_ROLE_IDS;
+  delete process.env.DISCORD_MODERATOR_ROLE_IDS;
+  delete process.env.DISCORD_ADMIN_ROLE_IDS;
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-enable-mirrors-roleids-"));
+
+  enableDiscordBotAdapter({ repoRoot: dir }, { player: ["111111111111111111"], moderator: ["222222222222222222"], admin: [] });
+
+  const state = readDiscordBotSettingsState({ repoRoot: dir });
+  assert.deepEqual(state.roleIds.player, ["111111111111111111"], "the freshly submitted player role IDs must be visible in this same process immediately");
+  assert.deepEqual(state.roleIds.moderator, ["222222222222222222"]);
+});
+
+// Same gap, for updateDiscordBotRoleIds() (the /role-ids route, and the
+// "already enabled" branch of applyDiscordBotEnableRequest) -- this is the
+// function an admin editing role IDs on an already-live adapter actually
+// goes through, so this is the more commonly hit path in practice.
+test("updateDiscordBotRoleIds mirrors the role-ID env keys into the RUNNING process too, so a read immediately after saving reflects what was just submitted", () => {
+  process.env.DISCORD_PLAYER_ROLE_IDS = "111111111111111111";
+  delete process.env.DISCORD_MODERATOR_ROLE_IDS;
+  delete process.env.DISCORD_ADMIN_ROLE_IDS;
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-roleids-mirrors-"));
+
+  updateDiscordBotRoleIds({ repoRoot: dir }, { player: ["333333333333333333"], moderator: ["444444444444444444"], admin: [] });
+
+  const state = readDiscordBotSettingsState({ repoRoot: dir });
+  assert.deepEqual(state.roleIds.player, ["333333333333333333"], "the newly saved player role IDs must be visible in this same process immediately, not the pre-save value");
+  assert.deepEqual(state.roleIds.moderator, ["444444444444444444"]);
 });
 
 // Audit finding #2 (HIGH): admin must not be able to grant Discord

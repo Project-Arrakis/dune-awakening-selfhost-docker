@@ -99,8 +99,33 @@ export function enableDiscordBotAdapter(config, roleIdsByTier = {}) {
   // token, readDiscordBotApiToken() (which also reads process.env
   // directly) keeps returning a stale, already-loaded direct value in
   // this process until that same recreate completes.
+  //
+  // Found while adding route-level integration coverage: the same
+  // staleness applies to the token FILE PATH itself. readDiscordBotApiToken()
+  // reads process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE directly, so without
+  // mirroring it here too, a fresh install's first-ever enable would write
+  // the path to .env on disk but leave THIS process's own process.env
+  // without it -- readDiscordBotSettingsState() would keep reporting
+  // tokenConfigured:false (and the live adapter route would keep reporting
+  // the credential as not configured) until a restart, even though the
+  // token file was just written. Mirror the resolved ABSOLUTE path (the
+  // same `tokenFile` this function just wrote to), not the relative
+  // DEFAULT_TOKEN_FILE constant written to .env -- readDiscordBotApiToken()
+  // reads this value with a bare readFileSync(), no resolve() against
+  // repoRoot, so a relative value here would only work by accident of the
+  // process's current working directory happening to already be repoRoot.
+  //
+  // Same reasoning applies to the 3 role-ID keys: discordRoleMappingFromEnv()
+  // (adapter.js) also reads process.env directly. Without mirroring them
+  // here, a GET of the settings state in this same process, in the window
+  // before the queued console restart completes, would report the role IDs
+  // from BEFORE this call, not what was just submitted.
   process.env[MANAGED_ENV_KEYS.enabled] = "true";
   process.env[MANAGED_ENV_KEYS.directToken] = "";
+  process.env[MANAGED_ENV_KEYS.tokenFile] = tokenFile;
+  process.env[MANAGED_ENV_KEYS.player] = (roleIdsByTier.player || []).join(",");
+  process.env[MANAGED_ENV_KEYS.moderator] = (roleIdsByTier.moderator || []).join(",");
+  process.env[MANAGED_ENV_KEYS.admin] = (roleIdsByTier.admin || []).join(",");
 
   return { ok: true, tokenFile: DEFAULT_TOKEN_FILE, token };
 }
@@ -122,6 +147,16 @@ export function updateDiscordBotRoleIds(config, roleIdsByTier = {}) {
     [MANAGED_ENV_KEYS.moderator, (roleIdsByTier.moderator || []).join(",")],
     [MANAGED_ENV_KEYS.admin, (roleIdsByTier.admin || []).join(",")]
   ]);
+  // Mirror into the RUNNING process too, for the same reason
+  // enableDiscordBotAdapter() does -- discordRoleMappingFromEnv() reads
+  // process.env directly, so without this a GET of the settings state in
+  // this same process, in the window before the queued console restart
+  // completes, would report the role IDs from before this save. This is
+  // the function an admin editing role IDs on an already-live adapter
+  // actually goes through, so it's the more commonly hit path in practice.
+  process.env[MANAGED_ENV_KEYS.player] = (roleIdsByTier.player || []).join(",");
+  process.env[MANAGED_ENV_KEYS.moderator] = (roleIdsByTier.moderator || []).join(",");
+  process.env[MANAGED_ENV_KEYS.admin] = (roleIdsByTier.admin || []).join(",");
   return { ok: true };
 }
 
