@@ -218,16 +218,22 @@ async function requireFreshTier3Proof(req, res, body, { auditUrl, action, actor 
     json(res, status, payload, headers || {});
     return { ok: false };
   };
-  // #617: keyed by action too, not just client IP -- previously every
-  // requireFreshTier3Proof caller (password rotation, recovery-code
-  // regeneration, TOTP enable, TOTP disable) shared ONE bucket per IP, so a
-  // mistyped code on one action could 429 an unrelated action from the same
-  // browser (e.g. rotating a password trips the shared bucket, then
-  // regenerating recovery codes moments later is refused even though it was
-  // never attempted). Same shape as the existing `2fa-confirm:${session.id}`
-  // key a few lines below in this file -- action-scoped, still IP-scoped
-  // within that.
-  const rateKey = `${action}:${loginRateLimitKey(req)}`;
+  // #617 CORRECTION: an earlier version of this fix keyed the bucket by
+  // action too, but that directly contradicted a deliberate, already-tested
+  // design decision from an earlier real DoS fix (see this repo's own
+  // `discordOAuthDisable.integration.test.js`, "disable shares its rate-limit
+  // bucket with password rotation -- exhausting one blocks the other", #676
+  // §10 -- its own comment names this exact sharing "the site of a
+  // previously-fixed real DoS bug in this file"). Every requireFreshTier3Proof
+  // caller (password rotation, recovery-code regeneration, TOTP enable/
+  // disable, Discord OAuth disable/enable/forget) is DELIBERATELY one shared
+  // bucket per IP: they all require a valid session AND CSRF token (the same
+  // threat model -- a compromised/stolen session grinding credentials), and
+  // splitting them apart would let an attacker who trips the bucket on one
+  // authenticated action simply move to another with a fresh budget. The
+  // action-scoped version was reverted before it ever reached a released
+  // branch; kept here, not silently dropped, so a future session sees why.
+  const rateKey = loginRateLimitKey(req);
   const rate = credentialProofRateLimiter.check(rateKey);
   if (!rate.allowed) {
     return deny(429, { error: "Too many attempts. Please wait a few minutes, then try again." }, "rate_limited", { "retry-after": String(rate.retryAfterSeconds) });
