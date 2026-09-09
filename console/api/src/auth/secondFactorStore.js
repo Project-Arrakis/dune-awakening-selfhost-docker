@@ -490,6 +490,18 @@ export function createSecondFactorStore({ filePath, watermarkFilePath }) {
     return runExclusive(async () => {
       const state = await loadRaw();
       if (state === null) return { ok: false, reason: "not_configured" };
+      // Review finding: a concurrent consumeRecoveryCode() call (a resetup
+      // already in progress against this same factor) can set
+      // recoveryPending in the window between the caller's own
+      // requireFreshTier3Proof.verifyTotpToken() check and this call --
+      // those are two SEPARATE runExclusive() critical sections, not one
+      // atomic transaction. Without this check, this would persist a fresh
+      // code set that verifyTotpToken()/consumeRecoveryCode() immediately
+      // refuse (their own recoveryPending check, above), handing the
+      // operator ten plaintext codes that can never work -- and the
+      // in-progress resetup's own commit() would silently replace them
+      // again anyway. Same reason, same refusal shape as those two.
+      if (state.recoveryPending) return { ok: false, reason: "recovery_pending" };
       const watermarkEpoch = await loadWatermarkEpoch();
       const healedRollback = state.epoch < watermarkEpoch;
       const { codes, digests } = count ? generateRecoveryCodes(count) : generateRecoveryCodes();
