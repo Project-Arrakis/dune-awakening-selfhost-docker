@@ -987,4 +987,13 @@ bullets without that marker are unchanged from the original doc.
 
 This isolated review was dispatched deliberately narrower than a full 8-hat round — scoped to just the `stop` dual-confirmation gate, the newest and least-battle-tested mechanism in the document, before committing to a full round 8 across everything. All CRITICAL/HIGH resolved by redesigning the gate to reuse the existing nonce store instead of inventing a new record type and a second full preview/execute round-trip.
 
+**Quick follow-up check (2026-09-09, after the isolated review's redesign) — a narrow 2-hat dispatch (Security, Architect) against only the redesigned nonce-reuse mechanism, 2 issues filed:**
+
+| # | Title | Hat(s) | Severity |
+|---|-------|--------|----------|
+| 803 | Nonce consume-then-execute check needs explicit atomic ordering before the loopback call | Architect | MEDIUM |
+| 804 | Batched LOW: doc cross-reference and unstated-edge-case gaps in the redesigned mechanism | Security, Architect | LOW (batch) |
+
+The smallest finding set of any pass so far — a good sign the `stop` gate's third design is converging. All fixed.
+
 Full findings and STRIDE reports: comments on #215.
