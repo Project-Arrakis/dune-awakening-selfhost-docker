@@ -283,6 +283,27 @@ export function DiscordBotSection() {
       <p className="muted">For bot commands and in-game data access — not console admin sign-in, see the Discord OAuth section above.</p>
       {error && <div className="confirm-modal-warning">{error}</div>}
 
+      {/* Finding 4 (final review): hoisted above the phase-specific
+          branches below so it renders whenever a token was just revealed,
+          regardless of which phase the component is currently in --
+          previously this only rendered inside phase === "enabled", so an
+          Enable that succeeded but then failed its post-recreate health
+          check (phase moves to "failed") left the one-time token
+          permanently unreachable: Regenerate Token is owner-only, the
+          token is never persisted (deliberate, Requirement 24), and a
+          page reload discards it entirely. */}
+      {revealedToken && (
+        <div className="settings-token-reveal">
+          <label>
+            Your new token (copy it before leaving this page)
+            <input readOnly type="text" value={revealedToken} />
+            <button type="button" onClick={() => { void copyRevealedToken(); }}>Copy</button>
+          </label>
+          <p className="muted">Copy this now — it won't be shown again. Use Regenerate Token to get a new one if you lose it.</p>
+          {tokenCopyResult && <span className="muted" role="status">{tokenCopyResult}</span>}
+        </div>
+      )}
+
       {phase === "disabled" && (
         <>
           <div className="settings-choice">
@@ -310,18 +331,18 @@ export function DiscordBotSection() {
       {phase === "enabled" && state && (
         <>
           <p>Enabled.</p>
-          <label>
-            Token
-            {/* Not SecretInput: that component hardcodes type="password" (verified against
-                every existing usage in this codebase, all write-only secret-entry fields) and
-                would keep the real, freshly-generated token permanently dot-masked even when
-                revealedToken holds the plaintext. A plain input, switched to type="text" only
-                while a real value is present, is the correct one-time-reveal control here. */}
-            <input readOnly type={revealedToken ? "text" : "password"} value={revealedToken ?? "••••••••••••••••••••••••••••••••"} />
-            {revealedToken && <button type="button" onClick={() => { void copyRevealedToken(); }}>Copy</button>}
-          </label>
-          {revealedToken && <p className="muted">Copy this now — it won't be shown again. Use Regenerate Token to get a new one if you lose it.</p>}
-          {tokenCopyResult && <span className="muted" role="status">{tokenCopyResult}</span>}
+          {/* The real, one-time reveal (plaintext value + Copy button) now
+              lives in the hoisted block above, so it also survives a
+              transition into phase === "failed" (Finding 4). This masked
+              placeholder only covers the ordinary case: a normal page
+              view/reload where nothing was revealed in this browser
+              session, but the adapter does have a token configured. */}
+          {!revealedToken && (
+            <label>
+              Token
+              <input readOnly type="password" value="••••••••••••••••••••••••••••••••" />
+            </label>
+          )}
           <label>Player role IDs<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} /></label>
           <label>Moderator role IDs<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} /></label>
           <label>Admin role IDs<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} /></label>
