@@ -905,6 +905,45 @@ test("GET /api/auth/discord/start?setup=1 is rate-limited per client after a bur
   }
 });
 
+// #578 review finding: every OTHER failure branch in handleOAuthCallback
+// calls oauthCallbackRateLimiter.recordFailure() -- the setup-purpose
+// "owner session ended mid-authorization" branch didn't, so repeated hits of
+// specifically this failure mode never counted toward the same limiter.
+// Reproduced by actually exhausting the shared, IP-keyed bucket via this
+// exact failure mode: log in as owner, start setup, log the owner session
+// out, then complete the callback with the still-valid state -- repeated
+// until the limiter trips, proving recordFailure now actually fires here.
+test("repeatedly hitting the setup-purpose owner-session-gone failure trips the same rate limiter every other callback failure does", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-setup-ownergone-rate-"));
+  const console = startConsole(consolePort, discordPort, tempDir);
+  const discordServer = await startFakeDiscord(discordPort);
+  try {
+    await waitForHealth(consolePort);
+    let limited = null;
+    for (let i = 0; i < 12; i += 1) {
+      const owner = await passwordOwnerSession(consolePort);
+      const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start?setup=1`, { redirect: "manual", headers: { cookie: owner.cookie } });
+      assert.equal(start.status, 302, `request ${i}: setup start should still redirect`);
+      const state = sessionCookieValue(start.headers.getSetCookie(), "discord_oauth_state");
+      // End the owner session BEFORE the callback lands -- the exact
+      // scenario the "owner session ended while Discord was authorizing"
+      // branch exists for.
+      await fetch(`http://127.0.0.1:${consolePort}/api/auth/logout`, { method: "POST", headers: { cookie: owner.cookie, "x-csrf-token": owner.csrfToken } });
+      const cb = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=guildowner&state=${encodeURIComponent(state)}`, { redirect: "manual", headers: { cookie: `discord_oauth_state=${state}` } });
+      if (cb.status === 429) { limited = { at: i, retryAfter: cb.headers.get("retry-after") }; break; }
+      assert.equal(cb.status, 403, `request ${i}: should fail as owner_session_gone, not something else`);
+    }
+    assert.ok(limited, "repeated owner-session-gone failures must trip the shared callback rate limiter, the same as every other failure branch");
+    assert.ok(Number(limited.retryAfter) > 0, "429 must carry retry-after");
+  } finally {
+    await stopProcess(console.child);
+    await closeDiscordServer(discordServer);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 // ---- review finding: the setup-mode callback was blocked by the exact
 // misconfigurations (a half-configured handoff, an unsound role mapping)
 // that the guided setup wizard exists to let an owner fix. The /start route

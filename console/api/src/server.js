@@ -3116,7 +3116,18 @@ async function totpDisableRoute(req, res) {
   // proceeds anyway -- this is a nudge against an accidental zero-factor
   // state, not a hard security boundary (an operator may have a considered
   // reason to run with none).
-  if (config.discordOAuthConfigured && !config.discordOAuthRequireMfaTiers.includes(actor.tier) && !body.acknowledgeNoOtherFactor) {
+  // #578 review finding: every OTHER real gate on Discord OAuth's live state
+  // (see /api/auth/state, the start/callback routes) checks
+  // discordOAuthSoftDisabledInProcess alongside the boot-time config value --
+  // this check used only the stale snapshot. Not a security gap (the
+  // in-process flag only ever narrows availability further, so this could
+  // only ever show the warning when Discord sign-in is ALREADY effectively
+  // disabled, never miss it) but a real, confusing inconsistency: an owner
+  // who just disabled/forgot Discord OAuth in this same process, before a
+  // restart, would still see "Discord sign-in doesn't require Discord's own
+  // two-factor for your role" naming a credential source that is no longer
+  // actually live.
+  if (config.discordOAuthConfigured && !discordOAuthSoftDisabledInProcess && !config.discordOAuthRequireMfaTiers.includes(actor.tier) && !body.acknowledgeNoOtherFactor) {
     return deny(409, {
       zeroFactorWarning: true,
       error: "Disabling this will leave your console with no two-factor authentication anywhere -- Discord sign-in doesn't require Discord's own two-factor for your role."
@@ -7464,6 +7475,11 @@ async function handleOAuthCallback(req, res) {
     };
     const ownerSession = consumed.sessionId ? auth.readSessionById(consumed.sessionId) : null;
     if (!ownerSession) {
+      // #578 review finding: every OTHER failure branch in this function
+      // calls oauthCallbackRateLimiter.recordFailure() -- this one didn't,
+      // so repeated hits of this specific failure mode never counted toward
+      // the same limiter every sibling denial contributes to.
+      oauthCallbackRateLimiter.recordFailure(rateKey);
       audit(config, sanitizedUrl(req, "/api/auth/discord/callback"), "auth.oauth.callback", { ok: false, purpose: "setup", reason: "owner_session_gone" });
       return html(res, 403, oauthErrorPage("Your console session ended while Discord was authorizing. Sign in with the admin password and start Discord setup again."));
     }
