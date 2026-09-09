@@ -13,6 +13,10 @@ This setup path validates the read-only Discord companion bot command layer and 
 
 The actual network Discord client is still deferred. Use the smoke runner to validate command behavior before connecting to Discord.
 
+### Production Discord Adapter Setup
+
+**As of this version, the Discord adapter token and settings can be generated and managed from the console's Settings → Discord Bot section.** This replaces the previous fully-manual `.env`-edit-and-container-recreate process for both hosted and self-hosted bot deployments. The manual steps documented below remain available as a fallback for troubleshooting or if the UI path is unavailable.
+
 ## Prerequisites
 
 - Dune Docker Console repository checked out.

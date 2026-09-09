@@ -15,7 +15,7 @@
 | Session signing key | `runtime/secrets/admin-web-session-secret.txt` | Plaintext base64url | 600 | Yes | Manual |
 | Funcom service token | `runtime/secrets/funcom-token.txt` | Plaintext JWT | 600 | No (operator) | Via Funcom portal |
 | Discord OAuth client secret | `runtime/secrets/discord-oauth-client-secret.txt` | Plaintext | 600 | No (operator) | Via Discord portal |
-| Discord adapter token | `runtime/secrets/discord-adapter-token.txt` | Plaintext | 600 | No (operator) | Manual |
+| Discord adapter token | `runtime/secrets/discord-adapter-token.txt` | Plaintext | 600 | No (operator) | Automated (Settings → Discord Bot → Regenerate Token) |
 | Discord bot handoff secret | `runtime/secrets/discord-bot-handoff-secret.txt` | Plaintext | 600 | No (operator) | Manual |
 | FLS API key | `runtime/secrets/fls-apikey.txt` | Plaintext | 600 | No (operator) | Via Funcom |
 | RMQ HTTP token secret | `runtime/secrets/rmq-http-token-auth-secret.txt` | Plaintext | 600 | Manual | Manual |
@@ -40,7 +40,7 @@ getOrCreateSecret(path, bytes):
   → Else: generate random, write file, return value
 ```
 
-Each secret is loaded independently. There's no unified secret store, no key hierarchy, no master key, and no rotation mechanism. The only existing encryption is the Mentat bot's `ACP_SECRETS_KEY` (env var name unchanged as of this writing -- deliberately deferred, see above) → AES-256-GCM for SQLite at-rest encryption of adapter tokens and OAuth access tokens.
+Each secret is loaded independently. There's no unified secret store, no key hierarchy, no master key. Most secrets require manual rotation; however, the Discord adapter token now has an automated rotation mechanism via the console's Settings → Discord Bot section. The only existing encryption is the Mentat bot's `ACP_SECRETS_KEY` (env var name unchanged as of this writing -- deliberately deferred, see above) → AES-256-GCM for SQLite at-rest encryption of adapter tokens and OAuth access tokens.
 
 ### 1.3 The Current Threat Model
 
