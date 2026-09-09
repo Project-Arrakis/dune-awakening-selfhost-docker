@@ -257,6 +257,18 @@ export function loadConfig() {
     // to exactly match one of the app's registered URIs for that specific
     // request.
     discordHostedBotOAuthRedirectUri: process.env.DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI || "",
+    // The hosted mentat bot's console-registration endpoint. Overridable
+    // ONLY so an integration test can point this at a local fake listener
+    // instead of the real host -- found necessary during this task's own
+    // fix round 1 (Important #5): mentat-backend.darkdante.org is a real,
+    // live, internal-only production hostname that IS reachable from this
+    // dev/CI environment (confirmed directly with curl), so a test that
+    // needs to prove "no outbound call was made" cannot safely assert that
+    // against the real hardcoded URL -- an accidental regression could
+    // otherwise send a real POST to the live hosted-bot service. No
+    // operator ever needs to set this in a real deployment; it is not
+    // documented in .env.example for that reason.
+    mentatBackendRegisterUrl: process.env.MENTAT_BACKEND_REGISTER_URL || "https://mentat-backend.darkdante.org/api/consoles/register",
     discordOAuthApiBaseUrl: process.env.DISCORD_OAUTH_BASE_URL || "https://discord.com/api/v10",
     discordOAuthAllowOwnerBootstrap: process.env.DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP === "1",
     discordOAuthOwnerAllowlist: String(process.env.DISCORD_OAUTH_OWNER_ALLOWLIST || "").split(",").map((item) => item.trim()).filter((item) => /^\d{17,19}$/.test(item)),
