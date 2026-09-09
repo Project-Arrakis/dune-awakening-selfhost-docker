@@ -12,6 +12,7 @@ import {
   applyDiscordBotEnableRequest,
   discordAdminRoleIdsChanged
 } from "../src/integrations/discord/adapterSettings.js";
+import { readDiscordBotApiToken } from "../src/integrations/discord/routes.js";
 
 const OLD_ENV = { ...process.env };
 test.afterEach(() => {
@@ -196,6 +197,82 @@ test("applyDiscordBotEnableRequest does NOT mint a new token when the adapter is
   assert.equal(tokenContent, "token-a-must-be-unchanged", "the live token file must be untouched");
   const envContent = readFileSync(join(dir, ".env"), "utf8");
   assert.match(envContent, /^DISCORD_PLAYER_ROLE_IDS=222222222222222222$/m, "role IDs must still be applied");
+});
+
+// Audit finding #1 residual gap (Important, second review round): writing
+// a new value to .env on disk does NOT update the RUNNING process's own
+// process.env -- that only happens when the container restarts and
+// re-reads env vars fresh. discordAdapterEnabled() reads
+// process.env.DUNE_DISCORD_ADAPTER_ENABLED directly, so between a first
+// successful Enable (which writes .env and queues a container-recreate
+// task that finishes asynchronously) and that recreate actually
+// completing, a second /enable call landing in this SAME, not-yet-
+// recreated process must still see enabled:true -- otherwise it
+// re-evaluates as "not yet enabled" and mints a SECOND fresh token,
+// reproducing finding #1's original bug inside a race window instead of
+// closing it. This simulates that exact scenario: two sequential calls
+// into the real business-logic layer against ONE persistent process
+// state (no resetting process.env between calls, no separate pre-set
+// .env per call), not two independent pure-function invocations.
+test("applyDiscordBotEnableRequest: a second call before the container recreate completes must not mint a second token (in-process staleness)", () => {
+  delete process.env.DUNE_DISCORD_ADAPTER_ENABLED;
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-double-enable-"));
+
+  const first = applyDiscordBotEnableRequest({ repoRoot: dir }, { player: ["111111111111111111"], moderator: [], admin: [] });
+  assert.equal(first.tokenMinted, true, "the genuine first enable must mint a token");
+
+  // Nothing has restarted this process -- simulate the second /enable POST
+  // landing before the queued recreate task finishes.
+  const second = applyDiscordBotEnableRequest({ repoRoot: dir }, { player: ["222222222222222222"], moderator: [], admin: [] });
+  assert.equal(second.tokenMinted, false, "a second enable call before the recreate completes must not mint a second token");
+  assert.equal(second.token, undefined);
+
+  const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
+  const tokenContent = readFileSync(tokenFile, "utf8").trim();
+  assert.equal(tokenContent, first.token, "the live token file must still hold the first-minted token, unchanged by the second call");
+});
+
+// Audit finding #4 residual gap (Important, second review round): the
+// same in-process-vs-.env-file staleness applies to the direct
+// DUNE_DISCORD_ADAPTER_TOKEN var. regenerateDiscordBotToken() deliberately
+// never triggers a container recreate (the token file's content is read
+// fresh per request, so no recreate should be needed) -- which means
+// nothing will EVER refresh process.env for this specific path. An
+// operator who previously set DUNE_DISCORD_ADAPTER_TOKEN directly (the
+// documented manual-setup path) has that value already loaded into the
+// running process's process.env; clearing it in .env alone leaves
+// readDiscordBotApiToken() -- which reads process.env directly -- still
+// returning the stale direct value forever, in the exact same process,
+// with no restart to ever fix it.
+test("regenerateDiscordBotToken clears the direct token in the RUNNING process too, so readDiscordBotApiToken() immediately returns the new file token in the same process", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-regen-inprocess-"));
+  const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
+  mkdirSync(join(dir, "runtime", "secrets"), { recursive: true });
+  writeFileSync(tokenFile, "old-token-value\n");
+  process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE = tokenFile;
+  // Simulate an already-running process that loaded a direct manual token
+  // at container start -- .env may get rewritten by the time we get here,
+  // but THIS process's own process.env still has the old value until
+  // something explicitly clears it.
+  process.env.DUNE_DISCORD_ADAPTER_TOKEN = "stale-direct-value-loaded-at-container-start";
+
+  const result = regenerateDiscordBotToken({ repoRoot: dir });
+  assert.equal(result.ok, true);
+
+  // The exact scenario that was silently broken: read the token back
+  // through the SAME function the live adapter route uses to authenticate
+  // requests, in the SAME process, with no restart in between.
+  const resolvedToken = readDiscordBotApiToken({ repoRoot: dir });
+  assert.equal(resolvedToken, result.token, "the running process must immediately see the freshly-minted file token, not the stale direct value");
+});
+
+test("enableDiscordBotAdapter also clears DUNE_DISCORD_ADAPTER_TOKEN in the RUNNING process, not just in .env", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-enable-inprocess-clear-"));
+  process.env.DUNE_DISCORD_ADAPTER_TOKEN = "stale-direct-value-loaded-at-container-start";
+
+  enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
+
+  assert.equal(process.env.DUNE_DISCORD_ADAPTER_TOKEN, "", "the running process's own env var must be cleared immediately, not just the .env file on disk");
 });
 
 // Audit finding #2 (HIGH): admin must not be able to grant Discord

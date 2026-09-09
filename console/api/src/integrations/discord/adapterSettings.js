@@ -81,6 +81,27 @@ export function enableDiscordBotAdapter(config, roleIdsByTier = {}) {
     [MANAGED_ENV_KEYS.admin, (roleIdsByTier.admin || []).join(",")]
   ]);
 
+  // Mirror the two values every other part of this feature reads directly
+  // from process.env into the RUNNING process too. Writing .env on disk
+  // does NOT change what an already-running Node process sees -- .env is
+  // only ever re-read at container start; a write to the file alone has
+  // no effect here until the queued recreate task (launched by the route
+  // handler, after this function returns) finishes.
+  //
+  // Audit finding #1 residual gap (second review round): without mirroring
+  // `enabled`, discordAdapterEnabled() keeps evaluating false in THIS
+  // process until that recreate completes, so a second /enable POST
+  // arriving in the race window before it still mints a SECOND fresh
+  // token -- reproducing finding #1's original bug inside a narrower
+  // window instead of closing it.
+  //
+  // Audit finding #4 residual gap: without mirroring the cleared direct
+  // token, readDiscordBotApiToken() (which also reads process.env
+  // directly) keeps returning a stale, already-loaded direct value in
+  // this process until that same recreate completes.
+  process.env[MANAGED_ENV_KEYS.enabled] = "true";
+  process.env[MANAGED_ENV_KEYS.directToken] = "";
+
   return { ok: true, tokenFile: DEFAULT_TOKEN_FILE, token };
 }
 
@@ -124,6 +145,15 @@ export function regenerateDiscordBotToken(config) {
   writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
   try { chmodSync(tokenFile, 0o600); } catch {}
   updateEnvFileValues(repoRoot, [[MANAGED_ENV_KEYS.directToken, ""]]);
+  // Mirror into the RUNNING process too -- see enableDiscordBotAdapter()'s
+  // equivalent comment above for why. This function deliberately never
+  // triggers a container recreate (the token file's content is read fresh
+  // per request, so no recreate should be needed), which means NOTHING
+  // else will ever refresh process.env for this var. Without this line,
+  // an operator who previously set DUNE_DISCORD_ADAPTER_TOKEN directly
+  // would have the newly-shown token silently ignored forever by this
+  // already-running process (audit finding #4 residual gap).
+  process.env[MANAGED_ENV_KEYS.directToken] = "";
   return { ok: true, token };
 }
 
