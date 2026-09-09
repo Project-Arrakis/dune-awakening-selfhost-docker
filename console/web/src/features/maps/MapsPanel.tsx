@@ -1816,9 +1816,11 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       );
       return;
     }
-    const target = String(row.partitionId || row.partition || rowName);
     if (!(await confirmAction(`Force despawn ${rowName}?`))) return;
-    await runTaskAndRefresh(() => mapsApi.despawn(target, "DESPAWN MAP"), `Despawning ${rowName}`, `${rowName} Despawned`, { resultTarget: mapResultTarget(rowName) });
+    // A map row represents every dimension of that map. Passing its first
+    // partition id only removed one dimension and made operators repeat the
+    // action. The runtime map-name path intentionally drains all dimensions.
+    await runTaskAndRefresh(() => mapsApi.despawn(rowName, "DESPAWN MAP"), `Despawning ${rowName}`, `${rowName} Despawned`, { resultTarget: mapResultTarget(rowName) });
   }
   async function forceSpawnMap(row: Record<string, unknown>) {
     const rowName = String(row.map || "").trim();

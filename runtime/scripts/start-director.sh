@@ -61,6 +61,10 @@ repair_generated_file_path runtime/director/config/director_config.ini
 cat > runtime/director/config/director_config.ini <<'EOF'
 [Battlegroup]
 AuthorizationPreset=BattlegroupInternal
+; Refresh each Sietch's browser heartbeat independently of settings changes.
+; The Director default is 28800 seconds; its separate battlegroup heartbeat
+; does not refresh the per-partition timestamp sent by this update path.
+FlsServerHeartbeatUpdateFrequencySeconds=60
 EOF
 
 if [ -s runtime/generated/director-character-transfer.ini ]; then
@@ -136,9 +140,11 @@ NumExtraServers=0
 
 [CB_Overland_S_07]
 NumExtraServers=0
+MaxParties=1
 
 [CB_Overland_S_08]
 NumExtraServers=0
+MaxParties=1
 
 [CB_Story_BanditFortress01]
 NumExtraServers=0

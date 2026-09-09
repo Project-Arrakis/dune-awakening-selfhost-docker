@@ -95,9 +95,21 @@ function vehiclePartitionMap(map: unknown) {
   return "";
 }
 
+function vehicleLifecycleLocation(row: VehicleRow) {
+  switch (String(row.lifecycle_state || "Default")) {
+    case "Travel": return "In Transit";
+    case "VehicleBackup": return "Vehicle Backup";
+    case "VehicleRecovery": return "Stored for Recovery";
+    case "AbortedAuthorityTransfer": return "Transfer Interrupted";
+    default: return row.partition_id == null ? "Unassigned" : "";
+  }
+}
+
 function formatMapPartition(row: VehicleRow, instanceNames: Map<string, string>) {
   const rawMap = String(row.map || "").trim();
-  const partitionId = String(row.partition_id ?? 0);
+  const lifecycleLocation = vehicleLifecycleLocation(row);
+  if (lifecycleLocation) return `${friendlyMapName(rawMap)} · ${lifecycleLocation}`;
+  const partitionId = String(row.partition_id);
   const partitionMap = vehiclePartitionMap(rawMap);
   const instanceName = partitionMap ? instanceNames.get(`${partitionMap}:${partitionId}`) : "";
   return `${friendlyMapName(rawMap)} · ${instanceName || `Partition ${partitionId}`}`;
@@ -131,7 +143,10 @@ function relationshipClass(value: string) {
 function renderVehicleCell(row: Record<string, unknown>, column: string, instanceNames: Map<string, string>) {
   const vehicle = row as VehicleRow;
   if (column === "name") {
-    const rawLocation = `${vehicle.map || "Unknown map"} · Partition ${vehicle.partition_id ?? 0}`;
+    const lifecycleLocation = vehicleLifecycleLocation(vehicle);
+    const rawLocation = lifecycleLocation
+      ? `${vehicle.map || "Unknown map"} · ${lifecycleLocation}`
+      : `${vehicle.map || "Unknown map"} · Partition ${vehicle.partition_id}`;
     return <div className="vehicles-name-cell"><span className="vehicles-name">{vehicle.name || "—"}</span><span className="vehicles-location" title={rawLocation}>{formatMapPartition(vehicle, instanceNames)}</span></div>;
   }
   if (column === "location") {

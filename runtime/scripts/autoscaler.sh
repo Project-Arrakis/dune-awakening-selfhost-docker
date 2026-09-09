@@ -251,6 +251,13 @@ print("0")
 PY
 }
 
+map_requires_isolated_party_dimension() {
+  case "$1" in
+    CB_Overland_S_07|CB_Overland_S_08) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 map_exists() {
   local map="$1"
   local safe
@@ -269,6 +276,43 @@ map_assigned_count() {
     from dune.world_partition
     where lower(map) = lower('$safe')
       and coalesce(server_id, '') <> '';
+  "
+}
+
+occupied_dimensions_for_map() {
+  local map="$1"
+  local safe
+  safe="${map//\'/\'\'}"
+
+  psql_value "
+    select count(distinct fs.server_id)
+    from dune.farm_state fs
+    where fs.map = '$safe'
+      and coalesce(fs.server_id, '') <> ''
+      and exists (
+        select 1
+        from dune.player_state ps
+        left join dune.world_partition previous_wp
+          on previous_wp.partition_id = ps.previous_server_partition_id
+        where (
+          ps.server_id = fs.server_id
+          or (
+            previous_wp.server_id = fs.server_id
+            and coalesce(ps.server_id, '') <> fs.server_id
+          )
+        )
+          and (
+            ps.online_status <> 'Offline'
+            or (
+              ps.reconnect_grace_period_end is not null
+              and ps.reconnect_grace_period_end > (current_timestamp at time zone 'UTC')
+            )
+            or (
+              ps.last_avatar_activity is not null
+              and ps.last_avatar_activity > (current_timestamp - make_interval(secs => ${IDLE_SECONDS}))
+            )
+          )
+      );
   "
 }
 
@@ -1595,6 +1639,7 @@ handle_demand() {
   local map="$1"
   local num="$2"
   local event_id="${3:-}"
+  local demand_source="${4:-request}"
   local dedicated_scaling
   local now
 
@@ -1646,6 +1691,36 @@ handle_demand() {
   dedicated_scaling="$(map_uses_dedicated_scaling "$map")"
 
   if [ "$dedicated_scaling" = "1" ]; then
+    if map_requires_isolated_party_dimension "$map"; then
+      local occupied max_dimensions desired capacity
+      occupied="$(occupied_dimensions_for_map "$map")"
+      max_dimensions="$(max_dimensions_for_map "$map")"
+      [[ "$occupied" =~ ^[0-9]+$ ]] || occupied=0
+      [[ "$max_dimensions" =~ ^[1-9][0-9]*$ ]] || max_dimensions=1
+
+      # These Landsraad activity maps admit one party per dimension. A new
+      # request needs one dimension in addition to those already occupied;
+      # a queue summary reports every solo player still waiting. Count
+      # warming containers as capacity so repeated summaries cannot fill all
+      # configured dimensions while the requested server is starting.
+      desired=$((occupied + num))
+      [ "$desired" -le "$max_dimensions" ] || desired="$max_dimensions"
+      capacity="$assigned"
+      [ "$running" -le "$capacity" ] || capacity="$running"
+
+      if [ "$capacity" -ge "$desired" ]; then
+        echo "OK   demand map=$map num=$num source=$demand_source capacity=$capacity desired=$desired occupied=$occupied"
+        return 0
+      fi
+
+      echo "SPAWN demand map=$map num=$num source=$demand_source capacity=$capacity desired=$desired occupied=$occupied"
+      runtime/scripts/spawn-server.sh "$map" || {
+        echo "ERROR failed to spawn $map"
+        return 0
+      }
+      return 0
+    fi
+
     if [ "$assigned" != "0" ] || [ "$running" != "0" ]; then
       echo "OK   demand map=$map num=$num already running/assigned assigned=$assigned containers=$running"
       return 0
@@ -1681,11 +1756,12 @@ handle_demand() {
 
 handle_idle_row() {
   local map="$1"
-  local server_id="$2"
-  local connected_players="$3"
-  local effective_players="$4"
-  local ready="$5"
-  local alive="$6"
+  local partition_id="$2"
+  local server_id="$3"
+  local connected_players="$4"
+  local effective_players="$5"
+  local ready="$6"
+  local alive="$7"
 
   case "$map" in
     Survival_1|Overmap)
@@ -1696,6 +1772,14 @@ handle_idle_row() {
   local key idle_seconds
   key="$(state_key "$map" "$server_id")"
   idle_seconds="$(idle_seconds_for_map "$map")"
+
+  # Always On maps are owned by the reconciler, not the idle lifecycle.  The
+  # old path allowed the idle scanner to tear down empty Always On dimensions
+  # after the grace period while the reconciler tried to put them back.
+  if ! map_is_dynamic "$map" && ! map_is_overmap_active "$map"; then
+    clear_idle_since "$key"
+    return 0
+  fi
 
   if [ "$connected_players" != "0" ] || [ "$effective_players" != "0" ] || ! [[ "${ready,,}" =~ ^(t|true|1|yes|y)$ ]] || ! [[ "${alive,,}" =~ ^(t|true|1|yes|y)$ ]]; then
     # Once the destination has observed its player, the inbound allocation
@@ -1714,11 +1798,20 @@ handle_idle_row() {
     return 0
   fi
 
+  local now since age
+  now="$(date +%s)"
+
   if ! map_requires_fresh_process "$map"; then
-    local remaining
+    local remaining mode_elapsed
     remaining="$(map_dynamic_grace_remaining "$map" | tr -d '[:space:]')"
     if [ "${remaining:-0}" -gt 0 ] 2>/dev/null; then
-      clear_idle_since "$key"
+      # Count an already-empty map's idle time from the mode change.  Clearing
+      # this state here made an Always On -> Dynamic transition wait the mode
+      # grace and then a second full idle grace before it could despawn.
+      if ! get_idle_since "$key" >/dev/null 2>&1; then
+        mode_elapsed=$((DESPAWN_GRACE_SECONDS - remaining))
+        set_idle_since "$key" $((now - mode_elapsed))
+      fi
       return 0
     fi
   fi
@@ -1727,9 +1820,6 @@ handle_idle_row() {
     clear_idle_since "$key"
     return 0
   fi
-
-  local now since age
-  now="$(date +%s)"
 
   if since="$(get_idle_since "$key" 2>/dev/null)"; then
     age=$((now - since))
@@ -1742,7 +1832,7 @@ handle_idle_row() {
 
   if [ "$age" -ge "$idle_seconds" ]; then
     echo "DESPAWN idle map=$map server=$server_id idle=${age}s"
-    runtime/scripts/despawn-server.sh "$map" || true
+    runtime/scripts/despawn-server.sh "$partition_id" || true
     clear_idle_since "$key"
   fi
 }
@@ -1977,6 +2067,7 @@ scan_idle_servers() {
   docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
     select
       fs.map,
+      wp.partition_id,
       fs.server_id,
       fs.connected_players,
       coalesce(ep.effective_players, 0) as effective_players,
@@ -2016,10 +2107,11 @@ scan_idle_servers() {
       $map_filter
       and coalesce(fs.server_id, '') <> ''
     order by map;
-  " | while IFS='|' read -r map server_id connected_players effective_players ready alive; do
+  " | while IFS='|' read -r map partition_id server_id connected_players effective_players ready alive; do
     [ -z "${map:-}" ] && continue
+    [ -z "${partition_id:-}" ] && continue
     remember_server_id_map "$map" "$server_id"
-    handle_idle_row "$map" "$server_id" "$connected_players" "$effective_players" "$ready" "$alive"
+    handle_idle_row "$map" "$partition_id" "$server_id" "$connected_players" "$effective_players" "$ready" "$alive"
   done
 }
 
@@ -2164,7 +2256,9 @@ scan_travel_demand() {
   local demand_rows
 
   demand_rows="$(
-    docker logs --since "$SINCE" dune-director 2>&1 | python3 -c '
+    # Timestamps make otherwise identical player requests distinct while
+    # keeping the same log occurrence stable across overlapping scan windows.
+    docker logs --timestamps --since "$SINCE" dune-director 2>&1 | python3 -c '
 import hashlib
 import re
 import sys
@@ -2208,13 +2302,14 @@ for line in sys.stdin:
         continue
 
     seen.add(key)
-    print(f"{event_id}|{map_name}|{num}")
+    source = "queue" if classical_pattern.search(line) else "request"
+    print(f"{event_id}|{map_name}|{num}|{source}")
 '
   )"
 
-  while IFS='|' read -r event_id map num; do
+  while IFS='|' read -r event_id map num demand_source; do
     [ -n "${map:-}" ] || continue
-    handle_demand "$map" "$num" "$event_id"
+    handle_demand "$map" "$num" "$event_id" "$demand_source"
   done <<< "$demand_rows"
 }
 

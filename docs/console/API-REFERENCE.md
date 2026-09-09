@@ -455,6 +455,11 @@ Each row also carries a `region` sub-region name where the map has a region tabl
 covered). It is resolved from the nearest `dune.markers.area_id` and is best-effort
 — absent when marker data is unavailable. Deep Desert instead exposes its A–I/1–9
 sector grid as the `sector` field, derived from each row's coordinates.
+`partition_id` remains null when Funcom has not deployed the vehicle into a
+current world partition; it is never rewritten as the nonexistent partition 0.
+When available, `lifecycle_state` explains these records (`Travel`,
+`VehicleBackup`, or `VehicleRecovery`) so clients can label them as in transit
+or stored rather than spawned.
 
 The separate `/api/admin/vehicles*` routes under [Admin Tools](#admin-tools) are a
 different, CLI-backed surface (blueprint catalog and spawning), not this Postgres
