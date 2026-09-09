@@ -76,6 +76,36 @@ describe("iamActionAllowed mirrors the server matchAction wildcard forms", () =>
     expect(iamActionAllowed("players:read", ["players:read"])).toBe(true);
     expect(iamActionAllowed("players:read", ["bases:read"])).toBe(false);
   });
+  // Review finding: matchPattern had NO fallback for a removed/split action
+  // name at all, despite this file's own header claiming a full mirror of
+  // the server's matchAction(). The server still honors these (actions.js's
+  // REMOVED_ACTION_ALIASES) for a policy document written before a split --
+  // a stored `Deny players:mutate` still blocks every successor action
+  // server-side, but the grid previously fell through to a sibling wildcard
+  // Allow and showed the successor as GRANTED, the inverse of the escalation
+  // risk the `-*`/embedded-`*` fixes above already guard against.
+  it("matches a removed/split action name against its real successors (REMOVED_ACTION_ALIASES)", () => {
+    expect(iamActionAllowed("players:give-item", ["players:mutate"])).toBe(true);
+    expect(iamActionAllowed("players:moderate", ["players:mutate"])).toBe(true);
+    expect(iamActionAllowed("bases:delete", ["players:mutate"])).toBe(false);
+    expect(iamActionAllowed("guilds:disband", ["guilds:mutate"])).toBe(true);
+    expect(iamActionAllowed("addons:bridge", ["addons:mutate"])).toBe(true);
+    expect(iamActionAllowed("blueprints:export", ["blueprints:mutate"])).toBe(true);
+  });
+  it("checks the removed-alias fallback LAST, so it can never shadow a live action", () => {
+    // players:mutate is itself a removed name, never a live action -- direct
+    // exact/wildcard matching must win before the alias table is even
+    // consulted, matching the server's matchAction() ordering exactly.
+    expect(iamActionAllowed("players:mutate", ["players:*"])).toBe(true);
+  });
+  it("reflects the real server behavior end to end: a Deny on a removed name still blocks its live successors", () => {
+    const stmts: PolicyStatement[] = [
+      { Effect: "Deny", Action: ["players:mutate"] },
+      { Effect: "Allow", Action: ["players:*"] },
+    ];
+    expect(actionGrantedByStatements(stmts, "players:give-item")).toBe(false);
+    expect(actionGrantedByStatements(stmts, "players:read")).toBe(true);
+  });
 });
 
 // toggleAction's branch decision (grant vs. revoke) must be computed from the
