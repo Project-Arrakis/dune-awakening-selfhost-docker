@@ -9,7 +9,8 @@ import {
   enableDiscordBotAdapter,
   updateDiscordBotRoleIds,
   regenerateDiscordBotToken,
-  applyDiscordBotEnableRequest
+  applyDiscordBotEnableRequest,
+  discordAdminRoleIdsChanged
 } from "../src/integrations/discord/adapterSettings.js";
 
 const OLD_ENV = { ...process.env };
@@ -195,4 +196,28 @@ test("applyDiscordBotEnableRequest does NOT mint a new token when the adapter is
   assert.equal(tokenContent, "token-a-must-be-unchanged", "the live token file must be untouched");
   const envContent = readFileSync(join(dir, ".env"), "utf8");
   assert.match(envContent, /^DISCORD_PLAYER_ROLE_IDS=222222222222222222$/m, "role IDs must still be applied");
+});
+
+// Audit finding #2 (HIGH): admin must not be able to grant Discord
+// "admin" bot-command tier to an arbitrary role via /enable or
+// /role-ids -- the route handler uses this comparison to decide whether
+// owner-only gating applies.
+test("discordAdminRoleIdsChanged reports false when the admin role ID set is unchanged (order-independent)", () => {
+  assert.equal(discordAdminRoleIdsChanged(["111111111111111111", "222222222222222222"], ["222222222222222222", "111111111111111111"]), false);
+});
+
+test("discordAdminRoleIdsChanged reports false when neither current nor requested has any admin role IDs", () => {
+  assert.equal(discordAdminRoleIdsChanged([], []), false);
+});
+
+test("discordAdminRoleIdsChanged reports true when an admin role ID is added", () => {
+  assert.equal(discordAdminRoleIdsChanged([], ["111111111111111111"]), true);
+});
+
+test("discordAdminRoleIdsChanged reports true when an admin role ID is removed", () => {
+  assert.equal(discordAdminRoleIdsChanged(["111111111111111111"], []), true);
+});
+
+test("discordAdminRoleIdsChanged reports true when the admin role ID set is swapped for a different one of the same size", () => {
+  assert.equal(discordAdminRoleIdsChanged(["111111111111111111"], ["222222222222222222"]), true);
 });

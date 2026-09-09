@@ -55,6 +55,22 @@ test("the /enable route only includes `token` in its response when a token was a
   assert.match(body, /tokenMinted/, "the route must branch on whether a token was actually minted");
 });
 
+// Audit finding #2 (HIGH): both /enable and /role-ids must gate a change
+// to the admin role-ID mapping behind owner tier.
+test("the /enable route requires owner tier to change admin-tier Discord role mappings", () => {
+  const body = enableRoute();
+  assert.match(body, /discordAdminRoleIdsChanged\(/, "/enable must check whether the admin role-ID set is actually changing");
+  assert.match(body, /session\.tier\s*!==\s*"owner"/, "/enable must gate an admin role-ID change behind owner tier");
+  assert.match(body, /403/, "/enable must reject a non-owner admin role-ID change with 403");
+});
+
+test("the /role-ids route requires owner tier to change admin-tier Discord role mappings", () => {
+  const body = roleIdsRoute();
+  assert.match(body, /discordAdminRoleIdsChanged\(/, "/role-ids must check whether the admin role-ID set is actually changing");
+  assert.match(body, /session\.tier\s*!==\s*"owner"/, "/role-ids must gate an admin role-ID change behind owner tier");
+  assert.match(body, /403/, "/role-ids must reject a non-owner admin role-ID change with 403");
+});
+
 // Audit finding #6 (LOW): GET must use updates:read (verified against the
 // real actions.js mapping in discordAdapterSettingsPolicy.test.js) so
 // admin -- who can already mutate this feature's state via updates:apply

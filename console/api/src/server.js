@@ -1475,6 +1475,19 @@ async function handleApi(req, res) {
     const admin = validateDiscordRoleIds(body.adminRoleIds);
     if (!admin.ok) return json(res, 400, { error: admin.error });
 
+    // Audit finding #2 (HIGH): DISCORD_ADMIN_ROLE_IDS was read-only from
+    // .env before this feature -- no route ever wrote it. Per policy.js,
+    // Discord's "admin" bot-command tier grants nearly every
+    // non-self-scoped capability, so a request that actually changes
+    // which roles map to it requires owner, even though this route is
+    // otherwise admin-reachable via updates:apply. Player/moderator
+    // role-ID changes are unaffected.
+    const currentState = readDiscordBotSettingsState(config);
+    if (discordAdminRoleIdsChanged(currentState.roleIds.admin, admin.roleIds) && session.tier !== "owner") {
+      audit(config, req, "settings.discord-bot.enable", { ok: false, reason: "admin_role_change_requires_owner" });
+      return json(res, 403, { error: "Changing admin-tier Discord role mappings requires owner access." });
+    }
+
     // Audit finding #1 (CRITICAL): applyDiscordBotEnableRequest() only
     // mints a fresh token on a genuine first enable -- once the adapter
     // is already enabled, a repeat POST here behaves exactly like
@@ -1495,6 +1508,13 @@ async function handleApi(req, res) {
     if (!moderator.ok) return json(res, 400, { error: moderator.error });
     const admin = validateDiscordRoleIds(body.adminRoleIds);
     if (!admin.ok) return json(res, 400, { error: admin.error });
+
+    // Audit finding #2 (HIGH): same owner-only gate as /enable above.
+    const currentState = readDiscordBotSettingsState(config);
+    if (discordAdminRoleIdsChanged(currentState.roleIds.admin, admin.roleIds) && session.tier !== "owner") {
+      audit(config, req, "settings.discord-bot.role-ids-updated", { ok: false, reason: "admin_role_change_requires_owner" });
+      return json(res, 403, { error: "Changing admin-tier Discord role mappings requires owner access." });
+    }
 
     updateDiscordBotRoleIds(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds });
     audit(config, req, "settings.discord-bot.role-ids-updated", { playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length });

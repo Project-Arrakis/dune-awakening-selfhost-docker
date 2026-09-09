@@ -154,3 +154,23 @@ export function applyDiscordBotEnableRequest(config, roleIdsByTier = {}) {
   const result = enableDiscordBotAdapter(config, roleIdsByTier);
   return { ok: result.ok, tokenMinted: true, token: result.token, tokenFile: result.tokenFile };
 }
+
+// discordAdminRoleIdsChanged: order-independent set comparison used by
+// the /enable and /role-ids route handlers to decide whether a request
+// is attempting to change which Discord roles map to the "admin"
+// bot-command tier -- audit finding #2 (HIGH). Per policy.js, that tier
+// grants nearly every non-self-scoped bot capability; before this
+// feature, DISCORD_ADMIN_ROLE_IDS was read-only from .env (no route
+// ever wrote it), so an admin-tier console operator could not
+// previously grant Discord-bot-admin capability to an arbitrary Discord
+// role. A request that only touches player/moderator role IDs (this
+// returns false) remains admin-reachable as before.
+export function discordAdminRoleIdsChanged(currentAdminRoleIds, requestedAdminRoleIds) {
+  const current = new Set((currentAdminRoleIds || []).map(String));
+  const requested = new Set((requestedAdminRoleIds || []).map(String));
+  if (current.size !== requested.size) return true;
+  for (const id of requested) {
+    if (!current.has(id)) return true;
+  }
+  return false;
+}
