@@ -242,6 +242,21 @@ export function loadConfig() {
     discordOAuthClientId: process.env.DISCORD_OAUTH_CLIENT_ID || "",
     discordOAuthClientSecret: readInlineOrFile(process.env.DISCORD_OAUTH_CLIENT_SECRET, resolve(secretsDir, "discord-oauth-client-secret.txt")),
     discordOAuthRedirectUri: process.env.DISCORD_OAUTH_REDIRECT_URI || "",
+    // Hosted-bot console-initiated OAuth registration (Task 6 of the
+    // 2026-09-09 plan): a SECOND redirect URI on the SAME Discord OAuth
+    // application as discordOAuthRedirectUri above -- not a separate app,
+    // not a separate client id/secret. An operator who wants "Connect to
+    // hosted bot" must register this second URI in their own Discord
+    // Developer Portal app (documented in .env.example / Task 9's docs)
+    // alongside the existing console-login redirect URI. Deliberately its
+    // own config key rather than reusing discordOAuthRedirectUri: the two
+    // flows have different callback routes
+    // (/api/auth/discord/callback vs.
+    // /api/integrations/discord/hosted-bot/oauth/callback) and Discord
+    // requires the redirect_uri sent to /oauth2/authorize and /oauth2/token
+    // to exactly match one of the app's registered URIs for that specific
+    // request.
+    discordHostedBotOAuthRedirectUri: process.env.DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI || "",
     discordOAuthApiBaseUrl: process.env.DISCORD_OAUTH_BASE_URL || "https://discord.com/api/v10",
     discordOAuthAllowOwnerBootstrap: process.env.DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP === "1",
     discordOAuthOwnerAllowlist: String(process.env.DISCORD_OAUTH_OWNER_ALLOWLIST || "").split(",").map((item) => item.trim()).filter((item) => /^\d{17,19}$/.test(item)),

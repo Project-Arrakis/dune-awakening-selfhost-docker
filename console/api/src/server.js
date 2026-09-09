@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
+import { randomBytes } from "node:crypto";
 import { totalmem } from "node:os";
 import { spawn } from "node:child_process";
 import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync } from "node:fs";
@@ -33,8 +34,10 @@ import { createDeathPoller } from "./deathPoller.js";
 import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
-import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
-import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
+import { handleDiscordAdapterRoute, isDiscordAdapterRoute, readDiscordBotApiToken } from "./integrations/discord/routes.js";
+import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie, constantTimeStringEqual } from "./integrations/discord/oauth.js";
+import { fetchOwnedDiscordGuilds, createPendingRegistrationStore, hostedBotOAuthStateCookie, clearHostedBotOAuthStateCookie, hostedBotRegistrationHandleCookie, clearHostedBotRegistrationHandleCookie, hostedBotOAuthReturnPage } from "./integrations/discord/hostedBotOAuth.js";
+import { fetchWithTimeoutAndRetry } from "./services/httpWithRetry.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
 import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions } from "./policy.js";
@@ -261,6 +264,7 @@ const credentialProofRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
 const bridgeRateLimiter = createBridgeRateLimiter();
 const oauthPendingStates = createPendingStateStore();
+const hostedBotPendingRegistrations = createPendingRegistrationStore();
 const handoff = createHandoff({
   secret: config.discordBotHandoffSecret,
   botUrl: config.discordBotHandoffUrl,
@@ -1525,6 +1529,127 @@ async function handleApi(req, res) {
     audit(config, req, "settings.discord-bot.token-regenerated", {});
     return json(res, 200, { ok: true, token });
   }
+
+  // ---- Hosted-bot console-initiated OAuth registration (Task 6) ----
+  // Deliberately dispatched here, in the post-auth/post-IAM block alongside
+  // the sibling /api/settings/discord-bot* routes above -- unlike
+  // console-login's own OAuth routes (/api/auth/discord/start/callback,
+  // dispatched further up, BEFORE `auth.requireAuth()`/`evaluate()`), these
+  // 3 routes need an already-logged-in, already-authorized console session:
+  // this flow connects an existing console to the hosted bot, it does not
+  // establish console access in the first place.
+  if (path === "/api/integrations/discord/hosted-bot/oauth/start" && req.method === "GET") {
+    if (!config.discordOAuthClientId || !config.discordOAuthClientSecret || !config.discordHostedBotOAuthRedirectUri) {
+      return html(res, 200, oauthErrorPage("Connecting to the hosted bot isn't configured for this console yet. Set up Discord sign-in (Settings -> Discord OAuth) and register the hosted-bot redirect URI first, then try connecting to the hosted bot again."));
+    }
+    const oauthState = randomBytes(16).toString("base64url");
+    res.setHeader("Set-Cookie", hostedBotOAuthStateCookie(oauthState, config.secureCookies));
+    const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordHostedBotOAuthRedirectUri, state: oauthState });
+    res.writeHead(302, { Location: authorizeUrl });
+    res.end();
+    audit(config, req, "hosted-bot.oauth.start", { ok: true });
+    return;
+  }
+
+  if (path === "/api/integrations/discord/hosted-bot/oauth/callback" && req.method === "GET") {
+    const callbackUrl = new URL(req.url || "", "http://localhost");
+    const code = callbackUrl.searchParams.get("code") || "";
+    const oauthState = callbackUrl.searchParams.get("state") || "";
+    const cookieState = parseCookies(req.headers.cookie || "").get("hosted_bot_oauth_state") || "";
+    if (!oauthState || !constantTimeStringEqual(oauthState, cookieState)) {
+      audit(config, req, "hosted-bot.oauth.callback", { ok: false, reason: "state_mismatch" });
+      return html(res, 400, oauthErrorPage("This request was invalid or expired. Go back to Settings and try connecting to the hosted bot again."));
+    }
+    let token;
+    let owned;
+    try {
+      token = await exchangeDiscordAuthCode({
+        code,
+        redirectUri: config.discordHostedBotOAuthRedirectUri,
+        clientId: config.discordOAuthClientId,
+        clientSecret: config.discordOAuthClientSecret,
+        apiBaseUrl: config.discordOAuthApiBaseUrl
+      });
+      owned = await fetchOwnedDiscordGuilds({ accessToken: token.access_token, apiBaseUrl: config.discordOAuthApiBaseUrl });
+    } catch (error) {
+      audit(config, req, "hosted-bot.oauth.callback", { ok: false, reason: error.code || "oauth_error" });
+      return html(res, 400, oauthErrorPage("Connecting to Discord failed. Go back to Settings and try again."));
+    }
+    const pending = hostedBotPendingRegistrations.issue({
+      accessToken: token.access_token,
+      ownedGuildIds: owned.guilds.map((g) => g.id),
+      userId: owned.userId
+    });
+    if (!pending) {
+      audit(config, req, "hosted-bot.oauth.callback", { ok: false, reason: "too_many_pending" });
+      return html(res, 429, oauthErrorPage("Too many connection attempts in progress. Try again in a moment."));
+    }
+    res.setHeader("Set-Cookie", [hostedBotRegistrationHandleCookie(pending.handle, config.secureCookies), clearHostedBotOAuthStateCookie(config.secureCookies)]);
+    audit(config, req, "hosted-bot.oauth.callback", { ok: true, ownedGuildCount: owned.guilds.length });
+    return html(res, 200, hostedBotOAuthReturnPage(owned.guilds));
+  }
+
+  if (path === "/api/integrations/discord/hosted-bot/register" && req.method === "POST") {
+    // Fail-closed, cheapest check first (self-review requirement): never do
+    // any work -- reading cookies, consuming the pending registration, or
+    // calling out to mentat-backend -- unless this console has actually
+    // opted into the hosted deployment. An owner-tier session on a
+    // self-hosted console (deploymentChoice !== "hosted") is rejected here,
+    // before anything else runs.
+    const botSettingsState = readDiscordBotSettingsState(config);
+    if (botSettingsState.deploymentChoice !== "hosted") {
+      audit(config, req, "hosted-bot.register", { ok: false, reason: "not_hosted_choice" });
+      return json(res, 403, { error: "This console isn't configured for the hosted bot." });
+    }
+    if (!botSettingsState.tokenConfigured) {
+      audit(config, req, "hosted-bot.register", { ok: false, reason: "no_adapter_token" });
+      return json(res, 400, { error: "Your console doesn't have an adapter token configured yet -- enable the adapter first." });
+    }
+    // The registration handle is consumed from its own HttpOnly cookie, set
+    // by the callback route above -- never trusted from the request body,
+    // so a caller cannot claim someone else's completed OAuth round-trip by
+    // guessing/supplying a handle value directly.
+    const handleCookie = parseCookies(req.headers.cookie || "").get("hosted_bot_registration_handle") || "";
+    const body = await readJson(req);
+    const guildId = String(body.guildId || "");
+    const consumed = hostedBotPendingRegistrations.consume(handleCookie, handleCookie);
+    if (!consumed.ok) {
+      audit(config, req, "hosted-bot.register", { ok: false, reason: consumed.reason });
+      return json(res, 400, { error: "Reconnecting to Discord to confirm this is still you -- go back to Settings and connect to the hosted bot again.", needsReauth: true });
+    }
+    if (!consumed.entry.ownedGuildIds.includes(guildId)) {
+      audit(config, req, "hosted-bot.register", { ok: false, reason: "guild_not_owned" });
+      return json(res, 403, { error: "Could not verify you own that Discord server -- please try connecting again." });
+    }
+    const adapterToken = readDiscordAdapterTokenForHostedBot(config);
+    let mentatResponse;
+    try {
+      mentatResponse = await fetchWithTimeoutAndRetry(
+        "https://mentat-backend.darkdante.org/api/consoles/register",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            guildId,
+            discordAccessToken: consumed.entry.accessToken,
+            consoleUrl: String(body.consoleUrl || ""),
+            adapterToken
+          })
+        },
+        { timeoutMs: 15000 }
+      );
+    } catch {
+      audit(config, req, "hosted-bot.register", { ok: false, reason: "mentat_unreachable" });
+      return json(res, 502, { error: "Couldn't reach the hosted bot service. Your console's own settings are unaffected -- try again in a moment." });
+    }
+    if (!mentatResponse.ok) {
+      audit(config, req, "hosted-bot.register", { ok: false, reason: "mentat_rejected", status: mentatResponse.status });
+      return json(res, 502, { error: "Could not verify you own that Discord server -- please try connecting again." });
+    }
+    audit(config, req, "hosted-bot.register", { ok: true, guildId });
+    return json(res, 200, { ok: true });
+  }
+
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/settings") return json(res, 200, await setupState());
 
@@ -5584,6 +5709,18 @@ async function funcomTokenCheckRoute(req, res, url) {
 
 async function readJson(req) {
   return readJsonBody(req, config.maxJsonBytes);
+}
+
+// readDiscordAdapterTokenForHostedBot: a deliberately-named, thin wrapper
+// around routes.js's own readDiscordBotApiToken() -- the hosted-bot
+// registration route (below) must forward the SAME token value to
+// mentat-backend that this console's own live adapter route validates
+// incoming bot requests against (byte-identical), never a second,
+// independently-derived value. readDiscordBotApiToken()'s existing
+// signature (just `config`) already fits; this wrapper exists only to give
+// the hosted-bot call site its own clearly-named call, not to add logic.
+function readDiscordAdapterTokenForHostedBot(config) {
+  return readDiscordBotApiToken(config);
 }
 
 function mockCommand(operation) {
