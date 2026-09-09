@@ -325,7 +325,7 @@ Every write command generates a `uuid` idempotency key. Core rejects duplicate k
 | `discordWritesEnabled` standardization | **RESOLVED IN DESIGN** (this revision, Section 3.7) — Core keeps `"1"`, bot accepts both `"1"` and `"true"` | #217 |
 | Actor signing on all write adapter routes | **EXISTS** | #207 (verified) |
 
-### Bot (arrakis-control-panel)
+### Bot (Mentat)
 
 | Component | Status | Issue |
 |-----------|--------|-------|
