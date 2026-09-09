@@ -145,6 +145,41 @@ describe("DiscordBotSection", () => {
     expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
   });
 
+  it("never lets the initial-mount-load failure handling interfere with a persisted in-flight task's recovery, even when the status poll itself fails transiently (finding 2 non-interference)", async () => {
+    const persistedTask = {
+      id: "task-recover-2",
+      type: "discordAdapterApply",
+      operation: "enable",
+      status: "running",
+      currentStep: "Restarting console",
+      progressMessage: "",
+      logLines: [],
+      warnings: [],
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      errorMessage: null
+    };
+    window.localStorage.setItem(TASK_KEY, JSON.stringify(persistedTask));
+
+    // Both getState() (which the mount effect deliberately skips calling
+    // when a persisted task exists) and stack-progress reject here -- if
+    // finding #2's initial-mount-load failure handling were not correctly
+    // scoped to skip when runId is already set, or if a transient
+    // stack-progress failure incorrectly flipped phase to "failed", the
+    // enabling/restarting UI below would disappear.
+    mockApi.mockRejectedValue(new Error("network down"));
+
+    vi.useFakeTimers();
+    render(<DiscordBotSection />);
+
+    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+
+    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Retry/i })).toBeNull();
+  });
+
   it("does not clobber typed role IDs when Retry is clicked after a failed enable task (finding 4)", async () => {
     mockApi.mockImplementation((path: string) => {
       if (path === "/api/settings/discord-bot") {
@@ -215,6 +250,22 @@ describe("DiscordBotSection", () => {
     await screen.findByText(/restart/i);
     expect(saveButton).toBeDisabled();
     expect(regenButton).toBeDisabled();
+  });
+
+  it("re-enables the trigger button after the confirm dialog is cancelled (finding 5 cancel path)", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+
+    const enableButton = screen.getByRole("button", { name: /Enable Discord Bot Integration/i });
+    fireEvent.click(enableButton);
+    await screen.findByText(/restart/i);
+    expect(enableButton).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
+    await waitFor(() => expect(enableButton).not.toBeDisabled());
+    expect(mockPost).not.toHaveBeenCalled();
   });
 
   it("offers a Copy button for the one-time revealed token (finding 7)", async () => {
