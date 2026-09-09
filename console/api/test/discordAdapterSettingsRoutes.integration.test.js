@@ -1,0 +1,265 @@
+// Layer 3 audit findings #1/#2 (HIGH): none of the 4 Discord Bot settings
+// routes (GET /api/settings/discord-bot, POST .../enable, .../role-ids,
+// .../regenerate-token) had ever been exercised end-to-end via a real HTTP
+// request through the real server.js entrypoint -- only the underlying
+// business-logic functions (discordAdapterSettings.test.js) and structural
+// source-parsing checks (discordBotSettingsRoutes.test.js) covered them.
+// This file closes that gap, following passwordRotation.integration.test.js's
+// spawn-a-real-server-and-fetch-it pattern (the closer match here: these
+// routes need a plain owner-tier admin-password session, not a Discord OAuth
+// round-trip).
+//
+// This intentionally does NOT duplicate the one HTTP-level 403 test that
+// already exists for these routes -- oauthRoutes.integration.test.js's
+// "admin-tier session gets a real 403 changing Discord admin role IDs via
+// POST /api/settings/discord-bot/enable" -- which needs a real admin-tier
+// (non-owner) session minted via the Discord OAuth + bot-handoff harness.
+// That test stays where it is; this file builds alongside it.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createServer as createTcpServer } from "node:net";
+import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const apiRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
+const ADMIN_PASSWORD = "correct-password";
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const s = createTcpServer();
+    s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => resolve(p)); });
+    s.on("error", reject);
+  });
+}
+
+function startConsole(port, tempDir, extraEnv = {}) {
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: apiRoot,
+    env: {
+      ...process.env,
+      DUNE_DOCKER_DIR: tempDir,
+      ADMIN_BIND_PORT: String(port),
+      ADMIN_PASSWORD,
+      ADMIN_SECURE_COOKIES: "0",
+      ...extraEnv
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let logs = "";
+  child.stdout.on("data", (c) => { logs += c; });
+  child.stderr.on("data", (c) => { logs += c; });
+  return { child, logs: () => logs };
+}
+
+async function waitForHealth(port, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try { if ((await fetch(`http://127.0.0.1:${port}/api/health`)).ok) return; } catch { /* not up yet */ }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error("console did not become healthy in time");
+}
+
+function cookieFrom(res, name = "asc_session") {
+  const entry = (res.headers.getSetCookie() || []).find((v) => v.startsWith(`${name}=`));
+  return entry ? entry.split(";")[0].slice(name.length + 1) : null;
+}
+
+async function stopProcess(child) {
+  if (!child || child.exitCode !== null) return;
+  child.kill();
+  await Promise.race([new Promise((r) => child.once("exit", r)), new Promise((r) => setTimeout(r, 5000))]);
+}
+
+// method defaults to GET when no body is given, POST when one is -- every
+// caller below passes method explicitly anyway, this just keeps the helper
+// terse for the plain-GET call sites.
+function api(port, path, { method, cookie, csrf, body } = {}) {
+  const headers = {};
+  if (body !== undefined) headers["content-type"] = "application/json";
+  if (cookie) headers.cookie = `asc_session=${cookie}`;
+  if (csrf) headers["x-csrf-token"] = csrf;
+  return fetch(`http://127.0.0.1:${port}${path}`, {
+    method: method || (body !== undefined ? "POST" : "GET"),
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    redirect: "manual"
+  });
+}
+
+async function login(port, password) {
+  const res = await api(port, "/api/auth/login", { method: "POST", body: { password } });
+  const body = await res.json();
+  return { status: res.status, cookie: cookieFrom(res), csrf: body.csrfToken, body };
+}
+
+function auditRows(tempDir) {
+  try {
+    return readFileSync(join(tempDir, "runtime", "generated", "web-admin-audit.jsonl"), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+const ROUTES = [
+  { path: "/api/settings/discord-bot", method: "GET" },
+  { path: "/api/settings/discord-bot/enable", method: "POST" },
+  { path: "/api/settings/discord-bot/role-ids", method: "POST" },
+  { path: "/api/settings/discord-bot/regenerate-token", method: "POST" }
+];
+
+test("an unauthenticated request to each of the 4 Discord Bot settings routes is rejected, never reaching the route handler", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-unauth-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    for (const route of ROUTES) {
+      const res = await api(port, route.path, { method: route.method, body: route.method === "POST" ? {} : undefined });
+      // No session cookie at all -- auth.requireAuth() denies with 401
+      // (this codebase's real convention for "not signed in", distinct from
+      // the 403 an authenticated-but-unauthorized session gets).
+      assert.equal(res.status, 401, `${route.method} ${route.path} must reject an unauthenticated request`);
+      const body = await res.json();
+      assert.ok(body.error, `${route.method} ${route.path} must return an error message`);
+    }
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("an authenticated owner session can read, enable, update role IDs, and regenerate the token for the Discord Bot adapter end-to-end", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-owner-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+    assert.equal(session.status, 200);
+
+    // GET before anything is configured: disabled, no token.
+    const before = await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie });
+    assert.equal(before.status, 200);
+    const beforeBody = await before.json();
+    assert.equal(beforeBody.enabled, false);
+    assert.equal(beforeBody.tokenConfigured, false);
+
+    // POST /enable -- a genuine first enable must mint and return a token.
+    const enable = await api(port, "/api/settings/discord-bot/enable", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "" }
+    });
+    assert.equal(enable.status, 202, "a successful enable must return 202 (task queued)");
+    const enableBody = await enable.json();
+    assert.ok(enableBody.task, "the response must include the queued task");
+    assert.ok(enableBody.token, "a genuine first enable must return the freshly minted token");
+    const firstToken = enableBody.token;
+
+    // GET again -- state on disk (env-file-backed) must now reflect enabled.
+    const afterEnable = await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie });
+    const afterEnableBody = await afterEnable.json();
+    assert.equal(afterEnableBody.enabled, true);
+    assert.equal(afterEnableBody.tokenConfigured, true);
+    assert.deepEqual(afterEnableBody.roleIds.player, ["111111111111111111"]);
+
+    // POST /role-ids -- must succeed and must NOT return a token field at all.
+    const roleIds = await api(port, "/api/settings/discord-bot/role-ids", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "222222222222222222", adminRoleIds: "" }
+    });
+    assert.equal(roleIds.status, 202);
+    const roleIdsBody = await roleIds.json();
+    assert.ok(roleIdsBody.task, "the response must include the queued task");
+    assert.equal(roleIdsBody.token, undefined, "role-ids updates must never carry a token field");
+
+    const afterRoleIds = await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie });
+    const afterRoleIdsBody = await afterRoleIds.json();
+    assert.deepEqual(afterRoleIdsBody.roleIds.moderator, ["222222222222222222"]);
+
+    // POST /regenerate-token -- owner tier, must succeed and mint a NEW token.
+    const regen = await api(port, "/api/settings/discord-bot/regenerate-token", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: {}
+    });
+    assert.equal(regen.status, 200);
+    const regenBody = await regen.json();
+    assert.ok(regenBody.token, "regenerate-token must return the freshly minted token");
+    assert.notEqual(regenBody.token, firstToken, "regeneration must mint a genuinely new token, not echo the old one");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/settings/discord-bot/enable returns a real 400 over the wire for an invalid Discord role ID, not just from the pure validator", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-badinput-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+
+    const res = await api(port, "/api/settings/discord-bot/enable", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { playerRoleIds: "not-a-role-id", moderatorRoleIds: "", adminRoleIds: "" }
+    });
+    assert.equal(res.status, 400, "an invalid role-ID format must be rejected with 400 over the real HTTP route");
+    const body = await res.json();
+    assert.match(body.error || "", /Invalid Discord role ID/i);
+
+    // The invalid request must not have enabled the adapter as a side effect.
+    const state = await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie });
+    assert.equal((await state.json()).enabled, false, "a rejected request must not partially apply");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("a successful POST /api/settings/discord-bot/enable is recorded in the real audit log", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-audit-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+
+    const res = await api(port, "/api/settings/discord-bot/enable", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "" }
+    });
+    assert.equal(res.status, 202);
+
+    const rows = auditRows(tempDir).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const enableRow = rows.find((r) => r.action === "settings.discord-bot.enable");
+    assert.ok(enableRow, "a successful enable must write a settings.discord-bot.enable audit row");
+    assert.equal(enableRow.detail.playerCount, 1);
+    assert.equal(enableRow.path, "/api/settings/discord-bot/enable");
+    // redactValue() (redact.js) redacts ANY field whose key matches
+    // /password|token|secret|credential/i, unconditionally -- including a
+    // boolean like tokenMinted, which is not itself sensitive. This is the
+    // real, deliberately conservative behavior (over-redaction is the safe
+    // failure mode for a key that merely contains "token"), not a bug --
+    // pin it here so a change to that behavior doesn't silently regress
+    // into leaking something that WAS meant to be redacted.
+    assert.equal(enableRow.detail.tokenMinted, "<redacted>", "the audit log must never show an unredacted value for a token-named field, even a boolean");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
