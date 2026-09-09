@@ -5,10 +5,36 @@ import { persistUpdateTask, loadPersistedUpdateTask } from "../updates/updateUti
 import { ConfirmDialog, type ConfirmDialogRequest, type ConfirmDialogOutcome } from "../../components/common/ConfirmDialog";
 
 const TASK_KEY = "arrakis.discordAdapterEnableTask";
+const CHOICE_KEY = "arrakis.discordAdapterChoice";
 const POLL_INTERVAL_MS = 2000;
 
 type Choice = "hosted" | "self-hosted" | null;
 type Phase = "loading" | "disabled" | "enabling" | "enabled" | "failed";
+
+// Same shape as loadPersistedUpdateTask/persistUpdateTask in updateUtils.ts
+// (typeof-window guard, try/catch around localStorage access), just for a
+// plain string value instead of a Task -- there's no shared helper for that
+// shape, so this is a small, deliberately parallel pair rather than forcing
+// `choice` through the Task-specific helpers.
+function loadPersistedChoice(): Choice {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(CHOICE_KEY);
+    return raw === "hosted" || raw === "self-hosted" ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistChoice(value: Choice) {
+  if (typeof window === "undefined") return;
+  try {
+    if (value) window.localStorage.setItem(CHOICE_KEY, value);
+    else window.localStorage.removeItem(CHOICE_KEY);
+  } catch {
+    // The visible page state still works if localStorage is unavailable.
+  }
+}
 
 export function DiscordBotSection() {
   const [state, setState] = useState<DiscordBotSettingsState | null>(null);
@@ -28,7 +54,12 @@ export function DiscordBotSection() {
   // set on the first render).
   const [runId, setRunId] = useState<string | null>(() => loadPersistedUpdateTask(TASK_KEY)?.id ?? null);
   const [phase, setPhase] = useState<Phase>(() => (loadPersistedUpdateTask(TASK_KEY)?.id ? "enabling" : "loading"));
-  const [choice, setChoice] = useState<Choice>(null);
+  // Seeded synchronously from localStorage, same convention as runId/phase
+  // above -- otherwise the hosted/self-hosted token-destination instructions
+  // (gated on `choice`) would vanish on every visit after the very first
+  // Enable, since the backend's getState() never returns this (finding #1,
+  // Layer 3 review).
+  const [choice, setChoice] = useState<Choice>(() => loadPersistedChoice());
   const [playerRoleIds, setPlayerRoleIds] = useState("");
   const [moderatorRoleIds, setModeratorRoleIds] = useState("");
   const [adminRoleIds, setAdminRoleIds] = useState("");
@@ -39,6 +70,11 @@ export function DiscordBotSection() {
   // after Enable/Regenerate, since the backend never returns it again on
   // a later GET (Design §3.1's "masked, with reveal/copy" requirement).
   const [revealedToken, setRevealedToken] = useState<string | null>(null);
+
+  function updateChoice(value: Choice) {
+    setChoice(value);
+    persistChoice(value);
+  }
 
   async function refresh() {
     const nextState = await discordAdapterSettingsApi.getState();
@@ -176,8 +212,8 @@ export function DiscordBotSection() {
         <>
           <div className="settings-choice">
             <p>Which are you using?</p>
-            <button className={choice === "hosted" ? "active" : ""} aria-pressed={choice === "hosted"} onClick={() => setChoice("hosted")}>Hosted bot</button>
-            <button className={choice === "self-hosted" ? "active" : ""} aria-pressed={choice === "self-hosted"} onClick={() => setChoice("self-hosted")}>Self-hosting</button>
+            <button className={choice === "hosted" ? "active" : ""} aria-pressed={choice === "hosted"} onClick={() => updateChoice("hosted")}>Hosted bot</button>
+            <button className={choice === "self-hosted" ? "active" : ""} aria-pressed={choice === "self-hosted"} onClick={() => updateChoice("self-hosted")}>Self-hosting</button>
           </div>
           <label>Player role IDs<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
           <label>Moderator role IDs<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>

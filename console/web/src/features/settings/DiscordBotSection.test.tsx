@@ -124,6 +124,20 @@ describe("DiscordBotSection", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument(), { timeout: 5000 });
   });
 
+  it("persists the hosted/self-hosted choice to localStorage so token-destination instructions survive a reload (finding 1)", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    const { unmount } = render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+    expect(window.localStorage.getItem("arrakis.discordAdapterChoice")).toBe("hosted");
+    unmount();
+
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+    expect(screen.getByText(/mentat-link's setup form/i)).toBeInTheDocument();
+  });
+
   it("points the OAuth disambiguation note in the correct direction (finding 6)", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     render(<DiscordBotSection />);
