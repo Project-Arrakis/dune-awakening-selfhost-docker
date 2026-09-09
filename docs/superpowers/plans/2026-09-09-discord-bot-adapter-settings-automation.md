@@ -375,10 +375,11 @@ git commit -m "feat(settings): extend self-update status schema with an optional
 
 ---
 
-### Task 4: Add the buildless-recreate shell function and dispatch case
+### Task 4: Add the buildless-recreate shell function, dispatch case, and compose environment passthrough
 
 **Files:**
 - Modify: `runtime/scripts/self-update.sh`
+- Modify: `docker-compose.web.yml`
 - Test: `runtime/tests/test-discord-adapter-env-recreate.sh` (new)
 - Modify: `.github/workflows/ci.yml`
 
@@ -387,6 +388,16 @@ git commit -m "feat(settings): extend self-update status schema with an optional
 - Produces: `runtime/scripts/self-update.sh apply-discord-adapter-env [<service>]` — a new dispatch case that recreates the console container with the *current* image and *current* `.env` (no build/pull), then verifies the Discord adapter's health endpoint and records the result in the run's status file.
 
 Audit findings #4 and #6 (HIGH): `self-update.sh`'s only existing recreate path (`rebuild_web_console_now`) always runs a full `docker compose build` first — there's no existing buildless entry point, and completion-detection elsewhere is keyed on a version change this feature doesn't have. This task adds a new, clearly separate function and dispatch case rather than modifying the existing `install|apply`/`rebuild-web-console` paths at all.
+
+**Real gap found and fixed during pre-flight (before this task is dispatched):** `docker-compose.web.yml`'s console service does NOT use `env_file:` — it lists every environment variable it forwards to the container explicitly, one line per variable, as `KEY: "${KEY:-default}"`. A `.env` value that isn't listed there never reaches the container's `process.env`, no matter what Task 8 writes to `.env`. Verified directly: the file already has `DUNE_DISCORD_ADAPTER_ENABLED`, `DUNE_DISCORD_ADAPTER_TOKEN`, and `DISCORD_OBSERVER_ROLE_IDS`/`DISCORD_MODERATOR_ROLE_IDS`/`DISCORD_ADMIN_ROLE_IDS`/`DISCORD_OWNER_ROLE_IDS` lines — but NOT `DUNE_DISCORD_ADAPTER_TOKEN_FILE` (the token-FILE-path variable this plan's `enableDiscordBotAdapter()` writes, which `console/api/src/integrations/discord/routes.js:663`'s `readDiscordBotApiToken()` already reads as its primary token-file source, confirmed directly in that file — this env var name was not invented by this plan, the existing code already expects it) and NOT the renamed `DISCORD_PLAYER_ROLE_IDS` (Task 8 Step 0 reads this first, falling back to the legacy `DISCORD_OBSERVER_ROLE_IDS`). Without adding both lines, the whole feature would silently fail at runtime: the token file path and player role IDs would never reach the running console process, no matter how correctly every other task is implemented. Step 0 below adds them.
+
+- [ ] **Step 0: Add the 2 missing environment passthrough lines to `docker-compose.web.yml`**
+
+Run: `grep -n "DISCORD_OBSERVER_ROLE_IDS:\|DUNE_DISCORD_ADAPTER_TOKEN:" docker-compose.web.yml` to confirm the current line numbers (verified above at lines 70 and 84; use whatever the actual current numbers are).
+
+Add `DUNE_DISCORD_ADAPTER_TOKEN_FILE: "${DUNE_DISCORD_ADAPTER_TOKEN_FILE:-}"` immediately after the existing `DUNE_DISCORD_ADAPTER_TOKEN: "${DUNE_DISCORD_ADAPTER_TOKEN:-}"` line, and add `DISCORD_PLAYER_ROLE_IDS: "${DISCORD_PLAYER_ROLE_IDS:-}"` immediately after the existing `DISCORD_OBSERVER_ROLE_IDS: "${DISCORD_OBSERVER_ROLE_IDS:-}"` line — keep the legacy `DISCORD_OBSERVER_ROLE_IDS` line in place, do not remove it, since `discordRoleMappingFromEnv()` (Task 8 Step 0) still reads it as a fallback for operators who have not migrated their `.env`.
+
+Run: `grep -c "DUNE_DISCORD_ADAPTER_TOKEN_FILE\|DISCORD_PLAYER_ROLE_IDS" docker-compose.web.yml` — expect `2`.
 
 - [ ] **Step 1: Read the exact surrounding code to confirm line anchors before editing**
 
@@ -523,11 +534,14 @@ cp .env "$tmp_env" 2>/dev/null || touch "$tmp_env"
 {
   echo "DUNE_DISCORD_ADAPTER_ENABLED=true"
   echo "DUNE_DISCORD_ADAPTER_TOKEN_FILE=runtime/secrets/discord-adapter-token.txt"
+  echo "DISCORD_PLAYER_ROLE_IDS=111111111111111111"
 } >> "$tmp_env"
 
 resolved="$(env $(grep -v '^#' "$tmp_env" | xargs -d '\n' -I{} echo {}) docker compose -f docker-compose.web.yml config 2>/dev/null || true)"
 [ -n "$resolved" ] || fail "docker compose config produced no output with Discord adapter env vars set"
 echo "$resolved" | grep -q "DUNE_DISCORD_ADAPTER_ENABLED" || fail "resolved compose config did not include DUNE_DISCORD_ADAPTER_ENABLED -- check docker-compose.web.yml's environment: passthrough for this variable"
+echo "$resolved" | grep -q "DUNE_DISCORD_ADAPTER_TOKEN_FILE" || fail "resolved compose config did not include DUNE_DISCORD_ADAPTER_TOKEN_FILE -- Step 0 of this task must add this line to docker-compose.web.yml's environment: block, or the token file path this feature writes to .env never reaches the running container"
+echo "$resolved" | grep -q "DISCORD_PLAYER_ROLE_IDS" || fail "resolved compose config did not include DISCORD_PLAYER_ROLE_IDS -- Step 0 of this task must add this line to docker-compose.web.yml's environment: block, or player role IDs never reach the running container"
 
 echo "OK: docker-compose.web.yml resolves correctly with Discord adapter env vars set"
 ```
@@ -537,7 +551,7 @@ Run: `chmod +x runtime/tests/test-discord-adapter-env-recreate.sh`
 - [ ] **Step 6: Run the new test**
 
 Run: `runtime/tests/test-discord-adapter-env-recreate.sh`
-Expected: `OK: docker-compose.web.yml resolves correctly...` — if it instead fails with "resolved compose config did not include DUNE_DISCORD_ADAPTER_ENABLED", check whether `docker-compose.web.yml`'s `environment:` block for the console service already passes through arbitrary host env vars or needs an explicit `DUNE_DISCORD_ADAPTER_ENABLED: "${DUNE_DISCORD_ADAPTER_ENABLED:-false}"` line added — if so, add it as part of this task (grep the file for `ADMIN_BIND_HOST:` to find the existing `environment:` block and match its style).
+Expected: `OK: docker-compose.web.yml resolves correctly...`. This test is specifically designed to fail loudly if Step 0 above was skipped or done wrong — if it fails on the `DUNE_DISCORD_ADAPTER_TOKEN_FILE` or `DISCORD_PLAYER_ROLE_IDS` checks, go back and confirm Step 0's two lines were actually added to `docker-compose.web.yml`.
 
 - [ ] **Step 7: Wire the new test into CI**
 
@@ -552,7 +566,7 @@ In `.github/workflows/ci.yml`, add a new step after the existing "Test Compose p
 - [ ] **Step 8: Commit**
 
 ```bash
-git add runtime/scripts/self-update.sh runtime/tests/test-discord-adapter-env-recreate.sh .github/workflows/ci.yml
+git add runtime/scripts/self-update.sh docker-compose.web.yml runtime/tests/test-discord-adapter-env-recreate.sh .github/workflows/ci.yml
 git commit -m "feat(settings): add buildless console-env-recreate path, shared lock with self-update"
 ```
 
