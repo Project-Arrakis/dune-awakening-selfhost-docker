@@ -29,7 +29,7 @@ The console now supports one-click Discord bot registration directly from **Sett
 
 1. Go to your Discord Developer Portal application settings
 2. Add a new redirect URI: `https://<your-console-domain>/api/integrations/discord/hosted-bot/oauth/callback`
-3. Store the value in `.env` as `DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI` (see Prerequisites below)
+3. Store the value in `.env` as `DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI` (uncomment and set it in `.env.example`, then redeploy)
 
 This second redirect URI must point to the same Discord application as `DISCORD_OAUTH_REDIRECT_URI` — no separate application needed, just a second registered URI on the existing one.
 
