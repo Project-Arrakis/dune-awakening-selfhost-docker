@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   validateDiscordRoleIds,
   readDiscordBotSettingsState,
+  enableDiscordBotAdapter,
   updateDiscordBotRoleIds,
   regenerateDiscordBotToken
 } from "../src/integrations/discord/adapterSettings.js";
@@ -78,7 +79,7 @@ test("updateDiscordBotRoleIds writes only the 3 role-ID keys and never touches t
   assert.equal(tokenContent, "existing-token-value", "role-ID updates must never rotate the live token");
 });
 
-test("regenerateDiscordBotToken overwrites the token file with fresh random bytes and never touches .env", () => {
+test("regenerateDiscordBotToken overwrites the token file with fresh random bytes, and never rewrites the token FILE PATH in .env", () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-regen-"));
   const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
   process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE = tokenFile;
@@ -94,7 +95,39 @@ test("regenerateDiscordBotToken overwrites the token file with fresh random byte
   assert.equal(newToken, result.token);
   const envContent = readFileSync(join(dir, ".env"), "utf8");
   assert.match(envContent, /^SOME_OTHER_KEY=untouched$/m);
-  assert.doesNotMatch(envContent, /DUNE_DISCORD_ADAPTER_TOKEN_FILE/, "regenerating must not rewrite .env -- the file path doesn't change, only its contents");
+  assert.doesNotMatch(envContent, /DUNE_DISCORD_ADAPTER_TOKEN_FILE/, "regenerating must not rewrite .env's token FILE PATH -- the file path doesn't change, only its contents");
+});
+
+// Audit finding #4 (HIGH): readDiscordBotApiToken() (routes.js) checks the
+// direct DUNE_DISCORD_ADAPTER_TOKEN env var BEFORE the token file. If an
+// operator set that var directly (a real, documented manual-setup path),
+// Enable/Regenerate must clear it -- otherwise the UI shows a fresh,
+// plausible-looking token that the live adapter never actually uses to
+// authenticate, because the untouched direct env var keeps winning.
+test("enableDiscordBotAdapter clears a direct DUNE_DISCORD_ADAPTER_TOKEN value in .env so the file-based token becomes authoritative", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-enable-clears-direct-"));
+  writeFileSync(join(dir, ".env"), "DUNE_DISCORD_ADAPTER_TOKEN=some-direct-manual-value\n");
+
+  const result = enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
+  assert.equal(result.ok, true);
+
+  const envContent = readFileSync(join(dir, ".env"), "utf8");
+  assert.match(envContent, /^DUNE_DISCORD_ADAPTER_TOKEN=""$/m, "the direct token env var must be cleared, not left pointing at a now-dead credential");
+});
+
+test("regenerateDiscordBotToken clears a direct DUNE_DISCORD_ADAPTER_TOKEN value in .env for the same reason", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-regen-clears-direct-"));
+  const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
+  process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE = tokenFile;
+  mkdirSync(join(dir, "runtime", "secrets"), { recursive: true });
+  writeFileSync(join(dir, ".env"), "DUNE_DISCORD_ADAPTER_TOKEN=some-direct-manual-value\n");
+  writeFileSync(tokenFile, "old-token-value\n");
+
+  const result = regenerateDiscordBotToken({ repoRoot: dir });
+  assert.equal(result.ok, true);
+
+  const envContent = readFileSync(join(dir, ".env"), "utf8");
+  assert.match(envContent, /^DUNE_DISCORD_ADAPTER_TOKEN=""$/m, "the direct token env var must be cleared on regenerate too, or the freshly-shown token would never actually be used");
 });
 
 test("readDiscordBotSettingsState: enabled flag true but token file missing reports enabled with tokenConfigured false", () => {

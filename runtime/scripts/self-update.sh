@@ -1048,6 +1048,33 @@ recreate_discord_adapter_env() {
 # the adapter isn't responding") the frontend surfaces distinctly (§4 of the
 # design doc), not a reason to make the whole recreate report as failed --
 # the container recreate itself did succeed.
+# resolve_discord_adapter_token: token-file-FIRST, direct-env-var fallback.
+#
+# Audit finding #4 (HIGH): this used to check DUNE_DISCORD_ADAPTER_TOKEN
+# (direct) before the token file -- the exact same precedence bug as
+# readDiscordBotApiToken() (console/api/src/integrations/discord/routes.js).
+# adapterSettings.js's enableDiscordBotAdapter()/regenerateDiscordBotToken()
+# now always clear the direct var in .env when they mint a fresh
+# file-based token, so post-fix, the direct var is only ever non-empty for
+# an operator who set it manually and has not (yet, or ever) touched the
+# new Settings UI. Checking the file first here means this health check
+# verifies the SAME credential the operator was just shown ("Copy this
+# now -- it won't be shown again") -- which is the whole point of this
+# check -- rather than possibly re-validating a stale direct value left
+# over from before this fix shipped, which is what silently masked a dead
+# new token reporting a false "healthy" result.
+resolve_discord_adapter_token() {
+  local token="" token_file
+  token_file="$(read_env_file_value DUNE_DISCORD_ADAPTER_TOKEN_FILE || true)"
+  if [ -n "$token_file" ] && [ -f "$token_file" ]; then
+    token="$(tr -d '[:space:]' < "$token_file")"
+  fi
+  if [ -z "$token" ]; then
+    token="$(read_env_file_value DUNE_DISCORD_ADAPTER_TOKEN || true)"
+  fi
+  printf '%s' "$token"
+}
+
 verify_discord_adapter_health() {
   local service="$1"
   local port token health_ok=0
@@ -1056,12 +1083,7 @@ verify_discord_adapter_health() {
   [ -n "$port" ] || port="$(read_env_file_value ADMIN_BIND_PORT || true)"
   [ -n "$port" ] || port="8088"
 
-  token="$(read_env_file_value DUNE_DISCORD_ADAPTER_TOKEN || true)"
-  if [ -z "$token" ]; then
-    local token_file
-    token_file="$(read_env_file_value DUNE_DISCORD_ADAPTER_TOKEN_FILE || true)"
-    [ -n "$token_file" ] && [ -f "$token_file" ] && token="$(tr -d '[:space:]' < "$token_file")"
-  fi
+  token="$(resolve_discord_adapter_token)"
 
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if curl -fsS -m 5 -H "Authorization: Bearer $token" "http://127.0.0.1:${port}/api/integrations/discord/health" >/dev/null 2>&1; then

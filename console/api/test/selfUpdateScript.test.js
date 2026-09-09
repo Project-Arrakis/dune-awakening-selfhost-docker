@@ -296,6 +296,80 @@ test("web console rebuild stops at the configured build timeout", async () => {
   }
 });
 
+// Audit finding #4 (HIGH): resolve_discord_adapter_token() must check the
+// token FILE before the direct DUNE_DISCORD_ADAPTER_TOKEN env var --
+// otherwise the post-recreate health check can authenticate against a
+// stale, still-valid direct credential and report success even though the
+// freshly-issued token shown to the operator ("Copy this now") is dead.
+//
+// self-update.sh is an entrypoint that runs its full case-statement
+// dispatch on execution/sourcing (no `[ "${BASH_SOURCE[0]}" = "$0" ]`
+// guard), and verify_discord_adapter_health()'s own full path needs a
+// live Docker container to curl against -- neither can run here. Instead,
+// following baseContainerMutationRoutes.test.js's precedent for
+// entrypoint-only files, this extracts the REAL shipped
+// read_env_file_value() and resolve_discord_adapter_token() function
+// bodies verbatim from the script and executes them for real in an
+// isolated bash process -- proving the actual shipped precedence, not a
+// reimplemented copy of it.
+function extractShellFunction(source, name) {
+  const startMarker = `${name}() {`;
+  const start = source.indexOf(startMarker);
+  assert.notEqual(start, -1, `${name}() not found in self-update.sh`);
+  const end = source.indexOf("\n}\n", start);
+  assert.notEqual(end, -1, `could not find the end of ${name}()`);
+  return source.slice(start, end + 2);
+}
+
+function runShellFunction(functionsSource, callExpression, cwd) {
+  const script = `#!/usr/bin/env bash\nset -euo pipefail\ncd ${JSON.stringify(cwd)}\n${functionsSource}\n${callExpression}\n`;
+  const result = spawnSync("bash", ["-c", script]);
+  assert.equal(result.status, 0, result.stderr?.toString());
+  return result.stdout.toString();
+}
+
+test("resolve_discord_adapter_token prefers the token FILE over a direct DUNE_DISCORD_ADAPTER_TOKEN value", () => {
+  const source = readFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), "utf8");
+  const functionsSource = [
+    extractShellFunction(source, "read_env_file_value"),
+    extractShellFunction(source, "resolve_discord_adapter_token")
+  ].join("\n");
+
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-token-resolution-"));
+  try {
+    const tokenFile = join(dir, "discord-adapter-token.txt");
+    writeFileSync(tokenFile, "fresh-file-token\n");
+    writeFileSync(join(dir, ".env"), [
+      "DUNE_DISCORD_ADAPTER_TOKEN=stale-direct-token",
+      `DUNE_DISCORD_ADAPTER_TOKEN_FILE=${tokenFile}`,
+      ""
+    ].join("\n"));
+
+    const output = runShellFunction(functionsSource, "resolve_discord_adapter_token", dir);
+    assert.equal(output, "fresh-file-token", "the file-based token must win when both are present, matching the post-fix .env state after Enable/Regenerate");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolve_discord_adapter_token falls back to the direct env var when no usable token file exists (a manual, not-yet-migrated config)", () => {
+  const source = readFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), "utf8");
+  const functionsSource = [
+    extractShellFunction(source, "read_env_file_value"),
+    extractShellFunction(source, "resolve_discord_adapter_token")
+  ].join("\n");
+
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-token-resolution-fallback-"));
+  try {
+    writeFileSync(join(dir, ".env"), "DUNE_DISCORD_ADAPTER_TOKEN=manual-direct-token\n");
+
+    const output = runShellFunction(functionsSource, "resolve_discord_adapter_token", dir);
+    assert.equal(output, "manual-direct-token", "a manual, direct-only config (no token file at all) must still resolve");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function runProcess(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const { timeout = 15000, ...spawnOptions } = options;

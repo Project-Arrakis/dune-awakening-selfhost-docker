@@ -14,6 +14,14 @@ const DEFAULT_TOKEN_FILE = "runtime/secrets/discord-adapter-token.txt";
 const MANAGED_ENV_KEYS = Object.freeze({
   enabled: "DUNE_DISCORD_ADAPTER_ENABLED",
   tokenFile: "DUNE_DISCORD_ADAPTER_TOKEN_FILE",
+  // directToken: readDiscordBotApiToken() (routes.js) checks this direct
+  // value BEFORE the token file -- a real, documented manual-setup path.
+  // Audit finding #4 (HIGH): enableDiscordBotAdapter()/
+  // regenerateDiscordBotToken() must clear it whenever they mint a fresh
+  // file-based token, or an operator who set it directly would be shown a
+  // fresh, plausible-looking token that the live adapter never actually
+  // authenticates against, because the untouched direct var keeps winning.
+  directToken: "DUNE_DISCORD_ADAPTER_TOKEN",
   player: "DISCORD_PLAYER_ROLE_IDS",
   moderator: "DISCORD_MODERATOR_ROLE_IDS",
   admin: "DISCORD_ADMIN_ROLE_IDS"
@@ -65,6 +73,9 @@ export function enableDiscordBotAdapter(config, roleIdsByTier = {}) {
   updateEnvFileValues(repoRoot, [
     [MANAGED_ENV_KEYS.enabled, "true"],
     [MANAGED_ENV_KEYS.tokenFile, DEFAULT_TOKEN_FILE],
+    // Clear any direct manual-setup token -- see MANAGED_ENV_KEYS.directToken's
+    // own comment for why (audit finding #4).
+    [MANAGED_ENV_KEYS.directToken, ""],
     [MANAGED_ENV_KEYS.player, (roleIdsByTier.player || []).join(",")],
     [MANAGED_ENV_KEYS.moderator, (roleIdsByTier.moderator || []).join(",")],
     [MANAGED_ENV_KEYS.admin, (roleIdsByTier.admin || []).join(",")]
@@ -93,12 +104,18 @@ export function updateDiscordBotRoleIds(config, roleIdsByTier = {}) {
   return { ok: true };
 }
 
-// regenerateDiscordBotToken: file-only rewrite, no .env change, no
-// recreate helper launched (Layer 1 Cloud Security + Security Architect
-// audit finding -- the token file's CONTENT is read fresh on every
-// request by readDiscordBotApiToken(), so a container recreate is never
-// needed for this specific operation). Returns the plaintext token for
-// the same one-time-display reason as enableDiscordBotAdapter() above.
+// regenerateDiscordBotToken: rewrites the token FILE (its content only --
+// the file PATH in .env is untouched, no recreate helper launched; Layer 1
+// Cloud Security + Security Architect audit finding -- the token file's
+// CONTENT is read fresh on every request by readDiscordBotApiToken(), so a
+// container recreate is never needed for this specific operation), and
+// ALSO clears any direct DUNE_DISCORD_ADAPTER_TOKEN value in .env (audit
+// finding #4, HIGH -- see MANAGED_ENV_KEYS.directToken's comment: without
+// this, an operator who set that var manually would be shown a fresh
+// token that never actually becomes authoritative, because the untouched
+// direct var still wins in readDiscordBotApiToken()'s precedence order).
+// Returns the plaintext token for the same one-time-display reason as
+// enableDiscordBotAdapter() above.
 export function regenerateDiscordBotToken(config) {
   const repoRoot = config.repoRoot;
   const tokenFile = resolve(repoRoot, DEFAULT_TOKEN_FILE);
@@ -106,5 +123,6 @@ export function regenerateDiscordBotToken(config) {
   const token = randomBytes(32).toString("hex");
   writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
   try { chmodSync(tokenFile, 0o600); } catch {}
+  updateEnvFileValues(repoRoot, [[MANAGED_ENV_KEYS.directToken, ""]]);
   return { ok: true, token };
 }
