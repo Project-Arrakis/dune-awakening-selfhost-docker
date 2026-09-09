@@ -94,7 +94,7 @@ services:
       # no DISCORD_PLAYER_ROLE_IDS, since it didn't exist before this
       # feature) would silently lose that role mapping's bot access on their
       # next `docker compose up`, with no warning (Requirement 0 violation).
-      # Nested `${VAR:-${OTHER:-default}}` interpolation is valid per the
+      # Nested `${VAR-${OTHER-default}}` interpolation is valid per the
       # Compose Specification and supported by Compose V2 (compose-go, what
       # `docker compose` uses) -- verified against Compose's own
       # interpolation docs; NOT verified against a live `docker compose
@@ -107,7 +107,16 @@ services:
       # directly, so the correct value reaches the container even if this
       # nested-interpolation fallback were ever unsupported by some Compose
       # version.
-      DISCORD_PLAYER_ROLE_IDS: "${DISCORD_PLAYER_ROLE_IDS:-${DISCORD_OBSERVER_ROLE_IDS:-}}"
+      #
+      # Deliberately `-` (substitute only when the var is genuinely UNSET),
+      # never `:-` (which also substitutes on an explicitly-cleared empty
+      # string). `:-` here would resurrect a stale legacy role mapping the
+      # moment an operator clears Player role IDs via the Settings UI to
+      # revoke access -- reopening the exact revocation-bypass this branch's
+      # own JS-side `!== undefined` fix (adapter.js) and its regression test
+      # (selfUpdateScript.test.js) already close. Found and fixed during the
+      # final-review re-review pass on this same finding.
+      DISCORD_PLAYER_ROLE_IDS: "${DISCORD_PLAYER_ROLE_IDS-${DISCORD_OBSERVER_ROLE_IDS-}}"
       DISCORD_MODERATOR_ROLE_IDS: "${DISCORD_MODERATOR_ROLE_IDS:-}"
       DISCORD_ADMIN_ROLE_IDS: "${DISCORD_ADMIN_ROLE_IDS:-}"
       DISCORD_OWNER_ROLE_IDS: "${DISCORD_OWNER_ROLE_IDS:-}"
