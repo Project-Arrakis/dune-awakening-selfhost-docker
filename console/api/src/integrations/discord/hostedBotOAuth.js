@@ -137,7 +137,21 @@ export function clearHostedBotRegistrationHandleCookie(secure = true) {
 // JSON.stringify before being handed to sessionStorage.setItem (which only
 // accepts strings) -- this avoids manually double-escaping `safeJson`
 // (already a JSON string) into a second string literal.
+//
+// Fix round 2 (Priority 3): the sessionStorage.setItem call itself is
+// wrapped in try/catch, matching the guard readOwnedGuilds() (the read
+// side, discordHostedBotApi.ts) already has. In any browser context where
+// storage access throws (blocked/partitioned third-party-ish storage in
+// some private-browsing modes, storage quota, etc.), an unguarded
+// sessionStorage.setItem would throw INSIDE this inline script, which
+// aborts the script before the following window.location.replace("/") --
+// stranding the operator on a blank callback page with no way forward
+// except the <noscript> fallback link (which requires JS to be disabled
+// entirely, not just storage). The navigation must always happen
+// regardless of whether the stash succeeded; readOwnedGuilds() already
+// degrades to [] on a missing/malformed value, so a failed stash here just
+// means an empty guild picker on the other side, not a stranded page.
 export function hostedBotOAuthReturnPage(ownedGuilds) {
   const safeJson = JSON.stringify(ownedGuilds || []).replace(/</g, "\\u003c");
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Connect to hosted bot</title></head><body><noscript><a href="/">Return to the console</a></noscript><script>var hostedBotOwnedGuilds = ${safeJson}; sessionStorage.setItem("hostedBotOwnedGuilds", JSON.stringify(hostedBotOwnedGuilds)); window.location.replace("/");</script></body></html>`;
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Connect to hosted bot</title></head><body><noscript><a href="/">Return to the console</a></noscript><script>var hostedBotOwnedGuilds = ${safeJson}; try { sessionStorage.setItem("hostedBotOwnedGuilds", JSON.stringify(hostedBotOwnedGuilds)); } catch (e) {} window.location.replace("/");</script></body></html>`;
 }
