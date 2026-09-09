@@ -160,16 +160,35 @@ export function updateDiscordBotRoleIds(config, roleIdsByTier = {}) {
   return { ok: true };
 }
 
-// regenerateDiscordBotToken: rewrites the token FILE (its content only --
-// the file PATH in .env is untouched, no recreate helper launched; Layer 1
-// Cloud Security + Security Architect audit finding -- the token file's
-// CONTENT is read fresh on every request by readDiscordBotApiToken(), so a
-// container recreate is never needed for this specific operation), and
-// ALSO clears any direct DUNE_DISCORD_ADAPTER_TOKEN value in .env (audit
-// finding #4, HIGH -- see MANAGED_ENV_KEYS.directToken's comment: without
-// this, an operator who set that var manually would be shown a fresh
-// token that never actually becomes authoritative, because the untouched
-// direct var still wins in readDiscordBotApiToken()'s precedence order).
+// regenerateDiscordBotToken: rewrites the token FILE's content (read fresh
+// on every request by readDiscordBotApiToken(), so a container recreate is
+// never needed for this specific operation -- Layer 1 Cloud Security +
+// Security Architect audit finding), and ALSO clears any direct
+// DUNE_DISCORD_ADAPTER_TOKEN value in .env (audit finding #4, HIGH -- see
+// MANAGED_ENV_KEYS.directToken's comment: without this, an operator who set
+// that var manually would be shown a fresh token that never actually
+// becomes authoritative, because the untouched direct var still wins in
+// readDiscordBotApiToken()'s precedence order).
+//
+// Finding 2 (IMPORTANT, final review): ALSO (re-)writes the token FILE PATH
+// key (DUNE_DISCORD_ADAPTER_TOKEN_FILE) to DEFAULT_TOKEN_FILE -- the same
+// path this function just wrote the fresh token's content to. Without
+// this, an operator whose .env has ONLY the legacy DUNE_BOT_API_TOKEN_FILE
+// set (no DUNE_DISCORD_ADAPTER_TOKEN_FILE at all -- a real, documented
+// manual-setup path that predates this feature) would be shown a fresh
+// token here that readDiscordBotApiToken() (routes.js) never actually uses
+// to authenticate: its precedence chain only reaches DUNE_BOT_API_TOKEN_FILE
+// as a fallback AFTER DUNE_DISCORD_ADAPTER_TOKEN_FILE, so leaving that key
+// unset lets the untouched legacy path keep winning, silently pointing at
+// the OLD token forever. Same class of bug as the direct-token clearing
+// above (audit finding #4), just for a third precedence source that fix
+// missed. Writing the SAME value (DEFAULT_TOKEN_FILE) on every call is
+// idempotent -- safe even when this key was already set correctly by an
+// earlier enableDiscordBotAdapter() call -- and deliberately does NOT
+// trigger a container recreate: the .env value only matters at container
+// start, but the in-process mirror below (like the direct-token clear
+// above) makes it immediately authoritative in THIS process regardless.
+//
 // Returns the plaintext token for the same one-time-display reason as
 // enableDiscordBotAdapter() above.
 export function regenerateDiscordBotToken(config) {
@@ -179,16 +198,27 @@ export function regenerateDiscordBotToken(config) {
   const token = randomBytes(32).toString("hex");
   writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
   try { chmodSync(tokenFile, 0o600); } catch {}
-  updateEnvFileValues(repoRoot, [[MANAGED_ENV_KEYS.directToken, ""]]);
+  updateEnvFileValues(repoRoot, [
+    [MANAGED_ENV_KEYS.directToken, ""],
+    [MANAGED_ENV_KEYS.tokenFile, DEFAULT_TOKEN_FILE]
+  ]);
   // Mirror into the RUNNING process too -- see enableDiscordBotAdapter()'s
   // equivalent comment above for why. This function deliberately never
   // triggers a container recreate (the token file's content is read fresh
   // per request, so no recreate should be needed), which means NOTHING
-  // else will ever refresh process.env for this var. Without this line,
-  // an operator who previously set DUNE_DISCORD_ADAPTER_TOKEN directly
-  // would have the newly-shown token silently ignored forever by this
-  // already-running process (audit finding #4 residual gap).
+  // else will ever refresh process.env for these vars. Without these
+  // lines, an operator who previously set DUNE_DISCORD_ADAPTER_TOKEN
+  // directly, or whose process.env still has a stale/legacy token file
+  // path loaded from container start, would have the newly-shown token
+  // silently ignored forever by this already-running process (audit
+  // finding #4 residual gap; Finding 2 above for the token-file-path
+  // case). Mirror the resolved ABSOLUTE path (the same `tokenFile` this
+  // function just wrote to), matching enableDiscordBotAdapter()'s own
+  // convention -- readDiscordBotApiToken() does a bare readFileSync() with
+  // no resolve() against repoRoot, so a relative value here would only
+  // work by accident of the process's current working directory.
   process.env[MANAGED_ENV_KEYS.directToken] = "";
+  process.env[MANAGED_ENV_KEYS.tokenFile] = tokenFile;
   return { ok: true, token };
 }
 

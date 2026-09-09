@@ -82,7 +82,7 @@ test("updateDiscordBotRoleIds writes only the 3 role-ID keys and never touches t
   assert.equal(tokenContent, "existing-token-value", "role-ID updates must never rotate the live token");
 });
 
-test("regenerateDiscordBotToken overwrites the token file with fresh random bytes, and never rewrites the token FILE PATH in .env", () => {
+test("regenerateDiscordBotToken overwrites the token file with fresh random bytes, and (idempotently) writes the token FILE PATH in .env to the canonical default (Finding 2)", () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-regen-"));
   const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
   process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE = tokenFile;
@@ -98,7 +98,45 @@ test("regenerateDiscordBotToken overwrites the token file with fresh random byte
   assert.equal(newToken, result.token);
   const envContent = readFileSync(join(dir, ".env"), "utf8");
   assert.match(envContent, /^SOME_OTHER_KEY=untouched$/m);
-  assert.doesNotMatch(envContent, /DUNE_DISCORD_ADAPTER_TOKEN_FILE/, "regenerating must not rewrite .env's token FILE PATH -- the file path doesn't change, only its contents");
+  // Finding 2 (IMPORTANT, final review): regenerate must (re-)write the
+  // token FILE PATH key to the canonical default, idempotently -- see the
+  // dedicated Finding 2 test below for the exact scenario this closes (an
+  // operator with only the legacy DUNE_BOT_API_TOKEN_FILE set). This
+  // assertion previously required the opposite (no rewrite at all); that
+  // was the bug -- see this test's git history for the pre-fix version.
+  assert.match(envContent, /^DUNE_DISCORD_ADAPTER_TOKEN_FILE="runtime\/secrets\/discord-adapter-token\.txt"$/m, "regenerate must ensure the token FILE PATH key in .env points at the canonical default, so it can never lose precedence to a legacy DUNE_BOT_API_TOKEN_FILE");
+});
+
+// Finding 2 (IMPORTANT, final review): regenerateDiscordBotToken() rewrote
+// the token file's CONTENT but never wrote the token FILE PATH
+// (DUNE_DISCORD_ADAPTER_TOKEN_FILE) key to .env or process.env. An operator
+// whose .env has ONLY the legacy DUNE_BOT_API_TOKEN_FILE set (no
+// DUNE_DISCORD_ADAPTER_TOKEN_FILE at all -- a real, documented manual-setup
+// path that predates this feature) clicks Regenerate Token, is shown a
+// fresh token, but readDiscordBotApiToken()'s precedence chain
+// (DUNE_DISCORD_ADAPTER_TOKEN_FILE || DUNE_BOT_API_TOKEN_FILE) still falls
+// through to the untouched legacy var, which still points at the OLD file
+// -- the new token is never actually used to authenticate.
+test("regenerateDiscordBotToken makes the fresh token authoritative even when only the legacy DUNE_BOT_API_TOKEN_FILE was previously configured (Finding 2)", () => {
+  delete process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE;
+  delete process.env.DUNE_DISCORD_ADAPTER_TOKEN;
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-regen-legacy-file-"));
+  const legacyTokenFile = join(dir, "old-manual-token.txt");
+  writeFileSync(legacyTokenFile, "old-manual-token-value\n");
+  writeFileSync(join(dir, ".env"), `DUNE_BOT_API_TOKEN_FILE=${legacyTokenFile}\n`);
+  process.env.DUNE_BOT_API_TOKEN_FILE = legacyTokenFile;
+
+  const result = regenerateDiscordBotToken({ repoRoot: dir });
+  assert.equal(result.ok, true);
+
+  // The exact scenario that was silently broken: read the token back
+  // through the SAME function the live adapter route uses to authenticate
+  // requests, in the SAME process, with no restart in between.
+  const resolvedToken = readDiscordBotApiToken({ repoRoot: dir });
+  assert.equal(resolvedToken, result.token, "the freshly-minted token must be authoritative, not the stale value at the legacy DUNE_BOT_API_TOKEN_FILE path");
+
+  const envContent = readFileSync(join(dir, ".env"), "utf8");
+  assert.match(envContent, /^DUNE_DISCORD_ADAPTER_TOKEN_FILE="runtime\/secrets\/discord-adapter-token\.txt"$/m, "regenerate must write the token FILE PATH key so it takes precedence over the legacy var on a future restart too, not just in this process");
 });
 
 // Audit finding #4 (HIGH): readDiscordBotApiToken() (routes.js) checks the
