@@ -70,7 +70,7 @@ import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPl
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
 import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
-import { validateDiscordRoleIds, readDiscordBotSettingsState, enableDiscordBotAdapter, updateDiscordBotRoleIds, regenerateDiscordBotToken } from "./integrations/discord/adapterSettings.js";
+import { validateDiscordRoleIds, readDiscordBotSettingsState, applyDiscordBotEnableRequest, discordAdminRoleIdsChanged, updateDiscordBotRoleIds, regenerateDiscordBotToken } from "./integrations/discord/adapterSettings.js";
 
 const config = loadConfig();
 // #141: ADMIN_AUTH_DISABLED bypasses both password auth (auth.js requireAuth)
@@ -1475,9 +1475,17 @@ async function handleApi(req, res) {
     const admin = validateDiscordRoleIds(body.adminRoleIds);
     if (!admin.ok) return json(res, 400, { error: admin.error });
 
-    const { token } = enableDiscordBotAdapter(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds });
-    audit(config, req, "settings.discord-bot.enable", { playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length });
-    return json(res, 202, { task: tasks.create("settings", "discordAdapterApply", {}), token });
+    // Audit finding #1 (CRITICAL): applyDiscordBotEnableRequest() only
+    // mints a fresh token on a genuine first enable -- once the adapter
+    // is already enabled, a repeat POST here behaves exactly like
+    // /role-ids (token-safe, idempotent), so an admin (updates:apply)
+    // can never silently re-mint the live token, which the owner-only
+    // settings:discord-bot-regenerate-token action exists to reserve.
+    const result = applyDiscordBotEnableRequest(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds });
+    audit(config, req, "settings.discord-bot.enable", { playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length, tokenMinted: result.tokenMinted });
+    const responseBody = { task: tasks.create("settings", "discordAdapterApply", {}) };
+    if (result.tokenMinted) responseBody.token = result.token;
+    return json(res, 202, responseBody);
   }
   if (path === "/api/settings/discord-bot/role-ids" && req.method === "POST") {
     const body = await readJson(req);

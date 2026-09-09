@@ -8,7 +8,8 @@ import {
   readDiscordBotSettingsState,
   enableDiscordBotAdapter,
   updateDiscordBotRoleIds,
-  regenerateDiscordBotToken
+  regenerateDiscordBotToken,
+  applyDiscordBotEnableRequest
 } from "../src/integrations/discord/adapterSettings.js";
 
 const OLD_ENV = { ...process.env };
@@ -155,4 +156,43 @@ test("readDiscordBotSettingsState: role IDs set independently of the enabled fla
   const state = readDiscordBotSettingsState({});
   assert.equal(state.enabled, false);
   assert.deepEqual(state.roleIds.admin, ["333333333333333333"]);
+});
+
+// Audit finding #1 (CRITICAL): a bare POST to /enable must not silently
+// re-mint the live token once the adapter is already enabled -- that
+// would let an admin (updates:apply) achieve the exact effect the
+// owner-only settings:discord-bot-regenerate-token gate exists to
+// restrict. Repeat calls to /enable, once already enabled, must behave
+// exactly like /role-ids: token-safe and idempotent.
+test("applyDiscordBotEnableRequest mints a token on a genuine first enable (from disabled)", () => {
+  delete process.env.DUNE_DISCORD_ADAPTER_ENABLED;
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-apply-first-enable-"));
+
+  const result = applyDiscordBotEnableRequest({ repoRoot: dir }, { player: ["111111111111111111"], moderator: [], admin: [] });
+  assert.equal(result.ok, true);
+  assert.equal(result.tokenMinted, true, "a genuine first enable must mint a token");
+  assert.equal(result.token.length, 64);
+
+  const envContent = readFileSync(join(dir, ".env"), "utf8");
+  assert.match(envContent, /^DUNE_DISCORD_ADAPTER_ENABLED=true$/m);
+  assert.match(envContent, /^DISCORD_PLAYER_ROLE_IDS=111111111111111111$/m);
+});
+
+test("applyDiscordBotEnableRequest does NOT mint a new token when the adapter is already enabled -- it only updates role IDs, exactly like updateDiscordBotRoleIds", () => {
+  process.env.DUNE_DISCORD_ADAPTER_ENABLED = "true";
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-apply-reenable-"));
+  const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
+  mkdirSync(join(dir, "runtime", "secrets"), { recursive: true });
+  writeFileSync(join(dir, ".env"), "DUNE_DISCORD_ADAPTER_ENABLED=true\nDUNE_DISCORD_ADAPTER_TOKEN_FILE=runtime/secrets/discord-adapter-token.txt\n");
+  writeFileSync(tokenFile, "token-a-must-be-unchanged\n");
+
+  const result = applyDiscordBotEnableRequest({ repoRoot: dir }, { player: ["222222222222222222"], moderator: [], admin: [] });
+  assert.equal(result.ok, true);
+  assert.equal(result.tokenMinted, false, "re-POSTing /enable on an already-enabled adapter must not mint a new token");
+  assert.equal(result.token, undefined, "the response must carry no token field when none was minted");
+
+  const tokenContent = readFileSync(tokenFile, "utf8").trim();
+  assert.equal(tokenContent, "token-a-must-be-unchanged", "the live token file must be untouched");
+  const envContent = readFileSync(join(dir, ".env"), "utf8");
+  assert.match(envContent, /^DISCORD_PLAYER_ROLE_IDS=222222222222222222$/m, "role IDs must still be applied");
 });

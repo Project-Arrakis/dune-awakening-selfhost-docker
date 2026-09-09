@@ -126,3 +126,31 @@ export function regenerateDiscordBotToken(config) {
   updateEnvFileValues(repoRoot, [[MANAGED_ENV_KEYS.directToken, ""]]);
   return { ok: true, token };
 }
+
+// applyDiscordBotEnableRequest: the token-safety fix for the /enable
+// route -- audit finding #1 (CRITICAL). A bare POST to /enable used to
+// call enableDiscordBotAdapter() unconditionally, which always mints a
+// fresh token, regardless of whether the adapter was already enabled.
+// /enable is gated by updates:apply (admin-reachable), while token
+// regeneration is deliberately scoped to the owner-only
+// settings:discord-bot-regenerate-token action specifically because
+// rotation is disruptive/irreversible -- an admin re-POSTing /enable
+// (e.g. the frontend's "Save" on an already-enabled adapter) could
+// silently re-mint the live token, achieving the exact effect that gate
+// exists to reserve for owner.
+//
+// Once the adapter is already enabled, this routes the request through
+// updateDiscordBotRoleIds() (the token-safe function) instead --
+// repeat calls to /enable then behave exactly like /role-ids: safe,
+// idempotent, no silent token rotation. A genuine first-time enable
+// (from disabled) still goes through enableDiscordBotAdapter() and
+// mints a token. tokenMinted tells the route handler whether to include
+// `token` in its response.
+export function applyDiscordBotEnableRequest(config, roleIdsByTier = {}) {
+  if (discordAdapterEnabled(config)) {
+    const result = updateDiscordBotRoleIds(config, roleIdsByTier);
+    return { ok: result.ok, tokenMinted: false };
+  }
+  const result = enableDiscordBotAdapter(config, roleIdsByTier);
+  return { ok: result.ok, tokenMinted: true, token: result.token, tokenFile: result.tokenFile };
+}
