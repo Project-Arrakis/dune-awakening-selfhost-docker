@@ -180,8 +180,14 @@ export function DiscordBotSection() {
         moderatorRoleIds,
         adminRoleIds
       });
-      setRevealedToken(token);
-      setTokenCopyResult("");
+      // token is absent (not just falsy) on the already-enabled/role-ids-
+      // only path -- see the type's own comment in discordAdapterSettings.ts.
+      // Don't overwrite a still-relevant earlier reveal with undefined here;
+      // there is nothing new to show, so leave revealedToken as it was.
+      if (token) {
+        setRevealedToken(token);
+        setTokenCopyResult("");
+      }
       persistUpdateTask(TASK_KEY, task);
       setRunId(task.id);
       setPhase("enabling");
