@@ -169,6 +169,7 @@ jobs:
           runtime/tests/test-discord-adapter-recreate-failure.sh
           runtime/tests/test-discord-adapter-health-atomic-status.sh
           runtime/tests/test-discord-adapter-health-token-argv.sh
+          runtime/tests/test-discord-adapter-lock-contention.sh
       - name: Test age-based secrets library (AEAD primitive, shell seam, cross-language round-trip)
         run: |
           python3 runtime/scripts/lib/test_secrets_aead.py -v
