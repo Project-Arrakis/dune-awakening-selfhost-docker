@@ -253,6 +253,55 @@ test("a second recovery code is rejected once one is already pending, and the ol
   }
 });
 
+// #578 review finding: requireFreshTier3Proof (password rotation, recovery-
+// code regeneration, TOTP enable/disable) only special-cased a "replay"
+// verify.reason -- a "recovery_pending" result (reachable via a standing
+// session that logged in BEFORE a recovery started, then tries the old
+// authenticator code DURING the pending window) fell through to the generic
+// "check your device's clock" message, sending the operator toward a futile
+// troubleshooting path instead of the actual situation.
+test("a standing session's own credential-proof actions report the accurate mid-recovery message, not a clock-skew one", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "recovery-e2e-standing-session-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const { secret: oldSecret, recoveryCodes } = await enrollFresh(port);
+
+    // A normal, already-authenticated session, logged in BEFORE any recovery
+    // starts -- unaffected by consumeRecoveryCode(), which only mints a new
+    // resetup session for its own caller. Offset 1: offset 0 was already
+    // consumed by enrollFresh()'s own /2fa/confirm call and would replay.
+    const standing = await api(port, "/api/auth/login", { body: { password: PASSWORD, totpCode: codeFor(oldSecret, 1) } });
+    assert.equal(standing.status, 200);
+    const standingCookie = cookieFrom(standing);
+    const standingCsrf = (await standing.json()).csrfToken;
+
+    // A different actor starts a recovery, wiping every sibling code and
+    // marking the factor recovery-pending.
+    const rec = await api(port, "/api/auth/login", { body: { password: PASSWORD, recoveryCode: recoveryCodes[0] } });
+    assert.equal(rec.status, 200);
+
+    // The standing session tries a credential-proof action (recovery-code
+    // regeneration -- admin-password rotation isn't usable here, this file's
+    // own startConsole() sets ADMIN_PASSWORD, which refuses rotation outright
+    // before ever reaching requireFreshTier3Proof) using the OLD, still-known
+    // authenticator code -- requireFreshTier3Proof's verifyTotpToken() call
+    // now returns reason "recovery_pending".
+    const regenerate = await api(port, "/api/auth/2fa/recovery-codes/regenerate", {
+      cookie: standingCookie, csrf: standingCsrf,
+      body: { currentPassword: PASSWORD, totpCode: codeFor(oldSecret, 1) },
+    });
+    assert.equal(regenerate.status, 400);
+    const regenerateBody = await regenerate.json();
+    assert.match(regenerateBody.error, /mid-recovery/i, "must name the actual situation, not a clock-skew message");
+    assert.doesNotMatch(regenerateBody.error, /clock/i, "must not send the operator troubleshooting a clock problem they don't have");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("the recovery-pending state persists across a process restart", async () => {
   // Red-Blink explicitly asked for this: the atomic invalidation must be a
   // real, persisted store write, not in-memory-only state a restart would
