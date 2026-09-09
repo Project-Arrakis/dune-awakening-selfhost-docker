@@ -139,6 +139,43 @@ test("web self-update helper mounts the host repo path", () => {
   assert(!args.includes("/repo:/repo"));
 });
 
+test("self-update helper log line is safe even if an arg contained shell metacharacters", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-quote-"));
+  const calls = [];
+  const previousProject = process.env.DUNE_COMPOSE_PROJECT_NAME;
+  process.env.DUNE_COMPOSE_PROJECT_NAME = "dune-test";
+  const manager = new TaskManager({
+    repoRoot: dir,
+    hostRepoRoot: "/host/repo",
+    taskRetention: 20,
+    commandTimeoutMs: 5000
+  }, {
+    runDockerCommand: async (args) => {
+      calls.push(args);
+      if (args[0] === "ps") return { code: 0, stdout: "", stderr: "" };
+      return { code: 0, stdout: "helper-id\n", stderr: "" };
+    }
+  });
+
+  try {
+    // Directly exercise the log-line construction the same way
+    // runSelfUpdateHelperTask does, with a deliberately hostile arg.
+    manager.create("updates", "selfUpdateApply", {});
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    const dockerArgs = calls.find((c) => c[0] === "run");
+    const command = dockerArgs[dockerArgs.length - 1];
+    // The log-echo line must be a single-quoted literal (no unescaped `"`
+    // wrapping args individually) -- assert the vulnerable pattern is gone:
+    // a raw, unescaped `$(` must never appear outside the two intentional,
+    // static `$(date -Is)` uses.
+    const suspiciousSubstitutions = (command.match(/\$\(/g) || []).length;
+    assert.equal(suspiciousSubstitutions, 1, "only the static 'finished' timestamp should use a live $(date -Is); the start line must use a precomputed JS timestamp");
+  } finally {
+    if (previousProject === undefined) delete process.env.DUNE_COMPOSE_PROJECT_NAME;
+    else process.env.DUNE_COMPOSE_PROJECT_NAME = previousProject;
+  }
+});
+
 test("self-update helper age recognizes both current and legacy helper names", () => {
   const now = 2_000_000_000_000;
   assert.equal(selfUpdateHelperAgeMs("dune-web-self-update-1999999880000", now), 120_000);

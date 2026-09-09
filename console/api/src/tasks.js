@@ -144,10 +144,12 @@ export class TaskManager {
       ...(process.env.DUNE_SELF_UPDATE_TOKEN ? ["DUNE_SELF_UPDATE_TOKEN"] : [])
     ];
     const logFile = "runtime/generated/web-self-update.log";
+    const startedAtIso = new Date().toISOString();
+    const startLine = `[${startedAtIso}] Starting Web UI stack update: runtime/scripts/dune ${args.join(" ")}`;
     const command = [
       "set -eu",
       "mkdir -p runtime/generated",
-      `echo "[$(date -Is)] Starting Web UI stack update: runtime/scripts/dune ${args.map(shellQuote).join(" ")}" > ${shellQuote(logFile)}`,
+      `echo ${shellQuote(startLine)} > ${shellQuote(logFile)}`,
       `DUNE_WEB_SELF_UPDATE_HELPER=1 runtime/scripts/dune ${args.map(shellQuote).join(" ")} >> ${shellQuote(logFile)} 2>&1`,
       `echo "[$(date -Is)] Web UI stack update finished" >> ${shellQuote(logFile)}`
     ].join("\n");
