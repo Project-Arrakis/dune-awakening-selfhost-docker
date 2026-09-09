@@ -17,6 +17,24 @@ The actual network Discord client is still deferred. Use the smoke runner to val
 
 **As of this version, the Discord adapter token and settings can be generated and managed from the console's Settings → Discord Bot section.** This replaces the previous fully-manual `.env`-edit-and-container-recreate process for both hosted and self-hosted bot deployments. The manual steps documented below remain available as a fallback for troubleshooting or if the UI path is unavailable.
 
+## Connecting to the Hosted Bot (Recommended)
+
+The console now supports one-click Discord bot registration directly from **Settings → Discord Bot → "Connect to hosted bot"**. This flow:
+
+1. Initiates a Discord OAuth round-trip (using the same Discord application credentials as console sign-in, no new app needed)
+2. Lets you select a Discord guild you own
+3. Registers that guild with the hosted Mentat bot automatically in-console
+
+**One-time setup requirement:** Register a second OAuth redirect URI in your Discord application:
+
+1. Go to your Discord Developer Portal application settings
+2. Add a new redirect URI: `https://<your-console-domain>/api/integrations/discord/hosted-bot/oauth/callback`
+3. Store the value in `.env` as `DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI` (see Prerequisites below)
+
+This second redirect URI must point to the same Discord application as `DISCORD_OAUTH_REDIRECT_URI` — no separate application needed, just a second registered URI on the existing one.
+
+The hosted bot's old setup-portal flow (via DM + mentat-link) remains available as a fallback, documented in the Mentat bot's own setup guide.
+
 ## Prerequisites
 
 - Dune Docker Console repository checked out.
