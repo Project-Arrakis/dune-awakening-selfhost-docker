@@ -784,6 +784,10 @@ Layers legend's default-settings mechanism.
 | GET | `/api/public-directory/status` | Get public directory status | None |
 | POST | `/api/settings/public-directory` | Save public directory and anonymous-count settings | `enabled?`, `anonymousCountEnabled?`, `discordInvite?` |
 | POST | `/api/settings/public-directory/claim` | Claim server listing | `code` |
+| GET | `/api/settings/discord-bot` | Read the Discord Bot adapter's current settings state (enabled flag, configured role IDs per tier, whether a bot token is configured). Never returns the token itself. | None |
+| POST | `/api/settings/discord-bot/enable` | Enable the Discord Bot adapter: validates the given role IDs, generates a fresh adapter token, writes it and the enabled flag plus role IDs to `.env`, and queues a `discordAdapterApply` task to recreate the bot container. Returns the plaintext token **once** -- it is never returned again by `GET /api/settings/discord-bot`. | `playerRoleIds?`, `moderatorRoleIds?`, `adminRoleIds?` (each a comma-separated string of Discord role snowflakes) |
+| POST | `/api/settings/discord-bot/role-ids` | Update only the 3 role-ID env keys for an already-enabled adapter and queue a `discordAdapterApply` task. Never touches the token file or the enabled flag. | `playerRoleIds?`, `moderatorRoleIds?`, `adminRoleIds?` (each a comma-separated string of Discord role snowflakes) |
+| POST | `/api/settings/discord-bot/regenerate-token` | Overwrite the adapter token file with a freshly generated token. File-only -- does not touch `.env` and does not queue a container-recreate task, since the token file's content is read fresh on every request. Returns the plaintext token **once**. | None |
 
 ---
 

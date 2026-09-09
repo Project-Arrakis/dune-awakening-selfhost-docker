@@ -70,6 +70,7 @@ import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPl
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
 import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
+import { validateDiscordRoleIds, readDiscordBotSettingsState, enableDiscordBotAdapter, updateDiscordBotRoleIds, regenerateDiscordBotToken } from "./integrations/discord/adapterSettings.js";
 
 const config = loadConfig();
 // #141: ADMIN_AUTH_DISABLED bypasses both password auth (auth.js requireAuth)
@@ -1462,6 +1463,40 @@ async function handleApi(req, res) {
   if (path === "/api/deepdesert/update" && req.method === "POST") return deepDesertUpdateRoute(req, res);
   if (path === "/api/settings/public-directory" && req.method === "POST") return publicDirectorySettingsRoute(req, res);
   if (path === "/api/settings/public-directory/claim" && req.method === "POST") return publicDirectoryClaimRoute(req, res);
+  if (path === "/api/settings/discord-bot" && req.method === "GET") {
+    return json(res, 200, readDiscordBotSettingsState(config));
+  }
+  if (path === "/api/settings/discord-bot/enable" && req.method === "POST") {
+    const body = await readJson(req);
+    const player = validateDiscordRoleIds(body.playerRoleIds);
+    if (!player.ok) return json(res, 400, { error: player.error });
+    const moderator = validateDiscordRoleIds(body.moderatorRoleIds);
+    if (!moderator.ok) return json(res, 400, { error: moderator.error });
+    const admin = validateDiscordRoleIds(body.adminRoleIds);
+    if (!admin.ok) return json(res, 400, { error: admin.error });
+
+    const { token } = enableDiscordBotAdapter(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds });
+    audit(config, req, "settings.discord-bot.enable", { playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length });
+    return json(res, 202, { task: tasks.create("settings", "discordAdapterApply", {}), token });
+  }
+  if (path === "/api/settings/discord-bot/role-ids" && req.method === "POST") {
+    const body = await readJson(req);
+    const player = validateDiscordRoleIds(body.playerRoleIds);
+    if (!player.ok) return json(res, 400, { error: player.error });
+    const moderator = validateDiscordRoleIds(body.moderatorRoleIds);
+    if (!moderator.ok) return json(res, 400, { error: moderator.error });
+    const admin = validateDiscordRoleIds(body.adminRoleIds);
+    if (!admin.ok) return json(res, 400, { error: admin.error });
+
+    updateDiscordBotRoleIds(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds });
+    audit(config, req, "settings.discord-bot.role-ids-updated", { playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length });
+    return json(res, 202, { task: tasks.create("settings", "discordAdapterApply", {}) });
+  }
+  if (path === "/api/settings/discord-bot/regenerate-token" && req.method === "POST") {
+    const { token } = regenerateDiscordBotToken(config);
+    audit(config, req, "settings.discord-bot.token-regenerated", {});
+    return json(res, 200, { ok: true, token });
+  }
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/settings") return json(res, 200, await setupState());
 
