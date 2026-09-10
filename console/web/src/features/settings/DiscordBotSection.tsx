@@ -9,6 +9,15 @@ import { copyText } from "../../lib/clipboard";
 const TASK_KEY = "arrakis.discordAdapterEnableTask";
 const CHOICE_KEY = "arrakis.discordAdapterChoice";
 const POLL_INTERVAL_MS = 2000;
+// Real UAT finding: the existing "this will restart the console" confirm
+// dialog is a single click, and the moment it's confirmed the actual
+// restart fires immediately with no further warning -- it felt abrupt and
+// uncontrolled. Mirrors this codebase's own game-server restart queue
+// pattern (AdminToolsPanel's "Restart Now" button skipping a countdown),
+// scaled down for a console self-restart: a short, visible countdown with
+// an explicit "Restart Now" to skip the wait, rather than either an
+// instant restart or a mandatory full wait.
+const RESTART_COUNTDOWN_SECONDS = 10;
 
 type Choice = "hosted" | "self-hosted" | null;
 type Phase = "loading" | "disabled" | "enabling" | "enabled" | "failed";
@@ -145,6 +154,44 @@ export function DiscordBotSection() {
   });
   const [pickedGuild, setPickedGuild] = useState<OwnedDiscordGuild | null>(null);
   const [connectedGuildName, setConnectedGuildName] = useState<string | null>(null);
+  // Real UAT finding (2026-09-09): handleEnable()/handleUpdateRoleIds()
+  // used to fire their restart-triggering API call the instant the
+  // ConfirmDialog above was confirmed, with no further warning -- the
+  // console just went unreachable a moment later with no acknowledgement.
+  // waitForRestartCountdown() adds a visible pause between confirmation
+  // and the actual restart: a countdown notice with a "Restart Now"
+  // button to skip the wait. It resolves either when the countdown
+  // reaches zero (the ticking effect below) or when the operator clicks
+  // "Restart Now" (finishRestartCountdown()), whichever comes first. The
+  // resolver is stashed in a ref rather than state since it's a function,
+  // not a value the render needs to read.
+  const restartCountdownResolveRef = useRef<(() => void) | null>(null);
+  const [restartCountdownSeconds, setRestartCountdownSeconds] = useState<number | null>(null);
+
+  function waitForRestartCountdown(seconds: number) {
+    return new Promise<void>((resolve) => {
+      restartCountdownResolveRef.current = resolve;
+      setRestartCountdownSeconds(seconds);
+    });
+  }
+
+  function finishRestartCountdown() {
+    restartCountdownResolveRef.current?.();
+    restartCountdownResolveRef.current = null;
+    setRestartCountdownSeconds(null);
+  }
+
+  useEffect(() => {
+    if (restartCountdownSeconds === null) return;
+    if (restartCountdownSeconds <= 0) {
+      finishRestartCountdown();
+      return;
+    }
+    const timer = setTimeout(() => {
+      setRestartCountdownSeconds((seconds) => (seconds === null ? null : seconds - 1));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [restartCountdownSeconds]);
 
   function updateChoice(value: Choice) {
     setChoice(value);
@@ -294,6 +341,8 @@ export function DiscordBotSection() {
       setConfirmRequest(null);
       if (outcome !== "confirm") return;
 
+      await waitForRestartCountdown(RESTART_COUNTDOWN_SECONDS);
+
       const { task, token } = await discordAdapterSettingsApi.enable({
         playerRoleIds,
         moderatorRoleIds,
@@ -343,6 +392,8 @@ export function DiscordBotSection() {
       });
       setConfirmRequest(null);
       if (outcome !== "confirm") return;
+
+      await waitForRestartCountdown(RESTART_COUNTDOWN_SECONDS);
 
       const { task } = await discordAdapterSettingsApi.updateRoleIds({
         playerRoleIds,
@@ -475,6 +526,19 @@ export function DiscordBotSection() {
           </label>
           <p className="muted">Copy this now — it won't be shown again. Use Regenerate Token to get a new one if you lose it.</p>
           {tokenCopyResult && <span className="muted" role="status">{tokenCopyResult}</span>}
+        </div>
+      )}
+
+      {/* Hoisted for the same reason as revealedToken above -- this must
+          render regardless of which phase-specific branch is active,
+          since handleUpdateRoleIds() fires from phase === "enabled" while
+          handleEnable() fires from phase === "disabled". */}
+      {restartCountdownSeconds !== null && (
+        <div className="settings-restart-countdown" role="status">
+          <p>
+            Restarting the console in <strong>{restartCountdownSeconds}s</strong> to apply this change. It will be briefly unreachable.
+          </p>
+          <button type="button" onClick={finishRestartCountdown}>Restart Now</button>
         </div>
       )}
 

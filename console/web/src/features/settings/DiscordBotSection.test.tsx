@@ -144,6 +144,7 @@ describe("DiscordBotSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /Save Role IDs/i }));
     await screen.findByText(/restart to apply this change/i);
     fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
       "/api/settings/discord-bot/role-ids",
       expect.objectContaining({ deploymentChoice: "hosted" })
@@ -274,6 +275,7 @@ describe("DiscordBotSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
     await screen.findByText(/will restart to apply this change/i);
     fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
 
     await waitFor(() => expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument(), { timeout: 5000 });
   });
@@ -308,6 +310,7 @@ describe("DiscordBotSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
     await screen.findByText(/will restart to apply this change/i);
     fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
 
     await waitFor(() => expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument(), { timeout: 5000 });
 
@@ -396,6 +399,7 @@ describe("DiscordBotSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
     await screen.findByText(/will restart to apply this change/i);
     fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
 
     await waitFor(() => expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument(), { timeout: 5000 });
     fireEvent.click(screen.getByRole("button", { name: /Retry/i }));
@@ -428,6 +432,7 @@ describe("DiscordBotSection", () => {
     await screen.findByText(/restart/i);
     expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/role-ids", expect.anything());
     fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/role-ids", expect.anything()));
     // Save Role IDs must call updateRoleIds (/role-ids), never enable
     // (/enable) -- sharing the enable path here would silently rotate the
@@ -510,6 +515,7 @@ describe("DiscordBotSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
     await screen.findByText(/will restart to apply this change/i);
     fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/enable", expect.objectContaining({ deploymentChoice: "hosted" })));
   });
 
@@ -689,5 +695,75 @@ describe("DiscordBotSection", () => {
     await screen.findByText(/Reconnecting to Discord/i);
     expect(screen.queryByText(/Which server is this for/i)).toBeNull();
     expect(screen.getByRole("button", { name: /Connect to hosted bot/i })).toBeInTheDocument();
+  });
+
+  // Real UAT finding (2026-09-09): "step 3 generated the token and just
+  // restarted without my input or acknowledge[ment] -- I think it should
+  // pause, let user know that a restart is needed and start a timer to
+  // restart as well as provide a button to restart." These three tests
+  // cover the pause+notice, the automatic-expiry restart, and the
+  // skip-ahead button, for the Enable path specifically -- the identical
+  // mechanism on Save Role IDs is already exercised by the "Restart Now"
+  // click threaded through the existing role-ids/enable tests above.
+  it("pauses with a restart countdown notice after confirming Enable, and does not call /enable until the countdown resolves", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    mockPost.mockResolvedValue({ task: { id: "t1", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null }, token: "abc" } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
+    await screen.findByText(/will restart to apply this change/i);
+    fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
+
+    await screen.findByRole("button", { name: /^Restart Now$/i });
+    expect(screen.getByText(/Restarting the console in/i)).toBeInTheDocument();
+    expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/enable", expect.anything());
+  });
+
+  it("automatically proceeds with the restart once the countdown reaches zero, with no click required", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    mockPost.mockResolvedValue({ task: { id: "t1", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null }, token: "abc" } as never);
+    // Fake timers throughout, and plain getBy*/act flushes instead of
+    // findBy*/waitFor: the latter poll on a real setInterval, which never
+    // fires once fake timers are active unless the clock is advanced by
+    // hand -- the DOM updates here all come from resolved mock promises
+    // (microtasks), not timers, so a manual act-flush is enough.
+    vi.useFakeTimers();
+    render(<DiscordBotSection />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText(/Which are you using/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+    expect(screen.getByText(/Role mappings/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
+    expect(screen.getByText(/will restart to apply this change/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Enable$/i }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(screen.getByText(/Restarting the console in/i)).toBeInTheDocument();
+    expect(mockPost).not.toHaveBeenCalled();
+
+    for (let i = 0; i < 10; i++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    }
+    expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/enable", expect.anything());
+  });
+
+  it("clicking Restart Now skips the wait and proceeds immediately", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    mockPost.mockResolvedValue({ task: { id: "t1", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null }, token: "abc" } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
+    await screen.findByText(/will restart to apply this change/i);
+    fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/enable", expect.anything()));
+    expect(screen.queryByRole("button", { name: /^Restart Now$/i })).toBeNull();
   });
 });
