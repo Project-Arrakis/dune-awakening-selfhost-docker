@@ -341,9 +341,14 @@ export function DiscordBotSection() {
       setConfirmRequest(null);
       if (outcome !== "confirm") return;
 
-      await waitForRestartCountdown(RESTART_COUNTDOWN_SECONDS);
-
-      const { task, token } = await discordAdapterSettingsApi.enable({
+      // Real UAT finding (2026-09-09): persist config and reveal the
+      // one-time token FIRST -- before the restart countdown, not after --
+      // so the operator actually has a window to copy it while the console
+      // is still fully reachable. enable() no longer triggers the restart
+      // itself (see its own comment in discordAdapterSettings.ts); restart()
+      // below is the explicit, separate call for that, made only once the
+      // countdown resolves (by timeout or "Restart Now").
+      const { token } = await discordAdapterSettingsApi.enable({
         playerRoleIds,
         moderatorRoleIds,
         adminRoleIds,
@@ -357,6 +362,10 @@ export function DiscordBotSection() {
         setRevealedToken(token);
         setTokenCopyResult("");
       }
+
+      await waitForRestartCountdown(RESTART_COUNTDOWN_SECONDS);
+
+      const { task } = await discordAdapterSettingsApi.restart();
       persistUpdateTask(TASK_KEY, task);
       setRunId(task.id);
       setPhase("enabling");

@@ -13,6 +13,9 @@ test("Discord Bot settings routes resolve to the expected actions", () => {
   assert.equal(actionForRoute("/api/settings/discord-bot/enable", "POST"), "updates:apply");
   assert.equal(actionForRoute("/api/settings/discord-bot/role-ids", "POST"), "updates:apply");
   assert.equal(actionForRoute("/api/settings/discord-bot/regenerate-token", "POST"), "settings:discord-bot-regenerate-token");
+  // Real UAT finding (2026-09-09): the restart trigger split out of
+  // /enable and /role-ids -- same action as both.
+  assert.equal(actionForRoute("/api/settings/discord-bot/restart", "POST"), "updates:apply");
 });
 
 test("admin can enable the Discord adapter (already has updates:apply via self-update) but cannot regenerate its token (settings:* denied)", () => {

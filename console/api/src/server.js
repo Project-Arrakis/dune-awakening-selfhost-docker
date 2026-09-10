@@ -1509,9 +1509,29 @@ async function handleApi(req, res) {
     // settings:discord-bot-regenerate-token action exists to reserve.
     const result = applyDiscordBotEnableRequest(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds }, { deploymentChoice: body.deploymentChoice });
     audit(config, req, "settings.discord-bot.enable", { playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length, tokenMinted: result.tokenMinted });
-    const responseBody = { task: tasks.create("settings", "discordAdapterApply", {}) };
+    // Real UAT finding (2026-09-09): this used to also call tasks.create()
+    // here, restarting the console in the same request that mints the
+    // token -- by the time the frontend could show the token, the restart
+    // was already under way (tasks.create() dispatches via
+    // queueMicrotask(), i.e. effectively immediately). That left no real
+    // window for an operator to copy a one-time secret before the console
+    // went briefly unreachable. Persisting (.env + token file, above) and
+    // actually restarting are now two separate calls -- see POST .../restart
+    // below -- so the frontend can reveal the token first and let the
+    // operator decide when the restart happens.
+    const responseBody = {};
     if (result.tokenMinted) responseBody.token = result.token;
-    return json(res, 202, responseBody);
+    return json(res, 200, responseBody);
+  }
+  // Real UAT finding (2026-09-09): split out of /enable and /role-ids above
+  // so the frontend can reveal a freshly-minted token (or just acknowledge
+  // a role-ID save) before triggering the actual restart, instead of the
+  // restart firing in the same request that persists the change. Takes no
+  // body -- the discordAdapterApply task re-reads whatever is currently in
+  // .env, which the preceding /enable or /role-ids call already wrote.
+  if (path === "/api/settings/discord-bot/restart" && req.method === "POST") {
+    audit(config, req, "settings.discord-bot.restart", {});
+    return json(res, 202, { task: tasks.create("settings", "discordAdapterApply", {}) });
   }
   if (path === "/api/settings/discord-bot/role-ids" && req.method === "POST") {
     const body = await readJson(req);

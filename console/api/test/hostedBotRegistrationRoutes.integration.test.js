@@ -239,7 +239,7 @@ async function enableHostedDeployment(port, session) {
     csrf: session.csrf,
     body: { playerRoleIds: "", moderatorRoleIds: "", adminRoleIds: "", deploymentChoice: "hosted" }
   });
-  assert.equal(res.status, 202, "enabling the adapter with deploymentChoice: hosted must succeed");
+  assert.equal(res.status, 200, "enabling the adapter with deploymentChoice: hosted must succeed");
 }
 
 test("GET /api/integrations/discord/hosted-bot/oauth/start requires a real session (401 unauthenticated)", async () => {

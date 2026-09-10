@@ -160,6 +160,11 @@ export const ROUTE_ACTIONS = {
   "POST /api/settings/discord-bot/enable":      "updates:apply",
   "POST /api/settings/discord-bot/role-ids":    "updates:apply",
   "POST /api/settings/discord-bot/regenerate-token": "settings:discord-bot-regenerate-token",
+  // Real UAT finding (2026-09-09): the explicit restart trigger split out
+  // of /enable and /role-ids above -- same action as both, since it's the
+  // second half of the exact same "apply this pending settings change"
+  // capability those two routes already require.
+  "POST /api/settings/discord-bot/restart":     "updates:apply",
 
   // --- Hosted Bot Registration ---
   // start/callback use updates:read (the same real precedent as

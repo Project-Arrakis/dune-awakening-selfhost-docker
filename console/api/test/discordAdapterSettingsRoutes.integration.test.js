@@ -156,9 +156,14 @@ test("an authenticated owner session can read, enable, update role IDs, and rege
       csrf: session.csrf,
       body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "" }
     });
-    assert.equal(enable.status, 202, "a successful enable must return 202 (task queued)");
+    // Real UAT finding (2026-09-09): /enable used to also queue the
+    // restart task (202) in the same request that mints the token -- it
+    // now only persists config and mints the token (200), so the caller
+    // (the console UI) can reveal the token before deciding when to
+    // actually trigger the restart via the separate POST .../restart route.
+    assert.equal(enable.status, 200, "a successful enable persists config and mints a token, without restarting yet");
     const enableBody = await enable.json();
-    assert.ok(enableBody.task, "the response must include the queued task");
+    assert.equal(enableBody.task, undefined, "enable no longer queues the restart task itself -- see POST .../restart");
     assert.ok(enableBody.token, "a genuine first enable must return the freshly minted token");
     const firstToken = enableBody.token;
 
@@ -196,6 +201,42 @@ test("an authenticated owner session can read, enable, update role IDs, and rege
     const regenBody = await regen.json();
     assert.ok(regenBody.token, "regenerate-token must return the freshly minted token");
     assert.notEqual(regenBody.token, firstToken, "regeneration must mint a genuinely new token, not echo the old one");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// Real UAT finding (2026-09-09): /enable and /role-ids no longer trigger the
+// restart themselves -- POST .../restart is the separate, explicit call the
+// console UI now makes once the operator has seen the token (for /enable)
+// or acknowledged the change (for /role-ids). This closes the same
+// real-HTTP-route gap for the new route that the tests above already close
+// for /enable, /role-ids, and /regenerate-token.
+test("POST /api/settings/discord-bot/restart queues the discordAdapterApply task and is recorded in the real audit log", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-restart-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+    assert.equal(session.status, 200);
+
+    const restart = await api(port, "/api/settings/discord-bot/restart", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: {}
+    });
+    assert.equal(restart.status, 202, "a successful restart trigger must return 202 (task queued)");
+    const restartBody = await restart.json();
+    assert.ok(restartBody.task, "the response must include the queued task");
+    assert.equal(restartBody.task.operation, "discordAdapterApply");
+
+    const rows = auditRows(tempDir).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const restartRow = rows.find((r) => r.action === "settings.discord-bot.restart");
+    assert.ok(restartRow, "a successful restart trigger must write a settings.discord-bot.restart audit row");
+    assert.equal(restartRow.path, "/api/settings/discord-bot/restart");
   } finally {
     await stopProcess(console.child);
     rmSync(tempDir, { recursive: true, force: true });
@@ -251,7 +292,7 @@ test("POST /api/settings/discord-bot/enable persists deploymentChoice over the r
       csrf: session.csrf,
       body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "", deploymentChoice: "hosted" }
     });
-    assert.equal(enable.status, 202);
+    assert.equal(enable.status, 200);
 
     const after = await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie });
     const afterBody = await after.json();
@@ -277,7 +318,7 @@ test("POST /api/settings/discord-bot/role-ids persists a changed deploymentChoic
       csrf: session.csrf,
       body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "", deploymentChoice: "self-hosted" }
     });
-    assert.equal(enable.status, 202);
+    assert.equal(enable.status, 200);
 
     // Now switch the choice to hosted via /role-ids -- this route must
     // never rotate the live token (see updateDiscordBotRoleIds()'s own
@@ -315,7 +356,7 @@ test("a successful POST /api/settings/discord-bot/enable is recorded in the real
       csrf: session.csrf,
       body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "" }
     });
-    assert.equal(res.status, 202);
+    assert.equal(res.status, 200);
 
     const rows = auditRows(tempDir).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
     const enableRow = rows.find((r) => r.action === "settings.discord-bot.enable");
