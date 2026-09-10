@@ -864,6 +864,8 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | GET | `/api/integrations/discord/hosted-bot/oauth/start` | Begin hosted bot registration OAuth flow (Discord login) | `updates:read` | admin+ |
 | GET | `/api/integrations/discord/hosted-bot/oauth/callback` | OAuth callback handler for hosted bot registration | `updates:read` | admin+ |
 | POST | `/api/integrations/discord/hosted-bot/register` | Complete hosted bot registration with OAuth token and adapter secret | `settings:discord-bot-hosted-register` | owner |
+| POST | `/api/integrations/discord/hosted-bot/auto-invite/start` | Start the fully-automated auto-invite flow: silently enables the hosted-bot adapter token if needed, asks mentat-link to mint a pending state, and returns the single Discord consent-screen `authorizeUrl` for the console to open in a popup | `settings:discord-bot-hosted-oauth` | owner |
+| GET | `/api/integrations/discord/hosted-bot/auto-invite/complete` | Popup return leg reached via mentat-link's signed bounce page; verifies the double-submit state cookie and renders a small page that `postMessage`s the outcome (`ok`/`guildName`/`reason`/`reclaimed`) back to the opener before closing | `settings:discord-bot-hosted-oauth` | owner |
 
 ---
 
