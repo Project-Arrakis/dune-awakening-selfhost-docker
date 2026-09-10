@@ -41,6 +41,8 @@ source runtime/scripts/runtime-env.sh
 source runtime/scripts/image-tags.sh
 source runtime/scripts/sietch-login-password-args.sh
 source runtime/scripts/fake-k8s-serviceaccount.sh
+# shellcheck source=runtime/scripts/landsraad-instance-cleanup.sh
+source runtime/scripts/landsraad-instance-cleanup.sh
 
 IMAGE="$(resolve_game_server_image)"
 
@@ -554,6 +556,15 @@ runtime/scripts/network-addresses.sh reconcile >/dev/null 2>&1 || true
 prepare_fake_k8s_serviceaccount "$FAKE_K8S_SERVICEACCOUNT_DIR" "funcom-seabass-$BATTLEGROUP_ID"
 
 docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+landsraad_cleanup_sql="$(landsraad_instance_cleanup_sql "$MAP_NAME" "$PARTITION_ID" 2>/dev/null || true)"
+if [ -n "$landsraad_cleanup_sql" ]; then
+  echo "Resetting transient Landsraad actors before starting partition $PARTITION_ID"
+  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+begin;
+$landsraad_cleanup_sql
+commit;
+" >/dev/null
+fi
 ensure_host_latency_tuned
 mapfile -t MEMORY_SWAP_ARGS < <(memory_swap_docker_args "$MEMORY")
 
