@@ -182,8 +182,18 @@ export const ROUTE_ACTIONS = {
   // OAuth. Same tier as enable/role-ids/restart above, not owner-only:
   // this is prerequisite setup, not a destructive/credential-invalidating
   // action the way regenerate-token/disable are.
-  "POST /api/settings/discord-bot/oauth-config": "updates:apply",
-  "POST /api/settings/discord-bot/oauth-secret": "updates:apply",
+  // dune-awakening-selfhost-docker#859: these two routes replace the
+  // hosted-bot Discord Application's Client ID/Secret/Redirect URI --
+  // exactly the class of credential-replacement action every OTHER route
+  // in this flow (regenerate-token, disable, /register) already maps to a
+  // dedicated, owner-only settings:* action, per the Deny list below. This
+  // pair was the one place that convention wasn't applied: `updates:apply`
+  // let an admin (not owner) substitute their own Discord Application and
+  // an attacker-controlled redirectUri, then harvest the real owner's
+  // Discord identity/access token the next time the owner completed the
+  // (now-hijacked) OAuth consent flow.
+  "POST /api/settings/discord-bot/oauth-config": "settings:discord-bot-oauth-config",
+  "POST /api/settings/discord-bot/oauth-secret": "settings:discord-bot-oauth-secret",
 
   // --- Hosted Bot Registration ---
   // start/callback use updates:read (the same real precedent as
