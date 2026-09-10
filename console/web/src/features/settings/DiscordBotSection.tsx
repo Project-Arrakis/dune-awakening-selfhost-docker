@@ -269,6 +269,30 @@ export function DiscordBotSection() {
   const [autoInviteFailureReason, setAutoInviteFailureReason] = useState("");
   const [autoInvitePopupBlockedUrl, setAutoInvitePopupBlockedUrl] = useState<string | null>(null);
   const autoInvitePopupRef = useRef<Window | null>(null);
+  // Automated review finding (PR #868): a real backend request can still
+  // be outstanding on mentat's side even after the operator clicks "Start
+  // over" (which only resets the VISIBLE autoInviteStatus back to "idle"
+  // client-side -- there is no cancel endpoint to actually tell mentat to
+  // discard the staged pendingOwnerConfirmation). Gating the guard below
+  // purely on autoInviteStatus meant "Start over" silently re-armed
+  // Regenerate Token/Disable/Save Role IDs while mentat could still
+  // complete registration later using a now-stale adapter token -- the
+  // exact desync this guard exists to prevent. autoInviteBlockUntil is a
+  // separate timestamp, set only when a request is genuinely staged
+  // (never cleared by "Start over"), that self-expires after mentat's own
+  // pendingOwnerConfirmations TTL (15 minutes, design doc §4.5) -- past
+  // that point mentat has itself discarded the pending record on timeout
+  // (§4.2 Path F), so continuing to block is no longer protecting
+  // anything real.
+  const AUTO_INVITE_BLOCK_MS = 15 * 60 * 1000;
+  const [autoInviteBlockUntil, setAutoInviteBlockUntil] = useState<number | null>(null);
+  useEffect(() => {
+    if (autoInviteBlockUntil === null) return undefined;
+    const remaining = autoInviteBlockUntil - Date.now();
+    if (remaining <= 0) { setAutoInviteBlockUntil(null); return undefined; }
+    const timer = window.setTimeout(() => setAutoInviteBlockUntil(null), remaining);
+    return () => window.clearTimeout(timer);
+  }, [autoInviteBlockUntil]);
   // Layer 2 audit finding (HIGH, PR #868): a request is genuinely in
   // flight -- either the popup is open, or mentat has staged the
   // registration and is waiting on the owner's Discord confirmation --
@@ -283,7 +307,7 @@ export function DiscordBotSection() {
   // audit-required exception to renderHostedBotConnection() otherwise
   // being left unchanged) -- running both flows concurrently for the same
   // guild is never a safe combination.
-  const autoInvitePending = autoInviteStatus === "awaiting-popup" || autoInviteStatus === "waiting-for-owner";
+  const autoInvitePending = autoInviteStatus === "awaiting-popup" || autoInviteBlockUntil !== null;
 
   // Listens for the popup's own autoInviteCompletePage() postMessage
   // (autoInvite.js, Core's /auto-invite/complete route) -- targetOrigin is
@@ -298,6 +322,7 @@ export function DiscordBotSection() {
       if (data.result.ok) {
         setAutoInviteStatus("waiting-for-owner");
         setAutoInviteReclaimed(Boolean(data.result.reclaimed));
+        setAutoInviteBlockUntil(Date.now() + AUTO_INVITE_BLOCK_MS);
       } else {
         setAutoInviteStatus("failed");
         setAutoInviteFailureReason(data.result.reason || "");
@@ -345,19 +370,30 @@ export function DiscordBotSection() {
     // popup-blocked message at once, contradicting each other.
     setAutoInviteStatus("idle");
     setAutoInviteFailureReason("");
+    // Automated review finding (PR #868): window.open() must be called
+    // SYNCHRONOUSLY inside this click handler, before any await -- once a
+    // promise is awaited first, the call loses the click's own "transient
+    // activation" and browsers treat it as programmatic, not user-
+    // initiated (Safari always blocks it this way; Chrome/Firefox once the
+    // network round trip exceeds a few seconds). Opening a blank popup
+    // now and setting its location once startAutoInvite() resolves
+    // preserves activation, unlike the old (buggy) ordering that opened
+    // the popup only after the await.
+    const popup = window.open("", "discord-auto-invite", "width=500,height=800");
     try {
       const { authorizeUrl } = await discordHostedBotApi.startAutoInvite(window.location.origin);
-      const popup = window.open(authorizeUrl, "discord-auto-invite", "width=500,height=800");
-      if (!popup) {
+      if (!popup || popup.closed) {
         // Popup blocked -- same failure mode openBotInviteWindow() already
         // handles for the old flow (design doc §6); a plain link the
         // operator can click through manually is the fallback here too.
         setAutoInvitePopupBlockedUrl(authorizeUrl);
         return;
       }
+      popup.location.href = authorizeUrl;
       autoInvitePopupRef.current = popup;
       setAutoInviteStatus("awaiting-popup");
     } catch (err) {
+      popup?.close();
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
@@ -873,6 +909,14 @@ export function DiscordBotSection() {
             <p className="muted">This server was previously connected to a different console — that connection has been replaced, and role configuration was reset. Please reconfigure roles in the next step.</p>
           )}
           <button type="button" onClick={() => setAutoInviteStatus("idle")}>Start over</button>
+          {/* Automated review finding, PR #868: "Start over" only resets
+              this VISIBLE state -- there is no way to cancel the request
+              already staged on mentat's side, which can still complete if
+              the owner confirms later. Token/role actions elsewhere on
+              this page stay guarded (autoInviteBlockUntil) regardless of
+              this button, so this note explains why they may still look
+              disabled after clicking it. */}
+          <p className="muted">"Start over" only resets this screen -- the request already sent may still complete if the server owner confirms it later.</p>
         </div>
       );
     }

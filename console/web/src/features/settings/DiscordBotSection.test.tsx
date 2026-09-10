@@ -965,25 +965,29 @@ describe("DiscordBotSection", () => {
       expect(advancedSummary.closest("details")).toContainElement(screen.getByLabelText(/Client ID/i));
     });
 
-    it("clicking Add & Connect Bot calls the real start endpoint and opens a popup to the returned authorizeUrl", async () => {
-      const openSpy = vi.spyOn(window, "open").mockReturnValue({ closed: false } as never);
+    it("clicking Add & Connect Bot opens a blank popup synchronously (preserving transient activation), then navigates it to the returned authorizeUrl", async () => {
+      const fakePopup = { closed: false, close: vi.fn(), location: { href: "" } };
+      const openSpy = vi.spyOn(window, "open").mockReturnValue(fakePopup as never);
       await reachStep1HostedBranch();
 
       fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
+      // Automated review finding, PR #868: window.open() must be called
+      // SYNCHRONOUSLY with the click, before the startAutoInvite() await --
+      // otherwise the call loses the click's transient activation and
+      // browsers block it as if it were programmatic. Asserting the blank
+      // open happens with no prior await (no waitFor needed here) locks
+      // in that ordering.
+      expect(openSpy).toHaveBeenCalledWith("", "discord-auto-invite", expect.any(String));
       await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
         "/api/integrations/discord/hosted-bot/auto-invite/start",
         { consoleUrl: window.location.origin }
       ));
-      await waitFor(() => expect(openSpy).toHaveBeenCalledWith(
-        expect.stringContaining("https://discord.com/oauth2/authorize"),
-        "discord-auto-invite",
-        expect.any(String)
-      ));
+      await waitFor(() => expect(fakePopup.location.href).toContain("https://discord.com/oauth2/authorize"));
       expect(await screen.findByRole("button", { name: /Waiting for Discord…/i })).toBeInTheDocument();
     });
 
     it("transitions to the waiting-for-owner state on a successful postMessage, and unlocks Continue without the old flow's checkbox", async () => {
-      vi.spyOn(window, "open").mockReturnValue({ closed: false } as never);
+      vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
       await reachStep1HostedBranch();
       fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
       await screen.findByRole("button", { name: /Waiting for Discord…/i });
@@ -999,8 +1003,55 @@ describe("DiscordBotSection", () => {
       expect(screen.getByRole("button", { name: /^Continue$/i })).not.toBeDisabled();
     });
 
+    // Automated review finding (PR #868, real/normal severity): "Start
+    // over" only resets the VISIBLE state client-side -- there is no
+    // cancel endpoint, so mentat's staged registration (holding a copy of
+    // the adapter token) can still complete later if the owner confirms.
+    // The token/console-affecting buttons must stay guarded regardless of
+    // what "Start over" does to the on-screen status, until mentat's own
+    // pendingOwnerConfirmations TTL (15 minutes) would have discarded the
+    // record anyway.
+    it("keeps Regenerate Token/Save Role IDs/Disable guarded after Start over, until mentat's own 15-minute confirmation TTL elapses", async () => {
+      mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
+      mockPost.mockImplementation((path: string) => {
+        if (path === "/api/integrations/discord/hosted-bot/auto-invite/start") return Promise.resolve({ authorizeUrl: "https://discord.com/oauth2/authorize?client_id=1546203607807041697&state=real-state" });
+        return Promise.resolve({ ok: true });
+      });
+      vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
+
+      render(<DiscordBotSection />);
+      await screen.findByRole("button", { name: /^Add & Connect Bot$/i });
+      fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
+      await screen.findByRole("button", { name: /Waiting for Discord…/i });
+
+      // Fake timers are enabled only now -- everything above relies on
+      // findBy's real-timer-based polling, matching this file's own
+      // established convention (see the "opens the real Discord
+      // bot-invite link..." test) -- so that the 15-minute block set by
+      // the postMessage below is scheduled against the SAME fake clock
+      // advanceTimersByTimeAsync controls, not a real setTimeout that
+      // would be unaffected by it.
+      vi.useFakeTimers();
+      act(() => { postMessageFromPopup({ ok: true, guildName: "Fleetyard", reclaimed: false }); });
+      expect(screen.getByText(/Request sent — check Discord to confirm the connection\./i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^Regenerate Token$/i })).toBeDisabled();
+
+      fireEvent.click(screen.getByRole("button", { name: /^Start over$/i }));
+      // The visible flow really did reset...
+      expect(screen.getByRole("button", { name: /^Add & Connect Bot$/i })).toBeInTheDocument();
+      // ...but the guard must NOT have lifted just because the operator
+      // clicked "Start over" -- mentat's own staged request is still live.
+      expect(screen.getByRole("button", { name: /^Regenerate Token$/i })).toBeDisabled();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(15 * 60 * 1000 - 1000); });
+      expect(screen.getByRole("button", { name: /^Regenerate Token$/i })).toBeDisabled();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(screen.getByRole("button", { name: /^Regenerate Token$/i })).not.toBeDisabled();
+    });
+
     it("shows the reclaimed notice when a different console previously owned this guild", async () => {
-      vi.spyOn(window, "open").mockReturnValue({ closed: false } as never);
+      vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
       await reachStep1HostedBranch();
       fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
       await screen.findByRole("button", { name: /Waiting for Discord…/i });
@@ -1011,7 +1062,7 @@ describe("DiscordBotSection", () => {
     });
 
     it("shows an explicit, reason-specific message on a failed postMessage outcome, and Continue stays locked", async () => {
-      vi.spyOn(window, "open").mockReturnValue({ closed: false } as never);
+      vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
       await reachStep1HostedBranch();
       fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
       await screen.findByRole("button", { name: /Waiting for Discord…/i });
@@ -1023,7 +1074,7 @@ describe("DiscordBotSection", () => {
     });
 
     it("ignores a postMessage from a different origin", async () => {
-      vi.spyOn(window, "open").mockReturnValue({ closed: false } as never);
+      vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
       await reachStep1HostedBranch();
       fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
       await screen.findByRole("button", { name: /Waiting for Discord…/i });
@@ -1040,7 +1091,7 @@ describe("DiscordBotSection", () => {
     });
 
     it("resets to idle, with no error, when the operator closes the popup before any outcome arrives (abandonment, not a failure)", async () => {
-      const fakePopup = { closed: false };
+      const fakePopup = { closed: false, close: vi.fn(), location: { href: "" } };
       vi.spyOn(window, "open").mockReturnValue(fakePopup as never);
       // Fake timers are enabled only AFTER reaching step 1 -- reachStep1HostedBranch()
       // itself relies on findByText's real-timer-based polling, matching the
@@ -1070,7 +1121,7 @@ describe("DiscordBotSection", () => {
     });
 
     it("the old, advanced flow is still fully reachable and functional behind the disclosure", async () => {
-      vi.spyOn(window, "open").mockReturnValue({ closed: false } as never);
+      vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
       await reachStep1HostedBranch();
       // The old flow's own controls (unchanged renderHostedBotConnection())
       // must still exist and work -- design doc §9 Option B, not removed
@@ -1081,7 +1132,7 @@ describe("DiscordBotSection", () => {
 
     // Layer 2 audit findings, PR #868.
     it("disables the old flow's own Connect/Register actions while a new auto-invite request is in flight", async () => {
-      vi.spyOn(window, "open").mockReturnValue({ closed: false } as never);
+      vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
       await reachStep1HostedBranch();
       expect(screen.getByRole("button", { name: /Connect to hosted bot/i })).not.toBeDisabled();
 
@@ -1100,7 +1151,7 @@ describe("DiscordBotSection", () => {
       const openSpy = vi.spyOn(window, "open");
       await reachStep1HostedBranch();
 
-      openSpy.mockReturnValueOnce({ closed: false } as never);
+      openSpy.mockReturnValueOnce({ closed: false, close: vi.fn(), location: { href: "" } } as never);
       fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
       await screen.findByRole("button", { name: /Waiting for Discord…/i });
       act(() => { postMessageFromPopup({ ok: false, reason: "not_owner" }); });
@@ -1138,7 +1189,7 @@ describe("DiscordBotSection", () => {
         if (path === "/api/integrations/discord/hosted-bot/auto-invite/start") return Promise.resolve({ authorizeUrl: "https://discord.com/oauth2/authorize?client_id=1546203607807041697&state=real-state" });
         return Promise.resolve({ ok: true });
       });
-      vi.spyOn(window, "open").mockReturnValue({ closed: false } as never);
+      vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
 
       render(<DiscordBotSection />);
       await screen.findByRole("button", { name: /^Add & Connect Bot$/i });
