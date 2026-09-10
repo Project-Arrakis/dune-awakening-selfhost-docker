@@ -268,6 +268,25 @@ export function loadConfig() {
     // operator ever needs to set this in a real deployment; it is not
     // documented in .env.example for that reason.
     mentatBackendRegisterUrl: process.env.MENTAT_BACKEND_REGISTER_URL || "https://mentat-backend.darkdante.org/api/consoles/register",
+    // mentat#343+/dune-awakening-selfhost-docker#832 Phase 6: the
+    // fully-automated auto-invite flow's own two endpoints, deliberately
+    // separate config values from mentatBackendRegisterUrl above (that one
+    // is the OLD flow's direct-to-mentat-backend call; this flow calls
+    // mentat-LINK's proxy instead, so mentat-link's requireProxySecret
+    // hop-auth header gets attached automatically -- Core itself never
+    // needs to hold MENTAT_PROXY_SHARED_SECRET). Same test-only override
+    // reasoning as mentatBackendRegisterUrl: mentat-link.darkdante.org is a
+    // real, live, reachable hostname this dev/CI environment could
+    // otherwise accidentally hit.
+    mentatLinkAutoInviteStartUrl: process.env.MENTAT_LINK_AUTO_INVITE_START_URL || "https://mentat-link.darkdante.org/api/consoles/auto-invite/start",
+    // The redirect_uri embedded in the Discord authorize URL this flow
+    // builds -- a FIXED value (mentat-link's own callback route), unlike
+    // the OLD flow's operator-configured discordHostedBotOAuthRedirectUri.
+    // There is exactly one correct value in every real deployment (design
+    // doc goal G2: the operator never configures anything Discord-related
+    // for this path), so this is env-overridable for tests only, not
+    // documented in .env.example as an operator-facing setting.
+    autoInviteDiscordRedirectUri: process.env.AUTO_INVITE_DISCORD_REDIRECT_URI || "https://mentat-link.darkdante.org/api/consoles/auto-invite/callback",
     discordOAuthApiBaseUrl: process.env.DISCORD_OAUTH_BASE_URL || "https://discord.com/api/v10",
     discordOAuthAllowOwnerBootstrap: process.env.DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP === "1",
     discordOAuthOwnerAllowlist: String(process.env.DISCORD_OAUTH_OWNER_ALLOWLIST || "").split(",").map((item) => item.trim()).filter((item) => /^\d{17,19}$/.test(item)),

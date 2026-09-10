@@ -217,6 +217,17 @@ export const ROUTE_ACTIONS = {
   // precedent (also owner-only via the same settings:* Deny wildcard).
   "POST /api/integrations/discord/hosted-bot/register":      "settings:discord-bot-hosted-register",
 
+  // mentat#343+/dune-awakening-selfhost-docker#832 Phase 6: the new,
+  // fully-automated auto-invite flow -- same owner-only trust tier as the
+  // OLD hosted-bot routes immediately above (this flow mints/uses the
+  // same adapter token and forwards it across the same organizational
+  // trust boundary), reusing the existing settings:discord-bot-hosted-oauth
+  // action name since both are steps of conceptually the same "start a
+  // Discord round trip for the hosted bot connection" capability, not a
+  // newly-invented trust tier.
+  "POST /api/integrations/discord/hosted-bot/auto-invite/start":    "settings:discord-bot-hosted-oauth",
+  "GET /api/integrations/discord/hosted-bot/auto-invite/complete":  "settings:discord-bot-hosted-oauth",
+
   // --- Players (read) ---
   "GET /api/players":                          "players:read",
   "GET /api/players/online":                   "players:read",
