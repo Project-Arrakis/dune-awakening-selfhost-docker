@@ -42,5 +42,15 @@ export const discordHostedBotApi = {
   // owned-guild id set, not against anything this call sends.
   register: (guildId: string, guildName: string, consoleUrl: string) => {
     return post<{ ok: boolean }>("/api/integrations/discord/hosted-bot/register", { guildId, guildName, consoleUrl });
+  },
+  // Phase 6 (dune-awakening-selfhost-docker#832/#865): kicks off the
+  // fully-automated auto-invite flow. Returns the single Discord authorize
+  // URL to open in a popup -- covering bot-install + ownership
+  // re-verification in one consent screen, replacing the old flow's two
+  // separate steps (Add to Discord, then Connect to hosted bot). Server
+  // silently mints the adapter token / sets deploymentChoice on this call
+  // (server.js's own comment), so there is no separate "Enable" step first.
+  startAutoInvite: (consoleUrl: string) => {
+    return post<{ authorizeUrl: string }>("/api/integrations/discord/hosted-bot/auto-invite/start", { consoleUrl });
   }
 };
