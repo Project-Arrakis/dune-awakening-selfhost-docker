@@ -1,0 +1,46 @@
+import { post } from "./client";
+
+export type OwnedDiscordGuild = { id: string; name: string; owner: true };
+
+const OWNED_GUILDS_SESSION_STORAGE_KEY = "hostedBotOwnedGuilds";
+
+export const discordHostedBotApi = {
+  startOAuthUrl: () => "/api/integrations/discord/hosted-bot/oauth/start",
+  // readOwnedGuilds: reads the owned-guilds list the OAuth callback page
+  // (hostedBotOAuthReturnPage, hostedBotOAuth.js) stashed in sessionStorage
+  // just before its own `window.location.replace("/")` navigation.
+  // Renamed from readOwnedGuildsFromWindow (final integration review,
+  // CRITICAL): that name and its `window.__hostedBotOwnedGuilds__` property
+  // could never actually survive the real navigation -- a full document
+  // navigation loads the SPA into a brand-new `window`, discarding whatever
+  // property was set on the callback page's own window before this function
+  // ever got a chance to read it. sessionStorage is scoped to the origin,
+  // not to a `window` instance, so it survives. Single-read-then-clear
+  // contract preserved: the key is removed as soon as it's read, so a
+  // second call (e.g. a StrictMode double-invoke of a lazy initializer)
+  // returns [] rather than replaying the same list.
+  readOwnedGuilds: (): OwnedDiscordGuild[] => {
+    let raw: string | null = null;
+    try {
+      raw = window.sessionStorage.getItem(OWNED_GUILDS_SESSION_STORAGE_KEY);
+      window.sessionStorage.removeItem(OWNED_GUILDS_SESSION_STORAGE_KEY);
+    } catch {
+      return [];
+    }
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+  // guildName is included so Core can persist a human-readable label
+  // alongside the registration (see adapterSettings.js's
+  // persistHostedBotConnectedGuild) -- it is never used for authorization,
+  // which is still decided server-side against the OAuth-verified
+  // owned-guild id set, not against anything this call sends.
+  register: (guildId: string, guildName: string, consoleUrl: string) => {
+    return post<{ ok: boolean }>("/api/integrations/discord/hosted-bot/register", { guildId, guildName, consoleUrl });
+  }
+};

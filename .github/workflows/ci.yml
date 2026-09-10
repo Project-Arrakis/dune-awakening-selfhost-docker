@@ -158,6 +158,7 @@ jobs:
           runtime/tests/test-compose-project-name-portability.sh
           runtime/tests/test-compose-project-resolution.sh
           runtime/tests/test-container-compose-labels.sh
+          runtime/tests/test-compose-web-totp-env-passthrough.sh
       - name: Test Discord adapter env recreate (no build/pull, real docker compose config)
         run: |
           runtime/tests/test-discord-adapter-env-recreate.sh

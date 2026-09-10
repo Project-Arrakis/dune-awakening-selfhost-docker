@@ -176,3 +176,11 @@ test("oauthError carries a status code for routes", () => {
   assert.equal(error.statusCode, 403);
   assert.equal(error.code, "no_access");
 });
+
+test("constantTimeStringEqual is exported and behaves correctly", async () => {
+  const { constantTimeStringEqual } = await import("../src/integrations/discord/oauth.js");
+  assert.equal(constantTimeStringEqual("abc", "abc"), true);
+  assert.equal(constantTimeStringEqual("abc", "abd"), false);
+  assert.equal(constantTimeStringEqual("abc", "ab"), false);
+  assert.equal(constantTimeStringEqual("", ""), false, "empty-vs-empty must be false, matching the real function's own left.length === 0 short-circuit");
+});

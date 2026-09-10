@@ -242,6 +242,32 @@ export function loadConfig() {
     discordOAuthClientId: process.env.DISCORD_OAUTH_CLIENT_ID || "",
     discordOAuthClientSecret: readInlineOrFile(process.env.DISCORD_OAUTH_CLIENT_SECRET, resolve(secretsDir, "discord-oauth-client-secret.txt")),
     discordOAuthRedirectUri: process.env.DISCORD_OAUTH_REDIRECT_URI || "",
+    // Real UAT finding (2026-09-09): "Connect to hosted bot" originally
+    // reused discordOAuthClientId/discordOAuthClientSecret above (the
+    // console-sign-in app), on a second registered redirect URI -- the
+    // operator objected directly: console sign-in and the hosted-bot
+    // connection are unrelated capabilities and must each work without the
+    // other configured at all ("we have OAuth without bot and bot without
+    // OAuth"). These are now a fully independent Discord Application's
+    // credentials -- an operator can configure hosted-bot-connect without
+    // ever touching console sign-in, and vice versa. Same
+    // readInlineOrFile()/secrets-file convention as the sign-in secret
+    // above, just its own file so the two secrets are never conflated.
+    discordHostedBotOAuthClientId: process.env.DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID || "",
+    discordHostedBotOAuthClientSecret: readInlineOrFile(process.env.DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET, resolve(secretsDir, "discord-hosted-bot-oauth-client-secret.txt")),
+    discordHostedBotOAuthRedirectUri: process.env.DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI || "",
+    // The hosted mentat bot's console-registration endpoint. Overridable
+    // ONLY so an integration test can point this at a local fake listener
+    // instead of the real host -- found necessary during this task's own
+    // fix round 1 (Important #5): mentat-backend.darkdante.org is a real,
+    // live, internal-only production hostname that IS reachable from this
+    // dev/CI environment (confirmed directly with curl), so a test that
+    // needs to prove "no outbound call was made" cannot safely assert that
+    // against the real hardcoded URL -- an accidental regression could
+    // otherwise send a real POST to the live hosted-bot service. No
+    // operator ever needs to set this in a real deployment; it is not
+    // documented in .env.example for that reason.
+    mentatBackendRegisterUrl: process.env.MENTAT_BACKEND_REGISTER_URL || "https://mentat-backend.darkdante.org/api/consoles/register",
     discordOAuthApiBaseUrl: process.env.DISCORD_OAUTH_BASE_URL || "https://discord.com/api/v10",
     discordOAuthAllowOwnerBootstrap: process.env.DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP === "1",
     discordOAuthOwnerAllowlist: String(process.env.DISCORD_OAUTH_OWNER_ALLOWLIST || "").split(",").map((item) => item.trim()).filter((item) => /^\d{17,19}$/.test(item)),

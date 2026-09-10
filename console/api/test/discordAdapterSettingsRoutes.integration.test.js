@@ -156,9 +156,14 @@ test("an authenticated owner session can read, enable, update role IDs, and rege
       csrf: session.csrf,
       body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "" }
     });
-    assert.equal(enable.status, 202, "a successful enable must return 202 (task queued)");
+    // Real UAT finding (2026-09-09): /enable used to also queue the
+    // restart task (202) in the same request that mints the token -- it
+    // now only persists config and mints the token (200), so the caller
+    // (the console UI) can reveal the token before deciding when to
+    // actually trigger the restart via the separate POST .../restart route.
+    assert.equal(enable.status, 200, "a successful enable persists config and mints a token, without restarting yet");
     const enableBody = await enable.json();
-    assert.ok(enableBody.task, "the response must include the queued task");
+    assert.equal(enableBody.task, undefined, "enable no longer queues the restart task itself -- see POST .../restart");
     assert.ok(enableBody.token, "a genuine first enable must return the freshly minted token");
     const firstToken = enableBody.token;
 
@@ -202,6 +207,144 @@ test("an authenticated owner session can read, enable, update role IDs, and rege
   }
 });
 
+// Real UAT finding (2026-09-09, "I see no path to remove the bot"): this
+// feature previously had no way back to "never configured" once enabled.
+test("POST /api/settings/discord-bot/disable fully resets an enabled adapter back to never-configured, and is recorded in the real audit log", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-disable-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+    assert.equal(session.status, 200);
+
+    const enable = await api(port, "/api/settings/discord-bot/enable", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "", deploymentChoice: "hosted" }
+    });
+    assert.equal(enable.status, 200);
+
+    const disable = await api(port, "/api/settings/discord-bot/disable", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: {}
+    });
+    assert.equal(disable.status, 200);
+    assert.deepEqual(await disable.json(), { ok: true });
+
+    const after = await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie });
+    const afterBody = await after.json();
+    assert.equal(afterBody.enabled, false, "a disabled adapter must report enabled: false");
+    assert.equal(afterBody.tokenConfigured, false, "the token must be gone, not just the enabled flag flipped");
+    assert.equal(afterBody.deploymentChoice, null, "the deployment choice must be fully cleared, not left as 'hosted'");
+    assert.deepEqual(afterBody.roleIds.player, [], "role IDs must be cleared, not left over from the prior enable");
+
+    const rows = auditRows(tempDir).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const disableRow = rows.find((r) => r.action === "settings.discord-bot.disabled");
+    assert.ok(disableRow, "a successful disable must write a settings.discord-bot.disabled audit row");
+    assert.equal(disableRow.path, "/api/settings/discord-bot/disable");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// Real UAT finding (2026-09-09): /enable and /role-ids no longer trigger the
+// restart themselves -- POST .../restart is the separate, explicit call the
+// console UI now makes once the operator has seen the token (for /enable)
+// or acknowledged the change (for /role-ids). This closes the same
+// real-HTTP-route gap for the new route that the tests above already close
+// for /enable, /role-ids, and /regenerate-token.
+test("POST /api/settings/discord-bot/restart queues the discordAdapterApply task and is recorded in the real audit log", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-restart-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+    assert.equal(session.status, 200);
+
+    const restart = await api(port, "/api/settings/discord-bot/restart", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: {}
+    });
+    assert.equal(restart.status, 202, "a successful restart trigger must return 202 (task queued)");
+    const restartBody = await restart.json();
+    assert.ok(restartBody.task, "the response must include the queued task");
+    assert.equal(restartBody.task.operation, "discordAdapterApply");
+
+    const rows = auditRows(tempDir).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const restartRow = rows.find((r) => r.action === "settings.discord-bot.restart");
+    assert.ok(restartRow, "a successful restart trigger must write a settings.discord-bot.restart audit row");
+    assert.equal(restartRow.path, "/api/settings/discord-bot/restart");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// Real UAT finding (2026-09-10): the 3-step wizard redesign's step 1 ("Add
+// bot to Discord") needs deploymentChoice persisted immediately on picking
+// "Hosted bot" -- before role IDs or the adapter is enabled -- so the
+// hosted-bot OAuth routes' deploymentChoice gate passes in time.
+test("POST /api/settings/discord-bot/choice persists deploymentChoice without enabling the adapter or queuing a restart", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-choice-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+    assert.equal(session.status, 200);
+
+    const write = await api(port, "/api/settings/discord-bot/choice", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { deploymentChoice: "hosted" }
+    });
+    assert.equal(write.status, 200, "no task queued -- 200, not 202");
+    assert.deepEqual(await write.json(), { ok: true });
+
+    const after = await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie });
+    const afterBody = await after.json();
+    assert.equal(afterBody.deploymentChoice, "hosted");
+    assert.equal(afterBody.enabled, false, "must not enable the adapter");
+    assert.equal(afterBody.tokenConfigured, false, "must not mint a token");
+
+    const rows = auditRows(tempDir).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    assert.ok(rows.find((r) => r.action === "settings.discord-bot.choice-updated"), "must be audited");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/settings/discord-bot/choice rejects an invalid deploymentChoice value", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-choice-invalid-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+
+    const write = await api(port, "/api/settings/discord-bot/choice", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { deploymentChoice: "not-a-real-choice" }
+    });
+    assert.equal(write.status, 400);
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("POST /api/settings/discord-bot/enable returns a real 400 over the wire for an invalid Discord role ID, not just from the pure validator", async () => {
   const port = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-badinput-"));
@@ -229,6 +372,78 @@ test("POST /api/settings/discord-bot/enable returns a real 400 over the wire for
   }
 });
 
+// Task 2 (hosted-bot console-initiated OAuth registration plan), fix round
+// 1: the reviewer's finding was that everything verifying the new
+// deploymentChoice persistence path was either a direct-function-call unit
+// test (discordAdapterSettings.test.js, which bypasses server.js entirely)
+// or a manual code trace -- nothing exercised the real /enable and
+// /role-ids route handlers (server.js) over an actual HTTP request. This
+// closes that gap for both routes, in this file's own real-server pattern.
+test("POST /api/settings/discord-bot/enable persists deploymentChoice over the real HTTP route, reflected by a subsequent GET", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-choice-enable-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+    assert.equal(session.status, 200);
+
+    const enable = await api(port, "/api/settings/discord-bot/enable", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "", deploymentChoice: "hosted" }
+    });
+    assert.equal(enable.status, 200);
+
+    const after = await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie });
+    const afterBody = await after.json();
+    assert.equal(afterBody.deploymentChoice, "hosted", "a real POST /enable with deploymentChoice must be reflected by a subsequent GET, not just by direct function calls");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/settings/discord-bot/role-ids persists a changed deploymentChoice over the real HTTP route, without touching the live token", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-choice-roleids-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+
+    // First enable (self-hosted), same as the main end-to-end test above.
+    const enable = await api(port, "/api/settings/discord-bot/enable", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "", deploymentChoice: "self-hosted" }
+    });
+    assert.equal(enable.status, 200);
+
+    // Now switch the choice to hosted via /role-ids -- this route must
+    // never rotate the live token (see updateDiscordBotRoleIds()'s own
+    // comment in adapterSettings.js).
+    const roleIds = await api(port, "/api/settings/discord-bot/role-ids", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "", deploymentChoice: "hosted" }
+    });
+    assert.equal(roleIds.status, 202);
+    assert.equal((await roleIds.json()).token, undefined, "role-ids updates must never carry a token field");
+
+    const after = await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie });
+    const afterBody = await after.json();
+    assert.equal(afterBody.deploymentChoice, "hosted", "a real POST /role-ids with deploymentChoice must be reflected by a subsequent GET");
+    assert.equal(afterBody.tokenConfigured, true, "changing deploymentChoice via /role-ids must not disturb the already-configured token");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("a successful POST /api/settings/discord-bot/enable is recorded in the real audit log", async () => {
   const port = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-audit-"));
@@ -243,7 +458,7 @@ test("a successful POST /api/settings/discord-bot/enable is recorded in the real
       csrf: session.csrf,
       body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "" }
     });
-    assert.equal(res.status, 202);
+    assert.equal(res.status, 200);
 
     const rows = auditRows(tempDir).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
     const enableRow = rows.find((r) => r.action === "settings.discord-bot.enable");

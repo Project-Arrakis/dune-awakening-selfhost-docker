@@ -69,8 +69,34 @@ services:
       DUNE_DISCORD_ADAPTER_ENABLED: "${DUNE_DISCORD_ADAPTER_ENABLED:-false}"
       DUNE_DISCORD_ADAPTER_TOKEN: "${DUNE_DISCORD_ADAPTER_TOKEN:-}"
       DUNE_DISCORD_ADAPTER_TOKEN_FILE: "${DUNE_DISCORD_ADAPTER_TOKEN_FILE:-}"
+      # Hosted-bot console-initiated OAuth registration (Tasks 2/3/6, #739):
+      # found missing from this allowlist during the final-review re-review
+      # pass -- the exact same bug class this file's own CONSOLE_TOTP_ENABLED
+      # comment below already documents ("never wired through here despite
+      # six merged implementation phases"). Without these, every one of
+      # these values reads as unset/null inside any real docker-compose
+      # deployment, no matter what .env says: /oauth/start's deploymentChoice
+      # gate fails closed permanently, the hosted-bot redirect URI (no
+      # secrets-file fallback, unlike DISCORD_OAUTH_CLIENT_SECRET, so it's
+      # env-only) never reaches buildAuthorizeUrl(), and a successful
+      # registration's persisted "Connected to hosted bot for X" status
+      # never survives the very container recreate that "Save Role IDs"
+      # itself triggers. `:-` (not `-`) is correct for all 4: unlike
+      # DISCORD_PLAYER_ROLE_IDS above, none of these values distinguish
+      # "explicitly cleared to empty" from "genuinely unset" -- both
+      # normalizeDeploymentChoice() (adapterSettings.js) and
+      # readDiscordBotSettingsState()'s `|| null` reads treat an empty
+      # string exactly the same as unset, so there is no legacy-fallback/
+      # revocation-bypass hazard here to guard against.
+      DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE: "${DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE:-}"
+      DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID: "${DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID:-}"
+      DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME: "${DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME:-}"
       DISCORD_OAUTH_CLIENT_ID: "${DISCORD_OAUTH_CLIENT_ID:-}"
       DISCORD_OAUTH_REDIRECT_URI: "${DISCORD_OAUTH_REDIRECT_URI:-}"
+      # Second redirect URI on the SAME Discord application, used only by
+      # the hosted-bot "Connect to hosted bot" flow -- see this same finding
+      # above and .env.example's own comment for DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI.
+      DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: "${DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI:-}"
       DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "${DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP:-0}"
       DISCORD_HOME_GUILD_ID: "${DISCORD_HOME_GUILD_ID:-}"
       DISCORD_OAUTH_OWNER_ALLOWLIST: "${DISCORD_OAUTH_OWNER_ALLOWLIST:-}"
