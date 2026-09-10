@@ -836,4 +836,56 @@ describe("DiscordBotSection", () => {
     await waitFor(() => expect(screen.getByText(/Which are you using/i)).toBeInTheDocument(), { timeout: 5000 });
     expect(screen.queryByText(/Enable Discord Bot Integration/i)).toBeNull();
   });
+
+  // Real UAT finding (2026-09-09): "why can't we add [inviting the bot] to
+  // the wizard? click the button, a window pops, add to discord happens,
+  // window closes and back to wizard?" -- nothing in this wizard ever told
+  // the operator that inviting the bot to their Discord server is a
+  // separate, required, external step ("Connect to hosted bot" only
+  // verifies ownership and registers with mentat -- it can never add the
+  // bot to a guild itself, since that needs Discord's `bot` OAuth scope,
+  // not the `identify guilds` scope this component's own OAuth round trip
+  // uses). These tests cover the popup opening with the real invite link,
+  // and the "welcome back" acknowledgement once the operator closes it --
+  // in both the wizard's step 1 and the already-enabled management view.
+  it("opens the real Discord bot-invite link in a popup from wizard step 1, and shows a welcome-back message once it closes", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    const fakePopup = { closed: false };
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(fakePopup as never);
+    vi.useFakeTimers();
+
+    render(<DiscordBotSection />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText(/Which are you using/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Add to Discord$/i }));
+    expect(openSpy).toHaveBeenCalledWith(
+      expect.stringContaining("https://discord.com/oauth2/authorize?client_id="),
+      "discord-bot-invite",
+      expect.any(String)
+    );
+    expect(screen.queryByText(/Welcome back/i)).toBeNull();
+
+    fakePopup.closed = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(screen.getByText(/Welcome back/i)).toBeInTheDocument();
+  });
+
+  it("also offers Add to Discord alongside Connect to hosted bot once the adapter is enabled", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
+    const fakePopup = { closed: false };
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(fakePopup as never);
+    vi.useFakeTimers();
+
+    render(<DiscordBotSection />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole("button", { name: /Connect to hosted bot/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Add to Discord$/i }));
+    expect(openSpy).toHaveBeenCalled();
+
+    fakePopup.closed = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(screen.getByText(/Welcome back/i)).toBeInTheDocument();
+  });
 });

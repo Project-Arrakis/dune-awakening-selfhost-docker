@@ -18,6 +18,42 @@ const POLL_INTERVAL_MS = 2000;
 // an explicit "Restart Now" to skip the wait, rather than either an
 // instant restart or a mandatory full wait.
 const RESTART_COUNTDOWN_SECONDS = 10;
+// Real UAT finding (2026-09-09): nothing in this wizard ever told the
+// operator that inviting the hosted bot (Sahir Venn) to their own Discord
+// server is a separate, required, external step -- "Connect to hosted
+// bot" below only verifies guild ownership and registers with mentat, it
+// can never add the bot to a guild itself (Discord's OAuth `bot` scope
+// consent is the only mechanism that does that, and it's a completely
+// different flow from the `identify guilds` scope this component's own
+// OAuth round trip uses). This is the exact same invite link mentat-link's
+// own marketing/docs site already uses -- same client ID, same scope,
+// same fixed permissions=128 -- so an operator who already knows to visit
+// mentat-link doesn't get a different link/flow than one who never leaves
+// the console. Hardcoded (not configurable) deliberately: the "Hosted
+// bot" choice this button lives under is already, by design, wired
+// specifically to this org's own mentat/Sahir Venn service (see
+// mentatBackendRegisterUrl in server.js's config), not a generic
+// pluggable backend -- this is consistent with that, not a new pattern.
+const MENTAT_BOT_INVITE_URL = "https://discord.com/oauth2/authorize?client_id=1546203607807041697&scope=bot%20applications.commands&permissions=128";
+
+// openBotInviteWindow: a popup, not a full-page navigation, so the
+// operator never loses their place in this wizard. Discord's own
+// bot-invite consent flow needs no redirect_uri at all -- approving (or
+// cancelling) lands on Discord's own confirmation page inside the popup,
+// which the operator closes themselves. Polling `.closed` (there is no
+// cross-origin way to observe the popup's own navigation or get a
+// postMessage from Discord's page) is what lets the wizard notice the
+// operator is back without requiring them to click anything else here.
+function openBotInviteWindow(onClosed: () => void) {
+  const popup = window.open(MENTAT_BOT_INVITE_URL, "discord-bot-invite", "width=500,height=800");
+  if (!popup) return; // popup blocked -- the link below still works as a normal click-through
+  const timer = window.setInterval(() => {
+    if (popup.closed) {
+      window.clearInterval(timer);
+      onClosed();
+    }
+  }, 500);
+}
 
 type Choice = "hosted" | "self-hosted" | null;
 type Phase = "loading" | "disabled" | "enabling" | "enabled" | "failed";
@@ -154,6 +190,11 @@ export function DiscordBotSection() {
   });
   const [pickedGuild, setPickedGuild] = useState<OwnedDiscordGuild | null>(null);
   const [connectedGuildName, setConnectedGuildName] = useState<string | null>(null);
+  // Set once the "Add to Discord" popup closes (see openBotInviteWindow
+  // above) -- purely a UI acknowledgement so the operator gets some
+  // feedback that they're back, since there's no reliable cross-origin
+  // way to confirm the invite actually succeeded from here.
+  const [botInviteWindowClosed, setBotInviteWindowClosed] = useState(false);
   // Real UAT finding (2026-09-09): handleEnable()/handleUpdateRoleIds()
   // used to fire their restart-triggering API call the instant the
   // ConfirmDialog above was confirmed, with no further warning -- the
@@ -613,7 +654,11 @@ export function DiscordBotSection() {
               <p>Which are you using?</p>
               <div className="settings-choice">
                 <button className={choice === "hosted" ? "active" : ""} aria-pressed={choice === "hosted"} onClick={() => chooseAndAdvance("hosted")}>Hosted bot</button>
-                <p className="muted">We run the bot for you. Enable your adapter, then connect your Discord server in a few clicks — no separate bot process to run.</p>
+                <p className="muted">
+                  We run the bot for you. Invite it to your Discord server, enable your adapter, then connect your Discord server in a few clicks — no separate bot process to run.{" "}
+                  <button type="button" onClick={() => openBotInviteWindow(() => setBotInviteWindowClosed(true))}>Add to Discord</button>
+                  {botInviteWindowClosed && <span className="muted" role="status"> Welcome back — continue below once you've invited the bot.</span>}
+                </p>
                 <button className={choice === "self-hosted" ? "active" : ""} aria-pressed={choice === "self-hosted"} onClick={() => chooseAndAdvance("self-hosted")}>Self-hosting</button>
                 <p className="muted">Run your own bot instance under your own Discord Application. We generate a secure adapter token for it; you deploy the bot itself.</p>
               </div>
@@ -693,7 +738,11 @@ export function DiscordBotSection() {
           <button disabled={submitting} onClick={() => { void handleRegenerate(); }}>Regenerate Token</button>
           <button disabled={submitting} onClick={() => { void handleDisable(); }}>Disable Discord Bot Integration</button>
           {choice === "hosted" && !ownedGuilds && !connectedGuildName && (
-            <button disabled={submitting} onClick={() => { void handleConnectToHostedBot(); }}>Connect to hosted bot</button>
+            <>
+              <button type="button" onClick={() => openBotInviteWindow(() => setBotInviteWindowClosed(true))}>Add to Discord</button>
+              <button disabled={submitting} onClick={() => { void handleConnectToHostedBot(); }}>Connect to hosted bot</button>
+              {botInviteWindowClosed && <p className="muted" role="status">Welcome back — click Connect to hosted bot once you've invited the bot.</p>}
+            </>
           )}
           {choice === "hosted" && connectedGuildName && <p>Connected to hosted bot for {connectedGuildName}.</p>}
           {choice === "hosted" && ownedGuilds && (
