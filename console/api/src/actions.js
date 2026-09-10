@@ -201,8 +201,15 @@ export const ROUTE_ACTIONS = {
   // exist as a mapped action for this section and would strand every
   // admin-tier operator; verified against the sibling feature's own
   // ROUTE_ACTIONS entries during this plan's own research).
-  "GET /api/integrations/discord/hosted-bot/oauth/start":    "updates:read",
-  "GET /api/integrations/discord/hosted-bot/oauth/callback": "updates:read",
+  // dune-awakening-selfhost-docker#861: previously updates:read
+  // (admin-reachable). Only the owner can ever complete the downstream
+  // /register call this OAuth round trip exists for -- letting a non-owner
+  // admin start it anyway served no purpose but let them hold a live
+  // Discord access token in the pending-registration store under the
+  // guise of the shared hosted-bot flow. Gated to owner-only, matching
+  // /register itself.
+  "GET /api/integrations/discord/hosted-bot/oauth/start":    "settings:discord-bot-hosted-oauth",
+  "GET /api/integrations/discord/hosted-bot/oauth/callback": "settings:discord-bot-hosted-oauth",
   // register is a new, dedicated, owner-only action -- this route forwards
   // a live external OAuth credential and the local adapter secret across
   // an organizational trust boundary, at least as sensitive as this

@@ -324,6 +324,15 @@ test("hosted-bot/register requires owner tier -- an admin-tier session gets a re
     });
     assert.equal(response.status, 403, "an admin-tier session must be rejected over the wire -- registering the hosted bot is owner-only");
     assert.equal(mentat.hits(), 0, "the IAM gate must reject before the route body ever runs, so mentat-backend must never see a request");
+
+    // dune-awakening-selfhost-docker#861: oauth/start (and, by the same
+    // action mapping, oauth/callback) is now ALSO owner-only, not just
+    // /register -- reusing the exact same real admin-tier session this
+    // test already minted above.
+    const oauthStart = await fetch(`http://127.0.0.1:${consolePort}/api/integrations/discord/hosted-bot/oauth/start`, {
+      headers: { cookie: `asc_session=${sessionValue}` }
+    });
+    assert.equal(oauthStart.status, 403, "an admin-tier session must be rejected over the wire -- starting the hosted-bot OAuth flow is owner-only (#861)");
   } finally {
     await stopProcess(console_.child);
     await closeServer(discordServer);

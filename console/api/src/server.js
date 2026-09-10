@@ -1639,6 +1639,26 @@ async function handleApi(req, res) {
   // this flow connects an existing console to the hosted bot, it does not
   // establish console access in the first place.
   if (path === "/api/integrations/discord/hosted-bot/oauth/start" && req.method === "GET") {
+    // dune-awakening-selfhost-docker#861 (Security Architect wizard audit
+    // finding): this GET route is exempt from CSRF-token enforcement
+    // (auth.js's requireAuth() only checks x-csrf-token on non-GET/HEAD/
+    // OPTIONS methods, app-wide) and SameSite=Lax still permits it on a
+    // top-level cross-site navigation. A malicious page a logged-in
+    // operator visits in another tab could force-navigate their browser
+    // here, consuming one slot of the pending-state pool and triggering
+    // an unsolicited Discord consent redirect. Explicitly accepted,
+    // reasoned residual risk, not an oversight: (1) this is now owner-tier
+    // gated (see actions.js), so it can never be used to escalate a
+    // non-owner session's privilege, only to nuisance-trigger the owner's
+    // own already-privileged session; (2) the pending-state store is
+    // capacity-capped/TTL-bound (existing hardening); (3) downstream
+    // ownership verification independently re-checks Discord ownership
+    // regardless of how this leg was triggered. Moving this behind a
+    // POST-with-CSRF-token would require redesigning the click-to-open-
+    // popup UX (a GET-triggered top-level/popup navigation can't easily
+    // carry a CSRF header) for a residual risk this limited -- not judged
+    // worth it, revisit if that calculus changes.
+    //
     // Fail-closed, cheapest check first -- matches /register's own
     // ordering discipline (fix round 1, Important #2): a console that has
     // never opted into the hosted deployment must never even start a

@@ -102,9 +102,24 @@ export function readDiscordBotSettingsState(config) {
 // 100 characters) before being written, same defensive-input discipline as
 // validateDiscordRoleIds() above -- free text from an external service
 // should never be written to .env unbounded.
+// dune-awakening-selfhost-docker#860 (Security Architect wizard audit
+// finding): guildName is attacker-controllable free text (any Discord user
+// who owns a guild picks its display name) and previously flowed into
+// .env with only length-capping. envFile.js's quoteEnv() does correctly
+// JSON-escape it on write when it contains anything outside a safe
+// character set -- but whether the downstream .env loader (docker-compose/
+// container startup) re-interprets an escaped "\n" sequence back into a
+// literal newline was never traced. Reject control characters, "=", and
+// newlines/CR explicitly, as defense-in-depth independent of the loader's
+// actual behavior, rather than trusting quoteEnv() alone.
+function sanitizeEnvDisplayValue(value) {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\x00-\x1f\x7f=]/g, "");
+}
+
 export function persistHostedBotConnectedGuild(config, { guildId, guildName } = {}) {
   const safeGuildId = String(guildId || "").trim();
-  const safeGuildName = String(guildName || "").trim().slice(0, 100) || safeGuildId;
+  const safeGuildName = sanitizeEnvDisplayValue(String(guildName || "").trim()).slice(0, 100) || safeGuildId;
   if (!safeGuildId) return { ok: false };
   updateEnvFileValues(config.repoRoot, [
     [MANAGED_ENV_KEYS.hostedBotConnectedGuildId, safeGuildId],
