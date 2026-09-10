@@ -109,7 +109,8 @@ sequenceDiagram
     ML->>M: proxyRequest(), x-mentat-proxy-secret attached<br/>[issue #833 fix -- NOT exempt from requireProxySecret]
     M->>M: requireProxySecret passes -- caller proven to be<br/>a real mentat-link-fronted request, not an arbitrary third party
     M->>M: Stage pending registration:<br/>autoInviteSessions.create({consoleUrl, adapterToken}, ttl=10min) -> state<br/>[issue #840 -- shorter TTL than oauthSessions' 30min,<br/>deliberately, to bound plaintext-adapterToken exposure]
-    M-->>ML-->>Core: 200 {state}
+    M-->>ML: 200 {state}
+    ML-->>Core: 200 {state}
     Core->>Core: hostedBotAutoInvitePendingStates.issue()<br/>-- Core's OWN copy, for the return-leg check (see 4.5)
     Core->>Core: Set state cookie (double-submit, same pattern<br/>as the existing oauth/start flow)
     Core-->>Op: window.open(discord authorize URL,<br/>state=<mentat's state>, popup)
@@ -221,10 +222,12 @@ sequenceDiagram
     M->>M: requireProxySecret passes, THEN look up the row<br/>keyed by THIS request's own :guildId path param<br/>(constant-time compare) -- issue #839 H2 fix, prevents<br/>enumerating other guilds' role names via a valid credential
     M->>DGW: client.guilds.cache.get(guildId)?.roles.cache<br/>(NO Discord REST call -- reads the bot's own<br/>already-connected live cache, zero extra rate-limit cost)
     alt guild found in cache
-        M-->>ML-->>Core: 200 {roles: [{id, name, color, position}, ...]}
+        M-->>ML: 200 {roles: [{id, name, color, position}, ...]}
+        ML-->>Core: 200 {roles: [{id, name, color, position}, ...]}
         Core-->>Op: Render Player/Moderator/Admin as multi-select<br/>pickers-by-name (exact widget: UI/UX hat's call, see 4.6)
     else guild not in cache (bot restarted, not yet re-synced)
-        M-->>ML-->>Core: 200 {roles: [], cacheStale: true}
+        M-->>ML: 200 {roles: [], cacheStale: true}
+        ML-->>Core: 200 {roles: [], cacheStale: true}
         Core-->>Op: Fall back to the EXISTING manual comma-separated<br/>ID text fields, with a note why (never a dead end)
     end
 ```
