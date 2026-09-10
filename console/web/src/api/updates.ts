@@ -10,6 +10,7 @@ export type StackUpdateProgress = {
   startedAt?: string | null;
   updatedAt?: string | null;
   finishedAt?: string | null;
+  discordHealthOk?: boolean | null;
 };
 
 export const updatesApi = {

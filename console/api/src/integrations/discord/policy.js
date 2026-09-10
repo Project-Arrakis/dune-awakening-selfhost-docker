@@ -98,7 +98,7 @@ const CAPABILITY_BY_TIER = Object.freeze({
 
 export function normalizeRoleMapping(value = {}) {
   return {
-    observerRoleIds: normalizeStringList(value.observerRoleIds),
+    playerRoleIds: normalizeStringList(value.playerRoleIds),
     moderatorRoleIds: normalizeStringList(value.moderatorRoleIds),
     adminRoleIds: normalizeStringList(value.adminRoleIds),
     ownerRoleIds: normalizeStringList(value.ownerRoleIds)
@@ -159,7 +159,7 @@ export function discordActorTier(actor, mapping) {
   if (normalized.ownerRoleIds.some((roleId) => roleIds.has(roleId))) return "owner";
   if (normalized.adminRoleIds.some((roleId) => roleIds.has(roleId))) return "admin";
   if (normalized.moderatorRoleIds.some((roleId) => roleIds.has(roleId))) return "moderator";
-  if (normalized.observerRoleIds.some((roleId) => roleIds.has(roleId))) return "observer";
+  if (normalized.playerRoleIds.some((roleId) => roleIds.has(roleId))) return "observer";
   return "public";
 }
 

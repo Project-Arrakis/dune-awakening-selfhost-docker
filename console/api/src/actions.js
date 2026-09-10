@@ -147,6 +147,19 @@ export const ROUTE_ACTIONS = {
   "POST /api/auth/2fa/recovery-codes/regenerate": "settings:regenerate-recovery-codes",
   "POST /api/settings/public-directory":       "settings:write",
   "POST /api/settings/public-directory/claim": "settings:write",
+  // --- Discord Bot Adapter Settings ---
+  // GET uses updates:read, not settings:read -- audit finding #6 (LOW):
+  // admin is denied settings:* (see the Deny wildcard in policy.js) but IS
+  // allowed updates:* (self-update already reaches this class of
+  // capability), and the POST routes below already use updates:apply --
+  // an admin who can mutate this feature's state must also be able to read
+  // it back first. updates:read requires zero DEFAULT_POLICIES changes,
+  // matching this feature's existing pattern of reusing an existing
+  // wildcard rather than editing policies.
+  "GET /api/settings/discord-bot":              "updates:read",
+  "POST /api/settings/discord-bot/enable":      "updates:apply",
+  "POST /api/settings/discord-bot/role-ids":    "updates:apply",
+  "POST /api/settings/discord-bot/regenerate-token": "settings:discord-bot-regenerate-token",
 
   // --- Players (read) ---
   "GET /api/players":                          "players:read",

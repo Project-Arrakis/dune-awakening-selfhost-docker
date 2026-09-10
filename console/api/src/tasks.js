@@ -89,6 +89,10 @@ export class TaskManager {
         await this.runSelfUpdateHelperTask(task, payload);
         return;
       }
+      if (isDiscordAdapterApplyOperation(task.operation)) {
+        await this.runDiscordAdapterApplyTask(task, payload);
+        return;
+      }
 
       const operations = taskOperations(task.operation, payload);
       let lastCode = 0;
@@ -144,16 +148,75 @@ export class TaskManager {
       ...(process.env.DUNE_SELF_UPDATE_TOKEN ? ["DUNE_SELF_UPDATE_TOKEN"] : [])
     ];
     const logFile = "runtime/generated/web-self-update.log";
+    // The "Starting" and "finished" lines must share one timestamp
+    // source/format so an operator reading this log can compute elapsed
+    // time between them. Both use a live shell $(date -Is), evaluated at
+    // actual execution time inside the helper container -- NOT a
+    // JS-precomputed value, which would show queue time, not real
+    // start/finish time, and would use a different format besides (JS
+    // toISOString() vs. shell date -Is). The security-load-bearing part of
+    // the earlier shell-injection-adjacent fix is preserved here: the
+    // args-inclusive message is still exactly ONE shellQuote()-wrapped
+    // (single-quoted) literal, passed to `echo` as a SEPARATE argument from
+    // the live, unquoted "[$(date -Is)]" prefix -- never nested inside an
+    // outer double-quoted string the way the original vulnerable version
+    // was.
+    const startMessage = `Starting Web UI stack update: runtime/scripts/dune ${args.join(" ")}`;
     const command = [
       "set -eu",
       "mkdir -p runtime/generated",
-      `echo "[$(date -Is)] Starting Web UI stack update: runtime/scripts/dune ${args.map(shellQuote).join(" ")}" > ${shellQuote(logFile)}`,
+      `echo "[$(date -Is)]" ${shellQuote(startMessage)} > ${shellQuote(logFile)}`,
       `DUNE_WEB_SELF_UPDATE_HELPER=1 runtime/scripts/dune ${args.map(shellQuote).join(" ")} >> ${shellQuote(logFile)} 2>&1`,
       `echo "[$(date -Is)] Web UI stack update finished" >> ${shellQuote(logFile)}`
     ].join("\n");
 
     task.currentStep = "Starting update helper";
     this.emit(task, "Starting detached update helper");
+    await cleanupStaleSelfUpdateHelpers(this.config.repoRoot, this.runDockerCommand);
+    const result = await this.runDockerCommand(buildSelfUpdateHelperDockerArgs({
+      helperName,
+      hostRepoRoot,
+      composeProjectName,
+      helperImage,
+      hostUid,
+      hostGid,
+      dockerSocketGid,
+      extraEnv,
+      command
+    }), this.config.repoRoot);
+
+    this.append(task, `Update helper started: ${result.stdout.trim() || helperName}`, "stdout");
+    this.append(task, `Update log: ${logFile}`, "stdout");
+    task.currentStep = "Update helper running";
+    this.emit(task, "Update helper is running. The Web UI may reconnect while the console restarts.");
+  }
+
+  async runDiscordAdapterApplyTask(task, payload) {
+    const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME;
+    if (!composeProjectName) throw new Error("Main Dune Compose project name was not provided to the Console.");
+    const helperImage = process.env.DUNE_SYSTEMD_HELPER_IMAGE || "redblink-dune-docker-console:dev";
+    const hostRepoRoot = process.env.DUNE_HOST_REPO_ROOT || this.config.hostRepoRoot || this.config.repoRoot;
+    const hostUid = process.env.DUNE_HOST_UID || String(process.getuid?.() ?? 0);
+    const hostGid = process.env.DUNE_HOST_GID || String(process.getgid?.() ?? 0);
+    const dockerSocketGid = process.env.DOCKER_SOCKET_GID || detectDockerSocketGid();
+    const extraEnv = [`DUNE_SELF_UPDATE_RUN_ID=${task.id}`];
+    const logFile = "runtime/generated/discord-adapter-apply.log";
+    // Fixed, non-parameterized command -- see this plan's Global
+    // Constraints. Never interpolate `payload` (which carries the
+    // admin-supplied role IDs) into this string; those values only ever
+    // reach the system via .env, written before this task is created (see
+    // Task 8), and are read back from .env by the shell script itself.
+    const command = [
+      "set -eu",
+      "mkdir -p runtime/generated",
+      `echo "Starting Discord adapter settings apply" > ${shellQuote(logFile)}`,
+      `DUNE_WEB_SELF_UPDATE_HELPER=1 runtime/scripts/dune console apply-discord-adapter-env >> ${shellQuote(logFile)} 2>&1`,
+      `echo "Discord adapter settings apply finished" >> ${shellQuote(logFile)}`
+    ].join("\n");
+    const helperName = `dune-discord-adapter-apply-${Date.now()}`;
+
+    task.currentStep = "Starting update helper";
+    this.emit(task, "Starting detached Discord adapter apply helper");
     await cleanupStaleSelfUpdateHelpers(this.config.repoRoot, this.runDockerCommand);
     const result = await this.runDockerCommand(buildSelfUpdateHelperDockerArgs({
       helperName,
@@ -282,6 +345,10 @@ function isSelfUpdateApplyOperation(operation) {
   return operation === "selfUpdateApply";
 }
 
+function isDiscordAdapterApplyOperation(operation) {
+  return operation === "discordAdapterApply";
+}
+
 export function detectDockerSocketGid() {
   try {
     return String(statSync("/var/run/docker.sock").gid);
@@ -314,7 +381,7 @@ export async function cleanupStaleSelfUpdateHelpers(cwd, runCommand) {
   const helpers = listed.stdout.split(/\r?\n/).map((line) => {
     const [name = "", state = ""] = line.trim().split(/\s+/, 2);
     return { name, state };
-  }).filter(({ name }) => /^(?:dune-web-self-update-\d+|dune-console-self-update-\d+)$/.test(name));
+  }).filter(({ name }) => /^(?:dune-web-self-update-\d+|dune-console-self-update-\d+|dune-discord-adapter-apply-\d+)$/.test(name));
   const staleAfterMs = (boundedBuildTimeoutSeconds(process.env.DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS) + 300) * 1000;
   const now = Date.now();
   const stale = helpers.filter(({ name, state }) => state !== "running" || selfUpdateHelperAgeMs(name, now) > staleAfterMs);
@@ -324,7 +391,7 @@ export async function cleanupStaleSelfUpdateHelpers(cwd, runCommand) {
 }
 
 export function selfUpdateHelperAgeMs(name, now = Date.now()) {
-  const milliseconds = String(name || "").match(/^dune-web-self-update-(\d{13})$/)?.[1];
+  const milliseconds = String(name || "").match(/^(?:dune-web-self-update|dune-discord-adapter-apply)-(\d{13})$/)?.[1];
   if (milliseconds) return Math.max(0, now - Number(milliseconds));
   const seconds = String(name || "").match(/^dune-console-self-update-(\d{10})$/)?.[1];
   if (seconds) return Math.max(0, now - Number(seconds) * 1000);

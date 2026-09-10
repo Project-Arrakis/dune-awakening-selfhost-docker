@@ -438,3 +438,74 @@ test("exchange grants the allowlisted user a read-only observer session, never o
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+// ---- Discord Bot Settings: admin-role-change gate (audit finding #2) ----
+//
+// Reuses the startConsole/startFakeDiscord/startFakeBot harness above to
+// get a REAL admin-tier session cookie over the wire (the fake bot's
+// handoff response just declares tier: "admin" directly -- no guild-role
+// mocking needed), then exercises the real
+// POST /api/settings/discord-bot/enable route end-to-end and asserts a
+// real 403 comes back for a request that changes adminRoleIds. This
+// closes the specific gap a prior review round flagged: the pure
+// discordAdminRoleIdsChanged() unit tests (discordAdapterSettings.test.js)
+// and the structural route-wiring checks (discordBotSettingsRoutes.test.js)
+// are real and stay -- this is additionally the one HTTP-level proof that
+// an actual non-owner session gets rejected over the wire.
+test("admin-tier session gets a real 403 changing Discord admin role IDs via POST /api/settings/discord-bot/enable", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const botPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-e2e-discordbot-admin403-"));
+  const console = startConsole(consolePort, discordPort, tempDir, {
+    DISCORD_BOT_HANDOFF_SECRET: HANDOFF_SECRET,
+    DISCORD_BOT_HANDOFF_URL: `http://127.0.0.1:${botPort}`,
+    DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "",
+    DISCORD_OAUTH_OWNER_ALLOWLIST: ""
+  });
+  const discordServer = await startFakeDiscord(discordPort);
+  const botServer = await startFakeBot(botPort, { tier: "admin" });
+  try {
+    await waitForHealth(consolePort);
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" });
+    const pendingStateValue = sessionCookieValue(start.headers.getSetCookie() || [], "discord_oauth_state");
+
+    const callback = await fetch(
+      `http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=validcode&state=${encodeURIComponent(pendingStateValue)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${pendingStateValue}` } }
+    );
+    assert.equal(callback.status, 200, "handoff-backed sign-in must complete");
+    const sessionValue = sessionCookieValue(callback.headers.getSetCookie(), "asc_session");
+    assert.ok(sessionValue, "callback must mint a real session cookie");
+
+    const me = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, {
+      headers: { cookie: `asc_session=${sessionValue}` }
+    })).json();
+    assert.equal(me.user.tier, "admin", "sanity check: this really is an admin-tier session, not owner");
+
+    // POST routes require the CSRF header to match the session -- fetch it
+    // via /api/auth/state, the same source the real frontend uses.
+    const authState = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/state`, {
+      headers: { cookie: `asc_session=${sessionValue}` }
+    })).json();
+    assert.ok(authState.csrfToken, "must have a real CSRF token to exercise the route properly");
+
+    const response = await fetch(`http://127.0.0.1:${consolePort}/api/settings/discord-bot/enable`, {
+      method: "POST",
+      headers: {
+        cookie: `asc_session=${sessionValue}`,
+        "x-csrf-token": authState.csrfToken,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ playerRoleIds: "", moderatorRoleIds: "", adminRoleIds: "999999999999999999" })
+    });
+    assert.equal(response.status, 403, "an admin-tier session must be rejected over the wire when the request changes adminRoleIds");
+    const body = await response.json();
+    assert.match(body.error || "", /owner/i, "the error must explain that owner access is required");
+  } finally {
+    await stopProcess(console.child);
+    await closeDiscordServer(discordServer);
+    await closeDiscordServer(botServer);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});

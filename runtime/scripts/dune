@@ -370,7 +370,12 @@ EOF
 
   console|web)
     shift || true
-    runtime/scripts/console.sh "$@"
+    if [ "${1:-}" = "apply-discord-adapter-env" ]; then
+      shift
+      runtime/scripts/self-update.sh apply-discord-adapter-env "$@"
+    else
+      runtime/scripts/console.sh "$@"
+    fi
     ;;
 
   metrics)

@@ -13,7 +13,7 @@ import {
 } from "../src/integrations/discord/policy.js";
 
 const mapping = {
-  observerRoleIds: ["role-observer"],
+  playerRoleIds: ["role-observer"],
   moderatorRoleIds: ["role-moderator"],
   adminRoleIds: ["role-admin"],
   ownerRoleIds: ["role-owner"]

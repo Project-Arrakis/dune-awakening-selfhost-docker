@@ -148,7 +148,19 @@ export function discordWritesEnabled(config) {
 
 export function discordRoleMappingFromEnv(env = process.env) {
   return {
-    observerRoleIds: csv(env.DISCORD_OBSERVER_ROLE_IDS),
+    // DISCORD_OBSERVER_ROLE_IDS is the pre-rename name -- read as a
+    // fallback only, so an operator who already set it keeps working
+    // across this update without a manual migration step (Requirement 0).
+    // DISCORD_PLAYER_ROLE_IDS takes precedence whenever both are set.
+    //
+    // Audit finding #3 (HIGH): this must distinguish "key present but
+    // explicitly empty" from "key genuinely absent" -- `||` treats an
+    // empty string as falsy, so an operator who clears
+    // DISCORD_PLAYER_ROLE_IDS (writes "") via the new Settings UI to
+    // revoke access would otherwise silently fall through to a stale,
+    // non-empty legacy DISCORD_OBSERVER_ROLE_IDS, believing access was
+    // revoked when it wasn't.
+    playerRoleIds: csv(env.DISCORD_PLAYER_ROLE_IDS !== undefined ? env.DISCORD_PLAYER_ROLE_IDS : env.DISCORD_OBSERVER_ROLE_IDS),
     moderatorRoleIds: csv(env.DISCORD_MODERATOR_ROLE_IDS),
     adminRoleIds: csv(env.DISCORD_ADMIN_ROLE_IDS),
     ownerRoleIds: csv(env.DISCORD_OWNER_ROLE_IDS)
@@ -157,7 +169,7 @@ export function discordRoleMappingFromEnv(env = process.env) {
 
 export function discordRolePolicyHealth(mapping = discordRoleMappingFromEnv()) {
   return {
-    observerConfigured: mapping.observerRoleIds.length > 0,
+    playerConfigured: mapping.playerRoleIds.length > 0,
     moderatorConfigured: mapping.moderatorRoleIds.length > 0,
     adminConfigured: mapping.adminRoleIds.length > 0,
     // ownerConfigured strictly reflects DISCORD_OWNER_ROLE_IDS -- kept
