@@ -12,7 +12,8 @@ import {
   applyDiscordBotEnableRequest,
   discordAdminRoleIdsChanged,
   persistHostedBotConnectedGuild,
-  clearHostedBotConnectedGuild
+  clearHostedBotConnectedGuild,
+  setDeploymentChoice
 } from "../src/integrations/discord/adapterSettings.js";
 import { readDiscordBotApiToken } from "../src/integrations/discord/routes.js";
 
@@ -639,6 +640,52 @@ test("updateDiscordBotRoleIds clears a previously-persisted hosted-bot connectio
   assert.equal(state.hostedBotConnectedGuildId, null, "switching back to self-hosted must clear the persisted hosted-bot connection");
   assert.equal(state.hostedBotConnectedGuildName, null);
 
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID;
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
+});
+
+// Real UAT finding (2026-09-10): the 3-step wizard redesign needs
+// deploymentChoice persisted the moment "Hosted bot" is picked -- before
+// role IDs or the adapter token exist -- so /oauth/start's gate passes in
+// time for the new step 1 ("Add bot to Discord"). Deliberately the
+// smallest possible write: only this one key, no restart-task creation
+// (unlike updateDiscordBotRoleIds/enableDiscordBotAdapter, which both
+// return { ok, task } via their route handlers -- this never does).
+test("setDeploymentChoice persists only deploymentChoice -- never touches role IDs, the token, or the enabled flag", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-set-choice-"));
+  const before = readDiscordBotSettingsState({});
+  assert.equal(before.enabled, false);
+
+  const result = setDeploymentChoice({ repoRoot: dir }, "hosted");
+  assert.deepEqual(result, { ok: true });
+
+  const after = readDiscordBotSettingsState({});
+  assert.equal(after.deploymentChoice, "hosted");
+  assert.equal(after.enabled, false, "must not enable the adapter");
+  assert.equal(after.tokenConfigured, false, "must not mint a token");
+  assert.deepEqual(after.roleIds, { player: [], moderator: [], admin: [] }, "must not touch role IDs");
+
+  delete process.env.DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE;
+});
+
+test("setDeploymentChoice rejects anything other than \"hosted\" or \"self-hosted\"", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-set-choice-invalid-"));
+  const result = setDeploymentChoice({ repoRoot: dir }, "not-a-real-choice");
+  assert.deepEqual(result, { ok: false });
+  assert.equal(readDiscordBotSettingsState({}).deploymentChoice, null, "an invalid value must not be persisted");
+});
+
+test("setDeploymentChoice clears a previously-persisted hosted-bot connection when switching to self-hosted", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-set-choice-clears-"));
+  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
+  assert.equal(readDiscordBotSettingsState({}).hostedBotConnectedGuildName, "Fleetyard");
+
+  setDeploymentChoice({ repoRoot: dir }, "self-hosted");
+  const state = readDiscordBotSettingsState({});
+  assert.equal(state.hostedBotConnectedGuildId, null);
+  assert.equal(state.hostedBotConnectedGuildName, null);
+
+  delete process.env.DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE;
   delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID;
   delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
 });

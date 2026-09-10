@@ -64,5 +64,10 @@ export const discordAdapterSettingsApi = {
   saveOAuthConfig: (config: { clientId?: string; redirectUri?: string }) =>
     post<{ ok: boolean }>("/api/settings/discord-bot/oauth-config", config),
   saveOAuthSecret: (secret: string) =>
-    post<{ ok: boolean }>("/api/settings/discord-bot/oauth-secret", { secret })
+    post<{ ok: boolean }>("/api/settings/discord-bot/oauth-secret", { secret }),
+  // Real UAT finding (2026-09-10): the 3-step wizard's step 1 ("Add bot to
+  // Discord") needs deploymentChoice persisted immediately on picking
+  // "Hosted bot" -- see server.js's own comment on this route for why.
+  setChoice: (deploymentChoice: "hosted" | "self-hosted") =>
+    post<{ ok: boolean }>("/api/settings/discord-bot/choice", { deploymentChoice })
 };

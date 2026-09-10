@@ -72,7 +72,7 @@ import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPl
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
 import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
-import { validateDiscordRoleIds, readDiscordBotSettingsState, applyDiscordBotEnableRequest, discordAdminRoleIdsChanged, updateDiscordBotRoleIds, regenerateDiscordBotToken, persistHostedBotConnectedGuild, disableDiscordBotAdapter } from "./integrations/discord/adapterSettings.js";
+import { validateDiscordRoleIds, readDiscordBotSettingsState, applyDiscordBotEnableRequest, discordAdminRoleIdsChanged, updateDiscordBotRoleIds, regenerateDiscordBotToken, persistHostedBotConnectedGuild, disableDiscordBotAdapter, setDeploymentChoice } from "./integrations/discord/adapterSettings.js";
 
 const config = loadConfig();
 // #141: ADMIN_AUTH_DISABLED bypasses both password auth (auth.js requireAuth)
@@ -1478,6 +1478,21 @@ async function handleApi(req, res) {
   if (path === "/api/settings/public-directory/claim" && req.method === "POST") return publicDirectoryClaimRoute(req, res);
   if (path === "/api/settings/discord-bot" && req.method === "GET") {
     return json(res, 200, readDiscordBotSettingsState(config));
+  }
+  // Real UAT finding (2026-09-10): the 3-step wizard redesign needs
+  // deploymentChoice persisted the moment the operator picks "Hosted bot",
+  // before role config or the actual restart (step 1 is now "Add bot to
+  // Discord", which needs the hosted-bot OAuth routes' deploymentChoice
+  // gate to already pass). No restart task -- see setDeploymentChoice()'s
+  // own comment for why none is needed.
+  if (path === "/api/settings/discord-bot/choice" && req.method === "POST") {
+    const body = await readJson(req);
+    if (body.deploymentChoice !== "hosted" && body.deploymentChoice !== "self-hosted") {
+      return json(res, 400, { error: "deploymentChoice must be \"hosted\" or \"self-hosted\"" });
+    }
+    setDeploymentChoice(config, body.deploymentChoice);
+    audit(config, req, "settings.discord-bot.choice-updated", { deploymentChoice: body.deploymentChoice });
+    return json(res, 200, { ok: true });
   }
   if (path === "/api/settings/discord-bot/enable" && req.method === "POST") {
     const body = await readJson(req);

@@ -208,6 +208,15 @@ export function DiscordBotSection() {
   const [oauthConfigured, setOAuthConfigured] = useState(false);
   const [oauthSaving, setOAuthSaving] = useState(false);
   const [oauthSaveResult, setOAuthSaveResult] = useState("");
+  // Real UAT finding (2026-09-10): 3-step wizard redesign -- "Add bot to
+  // Discord" is now step 1, ahead of role config and the restart, but
+  // registering a guild with mentat requires the console's own adapter
+  // token to already exist (tokenConfigured). Picking "Hosted bot" now
+  // silently mints that token in the background (enable() already does
+  // this without restarting, unchanged from the earlier fix) -- this
+  // just gates step 1's Discord-connection UI behind that finishing,
+  // instead of asking the operator to click a separate "Enable" first.
+  const [silentEnabling, setSilentEnabling] = useState(false);
   // Real UAT finding (2026-09-09): handleEnable()/handleUpdateRoleIds()
   // used to fire their restart-triggering API call the instant the
   // ConfirmDialog above was confirmed, with no further warning -- the
@@ -252,13 +261,59 @@ export function DiscordBotSection() {
     persistChoice(value);
   }
 
-  // Picking a choice on the wizard's first step both records it and
-  // advances -- the choice buttons in the ongoing-management view
-  // (phase === "enabled") use plain updateChoice() instead, since that
-  // view isn't part of the step-1..3 wizard at all.
-  function chooseAndAdvance(value: Choice) {
+  // Picking a choice on the wizard's first step records it and, for
+  // self-hosted, advances straight to role config -- unchanged. The choice
+  // buttons in the ongoing-management view (phase === "enabled") use plain
+  // updateChoice() instead, since that view isn't part of the step-1..3
+  // wizard at all.
+  //
+  // Real UAT finding (2026-09-10): "Hosted bot" now STAYS on step 1 --
+  // step 1's own content switches from the picker to "Add bot to Discord"
+  // (see the render below), matching the operator's own requested step
+  // order (add bot -> configure roles -> restart) instead of the previous
+  // order (choice -> roles -> enable, with the Discord connection buried
+  // in the post-enable management view). Persists deploymentChoice
+  // server-side immediately (the hosted-bot OAuth routes' gate needs it)
+  // and silently mints the adapter token in the background (Register
+  // needs tokenConfigured -- see enable()'s own comment for why this
+  // doesn't trigger a restart) so every button in step 1's Discord-connect
+  // flow is immediately usable, with no separate "Enable" click first.
+  async function chooseAndAdvance(value: Choice) {
     updateChoice(value);
-    setWizardStep(2);
+    if (value === "self-hosted") {
+      setWizardStep(2);
+    }
+    setError("");
+    try {
+      await discordAdapterSettingsApi.setChoice(value === "hosted" ? "hosted" : "self-hosted");
+      if (value === "hosted" && !state?.tokenConfigured) {
+        setSilentEnabling(true);
+        const { token } = await discordAdapterSettingsApi.enable({
+          playerRoleIds: "",
+          moderatorRoleIds: "",
+          adminRoleIds: "",
+          deploymentChoice: "hosted"
+        });
+        if (token) {
+          setRevealedToken(token);
+          setTokenCopyResult("");
+        }
+        // Deliberately NOT calling refresh() here -- the server genuinely
+        // does report enabled: true now, and refresh() unconditionally
+        // sets phase to match (see its own comment below), which would
+        // drop straight to the post-setup management view before the
+        // operator has even seen step 1's "Add bot to Discord" content.
+        // Patch just the one field this step actually needs -- the rest
+        // of the wizard's state (oauthConfigured, connectedGuildName,
+        // ownedGuilds) already came from the real mount-time refresh()
+        // and this silent enable doesn't touch any of it.
+        setState((prev) => (prev ? { ...prev, enabled: true, tokenConfigured: true } : prev));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSilentEnabling(false);
+    }
   }
 
   async function refresh(options?: { preserveInputs?: boolean }) {
@@ -508,6 +563,16 @@ export function DiscordBotSection() {
       if (outcome !== "confirm") return;
 
       await discordAdapterSettingsApi.disable();
+      // Real UAT finding (2026-09-10): disable() clears deploymentChoice
+      // server-side, but refresh()'s own sync deliberately never clobbers
+      // this client-side value with a null/empty server response (that
+      // protection exists to avoid wiping an unsaved in-progress choice
+      // elsewhere) -- without resetting it here too, the next visit to
+      // wizard step 1 would skip straight to "Add bot to Discord" (still
+      // choice === "hosted" locally) instead of genuinely starting over
+      // at the picker, even though the adapter really is back to
+      // never-configured.
+      updateChoice(null);
 
       await waitForRestartCountdown(RESTART_COUNTDOWN_SECONDS);
 
@@ -641,6 +706,63 @@ export function DiscordBotSection() {
     }
   }
 
+  // Real UAT finding (2026-09-10): shared between wizard step 1 ("Add bot
+  // to Discord", first-time setup) and the post-setup management view
+  // (phase === "enabled") -- operators need to redo this after initial
+  // setup too (re-invite after being kicked, reconnect after
+  // Regenerate Token clears the connection, change the Discord
+  // Application's credentials). One rendering, two call sites, so they
+  // can never drift out of sync with each other.
+  function renderHostedBotConnection() {
+    return (
+      <>
+        <div className="settings-hosted-bot-oauth-config">
+          {/* Real UAT finding (2026-09-09): "we have OAuth without bot
+              and bot without OAuth" -- this Discord Application is
+              specific to the hosted-bot connection and deliberately
+              independent of Settings -> Discord OAuth's console-sign-in
+              app. Neither requires the other to be configured. */}
+          <p className="muted">
+            {oauthConfigured ? "Hosted bot connection: configured." : "Hosted bot connection: not yet configured."}{" "}
+            This is its own Discord Application, separate from console sign-in (Settings → Discord OAuth) — you don't need one configured to use the other.
+          </p>
+          <label>Client ID<input disabled={oauthSaving} value={oauthClientId} onChange={(event) => setOAuthClientId(event.target.value)} placeholder="Discord application client ID" /></label>
+          <label>Client Secret<SecretInput disabled={oauthSaving} value={oauthSecret} onChange={(event) => setOAuthSecret(event.target.value)} placeholder={oauthConfigured ? "Paste new to replace" : "Discord application client secret"} /></label>
+          <label>Redirect URI<input disabled={oauthSaving} value={oauthRedirectUri} onChange={(event) => setOAuthRedirectUri(event.target.value)} placeholder="https://your-host:8088/api/integrations/discord/hosted-bot/oauth/callback" /></label>
+          <button type="button" disabled={oauthSaving} onClick={() => { void handleSaveOAuthConfig(); }}>{oauthSaving ? "Saving..." : "Save Hosted Bot Connection"}</button>
+          {oauthSaveResult && <p className="muted" role="status">{oauthSaveResult}</p>}
+        </div>
+        {!ownedGuilds && !connectedGuildName && (
+          <>
+            <button type="button" onClick={() => openBotInviteWindow(() => setBotInviteWindowClosed(true))}>Add to Discord</button>
+            <button disabled={submitting} onClick={() => { void handleConnectToHostedBot(); }}>Connect to hosted bot</button>
+            {botInviteWindowClosed && <p className="muted" role="status">Welcome back — click Connect to hosted bot once you've invited the bot.</p>}
+          </>
+        )}
+        {connectedGuildName && <p>Connected to hosted bot for {connectedGuildName}.</p>}
+        {ownedGuilds && (
+          <div className="settings-hosted-guild-picker">
+            <p>Which server is this for?</p>
+            <ul>
+              {ownedGuilds.map((guild) => (
+                <li key={guild.id}>
+                  <button
+                    className={pickedGuild?.id === guild.id ? "active" : ""}
+                    aria-pressed={pickedGuild?.id === guild.id}
+                    onClick={() => setPickedGuild(guild)}
+                  >
+                    {guild.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {pickedGuild && <button disabled={submitting} onClick={() => { void handleRegisterGuild(); }}>Register</button>}
+          </div>
+        )}
+      </>
+    );
+  }
+
   return (
     <div className="playerAdmin_toggleBody">
       <p className="muted">For bot commands and in-game data access — not console admin sign-in, see the Discord OAuth section above.</p>
@@ -697,26 +819,52 @@ export function DiscordBotSection() {
             </p>
           )}
 
-          {wizardStep === 1 && (
+          {/* Real UAT finding (2026-09-10): "wizard steps: 1) add bot to
+              discord, 2) configure roles, 3) restart" -- step 1's own
+              content now depends on `choice`, not just `wizardStep`:
+              nothing picked yet shows the original picker; "Hosted bot"
+              stays on step 1 and switches to the Discord-connection flow
+              (chooseAndAdvance() above silently mints the adapter token in
+              the background so every button here works immediately);
+              "Self-hosting" has no bot to invite, so it still advances
+              straight to step 2 as before. */}
+          {wizardStep === 1 && choice !== "hosted" && (
             <div className="settings-wizard-step">
               <p>Which are you using?</p>
               <div className="settings-choice">
-                <button className={choice === "hosted" ? "active" : ""} aria-pressed={choice === "hosted"} onClick={() => chooseAndAdvance("hosted")}>Hosted bot</button>
-                <p className="muted">
-                  We run the bot for you. Invite it to your Discord server, enable your adapter, then connect your Discord server in a few clicks — no separate bot process to run.{" "}
-                  <button type="button" onClick={() => openBotInviteWindow(() => setBotInviteWindowClosed(true))}>Add to Discord</button>
-                  {botInviteWindowClosed && <span className="muted" role="status"> Welcome back — continue below once you've invited the bot.</span>}
-                </p>
-                <button className={choice === "self-hosted" ? "active" : ""} aria-pressed={choice === "self-hosted"} onClick={() => chooseAndAdvance("self-hosted")}>Self-hosting</button>
+                {/* Never active/pressed in this branch -- reaching it at
+                    all means choice !== "hosted" (see the outer condition
+                    above); once "Hosted bot" is picked, the wizard step 1
+                    && choice === "hosted" branch below takes over instead
+                    of this picker re-rendering with it highlighted. */}
+                <button aria-pressed={false} onClick={() => { void chooseAndAdvance("hosted"); }}>Hosted bot</button>
+                <p className="muted">We run the bot for you. Invite it to your Discord server, connect it, then configure roles — no separate bot process to run.</p>
+                <button className={choice === "self-hosted" ? "active" : ""} aria-pressed={choice === "self-hosted"} onClick={() => { void chooseAndAdvance("self-hosted"); }}>Self-hosting</button>
                 <p className="muted">Run your own bot instance under your own Discord Application. We generate a secure adapter token for it; you deploy the bot itself.</p>
               </div>
             </div>
           )}
 
+          {wizardStep === 1 && choice === "hosted" && (
+            <div className="settings-wizard-step">
+              <p>Add bot to Discord</p>
+              {silentEnabling ? (
+                <p className="muted">Setting up your console's connection…</p>
+              ) : (
+                <>
+                  <p className="muted">Invite the bot to your Discord server, then connect it to this console. Both are required before you can continue.</p>
+                  {renderHostedBotConnection()}
+                </>
+              )}
+              <button disabled={!connectedGuildName} onClick={() => setWizardStep(2)}>Continue</button>
+              {!connectedGuildName && !silentEnabling && <p className="muted">Continue unlocks once the bot is connected above.</p>}
+            </div>
+          )}
+
           {wizardStep === 2 && (
             <div className="settings-wizard-step">
-              <p>Role mappings (optional)</p>
-              <p className="muted">Map Discord roles to console permission tiers. You can skip this now and set it up later from this same page.</p>
+              <p>Configure roles</p>
+              <p className="muted">Map Discord roles to console permission tiers (optional). You can skip this now and set it up later from this same page.</p>
               <label>Player role IDs (optional)<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
               <label>Moderator role IDs (optional)<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
               <label>Admin role IDs (optional)<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
@@ -725,10 +873,19 @@ export function DiscordBotSection() {
             </div>
           )}
 
-          {wizardStep === 3 && (
+          {wizardStep === 3 && choice === "hosted" && (
             <div className="settings-wizard-step">
-              <p>Enable the bot</p>
-              <p className="muted">This generates a secure adapter token{choice === "self-hosted" ? " for your own bot to use" : ""} and briefly restarts the console to apply it.</p>
+              <p>Restart</p>
+              <p className="muted">Your role mappings will be saved and the console will briefly restart to apply them.</p>
+              <button onClick={() => setWizardStep(2)}>Back</button>
+              <button disabled={submitting} onClick={() => { void handleUpdateRoleIds(); }}>Save &amp; Restart</button>
+            </div>
+          )}
+
+          {wizardStep === 3 && choice !== "hosted" && (
+            <div className="settings-wizard-step">
+              <p>Restart</p>
+              <p className="muted">This generates a secure adapter token for your own bot to use and briefly restarts the console to apply it.</p>
               <button onClick={() => setWizardStep(2)}>Back</button>
               <button disabled={!choice || submitting} onClick={() => { void handleEnable(); }}>Enable Discord Bot Integration</button>
             </div>
@@ -785,51 +942,7 @@ export function DiscordBotSection() {
           <button disabled={submitting} onClick={() => { void handleUpdateRoleIds(); }}>Save Role IDs</button>
           <button disabled={submitting} onClick={() => { void handleRegenerate(); }}>Regenerate Token</button>
           <button disabled={submitting} onClick={() => { void handleDisable(); }}>Disable Discord Bot Integration</button>
-          {choice === "hosted" && (
-            <div className="settings-hosted-bot-oauth-config">
-              {/* Real UAT finding (2026-09-09): "we have OAuth without bot
-                  and bot without OAuth" -- this Discord Application is
-                  specific to the hosted-bot connection and deliberately
-                  independent of Settings -> Discord OAuth's console-sign-in
-                  app. Neither requires the other to be configured. */}
-              <p className="muted">
-                {oauthConfigured ? "Hosted bot connection: configured." : "Hosted bot connection: not yet configured."}{" "}
-                This is its own Discord Application, separate from console sign-in (Settings → Discord OAuth) — you don't need one configured to use the other.
-              </p>
-              <label>Client ID<input disabled={oauthSaving} value={oauthClientId} onChange={(event) => setOAuthClientId(event.target.value)} placeholder="Discord application client ID" /></label>
-              <label>Client Secret<SecretInput disabled={oauthSaving} value={oauthSecret} onChange={(event) => setOAuthSecret(event.target.value)} placeholder={oauthConfigured ? "Paste new to replace" : "Discord application client secret"} /></label>
-              <label>Redirect URI<input disabled={oauthSaving} value={oauthRedirectUri} onChange={(event) => setOAuthRedirectUri(event.target.value)} placeholder="https://your-host:8088/api/integrations/discord/hosted-bot/oauth/callback" /></label>
-              <button type="button" disabled={oauthSaving} onClick={() => { void handleSaveOAuthConfig(); }}>{oauthSaving ? "Saving..." : "Save Hosted Bot Connection"}</button>
-              {oauthSaveResult && <p className="muted" role="status">{oauthSaveResult}</p>}
-            </div>
-          )}
-          {choice === "hosted" && !ownedGuilds && !connectedGuildName && (
-            <>
-              <button type="button" onClick={() => openBotInviteWindow(() => setBotInviteWindowClosed(true))}>Add to Discord</button>
-              <button disabled={submitting} onClick={() => { void handleConnectToHostedBot(); }}>Connect to hosted bot</button>
-              {botInviteWindowClosed && <p className="muted" role="status">Welcome back — click Connect to hosted bot once you've invited the bot.</p>}
-            </>
-          )}
-          {choice === "hosted" && connectedGuildName && <p>Connected to hosted bot for {connectedGuildName}.</p>}
-          {choice === "hosted" && ownedGuilds && (
-            <div className="settings-hosted-guild-picker">
-              <p>Which server is this for?</p>
-              <ul>
-                {ownedGuilds.map((guild) => (
-                  <li key={guild.id}>
-                    <button
-                      className={pickedGuild?.id === guild.id ? "active" : ""}
-                      aria-pressed={pickedGuild?.id === guild.id}
-                      onClick={() => setPickedGuild(guild)}
-                    >
-                      {guild.name}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              {pickedGuild && <button disabled={submitting} onClick={() => { void handleRegisterGuild(); }}>Register</button>}
-            </div>
-          )}
+          {choice === "hosted" && renderHostedBotConnection()}
           {choice === "self-hosted" && (
             <div className="settings-self-hosted-handoff">
               <p>Your console side is ready. To finish, deploy your own bot instance under your own Discord Application:</p>

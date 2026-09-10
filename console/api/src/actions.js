@@ -157,6 +157,9 @@ export const ROUTE_ACTIONS = {
   // matching this feature's existing pattern of reusing an existing
   // wildcard rather than editing policies.
   "GET /api/settings/discord-bot":              "updates:read",
+  // Real UAT finding (2026-09-10): the 3-step wizard's early choice-persist
+  // -- no restart, so same non-destructive tier as enable/role-ids.
+  "POST /api/settings/discord-bot/choice":      "updates:apply",
   "POST /api/settings/discord-bot/enable":      "updates:apply",
   "POST /api/settings/discord-bot/role-ids":    "updates:apply",
   "POST /api/settings/discord-bot/regenerate-token": "settings:discord-bot-regenerate-token",

@@ -26,6 +26,8 @@ test("Discord Bot settings routes resolve to the expected actions", () => {
   // reachable) not owner-only.
   assert.equal(actionForRoute("/api/settings/discord-bot/oauth-config", "POST"), "updates:apply");
   assert.equal(actionForRoute("/api/settings/discord-bot/oauth-secret", "POST"), "updates:apply");
+  // Real UAT finding (2026-09-10): the 3-step wizard's early choice-persist.
+  assert.equal(actionForRoute("/api/settings/discord-bot/choice", "POST"), "updates:apply");
 });
 
 test("admin can enable the Discord adapter (already has updates:apply via self-update) but cannot regenerate its token (settings:* denied)", () => {

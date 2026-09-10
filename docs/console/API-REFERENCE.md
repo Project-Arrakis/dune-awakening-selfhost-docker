@@ -792,6 +792,7 @@ Layers legend's default-settings mechanism.
 | POST | `/api/settings/discord-bot/disable` | Owner-only. Fully reset the Discord Bot adapter back to never-configured: invalidates the token (file removed), clears all 3 role-ID env keys, and clears the persisted hosted/self-hosted choice and hosted-bot connection. Does **not** restart the console -- call `POST .../restart` separately. | None |
 | POST | `/api/settings/discord-bot/oauth-config` | Configure the hosted-bot connection's own, independent Discord Application (Client ID + Redirect URI) -- deliberately separate from Settings -> Discord OAuth's console-sign-in credentials; neither requires the other. Restart the console for changes to take effect. | `clientId?` (Discord snowflake), `redirectUri?` (URL) |
 | POST | `/api/settings/discord-bot/oauth-secret` | Save the hosted-bot connection's Discord Application client secret. File-only, written to its own secrets file, never echoed back. | `secret` (at least 20 characters) |
+| POST | `/api/settings/discord-bot/choice` | Persist the hosted/self-hosted deployment choice immediately, ahead of role config or enabling the adapter. Does not restart the console -- nothing about the live adapter's runtime behavior depends on this value. | `deploymentChoice` (`"hosted"` or `"self-hosted"`) |
 
 ---
 

@@ -288,6 +288,63 @@ test("POST /api/settings/discord-bot/restart queues the discordAdapterApply task
   }
 });
 
+// Real UAT finding (2026-09-10): the 3-step wizard redesign's step 1 ("Add
+// bot to Discord") needs deploymentChoice persisted immediately on picking
+// "Hosted bot" -- before role IDs or the adapter is enabled -- so the
+// hosted-bot OAuth routes' deploymentChoice gate passes in time.
+test("POST /api/settings/discord-bot/choice persists deploymentChoice without enabling the adapter or queuing a restart", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-choice-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+    assert.equal(session.status, 200);
+
+    const write = await api(port, "/api/settings/discord-bot/choice", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { deploymentChoice: "hosted" }
+    });
+    assert.equal(write.status, 200, "no task queued -- 200, not 202");
+    assert.deepEqual(await write.json(), { ok: true });
+
+    const after = await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie });
+    const afterBody = await after.json();
+    assert.equal(afterBody.deploymentChoice, "hosted");
+    assert.equal(afterBody.enabled, false, "must not enable the adapter");
+    assert.equal(afterBody.tokenConfigured, false, "must not mint a token");
+
+    const rows = auditRows(tempDir).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    assert.ok(rows.find((r) => r.action === "settings.discord-bot.choice-updated"), "must be audited");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/settings/discord-bot/choice rejects an invalid deploymentChoice value", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-choice-invalid-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+
+    const write = await api(port, "/api/settings/discord-bot/choice", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { deploymentChoice: "not-a-real-choice" }
+    });
+    assert.equal(write.status, 400);
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("POST /api/settings/discord-bot/enable returns a real 400 over the wire for an invalid Discord role ID, not just from the pure validator", async () => {
   const port = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-badinput-"));

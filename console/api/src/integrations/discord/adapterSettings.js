@@ -332,6 +332,28 @@ export function updateDiscordBotRoleIds(config, roleIdsByTier = {}, options = {}
   return { ok: true };
 }
 
+// setDeploymentChoice: real UAT finding (2026-09-10) -- the 3-step wizard
+// redesign needs deploymentChoice persisted server-side the moment the
+// operator picks "Hosted bot", BEFORE role IDs are entered or the adapter
+// is enabled, so /oauth/start's deploymentChoice gate passes in time for
+// "Add bot to Discord" (now step 1, ahead of role config and the actual
+// restart). Deliberately the smallest possible write -- only this one key,
+// no role IDs, no token, and critically NO restart task: nothing about the
+// live adapter's runtime behavior depends on deploymentChoice itself (it
+// only gates the hosted-bot OAuth routes, which read it directly from
+// process.env, mirrored below same as every other setter in this file), so
+// there is nothing here a container recreate would need to apply.
+export function setDeploymentChoice(config, choice) {
+  const normalizedChoice = normalizeDeploymentChoice(choice);
+  if (!normalizedChoice) return { ok: false };
+  updateEnvFileValues(config.repoRoot, [[MANAGED_ENV_KEYS.deploymentChoice, normalizedChoice]]);
+  process.env[MANAGED_ENV_KEYS.deploymentChoice] = normalizedChoice;
+  // Same reasoning as updateDiscordBotRoleIds() above -- switching to
+  // self-hosted invalidates any existing hosted-bot connection.
+  if (normalizedChoice === "self-hosted") clearHostedBotConnectedGuild(config);
+  return { ok: true };
+}
+
 // regenerateDiscordBotToken: rewrites the token FILE's content (read fresh
 // on every request by readDiscordBotApiToken(), so a container recreate is
 // never needed for this specific operation -- Layer 1 Cloud Security +

@@ -61,7 +61,7 @@ describe("DiscordBotSection", () => {
     expect(screen.getByText(/Run your own bot instance under your own Discord Application/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
-    await screen.findByText(/Role mappings \(optional\)/i);
+    await screen.findByText(/Configure roles/i);
     expect(screen.getByLabelText(/Player role IDs \(optional\)/i)).toBeInTheDocument();
   });
 
@@ -93,7 +93,7 @@ describe("DiscordBotSection", () => {
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
     fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
-    await screen.findByText(/Role mappings \(optional\)/i);
+    await screen.findByText(/Configure roles/i);
     expect(screen.getByText(/Setting up:/i)).toBeInTheDocument();
     expect(screen.getByText("Self-hosting")).toBeInTheDocument();
 
@@ -268,8 +268,8 @@ describe("DiscordBotSection", () => {
 
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
-    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
+    await screen.findByText(/Configure roles/i);
     fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
     await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
@@ -303,8 +303,8 @@ describe("DiscordBotSection", () => {
 
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
-    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
+    await screen.findByText(/Configure roles/i);
     fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
     await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
@@ -391,8 +391,8 @@ describe("DiscordBotSection", () => {
 
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
-    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
+    await screen.findByText(/Configure roles/i);
     fireEvent.change(screen.getByLabelText(/Player role IDs/i), { target: { value: "999999999999999999" } });
     fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
     await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
@@ -408,8 +408,8 @@ describe("DiscordBotSection", () => {
     // silent skip, ever), but the CHOICE itself is preserved and already
     // highlighted, so getting back to step 2 to see the preserved role ID
     // is just re-confirming the same choice, not re-deciding it.
-    await waitFor(() => expect(screen.getByRole("button", { name: /^Hosted bot$/i })).toHaveAttribute("aria-pressed", "true"));
-    fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Self-hosting$/i })).toHaveAttribute("aria-pressed", "true"));
+    fireEvent.click(screen.getByRole("button", { name: /^Self-hosting$/i }));
     await waitFor(() => expect(screen.getByDisplayValue("999999999999999999")).toBeInTheDocument());
   });
 
@@ -446,8 +446,8 @@ describe("DiscordBotSection", () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
-    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
+    await screen.findByText(/Configure roles/i);
     fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
 
     const enableButton = await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
@@ -472,8 +472,8 @@ describe("DiscordBotSection", () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
-    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
+    await screen.findByText(/Configure roles/i);
     fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
 
     const enableButton = await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
@@ -483,7 +483,10 @@ describe("DiscordBotSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
     await waitFor(() => expect(enableButton).not.toBeDisabled());
-    expect(mockPost).not.toHaveBeenCalled();
+    // Self-hosting's own choice-persist call (a legitimate side effect of
+    // picking it earlier in this test) is expected -- cancelling the
+    // confirm dialog must specifically never reach /enable.
+    expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/enable", expect.anything());
   });
 
   it("offers a Copy button for the one-time revealed token (finding 7)", async () => {
@@ -503,20 +506,42 @@ describe("DiscordBotSection", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("the-plaintext-token"));
   });
 
-  it("sends the current choice to the backend when enabling", async () => {
+  // Real UAT finding (2026-09-10): 3-step wizard redesign -- picking
+  // "Hosted bot" now persists deploymentChoice AND silently mints the
+  // adapter token immediately (no separate step-3 "Enable" click for the
+  // hosted path at all -- step 3 is "Save & Restart" instead, see the
+  // dedicated test below), so /oauth/start's gate and /register's
+  // tokenConfigured precondition are both already satisfied by the time
+  // step 1's "Add bot to Discord" content renders.
+  it("persists the choice and silently mints the adapter token the moment Hosted bot is picked, with no restart or confirm dialog", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false, deploymentChoice: null } as never);
-    mockPost.mockResolvedValue({ task: { id: "t1", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null }, token: "abc" } as never);
+    mockPost.mockResolvedValue({ ok: true, token: "abc" } as never);
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
-    await screen.findByText(/Role mappings/i);
-    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
-    await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
-    fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
-    await screen.findByText(/will restart to apply this change/i);
-    fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
-    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/enable", expect.objectContaining({ deploymentChoice: "hosted" })));
+    fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/choice", { deploymentChoice: "hosted" }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
+      "/api/settings/discord-bot/enable",
+      expect.objectContaining({ deploymentChoice: "hosted", playerRoleIds: "", moderatorRoleIds: "", adminRoleIds: "" })
+    ));
+    // No confirm dialog and no restart countdown for this silent mint --
+    // unlike step 3's own Enable/Save & Restart actions.
+    expect(screen.queryByText(/will restart to apply this change/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Restart Now$/i })).toBeNull();
+    await screen.findByText(/Add bot to Discord/i);
+  });
+
+  it("does not re-mint the token if Hosted bot is already configured (e.g. returning to step 1 via Change)", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: null } as never);
+    mockPost.mockResolvedValue({ ok: true } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/choice", { deploymentChoice: "hosted" }));
+    await screen.findByText(/Add bot to Discord/i);
+    expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/enable", expect.anything());
   });
 
   it("exposes wizard step 1's hosted/self-hosted buttons' initial unselected state to assistive tech via aria-pressed (finding 8)", async () => {
@@ -717,8 +742,8 @@ describe("DiscordBotSection", () => {
     mockPost.mockResolvedValue({ token: "abc" } as never);
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
-    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
+    await screen.findByText(/Configure roles/i);
     fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
     await screen.findByText(/will restart to apply this change/i);
@@ -733,8 +758,8 @@ describe("DiscordBotSection", () => {
     mockPost.mockResolvedValue({ task: { id: "t1", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null }, token: "abc" } as never);
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
-    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
+    await screen.findByText(/Configure roles/i);
     fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
     await screen.findByText(/will restart to apply this change/i);
@@ -758,8 +783,8 @@ describe("DiscordBotSection", () => {
     render(<DiscordBotSection />);
     await act(async () => { await Promise.resolve(); });
     expect(screen.getByText(/Which are you using/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
-    expect(screen.getByText(/Role mappings/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
+    expect(screen.getByText(/Configure roles/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
     expect(screen.getByText(/will restart to apply this change/i)).toBeInTheDocument();
@@ -779,8 +804,8 @@ describe("DiscordBotSection", () => {
     mockPost.mockResolvedValue({ task: { id: "t1", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null }, token: "abc" } as never);
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
-    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
+    await screen.findByText(/Configure roles/i);
     fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
     await screen.findByText(/will restart to apply this change/i);
@@ -848,8 +873,14 @@ describe("DiscordBotSection", () => {
   // uses). These tests cover the popup opening with the real invite link,
   // and the "welcome back" acknowledgement once the operator closes it --
   // in both the wizard's step 1 and the already-enabled management view.
-  it("opens the real Discord bot-invite link in a popup from wizard step 1, and shows a welcome-back message once it closes", async () => {
+  // Real UAT finding (2026-09-10): "Add to Discord" now lives inside wizard
+  // step 1's "Add bot to Discord" content (choice === "hosted"), not on the
+  // raw picker -- reaching it requires picking "Hosted bot" first, which
+  // silently persists the choice and mints the adapter token in the
+  // background before this content renders.
+  it("opens the real Discord bot-invite link in a popup from wizard step 1's Add bot to Discord content, and shows a welcome-back message once it closes", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    mockPost.mockResolvedValue({ ok: true, token: "abc" } as never);
     const fakePopup = { closed: false };
     const openSpy = vi.spyOn(window, "open").mockReturnValue(fakePopup as never);
     vi.useFakeTimers();
@@ -857,6 +888,11 @@ describe("DiscordBotSection", () => {
     render(<DiscordBotSection />);
     await act(async () => { await Promise.resolve(); });
     expect(screen.getByText(/Which are you using/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => {}); // flush the silent enable() call's own await chain
+    expect(screen.getByText(/Add bot to Discord/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Add to Discord$/i }));
     expect(openSpy).toHaveBeenCalledWith(
@@ -928,17 +964,67 @@ describe("DiscordBotSection", () => {
     expect(screen.queryByDisplayValue("a-real-looking-client-secret-value")).toBeNull();
   });
 
-  it("never requires the hosted-bot OAuth config to be filled in before Enable is reachable -- the two are independent", async () => {
+  // Real UAT finding (2026-09-10): the wizard redesign moved "Add bot to
+  // Discord" to step 1 -- this now confirms the same independence a
+  // different way: reaching step 1's Discord-connection content (and its
+  // Add to Discord / Connect to hosted bot buttons) never requires the
+  // OAuth app to already be configured. An unconfigured app shows as
+  // "not yet configured" text, not a gate blocking the rest of the step.
+  it("never requires the hosted-bot OAuth config to be filled in before the Discord-connection buttons are reachable -- the two are independent", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    mockPost.mockResolvedValue({ ok: true, token: "abc" } as never);
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
-    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
+
+    await screen.findByText(/Add bot to Discord/i);
+    expect(await screen.findByText(/Hosted bot connection: not yet configured/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Add to Discord$/i })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: /Connect to hosted bot/i })).not.toBeDisabled();
+  });
+
+  // Real UAT finding (2026-09-10): end-to-end coverage of the redesigned
+  // 3-step order the operator asked for directly -- "1) add bot to
+  // discord, 2) configure roles, 3) restart" -- as one continuous flow,
+  // not just its individual pieces.
+  it("Continue on step 1 stays disabled until a guild is actually registered, then unlocks the rest of the 3-step flow", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false, deploymentChoice: null } as never);
+    seedOwnedGuilds([{ id: "111111111111111111", name: "My Test Guild", owner: true }]);
+    mockPost.mockResolvedValue({ ok: true, token: "abc" } as never);
+
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
+
+    await screen.findByText(/Which server is this for/i);
+    // Continue is disabled -- no guild registered yet.
+    expect(screen.getByRole("button", { name: /^Continue$/i })).toBeDisabled();
+
+    fireEvent.click(screen.getByText("My Test Guild"));
+    fireEvent.click(screen.getByRole("button", { name: /^Register$/i }));
+    await screen.findByText(/Connected to hosted bot for My Test Guild/i);
+
+    const continueButton = screen.getByRole("button", { name: /^Continue$/i });
+    expect(continueButton).not.toBeDisabled();
+    fireEvent.click(continueButton);
+
+    await screen.findByText(/Configure roles/i);
+    fireEvent.change(screen.getByLabelText(/Player role IDs/i), { target: { value: "222222222222222222" } });
     fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
-    // Step 3's Enable button is reachable with zero mention of, or gate on,
-    // the hosted-bot OAuth config -- confirms the two are genuinely
-    // independent, not just independently labeled.
-    expect(await screen.findByRole("button", { name: /Enable Discord Bot Integration/i })).not.toBeDisabled();
-    expect(screen.queryByText(/Hosted bot connection/i)).toBeNull();
+
+    // Step 3 for the hosted path: "Save & Restart" (updateRoleIds), not
+    // "Enable Discord Bot Integration" -- the adapter was already silently
+    // enabled back in step 1.
+    const finishButton = await screen.findByRole("button", { name: /^Save & Restart$/i });
+    expect(screen.queryByRole("button", { name: /Enable Discord Bot Integration/i })).toBeNull();
+    fireEvent.click(finishButton);
+    await screen.findByText(/restart to apply this change/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
+      "/api/settings/discord-bot/role-ids",
+      expect.objectContaining({ playerRoleIds: "222222222222222222", deploymentChoice: "hosted" })
+    ));
   });
 });
