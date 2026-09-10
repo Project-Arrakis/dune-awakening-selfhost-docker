@@ -72,12 +72,18 @@ export function DiscordBotSection() {
   // Enable, since the backend's getState() never returns this (finding #1,
   // Layer 3 review).
   const [choice, setChoice] = useState<Choice>(() => loadPersistedChoice());
-  // Wizard starts at step 2 (skipping the "which are you using" prompt)
-  // when a choice was already persisted from an earlier, incomplete visit
-  // -- otherwise reloading mid-setup would force the operator to re-pick
-  // hosted/self-hosted every time before they can even see the role-ID
-  // step they were already on.
-  const [wizardStep, setWizardStep] = useState<WizardStep>(() => (loadPersistedChoice() ? 2 : 1));
+  // Real UAT finding (2026-09-09): an earlier version of this component
+  // auto-skipped straight to step 2 whenever a choice was already
+  // persisted from an earlier visit, on the theory that reloading
+  // mid-setup shouldn't force re-picking hosted/self-hosted. In practice
+  // this was actively confusing -- the operator never saw step 1 at all
+  // and had no idea which choice, or why, had already been made for
+  // them. The wizard now ALWAYS starts at step 1 on every fresh mount,
+  // with no silent skip for any reason -- choice/role-ID VALUES are
+  // still preserved across a reload (see loadPersistedChoice() above and
+  // preserveInputs in refresh() below), only the wizard's own on-screen
+  // step position is not.
+  const [wizardStep, setWizardStep] = useState<WizardStep>(1);
   const [playerRoleIds, setPlayerRoleIds] = useState("");
   const [moderatorRoleIds, setModeratorRoleIds] = useState("");
   const [adminRoleIds, setAdminRoleIds] = useState("");
@@ -200,13 +206,18 @@ export function DiscordBotSection() {
     // (Layer 1 audit finding #7, converged on by 3 independent hats).
     setPhase(nextState.enabled ? "enabled" : "disabled");
     // Landing back in the Disabled wizard via this refresh() -- a genuine
-    // fresh mount, or a Retry after a failed enable -- must put the
-    // operator somewhere they can actually see and adjust what they typed,
-    // not wherever wizardStep happened to be left (e.g. step 3's Enable
-    // screen, which renders no role-ID fields at all). Same rule as the
-    // wizardStep useState initializer above: skip step 1 only when a
-    // choice is already known.
-    if (!nextState.enabled) setWizardStep((nextState.deploymentChoice ?? choice) ? 2 : 1);
+    // fresh mount, or a Retry after a failed enable -- always resets to
+    // wizard step 1. An earlier version of this tried to skip ahead to
+    // step 2 when a choice was already known, on the theory that it saved
+    // a click on Retry -- real UAT found that same skip-ahead logic (also
+    // present in the wizardStep useState initializer, see its own comment)
+    // was confusing on a genuine fresh mount, so it's removed everywhere,
+    // not just there, for one consistent, predictable rule: the wizard
+    // always starts at step 1. `choice`/role-ID VALUES are still preserved
+    // (see loadPersistedChoice()/preserveInputs above) -- an operator who
+    // already picked "hosted" sees it already highlighted the moment they
+    // reach step 1 again, they just aren't skipped past seeing it.
+    if (!nextState.enabled) setWizardStep(1);
   }
 
   useEffect(() => {

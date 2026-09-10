@@ -65,18 +65,35 @@ describe("DiscordBotSection", () => {
     expect(screen.getByLabelText(/Player role IDs \(optional\)/i)).toBeInTheDocument();
   });
 
-  // Real UAT bug: a choice persisted in localStorage from an earlier visit
-  // makes the wizard skip step 1 and land directly on step 2 -- which,
-  // before this fix, gave zero indication anywhere on the page of which
-  // choice was actually active, leaving the operator staring at bare role
-  // ID fields with no idea whether they were setting up hosted or
-  // self-hosted.
-  it("shows which choice is active when a persisted choice skips step 1 straight to step 2", async () => {
+  // Real UAT finding: an earlier version of this wizard silently skipped
+  // step 1 whenever a choice was already persisted from an earlier visit
+  // -- the operator never saw the "which are you using" prompt at all on
+  // a fresh page load, with no indication anywhere of which choice had
+  // already been made for them. The wizard must now ALWAYS show step 1
+  // first on a fresh mount, with no silent skip for any reason -- the
+  // persisted choice only shows up as that button already being
+  // highlighted, never as a skipped step.
+  it("always shows step 1 first on a fresh mount, even when a choice was already persisted from an earlier visit -- with that choice already highlighted", async () => {
     window.localStorage.setItem("arrakis.discordAdapterChoice", "self-hosted");
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    expect(screen.getByRole("button", { name: /Self-hosting/i })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByText(/Role mappings/i)).toBeNull();
+  });
+
+  // The "Setting up: X (Change)" indicator itself is still needed once the
+  // operator actually reaches step 2 or 3 -- via normal navigation, not a
+  // skip -- since a returning session could still lose track of which
+  // choice they're mid-setup with (e.g. a Retry, which also now resets to
+  // step 1 -- see the dedicated Retry test below -- so this covers the
+  // plain forward-navigation case directly).
+  it("shows a Setting up indicator once step 2 is actually reached via normal navigation", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
     await screen.findByText(/Role mappings \(optional\)/i);
-    expect(screen.queryByText(/Which are you using/i)).toBeNull();
     expect(screen.getByText(/Setting up:/i)).toBeInTheDocument();
     expect(screen.getByText("Self-hosting")).toBeInTheDocument();
 
@@ -383,6 +400,12 @@ describe("DiscordBotSection", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument(), { timeout: 5000 });
     fireEvent.click(screen.getByRole("button", { name: /Retry/i }));
 
+    // Retry now always resets to wizard step 1 (real UAT finding -- no
+    // silent skip, ever), but the CHOICE itself is preserved and already
+    // highlighted, so getting back to step 2 to see the preserved role ID
+    // is just re-confirming the same choice, not re-deciding it.
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Hosted bot$/i })).toHaveAttribute("aria-pressed", "true"));
+    fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
     await waitFor(() => expect(screen.getByDisplayValue("999999999999999999")).toBeInTheDocument());
   });
 
