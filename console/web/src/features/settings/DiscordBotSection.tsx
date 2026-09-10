@@ -269,6 +269,21 @@ export function DiscordBotSection() {
   const [autoInviteFailureReason, setAutoInviteFailureReason] = useState("");
   const [autoInvitePopupBlockedUrl, setAutoInvitePopupBlockedUrl] = useState<string | null>(null);
   const autoInvitePopupRef = useRef<Window | null>(null);
+  // Layer 2 audit finding (HIGH, PR #868): a request is genuinely in
+  // flight -- either the popup is open, or mentat has staged the
+  // registration and is waiting on the owner's Discord confirmation --
+  // for as long as this is true. The adapter token this component just
+  // sent to mentat as part of that request must not be invalidated (by
+  // Regenerate Token or Disable) or have the console restarted out from
+  // under it (by Save Role IDs) while it's still relying on that exact
+  // token/liveness -- mentat's own pending records hold a COPY of the
+  // token captured at staging time, so regenerating it afterward silently
+  // desyncs mentat's copy from Core's real, live value. Also applied to
+  // the OLD, advanced flow's own Connect/Register buttons below (a narrow,
+  // audit-required exception to renderHostedBotConnection() otherwise
+  // being left unchanged) -- running both flows concurrently for the same
+  // guild is never a safe combination.
+  const autoInvitePending = autoInviteStatus === "awaiting-popup" || autoInviteStatus === "waiting-for-owner";
 
   // Listens for the popup's own autoInviteCompletePage() postMessage
   // (autoInvite.js, Core's /auto-invite/complete route) -- targetOrigin is
@@ -323,6 +338,13 @@ export function DiscordBotSection() {
     setSubmitting(true);
     setError("");
     setAutoInvitePopupBlockedUrl(null);
+    // Layer 2 audit finding (MEDIUM, PR #868): clear any previous
+    // failed-attempt state before a retry -- otherwise a first attempt
+    // that failed, followed by a second attempt whose popup gets
+    // blocked, would render both the old failure message AND the new
+    // popup-blocked message at once, contradicting each other.
+    setAutoInviteStatus("idle");
+    setAutoInviteFailureReason("");
     try {
       const { authorizeUrl } = await discordHostedBotApi.startAutoInvite(window.location.origin);
       const popup = window.open(authorizeUrl, "discord-auto-invite", "width=500,height=800");
@@ -912,7 +934,7 @@ export function DiscordBotSection() {
         {!ownedGuilds && !connectedGuildName && (
           <>
             <button type="button" onClick={() => openBotInviteWindow(() => setBotInviteWindowClosed(true))}>Add to Discord</button>
-            <button disabled={submitting} onClick={() => { void handleConnectToHostedBot(); }}>Connect to hosted bot</button>
+            <button disabled={submitting || autoInvitePending} onClick={() => { void handleConnectToHostedBot(); }}>Connect to hosted bot</button>
             {botInviteWindowClosed && <p className="muted" role="status">Welcome back — click Connect to hosted bot once you've invited the bot.</p>}
           </>
         )}
@@ -933,7 +955,7 @@ export function DiscordBotSection() {
                 </li>
               ))}
             </ul>
-            {pickedGuild && <button disabled={submitting} onClick={() => { void handleRegisterGuild(); }}>Register</button>}
+            {pickedGuild && <button disabled={submitting || autoInvitePending} onClick={() => { void handleRegisterGuild(); }}>Register</button>}
           </div>
         )}
       </>
@@ -1052,7 +1074,12 @@ export function DiscordBotSection() {
                       an operator learns what they're authorizing once
                       already inside Discord's own consent screen. */}
                   <p className="muted">Invite Sahir Venn, the hosted bot, to your Discord server and connect it to this console — one click, one Discord screen.</p>
-                  {renderAutoInviteConnection()}
+                  {/* Layer 2 audit finding (HIGH, PR #868): don't show the
+                      new flow's primary CTA as if nothing is connected when
+                      a guild is already connected (e.g. via the advanced
+                      flow, then "Change" back to step 1) -- same reasoning
+                      as the enabled-phase management view below. */}
+                  {connectedGuildName ? <p className="settings-auto-invite-already-connected">This server is already connected: <strong>{connectedGuildName}</strong>.</p> : renderAutoInviteConnection()}
                   {/* Design doc §9 Option B: the old, independent-Discord-
                       Application flow is not removed yet -- kept reachable
                       here as an opt-in fallback, no longer the default
@@ -1177,12 +1204,20 @@ export function DiscordBotSection() {
           <label>Player role IDs<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} /></label>
           <label>Moderator role IDs<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} /></label>
           <label>Admin role IDs<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} /></label>
-          <button disabled={submitting} onClick={() => { void handleUpdateRoleIds(); }}>Save Role IDs</button>
-          <button disabled={submitting} onClick={() => { void handleRegenerate(); }}>Regenerate Token</button>
-          <button disabled={submitting} onClick={() => { void handleDisable(); }}>Disable Discord Bot Integration</button>
+          <button disabled={submitting || autoInvitePending} onClick={() => { void handleUpdateRoleIds(); }}>Save Role IDs</button>
+          <button disabled={submitting || autoInvitePending} onClick={() => { void handleRegenerate(); }}>Regenerate Token</button>
+          <button disabled={submitting || autoInvitePending} onClick={() => { void handleDisable(); }}>Disable Discord Bot Integration</button>
+          {autoInvitePending && <p className="muted" role="status">Role/token actions are paused while a Discord connection request is in progress.</p>}
           {choice === "hosted" && (
             <>
-              {renderAutoInviteConnection()}
+              {/* Layer 2 audit finding (HIGH, PR #868): must not show the
+                  new flow's "Add & Connect Bot" as the primary action when
+                  a guild is already connected (via the old, advanced
+                  flow's own handleRegisterGuild()) -- that previously
+                  rendered an unconditional, misleading CTA suggesting
+                  nothing was connected, with the real "Connected to X"
+                  status hidden behind the collapsed Advanced disclosure. */}
+              {connectedGuildName ? <p className="settings-auto-invite-already-connected">This server is already connected: <strong>{connectedGuildName}</strong>.</p> : renderAutoInviteConnection()}
               <details className="settings-hosted-bot-advanced">
                 <summary>Advanced: use my own Discord Application instead</summary>
                 {renderHostedBotConnection()}

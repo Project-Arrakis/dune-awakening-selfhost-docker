@@ -1078,6 +1078,85 @@ describe("DiscordBotSection", () => {
       expect(screen.getByRole("button", { name: /^Add to Discord$/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /Connect to hosted bot/i })).toBeInTheDocument();
     });
+
+    // Layer 2 audit findings, PR #868.
+    it("disables the old flow's own Connect/Register actions while a new auto-invite request is in flight", async () => {
+      vi.spyOn(window, "open").mockReturnValue({ closed: false } as never);
+      await reachStep1HostedBranch();
+      expect(screen.getByRole("button", { name: /Connect to hosted bot/i })).not.toBeDisabled();
+
+      fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
+      await screen.findByRole("button", { name: /Waiting for Discord…/i });
+
+      // A stale-token race: mentat holds a COPY of the adapter token
+      // captured when /auto-invite/start staged the request. Letting the
+      // operator run the OLD flow's own Connect/Register concurrently (or
+      // Regenerate Token, covered in the enabled-view test below) could
+      // desync that copy from Core's real, live value.
+      expect(screen.getByRole("button", { name: /Connect to hosted bot/i })).toBeDisabled();
+    });
+
+    it("clears a previous failure message before a retry, so a popup-blocked retry never shows both messages at once", async () => {
+      const openSpy = vi.spyOn(window, "open");
+      await reachStep1HostedBranch();
+
+      openSpy.mockReturnValueOnce({ closed: false } as never);
+      fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
+      await screen.findByRole("button", { name: /Waiting for Discord…/i });
+      act(() => { postMessageFromPopup({ ok: false, reason: "not_owner" }); });
+      await screen.findByText(/Discord says you don't own this server/i);
+
+      openSpy.mockReturnValueOnce(null);
+      fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
+      await screen.findByText(/Your browser blocked the popup/i);
+      expect(screen.queryByText(/Discord says you don't own this server/i)).toBeNull();
+    });
+
+    it("shows the already-connected indicator, not the primary CTA, when a guild is already connected via the old flow", async () => {
+      mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+      seedOwnedGuilds([{ id: "111111111111111111", name: "My Test Guild", owner: true }]);
+      mockPost.mockImplementation((path: string) => {
+        if (path === "/api/settings/discord-bot/choice") return Promise.resolve({ ok: true });
+        if (path === "/api/settings/discord-bot/enable") return Promise.resolve({ ok: true, token: "abc" });
+        if (path === "/api/integrations/discord/hosted-bot/register") return Promise.resolve({ ok: true });
+        return Promise.resolve({ ok: true });
+      });
+      render(<DiscordBotSection />);
+      await screen.findByText(/Which are you using/i);
+      fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
+      await screen.findByText(/Which server is this for/i);
+      fireEvent.click(screen.getByText("My Test Guild"));
+      fireEvent.click(screen.getByRole("button", { name: /^Register$/i }));
+
+      await screen.findByText(/This server is already connected:/i);
+      expect(screen.queryByRole("button", { name: /^Add & Connect Bot$/i })).toBeNull();
+    });
+
+    it("disables Regenerate Token/Save Role IDs/Disable in the enabled management view while a new auto-invite request is in flight", async () => {
+      mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
+      mockPost.mockImplementation((path: string) => {
+        if (path === "/api/integrations/discord/hosted-bot/auto-invite/start") return Promise.resolve({ authorizeUrl: "https://discord.com/oauth2/authorize?client_id=1546203607807041697&state=real-state" });
+        return Promise.resolve({ ok: true });
+      });
+      vi.spyOn(window, "open").mockReturnValue({ closed: false } as never);
+
+      render(<DiscordBotSection />);
+      await screen.findByRole("button", { name: /^Add & Connect Bot$/i });
+      expect(screen.getByRole("button", { name: /^Regenerate Token$/i })).not.toBeDisabled();
+
+      fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
+      await screen.findByRole("button", { name: /Waiting for Discord…/i });
+
+      // Layer 2 audit finding (HIGH, PR #868): Regenerate Token
+      // invalidates the exact adapter token this request just sent to
+      // mentat as part of staging -- mentat's own pending record holds a
+      // copy captured at that moment, so regenerating afterward silently
+      // desyncs it. Save Role IDs and Disable both restart/reset the
+      // console, which would also break the in-flight request.
+      expect(screen.getByRole("button", { name: /^Regenerate Token$/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /^Save Role IDs$/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /^Disable Discord Bot Integration$/i })).toBeDisabled();
+    });
   });
 
   // Real UAT finding (2026-09-09): "we have OAuth without bot and bot
