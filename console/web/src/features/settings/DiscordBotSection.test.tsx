@@ -39,11 +39,30 @@ describe("DiscordBotSection", () => {
     window.sessionStorage.clear();
   });
 
-  it("renders the Disabled state and asks hosted-or-self-hosted before enabling, when nothing is configured yet", async () => {
+  it("renders the Disabled state's wizard step 1 (hosted-or-self-hosted) before anything else, with no Enable button visible yet", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
-    expect(screen.getByRole("button", { name: /Enable Discord Bot Integration/i })).toBeDisabled();
+    // The Enable button now lives on wizard step 3, not step 1 -- it must
+    // not exist at all yet, not merely be disabled, matching the real UAT
+    // complaint this wizard exists to fix (asked for role IDs/enable before
+    // any choice was even made).
+    expect(screen.queryByRole("button", { name: /Enable Discord Bot Integration/i })).toBeNull();
+  });
+
+  it("shows each choice's guidance immediately, before either is picked, and advances to the role-IDs step once one is", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    // Real UAT finding: clicking Self-hosting used to show zero guidance
+    // until well after Enable. Both explanations must be visible up front,
+    // not gated behind a click.
+    expect(screen.getByText(/We run the bot for you/i)).toBeInTheDocument();
+    expect(screen.getByText(/Run your own bot instance under your own Discord Application/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
+    await screen.findByText(/Role mappings \(optional\)/i);
+    expect(screen.getByLabelText(/Player role IDs \(optional\)/i)).toBeInTheDocument();
   });
 
   it("renders the Enabled state directly, with existing role IDs populated, when the adapter is already configured -- never a false Disabled (audit finding #7)", async () => {
@@ -213,8 +232,11 @@ describe("DiscordBotSection", () => {
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
     fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
+    await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
-    await screen.findByText(/restart/i);
+    await screen.findByText(/will restart to apply this change/i);
     fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
 
     await waitFor(() => expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument(), { timeout: 5000 });
@@ -244,8 +266,11 @@ describe("DiscordBotSection", () => {
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
     fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
+    await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
-    await screen.findByText(/restart/i);
+    await screen.findByText(/will restart to apply this change/i);
     fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
 
     await waitFor(() => expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument(), { timeout: 5000 });
@@ -328,9 +353,12 @@ describe("DiscordBotSection", () => {
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
     fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+    await screen.findByText(/Role mappings/i);
     fireEvent.change(screen.getByLabelText(/Player role IDs/i), { target: { value: "999999999999999999" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
+    await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
-    await screen.findByText(/restart/i);
+    await screen.findByText(/will restart to apply this change/i);
     fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
 
     await waitFor(() => expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument(), { timeout: 5000 });
@@ -372,10 +400,12 @@ describe("DiscordBotSection", () => {
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
     fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
 
-    const enableButton = screen.getByRole("button", { name: /Enable Discord Bot Integration/i });
+    const enableButton = await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
     fireEvent.click(enableButton);
-    await screen.findByText(/restart/i);
+    await screen.findByText(/will restart to apply this change/i);
     expect(enableButton).toBeDisabled();
   });
 
@@ -396,10 +426,12 @@ describe("DiscordBotSection", () => {
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
     fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
 
-    const enableButton = screen.getByRole("button", { name: /Enable Discord Bot Integration/i });
+    const enableButton = await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
     fireEvent.click(enableButton);
-    await screen.findByText(/restart/i);
+    await screen.findByText(/will restart to apply this change/i);
     expect(enableButton).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
@@ -430,17 +462,33 @@ describe("DiscordBotSection", () => {
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
     fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
+    await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
-    await screen.findByText(/restart/i);
+    await screen.findByText(/will restart to apply this change/i);
     fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/enable", expect.objectContaining({ deploymentChoice: "hosted" })));
   });
 
-  it("exposes the hosted/self-hosted toggle's selected state to assistive tech via aria-pressed (finding 8)", async () => {
+  it("exposes wizard step 1's hosted/self-hosted buttons' initial unselected state to assistive tech via aria-pressed (finding 8)", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     render(<DiscordBotSection />);
     await screen.findByText(/Which are you using/i);
-    const hostedButton = screen.getByRole("button", { name: /Hosted bot/i });
+    // The wizard now advances off step 1 the moment a choice is picked, so
+    // there's no "pressed" state to observe on these particular buttons
+    // afterward -- confirmed unpressed here; the toggle that stays mounted
+    // long enough to show a "true" transition is the Enabled-phase one,
+    // covered by the test below.
+    expect(screen.getByRole("button", { name: /Hosted bot/i })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /Self-hosting/i })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("exposes the Enabled-phase hosted/self-hosted toggle's selected state to assistive tech via aria-pressed (finding 8)", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: null } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+    const hostedButton = screen.getByRole("button", { name: /^Hosted bot$/i });
     const selfHostedButton = screen.getByRole("button", { name: /Self-hosting/i });
     expect(hostedButton).toHaveAttribute("aria-pressed", "false");
     expect(selfHostedButton).toHaveAttribute("aria-pressed", "false");

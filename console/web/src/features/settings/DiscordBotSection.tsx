@@ -12,6 +12,16 @@ const POLL_INTERVAL_MS = 2000;
 
 type Choice = "hosted" | "self-hosted" | null;
 type Phase = "loading" | "disabled" | "enabling" | "enabled" | "failed";
+// The first-time setup wizard's own step, independent of Phase above.
+// Only meaningful while phase === "disabled" -- once genuinely enabled,
+// the operator is in the ongoing-management view (existing Save Role
+// IDs / Regenerate Token / hosted-connect UI below), not the wizard.
+// Real UAT feedback (2026-09-09): the previous single flat form asked
+// for Role IDs before any bot was even configured, with no guidance on
+// what either choice meant until well after clicking Enable -- this
+// wizard exists specifically to sequence those concerns instead of
+// showing everything at once with no context.
+type WizardStep = 1 | 2 | 3;
 
 // Same shape as loadPersistedUpdateTask/persistUpdateTask in updateUtils.ts
 // (typeof-window guard, try/catch around localStorage access), just for a
@@ -62,6 +72,12 @@ export function DiscordBotSection() {
   // Enable, since the backend's getState() never returns this (finding #1,
   // Layer 3 review).
   const [choice, setChoice] = useState<Choice>(() => loadPersistedChoice());
+  // Wizard starts at step 2 (skipping the "which are you using" prompt)
+  // when a choice was already persisted from an earlier, incomplete visit
+  // -- otherwise reloading mid-setup would force the operator to re-pick
+  // hosted/self-hosted every time before they can even see the role-ID
+  // step they were already on.
+  const [wizardStep, setWizardStep] = useState<WizardStep>(() => (loadPersistedChoice() ? 2 : 1));
   const [playerRoleIds, setPlayerRoleIds] = useState("");
   const [moderatorRoleIds, setModeratorRoleIds] = useState("");
   const [adminRoleIds, setAdminRoleIds] = useState("");
@@ -129,6 +145,15 @@ export function DiscordBotSection() {
     persistChoice(value);
   }
 
+  // Picking a choice on the wizard's first step both records it and
+  // advances -- the choice buttons in the ongoing-management view
+  // (phase === "enabled") use plain updateChoice() instead, since that
+  // view isn't part of the step-1..3 wizard at all.
+  function chooseAndAdvance(value: Choice) {
+    updateChoice(value);
+    setWizardStep(2);
+  }
+
   async function refresh(options?: { preserveInputs?: boolean }) {
     const nextState = await discordAdapterSettingsApi.getState();
     setState(nextState);
@@ -174,6 +199,14 @@ export function DiscordBotSection() {
     // Never assume "never configured" -- always reflect real state
     // (Layer 1 audit finding #7, converged on by 3 independent hats).
     setPhase(nextState.enabled ? "enabled" : "disabled");
+    // Landing back in the Disabled wizard via this refresh() -- a genuine
+    // fresh mount, or a Retry after a failed enable -- must put the
+    // operator somewhere they can actually see and adjust what they typed,
+    // not wherever wizardStep happened to be left (e.g. step 3's Enable
+    // screen, which renders no role-ID fields at all). Same rule as the
+    // wizardStep useState initializer above: skip step 1 only when a
+    // choice is already known.
+    if (!nextState.enabled) setWizardStep((nextState.deploymentChoice ?? choice) ? 2 : 1);
   }
 
   useEffect(() => {
@@ -435,17 +468,42 @@ export function DiscordBotSection() {
       )}
 
       {phase === "disabled" && (
-        <>
-          <div className="settings-choice">
-            <p>Which are you using?</p>
-            <button className={choice === "hosted" ? "active" : ""} aria-pressed={choice === "hosted"} onClick={() => updateChoice("hosted")}>Hosted bot</button>
-            <button className={choice === "self-hosted" ? "active" : ""} aria-pressed={choice === "self-hosted"} onClick={() => updateChoice("self-hosted")}>Self-hosting</button>
-          </div>
-          <label>Player role IDs<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
-          <label>Moderator role IDs<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
-          <label>Admin role IDs<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
-          <button disabled={!choice || submitting} onClick={() => { void handleEnable(); }}>Enable Discord Bot Integration</button>
-        </>
+        <div className="settings-wizard">
+          <p className="settings-wizard-step-indicator">Step {wizardStep} of 3</p>
+
+          {wizardStep === 1 && (
+            <div className="settings-wizard-step">
+              <p>Which are you using?</p>
+              <div className="settings-choice">
+                <button className={choice === "hosted" ? "active" : ""} aria-pressed={choice === "hosted"} onClick={() => chooseAndAdvance("hosted")}>Hosted bot</button>
+                <p className="muted">We run the bot for you. Enable your adapter, then connect your Discord server in a few clicks — no separate bot process to run.</p>
+                <button className={choice === "self-hosted" ? "active" : ""} aria-pressed={choice === "self-hosted"} onClick={() => chooseAndAdvance("self-hosted")}>Self-hosting</button>
+                <p className="muted">Run your own bot instance under your own Discord Application. We generate a secure adapter token for it; you deploy the bot itself.</p>
+              </div>
+            </div>
+          )}
+
+          {wizardStep === 2 && (
+            <div className="settings-wizard-step">
+              <p>Role mappings (optional)</p>
+              <p className="muted">Map Discord roles to console permission tiers. You can skip this now and set it up later from this same page.</p>
+              <label>Player role IDs (optional)<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
+              <label>Moderator role IDs (optional)<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
+              <label>Admin role IDs (optional)<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} placeholder="Comma-separated Discord role IDs" /></label>
+              <button onClick={() => setWizardStep(1)}>Back</button>
+              <button onClick={() => setWizardStep(3)}>Continue</button>
+            </div>
+          )}
+
+          {wizardStep === 3 && (
+            <div className="settings-wizard-step">
+              <p>Enable the bot</p>
+              <p className="muted">This generates a secure adapter token{choice === "self-hosted" ? " for your own bot to use" : ""} and briefly restarts the console to apply it.</p>
+              <button onClick={() => setWizardStep(2)}>Back</button>
+              <button disabled={!choice || submitting} onClick={() => { void handleEnable(); }}>Enable Discord Bot Integration</button>
+            </div>
+          )}
+        </div>
       )}
 
       {phase === "enabling" && <p>Applying settings and restarting the console…</p>}
@@ -519,7 +577,21 @@ export function DiscordBotSection() {
               {pickedGuild && <button disabled={submitting} onClick={() => { void handleRegisterGuild(); }}>Register</button>}
             </div>
           )}
-          {choice === "self-hosted" && <p>Put the token in your bot's <code>.env</code> — see the <a href="https://github.com/Project-Arrakis/mentat/blob/main/docs/installation-guide.md">installation guide</a>.</p>}
+          {choice === "self-hosted" && (
+            <div className="settings-self-hosted-handoff">
+              <p>Your console side is ready. To finish, deploy your own bot instance under your own Discord Application:</p>
+              <ol>
+                <li>Create a Discord Application and bot at the <a href="https://discord.com/developers/applications" target="_blank" rel="noopener noreferrer">Discord Developer Portal</a> (if you haven't already)</li>
+                <li>Deploy the bot software — see the <a href="https://github.com/Project-Arrakis/mentat/blob/main/docs/installation-guide.md" target="_blank" rel="noopener noreferrer">Installation Guide</a></li>
+                <li>Configure it with:
+                  <ul>
+                    <li>Console URL: <code>{window.location.origin}</code></li>
+                    <li>Adapter Token: the value shown above (use Regenerate Token if you need a fresh one)</li>
+                  </ul>
+                </li>
+              </ol>
+            </div>
+          )}
         </>
       )}
 
