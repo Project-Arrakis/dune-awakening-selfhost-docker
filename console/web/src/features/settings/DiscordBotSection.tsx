@@ -196,6 +196,18 @@ export function DiscordBotSection() {
   // feedback that they're back, since there's no reliable cross-origin
   // way to confirm the invite actually succeeded from here.
   const [botInviteWindowClosed, setBotInviteWindowClosed] = useState(false);
+  // Independent UI/UX review (HIGH H1): "Add to Discord" (invites the bot)
+  // and "Connect to hosted bot" (verifies guild ownership + registers) are
+  // fully independent -- an operator can skip the invite entirely, still
+  // successfully register a guild, and finish the whole wizard with a
+  // registered-but-never-invited, non-functional bot integration, with
+  // nothing anywhere telling them. This can't be verified for real from
+  // here (no reliable cross-origin signal that the invite popup actually
+  // completed, see openBotInviteWindow's own comment) -- an explicit
+  // acknowledgement is the honest, lightweight mitigation: it doesn't
+  // guarantee correctness, but it forces the operator to consciously
+  // confirm the step rather than silently skip past it.
+  const [botInviteAcknowledged, setBotInviteAcknowledged] = useState(false);
   // Real UAT finding (2026-09-09): "Connect to hosted bot" needs its own,
   // independent Discord Application -- deliberately separate from Settings
   // -> Discord OAuth's console-sign-in credentials ("we have OAuth without
@@ -288,16 +300,21 @@ export function DiscordBotSection() {
       await discordAdapterSettingsApi.setChoice(value === "hosted" ? "hosted" : "self-hosted");
       if (value === "hosted" && !state?.tokenConfigured) {
         setSilentEnabling(true);
-        const { token } = await discordAdapterSettingsApi.enable({
+        // Independent UI/UX review (CRITICAL C2): this used to also call
+        // setRevealedToken(), surfacing the full "copy this now, it will
+        // never be shown again" one-time-secret banner the instant the
+        // operator clicked a picker button -- alarming and unexplained,
+        // with none of the self-hosted path's own handoff panel telling
+        // them why. The hosted path never needs the operator to manually
+        // handle this token at all (mentat's own registration call
+        // forwards it server-side) -- deliberately discarded here rather
+        // than revealed, unlike every other mint in this file.
+        await discordAdapterSettingsApi.enable({
           playerRoleIds: "",
           moderatorRoleIds: "",
           adminRoleIds: "",
           deploymentChoice: "hosted"
         });
-        if (token) {
-          setRevealedToken(token);
-          setTokenCopyResult("");
-        }
         // Deliberately NOT calling refresh() here -- the server genuinely
         // does report enabled: true now, and refresh() unconditionally
         // sets phase to match (see its own comment below), which would
@@ -810,12 +827,28 @@ export function DiscordBotSection() {
               the wizardStep useState initializer) gave no indication
               anywhere on this page of which choice was actually active --
               only the Back button on step 3's own "generates a token for
-              your own bot" sentence hinted at it. Shown on every step past
-              1 so it's never ambiguous which path is currently selected. */}
-          {wizardStep > 1 && choice && (
+              your own bot" sentence hinted at it. Shown whenever a choice
+              is active so it's never ambiguous which path is selected --
+              including on step 1 itself once "Hosted bot" is picked
+              (independent UI/UX review, CRITICAL C1): step 1's own content
+              switches away from the picker the instant "Hosted bot" is
+              picked (see below), with no other way back to it otherwise --
+              an operator who picked it by mistake, or just wants to look
+              at the other option, was stuck unless they completed a real
+              Discord OAuth authorization just to escape. "Change" resets
+              `choice` (not just wizardStep, which is already 1 here) so
+              the picker genuinely re-renders regardless of which step
+              this indicator appears on. */}
+          {/* Suppressed specifically when the raw picker itself is what's
+              on screen (self-hosted's step 1, which already shows both
+              buttons with this one highlighted) -- redundant there, not
+              wrong, but hosted's step 1 has no picker to fall back on
+              (see above), which is exactly why this can't stay gated on
+              wizardStep > 1 alone. */}
+          {choice && !(wizardStep === 1 && choice === "self-hosted") && (
             <p className="settings-wizard-current-choice">
               Setting up: <strong>{choice === "hosted" ? "Hosted bot" : "Self-hosting"}</strong>{" "}
-              <button type="button" onClick={() => setWizardStep(1)}>Change</button>
+              <button type="button" onClick={() => { updateChoice(null); setWizardStep(1); }}>Change</button>
             </p>
           )}
 
@@ -852,12 +885,33 @@ export function DiscordBotSection() {
                 <p className="muted">Setting up your console's connection…</p>
               ) : (
                 <>
-                  <p className="muted">Invite the bot to your Discord server, then connect it to this console. Both are required before you can continue.</p>
+                  {/* Independent UI/UX review (MEDIUM M4): neither button
+                      below names the bot -- an operator learned what
+                      they were actually authorizing only once already
+                      inside Discord's own consent screen. */}
+                  <p className="muted">Invite Sahir Venn, the hosted bot, to your Discord server, then connect it to this console. Both are required before you can continue.</p>
                   {renderHostedBotConnection()}
                 </>
               )}
-              <button disabled={!connectedGuildName} onClick={() => setWizardStep(2)}>Continue</button>
-              {!connectedGuildName && !silentEnabling && <p className="muted">Continue unlocks once the bot is connected above.</p>}
+              {/* Independent UI/UX review (HIGH H1): "Add to Discord" and
+                  "Connect to hosted bot"/Register are fully independent --
+                  an operator could register a guild without ever inviting
+                  the bot to it, finish this wizard, and end up with a
+                  registered-but-non-functional integration with no error
+                  anywhere. There's no reliable way to verify the invite
+                  actually completed from here (see openBotInviteWindow's
+                  own comment) -- this is a lightweight, honest mitigation:
+                  it doesn't guarantee correctness, but it stops Continue
+                  from being reachable without a conscious confirmation. */}
+              {connectedGuildName && (
+                <label className="settings-wizard-invite-ack">
+                  <input type="checkbox" checked={botInviteAcknowledged} onChange={(event) => setBotInviteAcknowledged(event.target.checked)} />
+                  {" "}I've invited the bot to this Discord server
+                </label>
+              )}
+              <button disabled={!connectedGuildName || !botInviteAcknowledged} onClick={() => setWizardStep(2)}>Continue</button>
+              {!connectedGuildName && !silentEnabling && <p className="muted" role="status">Continue unlocks once the bot is connected above.</p>}
+              {connectedGuildName && !botInviteAcknowledged && <p className="muted" role="status">Continue unlocks once you confirm you've invited the bot.</p>}
             </div>
           )}
 
@@ -876,7 +930,13 @@ export function DiscordBotSection() {
           {wizardStep === 3 && choice === "hosted" && (
             <div className="settings-wizard-step">
               <p>Restart</p>
-              <p className="muted">Your role mappings will be saved and the console will briefly restart to apply them.</p>
+              {/* Independent UI/UX review (LOW L2): nothing on screen told
+                  the operator why this step is worded differently from
+                  the self-hosted path's "Enable Discord Bot Integration"
+                  below -- the asymmetry could read as inconsistency
+                  rather than the deliberate difference it is (the adapter
+                  was already silently enabled back in step 1). */}
+              <p className="muted">Your adapter and Discord connection were already set up in step 1 -- this just saves your role mappings and briefly restarts the console to apply them.</p>
               <button onClick={() => setWizardStep(2)}>Back</button>
               <button disabled={submitting} onClick={() => { void handleUpdateRoleIds(); }}>Save &amp; Restart</button>
             </div>

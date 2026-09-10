@@ -1005,6 +1005,11 @@ describe("DiscordBotSection", () => {
     await screen.findByText(/Connected to hosted bot for My Test Guild/i);
 
     const continueButton = screen.getByRole("button", { name: /^Continue$/i });
+    // Independent UI/UX review (HIGH H1): Continue also requires an
+    // explicit "I've invited the bot" acknowledgement, not just a
+    // registered guild -- the two are otherwise independent actions.
+    expect(continueButton).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: /invited the bot/i }));
     expect(continueButton).not.toBeDisabled();
     fireEvent.click(continueButton);
 
@@ -1026,5 +1031,46 @@ describe("DiscordBotSection", () => {
       "/api/settings/discord-bot/role-ids",
       expect.objectContaining({ playerRoleIds: "222222222222222222", deploymentChoice: "hosted" })
     ));
+  });
+
+  // Independent UI/UX hat review (2026-09-10, CRITICAL C1): picking
+  // "Hosted bot" used to be a one-way door -- step 1's own content
+  // switched away from the picker with no way back to it short of
+  // actually completing a real Discord OAuth authorization. Confirms
+  // "Change" now genuinely re-shows the picker from step 1's own hosted
+  // content, not just from steps 2/3 (already covered by the "Setting up
+  // indicator" tests above, which only exercise the self-hosted path).
+  it("Change on step 1's Add bot to Discord content genuinely returns to the picker, not just steps 2/3", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false, deploymentChoice: null } as never);
+    mockPost.mockResolvedValue({ ok: true, token: "abc" } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
+
+    await screen.findByText(/Add bot to Discord/i);
+    expect(screen.getByText(/Setting up:/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Change$/i }));
+
+    await screen.findByText(/Which are you using/i);
+    expect(screen.queryByText(/Add bot to Discord/i)).toBeNull();
+  });
+
+  // Independent UI/UX hat review (2026-09-10, CRITICAL C2): the silent
+  // hosted-path token mint used to also reveal the full one-time-secret
+  // "copy it before leaving this page" banner the instant "Hosted bot"
+  // was clicked -- alarming and unexplained, unlike the self-hosted
+  // path's own handoff panel that actually tells the operator what to do
+  // with it. The hosted path never needs the operator to see this token
+  // at all (mentat's own registration call forwards it server-side).
+  it("does not reveal the token banner for the silent hosted-path mint", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false, deploymentChoice: null } as never);
+    mockPost.mockResolvedValue({ ok: true, token: "should-not-be-shown" } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
+
+    await screen.findByText(/Add bot to Discord/i);
+    expect(screen.queryByDisplayValue("should-not-be-shown")).toBeNull();
+    expect(screen.queryByText(/copy it before leaving this page/i)).toBeNull();
   });
 });
