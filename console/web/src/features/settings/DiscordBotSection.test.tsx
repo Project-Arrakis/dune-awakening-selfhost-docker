@@ -1073,4 +1073,23 @@ describe("DiscordBotSection", () => {
     expect(screen.queryByDisplayValue("should-not-be-shown")).toBeNull();
     expect(screen.queryByText(/copy it before leaving this page/i)).toBeNull();
   });
+
+  // Real UAT finding (2026-09-10): "why are we asking for Redirect URI --
+  // we're hosting the bot, we know the redirect URL." The path is fixed by
+  // the route's own code; only the domain varies per self-hosted install,
+  // and the browser's current origin already is that domain in the common
+  // case -- pre-fill instead of leaving this blank.
+  it("pre-fills the hosted-bot Redirect URI field from the page's own origin when nothing is saved yet", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted", hostedBotOAuthRedirectUri: null } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+    expect(screen.getByDisplayValue(`${window.location.origin}/api/integrations/discord/hosted-bot/oauth/callback`)).toBeInTheDocument();
+  });
+
+  it("does not override an already-saved hosted-bot Redirect URI with the computed default", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted", hostedBotOAuthRedirectUri: "https://reverse-proxy.example.com/api/integrations/discord/hosted-bot/oauth/callback" } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+    expect(screen.getByDisplayValue("https://reverse-proxy.example.com/api/integrations/discord/hosted-bot/oauth/callback")).toBeInTheDocument();
+  });
 });

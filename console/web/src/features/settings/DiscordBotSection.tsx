@@ -380,7 +380,22 @@ export function DiscordBotSection() {
       // itself is never returned by the server, so there's nothing to
       // repopulate there regardless.
       setOAuthClientId(nextState.hostedBotOAuthClientId || "");
-      setOAuthRedirectUri(nextState.hostedBotOAuthRedirectUri || "");
+      // Real UAT finding (2026-09-10): "why are we asking for Redirect URI
+      // -- we're hosting the bot, we know the redirect URL." The PATH is
+      // fixed by this route's own code; only the domain varies per
+      // self-hosted install, and the browser's current origin already is
+      // that domain in the overwhelming common case. Pre-fill with the
+      // computed value instead of leaving this blank with just a
+      // placeholder hint -- still a real, editable field (not hardcoded
+      // outright), since an operator behind a reverse proxy or reachable
+      // at a different public hostname than their browser's current
+      // origin genuinely does need to override it, same as the existing
+      // Settings -> Discord OAuth sign-in redirect URI field already
+      // requires for the identical reason. Only defaults when nothing is
+      // saved yet (hostedBotOAuthRedirectUri falsy) -- never overwrites a
+      // real, already-configured value, including one that was
+      // deliberately overridden away from this same computed default.
+      setOAuthRedirectUri(nextState.hostedBotOAuthRedirectUri || `${window.location.origin}/api/integrations/discord/hosted-bot/oauth/callback`);
     }
     setOAuthConfigured(Boolean(nextState.hostedBotOAuthConfigured));
     // Never assume "never configured" -- always reflect real state
@@ -745,7 +760,11 @@ export function DiscordBotSection() {
           </p>
           <label>Client ID<input disabled={oauthSaving} value={oauthClientId} onChange={(event) => setOAuthClientId(event.target.value)} placeholder="Discord application client ID" /></label>
           <label>Client Secret<SecretInput disabled={oauthSaving} value={oauthSecret} onChange={(event) => setOAuthSecret(event.target.value)} placeholder={oauthConfigured ? "Paste new to replace" : "Discord application client secret"} /></label>
-          <label>Redirect URI<input disabled={oauthSaving} value={oauthRedirectUri} onChange={(event) => setOAuthRedirectUri(event.target.value)} placeholder="https://your-host:8088/api/integrations/discord/hosted-bot/oauth/callback" /></label>
+          <label>
+            Redirect URI
+            <input disabled={oauthSaving} value={oauthRedirectUri} onChange={(event) => setOAuthRedirectUri(event.target.value)} />
+          </label>
+          <p className="muted">Pre-filled from this page's own address — register this exact value in your Discord Application's OAuth settings. Only change it if this console is reachable at a different public address than the one you're using right now (e.g. behind a reverse proxy).</p>
           <button type="button" disabled={oauthSaving} onClick={() => { void handleSaveOAuthConfig(); }}>{oauthSaving ? "Saving..." : "Save Hosted Bot Connection"}</button>
           {oauthSaveResult && <p className="muted" role="status">{oauthSaveResult}</p>}
         </div>
