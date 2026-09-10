@@ -65,6 +65,25 @@ describe("DiscordBotSection", () => {
     expect(screen.getByLabelText(/Player role IDs \(optional\)/i)).toBeInTheDocument();
   });
 
+  // Real UAT bug: a choice persisted in localStorage from an earlier visit
+  // makes the wizard skip step 1 and land directly on step 2 -- which,
+  // before this fix, gave zero indication anywhere on the page of which
+  // choice was actually active, leaving the operator staring at bare role
+  // ID fields with no idea whether they were setting up hosted or
+  // self-hosted.
+  it("shows which choice is active when a persisted choice skips step 1 straight to step 2", async () => {
+    window.localStorage.setItem("arrakis.discordAdapterChoice", "self-hosted");
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Role mappings \(optional\)/i);
+    expect(screen.queryByText(/Which are you using/i)).toBeNull();
+    expect(screen.getByText(/Setting up:/i)).toBeInTheDocument();
+    expect(screen.getByText("Self-hosting")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Change$/i }));
+    await screen.findByText(/Which are you using/i);
+  });
+
   it("renders the Enabled state directly, with existing role IDs populated, when the adapter is already configured -- never a false Disabled (audit finding #7)", async () => {
     mockApi.mockResolvedValue({
       enabled: true,

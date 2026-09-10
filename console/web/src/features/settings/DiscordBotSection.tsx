@@ -470,6 +470,19 @@ export function DiscordBotSection() {
       {phase === "disabled" && (
         <div className="settings-wizard">
           <p className="settings-wizard-step-indicator">Step {wizardStep} of 3</p>
+          {/* Real UAT finding: landing directly on step 2 (a choice
+              persisted from an earlier visit skips step 1 entirely, see
+              the wizardStep useState initializer) gave no indication
+              anywhere on this page of which choice was actually active --
+              only the Back button on step 3's own "generates a token for
+              your own bot" sentence hinted at it. Shown on every step past
+              1 so it's never ambiguous which path is currently selected. */}
+          {wizardStep > 1 && choice && (
+            <p className="settings-wizard-current-choice">
+              Setting up: <strong>{choice === "hosted" ? "Hosted bot" : "Self-hosting"}</strong>{" "}
+              <button type="button" onClick={() => setWizardStep(1)}>Change</button>
+            </p>
+          )}
 
           {wizardStep === 1 && (
             <div className="settings-wizard-step">
