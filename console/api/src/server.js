@@ -72,7 +72,7 @@ import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPl
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
 import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
-import { validateDiscordRoleIds, readDiscordBotSettingsState, applyDiscordBotEnableRequest, discordAdminRoleIdsChanged, updateDiscordBotRoleIds, regenerateDiscordBotToken, persistHostedBotConnectedGuild } from "./integrations/discord/adapterSettings.js";
+import { validateDiscordRoleIds, readDiscordBotSettingsState, applyDiscordBotEnableRequest, discordAdminRoleIdsChanged, updateDiscordBotRoleIds, regenerateDiscordBotToken, persistHostedBotConnectedGuild, disableDiscordBotAdapter } from "./integrations/discord/adapterSettings.js";
 
 const config = loadConfig();
 // #141: ADMIN_AUTH_DISABLED bypasses both password auth (auth.js requireAuth)
@@ -1557,6 +1557,18 @@ async function handleApi(req, res) {
     const { token } = regenerateDiscordBotToken(config);
     audit(config, req, "settings.discord-bot.token-regenerated", {});
     return json(res, 200, { ok: true, token });
+  }
+  // Real UAT finding (2026-09-09, "I see no path to remove the bot"): this
+  // feature previously had Enable/Save Role IDs/Regenerate Token but no way
+  // back to "never configured." Persists the reset (see
+  // disableDiscordBotAdapter()'s own comment for exactly what it wipes);
+  // like /enable, does not restart itself -- the frontend calls the shared
+  // POST .../restart route separately once the operator has acknowledged
+  // the change via the confirm dialog and countdown.
+  if (path === "/api/settings/discord-bot/disable" && req.method === "POST") {
+    disableDiscordBotAdapter(config);
+    audit(config, req, "settings.discord-bot.disabled", {});
+    return json(res, 200, { ok: true });
   }
 
   // ---- Hosted-bot console-initiated OAuth registration (Task 6) ----

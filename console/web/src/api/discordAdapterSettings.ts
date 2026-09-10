@@ -40,5 +40,11 @@ export const discordAdapterSettingsApi = {
   // Triggers the actual console restart that applies whatever /enable or
   // /role-ids just persisted -- see those handlers' own comments in
   // server.js for why this is now a separate call.
-  restart: () => post<{ task: Task }>("/api/settings/discord-bot/restart", {})
+  restart: () => post<{ task: Task }>("/api/settings/discord-bot/restart", {}),
+  // Real UAT finding (2026-09-09, "I see no path to remove the bot"):
+  // resets the adapter back to "never configured" (see
+  // disableDiscordBotAdapter()'s own comment in adapterSettings.js for
+  // exactly what it wipes). Like enable(), does not restart itself --
+  // the caller follows up with restart() once ready.
+  disable: () => post<{ ok: boolean }>("/api/settings/discord-bot/disable", {})
 };

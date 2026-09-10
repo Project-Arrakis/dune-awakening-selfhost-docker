@@ -165,6 +165,14 @@ export const ROUTE_ACTIONS = {
   // second half of the exact same "apply this pending settings change"
   // capability those two routes already require.
   "POST /api/settings/discord-bot/restart":     "updates:apply",
+  // Real UAT finding (2026-09-09, "I see no path to remove the bot"): a
+  // destructive, hard-to-reverse action (invalidates the live token, wipes
+  // role-ID mappings including admin-tier ones) -- owner-only, same tier
+  // restriction as settings:discord-bot-regenerate-token above, via its own
+  // distinct action name (falls under the settings:* Deny-for-admin
+  // wildcard already in policy.js, same as regenerate-token, with no new
+  // policy.js entry needed).
+  "POST /api/settings/discord-bot/disable":     "settings:discord-bot-disable",
 
   // --- Hosted Bot Registration ---
   // start/callback use updates:read (the same real precedent as

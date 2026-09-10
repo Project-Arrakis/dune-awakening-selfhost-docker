@@ -790,4 +790,50 @@ describe("DiscordBotSection", () => {
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/restart", {}));
     expect(screen.queryByRole("button", { name: /^Restart Now$/i })).toBeNull();
   });
+
+  // Real UAT finding (2026-09-09): "I see no path to remove the bot" -- this
+  // feature had Enable/Save Role IDs/Regenerate Token but no way back to
+  // "never configured." These three tests cover the confirm gate, the
+  // countdown-then-restart sequencing (same pattern as Save Role IDs -- no
+  // token to reveal here, so no reordering benefit the way Enable needed),
+  // and that a successful disable really does land back on a fresh wizard.
+  it("shows a real confirm dialog before disabling, and does not call /disable until confirmed", async () => {
+    mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+    fireEvent.click(screen.getByRole("button", { name: /Disable Discord Bot Integration/i }));
+    await screen.findByText(/you'll go through setup again to re-enable it/i);
+    expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/disable", expect.anything());
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
+    await waitFor(() => expect(screen.queryByText(/you'll go through setup again to re-enable it/i)).toBeNull());
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  it("disabling persists first, then pauses for the restart countdown before calling /restart, and lands back on a fresh wizard", async () => {
+    mockApi
+      .mockResolvedValueOnce({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never)
+      .mockImplementation((path: string) => {
+        if (path.startsWith("/api/updates/stack-progress")) {
+          return Promise.resolve({ runId: "disable-task", state: "succeeded", stage: "complete", percent: 100, message: "", discordHealthOk: true } as never);
+        }
+        return Promise.resolve({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false, deploymentChoice: null } as never);
+      });
+    mockPost.mockResolvedValue({ ok: true, task: { id: "disable-task", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null } } as never);
+
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+    fireEvent.click(screen.getByRole("button", { name: /Disable Discord Bot Integration/i }));
+    await screen.findByText(/you'll go through setup again to re-enable it/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Disable$/i }));
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/disable", {}));
+    await screen.findByRole("button", { name: /^Restart Now$/i });
+    expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/restart", {});
+
+    fireEvent.click(screen.getByRole("button", { name: /^Restart Now$/i }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/restart", {}));
+
+    await waitFor(() => expect(screen.getByText(/Which are you using/i)).toBeInTheDocument(), { timeout: 5000 });
+    expect(screen.queryByText(/Enable Discord Bot Integration/i)).toBeNull();
+  });
 });

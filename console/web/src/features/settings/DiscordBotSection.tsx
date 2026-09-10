@@ -420,6 +420,46 @@ export function DiscordBotSection() {
     }
   }
 
+  // Real UAT finding (2026-09-09): "I see no path to remove the bot" --
+  // this feature shipped Enable/Save Role IDs/Regenerate Token but no way
+  // back to "never configured." Same countdown-before-restart pattern as
+  // handleUpdateRoleIds() above (no token to reveal here, so no need for
+  // Enable's reveal-before-restart split) -- disable() persists the reset,
+  // then restart() (the same shared trigger Enable now uses) actually
+  // recreates the console once the operator has acknowledged it.
+  async function handleDisable() {
+    if (submitting) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const outcome = await new Promise<ConfirmDialogOutcome>((resolve) => {
+        setConfirmRequest({
+          title: "Disable Discord Bot Integration",
+          message: "This invalidates the current adapter token and clears your saved role mappings and hosted/self-hosted choice -- you'll go through setup again to re-enable it. The console will restart to apply this change. This cannot be undone.",
+          confirmLabel: "Disable",
+          cancelLabel: "Cancel",
+          danger: true,
+          resolve
+        });
+      });
+      setConfirmRequest(null);
+      if (outcome !== "confirm") return;
+
+      await discordAdapterSettingsApi.disable();
+
+      await waitForRestartCountdown(RESTART_COUNTDOWN_SECONDS);
+
+      const { task } = await discordAdapterSettingsApi.restart();
+      persistUpdateTask(TASK_KEY, task);
+      setRunId(task.id);
+      setPhase("enabling");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function handleRegenerate() {
     if (submitting) return;
     setSubmitting(true);
@@ -651,6 +691,7 @@ export function DiscordBotSection() {
           <label>Admin role IDs<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} /></label>
           <button disabled={submitting} onClick={() => { void handleUpdateRoleIds(); }}>Save Role IDs</button>
           <button disabled={submitting} onClick={() => { void handleRegenerate(); }}>Regenerate Token</button>
+          <button disabled={submitting} onClick={() => { void handleDisable(); }}>Disable Discord Bot Integration</button>
           {choice === "hosted" && !ownedGuilds && !connectedGuildName && (
             <button disabled={submitting} onClick={() => { void handleConnectToHostedBot(); }}>Connect to hosted bot</button>
           )}

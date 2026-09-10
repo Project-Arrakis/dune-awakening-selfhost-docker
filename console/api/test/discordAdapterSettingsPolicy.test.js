@@ -16,11 +16,19 @@ test("Discord Bot settings routes resolve to the expected actions", () => {
   // Real UAT finding (2026-09-09): the restart trigger split out of
   // /enable and /role-ids -- same action as both.
   assert.equal(actionForRoute("/api/settings/discord-bot/restart", "POST"), "updates:apply");
+  // Real UAT finding (2026-09-09, "I see no path to remove the bot") --
+  // owner-only, same tier restriction as regenerate-token, via its own
+  // distinct action name.
+  assert.equal(actionForRoute("/api/settings/discord-bot/disable", "POST"), "settings:discord-bot-disable");
 });
 
 test("admin can enable the Discord adapter (already has updates:apply via self-update) but cannot regenerate its token (settings:* denied)", () => {
   assert.equal(evaluate({ tier: "admin" }, "updates:apply"), true);
   assert.equal(evaluate({ tier: "admin" }, "settings:discord-bot-regenerate-token"), false);
+});
+
+test("admin cannot disable the Discord adapter (settings:* denied, same as regenerate-token)", () => {
+  assert.equal(evaluate({ tier: "admin" }, "settings:discord-bot-disable"), false);
 });
 
 test("admin can read the Discord Bot settings state (updates:* Allow wildcard), unlike settings:read which is denied", () => {
@@ -31,4 +39,8 @@ test("admin can read the Discord Bot settings state (updates:* Allow wildcard), 
 test("owner can do both", () => {
   assert.equal(evaluate({ tier: "owner" }, "updates:apply"), true);
   assert.equal(evaluate({ tier: "owner" }, "settings:discord-bot-regenerate-token"), true);
+});
+
+test("owner can disable the Discord adapter", () => {
+  assert.equal(evaluate({ tier: "owner" }, "settings:discord-bot-disable"), true);
 });

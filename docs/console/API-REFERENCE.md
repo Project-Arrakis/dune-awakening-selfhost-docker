@@ -789,6 +789,7 @@ Layers legend's default-settings mechanism.
 | POST | `/api/settings/discord-bot/role-ids` | Update only the 3 role-ID env keys for an already-enabled adapter and queue a `discordAdapterApply` task. Never touches the token file or the enabled flag. | `playerRoleIds?`, `moderatorRoleIds?`, `adminRoleIds?` (each a comma-separated string of Discord role snowflakes) |
 | POST | `/api/settings/discord-bot/restart` | Queue a `discordAdapterApply` task to recreate the bot container and apply whatever `.env` changes `POST .../enable` most recently persisted. | None |
 | POST | `/api/settings/discord-bot/regenerate-token` | Overwrite the adapter token file with a freshly generated token. File-only -- does not touch `.env` and does not queue a container-recreate task, since the token file's content is read fresh on every request. Returns the plaintext token **once**. | None |
+| POST | `/api/settings/discord-bot/disable` | Owner-only. Fully reset the Discord Bot adapter back to never-configured: invalidates the token (file removed), clears all 3 role-ID env keys, and clears the persisted hosted/self-hosted choice and hosted-bot connection. Does **not** restart the console -- call `POST .../restart` separately. | None |
 
 ---
 

@@ -509,3 +509,64 @@ test("admin-tier session gets a real 403 changing Discord admin role IDs via POS
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+// Real UAT finding (2026-09-09, "I see no path to remove the bot"): same
+// harness and reasoning as the admin-role-id-change 403 test directly
+// above, for the new owner-only POST /api/settings/discord-bot/disable
+// route -- discordAdapterSettingsPolicy.test.js already proves
+// evaluate({tier: "admin"}, "settings:discord-bot-disable") === false, this
+// is the one HTTP-level proof that a real non-owner session is rejected
+// over the wire.
+test("admin-tier session gets a real 403 disabling the Discord Bot adapter via POST /api/settings/discord-bot/disable", async () => {
+  const consolePort = await getFreePort();
+  const discordPort = await getFreePort();
+  const botPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "oauth-e2e-discordbot-disable403-"));
+  const console = startConsole(consolePort, discordPort, tempDir, {
+    DISCORD_BOT_HANDOFF_SECRET: HANDOFF_SECRET,
+    DISCORD_BOT_HANDOFF_URL: `http://127.0.0.1:${botPort}`,
+    DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "",
+    DISCORD_OAUTH_OWNER_ALLOWLIST: ""
+  });
+  const discordServer = await startFakeDiscord(discordPort);
+  const botServer = await startFakeBot(botPort, { tier: "admin" });
+  try {
+    await waitForHealth(consolePort);
+    const start = await fetch(`http://127.0.0.1:${consolePort}/api/auth/discord/start`, { redirect: "manual" });
+    const pendingStateValue = sessionCookieValue(start.headers.getSetCookie() || [], "discord_oauth_state");
+
+    const callback = await fetch(
+      `http://127.0.0.1:${consolePort}/api/auth/discord/callback?code=validcode&state=${encodeURIComponent(pendingStateValue)}`,
+      { redirect: "manual", headers: { cookie: `discord_oauth_state=${pendingStateValue}` } }
+    );
+    assert.equal(callback.status, 200, "handoff-backed sign-in must complete");
+    const sessionValue = sessionCookieValue(callback.headers.getSetCookie(), "asc_session");
+    assert.ok(sessionValue, "callback must mint a real session cookie");
+
+    const me = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/me`, {
+      headers: { cookie: `asc_session=${sessionValue}` }
+    })).json();
+    assert.equal(me.user.tier, "admin", "sanity check: this really is an admin-tier session, not owner");
+
+    const authState = await (await fetch(`http://127.0.0.1:${consolePort}/api/auth/state`, {
+      headers: { cookie: `asc_session=${sessionValue}` }
+    })).json();
+    assert.ok(authState.csrfToken, "must have a real CSRF token to exercise the route properly");
+
+    const response = await fetch(`http://127.0.0.1:${consolePort}/api/settings/discord-bot/disable`, {
+      method: "POST",
+      headers: {
+        cookie: `asc_session=${sessionValue}`,
+        "x-csrf-token": authState.csrfToken,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+    assert.equal(response.status, 403, "an admin-tier session must be rejected over the wire disabling the adapter");
+  } finally {
+    await stopProcess(console.child);
+    await closeDiscordServer(discordServer);
+    await closeDiscordServer(botServer);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});

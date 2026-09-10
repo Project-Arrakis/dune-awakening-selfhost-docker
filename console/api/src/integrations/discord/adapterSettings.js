@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, chmodSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { discordAdapterEnabled, discordRoleMappingFromEnv } from "./adapter.js";
 import { readDiscordBotApiToken } from "./routes.js";
@@ -231,6 +231,50 @@ export function enableDiscordBotAdapter(config, roleIdsByTier = {}, options = {}
   if (normalizedChoice === "self-hosted") clearHostedBotConnectedGuild(config);
 
   return { ok: true, tokenFile: DEFAULT_TOKEN_FILE, token };
+}
+
+// disableDiscordBotAdapter: the counterpart to enableDiscordBotAdapter()
+// above -- a real UAT finding (2026-09-09, "I see no path to remove the
+// bot") that this feature shipped an Enable/Save/Regenerate surface but no
+// way back to "never configured" at all. Fully resets every MANAGED_ENV_KEYS
+// value this feature owns, rather than a soft toggle that leaves the old
+// token/role IDs/choice sitting around -- an operator who disables and
+// later re-enables goes through the wizard from a genuinely clean step 1,
+// matching what a fresh install looks like. Does NOT launch the recreate
+// helper itself -- same convention as enableDiscordBotAdapter(), the caller
+// (the route handler) does that via tasks.create().
+export function disableDiscordBotAdapter(config) {
+  const repoRoot = config.repoRoot;
+  const tokenFile = resolve(repoRoot, DEFAULT_TOKEN_FILE);
+  // Best-effort: the token file may already be missing (never enabled, or a
+  // manual DUNE_DISCORD_ADAPTER_TOKEN_FILE override pointing elsewhere) --
+  // disabling must still succeed either way.
+  try { unlinkSync(tokenFile); } catch {}
+
+  updateEnvFileValues(repoRoot, [
+    [MANAGED_ENV_KEYS.enabled, "false"],
+    [MANAGED_ENV_KEYS.directToken, ""],
+    [MANAGED_ENV_KEYS.player, ""],
+    [MANAGED_ENV_KEYS.moderator, ""],
+    [MANAGED_ENV_KEYS.admin, ""],
+    [MANAGED_ENV_KEYS.deploymentChoice, ""]
+  ]);
+
+  // Mirror into the RUNNING process too -- see enableDiscordBotAdapter()'s
+  // own comment above for why this is necessary even though the recreate
+  // task (launched by the route handler after this returns) is what makes
+  // the change durable across a fresh process.
+  process.env[MANAGED_ENV_KEYS.enabled] = "false";
+  process.env[MANAGED_ENV_KEYS.directToken] = "";
+  process.env[MANAGED_ENV_KEYS.player] = "";
+  process.env[MANAGED_ENV_KEYS.moderator] = "";
+  process.env[MANAGED_ENV_KEYS.admin] = "";
+  process.env[MANAGED_ENV_KEYS.deploymentChoice] = "";
+
+  // Any hosted-bot registration was keyed to the token/choice just wiped
+  // above -- same reasoning as regenerateDiscordBotToken().
+  clearHostedBotConnectedGuild(config);
+  return { ok: true };
 }
 
 // updateDiscordBotRoleIds: writes ONLY the 3 role-ID env keys, via the
