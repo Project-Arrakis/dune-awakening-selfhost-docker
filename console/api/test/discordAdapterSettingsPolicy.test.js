@@ -20,6 +20,12 @@ test("Discord Bot settings routes resolve to the expected actions", () => {
   // owner-only, same tier restriction as regenerate-token, via its own
   // distinct action name.
   assert.equal(actionForRoute("/api/settings/discord-bot/disable", "POST"), "settings:discord-bot-disable");
+  // Real UAT finding (2026-09-09): the hosted-bot connection's own,
+  // independent Discord Application config -- prerequisite setup, not a
+  // destructive/credential-invalidating action, so updates:apply (admin
+  // reachable) not owner-only.
+  assert.equal(actionForRoute("/api/settings/discord-bot/oauth-config", "POST"), "updates:apply");
+  assert.equal(actionForRoute("/api/settings/discord-bot/oauth-secret", "POST"), "updates:apply");
 });
 
 test("admin can enable the Discord adapter (already has updates:apply via self-update) but cannot regenerate its token (settings:* denied)", () => {

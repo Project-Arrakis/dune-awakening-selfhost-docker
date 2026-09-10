@@ -69,7 +69,17 @@ export function readDiscordBotSettingsState(config) {
     tokenConfigured: Boolean(token),
     deploymentChoice: normalizeDeploymentChoice(process.env[MANAGED_ENV_KEYS.deploymentChoice] || null),
     hostedBotConnectedGuildId: process.env[MANAGED_ENV_KEYS.hostedBotConnectedGuildId] || null,
-    hostedBotConnectedGuildName: process.env[MANAGED_ENV_KEYS.hostedBotConnectedGuildName] || null
+    hostedBotConnectedGuildName: process.env[MANAGED_ENV_KEYS.hostedBotConnectedGuildName] || null,
+    // Real UAT finding (2026-09-09): "Connect to hosted bot" needs its own,
+    // independent Discord Application (Client ID/Secret/Redirect URI) --
+    // deliberately NOT the console-sign-in one (Settings -> Discord OAuth).
+    // The Client ID and Redirect URI are safe to return (same non-secret
+    // status this function already reports for tokenConfigured above);
+    // the client secret itself is never returned, matching that same
+    // convention.
+    hostedBotOAuthConfigured: Boolean(config.discordHostedBotOAuthClientId && config.discordHostedBotOAuthClientSecret && config.discordHostedBotOAuthRedirectUri),
+    hostedBotOAuthClientId: config.discordHostedBotOAuthClientId || null,
+    hostedBotOAuthRedirectUri: config.discordHostedBotOAuthRedirectUri || null
   };
 }
 

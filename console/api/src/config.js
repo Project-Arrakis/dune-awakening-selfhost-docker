@@ -242,20 +242,19 @@ export function loadConfig() {
     discordOAuthClientId: process.env.DISCORD_OAUTH_CLIENT_ID || "",
     discordOAuthClientSecret: readInlineOrFile(process.env.DISCORD_OAUTH_CLIENT_SECRET, resolve(secretsDir, "discord-oauth-client-secret.txt")),
     discordOAuthRedirectUri: process.env.DISCORD_OAUTH_REDIRECT_URI || "",
-    // Hosted-bot console-initiated OAuth registration (Task 6 of the
-    // 2026-09-09 plan): a SECOND redirect URI on the SAME Discord OAuth
-    // application as discordOAuthRedirectUri above -- not a separate app,
-    // not a separate client id/secret. An operator who wants "Connect to
-    // hosted bot" must register this second URI in their own Discord
-    // Developer Portal app (documented in .env.example / Task 9's docs)
-    // alongside the existing console-login redirect URI. Deliberately its
-    // own config key rather than reusing discordOAuthRedirectUri: the two
-    // flows have different callback routes
-    // (/api/auth/discord/callback vs.
-    // /api/integrations/discord/hosted-bot/oauth/callback) and Discord
-    // requires the redirect_uri sent to /oauth2/authorize and /oauth2/token
-    // to exactly match one of the app's registered URIs for that specific
-    // request.
+    // Real UAT finding (2026-09-09): "Connect to hosted bot" originally
+    // reused discordOAuthClientId/discordOAuthClientSecret above (the
+    // console-sign-in app), on a second registered redirect URI -- the
+    // operator objected directly: console sign-in and the hosted-bot
+    // connection are unrelated capabilities and must each work without the
+    // other configured at all ("we have OAuth without bot and bot without
+    // OAuth"). These are now a fully independent Discord Application's
+    // credentials -- an operator can configure hosted-bot-connect without
+    // ever touching console sign-in, and vice versa. Same
+    // readInlineOrFile()/secrets-file convention as the sign-in secret
+    // above, just its own file so the two secrets are never conflated.
+    discordHostedBotOAuthClientId: process.env.DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID || "",
+    discordHostedBotOAuthClientSecret: readInlineOrFile(process.env.DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET, resolve(secretsDir, "discord-hosted-bot-oauth-client-secret.txt")),
     discordHostedBotOAuthRedirectUri: process.env.DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI || "",
     // The hosted mentat bot's console-registration endpoint. Overridable
     // ONLY so an integration test can point this at a local fake listener

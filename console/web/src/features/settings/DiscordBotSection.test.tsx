@@ -888,4 +888,57 @@ describe("DiscordBotSection", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(500); });
     expect(screen.getByText(/Welcome back/i)).toBeInTheDocument();
   });
+
+  // Real UAT finding (2026-09-09): "we have OAuth without bot and bot
+  // without OAuth" -- the hosted-bot connection's own, independent
+  // Discord Application config, shown whenever choice === "hosted",
+  // deliberately separate from Settings -> Discord OAuth.
+  it("shows the hosted-bot connection's own OAuth config form, pre-filled from server state, and saves config + secret separately", async () => {
+    mockApi.mockResolvedValue({
+      enabled: true,
+      roleIds: { player: [], moderator: [], admin: [] },
+      tokenConfigured: true,
+      deploymentChoice: "hosted",
+      hostedBotOAuthConfigured: false,
+      hostedBotOAuthClientId: "999999999999999999",
+      hostedBotOAuthRedirectUri: "https://example.com/callback"
+    } as never);
+    mockPost.mockResolvedValue({ ok: true } as never);
+
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+    expect(screen.getByText(/Hosted bot connection: not yet configured/i)).toBeInTheDocument();
+    expect(screen.getByDisplayValue("999999999999999999")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("https://example.com/callback")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/Discord application client secret/i), { target: { value: "a-real-looking-client-secret-value" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Save Hosted Bot Connection$/i }));
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
+      "/api/settings/discord-bot/oauth-config",
+      { clientId: "999999999999999999", redirectUri: "https://example.com/callback" }
+    ));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
+      "/api/settings/discord-bot/oauth-secret",
+      { secret: "a-real-looking-client-secret-value" }
+    ));
+    await screen.findByText(/Restart the console/i);
+    // The secret field clears after a successful save -- it's never
+    // echoed back, so nothing should linger in the input either.
+    expect(screen.queryByDisplayValue("a-real-looking-client-secret-value")).toBeNull();
+  });
+
+  it("never requires the hosted-bot OAuth config to be filled in before Enable is reachable -- the two are independent", async () => {
+    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Which are you using/i);
+    fireEvent.click(screen.getByRole("button", { name: /Hosted bot/i }));
+    await screen.findByText(/Role mappings/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
+    // Step 3's Enable button is reachable with zero mention of, or gate on,
+    // the hosted-bot OAuth config -- confirms the two are genuinely
+    // independent, not just independently labeled.
+    expect(await screen.findByRole("button", { name: /Enable Discord Bot Integration/i })).not.toBeDisabled();
+    expect(screen.queryByText(/Hosted bot connection/i)).toBeNull();
+  });
 });

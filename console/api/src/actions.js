@@ -173,6 +173,14 @@ export const ROUTE_ACTIONS = {
   // wildcard already in policy.js, same as regenerate-token, with no new
   // policy.js entry needed).
   "POST /api/settings/discord-bot/disable":     "settings:discord-bot-disable",
+  // Real UAT finding (2026-09-09): the hosted-bot connection's own,
+  // independent Discord Application config -- see server.js's own comment
+  // on these 2 routes for why they're separate from Settings -> Discord
+  // OAuth. Same tier as enable/role-ids/restart above, not owner-only:
+  // this is prerequisite setup, not a destructive/credential-invalidating
+  // action the way regenerate-token/disable are.
+  "POST /api/settings/discord-bot/oauth-config": "updates:apply",
+  "POST /api/settings/discord-bot/oauth-secret": "updates:apply",
 
   // --- Hosted Bot Registration ---
   // start/callback use updates:read (the same real precedent as

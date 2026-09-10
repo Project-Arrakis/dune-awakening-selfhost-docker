@@ -410,8 +410,8 @@ test("GET .../hosted-bot/oauth/callback rejects a state/cookie mismatch with 400
   const port = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "hosted-bot-routes-e2e-statebad-"));
   const console_ = startConsole(port, tempDir, {
-    DISCORD_OAUTH_CLIENT_ID: "client-id",
-    DISCORD_OAUTH_CLIENT_SECRET: "client-secret",
+    DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID: "client-id",
+    DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET: "client-secret",
     DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: `http://127.0.0.1:${port}/api/integrations/discord/hosted-bot/oauth/callback`
   });
   try {
@@ -448,8 +448,8 @@ test("GET .../hosted-bot/oauth/callback clears hosted_bot_oauth_state when the D
   const unreachablePort = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "hosted-bot-routes-e2e-exchangefail-"));
   const console_ = startConsole(port, tempDir, {
-    DISCORD_OAUTH_CLIENT_ID: "client-id",
-    DISCORD_OAUTH_CLIENT_SECRET: "client-secret",
+    DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID: "client-id",
+    DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET: "client-secret",
     DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: `http://127.0.0.1:${port}/api/integrations/discord/hosted-bot/oauth/callback`,
     // Deliberately nothing listening on this port -- exchangeDiscordAuthCode's
     // own fetch to Discord's token endpoint must fail at the connection
@@ -490,8 +490,8 @@ test("GET .../hosted-bot/oauth/callback clears hosted_bot_oauth_state when the p
   const discordPort = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "hosted-bot-routes-e2e-toomanypending-"));
   const console_ = startConsole(port, tempDir, {
-    DISCORD_OAUTH_CLIENT_ID: "client-id",
-    DISCORD_OAUTH_CLIENT_SECRET: "client-secret",
+    DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID: "client-id",
+    DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET: "client-secret",
     DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: `http://127.0.0.1:${port}/api/integrations/discord/hosted-bot/oauth/callback`,
     DISCORD_OAUTH_BASE_URL: `http://127.0.0.1:${discordPort}`
   });
@@ -550,8 +550,8 @@ test("hosted-bot OAuth start -> callback round trip succeeds end-to-end and retu
   const OWNED_GUILD_B = "444444444444444444";
   const tempDir = mkdtempSync(join(tmpdir(), "hosted-bot-routes-e2e-oauth-success-"));
   const console_ = startConsole(consolePort, tempDir, {
-    DISCORD_OAUTH_CLIENT_ID: "client-id",
-    DISCORD_OAUTH_CLIENT_SECRET: "client-secret",
+    DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID: "client-id",
+    DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET: "client-secret",
     DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: `http://127.0.0.1:${consolePort}/api/integrations/discord/hosted-bot/oauth/callback`,
     DISCORD_OAUTH_BASE_URL: `http://127.0.0.1:${discordPort}`
   });
@@ -608,8 +608,8 @@ test("hosted-bot/register rejects a guildId the caller does not own with 403, an
   const NOT_OWNED_GUILD = "666666666666666666";
   const tempDir = mkdtempSync(join(tmpdir(), "hosted-bot-routes-e2e-guildnotowned-"));
   const console_ = startConsole(consolePort, tempDir, {
-    DISCORD_OAUTH_CLIENT_ID: "client-id",
-    DISCORD_OAUTH_CLIENT_SECRET: "client-secret",
+    DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID: "client-id",
+    DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET: "client-secret",
     DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: `http://127.0.0.1:${consolePort}/api/integrations/discord/hosted-bot/oauth/callback`,
     DISCORD_OAUTH_BASE_URL: `http://127.0.0.1:${discordPort}`,
     MENTAT_BACKEND_REGISTER_URL: `http://127.0.0.1:${mentatPort}/api/consoles/register`
@@ -702,8 +702,8 @@ test("hosted-bot/register succeeds end-to-end: mentat-backend receives exactly t
   const OWNED_GUILD = "333333333333333333";
   const tempDir = mkdtempSync(join(tmpdir(), "hosted-bot-routes-e2e-register-success-"));
   const console_ = startConsole(consolePort, tempDir, {
-    DISCORD_OAUTH_CLIENT_ID: "client-id",
-    DISCORD_OAUTH_CLIENT_SECRET: "client-secret",
+    DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID: "client-id",
+    DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET: "client-secret",
     DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: `http://127.0.0.1:${consolePort}/api/integrations/discord/hosted-bot/oauth/callback`,
     DISCORD_OAUTH_BASE_URL: `http://127.0.0.1:${discordPort}`,
     MENTAT_BACKEND_REGISTER_URL: `http://127.0.0.1:${mentatPort}/api/consoles/register`
@@ -764,8 +764,8 @@ test("hosted-bot/register retries exactly once against mentat-backend on a 503, 
   const OWNED_GUILD = "333333333333333333";
   const tempDir = mkdtempSync(join(tmpdir(), "hosted-bot-routes-e2e-register-retry-"));
   const console_ = startConsole(consolePort, tempDir, {
-    DISCORD_OAUTH_CLIENT_ID: "client-id",
-    DISCORD_OAUTH_CLIENT_SECRET: "client-secret",
+    DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID: "client-id",
+    DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET: "client-secret",
     DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: `http://127.0.0.1:${consolePort}/api/integrations/discord/hosted-bot/oauth/callback`,
     DISCORD_OAUTH_BASE_URL: `http://127.0.0.1:${discordPort}`,
     MENTAT_BACKEND_REGISTER_URL: `http://127.0.0.1:${mentatPort}/api/consoles/register`

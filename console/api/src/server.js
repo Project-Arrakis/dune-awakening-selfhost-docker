@@ -1570,6 +1570,50 @@ async function handleApi(req, res) {
     audit(config, req, "settings.discord-bot.disabled", {});
     return json(res, 200, { ok: true });
   }
+  // Real UAT finding (2026-09-09): "Connect to hosted bot" originally
+  // reused the console-sign-in Discord Application's Client ID/Secret
+  // (Settings -> Discord OAuth) on a second redirect URI -- the operator
+  // objected directly that these are unrelated capabilities and neither
+  // should require the other configured ("we have OAuth without bot and
+  // bot without OAuth"). These 2 routes configure a fully independent
+  // Discord Application for the hosted-bot connection specifically, kept
+  // under Settings -> Discord Bot (this same route namespace), not
+  // Settings -> Discord OAuth. Split into config (this route) + secret
+  // (the next route) for the same reason /api/setup/write-oauth-config
+  // and /api/setup/save-oauth-secret are already split for the sign-in
+  // credentials: a secret needs its own file/permissions handling, a
+  // plain client ID/URL doesn't.
+  if (path === "/api/settings/discord-bot/oauth-config" && req.method === "POST") {
+    const body = await readJson(req);
+    if (body.clientId !== undefined && body.clientId !== "" && !DISCORD_SNOWFLAKE_RE.test(String(body.clientId))) {
+      return json(res, 400, { error: "Client ID must be a valid Discord snowflake" });
+    }
+    if (body.redirectUri !== undefined && body.redirectUri !== "" && !/^https?:\/\/.+/.test(String(body.redirectUri))) {
+      return json(res, 400, { error: "Redirect URI must be a valid URL" });
+    }
+    if (body.clientId !== undefined) updateEnvFileValue("DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID", String(body.clientId));
+    if (body.redirectUri !== undefined) updateEnvFileValue("DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI", String(body.redirectUri));
+    audit(config, req, "settings.discord-bot.oauth-config-updated", {});
+    return json(res, 200, { ok: true });
+  }
+  if (path === "/api/settings/discord-bot/oauth-secret" && req.method === "POST") {
+    const body = await readJson(req);
+    const secret = body.secret;
+    if (!secret || String(secret).length < 20) {
+      return json(res, 400, { error: "Client secret must be at least 20 characters." });
+    }
+    const dir = config.secretsDir;
+    mkdirSync(dir, { recursive: true });
+    const secretPath = resolve(dir, "discord-hosted-bot-oauth-client-secret.txt");
+    try {
+      writeFileSync(secretPath, `${String(secret).trim()}\n`, { mode: 0o600 });
+      chmodSync(secretPath, 0o600);
+    } catch {
+      return json(res, 500, { error: "Failed to save client secret." });
+    }
+    audit(config, req, "settings.discord-bot.oauth-secret-updated", { secret: "<redacted>" });
+    return json(res, 200, { ok: true });
+  }
 
   // ---- Hosted-bot console-initiated OAuth registration (Task 6) ----
   // Deliberately dispatched here, in the post-auth/post-IAM block alongside
@@ -1596,8 +1640,16 @@ async function handleApi(req, res) {
       // UI, inconsistent with the rest of this handler's own convention.
       return html(res, 403, oauthErrorPage("This console isn't configured for the hosted bot."));
     }
-    if (!config.discordOAuthClientId || !config.discordOAuthClientSecret || !config.discordHostedBotOAuthRedirectUri) {
-      return html(res, 200, oauthErrorPage("Connecting to the hosted bot isn't configured for this console yet. Set up Discord sign-in (Settings -> Discord OAuth) and register the hosted-bot redirect URI first, then try connecting to the hosted bot again."));
+    if (!config.discordHostedBotOAuthClientId || !config.discordHostedBotOAuthClientSecret || !config.discordHostedBotOAuthRedirectUri) {
+      // Real UAT finding (2026-09-09): this used to say "Set up Discord
+      // sign-in (Settings -> Discord OAuth)" -- the operator objected
+      // directly that console sign-in and the hosted-bot connection are
+      // unrelated capabilities, and shouldn't be presented (or configured)
+      // as if one depends on the other. This now has its own fully
+      // independent Discord Application credentials (see config.js's own
+      // comment on discordHostedBotOAuthClientId), configured in Settings
+      // -> Discord Bot, not Settings -> Discord OAuth.
+      return html(res, 200, oauthErrorPage("Connecting to the hosted bot isn't configured for this console yet. Go to Settings -> Discord Bot and fill in a Discord Application's Client ID, Client Secret, and Redirect URI for the hosted bot connection, then try connecting to the hosted bot again."));
     }
     // PKCE + server-side pending-state record (fix round 1, Important #3):
     // mirrors console-login's own oauthPendingStates.issue() -> { state,
@@ -1612,7 +1664,7 @@ async function handleApi(req, res) {
     }
     const { state: oauthState, challenge } = pendingState;
     res.setHeader("Set-Cookie", hostedBotOAuthStateCookie(oauthState, config.secureCookies));
-    const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordOAuthClientId, redirectUri: config.discordHostedBotOAuthRedirectUri, state: oauthState, codeChallenge: challenge });
+    const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordHostedBotOAuthClientId, redirectUri: config.discordHostedBotOAuthRedirectUri, state: oauthState, codeChallenge: challenge });
     res.writeHead(302, { Location: authorizeUrl });
     res.end();
     audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/start"), "hosted-bot.oauth.start", { ok: true });
@@ -1659,8 +1711,8 @@ async function handleApi(req, res) {
       token = await exchangeDiscordAuthCode({
         code,
         redirectUri: config.discordHostedBotOAuthRedirectUri,
-        clientId: config.discordOAuthClientId,
-        clientSecret: config.discordOAuthClientSecret,
+        clientId: config.discordHostedBotOAuthClientId,
+        clientSecret: config.discordHostedBotOAuthClientSecret,
         codeVerifier: consumedState.verifier,
         apiBaseUrl: config.discordOAuthApiBaseUrl
       });

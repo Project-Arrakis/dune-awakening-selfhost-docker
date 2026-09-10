@@ -18,6 +18,15 @@ export type DiscordBotSettingsState = {
   // in-memory React state is gone.
   hostedBotConnectedGuildId?: string | null;
   hostedBotConnectedGuildName?: string | null;
+  // Real UAT finding (2026-09-09): "Connect to hosted bot" needs its own,
+  // independent Discord Application -- deliberately separate from Settings
+  // -> Discord OAuth's console-sign-in credentials ("we have OAuth without
+  // bot and bot without OAuth"). Client ID/Redirect URI are safe to show
+  // back (same non-secret status tokenConfigured already reports); the
+  // client secret itself is never returned.
+  hostedBotOAuthConfigured?: boolean;
+  hostedBotOAuthClientId?: string | null;
+  hostedBotOAuthRedirectUri?: string | null;
 };
 
 export const discordAdapterSettingsApi = {
@@ -46,5 +55,14 @@ export const discordAdapterSettingsApi = {
   // disableDiscordBotAdapter()'s own comment in adapterSettings.js for
   // exactly what it wipes). Like enable(), does not restart itself --
   // the caller follows up with restart() once ready.
-  disable: () => post<{ ok: boolean }>("/api/settings/discord-bot/disable", {})
+  disable: () => post<{ ok: boolean }>("/api/settings/discord-bot/disable", {}),
+  // Real UAT finding (2026-09-09): the hosted-bot connection's own,
+  // independent Discord Application config -- see this file's own
+  // DiscordBotSettingsState comment for why it's separate from Settings ->
+  // Discord OAuth. Split into config (non-secret) + secret the same way
+  // Settings -> Discord OAuth's own save flow already is.
+  saveOAuthConfig: (config: { clientId?: string; redirectUri?: string }) =>
+    post<{ ok: boolean }>("/api/settings/discord-bot/oauth-config", config),
+  saveOAuthSecret: (secret: string) =>
+    post<{ ok: boolean }>("/api/settings/discord-bot/oauth-secret", { secret })
 };

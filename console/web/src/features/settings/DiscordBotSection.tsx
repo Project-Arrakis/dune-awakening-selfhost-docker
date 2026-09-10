@@ -5,6 +5,7 @@ import { updatesApi } from "../../api/updates";
 import { persistUpdateTask, loadPersistedUpdateTask } from "../updates/updateUtils";
 import { ConfirmDialog, type ConfirmDialogRequest, type ConfirmDialogOutcome } from "../../components/common/ConfirmDialog";
 import { copyText } from "../../lib/clipboard";
+import { SecretInput } from "../../components/SecretInput";
 
 const TASK_KEY = "arrakis.discordAdapterEnableTask";
 const CHOICE_KEY = "arrakis.discordAdapterChoice";
@@ -195,6 +196,18 @@ export function DiscordBotSection() {
   // feedback that they're back, since there's no reliable cross-origin
   // way to confirm the invite actually succeeded from here.
   const [botInviteWindowClosed, setBotInviteWindowClosed] = useState(false);
+  // Real UAT finding (2026-09-09): "Connect to hosted bot" needs its own,
+  // independent Discord Application -- deliberately separate from Settings
+  // -> Discord OAuth's console-sign-in credentials ("we have OAuth without
+  // bot and bot without OAuth"). oauthClientId/oauthRedirectUri are
+  // pre-filled from refresh()'s fetched state (non-secret, safe to show
+  // back); oauthSecret is always blank -- the server never returns it.
+  const [oauthClientId, setOAuthClientId] = useState("");
+  const [oauthRedirectUri, setOAuthRedirectUri] = useState("");
+  const [oauthSecret, setOAuthSecret] = useState("");
+  const [oauthConfigured, setOAuthConfigured] = useState(false);
+  const [oauthSaving, setOAuthSaving] = useState(false);
+  const [oauthSaveResult, setOAuthSaveResult] = useState("");
   // Real UAT finding (2026-09-09): handleEnable()/handleUpdateRoleIds()
   // used to fire their restart-triggering API call the instant the
   // ConfirmDialog above was confirmed, with no further warning -- the
@@ -289,7 +302,15 @@ export function DiscordBotSection() {
       setPlayerRoleIds(nextState.roleIds.player.join(", "));
       setModeratorRoleIds(nextState.roleIds.moderator.join(", "));
       setAdminRoleIds(nextState.roleIds.admin.join(", "));
+      // Real UAT finding (2026-09-09): same reasoning as role IDs above --
+      // don't clobber an in-progress edit of the hosted-bot connection's
+      // own OAuth config on an unrelated refresh(). The client secret
+      // itself is never returned by the server, so there's nothing to
+      // repopulate there regardless.
+      setOAuthClientId(nextState.hostedBotOAuthClientId || "");
+      setOAuthRedirectUri(nextState.hostedBotOAuthRedirectUri || "");
     }
+    setOAuthConfigured(Boolean(nextState.hostedBotOAuthConfigured));
     // Never assume "never configured" -- always reflect real state
     // (Layer 1 audit finding #7, converged on by 3 independent hats).
     setPhase(nextState.enabled ? "enabled" : "disabled");
@@ -498,6 +519,33 @@ export function DiscordBotSection() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  // Real UAT finding (2026-09-09): "we have OAuth without bot and bot
+  // without OAuth" -- the hosted-bot connection's own, independent Discord
+  // Application config, deliberately not routed through the restart-
+  // countdown machinery above: this only takes effect after a restart
+  // regardless (same convention as Settings -> Discord OAuth's own save
+  // flow), but there's no live secret to reveal and no immediate outage to
+  // warn about from this call alone -- the operator triggers the actual
+  // restart separately, whenever they next Enable/Save Role IDs/Disable.
+  async function handleSaveOAuthConfig() {
+    setOAuthSaving(true);
+    setOAuthSaveResult("");
+    setError("");
+    try {
+      await discordAdapterSettingsApi.saveOAuthConfig({ clientId: oauthClientId, redirectUri: oauthRedirectUri });
+      if (oauthSecret) {
+        await discordAdapterSettingsApi.saveOAuthSecret(oauthSecret);
+        setOAuthSecret("");
+      }
+      setOAuthSaveResult("Saved. Restart the console (Enable, Save Role IDs, or Disable will trigger one) for this to take effect.");
+      await refresh({ preserveInputs: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setOAuthSaving(false);
     }
   }
 
@@ -737,6 +785,24 @@ export function DiscordBotSection() {
           <button disabled={submitting} onClick={() => { void handleUpdateRoleIds(); }}>Save Role IDs</button>
           <button disabled={submitting} onClick={() => { void handleRegenerate(); }}>Regenerate Token</button>
           <button disabled={submitting} onClick={() => { void handleDisable(); }}>Disable Discord Bot Integration</button>
+          {choice === "hosted" && (
+            <div className="settings-hosted-bot-oauth-config">
+              {/* Real UAT finding (2026-09-09): "we have OAuth without bot
+                  and bot without OAuth" -- this Discord Application is
+                  specific to the hosted-bot connection and deliberately
+                  independent of Settings -> Discord OAuth's console-sign-in
+                  app. Neither requires the other to be configured. */}
+              <p className="muted">
+                {oauthConfigured ? "Hosted bot connection: configured." : "Hosted bot connection: not yet configured."}{" "}
+                This is its own Discord Application, separate from console sign-in (Settings → Discord OAuth) — you don't need one configured to use the other.
+              </p>
+              <label>Client ID<input disabled={oauthSaving} value={oauthClientId} onChange={(event) => setOAuthClientId(event.target.value)} placeholder="Discord application client ID" /></label>
+              <label>Client Secret<SecretInput disabled={oauthSaving} value={oauthSecret} onChange={(event) => setOAuthSecret(event.target.value)} placeholder={oauthConfigured ? "Paste new to replace" : "Discord application client secret"} /></label>
+              <label>Redirect URI<input disabled={oauthSaving} value={oauthRedirectUri} onChange={(event) => setOAuthRedirectUri(event.target.value)} placeholder="https://your-host:8088/api/integrations/discord/hosted-bot/oauth/callback" /></label>
+              <button type="button" disabled={oauthSaving} onClick={() => { void handleSaveOAuthConfig(); }}>{oauthSaving ? "Saving..." : "Save Hosted Bot Connection"}</button>
+              {oauthSaveResult && <p className="muted" role="status">{oauthSaveResult}</p>}
+            </div>
+          )}
           {choice === "hosted" && !ownedGuilds && !connectedGuildName && (
             <>
               <button type="button" onClick={() => openBotInviteWindow(() => setBotInviteWindowClosed(true))}>Add to Discord</button>

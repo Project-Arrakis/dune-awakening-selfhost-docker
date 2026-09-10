@@ -50,6 +50,42 @@ test("readDiscordBotSettingsState reports disabled with no role IDs when nothing
   assert.equal(state.tokenConfigured, false);
 });
 
+// Real UAT finding (2026-09-09): "Connect to hosted bot" needs its own,
+// independent Discord Application -- deliberately separate from Settings
+// -> Discord OAuth's console-sign-in credentials ("we have OAuth without
+// bot and bot without OAuth"). readDiscordBotSettingsState() is where the
+// frontend learns whether that's configured -- it must read the NEW,
+// independent config fields, never fall back to the sign-in ones, and
+// must never return the secret itself.
+test("readDiscordBotSettingsState reports the hosted-bot OAuth app's own config, independent of console-sign-in OAuth", () => {
+  const configured = readDiscordBotSettingsState({
+    discordHostedBotOAuthClientId: "999999999999999999",
+    discordHostedBotOAuthClientSecret: "shh-do-not-return-this",
+    discordHostedBotOAuthRedirectUri: "https://example.com/callback",
+    // Deliberately different sign-in credentials present too -- proves
+    // this reads the hosted-bot-specific fields, not these.
+    discordOAuthClientId: "111111111111111111",
+    discordOAuthClientSecret: "unrelated-sign-in-secret"
+  });
+  assert.equal(configured.hostedBotOAuthConfigured, true);
+  assert.equal(configured.hostedBotOAuthClientId, "999999999999999999");
+  assert.equal(configured.hostedBotOAuthRedirectUri, "https://example.com/callback");
+  assert.equal("hostedBotOAuthClientSecret" in configured, false, "the secret itself must never be returned");
+  assert.ok(!JSON.stringify(configured).includes("shh-do-not-return-this"), "the secret value must not appear anywhere in the response");
+
+  const unconfigured = readDiscordBotSettingsState({});
+  assert.equal(unconfigured.hostedBotOAuthConfigured, false);
+  assert.equal(unconfigured.hostedBotOAuthClientId, null);
+  assert.equal(unconfigured.hostedBotOAuthRedirectUri, null);
+
+  const partial = readDiscordBotSettingsState({
+    discordHostedBotOAuthClientId: "999999999999999999",
+    discordHostedBotOAuthRedirectUri: "https://example.com/callback"
+    // No client secret -- must not report configured with only 2 of 3 set.
+  });
+  assert.equal(partial.hostedBotOAuthConfigured, false, "all 3 fields must be present to report configured");
+});
+
 test("readDiscordBotSettingsState reports enabled with existing role IDs -- the state-detection fix for pre-existing manual configs", () => {
   process.env.DUNE_DISCORD_ADAPTER_ENABLED = "true";
   process.env.DISCORD_PLAYER_ROLE_IDS = "111111111111111111";
