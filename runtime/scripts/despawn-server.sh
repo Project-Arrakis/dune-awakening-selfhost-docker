@@ -4,6 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 PORT_RESERVATION_FILE="runtime/generated/spawn-port-reservations.tsv"
 PORT_LOCK_FILE="runtime/generated/spawn-port-reservations.lock"
+# shellcheck source=runtime/scripts/landsraad-instance-cleanup.sh
+source runtime/scripts/landsraad-instance-cleanup.sh
 
 usage() {
   cat <<'EOF'
@@ -205,6 +207,7 @@ fi
 despawn_container() {
   local container="$1"
   local container_map="" partition_from_name="" partition_id="" server_id=""
+  local landsraad_cleanup_sql="" assignment_cleanup_sql=""
 
   case "$container" in
     dune-server-survival-1|dune-server-overmap)
@@ -230,6 +233,17 @@ despawn_container() {
     server_id="$(psql_value "select coalesce(server_id, '') from dune.world_partition where partition_id = $partition_id limit 1;")"
   fi
 
+  landsraad_cleanup_sql="$(landsraad_instance_cleanup_sql "$container_map" "$partition_id" 2>/dev/null || true)"
+  if [ -n "$server_id" ]; then
+    assignment_cleanup_sql="
+update dune.world_partition
+set server_id = null
+where server_id = '$server_id';
+
+delete from dune.farm_state
+where server_id = '$server_id';"
+  fi
+
   echo "Despawning: $container"
   docker rm -f "$container"
   ensure_runtime_state_file "$PORT_LOCK_FILE" "spawn port reservation lock"
@@ -238,18 +252,20 @@ despawn_container() {
   ensure_runtime_state_file "$PORT_RESERVATION_FILE" "spawn port reservation state"
   release_port_reservation "$container"
 
-  if [ -n "$server_id" ]; then
+  if [ -n "$server_id" ] || [ -n "$landsraad_cleanup_sql" ]; then
     echo
-    echo "Cleaning DB assignment for server_id: $server_id"
+    if [ -n "$server_id" ]; then
+      echo "Cleaning DB assignment for server_id: $server_id"
+    fi
+    if [ -n "$landsraad_cleanup_sql" ]; then
+      echo "Cleaning transient Landsraad actors for $container_map partition $partition_id"
+    fi
     docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
 begin;
 
-update dune.world_partition
-set server_id = null
-where server_id = '$server_id';
+$landsraad_cleanup_sql
 
-delete from dune.farm_state
-where server_id = '$server_id';
+$assignment_cleanup_sql
 
 commit;
 "
