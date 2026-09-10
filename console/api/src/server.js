@@ -1906,7 +1906,19 @@ async function handleApi(req, res) {
       setDeploymentChoice(config, "hosted");
     }
     if (!currentState.tokenConfigured) {
-      applyDiscordBotEnableRequest(config, {});
+      // CRITICAL fix (Layer 2 audit, #866): tokenConfigured and role-ID
+      // configuration are independent env vars -- an operator can have
+      // real role IDs already set in .env (a documented, supported
+      // legacy path, see discordRoleMappingFromEnv()) while never having
+      // minted a hosted-bot adapter token. Passing a bare {} here, like
+      // the OLD code did, unconditionally overwrites all 3 role-ID env
+      // keys to empty strings inside applyDiscordBotEnableRequest() --
+      // silently destroying that operator's existing role mapping the
+      // moment they use this new entry point. Must forward the real
+      // current values, matching the only other call site (the
+      // /api/settings/discord-bot/enable route above) which always
+      // supplies real current values, never a bare {}.
+      applyDiscordBotEnableRequest(config, currentState.roleIds);
     }
     const adapterToken = readDiscordAdapterTokenForHostedBot(config);
     if (!adapterToken) {

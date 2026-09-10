@@ -322,6 +322,55 @@ test("POST .../auto-invite/start succeeds end-to-end: silently enables the hoste
   }
 });
 
+// Layer 2 audit finding, CRITICAL (#866): tokenConfigured and role-ID
+// configuration are independent env vars -- an operator can have real
+// role IDs already set via the documented legacy env-var path
+// (discordRoleMappingFromEnv()) while never having minted a hosted-bot
+// adapter token. The silent-enable step above must never destroy that
+// existing configuration just because it's minting a token for the
+// first time.
+test("POST .../auto-invite/start preserves an operator's existing role-ID configuration when silently minting a first-time adapter token", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-preserve-roles-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_AUTO_INVITE_START_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/start`,
+    // Real, pre-existing role-ID configuration -- deliberately NOT going
+    // through POST /api/settings/discord-bot/enable first, matching the
+    // documented legacy path where these were hand-set in .env before the
+    // hosted-bot adapter token ever existed.
+    DISCORD_PLAYER_ROLE_IDS: "111111111111111111",
+    DISCORD_MODERATOR_ROLE_IDS: "222222222222222222",
+    DISCORD_ADMIN_ROLE_IDS: "333333333333333333"
+  });
+  const mentatLink = await startFakeMentatLinkStart(mentatLinkPort);
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+
+    const before = await (await api(port, "/api/settings/discord-bot", { cookie: session.cookie })).json();
+    assert.equal(before.tokenConfigured, false, "sanity check: no adapter token minted yet");
+    assert.deepEqual(before.roleIds, { player: ["111111111111111111"], moderator: ["222222222222222222"], admin: ["333333333333333333"] });
+
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/start", {
+      method: "POST", cookie: session.cookie, csrf: session.csrf, body: { consoleUrl: "https://console.example.test" }
+    });
+    assert.equal(res.status, 200, "the route must still succeed while minting the first-time token");
+
+    const after = await (await api(port, "/api/settings/discord-bot", { cookie: session.cookie })).json();
+    assert.equal(after.tokenConfigured, true, "a token must now be minted");
+    assert.deepEqual(
+      after.roleIds,
+      { player: ["111111111111111111"], moderator: ["222222222222222222"], admin: ["333333333333333333"] },
+      "the operator's pre-existing role-ID configuration must survive the silent first-time token mint, not be wiped to empty"
+    );
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(mentatLink.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("POST .../auto-invite/start returns 502 when mentat-link is unreachable, and never mints a pending state for it", async () => {
   const port = await getFreePort();
   const unreachablePort = await getFreePort();
