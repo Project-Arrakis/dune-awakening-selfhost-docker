@@ -284,6 +284,7 @@ test("destructive and audit-destroying actions are owner-only by default", () =>
     "carepackage:grant-all",      // server-wide economy injection in one call
     "carepackage:clear-history",  // destroys care-package audit evidence
     "admin:history:clear",        // destroys admin-command audit evidence
+    "landsraad:vendor-override:write", // fabricates a Landsraad term's win/decree outcome (#907)
   ]) {
     assert.equal(evaluate({ tier: "owner" }, action), true, `owner keeps ${action}`);
     assert.equal(evaluate({ tier: "admin" }, action), false, `admin is denied ${action}`);
@@ -299,6 +300,7 @@ test("tightening admin did not take away its routine surface", () => {
     "players:read", "players:mutate", "players:kick",
     "server:read", "server:restart-service",
     "backups:create", "logs:read", "bases:read",
+    "landsraad:read", "landsraad:write", // only vendor-override:write was split out (#907)
   ]) {
     assert.equal(evaluate({ tier: "admin" }, action), true, `admin keeps ${action}`);
   }

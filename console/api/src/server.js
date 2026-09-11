@@ -51,6 +51,7 @@ import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 import { liveMapSpice } from "./services/liveMapSpice.js";
 import { liveMapPoi } from "./services/liveMapPoi.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
+import { applySavedLandsraadVendorOverride, createLandsraadVendorOverrideReconciler, readLandsraadVendorOverridePreset, revertSavedLandsraadVendorOverride, saveLandsraadVendorOverridePreset } from "./services/landsraadVendorOverride.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
@@ -350,6 +351,7 @@ const addonJobScheduler = createAddonJobScheduler(config, {
   failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
 });
 const landsraadMilestoneReconciler = createLandsraadMilestoneReconciler(config, { getDb: () => db });
+const landsraadVendorOverrideReconciler = createLandsraadVendorOverrideReconciler(config, { getDb: () => db });
 const autoRefillScheduler = createAutoRefillScheduler({
   config,
   getDb: () => db,
@@ -470,7 +472,14 @@ setInterval(() => {
   runBackgroundTick("Message of the Day", messageOfTheDayAutoTick);
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
   runBackgroundTick("Addon scheduled jobs", () => addonJobScheduler.tick());
+  // These two reconcilers can both issue a `for update` lock against the
+  // same latest dune.landsraad_decree_term row in the same tick (one waits
+  // for the other to commit -- not a deadlock, just a known, accepted
+  // serialization coupling; 2026-09-11 Layer 2 audit, Architect hat
+  // finding). If a reconciler-tick latency spike ever needs investigating,
+  // check here first before assuming either one alone is slow.
   runBackgroundTick("Landsraad milestone preset", () => landsraadMilestoneReconciler.tick());
+  runBackgroundTick("Landsraad vendor override", () => landsraadVendorOverrideReconciler.tick());
   // Daily, but gated inside the tick like every other long-period job here.
   // Costs one small file read when no base is enrolled, and no database query.
   runBackgroundTick("Bases auto-refill", () => autoRefillScheduler.tick());
@@ -1252,6 +1261,8 @@ async function handleApi(req, res) {
   if (path === "/api/admin/landsraad/milestone-preset") return landsraadRoute(req, res, "milestone-preset");
   if (path === "/api/admin/landsraad/reward-tier") return landsraadRoute(req, res, "reward-tier");
   if (path === "/api/admin/landsraad/player-contribution") return landsraadRoute(req, res, "player-contribution");
+  if (path === "/api/admin/landsraad/vendor-override") return landsraadRoute(req, res, "vendor-override");
+  if (path === "/api/admin/landsraad/vendor-override/revert") return landsraadRoute(req, res, "vendor-override-revert");
   if (path === "/api/admin/broadcast" && req.method === "POST") return broadcastRoute(req, res);
   if (path === "/api/admin/map-chat" && req.method === "POST") return mapChatRoute(req, res);
   if (path === "/api/admin/broadcast-shutdown" && req.method === "POST") return shutdownBroadcastRoute(req, res);
@@ -3733,6 +3744,13 @@ async function playerAnnouncementsRoute(req, res) {
 async function landsraadRoute(req, res, action) {
   if (req.method === "GET" && action === "overview") return dbJson(res, () => duneDb.landsraadOverview(db));
   if (req.method === "GET" && action === "milestone-preset") return json(res, 200, { preset: readLandsraadMilestonePreset(config) });
+  if (req.method === "GET" && action === "vendor-override") {
+    return dbJson(res, async () => ({
+      preset: readLandsraadVendorOverridePreset(config),
+      catalog: await duneDb.landsraadVendorCatalog(db),
+      houseCatalog: await duneDb.landsraadHouseFactionCatalog(db)
+    }));
+  }
   if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
   const body = await readJson(req);
   try {
@@ -3745,6 +3763,13 @@ async function landsraadRoute(req, res, action) {
     }
     else if (action === "reward-tier") result = await duneDb.updateLandsraadRewardTier(db, body);
     else if (action === "player-contribution") result = await duneDb.setLandsraadPlayerContribution(db, body);
+    else if (action === "vendor-override") {
+      saveLandsraadVendorOverridePreset(config, body);
+      result = await applySavedLandsraadVendorOverride(config, db, { allowOverrideResolvedTerm: body.overrideResolvedTerm === true });
+    }
+    else if (action === "vendor-override-revert") {
+      result = await revertSavedLandsraadVendorOverride(config, db);
+    }
     else return json(res, 404, { error: "Not found" });
     audit(config, req, `admin.landsraad.${action}`, { ...body, ok: true });
     return json(res, 200, result);
