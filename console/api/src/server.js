@@ -34,9 +34,9 @@ import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute, readDiscordBotApiToken } from "./integrations/discord/routes.js";
-import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
+import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie, constantTimeStringEqual } from "./integrations/discord/oauth.js";
 import { fetchOwnedDiscordGuilds, createPendingRegistrationStore, hostedBotOAuthStateCookie, clearHostedBotOAuthStateCookie, hostedBotRegistrationHandleCookie, clearHostedBotRegistrationHandleCookie, hostedBotOAuthReturnPage } from "./integrations/discord/hostedBotOAuth.js";
-import { buildAutoInviteAuthorizeUrl, createAutoInvitePendingStateStore, autoInviteStateCookie, clearAutoInviteStateCookie, autoInviteCompletePage } from "./integrations/discord/autoInvite.js";
+import { buildAutoInviteAuthorizeUrl, createAutoInvitePendingStateStore, autoInviteStateCookie, clearAutoInviteStateCookie, autoInviteCompletePage, autoInviteConfirmationIdCookie, clearAutoInviteConfirmationIdCookie } from "./integrations/discord/autoInvite.js";
 import { fetchWithTimeoutAndRetry } from "./services/httpWithRetry.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
@@ -2053,7 +2053,19 @@ async function handleApi(req, res) {
     // route's own job ends at showing the operator the right "waiting"
     // state, matching design doc §6's failure-mode table, and handing
     // confirmationId to the frontend so it can start that poll.
-    res.setHeader("Set-Cookie", clearAutoInviteStateCookie(config.secureCookies));
+    // Layer 2 audit finding: the confirmation-status route below has no
+    // CSRF protection of its own beyond a valid session -- an attacker who
+    // separately knows/stages a confirmationId could otherwise trick a
+    // logged-in operator's browser (asc_session is SameSite=Lax, which
+    // does ride along on a cross-site top-level navigation) into polling
+    // with an UNRELATED confirmationId, persisting a wrong guild's
+    // connection. Same double-submit-cookie mechanism as auto_invite_state
+    // above: this cookie is set ONLY here, when the browser is trusted to
+    // have just legitimately received this exact confirmationId, and
+    // confirmation-status requires the presented value to match it.
+    const cookiesToSet = [clearAutoInviteStateCookie(config.secureCookies)];
+    if (ok && confirmationId) cookiesToSet.push(autoInviteConfirmationIdCookie(confirmationId, config.secureCookies));
+    res.setHeader("Set-Cookie", cookiesToSet);
     audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/complete"), "hosted-bot.auto-invite.complete", { ok, reason: ok ? undefined : reason, reclaimed });
     return html(res, 200, autoInviteCompletePage({ ok, guildName, reason, reclaimed, confirmationId }));
   }
@@ -2071,6 +2083,18 @@ async function handleApi(req, res) {
     const confirmationId = String(url.searchParams.get("confirmationId") || "");
     if (!confirmationId) {
       return json(res, 400, { error: "confirmationId is required" });
+    }
+    // Layer 2 audit finding: double-submit cookie check, matching
+    // /auto-invite/complete's own state-cookie pattern -- a valid session
+    // alone is not enough to trust an arbitrary caller-supplied
+    // confirmationId, since persisting the wrong guild here has a real
+    // (if narrow) blast radius. Only /complete ever sets this cookie, and
+    // only for the confirmationId this exact browser just legitimately
+    // received.
+    const cookieConfirmationId = parseCookies(req.headers.cookie || "").get("auto_invite_confirmation_id") || "";
+    if (!cookieConfirmationId || !constantTimeStringEqual(confirmationId, cookieConfirmationId)) {
+      audit(config, req, "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "confirmation_id_cookie_mismatch" });
+      return json(res, 403, { error: "This connection request could not be verified. Start over from the settings page." });
     }
     let mentatLinkResponse;
     try {

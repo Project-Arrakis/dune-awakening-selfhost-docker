@@ -451,6 +451,14 @@ export function DiscordBotSection() {
         // the popup's own postMessage payload -- the popup itself is gone
         // ~1.2s after loading, so this is the only place the opener can
         // ever pick it up. Without it, there is nothing to poll with.
+        // Layer 2 audit finding: always clear any STALE prior poll entry
+        // first, unconditionally -- without this, a genuine new attempt
+        // whose payload is somehow missing confirmationId (version skew
+        // between Core and mentat-link) would silently resume polling an
+        // OLD, unrelated confirmationId left over from an earlier attempt,
+        // instead of either polling nothing or clearly having nothing to
+        // poll with.
+        persistConfirmationPoll(null);
         const confirmationId = String(data.result.confirmationId || "");
         if (confirmationId) {
           persistConfirmationPoll({ confirmationId, deadline: Date.now() + CONFIRMATION_POLL_BUDGET_MS });
@@ -1213,7 +1221,7 @@ export function DiscordBotSection() {
         return (
           <div className="settings-auto-invite-waiting" role="status">
             <p>{confirmationPollOutcomeMessage(confirmationPollOutcome)}</p>
-            <button type="button" onClick={() => { setAutoInviteStatus("idle"); setConfirmationPollOutcome(""); }}>Start over</button>
+            <button type="button" onClick={() => { persistConfirmationPoll(null); setAutoInviteStatus("idle"); setConfirmationPollOutcome(""); }}>Start over</button>
           </div>
         );
       }
@@ -1230,7 +1238,15 @@ export function DiscordBotSection() {
           {autoInviteReclaimed && (
             <p className="muted">This server was previously connected to a different console — that connection has been replaced, and role configuration was reset. Please reconfigure roles in the next step.</p>
           )}
-          <button type="button" onClick={() => setAutoInviteStatus("idle")}>Start over</button>
+          {/* Layer 2 audit finding (round 4, PR #891): "Start over" must
+              also clear the persisted confirmation poll (issue found on
+              this PR's own diff) -- otherwise a later reload/accordion
+              collapse-reopen would silently resurrect "waiting-for-owner"
+              for a request the operator explicitly asked to abandon on
+              screen. autoInviteBlockUntil (the token-safety guard) is
+              deliberately NOT cleared here -- that's a different concern,
+              already covered by the note below. */}
+          <button type="button" onClick={() => { persistConfirmationPoll(null); setAutoInviteStatus("idle"); }}>Start over</button>
           {/* Automated review finding, PR #868: "Start over" only resets
               this VISIBLE state -- there is no way to cancel the request
               already staged on mentat's side, which can still complete if

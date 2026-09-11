@@ -1334,6 +1334,43 @@ describe("DiscordBotSection", () => {
       await screen.findByText(/Request sent — check Discord to confirm the connection\./i);
     });
 
+    // Layer 2 audit finding (round 4, PR #891): "Start over" must clear
+    // the persisted confirmation poll -- otherwise a later reload/remount
+    // silently resurrects "waiting-for-owner" for a request the operator
+    // explicitly abandoned on screen, contradicting "Start over" resetting
+    // this screen.
+    it("Start over clears the persisted confirmation poll so a later remount does NOT resurrect waiting-for-owner", async () => {
+      vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
+      mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+      mockPost.mockImplementation((path: string) => {
+        if (path === "/api/integrations/discord/hosted-bot/auto-invite/start") return Promise.resolve({ authorizeUrl: "https://discord.com/oauth2/authorize?client_id=1546203607807041697&state=real-state" });
+        return Promise.resolve({ ok: true });
+      });
+      const { unmount } = render(<DiscordBotSection />);
+      await screen.findByText(/Which are you using/i);
+      fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
+      await screen.findByText(/Add bot to Discord/i);
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
+      await screen.findByRole("button", { name: /Waiting for Discord…/i });
+      act(() => { postMessageFromPopup({ ok: true, guildName: "Fleetyard", confirmationId: "confirmation-abc" }); });
+      await screen.findByText(/Request sent — check Discord to confirm the connection\./i);
+      expect(window.localStorage.getItem(CONFIRMATION_POLL_KEY)).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: /^Start over$/i }));
+      expect(window.localStorage.getItem(CONFIRMATION_POLL_KEY)).toBeNull();
+
+      unmount();
+      render(<DiscordBotSection />);
+      // Must NOT resurrect "waiting-for-owner" -- Start over genuinely
+      // reset this screen. `choice` persists independently (CHOICE_KEY),
+      // so the fresh mount correctly lands back on step 1's hosted branch
+      // showing the initial "Add & Connect Bot" button again, not the
+      // "waiting for owner" text.
+      await screen.findByRole("button", { name: /^Add & Connect Bot$/i });
+      expect(screen.queryByText(/Request sent — check Discord to confirm the connection\./i)).toBeNull();
+    });
+
     it("ignores a postMessage from a different origin", async () => {
       vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
       await reachStep1HostedBranch();
