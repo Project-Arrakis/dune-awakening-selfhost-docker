@@ -566,3 +566,157 @@ test("auto-invite/complete renders ok:false with the caller's reason when mentat
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+// ─── GET /api/integrations/discord/hosted-bot/auto-invite/confirmation-status
+// (dune-awakening-selfhost-docker#876, design doc §13, round 4): the
+// completion-signal poll. Before this route existed, Core had no way to
+// ever learn whether/when the Discord owner actually confirmed. ──────────
+
+// Fake mentat-link /confirmation-status proxy, mirroring
+// startFakeMentatLinkStart()'s own pattern above.
+function startFakeMentatLinkConfirmationStatus(port, { status = 200, body = { status: "pending" } } = {}) {
+  let hitCount = 0;
+  const requestUrls = [];
+  const server = createServer((req, res) => {
+    hitCount += 1;
+    requestUrls.push(req.url);
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+  });
+  return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve({ server, hits: () => hitCount, urls: () => requestUrls })));
+}
+
+test("GET .../auto-invite/confirmation-status requires a real session (401 unauthenticated)", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-noauth-"));
+  const console_ = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const res = await fetch(`http://127.0.0.1:${port}/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=x`, { redirect: "manual" });
+    assert.equal(res.status, 401);
+  } finally {
+    await stopProcess(console_.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("GET .../auto-invite/confirmation-status requires the confirmationId query param (400, never calls mentat-link)", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-missing-id-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_CONFIRMATION_STATUS_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/confirmation-status`
+  });
+  const mentatLink = await startFakeMentatLinkConfirmationStatus(mentatLinkPort);
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status", { cookie: session.cookie });
+    assert.equal(res.status, 400);
+    assert.equal(mentatLink.hits(), 0, "a missing confirmationId must never reach mentat-link at all");
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(mentatLink.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("GET .../auto-invite/confirmation-status forwards confirmationId to mentat-link and returns its status verbatim when still pending", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-pending-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_CONFIRMATION_STATUS_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/confirmation-status`
+  });
+  const mentatLink = await startFakeMentatLinkConfirmationStatus(mentatLinkPort, { body: { status: "pending" } });
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=abc123", { cookie: session.cookie });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, "pending");
+    assert.equal(mentatLink.hits(), 1);
+    assert.match(mentatLink.urls()[0], /confirmationId=abc123/);
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(mentatLink.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// This is THE closing test for issue #876 -- the console actually learning
+// a connection succeeded, and persisting it the same way the OLD flow's
+// own /register route already does.
+test("GET .../auto-invite/confirmation-status persists the connected guild via persistHostedBotConnectedGuild when mentat-link reports confirmed", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-confirmed-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_CONFIRMATION_STATUS_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/confirmation-status`
+  });
+  const mentatLink = await startFakeMentatLinkConfirmationStatus(mentatLinkPort, { body: { status: "confirmed", guildId: "111111111111111111", guildName: "Fleetyard" } });
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=abc123", { cookie: session.cookie });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, "confirmed");
+    assert.equal(body.guildName, "Fleetyard");
+
+    // The real assertion: this actually reached persistHostedBotConnectedGuild(),
+    // reflected on a subsequent settings read -- exactly the gap issue #876
+    // exists to close.
+    const settings = await (await api(port, "/api/settings/discord-bot", { cookie: session.cookie })).json();
+    assert.equal(settings.hostedBotConnectedGuildId, "111111111111111111");
+    assert.equal(settings.hostedBotConnectedGuildName, "Fleetyard");
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(mentatLink.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("GET .../auto-invite/confirmation-status does NOT persist anything when the status is denied/pending/not_found", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-denied-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_CONFIRMATION_STATUS_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/confirmation-status`
+  });
+  const mentatLink = await startFakeMentatLinkConfirmationStatus(mentatLinkPort, { body: { status: "denied" } });
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=abc123", { cookie: session.cookie });
+    const body = await res.json();
+    assert.equal(body.status, "denied");
+
+    const settings = await (await api(port, "/api/settings/discord-bot", { cookie: session.cookie })).json();
+    assert.equal(settings.hostedBotConnectedGuildId, null, "a denied outcome must never persist a connected guild");
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(mentatLink.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("GET .../auto-invite/confirmation-status returns 502 when mentat-link is unreachable", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-unreachable-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_CONFIRMATION_STATUS_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/confirmation-status`
+  });
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=abc123", { cookie: session.cookie });
+    assert.equal(res.status, 502);
+  } finally {
+    await stopProcess(console_.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});

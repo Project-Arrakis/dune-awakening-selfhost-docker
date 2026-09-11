@@ -142,8 +142,13 @@ export function clearAutoInviteStateCookie(secure = true) {
 // entirely rather than relying on getting it right in this template
 // string. postMessage's targetOrigin is this page's own window.location.origin
 // (never "*") -- the opener is always this exact same console origin.
-export function autoInviteCompletePage({ ok, guildName = "", reason = "", reclaimed = false }) {
-  const payload = { ok: Boolean(ok), guildName: String(guildName), reason: String(reason), reclaimed: Boolean(reclaimed) };
+// Round 4 (dune-awakening-selfhost-docker#876, design doc §13, issue #879):
+// confirmationId added to this postMessage payload -- this popup self-closes
+// ~1.2s after loading, so this is the ONLY hop where the opener window can
+// ever pick up the value it needs to later poll
+// /api/integrations/discord/hosted-bot/auto-invite/confirmation-status.
+export function autoInviteCompletePage({ ok, guildName = "", reason = "", reclaimed = false, confirmationId = "" }) {
+  const payload = { ok: Boolean(ok), guildName: String(guildName), reason: String(reason), reclaimed: Boolean(reclaimed), confirmationId: String(confirmationId) };
   const safeJson = JSON.stringify(payload).replace(/</g, "\\u003c");
   const message = ok ? "Request sent — check Discord to confirm the connection." : "Could not connect. Check the console for details.";
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Connecting…</title></head><body><p>${message}</p><noscript><p>Close this window and return to the console.</p></noscript><script>

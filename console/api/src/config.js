@@ -279,6 +279,12 @@ export function loadConfig() {
     // real, live, reachable hostname this dev/CI environment could
     // otherwise accidentally hit.
     mentatLinkAutoInviteStartUrl: process.env.MENTAT_LINK_AUTO_INVITE_START_URL || "https://mentat-link.darkdante.org/api/consoles/auto-invite/start",
+    // Round 4 (dune-awakening-selfhost-docker#876, design doc §13): the
+    // completion-signal poll target -- same "Core never holds
+    // MENTAT_PROXY_SHARED_SECRET" reasoning as mentatLinkAutoInviteStartUrl
+    // above, and the same test-only override need (mentat-link.darkdante.org
+    // is a real, live, reachable hostname).
+    mentatLinkConfirmationStatusUrl: process.env.MENTAT_LINK_CONFIRMATION_STATUS_URL || "https://mentat-link.darkdante.org/api/consoles/auto-invite/confirmation-status",
     // The redirect_uri embedded in the Discord authorize URL this flow
     // builds -- a FIXED value (mentat-link's own callback route), unlike
     // the OLD flow's operator-configured discordHostedBotOAuthRedirectUri.

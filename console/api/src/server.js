@@ -2028,6 +2028,11 @@ async function handleApi(req, res) {
     const guildName = completeUrl.searchParams.get("guildName") || "";
     const reason = completeUrl.searchParams.get("reason") || "";
     const reclaimed = completeUrl.searchParams.get("reclaimed") === "true";
+    // Round 4 (dune-awakening-selfhost-docker#876, design doc §13, issue
+    // #879): read alongside the existing fields -- the first of the three
+    // hops confirmationId must flow through so the frontend can later poll
+    // /api/integrations/discord/hosted-bot/auto-invite/confirmation-status.
+    const confirmationId = completeUrl.searchParams.get("confirmationId") || "";
     const cookieState = parseCookies(req.headers.cookie || "").get("auto_invite_state") || "";
 
     const consumed = hostedBotAutoInvitePendingStates.consume(state, cookieState);
@@ -2042,13 +2047,66 @@ async function handleApi(req, res) {
     // reasoning for why the signed redirect fires at staging time, not
     // after the owner actually confirms) -- NOT "the guild is connected."
     // persistHostedBotConnectedGuild() is deliberately NOT called on this
-    // path; the local display cache is only updated once a later,
-    // separate mechanism confirms the owner actually clicked Confirm (not
-    // yet built -- this route's own job ends at showing the operator the
-    // right "waiting" state, matching design doc §6's failure-mode table).
+    // path; the local display cache is only updated once the new
+    // confirmation-status poll (round 4, dune-awakening-selfhost-docker#876,
+    // design doc §13) observes the owner actually clicked Confirm -- this
+    // route's own job ends at showing the operator the right "waiting"
+    // state, matching design doc §6's failure-mode table, and handing
+    // confirmationId to the frontend so it can start that poll.
     res.setHeader("Set-Cookie", clearAutoInviteStateCookie(config.secureCookies));
     audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/complete"), "hosted-bot.auto-invite.complete", { ok, reason: ok ? undefined : reason, reclaimed });
-    return html(res, 200, autoInviteCompletePage({ ok, guildName, reason, reclaimed }));
+    return html(res, 200, autoInviteCompletePage({ ok, guildName, reason, reclaimed, confirmationId }));
+  }
+
+  // Round 4 (dune-awakening-selfhost-docker#876, design doc §13): the
+  // completion signal itself. Before this route existed, Core had no way
+  // to ever learn the Discord owner actually confirmed a pending
+  // connection -- an operator could complete the entire flow successfully
+  // and the console would never reflect it. This route is called
+  // repeatedly by the frontend's own bounded polling loop while it shows
+  // "waiting for owner," and forwards to mentat-link's own
+  // /confirmation-status proxy (no MENTAT_PROXY_SHARED_SECRET on Core's
+  // side, same reasoning as /auto-invite/start above).
+  if (path === "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status" && req.method === "GET") {
+    const confirmationId = String(url.searchParams.get("confirmationId") || "");
+    if (!confirmationId) {
+      return json(res, 400, { error: "confirmationId is required" });
+    }
+    let mentatLinkResponse;
+    try {
+      mentatLinkResponse = await fetchWithTimeoutAndRetry(
+        `${config.mentatLinkConfirmationStatusUrl}?confirmationId=${encodeURIComponent(confirmationId)}`,
+        { method: "GET" },
+        { timeoutMs: 15000 }
+      );
+    } catch {
+      audit(config, req, "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "mentat_unreachable" });
+      return json(res, 502, { error: "Couldn't reach the hosted bot service. Try again in a moment." });
+    }
+    if (!mentatLinkResponse.ok) {
+      audit(config, req, "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "mentat_rejected", status: mentatLinkResponse.status });
+      return json(res, 502, { error: "Could not check the connection status. Try again in a moment." });
+    }
+    let statusBody;
+    try {
+      statusBody = await mentatLinkResponse.json();
+    } catch {
+      statusBody = null;
+    }
+    const status = String(statusBody?.status || "not_found");
+    // On "confirmed", persist the connection locally -- the same function
+    // the OLD, advanced flow's own handleRegisterGuild() already calls
+    // (server.js's existing persistHostedBotConnectedGuild() call site),
+    // just reached via this new path. This is the one place in the entire
+    // new auto-invite flow that finally closes the gap this round exists
+    // to fix.
+    if (status === "confirmed") {
+      const guildId = String(statusBody?.guildId || "");
+      const guildName = String(statusBody?.guildName || "");
+      if (guildId) persistHostedBotConnectedGuild(config, { guildId, guildName });
+    }
+    audit(config, req, "hosted-bot.auto-invite.confirmation-status", { ok: true, status });
+    return json(res, 200, { status, guildName: status === "confirmed" ? String(statusBody?.guildName || "") : undefined });
   }
 
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);

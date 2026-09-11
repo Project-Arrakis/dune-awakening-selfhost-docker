@@ -227,6 +227,10 @@ export const ROUTE_ACTIONS = {
   // newly-invented trust tier.
   "POST /api/integrations/discord/hosted-bot/auto-invite/start":    "settings:discord-bot-hosted-oauth",
   "GET /api/integrations/discord/hosted-bot/auto-invite/complete":  "settings:discord-bot-hosted-oauth",
+  // Round 4 (dune-awakening-selfhost-docker#876, design doc §13): the
+  // completion-signal poll -- same trust tier as the two routes above,
+  // it's a read of this same in-flight connection's own status.
+  "GET /api/integrations/discord/hosted-bot/auto-invite/confirmation-status": "settings:discord-bot-hosted-oauth",
 
   // --- Players (read) ---
   "GET /api/players":                          "players:read",

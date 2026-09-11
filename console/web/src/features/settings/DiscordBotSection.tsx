@@ -61,6 +61,47 @@ function loadPollDeadline(): number | null {
     return null;
   }
 }
+
+// Round 4 (dune-awakening-selfhost-docker#876, design doc §13, issue #880):
+// the confirmation-status poll needs its own persisted state, mirroring
+// POLL_DEADLINE_KEY's own pattern above -- without this, collapsing the
+// settings accordion (a genuine unmount, per SettingsPanel.tsx's
+// `{discordBotOpen && <DiscordBotSection />}`) or a page reload during the
+// up-to-~20-minute owner-confirmation wait would silently revert to
+// "idle," inviting a duplicate registration attempt for a request that may
+// still resolve server-side. Stores BOTH confirmationId and the poll's own
+// deadline together (as one JSON blob) since they're only ever meaningful
+// as a pair.
+const CONFIRMATION_POLL_KEY = "arrakis.discordAutoInviteConfirmationPoll";
+
+function persistConfirmationPoll(value: { confirmationId: string; deadline: number } | null) {
+  if (typeof window === "undefined") return;
+  try {
+    if (value === null) window.localStorage.removeItem(CONFIRMATION_POLL_KEY);
+    else window.localStorage.setItem(CONFIRMATION_POLL_KEY, JSON.stringify(value));
+  } catch {
+    // The visible page state still works if localStorage is unavailable.
+  }
+}
+
+function loadConfirmationPoll(): { confirmationId: string; deadline: number } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(CONFIRMATION_POLL_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.confirmationId !== "string" || !parsed.confirmationId || typeof parsed?.deadline !== "number" || !Number.isFinite(parsed.deadline)) return null;
+    return { confirmationId: parsed.confirmationId, deadline: parsed.deadline };
+  } catch {
+    return null;
+  }
+}
+
+// Total wall-clock budget for the confirmation-status poll: mentat's own
+// pendingOwnerConfirmations window (15 minutes) plus its 5-minute
+// post-resolution grace window (mentat#356) -- see design doc §13.3.
+const CONFIRMATION_POLL_INTERVAL_MS = 10 * 1000;
+const CONFIRMATION_POLL_BUDGET_MS = 20 * 60 * 1000;
 // Real UAT finding: the existing "this will restart the console" confirm
 // dialog is a single click, and the moment it's confirmed the actual
 // restart fires immediately with no further warning -- it felt abrupt and
@@ -315,11 +356,33 @@ export function DiscordBotSection() {
   //   terminal from this component's own point of view until the operator
   //   reloads or starts over.
   // "failed": the popup reported ok:false, with a reason code to explain.
-  const [autoInviteStatus, setAutoInviteStatus] = useState<"idle" | "awaiting-popup" | "waiting-for-owner" | "failed">("idle");
+  // Round 4 (issue #880): seeded from the persisted confirmation-status
+  // poll, the same way runId/phase above are seeded from TASK_KEY --
+  // without this, autoInviteStatus always starts "idle" on a fresh mount
+  // regardless of a still-valid, in-progress poll in localStorage, so a
+  // reload or accordion collapse/reopen would never resume polling at all.
+  const [autoInviteStatus, setAutoInviteStatus] = useState<"idle" | "awaiting-popup" | "waiting-for-owner" | "failed">(() => {
+    const persisted = loadConfirmationPoll();
+    return persisted && persisted.deadline > Date.now() ? "waiting-for-owner" : "idle";
+  });
   const [autoInviteReclaimed, setAutoInviteReclaimed] = useState(false);
   const [autoInviteFailureReason, setAutoInviteFailureReason] = useState("");
   const [autoInvitePopupBlockedUrl, setAutoInvitePopupBlockedUrl] = useState<string | null>(null);
   const autoInvitePopupRef = useRef<Window | null>(null);
+  // Round 4 (dune-awakening-selfhost-docker#876, design doc §13, issue
+  // #888): the confirmation-status poll auto-advances the wizard on
+  // success -- this ref lets that logic check whether the operator has the
+  // "Advanced: use my own Discord Application instead" disclosure open
+  // before yanking them to step 2 out from under it.
+  const advancedDetailsRef = useRef<HTMLDetailsElement | null>(null);
+  // The confirmation-status poll's own elapsed-time-aware wait copy (issue
+  // #888) -- ticks once per poll interval while a poll is active.
+  const [confirmationPollElapsedMs, setConfirmationPollElapsedMs] = useState(0);
+  // The poll's own terminal outcome, distinct from autoInviteStatus's
+  // "waiting-for-owner" (which only ever meant "request sent," never
+  // "confirmed") -- drives the wizard auto-advance and status-specific
+  // copy (issue #888).
+  const [confirmationPollOutcome, setConfirmationPollOutcome] = useState<"" | "denied" | "owner_changed" | "timed_out" | "gave_up">("");
   // Automated review finding (PR #868): a real backend request can still
   // be outstanding on mentat's side even after the operator clicks "Start
   // over" (which only resets the VISIBLE autoInviteStatus back to "idle"
@@ -336,7 +399,15 @@ export function DiscordBotSection() {
   // (§4.2 Path F), so continuing to block is no longer protecting
   // anything real.
   const AUTO_INVITE_BLOCK_MS = 15 * 60 * 1000;
-  const [autoInviteBlockUntil, setAutoInviteBlockUntil] = useState<number | null>(null);
+  // Seeded from the same persisted poll as autoInviteStatus above (issue
+  // #880/#881) -- without this, a remount that resumes "waiting-for-owner"
+  // would leave Regenerate Token/Disable/Save Role IDs briefly unguarded
+  // until the first poll tick (up to CONFIRMATION_POLL_INTERVAL_MS later)
+  // re-derives the real deadline.
+  const [autoInviteBlockUntil, setAutoInviteBlockUntil] = useState<number | null>(() => {
+    const persisted = loadConfirmationPoll();
+    return persisted && persisted.deadline > Date.now() ? persisted.deadline : null;
+  });
   useEffect(() => {
     if (autoInviteBlockUntil === null) return undefined;
     const remaining = autoInviteBlockUntil - Date.now();
@@ -368,12 +439,22 @@ export function DiscordBotSection() {
   useEffect(() => {
     function onMessage(event: MessageEvent) {
       if (event.origin !== window.location.origin) return;
-      const data = event.data as { type?: string; result?: { ok?: boolean; guildName?: string; reason?: string; reclaimed?: boolean } } | null;
+      const data = event.data as { type?: string; result?: { ok?: boolean; guildName?: string; reason?: string; reclaimed?: boolean; confirmationId?: string } } | null;
       if (!data || data.type !== "hosted-bot-auto-invite-complete" || !data.result) return;
       if (data.result.ok) {
         setAutoInviteStatus("waiting-for-owner");
         setAutoInviteReclaimed(Boolean(data.result.reclaimed));
         setAutoInviteBlockUntil(Date.now() + AUTO_INVITE_BLOCK_MS);
+        setConfirmationPollOutcome("");
+        setConfirmationPollElapsedMs(0);
+        // Round 4 (issue #879, hop 3 of 3): confirmationId arrives here via
+        // the popup's own postMessage payload -- the popup itself is gone
+        // ~1.2s after loading, so this is the only place the opener can
+        // ever pick it up. Without it, there is nothing to poll with.
+        const confirmationId = String(data.result.confirmationId || "");
+        if (confirmationId) {
+          persistConfirmationPoll({ confirmationId, deadline: Date.now() + CONFIRMATION_POLL_BUDGET_MS });
+        }
       } else {
         setAutoInviteStatus("failed");
         setAutoInviteFailureReason(data.result.reason || "");
@@ -398,6 +479,83 @@ export function DiscordBotSection() {
     }, 500);
     return () => window.clearInterval(timer);
   }, [autoInviteStatus]);
+
+  // Round 4 (dune-awakening-selfhost-docker#876, design doc §13): the
+  // completion-signal poll itself. Before this existed, "waiting-for-owner"
+  // was a genuine dead end -- Core had no way to ever learn whether/when
+  // the Discord owner confirmed. Every requirement here mirrors the
+  // settings-apply poll a few hundred lines below (issues #872/#874's own
+  // bounded-poll fix), per issue #884's explicit instruction not to
+  // reintroduce that bug class in a new location:
+  //  - persisted state (confirmationId + deadline) survives reload/unmount
+  //    (issue #880), read fresh on every mount rather than assumed absent.
+  //  - `stopped`/`inFlight` guards prevent overlapping ticks if a call
+  //    takes longer than the interval (issue #884).
+  //  - bounded to CONFIRMATION_POLL_BUDGET_MS, never polls forever.
+  useEffect(() => {
+    if (autoInviteStatus !== "waiting-for-owner") return undefined;
+    const persisted = loadConfirmationPoll();
+    if (!persisted) return undefined; // nothing to poll -- e.g. an old session predating this feature
+    const { confirmationId, deadline } = persisted;
+    let stopped = false;
+    let inFlight = false;
+    const startedAt = Date.now();
+    const interval = window.setInterval(async () => {
+      if (stopped || inFlight) return;
+      inFlight = true;
+      setConfirmationPollElapsedMs(Date.now() - startedAt);
+      try {
+        const result = await discordHostedBotApi.pollConfirmationStatus(confirmationId);
+        if (stopped) return;
+        if (result.status === "confirmed") {
+          stopped = true;
+          window.clearInterval(interval);
+          persistConfirmationPoll(null);
+          setAutoInviteBlockUntil(null);
+          setConnectedGuildName(result.guildName || "");
+          // UI/UX finding (issue #888): don't yank the operator away from
+          // the "Advanced" fallback form if they have it open.
+          if (wizardStep === 1 && !advancedDetailsRef.current?.open) {
+            setWizardStep(2);
+          }
+          return;
+        }
+        if (result.status === "denied" || result.status === "owner_changed" || result.status === "timed_out") {
+          stopped = true;
+          window.clearInterval(interval);
+          persistConfirmationPoll(null);
+          setAutoInviteBlockUntil(null);
+          setConfirmationPollOutcome(result.status);
+          return;
+        }
+        // "pending" or "not_found" (the latter only past mentat's own
+        // retention window, indistinguishable from "expired" by design) --
+        // keep polling until the budget below is exhausted. Issue #881:
+        // re-derive autoInviteBlockUntil FROM this poll's own real deadline
+        // on every still-pending tick, rather than leaving it as an
+        // independent, decoupled 15-minute clock -- the poll's own budget
+        // (up to ~20 minutes) is authoritative for as long as polling is
+        // genuinely still active, closing the 0-5 minute window where the
+        // old fixed timer could re-enable Regenerate Token/Disable/Save
+        // Role IDs while a confirmation might still resolve.
+        setAutoInviteBlockUntil(deadline);
+      } catch {
+        // Transient network/mentat-link hiccup -- keep polling, matching
+        // the settings-apply poll's own established convention.
+      } finally {
+        inFlight = false;
+      }
+      if (stopped) return;
+      if (Date.now() >= deadline) {
+        stopped = true;
+        window.clearInterval(interval);
+        persistConfirmationPoll(null);
+        setAutoInviteBlockUntil(null);
+        setConfirmationPollOutcome("gave_up");
+      }
+    }, CONFIRMATION_POLL_INTERVAL_MS);
+    return () => { stopped = true; window.clearInterval(interval); };
+  }, [autoInviteStatus, wizardStep]);
 
   function autoInviteFailureMessage(reason: string) {
     switch (reason) {
@@ -1036,11 +1194,39 @@ export function DiscordBotSection() {
   // covering both bot-install and ownership verification (design doc G1).
   // Shared between wizard step 1 and the enabled-phase management view,
   // same convention as renderHostedBotConnection() below.
+  function confirmationPollOutcomeMessage(outcome: "denied" | "owner_changed" | "timed_out" | "gave_up") {
+    // Round 4 (issue #888): distinct copy per terminal status, matching
+    // this design's own established discipline elsewhere (§6's failure-mode
+    // table) of never collapsing meaningfully different outcomes into one
+    // generic message.
+    switch (outcome) {
+      case "denied": return "The server owner denied the request on Discord. Click Start over to try again.";
+      case "owner_changed": return "This server's ownership changed on Discord since the request was sent. Click Start over to try again.";
+      case "timed_out": return "The server owner didn't respond in time. Click Start over to try again.";
+      case "gave_up": return "Didn't hear back in time. Check Discord directly, or click Start over to try again.";
+    }
+  }
+
   function renderAutoInviteConnection() {
     if (autoInviteStatus === "waiting-for-owner") {
+      if (confirmationPollOutcome) {
+        return (
+          <div className="settings-auto-invite-waiting" role="status">
+            <p>{confirmationPollOutcomeMessage(confirmationPollOutcome)}</p>
+            <button type="button" onClick={() => { setAutoInviteStatus("idle"); setConfirmationPollOutcome(""); }}>Start over</button>
+          </div>
+        );
+      }
+      // Issue #888: elapsed-time-aware copy so a wait that can genuinely
+      // run up to ~20 minutes doesn't look identical to "silently broken"
+      // -- a static, unchanging message was the original finding here.
+      const elapsedMinutes = Math.floor(confirmationPollElapsedMs / 60000);
+      const waitingCopy = elapsedMinutes > 0
+        ? `Request sent — check Discord to confirm the connection. Still waiting (${elapsedMinutes} minute${elapsedMinutes === 1 ? "" : "s"})…`
+        : "Request sent — check Discord to confirm the connection. This can take a few minutes.";
       return (
         <div className="settings-auto-invite-waiting" role="status">
-          <p>Request sent — check Discord to confirm the connection. This can take a few minutes.</p>
+          <p>{waitingCopy}</p>
           {autoInviteReclaimed && (
             <p className="muted">This server was previously connected to a different console — that connection has been replaced, and role configuration was reset. Please reconfigure roles in the next step.</p>
           )}
@@ -1266,7 +1452,7 @@ export function DiscordBotSection() {
                       (real UAT finding: it was previously shown
                       unconditionally, with fields most operators never
                       needed). */}
-                  <details className="settings-hosted-bot-advanced">
+                  <details className="settings-hosted-bot-advanced" ref={advancedDetailsRef}>
                     <summary>Advanced: use my own Discord Application instead</summary>
                     <p className="muted">Invite the bot manually, then connect it using your own Discord Application's credentials. Both are required before you can continue this way.</p>
                     {renderHostedBotConnection()}

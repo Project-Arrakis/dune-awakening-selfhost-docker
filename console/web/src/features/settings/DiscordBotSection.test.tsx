@@ -14,6 +14,7 @@ const mockApi = vi.mocked(api);
 const mockPost = vi.mocked(post);
 const TASK_KEY = "arrakis.discordAdapterEnableTask";
 const POLL_DEADLINE_KEY = "arrakis.discordAdapterEnableTaskDeadline";
+const CONFIRMATION_POLL_KEY = "arrakis.discordAutoInviteConfirmationPoll";
 
 // Final integration review (CRITICAL): seeds the owned-guilds list the way
 // the REAL OAuth callback page now does -- via sessionStorage, under the
@@ -1074,7 +1075,7 @@ describe("DiscordBotSection", () => {
       await act(async () => {}); // flush the silent enable() call's own await chain
     }
 
-    function postMessageFromPopup(result: { ok: boolean; guildName?: string; reason?: string; reclaimed?: boolean }) {
+    function postMessageFromPopup(result: { ok: boolean; guildName?: string; reason?: string; reclaimed?: boolean; confirmationId?: string }) {
       window.dispatchEvent(new MessageEvent("message", {
         origin: window.location.origin,
         data: { type: "hosted-bot-auto-invite-complete", result }
@@ -1198,6 +1199,139 @@ describe("DiscordBotSection", () => {
 
       await screen.findByText(/Discord says you don't own this server/i);
       expect(screen.getByRole("button", { name: /^Continue$/i })).toBeDisabled();
+    });
+
+    // ─── Round 4 (dune-awakening-selfhost-docker#876, design doc §13):
+    // the completion-signal poll -- Core learning when the Discord owner
+    // actually confirms, instead of "waiting-for-owner" being a permanent
+    // dead end. ──────────────────────────────────────────────────────────
+
+    it("polls confirmation-status and auto-advances to step 2 once the owner confirms", async () => {
+      vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
+      await reachStep1HostedBranch();
+      fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
+      await screen.findByRole("button", { name: /Waiting for Discord…/i });
+
+      mockApi.mockImplementation((path: string) => {
+        if (String(path).includes("confirmation-status")) {
+          return Promise.resolve({ status: "confirmed", guildName: "Fleetyard" } as never);
+        }
+        return Promise.resolve({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true } as never);
+      });
+
+      vi.useFakeTimers();
+      act(() => { postMessageFromPopup({ ok: true, guildName: "Fleetyard", confirmationId: "confirmation-abc" }); });
+      expect(screen.getByText(/Request sent — check Discord to confirm the connection\./i)).toBeInTheDocument();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+
+      expect(screen.getByText(/Configure roles/i)).toBeInTheDocument();
+      expect(screen.queryByText(/Add bot to Discord/i)).toBeNull();
+    });
+
+    it("does NOT auto-advance if the Advanced disclosure is open when the owner confirms", async () => {
+      vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
+      await reachStep1HostedBranch();
+      fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
+      await screen.findByRole("button", { name: /Waiting for Discord…/i });
+
+      // Open the "Advanced" <details> the same way a real user would.
+      const summary = screen.getByText(/Advanced: use my own Discord Application instead/i);
+      fireEvent.click(summary);
+      expect((summary.closest("details") as HTMLDetailsElement).open).toBe(true);
+
+      mockApi.mockImplementation((path: string) => {
+        if (String(path).includes("confirmation-status")) {
+          return Promise.resolve({ status: "confirmed", guildName: "Fleetyard" } as never);
+        }
+        return Promise.resolve({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true } as never);
+      });
+
+      vi.useFakeTimers();
+      act(() => { postMessageFromPopup({ ok: true, guildName: "Fleetyard", confirmationId: "confirmation-abc" }); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+
+      // Still on step 1 -- confirmed, but auto-advance was skipped because
+      // the operator has the Advanced fallback open.
+      expect(screen.getByText(/Add bot to Discord/i)).toBeInTheDocument();
+      expect(screen.getByText(/This server is already connected:/i)).toBeInTheDocument();
+      expect(screen.getAllByText("Fleetyard").length).toBeGreaterThan(0);
+    });
+
+    it("shows a distinct message and re-enables Start over when the owner denies the request", async () => {
+      vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
+      await reachStep1HostedBranch();
+      fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
+      await screen.findByRole("button", { name: /Waiting for Discord…/i });
+
+      mockApi.mockImplementation((path: string) => {
+        if (String(path).includes("confirmation-status")) return Promise.resolve({ status: "denied" } as never);
+        return Promise.resolve({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+      });
+
+      vi.useFakeTimers();
+      act(() => { postMessageFromPopup({ ok: true, guildName: "Fleetyard", confirmationId: "confirmation-abc" }); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+
+      expect(screen.getByText(/The server owner denied the request on Discord/i)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /^Start over$/i }));
+      expect(screen.getByRole("button", { name: /^Add & Connect Bot$/i })).toBeInTheDocument();
+    });
+
+    it("gives up with an actionable message after the poll's own ~20-minute budget, without polling forever", async () => {
+      vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
+      await reachStep1HostedBranch();
+      fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
+      await screen.findByRole("button", { name: /Waiting for Discord…/i });
+
+      mockApi.mockImplementation((path: string) => {
+        if (String(path).includes("confirmation-status")) return Promise.resolve({ status: "pending" } as never);
+        return Promise.resolve({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+      });
+
+      vi.useFakeTimers();
+      act(() => { postMessageFromPopup({ ok: true, guildName: "Fleetyard", confirmationId: "confirmation-abc" }); });
+
+      // 20 minutes at a 10-second interval -- still pending throughout,
+      // must not give up early.
+      for (let i = 0; i < 119; i += 1) {
+        // eslint-disable-next-line no-await-in-loop -- each tick must fully
+        // settle before the next, matching this file's own established
+        // pattern for the sibling settings-apply poll test.
+        await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      }
+      expect(screen.getByText(/Request sent — check Discord to confirm the connection/i)).toBeInTheDocument();
+
+      // The 120th tick crosses the ~20-minute budget.
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(screen.getByText(/Didn't hear back in time/i)).toBeInTheDocument();
+    }, 20000);
+
+    it("persists the poll across an unmount/remount (accordion collapse/reopen) so it doesn't silently revert to idle mid-wait", async () => {
+      vi.spyOn(window, "open").mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as never);
+      const { unmount } = render(<DiscordBotSection />);
+      mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
+      mockPost.mockImplementation((path: string) => {
+        if (path === "/api/integrations/discord/hosted-bot/auto-invite/start") return Promise.resolve({ authorizeUrl: "https://discord.com/oauth2/authorize?client_id=1546203607807041697&state=real-state" });
+        return Promise.resolve({ ok: true });
+      });
+      await screen.findByText(/Which are you using/i);
+      fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
+      await screen.findByText(/Add bot to Discord/i);
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: /^Add & Connect Bot$/i }));
+      await screen.findByRole("button", { name: /Waiting for Discord…/i });
+      act(() => { postMessageFromPopup({ ok: true, guildName: "Fleetyard", confirmationId: "confirmation-abc" }); });
+      await screen.findByText(/Request sent — check Discord to confirm the connection\./i);
+
+      expect(window.localStorage.getItem(CONFIRMATION_POLL_KEY)).toBeTruthy();
+
+      unmount();
+      render(<DiscordBotSection />);
+
+      // A fresh mount must resume "waiting-for-owner" from the persisted
+      // poll, not silently revert to the idle "Which are you using?" step.
+      await screen.findByText(/Request sent — check Discord to confirm the connection\./i);
     });
 
     it("ignores a postMessage from a different origin", async () => {
