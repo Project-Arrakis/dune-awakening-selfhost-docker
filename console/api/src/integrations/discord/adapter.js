@@ -102,7 +102,11 @@ export function discordRoleMappingFromEnv(env = process.env) {
     // DISCORD_OBSERVER_ROLE_IDS is the pre-rename name -- read as a
     // fallback only, so an operator who already set it keeps working
     // across this update without a manual migration step (Requirement 0).
-    // DISCORD_PLAYER_ROLE_IDS takes precedence whenever both are set.
+    // DISCORD_PLAYER_ROLE_IDS takes precedence whenever both are set. This
+    // is a genuinely different env var from DISCORD_CONSOLE_PLAYER_ROLE_IDS
+    // (the separate, independent console sign-in role mapping -- see the
+    // .env.example comment on both) despite the similar name; keep them
+    // straight when editing either.
     //
     // Audit finding #3 (HIGH): this must distinguish "key present but
     // explicitly empty" from "key genuinely absent" -- `||` treats an
@@ -122,18 +126,15 @@ export function discordRolePolicyHealth(mapping = discordRoleMappingFromEnv()) {
   return {
     // dune-awakening-selfhost-docker#872 (automated review finding on
     // already-merged #748): playerConfigured is a rename of the field
-    // this endpoint used to call observerConfigured. The equivalent
-    // env-var rename (DISCORD_OBSERVER_ROLE_IDS -> DISCORD_PLAYER_ROLE_IDS)
-    // correctly kept a legacy-fallback read, but this JSON field's own
-    // rename shipped with no back-compat alias -- a real, documented
-    // external contract break: docs/integrations/discord-control-bot/
-    // admin-guide.md's own "Expected role policy shape" example and
-    // 403-troubleshooting steps instruct checking
-    // `rolePolicy.observerConfigured` directly, and that repo's own
-    // smoke-runner-style consumers read this exact field. Emit both so
-    // neither an old nor a new consumer silently misreads a
-    // correctly-configured Player role as unconfigured.
-    observerConfigured: mapping.playerRoleIds.length > 0,
+    // this endpoint used to call observerConfigured. #859-era back-compat
+    // once dual-emitted observerConfigured here because
+    // docs/integrations/discord-control-bot/admin-guide.md's own "Expected
+    // role policy shape" example still documented the old field name --
+    // superseded by tier1-upstream's own full observer->player rename
+    // (2026-09-11), which updated that same doc's example to
+    // playerConfigured too, closing the external-contract gap the dual-emit
+    // existed to paper over. No remaining documented consumer expects
+    // observerConfigured; single-emit only, matching the doc.
     playerConfigured: mapping.playerRoleIds.length > 0,
     moderatorConfigured: mapping.moderatorRoleIds.length > 0,
     adminConfigured: mapping.adminRoleIds.length > 0,

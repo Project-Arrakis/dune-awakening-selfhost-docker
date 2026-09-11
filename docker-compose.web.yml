@@ -115,6 +115,10 @@ services:
       DUNE_DISCORD_ADAPTER_ENABLED: "${DUNE_DISCORD_ADAPTER_ENABLED:-false}"
       DUNE_DISCORD_ADAPTER_TOKEN: "${DUNE_DISCORD_ADAPTER_TOKEN:-}"
       DUNE_BOT_API_TOKEN_FILE: "${DUNE_BOT_API_TOKEN_FILE:-}"
+      DISCORD_PLAYER_ROLE_IDS: "${DISCORD_PLAYER_ROLE_IDS:-}"
+      # Legacy name, still passed through so an operator who already set it
+      # keeps working -- console/api reads DISCORD_PLAYER_ROLE_IDS first,
+      # falling back to this one.
       DISCORD_OBSERVER_ROLE_IDS: "${DISCORD_OBSERVER_ROLE_IDS:-}"
       DUNE_DISCORD_ADAPTER_TOKEN_FILE: "${DUNE_DISCORD_ADAPTER_TOKEN_FILE:-}"
       # Hosted-bot console-initiated OAuth registration (Tasks 2/3/6, #739):

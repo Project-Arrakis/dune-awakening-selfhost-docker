@@ -105,7 +105,7 @@ This is the entire authorization fix — no cache, no grace window, no new persi
 Each role field accepts one or more Discord role IDs (17–19-digit snowflakes, comma-separated); the operator copies them from Discord with Developer Mode on, exactly as for the bot. Nothing is fetched from Discord to populate the form — listing a guild's roles requires a bot token, which the console deliberately does not hold.
 
 **This mapping is independent of the console's separate, experimental
-read-only Discord adapter** (`DISCORD_OBSERVER_ROLE_IDS`/`DISCORD_MODERATOR_ROLE_IDS`/
+read-only Discord adapter** (`DISCORD_PLAYER_ROLE_IDS`/`DISCORD_MODERATOR_ROLE_IDS`/
 `DISCORD_ADMIN_ROLE_IDS`/`DISCORD_OWNER_ROLE_IDS`, see
 [docs/integrations/discord-control-bot/admin-guide.md](integrations/discord-control-bot/admin-guide.md#role-mapping))
 — they answer different questions (who can sign into the console vs. who can
