@@ -862,6 +862,36 @@ describe("DiscordBotSection", () => {
     expect(screen.queryByText(/Enable Discord Bot Integration/i)).toBeNull();
   });
 
+  // dune-awakening-selfhost-docker#870 (automated review finding on #801,
+  // real/normal severity): disable() already wiped the adapter token
+  // server-side (its own confirm dialog says "cannot be undone") by the
+  // time the restart countdown even starts -- if the component unmounts
+  // mid-countdown (e.g. the operator collapses the Settings accordion
+  // that conditionally renders this component), restart() must still
+  // eventually fire. Before the fix, the countdown's own Promise never
+  // resolved on unmount, so restart() was silently never called and the
+  // "invalidated" token's bot process kept running indefinitely.
+  it("still calls /restart after Disable, even if the component unmounts mid-countdown", async () => {
+    mockApi.mockResolvedValueOnce({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
+    mockPost.mockResolvedValue({ ok: true, task: { id: "disable-task", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null } } as never);
+
+    const { unmount } = render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+    fireEvent.click(screen.getByRole("button", { name: /Disable Discord Bot Integration/i }));
+    await screen.findByText(/you'll go through setup again to re-enable it/i);
+    fireEvent.click(screen.getByRole("button", { name: /^Disable$/i }));
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/disable", {}));
+    await screen.findByRole("button", { name: /^Restart Now$/i });
+    expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/restart", {});
+
+    // Simulates collapsing the Settings accordion mid-countdown -- the
+    // async handleDisable() keeps running after this (it's not tied to
+    // the component's own lifecycle), so /restart must still land.
+    unmount();
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/restart", {}));
+  });
+
   // Real UAT finding (2026-09-09): "why can't we add [inviting the bot] to
   // the wizard? click the button, a window pops, add to discord happens,
   // window closes and back to wizard?" -- nothing in this wizard ever told

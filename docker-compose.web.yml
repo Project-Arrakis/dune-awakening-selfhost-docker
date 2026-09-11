@@ -97,6 +97,15 @@ services:
       # the hosted-bot "Connect to hosted bot" flow -- see this same finding
       # above and .env.example's own comment for DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI.
       DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: "${DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI:-}"
+      # dune-awakening-selfhost-docker#870: this key's own sibling
+      # (REDIRECT_URI, above) was added when the hosted-bot OAuth flow
+      # shipped, but this one -- the independent Discord Application's
+      # Client ID config.js actually reads (discordHostedBotOAuthClientId)
+      # -- was missed, leaving hostedBotOAuthConfigured permanently false
+      # (and the whole "Connect to hosted bot" flow permanently
+      # unreachable) in any real docker-compose deployment, even after an
+      # operator saves it via Settings -> Discord Bot.
+      DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID: "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID:-}"
       DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "${DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP:-0}"
       DISCORD_HOME_GUILD_ID: "${DISCORD_HOME_GUILD_ID:-}"
       DISCORD_OAUTH_OWNER_ALLOWLIST: "${DISCORD_OAUTH_OWNER_ALLOWLIST:-}"

