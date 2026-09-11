@@ -93,9 +93,15 @@ services:
       DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME: "${DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME:-}"
       DISCORD_OAUTH_CLIENT_ID: "${DISCORD_OAUTH_CLIENT_ID:-}"
       DISCORD_OAUTH_REDIRECT_URI: "${DISCORD_OAUTH_REDIRECT_URI:-}"
-      # Second redirect URI on the SAME Discord application, used only by
-      # the hosted-bot "Connect to hosted bot" flow -- see this same finding
-      # above and .env.example's own comment for DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI.
+      # Redirect URI for the hosted-bot "Advanced: use my own Discord
+      # Application" fallback flow -- a FULLY INDEPENDENT Discord
+      # Application from the one used for console sign-in, not a second
+      # redirect URI on the same one. dune-awakening-selfhost-docker#870/
+      # #871: this comment previously said "SAME Discord application, no
+      # new app needed" -- corrected here to match the fix already applied
+      # to .env.example and setup-guide.md's own copies of this same
+      # stale claim (an automated review on #871 caught this exact
+      # instance being missed the first time).
       DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: "${DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI:-}"
       # dune-awakening-selfhost-docker#870: this key's own sibling
       # (REDIRECT_URI, above) was added when the hosted-bot OAuth flow

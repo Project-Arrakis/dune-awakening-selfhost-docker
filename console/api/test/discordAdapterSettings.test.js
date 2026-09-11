@@ -604,6 +604,31 @@ test("persistHostedBotConnectedGuild strips every shell metacharacter from an at
   delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
 });
 
+// Layer 2 audit finding (real, found by /code-review high on this exact
+// fix, before merge): the first version of the new allowlist used `\s`
+// for whitespace, which also matches \n, \r, \t, \v, \f, and the Unicode
+// line/paragraph separators -- not just a literal space -- so a raw
+// control character in the guild name would have survived unfiltered.
+// bash sourcing doesn't unescape quoteEnv()'s JSON-escaped "\n" back to a
+// literal newline, but Docker Compose's own SEPARATE .env-file parser
+// (used for ${VAR} interpolation in docker-compose.web.yml) is documented
+// to do exactly that -- reopening a version of the exact risk #860's own
+// comment already flags as "never traced" and was guarding against
+// unconditionally.
+test("persistHostedBotConnectedGuild strips raw control characters (newline, tab, CR, vertical/form feed, Unicode line separators) from the guild name, not just shell metacharacters", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-connected-controlchars-"));
+  const lineSeparator = "\u2028";
+  const paragraphSeparator = "\u2029";
+  const payload = `Evil\nDUNE_DISCORD_ADAPTER_ENABLED=false\r\t\v\f${lineSeparator}${paragraphSeparator} Server`;
+  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "666666666666666666", guildName: payload });
+  const persisted = process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
+  for (const [name, char] of [["newline", "\n"], ["CR", "\r"], ["tab", "\t"], ["vertical tab", "\v"], ["form feed", "\f"], ["U+2028", lineSeparator], ["U+2029", paragraphSeparator]]) {
+    assert.ok(!persisted.includes(char), `sanitized guild name must never contain a raw ${name}: got ${JSON.stringify(persisted)}`);
+  }
+  assert.equal(persisted, "EvilDUNE_DISCORD_ADAPTER_ENABLEDfalse Server", "'=' and every control character (including the Unicode line/paragraph separators) are stripped; the underscore and the one literal space are legitimate, allowed characters and survive");
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
+});
+
 // Closes the loop the finding above only argues in prose: actually writes
 // a real .env file via the real persist function, then actually sources
 // it through a real `sh -c '. ./.env'` (matching start-all.sh's own

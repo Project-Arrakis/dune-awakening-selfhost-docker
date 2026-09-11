@@ -128,12 +128,25 @@ export function readDiscordBotSettingsState(config) {
 // crossing, not a self-harm scenario. Switched from a blocklist to an
 // ALLOWLIST -- this value is display-only (never used for authorization,
 // see this function's own callers), so keeping only Unicode letters,
-// digits, whitespace, and a small, genuinely-safe punctuation set is
+// digits, a literal space, and a small, genuinely-safe punctuation set is
 // categorically safer than trying to enumerate every shell metacharacter
 // (`$`, backtick, parens, brackets, braces, quotes, `;`, `|`, `&`, `<`,
 // `>`, `\`, `=`, `~`, `*` are all excluded by construction, not by name).
+//
+// Layer 2 audit finding (real, found by /code-review high on this exact
+// PR before merge): the first version of this allowlist used `\s` for
+// whitespace, which in JS regex also matches \n, \r, \t, \v, \f, and the
+// Unicode line/paragraph separators U+2028/U+2029 -- not just a literal
+// space. That silently reopened a version of the very risk this file's
+// own #860 comment above already flags as "never traced": bash sourcing
+// doesn't unescape quoteEnv()'s JSON-escaped "\n" back to a real newline,
+// but Docker Compose's own separate .env-file parser (used for ${VAR}
+// interpolation in docker-compose.web.yml) is documented to do exactly
+// that. Using a literal space here instead of \s closes that gap by
+// construction, matching the original blocklist's own explicit rejection
+// of every control character, not just the shell-metacharacter set.
 function sanitizeEnvDisplayValue(value) {
-  return value.replace(/[^\p{L}\p{N}\s.,'!?_-]/gu, "");
+  return value.replace(/[^\p{L}\p{N} .,'!?_-]/gu, "");
 }
 
 export function persistHostedBotConnectedGuild(config, { guildId, guildName } = {}) {
