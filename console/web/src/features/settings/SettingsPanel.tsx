@@ -814,15 +814,19 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
     {serverListingError && <p className="error settings-server-listing-error">{serverListingError}</p>}
     {serverListingVisible && serverListingEnabled && publicDirectory.probeError &&
       <p className="error settings-server-listing-error">Server listing issue: {publicDirectory.probeError}</p>}
-    {/* Sections below are ordered alphabetically by their visible header
-        text (UAT request, 2026-09-11), with one deliberate exception: the
-        Discord OAuth / Login Password pair keeps its own existing #676 §3
-        primary/secondary swap (whichever is the active sign-in path renders
-        first) rather than being split apart -- "Discord OAuth" and "Login
-        Password" already happen to sort adjacently to each other in this
-        list, so the swap's own internal order is preserved without
-        conflicting with the outer alphabetical order. */}
+    {/* UAT request (2026-09-11): only the collapsible toggle sections below
+        are alphabetized by their visible header text -- RuntimeSettingsSummary
+        (Files Checklist, then Runtime Configuration) is not a toggle at all
+        (always rendered open, no header to click) and stays pinned first,
+        ahead of the alphabetical run, per a follow-up UAT request the same
+        day. Within the toggle run, the Discord OAuth / Login Password pair
+        keeps its own existing #676 §3 primary/secondary swap (whichever is
+        the active sign-in path renders first) rather than being split apart
+        -- "Discord OAuth" and "Login Password" already happen to sort
+        adjacently to each other, so the swap's own internal order doesn't
+        conflict with the outer alphabetical order. */}
     <div className="settings-section-stack">
+      <RuntimeSettingsSummary settings={settings} />
       <div className={`playerAdmin_toggle settings-api-keys-toggle ${apiKeysOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={apiKeysOpen ? "Collapse API Keys" : "Expand API Keys"} onClick={() => setApiKeysOpen(!apiKeysOpen)}>{apiKeysOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>API Keys</span></button>
         {apiKeysOpen && <div className="playerAdmin_toggleBody"><ApiKeysSection confirmAction={confirmAction} /></div>}
@@ -869,7 +873,6 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
           </div>
         </div>}
       </div>}
-      <RuntimeSettingsSummary settings={settings} />
       <div className={`playerAdmin_toggle settings-web-port-toggle ${webPortOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={webPortOpen ? "Collapse Web Console Port" : "Expand Web Console Port"} onClick={() => setWebPortOpen(!webPortOpen)}>{webPortOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Web Console Port</span></button>
         {webPortOpen && <div className="playerAdmin_toggleBody">
@@ -921,6 +924,11 @@ function RuntimeSettingsSummary({ settings }: { settings: Record<string, unknown
   const files = (settings?.files as Record<string, unknown> | undefined) || {};
   return <div className="action-sections">
     <section className="action-section">
+      <h4>Files Checklist</h4>
+      <div className="check-grid">{Object.entries(files).map(([key, value]) => <article className="check-card" key={key}><div><strong>{friendlyFileLabel(key)}</strong><p>{value ? "Found" : "Missing"}</p></div><StatusPill value={value ? "Ready" : "Attention Needed"} /></article>)}</div>
+      {!Object.keys(files).length && <p>Runtime file checks have not loaded yet.</p>}
+    </section>
+    <section className="action-section">
       <h4>Runtime Configuration</h4>
       <KeyValueGrid items={[
         ["App Name", firstDefined(config.appName, config.app_name, "Dune Docker Console")],
@@ -932,11 +940,6 @@ function RuntimeSettingsSummary({ settings }: { settings: Record<string, unknown
         ["Runtime path", config.runtimePath],
         ["Task retention", config.taskRetention]
       ]} />
-    </section>
-    <section className="action-section">
-      <h4>Files Checklist</h4>
-      <div className="check-grid">{Object.entries(files).map(([key, value]) => <article className="check-card" key={key}><div><strong>{friendlyFileLabel(key)}</strong><p>{value ? "Found" : "Missing"}</p></div><StatusPill value={value ? "Ready" : "Attention Needed"} /></article>)}</div>
-      {!Object.keys(files).length && <p>Runtime file checks have not loaded yet.</p>}
     </section>
   </div>;
 }
