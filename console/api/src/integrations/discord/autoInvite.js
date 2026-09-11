@@ -9,15 +9,6 @@
 // convention for why IT is a sibling of oauth.js.
 import { constantTimeStringEqual } from "./oauth.js";
 
-// Sahir Venn's existing, shared, org-owned Discord Application -- the SAME
-// client_id "Add to Discord" already uses today (see
-// console/web/src/features/settings/DiscordBotSection.tsx's
-// MENTAT_BOT_INVITE_URL). The whole point of this flow (design doc goal
-// G2) is that the operator never creates or configures their own Discord
-// Application, so this is a fixed, public constant, not operator
-// configuration -- there is exactly one correct value in every real
-// deployment.
-export const AUTO_INVITE_DISCORD_CLIENT_ID = "1546203607807041697";
 const AUTO_INVITE_DISCORD_AUTHORIZE_URL = "https://discord.com/oauth2/authorize";
 
 // One consent screen (design doc goal G1): bot install + applications.commands
@@ -26,9 +17,16 @@ const AUTO_INVITE_DISCORD_AUTHORIZE_URL = "https://discord.com/oauth2/authorize"
 // consent, the same load-bearing security property /register's own flow
 // already depends on). permissions=128 matches the existing static
 // MENTAT_BOT_INVITE_URL's own value exactly -- not a new permission grant.
-export function buildAutoInviteAuthorizeUrl({ redirectUri, state }) {
+//
+// clientId is a caller-supplied parameter (dune-awakening-selfhost-docker#903),
+// not a bare module constant -- pass config.autoInviteDiscordClientId, which
+// defaults to Sahir Venn's Discord Application (the correct value for every
+// real deployment of this fork) but is env-overridable for a self-hoster
+// running their own hosted-bot backend, matching every other hosted-bot
+// config value's own pattern.
+export function buildAutoInviteAuthorizeUrl({ redirectUri, state, clientId }) {
   const url = new URL(AUTO_INVITE_DISCORD_AUTHORIZE_URL);
-  url.searchParams.set("client_id", AUTO_INVITE_DISCORD_CLIENT_ID);
+  url.searchParams.set("client_id", clientId);
   url.searchParams.set("scope", "bot applications.commands identify guilds");
   url.searchParams.set("redirect_uri", redirectUri);
   url.searchParams.set("state", state);

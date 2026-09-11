@@ -5,14 +5,13 @@ import {
   createAutoInvitePendingStateStore,
   autoInviteStateCookie,
   clearAutoInviteStateCookie,
-  autoInviteCompletePage,
-  AUTO_INVITE_DISCORD_CLIENT_ID
+  autoInviteCompletePage
 } from "../src/integrations/discord/autoInvite.js";
 
-test("buildAutoInviteAuthorizeUrl embeds the fixed hosted-bot client_id, the caller's redirectUri/state, and the single-consent-screen scope", () => {
-  const url = new URL(buildAutoInviteAuthorizeUrl({ redirectUri: "https://mentat-link.darkdante.org/api/consoles/auto-invite/callback", state: "abc123" }));
+test("buildAutoInviteAuthorizeUrl embeds the caller-supplied client_id, redirectUri/state, and the single-consent-screen scope", () => {
+  const url = new URL(buildAutoInviteAuthorizeUrl({ redirectUri: "https://mentat-link.darkdante.org/api/consoles/auto-invite/callback", state: "abc123", clientId: "1546203607807041697" }));
   assert.equal(url.origin + url.pathname, "https://discord.com/oauth2/authorize");
-  assert.equal(url.searchParams.get("client_id"), AUTO_INVITE_DISCORD_CLIENT_ID);
+  assert.equal(url.searchParams.get("client_id"), "1546203607807041697");
   assert.equal(url.searchParams.get("redirect_uri"), "https://mentat-link.darkdante.org/api/consoles/auto-invite/callback");
   assert.equal(url.searchParams.get("state"), "abc123");
   assert.equal(url.searchParams.get("response_type"), "code");

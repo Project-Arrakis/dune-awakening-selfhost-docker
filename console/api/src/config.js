@@ -293,6 +293,18 @@ export function loadConfig() {
     // for this path), so this is env-overridable for tests only, not
     // documented in .env.example as an operator-facing setting.
     autoInviteDiscordRedirectUri: process.env.AUTO_INVITE_DISCORD_REDIRECT_URI || "https://mentat-link.darkdante.org/api/consoles/auto-invite/callback",
+    // dune-awakening-selfhost-docker#903: the Discord Application ID the
+    // one-click consent screen (autoInvite.js's buildAutoInviteAuthorizeUrl())
+    // authorizes against -- previously a bare, non-overridable literal in
+    // autoInvite.js itself. Sahir Venn's client_id remains the correct
+    // default for every real deployment of this fork (design doc goal G2:
+    // the operator never configures anything Discord-related for the
+    // hosted path), but making it env-overridable (matching every other
+    // hosted-bot config value's own pattern) lets a self-hoster running
+    // their own hosted-bot backend point this flow at their own Discord
+    // Application instead -- the one thing an upstream reviewer would
+    // otherwise flag as hardcoded to a single organization.
+    autoInviteDiscordClientId: process.env.AUTO_INVITE_DISCORD_CLIENT_ID || "1546203607807041697",
     discordOAuthApiBaseUrl: process.env.DISCORD_OAUTH_BASE_URL || "https://discord.com/api/v10",
     discordOAuthAllowOwnerBootstrap: process.env.DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP === "1",
     discordOAuthOwnerAllowlist: String(process.env.DISCORD_OAUTH_OWNER_ALLOWLIST || "").split(",").map((item) => item.trim()).filter((item) => /^\d{17,19}$/.test(item)),
