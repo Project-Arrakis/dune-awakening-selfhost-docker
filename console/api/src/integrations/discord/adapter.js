@@ -99,15 +99,19 @@ export function discordWritesEnabled(config) {
 
 export function discordRoleMappingFromEnv(env = process.env) {
   return {
-    // Renamed DISCORD_OBSERVER_ROLE_IDS -> DISCORD_PLAYER_ROLE_IDS (matching
-    // the tier rename below). The old name is still read as a fallback when
-    // the new one isn't set, so an operator who already configured it doesn't
-    // silently lose their role mapping on update (Strict Requirement 0). This
-    // is a genuinely different env var from DISCORD_CONSOLE_PLAYER_ROLE_IDS
-    // (the separate, independent console sign-in role mapping -- see the
-    // .env.example comment on both) despite the similar name; keep them
-    // straight when editing either.
-    playerRoleIds: csv(env.DISCORD_PLAYER_ROLE_IDS || env.DISCORD_OBSERVER_ROLE_IDS),
+    // DISCORD_OBSERVER_ROLE_IDS is the pre-rename name -- read as a
+    // fallback only, so an operator who already set it keeps working
+    // across this update without a manual migration step (Requirement 0).
+    // DISCORD_PLAYER_ROLE_IDS takes precedence whenever both are set.
+    //
+    // Audit finding #3 (HIGH): this must distinguish "key present but
+    // explicitly empty" from "key genuinely absent" -- `||` treats an
+    // empty string as falsy, so an operator who clears
+    // DISCORD_PLAYER_ROLE_IDS (writes "") via the new Settings UI to
+    // revoke access would otherwise silently fall through to a stale,
+    // non-empty legacy DISCORD_OBSERVER_ROLE_IDS, believing access was
+    // revoked when it wasn't.
+    playerRoleIds: csv(env.DISCORD_PLAYER_ROLE_IDS !== undefined ? env.DISCORD_PLAYER_ROLE_IDS : env.DISCORD_OBSERVER_ROLE_IDS),
     moderatorRoleIds: csv(env.DISCORD_MODERATOR_ROLE_IDS),
     adminRoleIds: csv(env.DISCORD_ADMIN_ROLE_IDS),
     ownerRoleIds: csv(env.DISCORD_OWNER_ROLE_IDS)
@@ -116,6 +120,20 @@ export function discordRoleMappingFromEnv(env = process.env) {
 
 export function discordRolePolicyHealth(mapping = discordRoleMappingFromEnv()) {
   return {
+    // dune-awakening-selfhost-docker#872 (automated review finding on
+    // already-merged #748): playerConfigured is a rename of the field
+    // this endpoint used to call observerConfigured. The equivalent
+    // env-var rename (DISCORD_OBSERVER_ROLE_IDS -> DISCORD_PLAYER_ROLE_IDS)
+    // correctly kept a legacy-fallback read, but this JSON field's own
+    // rename shipped with no back-compat alias -- a real, documented
+    // external contract break: docs/integrations/discord-control-bot/
+    // admin-guide.md's own "Expected role policy shape" example and
+    // 403-troubleshooting steps instruct checking
+    // `rolePolicy.observerConfigured` directly, and that repo's own
+    // smoke-runner-style consumers read this exact field. Emit both so
+    // neither an old nor a new consumer silently misreads a
+    // correctly-configured Player role as unconfigured.
+    observerConfigured: mapping.playerRoleIds.length > 0,
     playerConfigured: mapping.playerRoleIds.length > 0,
     moderatorConfigured: mapping.moderatorRoleIds.length > 0,
     adminConfigured: mapping.adminRoleIds.length > 0,
