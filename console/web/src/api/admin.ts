@@ -106,11 +106,13 @@ export type LandsraadMilestonePreset = {
 };
 
 export type LandsraadVendorKey = "vehicles" | "weapons" | "armor" | "utilities";
+export type LandsraadHouseFactionKey = "atreides" | "harkonnen";
 
 export type LandsraadVendorOverridePreset = {
   enabled: boolean;
   mode: "fixed" | "rotate";
   vendorKeys: LandsraadVendorKey[];
+  houseFaction: LandsraadHouseFactionKey | null;
   lastAppliedTermId: string | null;
   lastAppliedAt: string;
   lastResult: string;
@@ -121,12 +123,19 @@ export type LandsraadVendorCatalogEntry = {
   decreeName: string;
 };
 
+export type LandsraadHouseFactionCatalogEntry = {
+  key: LandsraadHouseFactionKey;
+  name: string;
+};
+
 export type LandsraadVendorOverrideResult = {
   applied: boolean;
   reason?: string;
   termId?: string;
   decreeKey?: LandsraadVendorKey;
   decreeName?: string;
+  houseFactionKey?: LandsraadHouseFactionKey | null;
+  houseFactionName?: string | null;
 };
 
 export const adminApi = {
@@ -150,8 +159,8 @@ export const adminApi = {
   landsraad: () => api<LandsraadOverview>("/api/admin/landsraad"),
   landsraadMilestonePreset: () => api<{ preset: LandsraadMilestonePreset }>("/api/admin/landsraad/milestone-preset"),
   saveLandsraadMilestonePreset: (body: { enabled: boolean; goalAmount: number; thresholds: number[] }) => post<{ preset: LandsraadMilestonePreset; result: { applied: boolean; reason?: string; termId?: string } }>("/api/admin/landsraad/milestone-preset", body),
-  landsraadVendorOverride: () => api<{ preset: LandsraadVendorOverridePreset; catalog: LandsraadVendorCatalogEntry[] }>("/api/admin/landsraad/vendor-override"),
-  saveLandsraadVendorOverride: (body: { enabled: boolean; mode: "fixed" | "rotate"; vendorKeys: LandsraadVendorKey[]; overrideResolvedTerm?: boolean }) => post<{ preset: LandsraadVendorOverridePreset; result: LandsraadVendorOverrideResult }>("/api/admin/landsraad/vendor-override", body),
+  landsraadVendorOverride: () => api<{ preset: LandsraadVendorOverridePreset; catalog: LandsraadVendorCatalogEntry[]; houseCatalog: LandsraadHouseFactionCatalogEntry[] }>("/api/admin/landsraad/vendor-override"),
+  saveLandsraadVendorOverride: (body: { enabled: boolean; mode: "fixed" | "rotate"; vendorKeys: LandsraadVendorKey[]; houseFaction?: LandsraadHouseFactionKey | null; overrideResolvedTerm?: boolean }) => post<{ preset: LandsraadVendorOverridePreset; result: LandsraadVendorOverrideResult }>("/api/admin/landsraad/vendor-override", body),
   revertLandsraadVendorOverride: () => post<{ preset: LandsraadVendorOverridePreset; result: LandsraadVendorOverrideResult }>("/api/admin/landsraad/vendor-override/revert", {}),
   setLandsraadTaskGoal: (taskId: string | number, goalAmount: number) => post<{ ok: boolean }>("/api/admin/landsraad/task-goal", { taskId, goalAmount }),
   setLandsraadTermTaskGoals: (termId: string | number, goalAmount: number) => post<{ ok: boolean; updatedRows: number }>("/api/admin/landsraad/term-task-goals", { termId, goalAmount }),

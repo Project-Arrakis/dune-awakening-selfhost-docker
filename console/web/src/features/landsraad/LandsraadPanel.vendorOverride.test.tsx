@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { adminApi, type LandsraadVendorCatalogEntry } from "../../api/admin";
+import { adminApi, type LandsraadHouseFactionCatalogEntry, type LandsraadVendorCatalogEntry } from "../../api/admin";
 import { mapsApi } from "../../api/maps";
 import { playersApi } from "../../api/players";
 import { LandsraadPanel } from "./LandsraadPanel";
@@ -53,7 +53,11 @@ const VENDOR_CATALOG: LandsraadVendorCatalogEntry[] = [
   { key: "utilities", decreeName: "SpecialVendorActive_Utilities" }
 ];
 
-const VENDOR_PRESET = { enabled: false, mode: "fixed" as const, vendorKeys: [], lastAppliedTermId: null, lastAppliedAt: "", lastResult: "" };
+const VENDOR_PRESET = { enabled: false, mode: "fixed" as const, vendorKeys: [], houseFaction: null, lastAppliedTermId: null, lastAppliedAt: "", lastResult: "" };
+const HOUSE_CATALOG: LandsraadHouseFactionCatalogEntry[] = [
+  { key: "atreides", name: "Atreides" },
+  { key: "harkonnen", name: "Harkonnen" }
+];
 
 function renderPanel(overrides: { overview?: typeof OVERVIEW } & Partial<Parameters<typeof LandsraadPanel>[0]> = {}) {
   const { overview, ...propOverrides } = overrides;
@@ -65,7 +69,7 @@ function renderPanel(overrides: { overview?: typeof OVERVIEW } & Partial<Paramet
   };
   vi.mocked(adminApi.landsraad).mockResolvedValue(overview ?? OVERVIEW);
   vi.mocked(adminApi.landsraadMilestonePreset).mockResolvedValue({ preset: MILESTONE_PRESET });
-  vi.mocked(adminApi.landsraadVendorOverride).mockResolvedValue({ preset: VENDOR_PRESET, catalog: VENDOR_CATALOG });
+  vi.mocked(adminApi.landsraadVendorOverride).mockResolvedValue({ preset: VENDOR_PRESET, catalog: VENDOR_CATALOG, houseCatalog: HOUSE_CATALOG });
   vi.mocked(playersApi.listAll).mockResolvedValue({ rows: [], totalCount: 0 });
   vi.mocked(mapsApi.userSettingsValues).mockResolvedValue({ stdout: "" });
   vi.mocked(mapsApi.userSettingsRestartPending).mockResolvedValue({ pending: false });
@@ -101,7 +105,7 @@ describe("LandsraadPanel Special Vendor Override", () => {
     renderPanel();
     await waitForVendorSection();
 
-    expect(screen.getByText(/has not been confirmed against a live game client/)).toBeInTheDocument();
+    expect(screen.getByText(/gated on which house is recorded as winning this term/)).toBeInTheDocument();
   });
 
   it("uses the bypass-the-win-requirement confirm copy on an unresolved term, and sends overrideResolvedTerm: false", async () => {
@@ -163,5 +167,70 @@ describe("LandsraadPanel Special Vendor Override", () => {
 
     await waitFor(() => expect(confirmAction).toHaveBeenCalled());
     expect(adminApi.saveLandsraadVendorOverride).not.toHaveBeenCalled();
+  });
+
+  // -- v2 (design doc §8): Target House --
+
+  it("selecting a house forces danger styling, a warning naming the risks, and details, even on an unresolved term", async () => {
+    const { confirmAction } = renderPanel();
+    await waitForVendorSection();
+    vi.mocked(adminApi.saveLandsraadVendorOverride).mockResolvedValue({ preset: VENDOR_PRESET, result: { applied: true } });
+
+    fireEvent.click(screen.getByLabelText("Vehicle Vendor"));
+    fireEvent.change(screen.getByLabelText(/Target House/), { target: { value: "atreides" } });
+    fireEvent.click(screen.getByRole("button", { name: "Force Now" }));
+
+    await waitFor(() => expect(confirmAction).toHaveBeenCalledWith(
+      expect.stringContaining("set Atreides as this term's winning house"),
+      expect.objectContaining({
+        danger: true,
+        warning: expect.stringContaining("real Landsraad rewards"),
+        details: [{ label: "Vendor", value: "Vehicle Vendor" }, { label: "Target House", value: "Atreides", tone: "danger" }]
+      })
+    ));
+    await waitFor(() => expect(adminApi.saveLandsraadVendorOverride).toHaveBeenCalledWith(
+      expect.objectContaining({ houseFaction: "atreides" })
+    ));
+  });
+
+  it("the confirm warning names the organic-win-masking risk", async () => {
+    const { confirmAction } = renderPanel();
+    await waitForVendorSection();
+    vi.mocked(adminApi.saveLandsraadVendorOverride).mockResolvedValue({ preset: VENDOR_PRESET, result: { applied: true } });
+
+    fireEvent.click(screen.getByLabelText("Vehicle Vendor"));
+    fireEvent.change(screen.getByLabelText(/Target House/), { target: { value: "harkonnen" } });
+    fireEvent.click(screen.getByRole("button", { name: "Force Now" }));
+
+    await waitFor(() => expect(confirmAction).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ warning: expect.stringContaining("silently prevent any house's real, organic Landsraad win") })
+    ));
+  });
+
+  it("omitting the target house keeps the plain vendor-only payload (no houseFaction)", async () => {
+    renderPanel();
+    await waitForVendorSection();
+    vi.mocked(adminApi.saveLandsraadVendorOverride).mockResolvedValue({ preset: VENDOR_PRESET, result: { applied: true } });
+
+    fireEvent.click(screen.getByLabelText("Vehicle Vendor"));
+    fireEvent.click(screen.getByRole("button", { name: "Force Now" }));
+
+    await waitFor(() => expect(adminApi.saveLandsraadVendorOverride).toHaveBeenCalledWith(
+      expect.objectContaining({ houseFaction: null })
+    ));
+  });
+
+  it("hides the Target House dropdown entirely when no install-eligible houses are found", async () => {
+    vi.mocked(adminApi.landsraad).mockResolvedValue(OVERVIEW);
+    vi.mocked(adminApi.landsraadMilestonePreset).mockResolvedValue({ preset: MILESTONE_PRESET });
+    vi.mocked(adminApi.landsraadVendorOverride).mockResolvedValue({ preset: VENDOR_PRESET, catalog: VENDOR_CATALOG, houseCatalog: [] });
+    vi.mocked(playersApi.listAll).mockResolvedValue({ rows: [], totalCount: 0 });
+    vi.mocked(mapsApi.userSettingsValues).mockResolvedValue({ stdout: "" });
+    vi.mocked(mapsApi.userSettingsRestartPending).mockResolvedValue({ pending: false });
+    render(<LandsraadPanel confirmAction={vi.fn().mockResolvedValue(true)} onError={vi.fn()} restartGate={vi.fn<RestartGate>()} />);
+    await waitForVendorSection();
+
+    expect(screen.queryByLabelText(/Target House/)).not.toBeInTheDocument();
   });
 });

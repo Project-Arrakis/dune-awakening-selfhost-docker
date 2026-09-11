@@ -3747,7 +3747,8 @@ async function landsraadRoute(req, res, action) {
   if (req.method === "GET" && action === "vendor-override") {
     return dbJson(res, async () => ({
       preset: readLandsraadVendorOverridePreset(config),
-      catalog: await duneDb.landsraadVendorCatalog(db)
+      catalog: await duneDb.landsraadVendorCatalog(db),
+      houseCatalog: await duneDb.landsraadHouseFactionCatalog(db)
     }));
   }
   if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
