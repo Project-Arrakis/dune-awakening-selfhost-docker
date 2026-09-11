@@ -1089,7 +1089,7 @@ describe("DiscordBotSection", () => {
       // form's Client ID/Secret/Redirect URI fields are no longer presented
       // as part of the primary, unconditional step-1 content -- they're
       // nested inside this explicit, opt-in disclosure instead.
-      const advancedSummary = screen.getByText(/Advanced: use my own Discord Application instead/i);
+      const advancedSummary = screen.getByText(/Advanced: connect manually instead/i);
       expect(advancedSummary.closest("details")).toContainElement(screen.getByLabelText(/Client ID/i));
     });
 
@@ -1236,7 +1236,7 @@ describe("DiscordBotSection", () => {
       await screen.findByRole("button", { name: /Waiting for Discord…/i });
 
       // Open the "Advanced" <details> the same way a real user would.
-      const summary = screen.getByText(/Advanced: use my own Discord Application instead/i);
+      const summary = screen.getByText(/Advanced: connect manually instead/i);
       fireEvent.click(summary);
       expect((summary.closest("details") as HTMLDetailsElement).open).toBe(true);
 
