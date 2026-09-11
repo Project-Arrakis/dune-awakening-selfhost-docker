@@ -177,7 +177,6 @@ test("oauthError carries a status code for routes", () => {
   assert.equal(error.code, "no_access");
 });
 
-
 // ---- §2.1.1: console-native role -> tier, and the Discord-account 2FA gate ----
 
 const HOME = "300000000000000001";
@@ -392,4 +391,12 @@ test("pending state: anonymous (unowned) issuing still cannot grow past maxEntri
   const store = createPendingStateStore({ maxEntries: 4 });
   for (let i = 0; i < 10; i += 1) store.issue();
   assert.equal(store.size(), 4);
+});
+
+test("constantTimeStringEqual is exported and behaves correctly", async () => {
+  const { constantTimeStringEqual } = await import("../src/integrations/discord/oauth.js");
+  assert.equal(constantTimeStringEqual("abc", "abc"), true);
+  assert.equal(constantTimeStringEqual("abc", "abd"), false);
+  assert.equal(constantTimeStringEqual("abc", "ab"), false);
+  assert.equal(constantTimeStringEqual("", ""), false, "empty-vs-empty must be false, matching the real function's own left.length === 0 short-circuit");
 });

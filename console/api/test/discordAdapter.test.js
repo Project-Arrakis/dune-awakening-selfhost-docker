@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DISCORD_ADAPTER_ROUTES, DISCORD_CATALOG_PROTOCOL_VERSION, discordAdapterErrorResponse, discordAdapterHealth, discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices, discordAdapterStatus, discordWritesEnabled } from "../src/integrations/discord/adapter.js";
+import { DISCORD_ADAPTER_ROUTES, DISCORD_CATALOG_PROTOCOL_VERSION, discordAdapterErrorResponse, discordAdapterHealth, discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices, discordAdapterStatus, discordRoleMappingFromEnv, discordRolePolicyHealth, discordWritesEnabled } from "../src/integrations/discord/adapter.js";
 
 const OLD_ENV = { ...process.env };
 
@@ -93,6 +93,42 @@ test("reports adapter health with isolated link-state writes", async () => {
   assert.ok(!result.plannedRoutes.includes("/api/integrations/discord/logs"));
   assert.ok(!result.plannedRoutes.includes("/api/integrations/discord/ops/activity"));
   assert.ok(result.plannedRoutes.includes("/api/integrations/discord/ops/location"));
+});
+
+// Audit finding #3 (HIGH): an operator who explicitly clears
+// DISCORD_PLAYER_ROLE_IDS (writes "") via the new Settings UI must see
+// access actually revoked -- not silently fall back to a stale, non-empty
+// legacy DISCORD_OBSERVER_ROLE_IDS just because "" is falsy under `||`.
+test("discordRoleMappingFromEnv does NOT fall back to the legacy var when DISCORD_PLAYER_ROLE_IDS is explicitly set to empty -- clearing role IDs must actually revoke access", () => {
+  process.env.DISCORD_PLAYER_ROLE_IDS = "";
+  process.env.DISCORD_OBSERVER_ROLE_IDS = "111111111111111111";
+  const mapping = discordRoleMappingFromEnv();
+  assert.deepEqual(mapping.playerRoleIds, [], "an explicitly-cleared DISCORD_PLAYER_ROLE_IDS must not fall back to the legacy var");
+  delete process.env.DISCORD_PLAYER_ROLE_IDS;
+  delete process.env.DISCORD_OBSERVER_ROLE_IDS;
+});
+
+// dune-awakening-selfhost-docker#872 (automated review finding on
+// already-merged #748): the DISCORD_OBSERVER_ROLE_IDS -> DISCORD_PLAYER_ROLE_IDS
+// env-var rename correctly kept a legacy-fallback READ, but the equivalent
+// health-endpoint JSON field rename (observerConfigured -> playerConfigured)
+// shipped with no back-compat alias -- a real, documented external
+// contract break (docs/integrations/discord-control-bot/admin-guide.md's
+// own "Expected role policy shape" example and 403-troubleshooting steps
+// instruct checking rolePolicy.observerConfigured directly).
+test("discordRolePolicyHealth emits both observerConfigured (legacy alias) and playerConfigured, matching the env-var's own dual-read convention", () => {
+  const configured = discordRolePolicyHealth({
+    playerRoleIds: ["111111111111111111"],
+    moderatorRoleIds: [],
+    adminRoleIds: [],
+    ownerRoleIds: []
+  });
+  assert.equal(configured.playerConfigured, true);
+  assert.equal(configured.observerConfigured, true, "a documented external consumer reading the pre-rename field name must still see the real, current value");
+
+  const unconfigured = discordRolePolicyHealth({ playerRoleIds: [], moderatorRoleIds: [], adminRoleIds: [], ownerRoleIds: [] });
+  assert.equal(unconfigured.playerConfigured, false);
+  assert.equal(unconfigured.observerConfigured, false);
 });
 
 test("keeps writes disabled by default and accepts explicit opt-in values", () => {
