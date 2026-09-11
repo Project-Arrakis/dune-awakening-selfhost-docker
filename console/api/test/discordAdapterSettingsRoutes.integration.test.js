@@ -251,6 +251,48 @@ test("POST /enable and /role-ids preserve a tier's existing role IDs when that f
   }
 });
 
+// Code-review finding on the fix above (dune-awakening-selfhost-docker#872
+// fix PR): the new `"field" in body` checks throw a TypeError when the
+// parsed JSON body is a valid-but-non-object value (readJsonBody() only
+// special-cases a genuinely EMPTY body as `{}`), which previously leaked a
+// raw 500 instead of degrading gracefully like the old `body.field` access
+// did on the same inputs.
+test("POST /enable and /role-ids degrade gracefully (no 500) when the request body is valid JSON but not an object", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-non-object-body-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+
+    // Seed all 3 tiers so a subsequent non-object body can be checked for
+    // "preserved existing state," not just "didn't 500."
+    await api(port, "/api/settings/discord-bot/enable", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "" }
+    });
+
+    for (const primitiveBody of [123, "not-an-object", true, null]) {
+      const res = await api(port, "/api/settings/discord-bot/role-ids", {
+        method: "POST",
+        cookie: session.cookie,
+        csrf: session.csrf,
+        body: primitiveBody
+      });
+      assert.notEqual(res.status, 500, `body ${JSON.stringify(primitiveBody)} must not crash the route handler`);
+      assert.equal(res.status, 202, `body ${JSON.stringify(primitiveBody)} should be treated as no fields present, not an error`);
+    }
+
+    const after = await (await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie })).json();
+    assert.deepEqual(after.roleIds.player, ["111111111111111111"], "a non-object body must not wipe existing role IDs");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 // Real UAT finding (2026-09-09, "I see no path to remove the bot"): this
 // feature previously had no way back to "never configured" once enabled.
 test("POST /api/settings/discord-bot/disable fully resets an enabled adapter back to never-configured, and is recorded in the real audit log", async () => {

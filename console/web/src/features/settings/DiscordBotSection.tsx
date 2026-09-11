@@ -21,10 +21,13 @@ const POLL_INTERVAL_MS = 2000;
 // effect's own catch block swallows transient fetch errors as "keep
 // polling" -- so the UI was stuck on phase === "enabling" permanently,
 // with no error and no way forward except manually clearing localStorage.
-// 90 attempts * 2s = 3 minutes, generous for a real discordAdapterApply
-// restart (which normally completes in well under a minute) while still
-// bounding the wait to something finite.
-const MAX_POLL_ATTEMPTS = 90;
+// 3 minutes is generous for a real discordAdapterApply restart (which
+// normally completes in well under a minute) while still bounding the wait
+// to something finite. Derived from POLL_INTERVAL_MS (code-review finding:
+// a bare attempt count silently changes its real wall-clock meaning if the
+// interval is ever retuned) rather than hardcoded separately.
+const POLL_TIMEOUT_BUDGET_MS = 3 * 60 * 1000;
+const MAX_POLL_ATTEMPTS = Math.ceil(POLL_TIMEOUT_BUDGET_MS / POLL_INTERVAL_MS);
 // Real UAT finding: the existing "this will restart the console" confirm
 // dialog is a single click, and the moment it's confirmed the actual
 // restart fires immediately with no further warning -- it felt abrupt and
@@ -613,11 +616,27 @@ export function DiscordBotSection() {
   useEffect(() => {
     if (phase !== "enabling" || !runId) return undefined;
     let attempts = 0;
+    // Code-review finding on the timeout fix above (dune-awakening-selfhost-docker#872
+    // fix PR): stackProgress() can occasionally take longer than
+    // POLL_INTERVAL_MS to resolve (the console is "briefly unreachable"
+    // during a real recreate, per the catch block below). Without a guard,
+    // an overlapping tick could still be in flight when a later tick hits
+    // MAX_POLL_ATTEMPTS and sets phase "failed" -- if the slow call then
+    // resolves "succeeded" afterward, whichever setState lands last wins,
+    // silently overwriting the other outcome. `stopped` is checked
+    // immediately after every await so a call whose result is already moot
+    // never applies it; `inFlight` skips starting an overlapping tick at all.
+    let stopped = false;
+    let inFlight = false;
     const interval = setInterval(async () => {
+      if (stopped || inFlight) return;
+      inFlight = true;
       attempts += 1;
       try {
         const progress = await updatesApi.stackProgress(runId);
+        if (stopped) return;
         if (progress.state === "succeeded") {
+          stopped = true;
           clearInterval(interval);
           persistUpdateTask(TASK_KEY, null);
           setRunId(null);
@@ -629,6 +648,7 @@ export function DiscordBotSection() {
           }
           return;
         } else if (progress.state === "failed") {
+          stopped = true;
           clearInterval(interval);
           persistUpdateTask(TASK_KEY, null);
           setRunId(null);
@@ -638,7 +658,10 @@ export function DiscordBotSection() {
         }
       } catch {
         // The console is mid-recreate and briefly unreachable -- keep polling.
+      } finally {
+        inFlight = false;
       }
+      if (stopped) return;
       // dune-awakening-selfhost-docker#872 (automated review finding on
       // already-merged #748): if runDiscordAdapterApplyTask throws before
       // its shell helper ever writes a status file (e.g.
@@ -649,9 +672,10 @@ export function DiscordBotSection() {
       // ever reached the succeeded/failed branches above to clear this
       // interval. Without a bound, this left phase stuck on "enabling"
       // permanently, with no error and no way forward except manually
-      // clearing localStorage. 90 attempts * 2s = 3 minutes, generous for
-      // a real discordAdapterApply restart (normally well under a minute).
+      // clearing localStorage. See POLL_TIMEOUT_BUDGET_MS above for the
+      // real wall-clock budget this attempt count is derived from.
       if (attempts >= MAX_POLL_ATTEMPTS) {
+        stopped = true;
         clearInterval(interval);
         persistUpdateTask(TASK_KEY, null);
         setRunId(null);
@@ -659,7 +683,7 @@ export function DiscordBotSection() {
         setError("Applying Discord Bot settings is taking much longer than expected. Check the console's logs, then Retry.");
       }
     }, POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
+    return () => { stopped = true; clearInterval(interval); };
   }, [phase, runId]);
 
   async function handleEnable() {
