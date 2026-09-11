@@ -1496,8 +1496,8 @@ export function DiscordBotSection() {
                       unconditionally, with fields most operators never
                       needed). */}
                   <details className="settings-hosted-bot-advanced" ref={advancedDetailsRef}>
-                    <summary>Advanced: use my own Discord Application instead</summary>
-                    <p className="muted">Invite the bot manually, then connect it using your own Discord Application's credentials. Both are required before you can continue this way.</p>
+                    <summary>Advanced: connect manually instead</summary>
+                    <p className="muted">Still uses the same hosted bot (Sahir Venn) above -- this is only a different way to prove you own the Discord server, using your own Discord Application's OAuth credentials instead of the one-click screen. It does not run a separate bot. Only use this if "Add &amp; Connect Bot" above doesn't work for you.</p>
                     {renderHostedBotConnection()}
                   </details>
                 </>
