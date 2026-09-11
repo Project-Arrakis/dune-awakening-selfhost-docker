@@ -251,11 +251,35 @@ print("0")
 PY
 }
 
+director_map_max_parties() {
+  local map="$1"
+  local config_path="${DUNE_DIRECTOR_CONFIG_FILE:-runtime/director/config/director_config.ini}"
+
+  [ -r "$config_path" ] || return 1
+  awk -v target="$map" '
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      next
+    }
+    section == target && /^[[:space:]]*MaxParties[[:space:]]*=/ {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]*[;#].*$/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+      found = 1
+      exit
+    }
+    END { if (!found) exit 1 }
+  ' "$config_path"
+}
+
 map_requires_isolated_party_dimension() {
-  case "$1" in
-    CB_Overland_S_07|CB_Overland_S_08) return 0 ;;
-    *) return 1 ;;
-  esac
+  local max_parties
+  max_parties="$(director_map_max_parties "$1" 2>/dev/null)" || return 1
+  [ "$max_parties" = "1" ]
 }
 
 map_exists() {
@@ -1698,11 +1722,11 @@ handle_demand() {
       [[ "$occupied" =~ ^[0-9]+$ ]] || occupied=0
       [[ "$max_dimensions" =~ ^[1-9][0-9]*$ ]] || max_dimensions=1
 
-      # These Landsraad activity maps admit one party per dimension. A new
+      # Party-isolated activity maps admit one party per dimension. A new
       # request needs one dimension in addition to those already occupied;
-      # a queue summary reports every solo player still waiting. Count
-      # warming containers as capacity so repeated summaries cannot fill all
-      # configured dimensions while the requested server is starting.
+      # a queue summary reports every solo player still waiting. Count warming
+      # containers as capacity so repeated summaries cannot fill every
+      # configured dimension while the requested server is starting.
       desired=$((occupied + num))
       [ "$desired" -le "$max_dimensions" ] || desired="$max_dimensions"
       capacity="$assigned"
