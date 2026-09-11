@@ -25,7 +25,7 @@ import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { createSecondFactorStore } from "./auth/secondFactorStore.js";
 import { generateTotpSecret, provisioningUri, provisioningQrDataUri, verifyTotpMatch } from "./auth/totp.js";
-import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
+import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie, constantTimeStringEqual } from "./integrations/discord/oauth.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { roleTiersConfigured, roleTierConflicts, describeRoleTierConflicts, parseRoleIdList } from "./integrations/discord/roleTiers.js";
 import { redact } from "./redact.js";
@@ -46,7 +46,10 @@ import { createDeathPoller } from "./deathPoller.js";
 import { updateEnvFileValue as updateEnvValue, updateEnvFileValues as updateEnvValues } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
-import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
+import { handleDiscordAdapterRoute, isDiscordAdapterRoute, readDiscordBotApiToken } from "./integrations/discord/routes.js";
+import { fetchOwnedDiscordGuilds, createPendingRegistrationStore, hostedBotOAuthStateCookie, clearHostedBotOAuthStateCookie, hostedBotRegistrationHandleCookie, clearHostedBotRegistrationHandleCookie, hostedBotOAuthReturnPage } from "./integrations/discord/hostedBotOAuth.js";
+import { buildAutoInviteAuthorizeUrl, createAutoInvitePendingStateStore, autoInviteStateCookie, clearAutoInviteStateCookie, autoInviteCompletePage, autoInviteConfirmationIdCookie, clearAutoInviteConfirmationIdCookie } from "./integrations/discord/autoInvite.js";
+import { fetchWithTimeoutAndRetry } from "./services/httpWithRetry.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
@@ -90,6 +93,7 @@ import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
 import { createScheduledMapMessageScheduler } from "./services/scheduledMapMessages.js";
 import { createQaUpdates } from "./services/qaUpdates.js";
 import { SETUP_CONFIG_KEYS, validHostDatacenterId } from "./services/setupConfig.js";
+import { validateDiscordRoleIds, readDiscordBotSettingsState, applyDiscordBotEnableRequest, discordAdminRoleIdsChanged, updateDiscordBotRoleIds, regenerateDiscordBotToken, persistHostedBotConnectedGuild, disableDiscordBotAdapter, setDeploymentChoice } from "./integrations/discord/adapterSettings.js";
 
 const config = loadConfig();
 const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
@@ -338,6 +342,24 @@ const oauthStartRateLimiter = createMutationRateLimiter({ maxRequests: OAUTH_STA
 // two very different exposures should not share one lockout.
 const credentialProofRateLimiter = createLoginRateLimiter();
 const oauthPendingStates = createPendingStateStore();
+const hostedBotPendingRegistrations = createPendingRegistrationStore();
+// A second, independent createPendingStateStore() instance -- the SAME
+// shape console-login's own `oauthPendingStates` uses (state + PKCE
+// verifier/challenge, TTL, capacity cap, single-use consume), but scoped
+// to this flow's own state cookie/path so the two OAuth purposes never
+// share a pending-state pool (fix round 1, Important #3: the original
+// draft validated /oauth/start's state purely via double-submit-cookie,
+// with no server-side record, no PKCE, and no TTL/capacity cap beyond the
+// cookie's own Max-Age -- this closes that gap, mirroring console-login's
+// pattern on the same Discord app).
+const hostedBotOAuthPendingStates = createPendingStateStore();
+// mentat#343+/dune-awakening-selfhost-docker#832 Phase 6: a THIRD,
+// independent pending-state store for the new auto-invite flow --
+// deliberately not sharing hostedBotOAuthPendingStates above (that one
+// backs the OLD "Connect to hosted bot" flow, kept unmodified per §9
+// Option B). See autoInvite.js's own header comment for why this store
+// doesn't reuse createPendingStateStore()'s PKCE-shaped API.
+const hostedBotAutoInvitePendingStates = createAutoInvitePendingStateStore();
 const handoff = createHandoff({
   secret: config.discordBotHandoffSecret,
   botUrl: config.discordBotHandoffUrl,
@@ -2067,6 +2089,672 @@ async function handleApi(req, res) {
   if (path === "/api/deepdesert/update" && req.method === "POST") return deepDesertUpdateRoute(req, res);
   if (path === "/api/settings/public-directory" && req.method === "POST") return publicDirectorySettingsRoute(req, res);
   if (path === "/api/settings/public-directory/claim" && req.method === "POST") return publicDirectoryClaimRoute(req, res);
+  if (path === "/api/settings/discord-bot" && req.method === "GET") {
+    return json(res, 200, readDiscordBotSettingsState(config));
+  }
+  // Code-review finding (dune-awakening-selfhost-docker#872 fix PR): both
+  // /enable and /role-ids below need the same "non-object body -> {}" guard
+  // and the same "field omitted from body -> keep the tier's current value"
+  // fallback, 3 times each (player/moderator/admin). Sharing these two
+  // helpers instead of repeating the pattern 6 times means a future fix to
+  // either only has to be made once.
+  function normalizeSettingsBody(parsedBody) {
+    return parsedBody && typeof parsedBody === "object" && !Array.isArray(parsedBody) ? parsedBody : {};
+  }
+  // Code-review finding (dune-awakening-selfhost-docker#872 fix PR, round
+  // 2): the previous version of this helper re-ran the OMITTED field's
+  // current value back through validateDiscordRoleIds(). That's wrong --
+  // discordRoleMappingFromEnv() never validated .env-sourced role IDs
+  // against SNOWFLAKE_PATTERN in the first place (this UI predates that
+  // validator), so a legacy/manually-edited .env entry that doesn't match
+  // the pattern would now 400 a request that never touched that tier at
+  // all. The current, already-persisted value is trusted as-is when the
+  // field is absent; only a field genuinely present in the body goes
+  // through the strict validator.
+  function resolveRoleIdsTier(body, fieldName, currentTierIds) {
+    if (!(fieldName in body)) return { ok: true, roleIds: currentTierIds };
+    return validateDiscordRoleIds(body[fieldName]);
+  }
+  // Real UAT finding (2026-09-10): the 3-step wizard redesign needs
+  // deploymentChoice persisted the moment the operator picks "Hosted bot",
+  // before role config or the actual restart (step 1 is now "Add bot to
+  // Discord", which needs the hosted-bot OAuth routes' deploymentChoice
+  // gate to already pass). No restart task -- see setDeploymentChoice()'s
+  // own comment for why none is needed.
+  if (path === "/api/settings/discord-bot/choice" && req.method === "POST") {
+    const body = await readJson(req);
+    if (body.deploymentChoice !== "hosted" && body.deploymentChoice !== "self-hosted") {
+      return json(res, 400, { error: "deploymentChoice must be \"hosted\" or \"self-hosted\"" });
+    }
+    setDeploymentChoice(config, body.deploymentChoice);
+    audit(config, req, "settings.discord-bot.choice-updated", { deploymentChoice: body.deploymentChoice });
+    return json(res, 200, { ok: true });
+  }
+  if (path === "/api/settings/discord-bot/enable" && req.method === "POST") {
+    const body = normalizeSettingsBody(await readJson(req));
+    // dune-awakening-selfhost-docker#872 (automated review finding on
+    // already-merged #748): API-REFERENCE.md documents these 3 fields as
+    // optional, implying a caller can update one tier at a time -- but
+    // validateDiscordRoleIds() treats an omitted field identically to an
+    // explicitly-empty one, and the write below persists all 3 tiers
+    // unconditionally. Reading currentState BEFORE validation, and
+    // substituting the tier's CURRENT value whenever the field is
+    // genuinely absent from the body (`in` check, not just falsy -- an
+    // explicit `""` must still mean "clear this tier"), makes the
+    // documented "optional" contract actually true: omitting a field now
+    // preserves that tier's existing mapping instead of silently wiping
+    // it. The only real caller (DiscordBotSection.tsx) always sends all
+    // three fields together, so this is a no-op for it.
+    const currentState = readDiscordBotSettingsState(config);
+    const player = resolveRoleIdsTier(body, "playerRoleIds", currentState.roleIds.player);
+    if (!player.ok) return json(res, 400, { error: player.error });
+    const moderator = resolveRoleIdsTier(body, "moderatorRoleIds", currentState.roleIds.moderator);
+    if (!moderator.ok) return json(res, 400, { error: moderator.error });
+    const admin = resolveRoleIdsTier(body, "adminRoleIds", currentState.roleIds.admin);
+    if (!admin.ok) return json(res, 400, { error: admin.error });
+
+    // Audit finding #2 (HIGH): DISCORD_ADMIN_ROLE_IDS was read-only from
+    // .env before this feature -- no route ever wrote it. Per policy.js,
+    // Discord's "admin" bot-command tier grants nearly every
+    // non-self-scoped capability, so a request that actually changes
+    // which roles map to it requires owner, even though this route is
+    // otherwise admin-reachable via updates:apply. Player/moderator
+    // role-ID changes are unaffected.
+    if (discordAdminRoleIdsChanged(currentState.roleIds.admin, admin.roleIds) && session.tier !== "owner") {
+      audit(config, req, "settings.discord-bot.enable", { ok: false, reason: "admin_role_change_requires_owner" });
+      return json(res, 403, { error: "Changing admin-tier Discord role mappings requires owner access." });
+    }
+
+    // Audit finding #1 (CRITICAL): applyDiscordBotEnableRequest() only
+    // mints a fresh token on a genuine first enable -- once the adapter
+    // is already enabled, a repeat POST here behaves exactly like
+    // /role-ids (token-safe, idempotent), so an admin (updates:apply)
+    // can never silently re-mint the live token, which the owner-only
+    // settings:discord-bot-regenerate-token action exists to reserve.
+    const result = applyDiscordBotEnableRequest(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds }, { deploymentChoice: body.deploymentChoice });
+    audit(config, req, "settings.discord-bot.enable", { playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length, tokenMinted: result.tokenMinted });
+    // Real UAT finding (2026-09-09): this used to also call tasks.create()
+    // here, restarting the console in the same request that mints the
+    // token -- by the time the frontend could show the token, the restart
+    // was already under way (tasks.create() dispatches via
+    // queueMicrotask(), i.e. effectively immediately). That left no real
+    // window for an operator to copy a one-time secret before the console
+    // went briefly unreachable. Persisting (.env + token file, above) and
+    // actually restarting are now two separate calls -- see POST .../restart
+    // below -- so the frontend can reveal the token first and let the
+    // operator decide when the restart happens.
+    const responseBody = {};
+    if (result.tokenMinted) responseBody.token = result.token;
+    return json(res, 200, responseBody);
+  }
+  // Real UAT finding (2026-09-09): split out of /enable and /role-ids above
+  // so the frontend can reveal a freshly-minted token (or just acknowledge
+  // a role-ID save) before triggering the actual restart, instead of the
+  // restart firing in the same request that persists the change. Takes no
+  // body -- the discordAdapterApply task re-reads whatever is currently in
+  // .env, which the preceding /enable or /role-ids call already wrote.
+  if (path === "/api/settings/discord-bot/restart" && req.method === "POST") {
+    audit(config, req, "settings.discord-bot.restart", {});
+    return json(res, 202, { task: tasks.create("settings", "discordAdapterApply", {}) });
+  }
+  if (path === "/api/settings/discord-bot/role-ids" && req.method === "POST") {
+    const body = normalizeSettingsBody(await readJson(req));
+    // dune-awakening-selfhost-docker#872: same fix, same reasoning, as
+    // /enable above -- an omitted field must preserve its tier's current
+    // mapping, not silently wipe it, matching this route's own
+    // API-REFERENCE.md documentation ("optional" fields).
+    const currentState = readDiscordBotSettingsState(config);
+    const player = resolveRoleIdsTier(body, "playerRoleIds", currentState.roleIds.player);
+    if (!player.ok) return json(res, 400, { error: player.error });
+    const moderator = resolveRoleIdsTier(body, "moderatorRoleIds", currentState.roleIds.moderator);
+    if (!moderator.ok) return json(res, 400, { error: moderator.error });
+    const admin = resolveRoleIdsTier(body, "adminRoleIds", currentState.roleIds.admin);
+    if (!admin.ok) return json(res, 400, { error: admin.error });
+
+    // Audit finding #2 (HIGH): same owner-only gate as /enable above.
+    if (discordAdminRoleIdsChanged(currentState.roleIds.admin, admin.roleIds) && session.tier !== "owner") {
+      audit(config, req, "settings.discord-bot.role-ids-updated", { ok: false, reason: "admin_role_change_requires_owner" });
+      return json(res, 403, { error: "Changing admin-tier Discord role mappings requires owner access." });
+    }
+
+    updateDiscordBotRoleIds(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds }, { deploymentChoice: body.deploymentChoice });
+    audit(config, req, "settings.discord-bot.role-ids-updated", { playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length });
+    return json(res, 202, { task: tasks.create("settings", "discordAdapterApply", {}) });
+  }
+  if (path === "/api/settings/discord-bot/regenerate-token" && req.method === "POST") {
+    const { token } = regenerateDiscordBotToken(config);
+    audit(config, req, "settings.discord-bot.token-regenerated", {});
+    return json(res, 200, { ok: true, token });
+  }
+  // Real UAT finding (2026-09-09, "I see no path to remove the bot"): this
+  // feature previously had Enable/Save Role IDs/Regenerate Token but no way
+  // back to "never configured." Persists the reset (see
+  // disableDiscordBotAdapter()'s own comment for exactly what it wipes);
+  // like /enable, does not restart itself -- the frontend calls the shared
+  // POST .../restart route separately once the operator has acknowledged
+  // the change via the confirm dialog and countdown.
+  if (path === "/api/settings/discord-bot/disable" && req.method === "POST") {
+    disableDiscordBotAdapter(config);
+    audit(config, req, "settings.discord-bot.disabled", {});
+    return json(res, 200, { ok: true });
+  }
+  // Real UAT finding (2026-09-09): "Connect to hosted bot" originally
+  // reused the console-sign-in Discord Application's Client ID/Secret
+  // (Settings -> Discord OAuth) on a second redirect URI -- the operator
+  // objected directly that these are unrelated capabilities and neither
+  // should require the other configured ("we have OAuth without bot and
+  // bot without OAuth"). These 2 routes configure a fully independent
+  // Discord Application for the hosted-bot connection specifically, kept
+  // under Settings -> Discord Bot (this same route namespace), not
+  // Settings -> Discord OAuth. Split into config (this route) + secret
+  // (the next route) for the same reason /api/setup/write-oauth-config
+  // and /api/setup/save-oauth-secret are already split for the sign-in
+  // credentials: a secret needs its own file/permissions handling, a
+  // plain client ID/URL doesn't.
+  if (path === "/api/settings/discord-bot/oauth-config" && req.method === "POST") {
+    const body = await readJson(req);
+    if (body.clientId !== undefined && body.clientId !== "" && !DISCORD_SNOWFLAKE_RE.test(String(body.clientId))) {
+      return json(res, 400, { error: "Client ID must be a valid Discord snowflake" });
+    }
+    if (body.redirectUri !== undefined && body.redirectUri !== "" && !/^https?:\/\/.+/.test(String(body.redirectUri))) {
+      return json(res, 400, { error: "Redirect URI must be a valid URL" });
+    }
+    if (body.clientId !== undefined) updateEnvFileValue("DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID", String(body.clientId));
+    if (body.redirectUri !== undefined) updateEnvFileValue("DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI", String(body.redirectUri));
+    audit(config, req, "settings.discord-bot.oauth-config-updated", {});
+    return json(res, 200, { ok: true });
+  }
+  if (path === "/api/settings/discord-bot/oauth-secret" && req.method === "POST") {
+    const body = await readJson(req);
+    const secret = body.secret;
+    if (!secret || String(secret).length < 20) {
+      return json(res, 400, { error: "Client secret must be at least 20 characters." });
+    }
+    const dir = config.secretsDir;
+    mkdirSync(dir, { recursive: true });
+    const secretPath = resolve(dir, "discord-hosted-bot-oauth-client-secret.txt");
+    try {
+      writeFileSync(secretPath, `${String(secret).trim()}\n`, { mode: 0o600 });
+      chmodSync(secretPath, 0o600);
+    } catch {
+      return json(res, 500, { error: "Failed to save client secret." });
+    }
+    audit(config, req, "settings.discord-bot.oauth-secret-updated", { secret: "<redacted>" });
+    return json(res, 200, { ok: true });
+  }
+
+  // ---- Hosted-bot console-initiated OAuth registration (Task 6) ----
+  // Deliberately dispatched here, in the post-auth/post-IAM block alongside
+  // the sibling /api/settings/discord-bot* routes above -- unlike
+  // console-login's own OAuth routes (/api/auth/discord/start/callback,
+  // dispatched further up, BEFORE `auth.requireAuth()`/`evaluate()`), these
+  // 3 routes need an already-logged-in, already-authorized console session:
+  // this flow connects an existing console to the hosted bot, it does not
+  // establish console access in the first place.
+  if (path === "/api/integrations/discord/hosted-bot/oauth/start" && req.method === "GET") {
+    // dune-awakening-selfhost-docker#861 (Security Architect wizard audit
+    // finding): this GET route is exempt from CSRF-token enforcement
+    // (auth.js's requireAuth() only checks x-csrf-token on non-GET/HEAD/
+    // OPTIONS methods, app-wide) and SameSite=Lax still permits it on a
+    // top-level cross-site navigation. A malicious page a logged-in
+    // operator visits in another tab could force-navigate their browser
+    // here, consuming one slot of the pending-state pool and triggering
+    // an unsolicited Discord consent redirect. Explicitly accepted,
+    // reasoned residual risk, not an oversight: (1) this is now owner-tier
+    // gated (see actions.js), so it can never be used to escalate a
+    // non-owner session's privilege, only to nuisance-trigger the owner's
+    // own already-privileged session; (2) the pending-state store is
+    // capacity-capped/TTL-bound (existing hardening); (3) downstream
+    // ownership verification independently re-checks Discord ownership
+    // regardless of how this leg was triggered. Moving this behind a
+    // POST-with-CSRF-token would require redesigning the click-to-open-
+    // popup UX (a GET-triggered top-level/popup navigation can't easily
+    // carry a CSRF header) for a residual risk this limited -- not judged
+    // worth it, revisit if that calculus changes.
+    //
+    // Fail-closed, cheapest check first -- matches /register's own
+    // ordering discipline (fix round 1, Important #2): a console that has
+    // never opted into the hosted deployment must never even start a
+    // Discord round-trip for this purpose, regardless of whether Discord
+    // OAuth itself happens to be configured.
+    const botSettingsState = readDiscordBotSettingsState(config);
+    if (botSettingsState.deploymentChoice !== "hosted") {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/start"), "hosted-bot.oauth.start", { ok: false, reason: "not_hosted_choice" });
+      // Final integration review (Important #3): this route is reached by
+      // a top-level browser navigation, not an AJAX call -- every other
+      // failure in this handler (and in /oauth/callback below) renders
+      // oauthErrorPage() as HTML the operator actually sees; a bare JSON
+      // body here used to render as raw text replacing the whole console
+      // UI, inconsistent with the rest of this handler's own convention.
+      return html(res, 403, oauthErrorPage("This console isn't configured for the hosted bot."));
+    }
+    if (!config.discordHostedBotOAuthClientId || !config.discordHostedBotOAuthClientSecret || !config.discordHostedBotOAuthRedirectUri) {
+      // Real UAT finding (2026-09-09): this used to say "Set up Discord
+      // sign-in (Settings -> Discord OAuth)" -- the operator objected
+      // directly that console sign-in and the hosted-bot connection are
+      // unrelated capabilities, and shouldn't be presented (or configured)
+      // as if one depends on the other. This now has its own fully
+      // independent Discord Application credentials (see config.js's own
+      // comment on discordHostedBotOAuthClientId), configured in Settings
+      // -> Discord Bot, not Settings -> Discord OAuth.
+      return html(res, 200, oauthErrorPage("Connecting to the hosted bot isn't configured for this console yet. Go to Settings -> Discord Bot and fill in a Discord Application's Client ID, Client Secret, and Redirect URI for the hosted bot connection, then try connecting to the hosted bot again."));
+    }
+    // PKCE + server-side pending-state record (fix round 1, Important #3):
+    // mirrors console-login's own oauthPendingStates.issue() -> { state,
+    // challenge } exactly, on a second, independent createPendingStateStore()
+    // instance scoped to this flow. The state cookie below remains the
+    // double-submit-cookie half of the defense -- PKCE and the cookie are
+    // complementary, not alternatives.
+    const pendingState = hostedBotOAuthPendingStates.issue();
+    if (!pendingState) {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/start"), "hosted-bot.oauth.start", { ok: false, reason: "too_many_pending" });
+      return json(res, 429, { error: "Too many hosted-bot connection attempts in progress. Try again in a moment." });
+    }
+    const { state: oauthState, challenge } = pendingState;
+    res.setHeader("Set-Cookie", hostedBotOAuthStateCookie(oauthState, config.secureCookies));
+    const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordHostedBotOAuthClientId, redirectUri: config.discordHostedBotOAuthRedirectUri, state: oauthState, codeChallenge: challenge });
+    res.writeHead(302, { Location: authorizeUrl });
+    res.end();
+    audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/start"), "hosted-bot.oauth.start", { ok: true });
+    return;
+  }
+
+  if (path === "/api/integrations/discord/hosted-bot/oauth/callback" && req.method === "GET") {
+    // Same fail-closed, cheapest-check-first gate as /start above (fix
+    // round 1, Important #2) -- a console that has since flipped away from
+    // "hosted" (or never opted in) must not exchange a code or fetch owned
+    // guilds, even if it somehow reached this callback with a
+    // superficially valid state.
+    const botSettingsState = readDiscordBotSettingsState(config);
+    if (botSettingsState.deploymentChoice !== "hosted") {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/callback"), "hosted-bot.oauth.callback", { ok: false, reason: "not_hosted_choice" });
+      // Final integration review (Important #3) -- same reasoning as
+      // /oauth/start above: this route is a top-level browser navigation
+      // target, so its failure response must be HTML like every other
+      // failure path here, not bare JSON the operator would see as raw
+      // text.
+      return html(res, 403, oauthErrorPage("This console isn't configured for the hosted bot."));
+    }
+    const callbackUrl = new URL(req.url || "", "http://localhost");
+    const code = callbackUrl.searchParams.get("code") || "";
+    const oauthState = callbackUrl.searchParams.get("state") || "";
+    const cookieState = parseCookies(req.headers.cookie || "").get("hosted_bot_oauth_state") || "";
+    // consume() does its own constant-time state/cookie comparison
+    // internally (createPendingStateStore, oauth.js) -- same store this
+    // flow's own /start above issued into, PKCE verifier included.
+    const consumedState = hostedBotOAuthPendingStates.consume(oauthState, cookieState);
+    if (!consumedState.ok) {
+      // Minor fix (final integration review): clear the state cookie here
+      // too, matching the hygiene fix already applied to the registration-
+      // handle cookie in Task 6's fix round -- the state has already been
+      // consumed/rejected either way, so leaving the cookie in the browser
+      // for its remaining Max-Age serves no purpose.
+      res.setHeader("Set-Cookie", clearHostedBotOAuthStateCookie(config.secureCookies));
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/callback"), "hosted-bot.oauth.callback", { ok: false, reason: consumedState.reason });
+      return html(res, 400, oauthErrorPage("This request was invalid or expired. Go back to Settings and try connecting to the hosted bot again."));
+    }
+    let token;
+    let owned;
+    try {
+      token = await exchangeDiscordAuthCode({
+        code,
+        redirectUri: config.discordHostedBotOAuthRedirectUri,
+        clientId: config.discordHostedBotOAuthClientId,
+        clientSecret: config.discordHostedBotOAuthClientSecret,
+        codeVerifier: consumedState.verifier,
+        apiBaseUrl: config.discordOAuthApiBaseUrl
+      });
+      owned = await fetchOwnedDiscordGuilds({ accessToken: token.access_token, apiBaseUrl: config.discordOAuthApiBaseUrl });
+    } catch (error) {
+      // Same cookie-hygiene fix as above -- the state was already
+      // successfully consumed to reach this catch block, so only the
+      // cookie remains to clear.
+      res.setHeader("Set-Cookie", clearHostedBotOAuthStateCookie(config.secureCookies));
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/callback"), "hosted-bot.oauth.callback", { ok: false, reason: error.code || "oauth_error" });
+      return html(res, 400, oauthErrorPage("Connecting to Discord failed. Go back to Settings and try again."));
+    }
+    const pending = hostedBotPendingRegistrations.issue({
+      accessToken: token.access_token,
+      ownedGuildIds: owned.guilds.map((g) => g.id),
+      userId: owned.userId
+    });
+    if (!pending) {
+      // Same cookie-hygiene fix as above.
+      res.setHeader("Set-Cookie", clearHostedBotOAuthStateCookie(config.secureCookies));
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/callback"), "hosted-bot.oauth.callback", { ok: false, reason: "too_many_pending" });
+      return html(res, 429, oauthErrorPage("Too many connection attempts in progress. Try again in a moment."));
+    }
+    res.setHeader("Set-Cookie", [hostedBotRegistrationHandleCookie(pending.handle, config.secureCookies), clearHostedBotOAuthStateCookie(config.secureCookies)]);
+    audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/callback"), "hosted-bot.oauth.callback", { ok: true, ownedGuildCount: owned.guilds.length });
+    return html(res, 200, hostedBotOAuthReturnPage(owned.guilds));
+  }
+
+  if (path === "/api/integrations/discord/hosted-bot/register" && req.method === "POST") {
+    // Fail-closed, cheapest check first (self-review requirement): never do
+    // any work -- reading cookies, consuming the pending registration, or
+    // calling out to mentat-backend -- unless this console has actually
+    // opted into the hosted deployment. An owner-tier session on a
+    // self-hosted console (deploymentChoice !== "hosted") is rejected here,
+    // before anything else runs.
+    const botSettingsState = readDiscordBotSettingsState(config);
+    if (botSettingsState.deploymentChoice !== "hosted") {
+      audit(config, req, "hosted-bot.register", { ok: false, reason: "not_hosted_choice" });
+      return json(res, 403, { error: "This console isn't configured for the hosted bot." });
+    }
+    if (!botSettingsState.tokenConfigured) {
+      audit(config, req, "hosted-bot.register", { ok: false, reason: "no_adapter_token" });
+      return json(res, 400, { error: "Your console doesn't have an adapter token configured yet -- enable the adapter first." });
+    }
+    // The registration handle is consumed from its own HttpOnly cookie, set
+    // by the callback route above -- never trusted from the request body,
+    // so a caller cannot claim someone else's completed OAuth round-trip by
+    // guessing/supplying a handle value directly.
+    const handleCookie = parseCookies(req.headers.cookie || "").get("hosted_bot_registration_handle") || "";
+    const body = await readJson(req);
+    const guildId = String(body.guildId || "");
+    const consumed = hostedBotPendingRegistrations.consume(handleCookie, handleCookie);
+    if (!consumed.ok) {
+      // Fix round 1, Important #4: clear the handle cookie here too -- it's
+      // either already used, expired, or never matched a real pending
+      // entry, so leaving it in the browser for its remaining Max-Age
+      // serves no purpose.
+      res.setHeader("Set-Cookie", clearHostedBotRegistrationHandleCookie(config.secureCookies));
+      audit(config, req, "hosted-bot.register", { ok: false, reason: consumed.reason });
+      return json(res, 400, { error: "Reconnecting to Discord to confirm this is still you -- go back to Settings and connect to the hosted bot again.", needsReauth: true });
+    }
+    // From here on, `consumed.ok` is true -- the pending entry has already
+    // been removed from the store (single-use), so the handle cookie no
+    // longer refers to anything live. Every remaining response path below
+    // clears it (fix round 1, Important #4), matching how the callback
+    // route above clears its own state cookie once consumed.
+    if (!consumed.entry.ownedGuildIds.includes(guildId)) {
+      res.setHeader("Set-Cookie", clearHostedBotRegistrationHandleCookie(config.secureCookies));
+      audit(config, req, "hosted-bot.register", { ok: false, reason: "guild_not_owned" });
+      return json(res, 403, { error: "Could not verify you own that Discord server -- please try connecting again." });
+    }
+    const adapterToken = readDiscordAdapterTokenForHostedBot(config);
+    let mentatResponse;
+    try {
+      mentatResponse = await fetchWithTimeoutAndRetry(
+        config.mentatBackendRegisterUrl,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            guildId,
+            discordAccessToken: consumed.entry.accessToken,
+            // consoleUrl's own format/reachability validation is
+            // deliberately mentat's responsibility (verifyAndRegisterConsole,
+            // Task 11), not this side's -- Core only forwards it verbatim.
+            consoleUrl: String(body.consoleUrl || ""),
+            adapterToken
+          })
+        },
+        { timeoutMs: 15000 }
+      );
+    } catch {
+      res.setHeader("Set-Cookie", clearHostedBotRegistrationHandleCookie(config.secureCookies));
+      audit(config, req, "hosted-bot.register", { ok: false, reason: "mentat_unreachable" });
+      return json(res, 502, { error: "Couldn't reach the hosted bot service. Your console's own settings are unaffected -- try again in a moment." });
+    }
+    if (!mentatResponse.ok) {
+      res.setHeader("Set-Cookie", clearHostedBotRegistrationHandleCookie(config.secureCookies));
+      audit(config, req, "hosted-bot.register", { ok: false, reason: "mentat_rejected", status: mentatResponse.status });
+      return json(res, 502, { error: "Could not verify you own that Discord server -- please try connecting again." });
+    }
+    // Final integration review (Important #5): persist which guild this
+    // console is now connected to, so "Connected to hosted bot for {name}"
+    // survives a page reload instead of being pure in-memory React state.
+    // guildId here is already OAuth-verified (checked against
+    // consumed.entry.ownedGuildIds above) -- guildName is a caller-
+    // supplied display label only, never itself used for authorization
+    // (see persistHostedBotConnectedGuild's own comment).
+    persistHostedBotConnectedGuild(config, { guildId, guildName: body.guildName });
+    res.setHeader("Set-Cookie", clearHostedBotRegistrationHandleCookie(config.secureCookies));
+    audit(config, req, "hosted-bot.register", { ok: true, guildId });
+    return json(res, 200, { ok: true });
+  }
+
+  // ---- Hosted-bot fully-automated auto-invite (Phase 6, mentat#343+/
+  // dune-awakening-selfhost-docker#832's design, §4.1/§4.4) ----
+  // Deliberately dispatched here, alongside the OLD hosted-bot routes
+  // above, not replacing them (§9 Option B -- both coexist until the new
+  // flow is confirmed working end-to-end against a real deployment).
+  if (path === "/api/integrations/discord/hosted-bot/auto-invite/start" && req.method === "POST") {
+    const body = await readJson(req);
+    const consoleUrl = String(body.consoleUrl || "");
+
+    // consoleUrl validated as well-formed https:// BEFORE it is ever sent
+    // onward (design doc §4.1/§4.5, issue #843 M1) -- the SECOND
+    // validation point (mentat-link's bounce page, already shipped) is
+    // defense-in-depth, not a substitute for this one.
+    let parsedConsoleUrl;
+    try {
+      parsedConsoleUrl = new URL(consoleUrl);
+    } catch {
+      audit(config, req, "hosted-bot.auto-invite.start", { ok: false, reason: "invalid_console_url" });
+      return json(res, 400, { error: "Console URL must be a valid URL." });
+    }
+    if (parsedConsoleUrl.protocol !== "https:") {
+      audit(config, req, "hosted-bot.auto-invite.start", { ok: false, reason: "non_https_console_url" });
+      return json(res, 400, { error: "Console URL must use https://." });
+    }
+
+    // "silently enable()" -- mint the adapter token / opt into the hosted
+    // deployment choice if this console hasn't already, matching the
+    // design doc's own §4.1 step 1 language ("setDeploymentChoice('hosted')
+    // silently enable() -- mint adapter token (unchanged, existing)"). Both
+    // calls are the SAME already-shipped mechanism the old wizard's own
+    // step 1 uses -- no new logic, just triggered from this new route too.
+    const currentState = readDiscordBotSettingsState(config);
+    if (currentState.deploymentChoice !== "hosted") {
+      setDeploymentChoice(config, "hosted");
+    }
+    if (!currentState.tokenConfigured) {
+      // CRITICAL fix (Layer 2 audit, #866): tokenConfigured and role-ID
+      // configuration are independent env vars -- an operator can have
+      // real role IDs already set in .env (a documented, supported
+      // legacy path, see discordRoleMappingFromEnv()) while never having
+      // minted a hosted-bot adapter token. Passing a bare {} here, like
+      // the OLD code did, unconditionally overwrites all 3 role-ID env
+      // keys to empty strings inside applyDiscordBotEnableRequest() --
+      // silently destroying that operator's existing role mapping the
+      // moment they use this new entry point. Must forward the real
+      // current values, matching the only other call site (the
+      // /api/settings/discord-bot/enable route above) which always
+      // supplies real current values, never a bare {}.
+      applyDiscordBotEnableRequest(config, currentState.roleIds);
+    }
+    const adapterToken = readDiscordAdapterTokenForHostedBot(config);
+    if (!adapterToken) {
+      audit(config, req, "hosted-bot.auto-invite.start", { ok: false, reason: "no_adapter_token" });
+      return json(res, 500, { error: "Could not prepare this console's adapter token." });
+    }
+
+    // Calls mentat-LINK's proxy (not mentat-backend directly, unlike
+    // /register above) -- mentat-link's proxyRequest() attaches the
+    // X-Mentat-Proxy-Secret hop-auth header automatically; Core itself
+    // never needs to hold MENTAT_PROXY_SHARED_SECRET.
+    let mentatLinkResponse;
+    try {
+      mentatLinkResponse = await fetchWithTimeoutAndRetry(
+        config.mentatLinkAutoInviteStartUrl,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ consoleUrl, adapterToken })
+        },
+        { timeoutMs: 15000 }
+      );
+    } catch {
+      audit(config, req, "hosted-bot.auto-invite.start", { ok: false, reason: "mentat_unreachable" });
+      return json(res, 502, { error: "Couldn't reach the hosted bot service. Try again in a moment." });
+    }
+    if (!mentatLinkResponse.ok) {
+      audit(config, req, "hosted-bot.auto-invite.start", { ok: false, reason: "mentat_rejected", status: mentatLinkResponse.status });
+      return json(res, 502, { error: "Could not start the connection. Try again in a moment." });
+    }
+    let mentatState;
+    try {
+      const mentatBody = await mentatLinkResponse.json();
+      mentatState = String(mentatBody?.state || "");
+    } catch {
+      mentatState = "";
+    }
+    if (!mentatState) {
+      audit(config, req, "hosted-bot.auto-invite.start", { ok: false, reason: "mentat_bad_response" });
+      return json(res, 502, { error: "Could not start the connection. Try again in a moment." });
+    }
+
+    // Records mentat's OWN state value as Core's pending entry -- see
+    // autoInvite.js's own createAutoInvitePendingStateStore() comment for
+    // why this store's issue() takes the state as input rather than
+    // minting a second, unrelated value.
+    const pendingState = hostedBotAutoInvitePendingStates.issue(mentatState);
+    if (!pendingState) {
+      audit(config, req, "hosted-bot.auto-invite.start", { ok: false, reason: "too_many_pending" });
+      return json(res, 429, { error: "Too many connection attempts in progress. Try again in a moment." });
+    }
+    res.setHeader("Set-Cookie", autoInviteStateCookie(mentatState, config.secureCookies));
+    const authorizeUrl = buildAutoInviteAuthorizeUrl({ redirectUri: config.autoInviteDiscordRedirectUri, state: mentatState, clientId: config.autoInviteDiscordClientId });
+    audit(config, req, "hosted-bot.auto-invite.start", { ok: true });
+    return json(res, 200, { authorizeUrl });
+  }
+
+  if (path === "/api/integrations/discord/hosted-bot/auto-invite/complete" && req.method === "GET") {
+    // Reached via a normal top-level browser navigation FROM mentat-link's
+    // signed bounce page (a client-side window.location assignment, not a
+    // direct Discord redirect) -- see mentat-link's js/auto-invite-return.js
+    // and mentat's signedRedirect.js for the upstream signing/verification
+    // this route's own inputs already passed through before arriving here.
+    const completeUrl = new URL(req.url || "", "http://localhost");
+    const state = completeUrl.searchParams.get("state") || "";
+    const ok = completeUrl.searchParams.get("ok") === "true";
+    const guildName = completeUrl.searchParams.get("guildName") || "";
+    const reason = completeUrl.searchParams.get("reason") || "";
+    const reclaimed = completeUrl.searchParams.get("reclaimed") === "true";
+    // Round 4 (dune-awakening-selfhost-docker#876, design doc §13, issue
+    // #879): read alongside the existing fields -- the first of the three
+    // hops confirmationId must flow through so the frontend can later poll
+    // /api/integrations/discord/hosted-bot/auto-invite/confirmation-status.
+    const confirmationId = completeUrl.searchParams.get("confirmationId") || "";
+    const cookieState = parseCookies(req.headers.cookie || "").get("auto_invite_state") || "";
+
+    const consumed = hostedBotAutoInvitePendingStates.consume(state, cookieState);
+    if (!consumed.ok) {
+      res.setHeader("Set-Cookie", clearAutoInviteStateCookie(config.secureCookies));
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/complete"), "hosted-bot.auto-invite.complete", { ok: false, reason: consumed.reason });
+      return html(res, 400, autoInviteCompletePage({ ok: false, reason: "expired" }));
+    }
+
+    // ok:true here means "a connection request was successfully staged and
+    // the verified owner has been notified" (mentat#348's own documented
+    // reasoning for why the signed redirect fires at staging time, not
+    // after the owner actually confirms) -- NOT "the guild is connected."
+    // persistHostedBotConnectedGuild() is deliberately NOT called on this
+    // path; the local display cache is only updated once the new
+    // confirmation-status poll (round 4, dune-awakening-selfhost-docker#876,
+    // design doc §13) observes the owner actually clicked Confirm -- this
+    // route's own job ends at showing the operator the right "waiting"
+    // state, matching design doc §6's failure-mode table, and handing
+    // confirmationId to the frontend so it can start that poll.
+    // Layer 2 audit finding: the confirmation-status route below has no
+    // CSRF protection of its own beyond a valid session -- an attacker who
+    // separately knows/stages a confirmationId could otherwise trick a
+    // logged-in operator's browser (asc_session is SameSite=Lax, which
+    // does ride along on a cross-site top-level navigation) into polling
+    // with an UNRELATED confirmationId, persisting a wrong guild's
+    // connection. Same double-submit-cookie mechanism as auto_invite_state
+    // above: this cookie is set ONLY here, when the browser is trusted to
+    // have just legitimately received this exact confirmationId, and
+    // confirmation-status requires the presented value to match it.
+    const cookiesToSet = [clearAutoInviteStateCookie(config.secureCookies)];
+    if (ok && confirmationId) cookiesToSet.push(autoInviteConfirmationIdCookie(confirmationId, config.secureCookies));
+    res.setHeader("Set-Cookie", cookiesToSet);
+    audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/complete"), "hosted-bot.auto-invite.complete", { ok, reason: ok ? undefined : reason, reclaimed });
+    return html(res, 200, autoInviteCompletePage({ ok, guildName, reason, reclaimed, confirmationId }));
+  }
+
+  // Round 4 (dune-awakening-selfhost-docker#876, design doc §13): the
+  // completion signal itself. Before this route existed, Core had no way
+  // to ever learn the Discord owner actually confirmed a pending
+  // connection -- an operator could complete the entire flow successfully
+  // and the console would never reflect it. This route is called
+  // repeatedly by the frontend's own bounded polling loop while it shows
+  // "waiting for owner," and forwards to mentat-link's own
+  // /confirmation-status proxy (no MENTAT_PROXY_SHARED_SECRET on Core's
+  // side, same reasoning as /auto-invite/start above).
+  if (path === "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status" && req.method === "GET") {
+    const confirmationId = String(url.searchParams.get("confirmationId") || "");
+    if (!confirmationId) {
+      return json(res, 400, { error: "confirmationId is required" });
+    }
+    // Layer 2 audit finding: double-submit cookie check, matching
+    // /auto-invite/complete's own state-cookie pattern -- a valid session
+    // alone is not enough to trust an arbitrary caller-supplied
+    // confirmationId, since persisting the wrong guild here has a real
+    // (if narrow) blast radius. Only /complete ever sets this cookie, and
+    // only for the confirmationId this exact browser just legitimately
+    // received.
+    const cookieConfirmationId = parseCookies(req.headers.cookie || "").get("auto_invite_confirmation_id") || "";
+    if (!cookieConfirmationId || !constantTimeStringEqual(confirmationId, cookieConfirmationId)) {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "confirmation_id_cookie_mismatch" });
+      return json(res, 403, { error: "This connection request could not be verified. Start over from the settings page." });
+    }
+    let mentatLinkResponse;
+    try {
+      mentatLinkResponse = await fetchWithTimeoutAndRetry(
+        `${config.mentatLinkConfirmationStatusUrl}?confirmationId=${encodeURIComponent(confirmationId)}`,
+        { method: "GET" },
+        { timeoutMs: 15000 }
+      );
+    } catch {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "mentat_unreachable" });
+      return json(res, 502, { error: "Couldn't reach the hosted bot service. Try again in a moment." });
+    }
+    if (!mentatLinkResponse.ok) {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "mentat_rejected", status: mentatLinkResponse.status });
+      return json(res, 502, { error: "Could not check the connection status. Try again in a moment." });
+    }
+    let statusBody;
+    try {
+      statusBody = await mentatLinkResponse.json();
+    } catch {
+      statusBody = null;
+    }
+    const status = String(statusBody?.status || "not_found");
+    // On "confirmed", persist the connection locally -- the same function
+    // the OLD, advanced flow's own handleRegisterGuild() already calls
+    // (server.js's existing persistHostedBotConnectedGuild() call site),
+    // just reached via this new path. This is the one place in the entire
+    // new auto-invite flow that finally closes the gap this round exists
+    // to fix.
+    if (status === "confirmed") {
+      const guildId = String(statusBody?.guildId || "");
+      const guildName = String(statusBody?.guildName || "");
+      // Automated review finding: persistHostedBotConnectedGuild()'s only
+      // existing caller (POST /register above) sources guildId from Core's
+      // own OAuth-verified owned-guild list -- a real Discord snowflake by
+      // construction, which is why no format check was ever applied to it
+      // (only guildName gets the #870/#860 allowlist sanitization). This
+      // route is the first caller to source guildId from an inbound
+      // response Core does not independently re-verify (no shared secret
+      // to/from mentat-link on Core's side) -- if mentat-link were ever
+      // compromised, MITM'd, or simply buggy, an unvalidated guildId
+      // string would reach the same .env-write/shell-source path #870's
+      // CRITICAL fix hardened guildName against. Reuses
+      // validateDiscordRoleIds() -- a single, non-comma value is exactly
+      // one snowflake-pattern check -- rather than duplicating the regex.
+      if (guildId && validateDiscordRoleIds(guildId).ok) {
+        persistHostedBotConnectedGuild(config, { guildId, guildName });
+      } else if (guildId) {
+        audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "invalid_guild_id_from_mentat" });
+      }
+    }
+    audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: true, status });
+    return json(res, 200, { status, guildName: status === "confirmed" ? String(statusBody?.guildName || "") : undefined });
+  }
+
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/settings") return json(res, 200, await setupState());
 
@@ -7354,6 +8042,18 @@ async function funcomTokenCheckRoute(req, res, url) {
 
 async function readJson(req) {
   return readJsonBody(req, config.maxJsonBytes);
+}
+
+// readDiscordAdapterTokenForHostedBot: a deliberately-named, thin wrapper
+// around routes.js's own readDiscordBotApiToken() -- the hosted-bot
+// registration route (below) must forward the SAME token value to
+// mentat-backend that this console's own live adapter route validates
+// incoming bot requests against (byte-identical), never a second,
+// independently-derived value. readDiscordBotApiToken()'s existing
+// signature (just `config`) already fits; this wrapper exists only to give
+// the hosted-bot call site its own clearly-named call, not to add logic.
+function readDiscordAdapterTokenForHostedBot(config) {
+  return readDiscordBotApiToken(config);
 }
 
 function mockCommand(operation) {
