@@ -1664,6 +1664,7 @@ handle_demand() {
   local num="$2"
   local event_id="${3:-}"
   local demand_source="${4:-request}"
+  local instancing_mode="${5:-}"
   local dedicated_scaling
   local now
 
@@ -1715,7 +1716,10 @@ handle_demand() {
   dedicated_scaling="$(map_uses_dedicated_scaling "$map")"
 
   if [ "$dedicated_scaling" = "1" ]; then
-    if map_requires_isolated_party_dimension "$map"; then
+    # ClassicalInstancing is the Director's authoritative indication that
+    # each queued party needs separate capacity. Keep the configured policy
+    # fallback for recovery paths that do not originate from a travel event.
+    if [ "$instancing_mode" = "ClassicalInstancing" ] || map_requires_isolated_party_dimension "$map"; then
       local occupied max_dimensions desired capacity
       occupied="$(occupied_dimensions_for_map "$map")"
       max_dimensions="$(max_dimensions_for_map "$map")"
@@ -2293,7 +2297,7 @@ classical_pattern = re.compile(
 )
 request_pattern = re.compile(
     r"Received travel request for ([0-9]+) player\(s\) to ([A-Za-z0-9_]+) "
-    r"\(instancingMode=(?:ClassicalInstancing|Dimension)\)"
+    r"\(instancingMode=(ClassicalInstancing|Dimension)\)"
 )
 
 seen = set()
@@ -2303,6 +2307,7 @@ for line in sys.stdin:
     if match:
         map_name = match.group(1)
         num = int(match.group(2))
+        instancing_mode = "ClassicalInstancing"
         if map_name == "DeepDesert_1":
             continue
         # Smugglers Run is handled from its original request below. Repeated
@@ -2316,6 +2321,7 @@ for line in sys.stdin:
             continue
         num = int(match.group(1))
         map_name = match.group(2)
+        instancing_mode = match.group(3)
 
     if num <= 0:
         continue
@@ -2327,13 +2333,13 @@ for line in sys.stdin:
 
     seen.add(key)
     source = "queue" if classical_pattern.search(line) else "request"
-    print(f"{event_id}|{map_name}|{num}|{source}")
+    print(f"{event_id}|{map_name}|{num}|{source}|{instancing_mode}")
 '
   )"
 
-  while IFS='|' read -r event_id map num demand_source; do
+  while IFS='|' read -r event_id map num demand_source instancing_mode; do
     [ -n "${map:-}" ] || continue
-    handle_demand "$map" "$num" "$event_id" "$demand_source"
+    handle_demand "$map" "$num" "$event_id" "$demand_source" "$instancing_mode"
   done <<< "$demand_rows"
 }
 
