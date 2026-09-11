@@ -43,7 +43,12 @@ describe("hostedBotOAuthReturnPage -> discordHostedBotApi.readOwnedGuilds crosse
     ];
     const returnPageHtml = hostedBotOAuthReturnPage(guilds);
 
+    // False positive: scriptMatch only reads already-generated test HTML
+    // (returnPageHtml, built above from a test-controlled `guilds` array via
+    // hostedBotOAuthReturnPage()) to assert on its shape -- it is never
+    // written into a real page or DOM anywhere.
     const scriptMatch = returnPageHtml.match(/<script>([\s\S]*?)<\/script>/);
+    // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag
     expect(scriptMatch, "the return page must embed exactly one <script> block").toBeTruthy();
     const scriptBody = scriptMatch![1];
 
