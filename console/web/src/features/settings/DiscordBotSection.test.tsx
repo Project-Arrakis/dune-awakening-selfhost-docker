@@ -13,6 +13,7 @@ vi.mock("../../api/client", () => ({
 const mockApi = vi.mocked(api);
 const mockPost = vi.mocked(post);
 const TASK_KEY = "arrakis.discordAdapterEnableTask";
+const POLL_DEADLINE_KEY = "arrakis.discordAdapterEnableTaskDeadline";
 
 // Final integration review (CRITICAL): seeds the owned-guilds list the way
 // the REAL OAuth callback page now does -- via sessionStorage, under the
@@ -376,6 +377,102 @@ describe("DiscordBotSection", () => {
     expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Retry/i })).toBeNull();
   });
+
+  // dune-awakening-selfhost-docker#872 (automated review finding on
+  // already-merged #748): if the backend task fails before ever writing a
+  // status file, stackProgress() keeps returning state:"pending" forever
+  // -- this used to leave phase stuck on "enabling" permanently, with no
+  // error and no way forward. The polling effect must eventually give up
+  // and transition to "failed" with a real error, not hang indefinitely.
+  it("gives up and shows a real error after the backend task never resolves (stuck at state:\"pending\" forever)", async () => {
+    const persistedTask = {
+      id: "task-stuck",
+      type: "discordAdapterApply",
+      operation: "enable",
+      status: "running",
+      currentStep: "Restarting console",
+      progressMessage: "",
+      logLines: [],
+      warnings: [],
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      errorMessage: null
+    };
+    window.localStorage.setItem(TASK_KEY, JSON.stringify(persistedTask));
+    mockApi.mockResolvedValue({ runId: "task-stuck", state: "pending", stage: "launching", percent: 0, message: "" } as never);
+
+    vi.useFakeTimers();
+    render(<DiscordBotSection />);
+    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
+
+    // 89 attempts (all still "pending") must NOT give up yet.
+    for (let i = 0; i < 89; i += 1) {
+      // eslint-disable-next-line no-await-in-loop -- each tick must
+      // complete (including its own microtask/state-update chain) before
+      // the next one advances, matching how the real setInterval fires.
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    }
+    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Retry/i })).toBeNull();
+
+    // The 90th attempt must finally give up with a real, actionable error.
+    // A synchronous query, not findByRole/waitFor -- those poll with real
+    // timers internally and would hang forever while fake timers are
+    // active with nothing left to advance them.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
+    expect(screen.getByText(/taking much longer than expected/i)).toBeInTheDocument();
+  }, 20000);
+
+  // GitHub automated-review finding on this PR's own first remediation
+  // attempt (dune-awakening-selfhost-docker#872): the poll timeout must
+  // survive this component unmounting/remounting (e.g. the "Discord Bot"
+  // accordion in SettingsPanel.tsx being collapsed and reopened while a
+  // task is stuck enabling), not re-arm a fresh budget every time.
+  it("does not re-arm the poll timeout when the component unmounts and remounts mid-poll (accordion collapse/reopen)", async () => {
+    const persistedTask = {
+      id: "task-stuck-remount",
+      type: "discordAdapterApply",
+      operation: "enable",
+      status: "running",
+      currentStep: "Restarting console",
+      progressMessage: "",
+      logLines: [],
+      warnings: [],
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      errorMessage: null
+    };
+    window.localStorage.setItem(TASK_KEY, JSON.stringify(persistedTask));
+    mockApi.mockResolvedValue({ runId: "task-stuck-remount", state: "pending", stage: "launching", percent: 0, message: "" } as never);
+
+    vi.useFakeTimers();
+    const { unmount } = render(<DiscordBotSection />);
+    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
+
+    // Consume most of the 3-minute budget (88 of the 90 ticks a fresh
+    // mount would allow) before simulating the accordion being toggled.
+    for (let i = 0; i < 88; i += 1) {
+      // eslint-disable-next-line no-await-in-loop -- see the sibling test
+      // above for why each tick must fully settle before the next.
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    }
+    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
+
+    // Simulate collapsing and reopening the "Discord Bot" accordion:
+    // SettingsPanel.tsx conditionally renders this component, so this is a
+    // genuine unmount + fresh mount, not just a re-render.
+    unmount();
+    render(<DiscordBotSection />);
+    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
+
+    // Only 2 ticks worth of budget should remain -- if the remount had
+    // reset the timeout (the bug), this would still be "enabling" here.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
+    expect(screen.getByText(/taking much longer than expected/i)).toBeInTheDocument();
+  }, 20000);
 
   it("does not clobber typed role IDs when Retry is clicked after a failed enable task (finding 4)", async () => {
     mockApi.mockImplementation((path: string) => {

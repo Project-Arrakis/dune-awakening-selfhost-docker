@@ -1487,6 +1487,29 @@ async function handleApi(req, res) {
   if (path === "/api/settings/discord-bot" && req.method === "GET") {
     return json(res, 200, readDiscordBotSettingsState(config));
   }
+  // Code-review finding (dune-awakening-selfhost-docker#872 fix PR): both
+  // /enable and /role-ids below need the same "non-object body -> {}" guard
+  // and the same "field omitted from body -> keep the tier's current value"
+  // fallback, 3 times each (player/moderator/admin). Sharing these two
+  // helpers instead of repeating the pattern 6 times means a future fix to
+  // either only has to be made once.
+  function normalizeSettingsBody(parsedBody) {
+    return parsedBody && typeof parsedBody === "object" && !Array.isArray(parsedBody) ? parsedBody : {};
+  }
+  // Code-review finding (dune-awakening-selfhost-docker#872 fix PR, round
+  // 2): the previous version of this helper re-ran the OMITTED field's
+  // current value back through validateDiscordRoleIds(). That's wrong --
+  // discordRoleMappingFromEnv() never validated .env-sourced role IDs
+  // against SNOWFLAKE_PATTERN in the first place (this UI predates that
+  // validator), so a legacy/manually-edited .env entry that doesn't match
+  // the pattern would now 400 a request that never touched that tier at
+  // all. The current, already-persisted value is trusted as-is when the
+  // field is absent; only a field genuinely present in the body goes
+  // through the strict validator.
+  function resolveRoleIdsTier(body, fieldName, currentTierIds) {
+    if (!(fieldName in body)) return { ok: true, roleIds: currentTierIds };
+    return validateDiscordRoleIds(body[fieldName]);
+  }
   // Real UAT finding (2026-09-10): the 3-step wizard redesign needs
   // deploymentChoice persisted the moment the operator picks "Hosted bot",
   // before role config or the actual restart (step 1 is now "Add bot to
@@ -1503,12 +1526,26 @@ async function handleApi(req, res) {
     return json(res, 200, { ok: true });
   }
   if (path === "/api/settings/discord-bot/enable" && req.method === "POST") {
-    const body = await readJson(req);
-    const player = validateDiscordRoleIds(body.playerRoleIds);
+    const body = normalizeSettingsBody(await readJson(req));
+    // dune-awakening-selfhost-docker#872 (automated review finding on
+    // already-merged #748): API-REFERENCE.md documents these 3 fields as
+    // optional, implying a caller can update one tier at a time -- but
+    // validateDiscordRoleIds() treats an omitted field identically to an
+    // explicitly-empty one, and the write below persists all 3 tiers
+    // unconditionally. Reading currentState BEFORE validation, and
+    // substituting the tier's CURRENT value whenever the field is
+    // genuinely absent from the body (`in` check, not just falsy -- an
+    // explicit `""` must still mean "clear this tier"), makes the
+    // documented "optional" contract actually true: omitting a field now
+    // preserves that tier's existing mapping instead of silently wiping
+    // it. The only real caller (DiscordBotSection.tsx) always sends all
+    // three fields together, so this is a no-op for it.
+    const currentState = readDiscordBotSettingsState(config);
+    const player = resolveRoleIdsTier(body, "playerRoleIds", currentState.roleIds.player);
     if (!player.ok) return json(res, 400, { error: player.error });
-    const moderator = validateDiscordRoleIds(body.moderatorRoleIds);
+    const moderator = resolveRoleIdsTier(body, "moderatorRoleIds", currentState.roleIds.moderator);
     if (!moderator.ok) return json(res, 400, { error: moderator.error });
-    const admin = validateDiscordRoleIds(body.adminRoleIds);
+    const admin = resolveRoleIdsTier(body, "adminRoleIds", currentState.roleIds.admin);
     if (!admin.ok) return json(res, 400, { error: admin.error });
 
     // Audit finding #2 (HIGH): DISCORD_ADMIN_ROLE_IDS was read-only from
@@ -1518,7 +1555,6 @@ async function handleApi(req, res) {
     // which roles map to it requires owner, even though this route is
     // otherwise admin-reachable via updates:apply. Player/moderator
     // role-ID changes are unaffected.
-    const currentState = readDiscordBotSettingsState(config);
     if (discordAdminRoleIdsChanged(currentState.roleIds.admin, admin.roleIds) && session.tier !== "owner") {
       audit(config, req, "settings.discord-bot.enable", { ok: false, reason: "admin_role_change_requires_owner" });
       return json(res, 403, { error: "Changing admin-tier Discord role mappings requires owner access." });
@@ -1557,16 +1593,20 @@ async function handleApi(req, res) {
     return json(res, 202, { task: tasks.create("settings", "discordAdapterApply", {}) });
   }
   if (path === "/api/settings/discord-bot/role-ids" && req.method === "POST") {
-    const body = await readJson(req);
-    const player = validateDiscordRoleIds(body.playerRoleIds);
+    const body = normalizeSettingsBody(await readJson(req));
+    // dune-awakening-selfhost-docker#872: same fix, same reasoning, as
+    // /enable above -- an omitted field must preserve its tier's current
+    // mapping, not silently wipe it, matching this route's own
+    // API-REFERENCE.md documentation ("optional" fields).
+    const currentState = readDiscordBotSettingsState(config);
+    const player = resolveRoleIdsTier(body, "playerRoleIds", currentState.roleIds.player);
     if (!player.ok) return json(res, 400, { error: player.error });
-    const moderator = validateDiscordRoleIds(body.moderatorRoleIds);
+    const moderator = resolveRoleIdsTier(body, "moderatorRoleIds", currentState.roleIds.moderator);
     if (!moderator.ok) return json(res, 400, { error: moderator.error });
-    const admin = validateDiscordRoleIds(body.adminRoleIds);
+    const admin = resolveRoleIdsTier(body, "adminRoleIds", currentState.roleIds.admin);
     if (!admin.ok) return json(res, 400, { error: admin.error });
 
     // Audit finding #2 (HIGH): same owner-only gate as /enable above.
-    const currentState = readDiscordBotSettingsState(config);
     if (discordAdminRoleIdsChanged(currentState.roleIds.admin, admin.roleIds) && session.tier !== "owner") {
       audit(config, req, "settings.discord-bot.role-ids-updated", { ok: false, reason: "admin_role_change_requires_owner" });
       return json(res, 403, { error: "Changing admin-tier Discord role mappings requires owner access." });
