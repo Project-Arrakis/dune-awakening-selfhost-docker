@@ -105,7 +105,7 @@ describe("LandsraadPanel Special Vendor Override", () => {
     renderPanel();
     await waitForVendorSection();
 
-    expect(screen.getByText(/gated on which house is recorded as winning this term/)).toBeInTheDocument();
+    expect(screen.getByText(/the vendor NPC itself is always visible, regardless of decree state/)).toBeInTheDocument();
   });
 
   it("uses the bypass-the-win-requirement confirm copy on an unresolved term, and sends overrideResolvedTerm: false", async () => {
@@ -117,7 +117,7 @@ describe("LandsraadPanel Special Vendor Override", () => {
     fireEvent.click(screen.getByRole("button", { name: "Force Now" }));
 
     await waitFor(() => expect(confirmAction).toHaveBeenCalledWith(
-      expect.stringContaining("This bypasses the normal win requirement"),
+      expect.stringContaining("nobody can buy from it yet"),
       expect.objectContaining({ title: "Force Landsraad Vendor Override", confirmLabel: "Force Now", danger: false })
     ));
     await waitFor(() => expect(adminApi.saveLandsraadVendorOverride).toHaveBeenCalledWith(
@@ -269,6 +269,77 @@ describe("LandsraadPanel Special Vendor Override", () => {
     await waitFor(() => expect(adminApi.saveLandsraadVendorOverride).toHaveBeenCalledWith(
       expect.objectContaining({ houseFaction: "atreides", overrideResolvedTerm: true })
     ));
+  });
+
+  // -- Mode-first redesign: exactly one vendor is ever live at once, so the
+  // control must never look like a multi-select in Fixed mode, and Rotate
+  // mode's checkboxes must read as an ordered cycle list, not "these are all
+  // simultaneously on" (operator feedback on the original checkbox-only UI).
+
+  it("defaults to Fixed mode with a true single-select -- picking a second vendor replaces, not adds to, the selection", async () => {
+    renderPanel();
+    await waitForVendorSection();
+
+    fireEvent.click(screen.getByLabelText("Vehicle Vendor"));
+    fireEvent.click(screen.getByLabelText("Weapon Vendor"));
+
+    expect((screen.getByLabelText("Vehicle Vendor") as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText("Weapon Vendor") as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("switching to Rotate mode seeds the rotation list with the Fixed selection, and checking more adds numbered positions", async () => {
+    renderPanel();
+    await waitForVendorSection();
+
+    fireEvent.click(screen.getByLabelText("Vehicle Vendor"));
+    fireEvent.click(screen.getByLabelText("Rotate"));
+    fireEvent.click(screen.getByLabelText("Weapon Vendor"));
+
+    expect(screen.getByText("Cycle: Vehicle Vendor → Weapon Vendor")).toBeInTheDocument();
+  });
+
+  it("switching back to Fixed from a multi-item Rotate selection keeps only the first vendor", async () => {
+    renderPanel();
+    await waitForVendorSection();
+
+    fireEvent.click(screen.getByLabelText("Vehicle Vendor"));
+    fireEvent.click(screen.getByLabelText("Rotate"));
+    fireEvent.click(screen.getByLabelText("Weapon Vendor"));
+    fireEvent.click(screen.getByLabelText("Fixed"));
+
+    expect((screen.getByLabelText("Vehicle Vendor") as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("Rotate mode's confirm-dialog and payload use the real cycle order, not a bare join of all vendorKeys", async () => {
+    const { confirmAction } = renderPanel();
+    await waitForVendorSection();
+    vi.mocked(adminApi.saveLandsraadVendorOverride).mockResolvedValue({ preset: VENDOR_PRESET, result: { applied: true } });
+
+    fireEvent.click(screen.getByLabelText("Vehicle Vendor"));
+    fireEvent.click(screen.getByLabelText("Rotate"));
+    fireEvent.click(screen.getByLabelText("Weapon Vendor"));
+    fireEvent.click(screen.getByRole("button", { name: "Force Now" }));
+
+    await waitFor(() => expect(confirmAction).toHaveBeenCalledWith(
+      expect.stringContaining("Vehicle Vendor → Weapon Vendor"),
+      expect.anything()
+    ));
+    await waitFor(() => expect(adminApi.saveLandsraadVendorOverride).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "rotate", vendorKeys: ["vehicles", "weapons"] })
+    ));
+  });
+
+  it("the live preview line reflects the current selection and updates when a house is chosen", async () => {
+    renderPanel();
+    await waitForVendorSection();
+
+    expect(screen.getByText("Select a vendor type to see what Force Now would do.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Vehicle Vendor"));
+    expect(screen.getByText(/nobody can buy yet/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/Target House/), { target: { value: "atreides" } });
+    expect(screen.getByText(/will sell to:/).closest("p")).toHaveTextContent("Atreides");
   });
 
   it("hides the Target House dropdown entirely when no install-eligible houses are found", async () => {

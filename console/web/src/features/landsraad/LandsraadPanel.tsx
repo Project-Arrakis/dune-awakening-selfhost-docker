@@ -312,7 +312,17 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
       setResult({ key: "vendor-override", text: "Select at least one vendor type.", tone: "danger" });
       return;
     }
-    const label = vendorDraft.vendorKeys.map((key) => VENDOR_LABELS[key]).join(", ");
+    // Fixed mode only ever has one real target -- vendorKeys[0] -- so the
+    // label must reflect that single value, not join the whole array (that
+    // array can still briefly hold more than one key immediately after
+    // switching from Rotate mode). Rotate mode's label shows the real cycle
+    // order. See design doc §9-equivalent UI/UX finding: the previous
+    // unconditional join() could show a Fixed-mode confirm dialog naming two
+    // vendors as if both would be simultaneously forced, when only the first
+    // ever is.
+    const label = vendorDraft.mode === "fixed"
+      ? VENDOR_LABELS[vendorDraft.vendorKeys[0]]
+      : vendorDraft.vendorKeys.map((key) => VENDOR_LABELS[key]).join(" → ");
     const house = vendorDraft.houseFaction ? houseFactionCatalog.find((entry) => entry.key === vendorDraft.houseFaction)?.name ?? vendorDraft.houseFaction : null;
     const alreadyResolvedNote = termAlreadyResolved
       ? `This term has already resolved${overview?.term?.winning_faction ? ` (won by ${overview.term.winning_faction})` : ""}${overview?.term?.active_decree || overview?.term?.elected_decree ? ` with ${overview?.term?.active_decree || overview?.term?.elected_decree} active` : ""}. `
@@ -321,9 +331,9 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
       ? `${alreadyResolvedNote}Force ${label} active and set ${house} as this term's winning house?`
       : termAlreadyResolved
         ? `${alreadyResolvedNote}Forcing ${label} will overwrite that result. This cannot be undone within this term.`
-        : `Force the ${label} active for the current Landsraad term? This bypasses the normal win requirement -- the vendor becomes available regardless of whether any house has won this cycle.`;
+        : `Force the ${label} decree active for the current Landsraad term? Confirmed live: the vendor NPC is always visible regardless -- what's actually gated on this is whether it will SELL to a player. Without a Target House selected below, no house has favor, so nobody can buy from it yet.`;
     const warning = house
-      ? `This may grant ${house}'s players real Landsraad rewards, not just vendor access (unconfirmed, being verified -- see issue #907). It will also silently prevent any house's real, organic Landsraad win from being recorded for the rest of this term -- Revert can undo the values this sets, but cannot recover a win that happened while they were in place.${termAlreadyResolved ? ` This overwrites ${overview?.term?.winning_faction || "the existing result"}.` : ""}`
+      ? `${house}'s players will be able to buy from ${label} -- other houses' players will still see the vendor but cannot buy (confirmed live). This may also grant ${house}'s players real Landsraad rewards, not just selling rights (unconfirmed, being verified -- see issue #907). It will also silently prevent any house's real, organic Landsraad win from being recorded for the rest of this term -- Revert can undo the values this sets, but cannot recover a win that happened while they were in place.${termAlreadyResolved ? ` This overwrites ${overview?.term?.winning_faction || "the existing result"}.` : ""}`
       : undefined;
     if (!(await confirmAction(message, {
       title: "Force Landsraad Vendor Override",
@@ -497,27 +507,81 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
           {vendorPreset?.lastResult && <span className="landsraad-preset-status">{vendorPreset.lastResult}</span>}
         </div>
         <p className="empty landsraad-vendor-override-caveat">
-          Vendor visibility is per-house, gated on which house is recorded as winning this term (confirmed). Selecting a
-          Target House below is required for the vendor to actually be visible to that house's players -- see the warning
-          shown when forcing with a house selected for what that does to the term's real win record for the rest of this
-          cycle. See issue #907.
+          Confirmed live: the vendor NPC itself is always visible, regardless of decree state. What's actually gated is
+          whether it will <strong>sell</strong> to a player -- that requires their house to currently have favor (be
+          recorded as winning this term). Selecting a Target House below is what actually lets that house's players buy;
+          forcing only a vendor with no house selected makes the decree active but leaves nobody able to purchase. See the
+          warning shown when forcing with a house selected for what that does to the term's real win record for the rest
+          of this cycle. See issue #907.
         </p>
         {vendorCatalog.length ? <>
-          <div className="landsraad-vendor-checkboxes">
-            {vendorCatalog.map((entry) => <label key={entry.key} className="landsraad-vendor-checkbox">
+          {/* Mode comes first: only one vendor is EVER simultaneously live on
+              the server (a real schema constraint, not a UI choice), so the
+              vendor control below must change shape depending on mode --
+              a true single-select in Fixed, an ordered rotation list in
+              Rotate -- rather than one control whose meaning silently shifts
+              underneath it. Mirrors the existing radiogroup pattern used for
+              rank selection elsewhere in this codebase (rosterEditor.tsx's
+              RankSegments). */}
+          <div className="landsraad-vendor-mode-segments" role="radiogroup" aria-label="Vendor override mode">
+            {(["fixed", "rotate"] as const).map((mode) => <label key={mode} className="landsraad-mode-segment">
               <input
-                type="checkbox"
-                checked={vendorDraft.vendorKeys.includes(entry.key)}
-                onChange={(event) => setVendorDraft((current) => {
-                  const vendorKeys = event.target.checked
-                    ? [...current.vendorKeys, entry.key]
-                    : current.vendorKeys.filter((key) => key !== entry.key);
-                  return { ...current, vendorKeys, mode: vendorKeys.length > 1 ? current.mode : "fixed" };
-                })}
+                type="radio"
+                name="landsraad-vendor-mode"
+                checked={vendorDraft.mode === mode}
+                aria-label={mode === "fixed" ? "Fixed" : "Rotate"}
+                onChange={() => setVendorDraft((current) => ({
+                  ...current,
+                  mode,
+                  // Fixed -> Rotate: seed the rotation list with whatever was
+                  // already picked. Rotate -> Fixed: keep only the first key
+                  // in rotation order as the new single pick -- never lose
+                  // the operator's selection outright on a mode switch.
+                  vendorKeys: mode === "fixed" ? current.vendorKeys.slice(0, 1) : current.vendorKeys
+                }))}
+                onClick={() => setVendorDraft((current) => ({ ...current, mode, vendorKeys: mode === "fixed" ? current.vendorKeys.slice(0, 1) : current.vendorKeys }))}
               />
-              {VENDOR_LABELS[entry.key]}
+              <span aria-hidden="true">{mode === "fixed" ? "Fixed" : "Rotate"}</span>
             </label>)}
           </div>
+          {vendorDraft.mode === "fixed" ? <>
+            <p className="muted landsraad-vendor-mode-help">Exactly one vendor is active on the server at a time -- pick which one.</p>
+            <div className="landsraad-vendor-segments" role="radiogroup" aria-label="Vendor type">
+              {vendorCatalog.map((entry) => <label key={entry.key} className="landsraad-vendor-segment">
+                <input
+                  type="radio"
+                  name="landsraad-vendor-fixed"
+                  checked={vendorDraft.vendorKeys[0] === entry.key}
+                  aria-label={VENDOR_LABELS[entry.key]}
+                  onChange={() => setVendorDraft((current) => ({ ...current, vendorKeys: [entry.key] }))}
+                  onClick={() => setVendorDraft((current) => ({ ...current, vendorKeys: [entry.key] }))}
+                />
+                <span aria-hidden="true">{VENDOR_LABELS[entry.key]}</span>
+              </label>)}
+            </div>
+          </> : <>
+            <p className="muted landsraad-vendor-mode-help">Only one vendor is ever live at once -- check which ones to cycle through, one per term, in the order checked.</p>
+            <div className="landsraad-vendor-checkboxes">
+              {vendorCatalog.map((entry) => {
+                const position = vendorDraft.vendorKeys.indexOf(entry.key);
+                return <label key={entry.key} className="landsraad-vendor-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={position !== -1}
+                    onChange={(event) => setVendorDraft((current) => ({
+                      ...current,
+                      vendorKeys: event.target.checked
+                        ? [...current.vendorKeys, entry.key]
+                        : current.vendorKeys.filter((key) => key !== entry.key)
+                    }))}
+                  />
+                  {position !== -1 && <span className="landsraad-vendor-position" aria-hidden="true">{position + 1}</span>}
+                  {VENDOR_LABELS[entry.key]}
+                </label>;
+              })}
+            </div>
+            {vendorDraft.vendorKeys.length > 0 && <p className="muted landsraad-vendor-cycle-preview">Cycle: {vendorDraft.vendorKeys.map((key) => VENDOR_LABELS[key]).join(" → ")}</p>}
+          </>}
           {houseFactionCatalog.length > 0 && <div className="landsraad-vendor-house">
             <label className="compact-select">Target House (optional -- leave blank to only force the vendor, without declaring a winning house)<select
               value={vendorDraft.houseFaction ?? ""}
@@ -527,17 +591,18 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
               {houseFactionCatalog.map((entry) => <option key={entry.key} value={entry.key}>{entry.name}</option>)}
             </select></label>
           </div>}
-          <div className="landsraad-vendor-mode">
-            <label className="compact-select">Mode<select
-              value={vendorDraft.mode}
-              disabled={vendorDraft.vendorKeys.length <= 1}
-              onChange={(event) => setVendorDraft((current) => ({ ...current, mode: event.target.value as "fixed" | "rotate" }))}
-            >
-              <option value="fixed">Fixed</option>
-              <option value="rotate">Rotate (advance each term)</option>
-            </select></label>
-          </div>
           {vendorCatalog.length < 4 && <p className="empty">This install's Landsraad decree catalog is missing {4 - vendorCatalog.length} of the 4 expected vendor decrees -- only the vendors listed above are supported here.</p>}
+          {/* One combined "what's live right now" statement -- constraint #2
+              (only one house can have the vendor active) reinforced here,
+              not via a new control, since the house dropdown is already a
+              correct single-select on its own. */}
+          <p className="muted landsraad-vendor-live-preview">
+            {vendorDraft.vendorKeys.length
+              ? <>Will force: <strong>{vendorDraft.mode === "fixed" ? VENDOR_LABELS[vendorDraft.vendorKeys[0]] : `${VENDOR_LABELS[vendorDraft.vendorKeys[0]]} first, then cycling`}</strong> {vendorDraft.houseFaction
+                ? <>· will sell to: <strong>{houseFactionCatalog.find((entry) => entry.key === vendorDraft.houseFaction)?.name ?? vendorDraft.houseFaction}</strong></>
+                : "· no house has favor -- nobody can buy yet"}</>
+              : "Select a vendor type to see what Force Now would do."}
+          </p>
           <div className="landsraad-vendor-override-actions">
             <label className={`switch-checkbox landsraad-cycle-toggle ${vendorDraft.enabled ? "enabled" : "disabled"}`}><input type="checkbox" checked={vendorDraft.enabled} onChange={(event) => setVendorDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span className="switch-label">Apply Automatically Each Term</span><strong className="switch-state">{vendorDraft.enabled ? "ON" : "OFF"}</strong></label>
             <div className="landsraad-vendor-override-result"><InlineActionResult result={result} resultKey="vendor-override" format={false} /></div>
