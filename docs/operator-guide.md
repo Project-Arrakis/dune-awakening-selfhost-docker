@@ -70,26 +70,35 @@ issue if you get stuck on one of those.
 **Landsraad Special Vendor Override (fork-only):** the Landsraad panel's
 "Special Vendor Override" section lets you force one of the game's
 Special Vendor decrees (Vehicles/Weapons/Armor/Utilities) active for the
-current term, so that vendor's stock is available to players even if no
-house has organically won the Landsraad cycle. This deliberately
-**bypasses the game's normal win requirement** — it is not something
-Red-Blink's upstream project supports. "Force Now" behind a confirmation
-applies for the current term; use "Revert" to undo it.
+current term, so that vendor will sell to players even if no house has
+organically won the Landsraad cycle. This deliberately **bypasses the
+game's normal win requirement** — it is not something Red-Blink's
+upstream project supports. "Force Now" behind a confirmation applies for
+the current term; use "Revert" to undo it.
 
-**Vendor visibility requires selecting a Target House — plain vendor
-forcing alone does not make it visible to any player.** Vendor access is
-gated on which house is *recorded as winning* the term, confirmed
-directly, not just which decree is active. The optional "Target House"
-dropdown also sets that term's winning house (Atreides or Harkonnen)
-when you select one — leaving it blank only forces the decree, which by
-itself will not make the vendor appear for anyone.
+**Only one vendor, and one house, are ever live at once — the UI reflects
+this directly.** The section is mode-first: pick Fixed (a true
+single-select — exactly one vendor type) or Rotate (an ordered list that
+cycles one vendor per term, since only one can ever be active
+simultaneously) before picking which vendor(s).
+
+**Confirmed live (2026-09-11): the vendor NPC itself is always visible to
+every player, regardless of decree or house state. What's actually gated
+is whether it will *sell* to a given player — that requires their house
+to currently have favor (be recorded as winning the term).** Forcing only
+a vendor, with no Target House selected, makes the decree active but
+leaves nobody able to buy — confirmed empirically, not just inferred from
+schema. The optional "Target House" dropdown is what actually grants
+selling rights to that house's players (Atreides or Harkonnen); tested
+directly: the targeted house could buy, the other house (no favor)
+could not.
 
 **Selecting a Target House is a materially bigger action than the
 decree-only case — read the confirm dialog's warning before proceeding.**
 Two real consequences, named explicitly because they cannot be verified
 or fixed from this codebase:
 - It may grant that house's players real Landsraad rewards (currency/
-  items), not just vendor access — unconfirmed as of this writing, being
+  items), not just selling rights — unconfirmed as of this writing, being
   verified empirically (see [issue #907](https://github.com/Project-Arrakis/dune-awakening-selfhost-docker/issues/907)).
 - It **silently disables the game's own organic win-detection for the
   rest of that term** — confirmed directly against this fork's schema: a
