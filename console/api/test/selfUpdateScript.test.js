@@ -267,11 +267,20 @@ test("web console rebuild stops at the configured build timeout", async () => {
   const root = mkdtempSync(join(tmpdir(), "arrakis-self-update-timeout-"));
   const fakeBin = join(root, "bin");
   const runId = "123e4567-e89b-42d3-a456-426614174002";
-  mkdirSync(join(root, "runtime", "scripts"), { recursive: true });
+  mkdirSync(join(root, "runtime", "scripts", "lib"), { recursive: true });
   mkdirSync(join(root, "runtime", "generated"), { recursive: true });
   mkdirSync(fakeBin);
   copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(root, "runtime", "scripts", "self-update.sh"));
   copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(root, "runtime", "scripts", "compose-project.sh"));
+  // dune-awakening-selfhost-docker#901: prepare_web_console_rebuild_env()
+  // (called by rebuild_web_console_now(), exercised below) now sources
+  // console-secrets-env.sh, a new real dependency of self-update.sh this
+  // isolated fixture didn't carry before -- without it, self-update.sh
+  // fails on the missing file before ever reaching the `timeout` command
+  // this test is actually exercising.
+  copyFileSync(join(repoRoot, "runtime", "scripts", "lib", "console-secrets-env.sh"), join(root, "runtime", "scripts", "lib", "console-secrets-env.sh"));
+  copyFileSync(join(repoRoot, "runtime", "scripts", "lib", "secrets.sh"), join(root, "runtime", "scripts", "lib", "secrets.sh"));
+  copyFileSync(join(repoRoot, "runtime", "scripts", "lib", "secrets_aead.py"), join(root, "runtime", "scripts", "lib", "secrets_aead.py"));
   writeFileSync(join(root, "VERSION"), "v0.0.1\n");
   writeFileSync(join(root, "docker-compose.web.yml"), "services: {}\n");
   writeFileSync(join(fakeBin, "docker"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o700 });
