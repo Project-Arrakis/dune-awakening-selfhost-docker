@@ -2011,7 +2011,7 @@ async function handleApi(req, res) {
       return json(res, 429, { error: "Too many connection attempts in progress. Try again in a moment." });
     }
     res.setHeader("Set-Cookie", autoInviteStateCookie(mentatState, config.secureCookies));
-    const authorizeUrl = buildAutoInviteAuthorizeUrl({ redirectUri: config.autoInviteDiscordRedirectUri, state: mentatState });
+    const authorizeUrl = buildAutoInviteAuthorizeUrl({ redirectUri: config.autoInviteDiscordRedirectUri, state: mentatState, clientId: config.autoInviteDiscordClientId });
     audit(config, req, "hosted-bot.auto-invite.start", { ok: true });
     return json(res, 200, { authorizeUrl });
   }

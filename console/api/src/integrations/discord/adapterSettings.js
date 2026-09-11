@@ -79,7 +79,13 @@ export function readDiscordBotSettingsState(config) {
     // convention.
     hostedBotOAuthConfigured: Boolean(config.discordHostedBotOAuthClientId && config.discordHostedBotOAuthClientSecret && config.discordHostedBotOAuthRedirectUri),
     hostedBotOAuthClientId: config.discordHostedBotOAuthClientId || null,
-    hostedBotOAuthRedirectUri: config.discordHostedBotOAuthRedirectUri || null
+    hostedBotOAuthRedirectUri: config.discordHostedBotOAuthRedirectUri || null,
+    // dune-awakening-selfhost-docker#903: safe to return -- a Discord
+    // client_id is not a secret (same status hostedBotOAuthClientId
+    // above already has). Lets the frontend build its own "Add to
+    // Discord" invite link from the real, possibly-overridden backend
+    // value instead of hardcoding the default a second time.
+    autoInviteDiscordClientId: config.autoInviteDiscordClientId
   };
 }
 

@@ -27,6 +27,16 @@ export type DiscordBotSettingsState = {
   hostedBotOAuthConfigured?: boolean;
   hostedBotOAuthClientId?: string | null;
   hostedBotOAuthRedirectUri?: string | null;
+  // dune-awakening-selfhost-docker#903: the auto-invite flow's Discord
+  // Application ID (config.js's autoInviteDiscordClientId) -- env-
+  // overridable, defaults to Sahir Venn. Safe to return (a Discord
+  // client_id is not a secret, same status as hostedBotOAuthClientId
+  // above); the frontend uses it to build the OLD/Advanced flow's own
+  // "Add to Discord" invite link instead of hardcoding the same value
+  // a second time, so overriding the backend's env var can never leave
+  // that button silently pointed at a different bot than the one the
+  // one-click flow actually authorizes.
+  autoInviteDiscordClientId?: string;
 };
 
 export const discordAdapterSettingsApi = {

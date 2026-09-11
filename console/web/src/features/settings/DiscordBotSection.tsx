@@ -122,12 +122,23 @@ const RESTART_COUNTDOWN_SECONDS = 10;
 // own marketing/docs site already uses -- same client ID, same scope,
 // same fixed permissions=128 -- so an operator who already knows to visit
 // mentat-link doesn't get a different link/flow than one who never leaves
-// the console. Hardcoded (not configurable) deliberately: the "Hosted
-// bot" choice this button lives under is already, by design, wired
-// specifically to this org's own mentat/Sahir Venn service (see
-// mentatBackendRegisterUrl in server.js's config), not a generic
-// pluggable backend -- this is consistent with that, not a new pattern.
-const MENTAT_BOT_INVITE_URL = "https://discord.com/oauth2/authorize?client_id=1546203607807041697&scope=bot%20applications.commands&permissions=128";
+// the console.
+//
+// Real correctness bug (dune-awakening-selfhost-docker#903): this used to
+// be a bare hardcoded string. The backend's own client_id
+// (config.autoInviteDiscordClientId, what the NEW auto-invite flow's OAuth
+// screen actually authorizes against) is now env-overridable -- a self-
+// hoster who overrides it would otherwise have this OLD/Advanced flow's
+// button silently keep inviting Sahir Venn regardless, a real, confusing
+// mismatch between the two flows' bots. Built from the fetched settings
+// state's own autoInviteDiscordClientId instead, falling back to Sahir
+// Venn's client_id only for the brief window before that fetch resolves
+// (same default the backend itself falls back to when unconfigured) --
+// never leaves this button non-functional while state is loading.
+const DEFAULT_AUTO_INVITE_DISCORD_CLIENT_ID = "1546203607807041697";
+function buildMentatBotInviteUrl(clientId: string): string {
+  return `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(clientId)}&scope=bot%20applications.commands&permissions=128`;
+}
 
 const DISCORD_POPUP_WIDTH = 500;
 const DISCORD_POPUP_HEIGHT = 800;
@@ -153,8 +164,8 @@ function centeredPopupFeatures(width: number, height: number): string {
 // cross-origin way to observe the popup's own navigation or get a
 // postMessage from Discord's page) is what lets the wizard notice the
 // operator is back without requiring them to click anything else here.
-function openBotInviteWindow(onClosed: () => void) {
-  const popup = window.open(MENTAT_BOT_INVITE_URL, "discord-bot-invite", centeredPopupFeatures(DISCORD_POPUP_WIDTH, DISCORD_POPUP_HEIGHT));
+function openBotInviteWindow(clientId: string, onClosed: () => void) {
+  const popup = window.open(buildMentatBotInviteUrl(clientId), "discord-bot-invite", centeredPopupFeatures(DISCORD_POPUP_WIDTH, DISCORD_POPUP_HEIGHT));
   if (!popup) return; // popup blocked -- the link below still works as a normal click-through
   const timer = window.setInterval(() => {
     if (popup.closed) {
@@ -1358,7 +1369,7 @@ export function DiscordBotSection() {
         </div>
         {!ownedGuilds && !connectedGuildName && (
           <>
-            <button type="button" onClick={() => openBotInviteWindow(() => setBotInviteWindowClosed(true))}>Add to Discord</button>
+            <button type="button" onClick={() => openBotInviteWindow(state?.autoInviteDiscordClientId || DEFAULT_AUTO_INVITE_DISCORD_CLIENT_ID, () => setBotInviteWindowClosed(true))}>Add to Discord</button>
             <button disabled={submitting || autoInvitePending} onClick={() => { void handleConnectToHostedBot(); }}>Connect to hosted bot</button>
             {botInviteWindowClosed && <p className="muted" role="status">Welcome back — click Connect to hosted bot once you've invited the bot.</p>}
           </>
