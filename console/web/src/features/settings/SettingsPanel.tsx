@@ -6,6 +6,7 @@ import { InfoTooltip, KeyValueGrid, StatusPill } from "../../components/common/D
 import { RecoveryCodesPanel } from "../auth/RecoveryCodesPanel";
 import { DiscordSetupWizard } from "../auth/DiscordSetupWizard";
 import { restartConsoleAndReload } from "../../lib/consoleRestart";
+import { DiscordBotSection } from "./DiscordBotSection";
 import { firstDefined, formatUiSentence, friendlyColumnName } from "../../lib/display";
 import { ApiKeysSection } from "./ApiKeysSection";
 
@@ -147,6 +148,15 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   const [claimCode, setClaimCode] = useState("");
   const [loginPasswordOpen, setLoginPasswordOpen] = useState(false);
   const [webPortOpen, setWebPortOpen] = useState(false);
+  // dune-awakening-selfhost-docker#748+: the ONLY genuinely new state this
+  // wizard needs here -- tier1-upstream's own discordOAuthOpen (computed,
+  // line ~547) and the raw Client ID/Secret/Redirect URI form state
+  // (discordClientId etc.) belong to fork main's OWN separate, pre-existing
+  // "Discord OAuth" console-sign-in section, superseded on tier1-upstream
+  // by the embedded DiscordSetupWizard -- porting them here would both
+  // collide with discordOAuthOpen's real declaration below and add dead
+  // state with no JSX consumer on this branch.
+  const [discordBotOpen, setDiscordBotOpen] = useState(false);
   const [webPort, setWebPort] = useState("");
   const [webPortRedirectUrl, setWebPortRedirectUrl] = useState("");
   const [webPortRedirectCountdown, setWebPortRedirectCountdown] = useState<number | null>(null);
@@ -863,6 +873,11 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       <div className={`playerAdmin_toggle settings-api-keys-toggle ${apiKeysOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={apiKeysOpen ? "Collapse API Keys" : "Expand API Keys"} onClick={() => setApiKeysOpen(!apiKeysOpen)}>{apiKeysOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>API Keys</span></button>
         {apiKeysOpen && <div className="playerAdmin_toggleBody"><ApiKeysSection confirmAction={confirmAction} /></div>}
+      </div>
+
+      <div className={`playerAdmin_toggle ${discordBotOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={discordBotOpen ? "Collapse Discord Bot" : "Expand Discord Bot"} onClick={() => setDiscordBotOpen(!discordBotOpen)}>{discordBotOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Discord Bot</span></button>
+        {discordBotOpen && <DiscordBotSection />}
       </div>
     </div>
   </section>;

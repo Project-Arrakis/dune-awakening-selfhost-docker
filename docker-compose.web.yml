@@ -116,6 +116,99 @@ services:
       DUNE_DISCORD_ADAPTER_TOKEN: "${DUNE_DISCORD_ADAPTER_TOKEN:-}"
       DUNE_BOT_API_TOKEN_FILE: "${DUNE_BOT_API_TOKEN_FILE:-}"
       DISCORD_OBSERVER_ROLE_IDS: "${DISCORD_OBSERVER_ROLE_IDS:-}"
+      DUNE_DISCORD_ADAPTER_TOKEN_FILE: "${DUNE_DISCORD_ADAPTER_TOKEN_FILE:-}"
+      # Hosted-bot console-initiated OAuth registration (Tasks 2/3/6, #739):
+      # found missing from this allowlist during the final-review re-review
+      # pass -- the exact same bug class this file's own CONSOLE_TOTP_ENABLED
+      # comment below already documents ("never wired through here despite
+      # six merged implementation phases"). Without these, every one of
+      # these values reads as unset/null inside any real docker-compose
+      # deployment, no matter what .env says: /oauth/start's deploymentChoice
+      # gate fails closed permanently, the hosted-bot redirect URI (no
+      # secrets-file fallback, unlike DISCORD_OAUTH_CLIENT_SECRET, so it's
+      # env-only) never reaches buildAuthorizeUrl(), and a successful
+      # registration's persisted "Connected to hosted bot for X" status
+      # never survives the very container recreate that "Save Role IDs"
+      # itself triggers. `:-` (not `-`) is correct for all 4: unlike
+      # DISCORD_PLAYER_ROLE_IDS above, none of these values distinguish
+      # "explicitly cleared to empty" from "genuinely unset" -- both
+      # normalizeDeploymentChoice() (adapterSettings.js) and
+      # readDiscordBotSettingsState()'s `|| null` reads treat an empty
+      # string exactly the same as unset, so there is no legacy-fallback/
+      # revocation-bypass hazard here to guard against.
+      DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE: "${DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE:-}"
+      DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID: "${DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID:-}"
+      DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME: "${DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME:-}"
+      # Redirect URI for the hosted-bot "Advanced: use my own Discord
+      # Application" fallback flow -- a FULLY INDEPENDENT Discord
+      # Application from the one used for console sign-in, not a second
+      # redirect URI on the same one. dune-awakening-selfhost-docker#870/
+      # #871: this comment previously said "SAME Discord application, no
+      # new app needed" -- corrected here to match the fix already applied
+      # to .env.example and setup-guide.md's own copies of this same
+      # stale claim (an automated review on #871 caught this exact
+      # instance being missed the first time).
+      DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI: "${DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI:-}"
+      # dune-awakening-selfhost-docker#870: this key's own sibling
+      # (REDIRECT_URI, above) was added when the hosted-bot OAuth flow
+      # shipped, but this one -- the independent Discord Application's
+      # Client ID config.js actually reads (discordHostedBotOAuthClientId)
+      # -- was missed, leaving hostedBotOAuthConfigured permanently false
+      # (and the whole "Connect to hosted bot" flow permanently
+      # unreachable) in any real docker-compose deployment, even after an
+      # operator saves it via Settings -> Discord Bot.
+      DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID: "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID:-}"
+      # dune-awakening-selfhost-docker#901: this key's own sibling
+      # (CLIENT_ID, above) has always been read from here, but the
+      # secret itself never needed an entry -- config.js's
+      # readInlineOrFile() falls back to reading the bind-mounted
+      # runtime/secrets/discord-hosted-bot-oauth-client-secret.txt file
+      # directly when this env var is unset, which is all a plaintext
+      # install ever needed. Added so runtime/scripts/console.sh's new
+      # prepare_discord_hosted_bot_oauth_secret() (Stage 3 age-secrets
+      # wiring) has somewhere to hand off the *decrypted* value once
+      # an operator migrates this secret -- the container can never
+      # reach the age identity itself (deliberately outside the repo,
+      # never bind-mounted), so the host must decrypt and pass the
+      # plaintext value through here instead. `:-` (empty string) is
+      # correct, not `-`: readInlineOrFile() treats "" exactly like
+      # unset, so an operator who never configures this secret at all,
+      # or who never migrates it, sees zero behavior change.
+      DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET: "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}"
+      # Finding 1 (CRITICAL, final review): a bare map-form interpolated
+      # entry here (the previous "${DISCORD_PLAYER_ROLE_IDS:-}") ALWAYS sets
+      # this var in the container -- as an empty string when unset in .env,
+      # never actually omitted. That means process.env.DISCORD_PLAYER_ROLE_IDS
+      # is never `undefined` inside a real deployed container, so
+      # discordRoleMappingFromEnv()'s `!== undefined` legacy-fallback branch
+      # (adapter.js) can never fire there -- only in a bare Node test
+      # process. An existing operator with DISCORD_OBSERVER_ROLE_IDS set (and
+      # no DISCORD_PLAYER_ROLE_IDS, since it didn't exist before this
+      # feature) would silently lose that role mapping's bot access on their
+      # next `docker compose up`, with no warning (Requirement 0 violation).
+      # Nested `${VAR-${OTHER-default}}` interpolation is valid per the
+      # Compose Specification and supported by Compose V2 (compose-go, what
+      # `docker compose` uses) -- verified against Compose's own
+      # interpolation docs; NOT verified against a live `docker compose
+      # config` run in this environment (Docker is unavailable here), so
+      # confirm with `docker compose -f docker-compose.web.yml config` (only
+      # DISCORD_OBSERVER_ROLE_IDS set in .env) before relying on this alone.
+      # runtime/scripts/self-update.sh's migrate_discord_role_ids_env() is a
+      # second, independently-testable layer for the same gap -- it copies
+      # the legacy value into .env's own DISCORD_PLAYER_ROLE_IDS key
+      # directly, so the correct value reaches the container even if this
+      # nested-interpolation fallback were ever unsupported by some Compose
+      # version.
+      #
+      # Deliberately `-` (substitute only when the var is genuinely UNSET),
+      # never `:-` (which also substitutes on an explicitly-cleared empty
+      # string). `:-` here would resurrect a stale legacy role mapping the
+      # moment an operator clears Player role IDs via the Settings UI to
+      # revoke access -- reopening the exact revocation-bypass this branch's
+      # own JS-side `!== undefined` fix (adapter.js) and its regression test
+      # (selfUpdateScript.test.js) already close. Found and fixed during the
+      # final-review re-review pass on this same finding.
+      DISCORD_PLAYER_ROLE_IDS: "${DISCORD_PLAYER_ROLE_IDS-${DISCORD_OBSERVER_ROLE_IDS-}}"
       DISCORD_MODERATOR_ROLE_IDS: "${DISCORD_MODERATOR_ROLE_IDS:-}"
       DISCORD_ADMIN_ROLE_IDS: "${DISCORD_ADMIN_ROLE_IDS:-}"
       DISCORD_OWNER_ROLE_IDS: "${DISCORD_OWNER_ROLE_IDS:-}"
