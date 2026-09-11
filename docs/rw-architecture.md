@@ -197,24 +197,32 @@ The console's own IAM (`policy.js`) has a `player` tier (own-record-scoped,
 read-only console access — see the console-session design work this
 revision's design doc process ran alongside). The Discord bot's RW tier
 ladder in Section 1 below is a **separate, independent tier space**
-(`public`/`observer`/`moderator`/`admin`/`owner` — see `discordActorTier()`
+(`public`/`player`/`moderator`/`admin`/`owner` — see `discordActorTier()`
 in `console/api/src/integrations/discord/policy.js`) that has never included
 a `player` tier at all. This is not an oversight to fix — it is the design:
 **the `player` console tier and any future Discord-side equivalent must never
 be capable of any RW (write/mutate) action, under any circumstance.**
-`CAPABILITY_BY_TIER["public"]`/`["observer"]` contain zero write capabilities
+`CAPABILITY_BY_TIER["public"]`/`["player"]` contain zero write capabilities
 today, structurally, by construction — this invariant is enforced by the
 absence of a mapping, not a runtime check, and any future change to
 `policy.js` or `commandCatalog.js` that would grant a write capability to
-`public`, `observer`, or a console `player`-tier-derived actor is a direct
-violation of this invariant and must be rejected in review.
+`public`, the Discord adapter's own `player` tier, or a console
+`player`-tier-derived actor is a direct violation of this invariant and must
+be rejected in review. **Corrected, same day: `discordActorTier()`'s own
+lowest real tier was itself renamed `observer` → `player` for terminology
+consistency with the console's already-completed observer→player fold
+(`console/api/src/integrations/discord/policy.js`, `services/discordAdapter.js`)
+— this is EXACTLY the "future Discord-side equivalent" this invariant
+already anticipated by name, not a new exception to it. Capability set is
+unchanged (still zero write capabilities); every citation below updated to
+match the real code.**
 
 **Enforcement commitment (added after round-2 audit, GRC finding):** review
 alone is not a sufficient backstop (Requirement 20's own rationale for
 shifting audits left applies here too). Layer 2 implementation must extend
 `console/api/test/discordPolicy.test.js` with a table-driven negative test —
 for every entry in `WRITE_ACTION_ROUTES` (Section 3.5), assert
-`requireDiscordCapability()` rejects `public` and `observer` tier actors, so
+`requireDiscordCapability()` rejects `public` and `player` tier actors, so
 a future capability addition can't silently violate this invariant without a
 test failing.
 
@@ -242,7 +250,7 @@ Discord User → Slash Command → Bot RBAC → Confirmation (if destructive)
 
 | Discord Role | Capability Tier | Can do |
 |-------------|----------------|--------|
-| observer | `public` | RO only — no write commands |
+| player | `public` | RO only — no write commands |
 | moderator | `moderator` | `player:warn` (map chat) |
 | admin | `admin` | Most RW: player kick/ban, base refill, server start, map control, carepackage grant, guild add/remove |
 | owner | `owner` | Destructive: server restart/stop, player inventory clear, give-item, grant-all, history clear |
@@ -556,7 +564,7 @@ Every downstream consumer (`evaluate()`, `task()`, `audit()`, every route handle
 
 ### 3.3 Tier mapping: only moderator/admin/owner ever reach this far
 
-The Discord bot's tier space (`DISCORD_ROLE_TIERS`) and the console's IAM tier space (`policy.js`'s tiers) are separate, but they share three tier *names*: `moderator`, `admin`, `owner`. Per Section 0's invariant, the Discord bot's `CAPABILITY_BY_TIER` grants zero write capabilities to `public`/`observer` — so `requireDiscordCapability()` already rejects any actor below `moderator` before `write/preview` ever returns a nonce. `mappedTier` in 3.2 is simply `discordActorTier(actor, mapping)`'s result, which by construction is always `moderator`/`admin`/`owner` by the time execution reaches the loopback.
+The Discord bot's tier space (`DISCORD_ROLE_TIERS`) and the console's IAM tier space (`policy.js`'s tiers) are separate, but they share three tier *names*: `moderator`, `admin`, `owner`. Per Section 0's invariant, the Discord bot's `CAPABILITY_BY_TIER` grants zero write capabilities to `public`/`player` — so `requireDiscordCapability()` already rejects any actor below `moderator` before `write/preview` ever returns a nonce. `mappedTier` in 3.2 is simply `discordActorTier(actor, mapping)`'s result, which by construction is always `moderator`/`admin`/`owner` by the time execution reaches the loopback.
 
 **This tier alone is not sufficient to enforce Section 1's per-action tier ladder** — see 3.3a below, added after round-2 audit found the existing IAM systems can't express "owner but not admin" for a specific action.
 
@@ -933,7 +941,7 @@ bullets without that marker are unchanged from the original doc.
 - *(new, Core)* **Audit attribution:** a loopback-executed action produces an audit-log entry correctly identifying the real Discord actor (`discordUserId`), never the bridge's internal credential and never blank.
 - *(new, Core)* **Credential non-leakage:** the internal token never appears in any `audit()` payload, error response body, logged output, or the persisted idempotency-cache file (Requirement 24, extended after round-3 to cover the new on-disk cache, #747) — a capture-based assertion against real logged/persisted output during a simulated loopback call.
 - *(new, Core)* **Rate-limit per-actor isolation (3.8, #733):** two different Discord actors performing the same action in the same window are NOT throttled by each other's activity (regression test for the shared-bucket bug this round's audit found).
-- *(new, Core)* **Item catalog endpoint (3.6, #745):** `requireDiscordCapability(moderator)` gates the route and console `policy.js` is never consulted; **both directions of the tier boundary explicitly asserted (round-4 audit, QA hat, batch #755) — `public`/`observer` rejected, `moderator`/`admin`/`owner` accepted, not just the design fact restated**; substring-match/25-result-cap/case-insensitivity behavior (corrected from "prefix-match" during Layer-1 gap-closure work, matching 3.6's corrected match-semantics design above); **a catalog file change on disk IS reflected on the very next `POST /api/items/search` call, with no Core restart required (corrected after the final confirmatory round, was HIGH #811 — this bullet previously asserted the opposite, matching a since-superseded design)**; the endpoint's result set correctly reflects a match against `id`, `name`, AND `category` fields, not names alone (HIGH #814). **Added after round 8 (was HIGH #821/#822, Cloud Security + Network hats):** a request with a missing/invalid actor signature is rejected before `requireDiscordCapability` ever runs (mirroring the existing signature-then-capability ordering test every other actor-signed route already has); a burst of same-actor requests past the configured window returns `429`, keyed on `discord:${actor.userId}` — a regression test proving two DIFFERENT actors sharing one NAT'd IP do NOT share one bucket (the exact keying-dimension bug this round's fix corrects); a query with more real matches than `limit` sets the truncation-signal field (HIGH #825's round-8 fix) rather than silently returning an arbitrary, unflagged slice.
+- *(new, Core)* **Item catalog endpoint (3.6, #745):** `requireDiscordCapability(moderator)` gates the route and console `policy.js` is never consulted; **both directions of the tier boundary explicitly asserted (round-4 audit, QA hat, batch #755) — `public`/`player` rejected, `moderator`/`admin`/`owner` accepted, not just the design fact restated**; substring-match/25-result-cap/case-insensitivity behavior (corrected from "prefix-match" during Layer-1 gap-closure work, matching 3.6's corrected match-semantics design above); **a catalog file change on disk IS reflected on the very next `POST /api/items/search` call, with no Core restart required (corrected after the final confirmatory round, was HIGH #811 — this bullet previously asserted the opposite, matching a since-superseded design)**; the endpoint's result set correctly reflects a match against `id`, `name`, AND `category` fields, not names alone (HIGH #814). **Added after round 8 (was HIGH #821/#822, Cloud Security + Network hats):** a request with a missing/invalid actor signature is rejected before `requireDiscordCapability` ever runs (mirroring the existing signature-then-capability ordering test every other actor-signed route already has); a burst of same-actor requests past the configured window returns `429`, keyed on `discord:${actor.userId}` — a regression test proving two DIFFERENT actors sharing one NAT'd IP do NOT share one bucket (the exact keying-dimension bug this round's fix corrects); a query with more real matches than `limit` sets the truncation-signal field (HIGH #825's round-8 fix) rather than silently returning an arbitrary, unflagged slice.
 - *(new, Core)* **Item catalog match semantics, added during Layer-1 gap-closure work (was MEDIUM-HIGH, QA hat) — resolves the prefix-vs-substring ambiguity with a discriminating test, not just "some query returns some rows":** assert `q: "administ"` matches an item named "Administrator's Badge" (a prefix hit, which any implementation should return) **and also matches** an item named "The Grand Administrator" (a substring-only hit — this is the one case that actually distinguishes substring matching from prefix-only matching, proving the endpoint reuses `listCatalogItems()`'s real substring behavior rather than a silently-reintroduced prefix-only implementation). Also assert empty/missing `q` returns the first 25 catalog rows in a stable order, not an empty array.
 
 ### Layer 2: Integration Tests
@@ -943,7 +951,7 @@ bullets without that marker are unchanged from the original doc.
 - Idempotency collision (same key, different params) → bot shows "already executed"
 - All error codes from the corrected error table (Section 4), including the new `410` and the split kill-switch-vs-permission `403` rows
 - *(new, Core)* **Per-route-table-entry correctness (resolves the self-check's documented blind spot, #731; relabeled from Layer 1 to Layer 2 after round-3 audit, since it genuinely runs against a real test Core instance, #747):** one integration test per `WRITE_ACTION_ROUTES` entry, asserting the *actual* expected effect by independently querying/observing state the loopback call itself doesn't control (a real DB row, a mock game-server call log) — never by re-checking the response body the same code path just returned, which would recreate a shallow tautology (#747). Concrete worked examples: `player.ban` really bans, not unbans; `player.give-item` really targets the player's inventory, not a storage container; `guild.remove` actually removes the named member, not a 404.
-- *(new, Core)* **Tier-floor negative test (Section 0's invariant):** table-driven across every `WRITE_ACTION_ROUTES` entry, assert `requireDiscordCapability()` rejects `public`/`observer`-tier actors before a nonce is ever issued.
+- *(new, Core)* **Tier-floor negative test (Section 0's invariant):** table-driven across every `WRITE_ACTION_ROUTES` entry, assert `requireDiscordCapability()` rejects `public`/`player`-tier actors before a nonce is ever issued.
 - *(new, Core)* **Confirmation-phrase pass-through:** every entry with a `confirmPhrase` (3.5) — the loopback body carries the exact required phrase; a mismatched/missing phrase → the real endpoint's `400`, not a false success. **Cross-consistency check (added after round-3, QA #747):** every action listed under Section 4's "Type confirmation string" tier has a non-empty `confirmPhrase` in `WRITE_ACTION_ROUTES` — a table-driven check between the two lists, not just a per-entry pass-through test, so a destructive action (e.g. `grant-all`) can't ship without its documented phrase gate unnoticed.
 - *(new, Core)* **Stale-role rejection (#734) and freshness enforcement (#744/#749/#754):** an actor whose role is revoked between `write/preview` and `write/execute` is rejected; test table for `roleSnapshotAt` (round-4/5 audit, QA + DBA hats, batch #755/#754/#762 — a prior revision only stated the negative case, an inverted-tautology risk, and omitted a malformed-value case entirely): a fresh `roleSnapshotAt` is **accepted**; a stale one (`Math.abs(now - roleSnapshotAt) > maxRoleAgeSeconds`) is **rejected**; a **future-dated** `roleSnapshotAt` is also rejected (not just old ones); the boundary at exactly `maxRoleAgeSeconds` is explicitly pinned to one behavior; a **malformed value** (`NaN`, a string, `undefined`) is rejected by the upstream `Number.isSafeInteger` guard, not silently accepted via a `NaN` comparison always evaluating false; **extended after round-6 audit (was LOW, batch #776, QA hat): also `0` and a negative integer** — both pass `Number.isSafeInteger` but must fail the separate `roleSnapshotAt > 0` bound, a distinct condition from the safe-integer guard that the malformed-value case alone doesn't exercise. Also confirm `write/preview`/`write/execute` verify this field via `WRITE_BRIDGE_SIGNED_ACTOR_FIELDS` (3.8), and that an old-format actor payload lacking `roleSnapshotAt` entirely still verifies correctly against **all five** routes the shared array serves — `link`, `verify`, `unlink`, `steam-link`, `broadcast` (round-5 audit, QA hat — a prior revision's regression test named only 2-3 of these; the shared `SIGNED_ACTOR_FIELDS` array must remain untouched for every one of them, not just a sample). **Tamper test, added after round-6 audit (was HIGH #775, QA hat): "verify this field" alone doesn't prove `roleSnapshotAt` is actually cryptographically covered by the signature, only that verification "happens."** Add an explicit test: sign a valid write-bridge envelope, mutate `roleSnapshotAt` in the body afterward *without* re-signing, and assert `verifyActorSignature()` rejects it — proving the field is bound inside the signed message, not merely present in the request body alongside an unrelated, still-valid signature. Without this, a canonical-payload implementation bug that silently drops the `fields` override (the exact shortcut #749's own history warns about) could pass every other test in this table while leaving `roleSnapshotAt` completely unauthenticated.
 - *(new, Core)* **Kill-switch dual-checkpoint (#747):** `discordWritesEnabled()` is independently checked and rejects at both `write/preview` and `write/execute` — specifically, a switch flipped off *after* a valid preview/nonce but *before* the confirm-click reaches `write/execute` is still rejected, with the dedicated kill-switch error message, not the generic permission-denial one.
