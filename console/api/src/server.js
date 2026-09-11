@@ -472,6 +472,12 @@ setInterval(() => {
   runBackgroundTick("Message of the Day", messageOfTheDayAutoTick);
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
   runBackgroundTick("Addon scheduled jobs", () => addonJobScheduler.tick());
+  // These two reconcilers can both issue a `for update` lock against the
+  // same latest dune.landsraad_decree_term row in the same tick (one waits
+  // for the other to commit -- not a deadlock, just a known, accepted
+  // serialization coupling; 2026-09-11 Layer 2 audit, Architect hat
+  // finding). If a reconciler-tick latency spike ever needs investigating,
+  // check here first before assuming either one alone is slow.
   runBackgroundTick("Landsraad milestone preset", () => landsraadMilestoneReconciler.tick());
   runBackgroundTick("Landsraad vendor override", () => landsraadVendorOverrideReconciler.tick());
   // Daily, but gated inside the tick like every other long-period job here.
@@ -3758,7 +3764,7 @@ async function landsraadRoute(req, res, action) {
     else if (action === "player-contribution") result = await duneDb.setLandsraadPlayerContribution(db, body);
     else if (action === "vendor-override") {
       saveLandsraadVendorOverridePreset(config, body);
-      result = await applySavedLandsraadVendorOverride(config, db, { manual: true });
+      result = await applySavedLandsraadVendorOverride(config, db, { allowOverrideResolvedTerm: body.overrideResolvedTerm === true });
     }
     else if (action === "vendor-override-revert") {
       result = await revertSavedLandsraadVendorOverride(config, db);

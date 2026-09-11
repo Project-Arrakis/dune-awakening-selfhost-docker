@@ -78,8 +78,16 @@ house is credited with winning the term (that state is left alone). It
 exists because a low-population self-hosted server may rarely or never
 reach the participation threshold needed to win a term naturally,
 permanently locking out this content otherwise. "Force Now" behind a
-confirmation is a one-way action for the current term; use "Revert" to
-undo it.
+confirmation applies for the current term; use "Revert" to undo it.
+
+**Known limitation, unverified as of this writing:** whether the vendor
+actually becomes visible to every player, or only to players of whichever
+house the game engine treats as "reigning," once the decree is forced
+active has not been confirmed against a live game client with characters
+of different houses. If players report the vendor isn't appearing after
+you apply this, that is a known, currently-open question (see
+[issue #907](https://github.com/Project-Arrakis/dune-awakening-selfhost-docker/issues/907)),
+not necessarily something you did wrong.
 
 ---
 

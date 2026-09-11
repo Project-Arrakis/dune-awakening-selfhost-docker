@@ -20,7 +20,7 @@ const DECREE_IDS = {
 // functions run unmodified (not a stub -- see the design doc §5's note on
 // avoiding the tautology failure class this test file mirrors that
 // precedent specifically to avoid).
-function makeVendorOverrideDb({ decreeNames = Object.keys(DECREE_IDS), term, stateLastAppliedDecreeId = null, updateRowCount = 1 } = {}) {
+function makeVendorOverrideDb({ decreeNames = Object.keys(DECREE_IDS), term, stateLastAppliedDecreeId = null, stateLastAppliedTermId, updateRowCount = 1 } = {}) {
   const calls = [];
   let writtenActiveDecreeId = term?.active_decree_id ?? null;
   const query = async (text, values = []) => {
@@ -35,8 +35,11 @@ function makeVendorOverrideDb({ decreeNames = Object.keys(DECREE_IDS), term, sta
     if (text.includes("create schema if not exists console")) return { rows: [] };
     if (text.includes("create table if not exists console.landsraad_vendor_override_state")) return { rows: [] };
     if (text.includes("insert into console.landsraad_vendor_override_state")) return { rows: [] };
-    if (text.includes("from console.landsraad_vendor_override_state where id = 1 for update")) {
+    if (text.includes("select last_applied_decree_id::text as last_applied_decree_id from console.landsraad_vendor_override_state")) {
       return { rows: [{ last_applied_decree_id: stateLastAppliedDecreeId }] };
+    }
+    if (text.includes("select last_applied_term_id::text as last_applied_term_id from console.landsraad_vendor_override_state")) {
+      return { rows: [{ last_applied_term_id: stateLastAppliedTermId === undefined ? (term?.term_id ?? null) : stateLastAppliedTermId }] };
     }
     if (text.includes("test_term,") && text.includes("from dune.landsraad_decree_term")) {
       return { rows: term ? [term] : [] };
@@ -143,6 +146,22 @@ test("revertLandsraadVendorOverride clears the current term's decree columns", a
 
 test("revertLandsraadVendorOverride is a no-op when there is no current term", async () => {
   const { db } = makeVendorOverrideDb({ term: undefined });
+  const result = await revertLandsraadVendorOverride(db);
+  assert.equal(result.applied, false);
+});
+
+test("revertLandsraadVendorOverride refuses to clear a term this feature never applied to", async () => {
+  const term = { term_id: "73" };
+  const { db, calls } = makeVendorOverrideDb({ term, stateLastAppliedTermId: "72" });
+  const result = await revertLandsraadVendorOverride(db);
+  assert.equal(result.applied, false);
+  assert.match(result.reason, /was not set by the vendor override/);
+  assert.ok(!calls.some((call) => String(call.text).includes("set active_decree_id = null")), "must never null out a term it never touched");
+});
+
+test("revertLandsraadVendorOverride is a no-op when this feature has never applied at all", async () => {
+  const term = { term_id: "73" };
+  const { db } = makeVendorOverrideDb({ term, stateLastAppliedTermId: null });
   const result = await revertLandsraadVendorOverride(db);
   assert.equal(result.applied, false);
 });
