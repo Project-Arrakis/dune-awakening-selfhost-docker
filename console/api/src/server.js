@@ -1657,35 +1657,72 @@ async function handleApi(req, res) {
     });
   }
 
-  if (path === "/api/players") return dbJson(res, () => duneDb.listPlayers(db, {
-    q: url.searchParams.get("q") || "",
-    page: url.searchParams.get("page") || 0,
-    pageSize: url.searchParams.get("pageSize") || 50,
-    status: url.searchParams.get("status") || "all",
-    sortColumn: url.searchParams.get("sortColumn") || "character_name",
-    sortDirection: url.searchParams.get("sortDirection") || "asc",
-    bannedFlsIds: bannedFlsIds(config.repoRoot)
-  }));
-  if (path === "/api/players/online") return dbJson(res, () => duneDb.listPlayers(db, {
-    status: "online",
-    page: url.searchParams.get("page") || 0,
-    pageSize: url.searchParams.get("pageSize") || 200,
-    bannedFlsIds: bannedFlsIds(config.repoRoot)
-  }));
-  if (path === "/api/players/search") return dbJson(res, () => duneDb.listPlayers(db, { q: url.searchParams.get("q") || "", bannedFlsIds: bannedFlsIds(config.repoRoot) }));
-  if (path === "/api/guilds") return dbJson(res, () => duneDb.listGuilds(db, {
-    q: url.searchParams.get("q") || "",
-    page: url.searchParams.get("page") || 0,
-    pageSize: url.searchParams.get("pageSize") || 50,
-    sortColumn: url.searchParams.get("sortColumn") || "guild_name",
-    sortDirection: url.searchParams.get("sortDirection") || "asc"
-  }));
+  if (path === "/api/players" || path === "/api/players/online" || path === "/api/players/search" || path === "/api/guilds") {
+    // Own-record scoping for the console's `player` IAM tier (Red-Blink PR
+    // #202 review): players:read/guilds:read are otherwise tier-wide grants
+    // (policy.js's own comment on the `player` tier has said so since it was
+    // written) -- an ordinary player must only ever see their own linked
+    // character and their own guild here, never the full server roster.
+    // owner/admin/moderator sessions get `scope = null`, leaving every
+    // listPlayers()/listGuilds() call below unfiltered, identical to before.
+    const scope = session.tier === "player" ? await resolveOwnPlayerScope(session.userId) : null;
+    if (scope && !scope.linked) {
+      const notLinked = { notLinked: true, reason: PLAYER_LINK_INSTRUCTIONS.reason, linkInstructions: PLAYER_LINK_INSTRUCTIONS };
+      if (path === "/api/guilds") return json(res, 200, { capabilities: { guilds: true, guildMembers: true }, totalCount: 0, totalGuilds: 0, rows: [], ...notLinked });
+      return json(res, 200, { capabilities: { players: true }, totalCount: 0, totalPlayers: 0, rows: [], ...notLinked });
+    }
+    const onlyPlayerControllerId = scope ? scope.playerControllerId : null;
+
+    if (path === "/api/players") return dbJson(res, () => duneDb.listPlayers(db, {
+      q: url.searchParams.get("q") || "",
+      page: url.searchParams.get("page") || 0,
+      pageSize: url.searchParams.get("pageSize") || 50,
+      status: url.searchParams.get("status") || "all",
+      sortColumn: url.searchParams.get("sortColumn") || "character_name",
+      sortDirection: url.searchParams.get("sortDirection") || "asc",
+      bannedFlsIds: bannedFlsIds(config.repoRoot),
+      onlyPlayerControllerId
+    }));
+    if (path === "/api/players/online") return dbJson(res, () => duneDb.listPlayers(db, {
+      status: "online",
+      page: url.searchParams.get("page") || 0,
+      pageSize: url.searchParams.get("pageSize") || 200,
+      bannedFlsIds: bannedFlsIds(config.repoRoot),
+      onlyPlayerControllerId
+    }));
+    if (path === "/api/players/search") return dbJson(res, () => duneDb.listPlayers(db, { q: url.searchParams.get("q") || "", bannedFlsIds: bannedFlsIds(config.repoRoot), onlyPlayerControllerId }));
+    // path === "/api/guilds" -- a linked player with no guild isn't a "go link
+    // your character" problem, so it gets its own distinct message rather than
+    // being folded into the notLinked case above.
+    if (scope && !scope.guildId) {
+      return json(res, 200, { capabilities: { guilds: true, guildMembers: true }, totalCount: 0, totalGuilds: 0, rows: [], notInGuild: true, reason: "You're linked, but your character isn't currently in a guild." });
+    }
+    return dbJson(res, () => duneDb.listGuilds(db, {
+      q: url.searchParams.get("q") || "",
+      page: url.searchParams.get("page") || 0,
+      pageSize: url.searchParams.get("pageSize") || 50,
+      sortColumn: url.searchParams.get("sortColumn") || "guild_name",
+      sortDirection: url.searchParams.get("sortDirection") || "asc",
+      onlyGuildId: scope ? scope.guildId : null
+    }));
+  }
   if (path.match(/^\/api\/guilds\/[^/]+\/members\/[^/]+\/promote$/) && req.method === "POST") return guildPromoteRoute(req, res, path);
   if (path.match(/^\/api\/guilds\/[^/]+\/members\/[^/]+\/demote$/) && req.method === "POST") return guildDemoteRoute(req, res, path);
   if (path.match(/^\/api\/guilds\/[^/]+\/members$/) && req.method === "POST") return guildAddMemberRoute(req, res, path);
   if (path.match(/^\/api\/guilds\/[^/]+\/members\/[^/]+$/) && req.method === "DELETE") return guildRemoveMemberRoute(req, res, path);
   if (path.match(/^\/api\/guilds\/[^/]+$/) && req.method === "DELETE") return guildDisbandRoute(req, res, path);
-  if (path.match(/^\/api\/guilds\/[^/]+\/members$/)) return dbJson(res, () => duneDb.guildMembers(db, decodeURIComponent(path.split("/")[3])));
+  if (path.match(/^\/api\/guilds\/[^/]+\/members$/)) {
+    const guildId = decodeURIComponent(path.split("/")[3]);
+    // Same own-guild scoping as GET /api/guilds above, applied to the
+    // by-id roster route -- a `player`-tier session must not be able to
+    // bypass the list scoping by requesting an arbitrary guild id directly.
+    if (session.tier === "player") {
+      const scope = await resolveOwnPlayerScope(session.userId);
+      if (!scope.linked) return json(res, 200, { capabilities: { guildMembers: true }, rows: [], notLinked: true, reason: PLAYER_LINK_INSTRUCTIONS.reason, linkInstructions: PLAYER_LINK_INSTRUCTIONS });
+      if (!scope.guildId || scope.guildId !== guildId) return json(res, 403, { error: "You can only view your own guild's roster." });
+    }
+    return dbJson(res, () => duneDb.guildMembers(db, guildId));
+  }
   if (path === "/api/bases") return dbJson(res, () => duneDb.listBases(db, {
     q: url.searchParams.get("q") || "",
     page: url.searchParams.get("page") || 0,
@@ -1879,7 +1916,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/events$/)) return dbPlayerUnsupported(res, path, "events");
   if (path.match(/^\/api\/players\/[^/]+\/stats$/)) return dbPlayerUnsupported(res, path, "stats");
   if (path.match(/^\/api\/players\/[^/]+\/history$/)) return dbPlayerUnsupported(res, path, "history");
-  if (path.match(/^\/api\/players\/[^/]+$/)) return playerProfileRoute(res, path);
+  if (path.match(/^\/api\/players\/[^/]+$/)) return playerProfileRoute(req, res, path);
 
   if (path === "/api/storage") return dbJson(res, () => duneDb.listStorage(db));
   if (path.match(/^\/api\/storage\/[^/]+$/)) return dbJson(res, async () => ({ storage: (await duneDb.listStorage(db)).rows.find((row) => String(row.id) === decodeURIComponent(path.split("/")[3])) || null }));
@@ -4409,8 +4446,48 @@ async function playerIdentityForBan(playerId) {
   return player;
 }
 
-async function playerProfileRoute(res, path) {
+// Own-record scoping for the console's `player` IAM tier (Red-Blink PR #202
+// review). Resolves the Discord user's linked character (via the existing
+// dune.discord_player_links table -- see integrations/discord/linkProvider.js
+// for how a player actually establishes that link, an in-game whisper with a
+// one-time code proving ownership, not something this route invents) and, if
+// linked, which guild that character currently belongs to.
+async function resolveOwnPlayerScope(discordUserId) {
+  const linked = await duneDb.getLinkedPlayer(db, discordUserId);
+  if (!linked) return { linked: false, playerControllerId: null, guildId: null };
+  const guildId = await duneDb.getPlayerGuildId(db, linked.player_pawn_id);
+  return { linked: true, playerControllerId: linked.player_controller_id, guildId };
+}
+
+// Shown to an unlinked `player`-tier session instead of a bare empty list, so
+// it's obvious why nothing appears and what to do about it (Red-Blink PR #202
+// review) -- points at the real, already-shipped linking commands rather than
+// inventing a new console-side flow.
+const PLAYER_LINK_INSTRUCTIONS = Object.freeze({
+  reason: "Your Discord account isn't linked to a player character yet.",
+  linkCommand: "/dune player link <character-name>",
+  verifyCommand: "/dune player verify <code>",
+  message: "In Discord, run /dune player link <your character name>. You'll receive a private in-game whisper with a verification code -- run /dune player verify <code> to finish linking. Once linked, your own player and guild will appear here."
+});
+
+async function playerProfileRoute(req, res, path) {
   const playerId = decodeURIComponent(path.split("/")[3]);
+  const session = req.authSession;
+  // Own-record scoping (Red-Blink PR #202 review): the list routes above are
+  // scoped, but this by-id detail route previously took no session at all --
+  // a `player`-tier caller could read anyone's profile just by knowing their
+  // id, bypassing the list scoping entirely. Reuses listPlayers()'s own
+  // action_player_id resolution (fls_id, else owner_account_id) rather than
+  // re-deriving the identifier scheme independently, so the two can't drift.
+  if (session.tier === "player") {
+    const scope = await resolveOwnPlayerScope(session.userId);
+    if (!scope.linked) return json(res, 200, { notLinked: true, reason: PLAYER_LINK_INSTRUCTIONS.reason, linkInstructions: PLAYER_LINK_INSTRUCTIONS });
+    const own = await duneDb.listPlayers(db, { onlyPlayerControllerId: scope.playerControllerId, pageSize: 1, includeTotals: false });
+    const ownPlayerId = own.rows[0]?.action_player_id;
+    if (!ownPlayerId || ownPlayerId !== playerId) {
+      return json(res, 403, { error: "You can only view your own player profile." });
+    }
+  }
   return dbJson(res, async () => {
     const profile = await duneDb.playerProfile(db, playerId);
     const fallbackIdentity = profile.player || {};
