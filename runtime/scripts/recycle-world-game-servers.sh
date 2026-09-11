@@ -51,20 +51,14 @@ remove_server_id_map() {
 
 cleanup_partition_assignment() {
   local partition_id="$1"
-  local server_id map_name landsraad_cleanup_sql=""
+  local server_id map_name
 
   [ -n "$partition_id" ] || return 0
   server_id="$(psql_value "select coalesce(server_id, '') from dune.world_partition where partition_id = $partition_id limit 1;")"
   map_name="$(psql_value "select coalesce(map, '') from dune.world_partition where partition_id = $partition_id limit 1;")"
-  landsraad_cleanup_sql="$(landsraad_instance_cleanup_sql "$map_name" "$partition_id" 2>/dev/null || true)"
-
-  if [ -n "$landsraad_cleanup_sql" ]; then
-    echo "Cleaning transient Landsraad actors for $map_name partition $partition_id"
-  fi
 
   docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
 begin;
-$landsraad_cleanup_sql
 update dune.world_partition
 set server_id = null
 where partition_id = $partition_id;
@@ -82,6 +76,7 @@ commit;
 " >/dev/null
 
   remove_server_id_map "$server_id"
+  cleanup_landsraad_instance_after_shutdown "$map_name" "$partition_id"
 }
 
 remove_container() {

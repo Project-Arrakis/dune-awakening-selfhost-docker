@@ -31,3 +31,21 @@ select dune.delete_actors_and_respawns_on_server(
 );
 SQL
 }
+
+cleanup_landsraad_instance_after_shutdown() {
+  local world_map="$1"
+  local partition_id="$2"
+  local cleanup_sql=""
+
+  cleanup_sql="$(landsraad_instance_cleanup_sql "$world_map" "$partition_id" 2>/dev/null || true)"
+  [ -n "$cleanup_sql" ] || return 0
+
+  echo "Cleaning transient Landsraad actors for $world_map partition $partition_id"
+  if ! docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+begin;
+$cleanup_sql
+commit;
+" >/dev/null; then
+    echo "Warning: transient Landsraad actor cleanup failed for $world_map partition $partition_id; map lifecycle will continue." >&2
+  fi
+}
