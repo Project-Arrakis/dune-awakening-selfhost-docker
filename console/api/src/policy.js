@@ -269,6 +269,13 @@ const DEFAULT_POLICIES = {
         "carepackage:clear-history",  // destroys care-package audit evidence
         "admin:history:clear",     // destroys admin-command audit evidence
         "carepackage:grant-all",   // server-wide economy injection in one call
+        // Fabricates a Landsraad term's win/decree outcome (2026-09-11
+        // design audit, Security Architect hat, direct precedent to #859)
+        // -- categorically different from every other landsraad:* action
+        // (which tune numeric values within already-live rules). Without
+        // this explicit Deny, admin's "landsraad:*" Allow above (like
+        // every other namespace wildcard) would reach it.
+        "landsraad:vendor-override:write",
       ]}
     ]
   },

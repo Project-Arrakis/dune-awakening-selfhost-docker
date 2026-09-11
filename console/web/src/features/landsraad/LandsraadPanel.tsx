@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { adminApi, type LandsraadMilestonePreset, type LandsraadOverview, type LandsraadReward, type LandsraadTask } from "../../api/admin";
+import { adminApi, type LandsraadMilestonePreset, type LandsraadOverview, type LandsraadReward, type LandsraadTask, type LandsraadVendorCatalogEntry, type LandsraadVendorKey, type LandsraadVendorOverridePreset } from "../../api/admin";
 import { mapsApi } from "../../api/maps";
 import { playersApi } from "../../api/players";
 import { serverApi } from "../../api/server";
@@ -28,6 +28,13 @@ type PersistentField = {
   min?: number;
   max?: number;
   step?: number;
+};
+
+const VENDOR_LABELS: Record<LandsraadVendorKey, string> = {
+  vehicles: "Vehicle Vendor",
+  weapons: "Weapon Vendor",
+  armor: "Armor Vendor",
+  utilities: "Utility Vendor"
 };
 
 const PERSISTENT_FIELDS: PersistentField[] = [
@@ -65,6 +72,9 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
   const [bulkGoal, setBulkGoal] = useState("");
   const [milestonePreset, setMilestonePreset] = useState<LandsraadMilestonePreset | null>(null);
   const [milestoneDraft, setMilestoneDraft] = useState({ enabled: false, goalAmount: "", thresholds: [] as string[] });
+  const [vendorCatalog, setVendorCatalog] = useState<LandsraadVendorCatalogEntry[]>([]);
+  const [vendorPreset, setVendorPreset] = useState<LandsraadVendorOverridePreset | null>(null);
+  const [vendorDraft, setVendorDraft] = useState({ enabled: false, mode: "fixed" as "fixed" | "rotate", vendorKeys: [] as LandsraadVendorKey[] });
   const [contributionPlayer, setContributionPlayer] = useState("");
   const [contributionTask, setContributionTask] = useState("");
   const [contributionAmount, setContributionAmount] = useState("");
@@ -100,11 +110,19 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
     setResult(null);
     onError("");
     try {
-      const [nextOverview, nextPlayers, presetResponse] = await Promise.all([
+      const [nextOverview, nextPlayers, presetResponse, vendorResponse] = await Promise.all([
         adminApi.landsraad(),
         playersApi.listAll().catch(() => ({ rows: [] })),
-        adminApi.landsraadMilestonePreset()
+        adminApi.landsraadMilestonePreset(),
+        adminApi.landsraadVendorOverride()
       ]);
+      setVendorCatalog(vendorResponse.catalog);
+      setVendorPreset(vendorResponse.preset);
+      setVendorDraft({
+        enabled: vendorResponse.preset.enabled,
+        mode: vendorResponse.preset.mode,
+        vendorKeys: vendorResponse.preset.vendorKeys
+      });
       setOverview(nextOverview);
       setPlayers(nextPlayers.rows || []);
       setGoalDrafts(Object.fromEntries((nextOverview.tasks || []).map((task) => [task.task_id, String(task.goal_amount ?? 0)])));
@@ -268,6 +286,37 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
     }
   }
 
+  const termAlreadyResolved = Boolean(overview?.term?.active_decree || overview?.term?.winning_faction);
+
+  async function forceVendorOverride() {
+    if (!vendorDraft.vendorKeys.length) {
+      setResult({ key: "vendor-override", text: "Select at least one vendor type.", tone: "danger" });
+      return;
+    }
+    const label = vendorDraft.vendorKeys.map((key) => VENDOR_LABELS[key]).join(", ");
+    const message = termAlreadyResolved
+      ? `This term was already won by ${overview?.term?.winning_faction || "a house"} with ${overview?.term?.active_decree || "a decree"} active. Forcing ${label} will overwrite that result. This cannot be undone within this term.`
+      : `Force the ${label} active for the current Landsraad term? This bypasses the normal win requirement -- the vendor becomes available regardless of whether any house has won this cycle.`;
+    if (!(await confirmAction(message, { title: "Force Landsraad Vendor Override", confirmLabel: "Force Now", danger: termAlreadyResolved }))) return;
+
+    const responseRef: { current: Awaited<ReturnType<typeof adminApi.saveLandsraadVendorOverride>> | null } = { current: null };
+    await run(
+      "vendor-override",
+      "Applying vendor override",
+      async () => { responseRef.current = await adminApi.saveLandsraadVendorOverride(vendorDraft); },
+      "Vendor Override Applied"
+    );
+    if (responseRef.current && !responseRef.current.result.applied) {
+      setResult({ key: "vendor-override", text: responseRef.current.result.reason || "Not applied.", tone: "neutral" });
+      resultTimer.current = window.setTimeout(() => setResult(null), 6500);
+    }
+  }
+
+  async function revertVendorOverride() {
+    if (!(await confirmAction("Revert the Landsraad vendor override for the current term? This clears the active/elected decree back to none.", { title: "Revert Landsraad Vendor Override", confirmLabel: "Revert", danger: true }))) return;
+    await run("vendor-override", "Reverting vendor override", () => adminApi.revertLandsraadVendorOverride(), "Vendor Override Reverted");
+  }
+
   async function saveReward(reward: LandsraadReward) {
     const draft = rewardDrafts[rewardKey(reward)];
     const threshold = Number(draft?.threshold ?? reward.threshold);
@@ -397,6 +446,52 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
             <button onClick={() => void saveMilestonePreset()}>Save And Apply</button>
           </div>
         </> : <p className="empty">Reward levels will appear after the current Landsraad term generates its milestones.</p>}
+      </section>
+
+      <div className="section-divider landsraad-section-divider" />
+
+      <section className="landsraad-vendor-override">
+        <div className="landsraad-vendor-override-heading">
+          <div>
+            <h4>Special Vendor Override</h4>
+            <p className="muted">Force a Landsraad Special Vendor active for the current term, even if no house has won this cycle. Fork-only -- bypasses the normal win requirement.</p>
+          </div>
+          {vendorPreset?.lastResult && <span className="landsraad-preset-status">{vendorPreset.lastResult}</span>}
+        </div>
+        {vendorCatalog.length ? <>
+          <div className="landsraad-vendor-checkboxes">
+            {vendorCatalog.map((entry) => <label key={entry.key} className="landsraad-vendor-checkbox">
+              <input
+                type="checkbox"
+                checked={vendorDraft.vendorKeys.includes(entry.key)}
+                onChange={(event) => setVendorDraft((current) => ({
+                  ...current,
+                  vendorKeys: event.target.checked
+                    ? [...current.vendorKeys, entry.key]
+                    : current.vendorKeys.filter((key) => key !== entry.key)
+                }))}
+              />
+              {VENDOR_LABELS[entry.key]}
+            </label>)}
+          </div>
+          <div className="landsraad-vendor-mode">
+            <label className="compact-select">Mode<select
+              value={vendorDraft.mode}
+              disabled={vendorDraft.vendorKeys.length <= 1}
+              onChange={(event) => setVendorDraft((current) => ({ ...current, mode: event.target.value as "fixed" | "rotate" }))}
+            >
+              <option value="fixed">Fixed</option>
+              <option value="rotate">Rotate (advance each term)</option>
+            </select></label>
+          </div>
+          {vendorCatalog.length < 4 && <p className="empty">This install's Landsraad decree catalog is missing {4 - vendorCatalog.length} of the 4 expected vendor decrees -- only the vendors listed above are supported here.</p>}
+          <div className="landsraad-vendor-override-actions">
+            <label className={`switch-checkbox landsraad-cycle-toggle ${vendorDraft.enabled ? "enabled" : "disabled"}`}><input type="checkbox" checked={vendorDraft.enabled} onChange={(event) => setVendorDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span className="switch-label">Apply Automatically Each Term</span><strong className="switch-state">{vendorDraft.enabled ? "ON" : "OFF"}</strong></label>
+            <div className="landsraad-vendor-override-result"><InlineActionResult result={result} resultKey="vendor-override" format={false} /></div>
+            <button className="secondary" onClick={() => void revertVendorOverride()}>Revert</button>
+            <button disabled={!vendorDraft.vendorKeys.length} onClick={() => void forceVendorOverride()}>Force Now</button>
+          </div>
+        </> : <p className="empty">No Landsraad Special Vendor decrees were found on this install -- this feature is not supported here.</p>}
       </section>
 
       <div className="section-divider landsraad-section-divider" />
