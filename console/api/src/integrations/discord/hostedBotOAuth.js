@@ -11,12 +11,27 @@ export const HOSTED_BOT_DISCORD_API_BASE_URL = "https://discord.com/api/v10";
 export const HOSTED_BOT_REGISTRATION_TTL_MS = 10 * 60 * 1000;
 export const HOSTED_BOT_MAX_PENDING_REGISTRATIONS = 256;
 
+// Layer 3 audit finding (HIGH): this was a bare `await fetchImpl(...)` with
+// no bound at all, unlike oauth.js's near-identical discordJsonRequest()
+// (5s timeout, added specifically because a discord.com brownout or an
+// operator's egress-drop firewall would otherwise hang the request for
+// undici's multi-minute default -- a real DoS on the auth path, per that
+// file's own comment). This flow's /users/@me and /users/@me/guilds calls
+// during the hosted-bot OAuth callback had the identical exposure. Same
+// 5s bound, same AbortController pattern; this file's own simpler
+// Error+code/statusCode convention kept rather than switching to oauth.js's
+// oauthError() helper.
+const DISCORD_HTTP_TIMEOUT_MS = 5_000;
 async function discordJsonRequest(url, init, { fetchImpl, label }) {
   let response;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DISCORD_HTTP_TIMEOUT_MS);
   try {
-    response = await fetchImpl(url, init);
+    response = await fetchImpl(url, { ...init, signal: controller.signal });
   } catch {
     throw Object.assign(new Error(`Discord ${label} request failed.`), { code: "discord_unreachable", statusCode: 502 });
+  } finally {
+    clearTimeout(timer);
   }
   if (!response.ok) {
     throw Object.assign(new Error(`Discord rejected the ${label} request (HTTP ${response.status}).`), { code: "oauth_upstream_error", statusCode: 502 });
@@ -92,14 +107,27 @@ export function createPendingRegistrationStore({
 // (Path=/api/auth/discord/callback) -- the two flows must never be
 // confusable mid-flight, and this flow's own callback lives at a different
 // path.
-export function hostedBotOAuthStateCookie(value, secure = true) {
-  const securePart = secure ? "; Secure" : "";
-  return `hosted_bot_oauth_state=${encodeURIComponent(value)}; HttpOnly; SameSite=None; Path=/api/integrations/discord/hosted-bot/oauth/callback; Max-Age=600${securePart}`;
+//
+// Layer 3 audit finding (CRITICAL): unlike oauth.js's own oauthStateCookie()
+// (which hardcodes Secure unconditionally, with its own comment explaining
+// why), these two functions used to accept a `secure` parameter and gated
+// the Secure attribute on it -- and docker-compose.web.yml's own default,
+// ADMIN_SECURE_COOKIES:-0, means config.secureCookies (the value every real
+// call site passed in) is false on every fresh install using documented
+// defaults. SameSite=None without Secure is not just weaker; per the Cookie
+// spec (and confirmed in every modern browser) it is REJECTED outright --
+// the cookie is never even stored, so this hosted-bot OAuth flow's state
+// cookie never survives the Discord->console redirect on any default
+// install. Same root-cause class as this org's own documented incident
+// (a SameSite=Lax state cookie silently dropped across a cross-site
+// redirect, Strict Requirement 19(e)) -- fixed the same way oauth.js
+// already was: Secure is no longer conditional for a SameSite=None cookie.
+export function hostedBotOAuthStateCookie(value) {
+  return `hosted_bot_oauth_state=${encodeURIComponent(value)}; HttpOnly; SameSite=None; Path=/api/integrations/discord/hosted-bot/oauth/callback; Max-Age=600; Secure`;
 }
 
-export function clearHostedBotOAuthStateCookie(secure = true) {
-  const securePart = secure ? "; Secure" : "";
-  return `hosted_bot_oauth_state=; HttpOnly; SameSite=None; Path=/api/integrations/discord/hosted-bot/oauth/callback; Max-Age=0${securePart}`;
+export function clearHostedBotOAuthStateCookie() {
+  return `hosted_bot_oauth_state=; HttpOnly; SameSite=None; Path=/api/integrations/discord/hosted-bot/oauth/callback; Max-Age=0; Secure`;
 }
 
 // The registration-handle cookie is scoped to the whole /api/integrations/discord/hosted-bot/

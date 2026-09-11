@@ -400,6 +400,34 @@ test("POST /api/settings/discord-bot/restart queues the discordAdapterApply task
     assert.ok(restartBody.task, "the response must include the queued task");
     assert.equal(restartBody.task.operation, "discordAdapterApply");
 
+    // Layer 3 audit finding (CRITICAL): this test used to stop at "the task
+    // was queued with the right operation name" -- it never checked the task
+    // actually ran successfully. runner.js's buildDuneArgs() had no case for
+    // "discordAdapterApply" at all, so the queued task ALWAYS failed with
+    // "Unsupported operation: discordAdapterApply" the moment it executed,
+    // silently, with this exact assertion set still green (the .env write
+    // and in-process mirror that make the settings page look correct happen
+    // synchronously, before this task is even queued -- see
+    // adapterSettings.js). This test's own sandbox has no real
+    // runtime/scripts/dune (DUNE_DOCKER_DIR points at a bare tempDir), so it
+    // cannot verify a real container recreate succeeds -- but it CAN verify
+    // the operation is actually recognized by polling to a terminal task
+    // state and asserting the failure, if any, is an infra-availability
+    // one ("Missing dune command"), never the code-level "Unsupported
+    // operation" this bug produced.
+    const deadline = Date.now() + 5000;
+    let finalTask = restartBody.task;
+    while (Date.now() < deadline && (finalTask.status === "queued" || finalTask.status === "running")) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const poll = await api(port, `/api/setup/tasks/${finalTask.id}`, { method: "GET", cookie: session.cookie });
+      finalTask = (await poll.json()).task;
+    }
+    assert.notEqual(finalTask.status, "queued", "the task must have started running within the poll window");
+    assert.ok(
+      !finalTask.errorMessage || !/Unsupported operation/.test(finalTask.errorMessage),
+      `discordAdapterApply must be a recognized operation -- got: ${finalTask.errorMessage}`
+    );
+
     const rows = auditRows(tempDir).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
     const restartRow = rows.find((r) => r.action === "settings.discord-bot.restart");
     assert.ok(restartRow, "a successful restart trigger must write a settings.discord-bot.restart audit row");
