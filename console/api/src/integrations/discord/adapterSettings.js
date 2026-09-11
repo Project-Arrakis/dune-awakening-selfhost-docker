@@ -155,14 +155,14 @@ function sanitizeEnvDisplayValue(value) {
   return value.replace(/[^\p{L}\p{N} .,'!?_-]/gu, "");
 }
 
-export function persistHostedBotConnectedGuild(config, { guildId, guildName } = {}) {
+export async function persistHostedBotConnectedGuild(config, { guildId, guildName } = {}) {
   const safeGuildId = String(guildId || "").trim();
   const safeGuildName = sanitizeEnvDisplayValue(String(guildName || "").trim()).slice(0, 100) || safeGuildId;
   if (!safeGuildId) return { ok: false };
-  updateEnvFileValues(config.repoRoot, [
-    [MANAGED_ENV_KEYS.hostedBotConnectedGuildId, safeGuildId],
-    [MANAGED_ENV_KEYS.hostedBotConnectedGuildName, safeGuildName]
-  ]);
+  await updateEnvFileValues(config.repoRoot, {
+    [MANAGED_ENV_KEYS.hostedBotConnectedGuildId]: safeGuildId,
+    [MANAGED_ENV_KEYS.hostedBotConnectedGuildName]: safeGuildName
+  });
   // Mirror into the RUNNING process too -- same reasoning as every other
   // mirror in this file: readDiscordBotSettingsState() reads process.env
   // directly, and this write deliberately never triggers a container
@@ -187,11 +187,11 @@ export function persistHostedBotConnectedGuild(config, { guildId, guildName } = 
 // this file's existing directToken-clearing convention), which
 // readDiscordBotSettingsState()'s `|| null` reads treat identically to
 // never having been set.
-export function clearHostedBotConnectedGuild(config) {
-  updateEnvFileValues(config.repoRoot, [
-    [MANAGED_ENV_KEYS.hostedBotConnectedGuildId, ""],
-    [MANAGED_ENV_KEYS.hostedBotConnectedGuildName, ""]
-  ]);
+export async function clearHostedBotConnectedGuild(config) {
+  await updateEnvFileValues(config.repoRoot, {
+    [MANAGED_ENV_KEYS.hostedBotConnectedGuildId]: "",
+    [MANAGED_ENV_KEYS.hostedBotConnectedGuildName]: ""
+  });
   // Mirror into the RUNNING process too -- same reasoning as every other
   // mirror in this file.
   process.env[MANAGED_ENV_KEYS.hostedBotConnectedGuildId] = "";
@@ -211,7 +211,7 @@ export function clearHostedBotConnectedGuild(config) {
 // after generation (Design §3.1's "masked, with reveal/copy" requirement)
 // -- readDiscordBotSettingsState() never returns it on subsequent reads,
 // since the token file's own content is the only persistent copy.
-export function enableDiscordBotAdapter(config, roleIdsByTier = {}, options = {}) {
+export async function enableDiscordBotAdapter(config, roleIdsByTier = {}, options = {}) {
   const repoRoot = config.repoRoot;
   const tokenFile = resolve(repoRoot, DEFAULT_TOKEN_FILE);
   const token = randomBytes(32).toString("hex");
@@ -234,7 +234,7 @@ export function enableDiscordBotAdapter(config, roleIdsByTier = {}, options = {}
   // persisted untouched, rather than clobbering it with an empty string.
   const normalizedChoice = normalizeDeploymentChoice(options.deploymentChoice);
   if (normalizedChoice) entries.push([MANAGED_ENV_KEYS.deploymentChoice, normalizedChoice]);
-  updateEnvFileValues(repoRoot, entries);
+  await updateEnvFileValues(repoRoot, Object.fromEntries(entries));
 
   // Mirror the two values every other part of this feature reads directly
   // from process.env into the RUNNING process too. Writing .env on disk
@@ -291,7 +291,7 @@ export function enableDiscordBotAdapter(config, roleIdsByTier = {}, options = {}
   // clear, but it's included for the same reason updateDiscordBotRoleIds
   // below needs it -- both functions persist deploymentChoice, and neither
   // should be a hole this fix misses.
-  if (normalizedChoice === "self-hosted") clearHostedBotConnectedGuild(config);
+  if (normalizedChoice === "self-hosted") await clearHostedBotConnectedGuild(config);
 
   return { ok: true, tokenFile: DEFAULT_TOKEN_FILE, token };
 }
@@ -306,7 +306,7 @@ export function enableDiscordBotAdapter(config, roleIdsByTier = {}, options = {}
 // matching what a fresh install looks like. Does NOT launch the recreate
 // helper itself -- same convention as enableDiscordBotAdapter(), the caller
 // (the route handler) does that via tasks.create().
-export function disableDiscordBotAdapter(config) {
+export async function disableDiscordBotAdapter(config) {
   const repoRoot = config.repoRoot;
   const tokenFile = resolve(repoRoot, DEFAULT_TOKEN_FILE);
   // Best-effort: the token file may already be missing (never enabled, or a
@@ -314,14 +314,14 @@ export function disableDiscordBotAdapter(config) {
   // disabling must still succeed either way.
   try { unlinkSync(tokenFile); } catch {}
 
-  updateEnvFileValues(repoRoot, [
-    [MANAGED_ENV_KEYS.enabled, "false"],
-    [MANAGED_ENV_KEYS.directToken, ""],
-    [MANAGED_ENV_KEYS.player, ""],
-    [MANAGED_ENV_KEYS.moderator, ""],
-    [MANAGED_ENV_KEYS.admin, ""],
-    [MANAGED_ENV_KEYS.deploymentChoice, ""]
-  ]);
+  await updateEnvFileValues(repoRoot, {
+    [MANAGED_ENV_KEYS.enabled]: "false",
+    [MANAGED_ENV_KEYS.directToken]: "",
+    [MANAGED_ENV_KEYS.player]: "",
+    [MANAGED_ENV_KEYS.moderator]: "",
+    [MANAGED_ENV_KEYS.admin]: "",
+    [MANAGED_ENV_KEYS.deploymentChoice]: ""
+  });
 
   // Mirror into the RUNNING process too -- see enableDiscordBotAdapter()'s
   // own comment above for why this is necessary even though the recreate
@@ -336,7 +336,7 @@ export function disableDiscordBotAdapter(config) {
 
   // Any hosted-bot registration was keyed to the token/choice just wiped
   // above -- same reasoning as regenerateDiscordBotToken().
-  clearHostedBotConnectedGuild(config);
+  await clearHostedBotConnectedGuild(config);
   return { ok: true };
 }
 
@@ -351,7 +351,7 @@ export function disableDiscordBotAdapter(config) {
 // token on every role-ID edit). Still triggers the recreate helper (the
 // caller does that, same as enableDiscordBotAdapter) because role IDs are
 // only read from the environment at container start.
-export function updateDiscordBotRoleIds(config, roleIdsByTier = {}, options = {}) {
+export async function updateDiscordBotRoleIds(config, roleIdsByTier = {}, options = {}) {
   const entries = [
     [MANAGED_ENV_KEYS.player, (roleIdsByTier.player || []).join(",")],
     [MANAGED_ENV_KEYS.moderator, (roleIdsByTier.moderator || []).join(",")],
@@ -361,7 +361,7 @@ export function updateDiscordBotRoleIds(config, roleIdsByTier = {}, options = {}
   // enableDiscordBotAdapter() above.
   const normalizedChoice = normalizeDeploymentChoice(options.deploymentChoice);
   if (normalizedChoice) entries.push([MANAGED_ENV_KEYS.deploymentChoice, normalizedChoice]);
-  updateEnvFileValues(config.repoRoot, entries);
+  await updateEnvFileValues(config.repoRoot, Object.fromEntries(entries));
   // Mirror into the RUNNING process too, for the same reason
   // enableDiscordBotAdapter() does -- discordRoleMappingFromEnv() reads
   // process.env directly, so without this a GET of the settings state in
@@ -381,7 +381,7 @@ export function updateDiscordBotRoleIds(config, roleIdsByTier = {}, options = {}
   // persisted "Connected to hosted bot for {name}" status is now a lie.
   // Clear it so "Connect to hosted bot" can reappear if they ever switch
   // back to "hosted".
-  if (normalizedChoice === "self-hosted") clearHostedBotConnectedGuild(config);
+  if (normalizedChoice === "self-hosted") await clearHostedBotConnectedGuild(config);
   return { ok: true };
 }
 
@@ -396,14 +396,14 @@ export function updateDiscordBotRoleIds(config, roleIdsByTier = {}, options = {}
 // only gates the hosted-bot OAuth routes, which read it directly from
 // process.env, mirrored below same as every other setter in this file), so
 // there is nothing here a container recreate would need to apply.
-export function setDeploymentChoice(config, choice) {
+export async function setDeploymentChoice(config, choice) {
   const normalizedChoice = normalizeDeploymentChoice(choice);
   if (!normalizedChoice) return { ok: false };
-  updateEnvFileValues(config.repoRoot, [[MANAGED_ENV_KEYS.deploymentChoice, normalizedChoice]]);
+  await updateEnvFileValues(config.repoRoot, { [MANAGED_ENV_KEYS.deploymentChoice]: normalizedChoice });
   process.env[MANAGED_ENV_KEYS.deploymentChoice] = normalizedChoice;
   // Same reasoning as updateDiscordBotRoleIds() above -- switching to
   // self-hosted invalidates any existing hosted-bot connection.
-  if (normalizedChoice === "self-hosted") clearHostedBotConnectedGuild(config);
+  if (normalizedChoice === "self-hosted") await clearHostedBotConnectedGuild(config);
   return { ok: true };
 }
 
@@ -438,17 +438,17 @@ export function setDeploymentChoice(config, choice) {
 //
 // Returns the plaintext token for the same one-time-display reason as
 // enableDiscordBotAdapter() above.
-export function regenerateDiscordBotToken(config) {
+export async function regenerateDiscordBotToken(config) {
   const repoRoot = config.repoRoot;
   const tokenFile = resolve(repoRoot, DEFAULT_TOKEN_FILE);
   if (!existsSync(dirname(tokenFile))) mkdirSync(dirname(tokenFile), { recursive: true });
   const token = randomBytes(32).toString("hex");
   writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
   try { chmodSync(tokenFile, 0o600); } catch {}
-  updateEnvFileValues(repoRoot, [
-    [MANAGED_ENV_KEYS.directToken, ""],
-    [MANAGED_ENV_KEYS.tokenFile, DEFAULT_TOKEN_FILE]
-  ]);
+  await updateEnvFileValues(repoRoot, {
+    [MANAGED_ENV_KEYS.directToken]: "",
+    [MANAGED_ENV_KEYS.tokenFile]: DEFAULT_TOKEN_FILE
+  });
   // Mirror into the RUNNING process too -- see enableDiscordBotAdapter()'s
   // equivalent comment above for why. This function deliberately never
   // triggers a container recreate (the token file's content is read fresh
@@ -474,7 +474,7 @@ export function regenerateDiscordBotToken(config) {
   // "Connect to hosted bot" button back into view. Without this, an
   // operator who regenerates their token has no way back into the
   // registration flow at all.
-  clearHostedBotConnectedGuild(config);
+  await clearHostedBotConnectedGuild(config);
   return { ok: true, token };
 }
 
@@ -497,12 +497,12 @@ export function regenerateDiscordBotToken(config) {
 // (from disabled) still goes through enableDiscordBotAdapter() and
 // mints a token. tokenMinted tells the route handler whether to include
 // `token` in its response.
-export function applyDiscordBotEnableRequest(config, roleIdsByTier = {}, options = {}) {
+export async function applyDiscordBotEnableRequest(config, roleIdsByTier = {}, options = {}) {
   if (discordAdapterEnabled(config)) {
-    const result = updateDiscordBotRoleIds(config, roleIdsByTier, options);
+    const result = await updateDiscordBotRoleIds(config, roleIdsByTier, options);
     return { ok: result.ok, tokenMinted: false };
   }
-  const result = enableDiscordBotAdapter(config, roleIdsByTier, options);
+  const result = await enableDiscordBotAdapter(config, roleIdsByTier, options);
   return { ok: result.ok, tokenMinted: true, token: result.token, tokenFile: result.tokenFile };
 }
 
