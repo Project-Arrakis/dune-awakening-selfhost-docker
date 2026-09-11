@@ -41,17 +41,23 @@ export function saveLandsraadVendorOverridePreset(config, input = {}) {
   return next;
 }
 
-// manual: true is "Force Now" (explicit, attended -- may override an
-// already-resolved term, since only a deliberate admin action may discard a
-// real win). false is the reconciler's unattended tick (never overrides a
-// resolved term). See duneDb.js's applyLandsraadVendorOverride for why.
-export async function applySavedLandsraadVendorOverride(config, db, { manual = false } = {}) {
+// allowOverrideResolvedTerm must be explicitly true (only ever sent by the
+// UI's "Force Now" after its own stronger, already-resolved-term-specific
+// confirm dialog -- see LandsraadPanel.tsx) to override a term that has
+// already organically resolved. This is a real, separate flag rather than
+// implied by "this came from the manual save-and-apply route" (2026-09-11
+// Layer 2 audit, Security Architect hat finding): a bare "save my preset"
+// POST -- e.g. an operator just enabling the automatic-reconciler toggle,
+// or any other direct API caller -- must never be able to silently discard
+// a real win just by virtue of hitting the same endpoint the UI's Force
+// Now button also uses.
+export async function applySavedLandsraadVendorOverride(config, db, { allowOverrideResolvedTerm = false } = {}) {
   const preset = readLandsraadVendorOverridePreset(config);
   if (!preset.vendorKeys.length) return { preset, result: { ok: true, applied: false, reason: "No Landsraad vendor override has been configured." } };
   const result = await applyLandsraadVendorOverride(db, {
     vendorKeys: preset.vendorKeys,
     mode: preset.mode,
-    allowOverrideResolvedTerm: manual
+    allowOverrideResolvedTerm
   });
   const next = {
     ...preset,
@@ -68,7 +74,7 @@ export async function revertSavedLandsraadVendorOverride(config, db) {
   const preset = readLandsraadVendorOverridePreset(config);
   const next = {
     ...preset,
-    lastAppliedTermId: null,
+    lastAppliedTermId: result.applied ? null : preset.lastAppliedTermId,
     lastAppliedAt: result.applied ? new Date().toISOString() : preset.lastAppliedAt,
     lastResult: result.applied ? "Reverted" : String(result.reason || "Nothing to revert")
   };

@@ -781,6 +781,21 @@ function normalizeLandsraadVendorKeys(vendorKeys) {
   return vendorKeys;
 }
 
+// CREATE ... IF NOT EXISTS is idempotent but not race-free under true
+// concurrency -- two transactions that both see "doesn't exist yet" can
+// both attempt the CREATE, and Postgres raises duplicate_schema (42P06) /
+// duplicate_table (42P07) on the loser (2026-09-11 Layer 2 audit, DBA hat
+// finding). This is NOT caught-and-continued here: once any statement in
+// a Postgres transaction errors, the whole transaction is aborted and every
+// later statement fails too (25P02) until rollback -- swallowing just the
+// CREATE's error would only move the failure to the next statement, not
+// prevent it. Deliberately left as a hard failure instead: it can only
+// happen in the narrow, one-time window before this table has ever been
+// created on a given install (a fresh deploy's reconciler tick racing an
+// admin's first "Force Now" click), the whole apply/revert attempt fails
+// and rolls back cleanly (no partial state), and the loser's natural retry
+// (the reconciler's next ~60s tick, or the admin re-clicking) succeeds
+// once the winner's CREATE has committed.
 async function ensureLandsraadVendorOverrideStateTable(tx) {
   await tx.query("create schema if not exists console");
   await tx.query(`
@@ -895,9 +910,20 @@ export async function applyLandsraadVendorOverride(db, { vendorKeys, mode, allow
   };
 }
 
+// Only clears active_decree_id/elected_decree_id if THIS feature's own
+// state table says it was the one that set them for the current term --
+// otherwise this would silently null a term a house actually, organically
+// won (2026-09-11 Layer 2 audit, Architect hat finding: the original
+// version reverted unconditionally, with no way to tell "this feature's
+// override" apart from "a real win", a materially weaker guarantee than
+// applyLandsraadVendorOverride's own guard on the way in).
 export async function revertLandsraadVendorOverride(db) {
   await requireLandsraadVendorOverrideCapability(db);
   return db.transaction(async (tx) => {
+    await ensureLandsraadVendorOverrideStateTable(tx);
+    const state = await tx.query(
+      "select last_applied_term_id::text as last_applied_term_id from console.landsraad_vendor_override_state where id = 1 for update"
+    );
     const term = await tx.query(`
       select term_id::text as term_id
       from dune.landsraad_decree_term
@@ -906,12 +932,23 @@ export async function revertLandsraadVendorOverride(db) {
       for update`);
     const termRow = term.rows[0];
     if (!termRow) return { ok: true, applied: false, reason: "No current Landsraad term is available yet." };
+    if (state.rows[0]?.last_applied_term_id !== termRow.term_id) {
+      return { ok: true, applied: false, reason: "This term's decree was not set by the vendor override -- nothing to revert.", termId: termRow.term_id };
+    }
     const updated = await tx.query(`
       update dune.landsraad_decree_term
          set active_decree_id = null,
              elected_decree_id = null
        where term_id = $1
        returning term_id::text as term_id`, [termRow.term_id]);
+    if (updated.rowCount) {
+      await tx.query(`
+        update console.landsraad_vendor_override_state
+           set last_applied_term_id = null,
+               last_applied_decree_id = null,
+               updated_at = now()
+         where id = 1`);
+    }
     return { ok: true, applied: Boolean(updated.rowCount), termId: termRow.term_id };
   });
 }

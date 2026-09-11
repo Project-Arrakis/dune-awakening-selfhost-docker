@@ -286,7 +286,16 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
     }
   }
 
-  const termAlreadyResolved = Boolean(overview?.term?.active_decree || overview?.term?.winning_faction);
+  // Mirrors duneDb.js's applyLandsraadVendorOverride's own "already resolved"
+  // guard exactly (active_decree, elected_decree, and winning_faction can
+  // each independently be set before a term is fully "won") -- narrower
+  // than this (2026-09-11 Layer 2 audit, UI/UX hat finding) would show the
+  // softer "bypasses the win requirement" confirm copy for a term that the
+  // backend actually treats as already-resolved and requires the stronger
+  // confirm/overrideResolvedTerm flag to touch.
+  const termAlreadyResolved = Boolean(
+    overview?.term?.active_decree || overview?.term?.elected_decree || overview?.term?.winning_faction
+  );
 
   async function forceVendorOverride() {
     if (!vendorDraft.vendorKeys.length) {
@@ -295,7 +304,7 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
     }
     const label = vendorDraft.vendorKeys.map((key) => VENDOR_LABELS[key]).join(", ");
     const message = termAlreadyResolved
-      ? `This term was already won by ${overview?.term?.winning_faction || "a house"} with ${overview?.term?.active_decree || "a decree"} active. Forcing ${label} will overwrite that result. This cannot be undone within this term.`
+      ? `This term has already resolved${overview?.term?.winning_faction ? ` (won by ${overview.term.winning_faction})` : ""}${overview?.term?.active_decree || overview?.term?.elected_decree ? ` with ${overview?.term?.active_decree || overview?.term?.elected_decree} active` : ""}. Forcing ${label} will overwrite that result. This cannot be undone within this term.`
       : `Force the ${label} active for the current Landsraad term? This bypasses the normal win requirement -- the vendor becomes available regardless of whether any house has won this cycle.`;
     if (!(await confirmAction(message, { title: "Force Landsraad Vendor Override", confirmLabel: "Force Now", danger: termAlreadyResolved }))) return;
 
@@ -303,7 +312,7 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
     await run(
       "vendor-override",
       "Applying vendor override",
-      async () => { responseRef.current = await adminApi.saveLandsraadVendorOverride(vendorDraft); },
+      async () => { responseRef.current = await adminApi.saveLandsraadVendorOverride({ ...vendorDraft, overrideResolvedTerm: termAlreadyResolved }); },
       "Vendor Override Applied"
     );
     if (responseRef.current && !responseRef.current.result.applied) {
@@ -458,18 +467,23 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
           </div>
           {vendorPreset?.lastResult && <span className="landsraad-preset-status">{vendorPreset.lastResult}</span>}
         </div>
+        <p className="empty landsraad-vendor-override-caveat">
+          Whether vendor visibility is per-house or server-wide once active has not been confirmed against a live game client.
+          If players report the vendor isn't appearing after this is applied, that is a known, currently-unverified limitation --
+          not necessarily a misconfiguration. See issue #907.
+        </p>
         {vendorCatalog.length ? <>
           <div className="landsraad-vendor-checkboxes">
             {vendorCatalog.map((entry) => <label key={entry.key} className="landsraad-vendor-checkbox">
               <input
                 type="checkbox"
                 checked={vendorDraft.vendorKeys.includes(entry.key)}
-                onChange={(event) => setVendorDraft((current) => ({
-                  ...current,
-                  vendorKeys: event.target.checked
+                onChange={(event) => setVendorDraft((current) => {
+                  const vendorKeys = event.target.checked
                     ? [...current.vendorKeys, entry.key]
-                    : current.vendorKeys.filter((key) => key !== entry.key)
-                }))}
+                    : current.vendorKeys.filter((key) => key !== entry.key);
+                  return { ...current, vendorKeys, mode: vendorKeys.length > 1 ? current.mode : "fixed" };
+                })}
               />
               {VENDOR_LABELS[entry.key]}
             </label>)}
