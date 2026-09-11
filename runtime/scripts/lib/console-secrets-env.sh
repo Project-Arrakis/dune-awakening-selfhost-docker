@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Stage 3 (dune-awakening-selfhost-docker#900) of the age-based secrets
+# Stage 3 (dune-awakening-selfhost-docker#901) of the age-based secrets
 # library rollout -- a resolver for the hosted-bot wizard's Discord
 # OAuth client secret, sourced only by runtime/scripts/console.sh's
 # own prepare_discord_hosted_bot_oauth_secret(), on the HOST, before

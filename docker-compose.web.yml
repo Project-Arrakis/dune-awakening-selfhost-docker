@@ -112,7 +112,7 @@ services:
       # unreachable) in any real docker-compose deployment, even after an
       # operator saves it via Settings -> Discord Bot.
       DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID: "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID:-}"
-      # dune-awakening-selfhost-docker#900: this key's own sibling
+      # dune-awakening-selfhost-docker#901: this key's own sibling
       # (CLIENT_ID, above) has always been read from here, but the
       # secret itself never needed an entry -- config.js's
       # readInlineOrFile() falls back to reading the bind-mounted

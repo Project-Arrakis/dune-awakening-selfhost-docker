@@ -16,7 +16,7 @@ python3 -c "from cryptography.hazmat.primitives.ciphers.aead import AESGCM" >/de
 }
 
 # Regression coverage for Stage 3 of the age-based secrets library
-# rollout (dune-awakening-selfhost-docker#900):
+# rollout (dune-awakening-selfhost-docker#901):
 # discord-hosted-bot-oauth-client-secret, resolved by
 # runtime/scripts/lib/console-secrets-env.sh and wired into
 # runtime/scripts/console.sh. Deliberately does NOT re-prove what

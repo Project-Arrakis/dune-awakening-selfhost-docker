@@ -98,7 +98,7 @@ require_compose() {
   fi
 }
 
-# prepare_discord_hosted_bot_oauth_secret (dune-awakening-selfhost-docker#900)
+# prepare_discord_hosted_bot_oauth_secret (dune-awakening-selfhost-docker#901)
 #
 # Resolves the hosted-bot wizard's Discord OAuth client secret on the
 # HOST, before docker compose starts the console -- matching the

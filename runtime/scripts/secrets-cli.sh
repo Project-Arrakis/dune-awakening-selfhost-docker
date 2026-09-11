@@ -6,7 +6,7 @@ cd "$(dirname "$0")/../.."
 # dune secrets -- Stage 2 wired the two lowest-blast-radius secrets
 # (server-login-password-secret, username-server-login-secret) to
 # optional age-based at-rest encryption; Stage 3 (dune-awakening-
-# selfhost-docker#900) adds discord-hosted-bot-oauth-client-secret --
+# selfhost-docker#901) adds discord-hosted-bot-oauth-client-secret --
 # the hosted-bot wizard's operator-supplied Discord Application client
 # secret (Advanced fallback, console/web's DiscordBotSection.tsx).
 # Strictly opt-in -- set DUNE_KEK_FILE and DUNE_AGE_IDENTITY_FILE to a

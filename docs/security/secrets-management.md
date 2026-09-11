@@ -16,7 +16,7 @@
 | Funcom service token | `runtime/secrets/funcom-token.txt` | Plaintext JWT | 600 | No (operator) | Via Funcom portal |
 | Discord OAuth client secret | `runtime/secrets/discord-oauth-client-secret.txt` | Plaintext | 600 | No (operator) | Via Discord portal |
 | Discord adapter token | `runtime/secrets/discord-adapter-token.txt` | Plaintext | 600 | No (operator) | Automated (Settings → Discord Bot → Regenerate Token) |
-| Discord hosted-bot OAuth client secret (`dune-awakening-selfhost-docker#900`) | `runtime/secrets/discord-hosted-bot-oauth-client-secret.txt` | Plaintext (age-encryptable, opt-in -- see `age-secrets.md`) | 600 | No (operator, hosted-bot wizard's Advanced fallback) | Via Discord portal |
+| Discord hosted-bot OAuth client secret (`dune-awakening-selfhost-docker#901`) | `runtime/secrets/discord-hosted-bot-oauth-client-secret.txt` | Plaintext (age-encryptable, opt-in -- see `age-secrets.md`) | 600 | No (operator, hosted-bot wizard's Advanced fallback) | Via Discord portal |
 | Discord bot handoff secret | `runtime/secrets/discord-bot-handoff-secret.txt` | Plaintext | 600 | No (operator) | Manual |
 | FLS API key | `runtime/secrets/fls-apikey.txt` | Plaintext | 600 | No (operator) | Via Funcom |
 | RMQ HTTP token secret | `runtime/secrets/rmq-http-token-auth-secret.txt` | Plaintext | 600 | Manual | Manual |
