@@ -28,7 +28,7 @@ Configure Discord role IDs in both the Console adapter runtime and the bot runti
 
 | Tier | Environment variable | Intended access |
 |---|---|---|
-| Observer | `DISCORD_OBSERVER_ROLE_IDS` | Readiness and services |
+| Player | `DISCORD_PLAYER_ROLE_IDS` | Readiness and services |
 | Moderator | `DISCORD_MODERATOR_ROLE_IDS` | Future population, map state, backup metadata |
 | Admin | `DISCORD_ADMIN_ROLE_IDS` | Detailed Status and future redacted logs |
 | Owner | `DISCORD_OWNER_ROLE_IDS` | Same read-only access as admin in the experimental phase |
@@ -53,7 +53,7 @@ For local smoke tests, placeholder values are acceptable as long as both process
 Example:
 
 ```bash
-DISCORD_OBSERVER_ROLE_IDS=role-observer
+DISCORD_PLAYER_ROLE_IDS=role-player
 DISCORD_ADMIN_ROLE_IDS=role-admin
 DISCORD_OWNER_ROLE_IDS=role-owner
 ```
@@ -67,8 +67,8 @@ For production Discord use, replace those placeholders with real Discord role ID
 | `/dune health` | Public | Shows adapter health and configured role-policy booleans. |
 | `/dune status` | Public | Public redacted status output. |
 | `/dune status detail` | Admin | Detailed Status output. Ephemeral by default. |
-| `/dune readiness` | Observer | Readiness summary. |
-| `/dune services` | Observer | Friendly service summary. |
+| `/dune readiness` | Player | Readiness summary. |
+| `/dune services` | Player | Friendly service summary. |
 
 ## Public Status
 
@@ -95,7 +95,7 @@ Expected role policy shape:
 ```json
 {
   "rolePolicy": {
-    "observerConfigured": true,
+    "playerConfigured": true,
     "moderatorConfigured": false,
     "adminConfigured": true,
     "ownerConfigured": true
