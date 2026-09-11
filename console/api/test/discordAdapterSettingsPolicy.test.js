@@ -39,8 +39,25 @@ test("Discord Bot settings routes resolve to the expected actions", () => {
   assert.equal(actionForRoute("/api/settings/discord-bot/choice", "POST"), "updates:apply");
 });
 
-test("admin can enable the Discord adapter (already has updates:apply via self-update) but cannot regenerate its token (settings:* denied)", () => {
-  assert.equal(evaluate({ tier: "admin" }, "updates:apply"), true);
+// Upstream-port structural difference (dune-awakening-selfhost-docker
+// wizard-port to tier1-upstream, same finding as oauthRoutes.integration.
+// test.js's "admin-tier session gets a real 403 changing Discord admin role
+// IDs" test): the comment this test's name is drawn from ("already has
+// updates:apply via self-update") is a fork-main assumption that does not
+// hold on tier1-upstream. tier1-upstream's own policy.js CROWN_JEWEL_DENY_
+// ACTIONS list includes "updates:apply"/"updates:fix"/"updates:repair" as
+// owner-only, explicitly denied to admin -- a real, deliberate, STRICTER
+// security posture than fork main's, not a bug to "fix" by weakening the
+// real policy. Concretely, on tier1-upstream admin cannot enable the
+// Discord adapter, edit its role IDs, trigger its restart, or persist the
+// deployment choice either (all four routes resolve to updates:apply per
+// the route-mapping test above) -- only owner can perform any write action
+// in this feature there, not just the two (regenerate-token, disable) fork
+// main scoped to owner-only. Asserting the real, current behavior here
+// rather than the fork-main assumption; this structural difference is
+// flagged explicitly in the upstream PR body per Requirement 19(c).
+test("admin cannot enable the Discord adapter on tier1-upstream (updates:apply is owner-only there) and cannot regenerate its token either (settings:* denied)", () => {
+  assert.equal(evaluate({ tier: "admin" }, "updates:apply"), false);
   assert.equal(evaluate({ tier: "admin" }, "settings:discord-bot-regenerate-token"), false);
 });
 

@@ -2126,7 +2126,7 @@ async function handleApi(req, res) {
     if (body.deploymentChoice !== "hosted" && body.deploymentChoice !== "self-hosted") {
       return json(res, 400, { error: "deploymentChoice must be \"hosted\" or \"self-hosted\"" });
     }
-    setDeploymentChoice(config, body.deploymentChoice);
+    await setDeploymentChoice(config, body.deploymentChoice);
     audit(config, req, "settings.discord-bot.choice-updated", { deploymentChoice: body.deploymentChoice });
     return json(res, 200, { ok: true });
   }
@@ -2171,7 +2171,7 @@ async function handleApi(req, res) {
     // /role-ids (token-safe, idempotent), so an admin (updates:apply)
     // can never silently re-mint the live token, which the owner-only
     // settings:discord-bot-regenerate-token action exists to reserve.
-    const result = applyDiscordBotEnableRequest(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds }, { deploymentChoice: body.deploymentChoice });
+    const result = await applyDiscordBotEnableRequest(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds }, { deploymentChoice: body.deploymentChoice });
     audit(config, req, "settings.discord-bot.enable", { playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length, tokenMinted: result.tokenMinted });
     // Real UAT finding (2026-09-09): this used to also call tasks.create()
     // here, restarting the console in the same request that mints the
@@ -2217,12 +2217,12 @@ async function handleApi(req, res) {
       return json(res, 403, { error: "Changing admin-tier Discord role mappings requires owner access." });
     }
 
-    updateDiscordBotRoleIds(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds }, { deploymentChoice: body.deploymentChoice });
+    await updateDiscordBotRoleIds(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds }, { deploymentChoice: body.deploymentChoice });
     audit(config, req, "settings.discord-bot.role-ids-updated", { playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length });
     return json(res, 202, { task: tasks.create("settings", "discordAdapterApply", {}) });
   }
   if (path === "/api/settings/discord-bot/regenerate-token" && req.method === "POST") {
-    const { token } = regenerateDiscordBotToken(config);
+    const { token } = await regenerateDiscordBotToken(config);
     audit(config, req, "settings.discord-bot.token-regenerated", {});
     return json(res, 200, { ok: true, token });
   }
@@ -2234,7 +2234,7 @@ async function handleApi(req, res) {
   // POST .../restart route separately once the operator has acknowledged
   // the change via the confirm dialog and countdown.
   if (path === "/api/settings/discord-bot/disable" && req.method === "POST") {
-    disableDiscordBotAdapter(config);
+    await disableDiscordBotAdapter(config);
     audit(config, req, "settings.discord-bot.disabled", {});
     return json(res, 200, { ok: true });
   }
@@ -2509,7 +2509,7 @@ async function handleApi(req, res) {
     // consumed.entry.ownedGuildIds above) -- guildName is a caller-
     // supplied display label only, never itself used for authorization
     // (see persistHostedBotConnectedGuild's own comment).
-    persistHostedBotConnectedGuild(config, { guildId, guildName: body.guildName });
+    await persistHostedBotConnectedGuild(config, { guildId, guildName: body.guildName });
     res.setHeader("Set-Cookie", clearHostedBotRegistrationHandleCookie(config.secureCookies));
     audit(config, req, "hosted-bot.register", { ok: true, guildId });
     return json(res, 200, { ok: true });
@@ -2548,7 +2548,7 @@ async function handleApi(req, res) {
     // step 1 uses -- no new logic, just triggered from this new route too.
     const currentState = readDiscordBotSettingsState(config);
     if (currentState.deploymentChoice !== "hosted") {
-      setDeploymentChoice(config, "hosted");
+      await setDeploymentChoice(config, "hosted");
     }
     if (!currentState.tokenConfigured) {
       // CRITICAL fix (Layer 2 audit, #866): tokenConfigured and role-ID
@@ -2563,7 +2563,7 @@ async function handleApi(req, res) {
       // current values, matching the only other call site (the
       // /api/settings/discord-bot/enable route above) which always
       // supplies real current values, never a bare {}.
-      applyDiscordBotEnableRequest(config, currentState.roleIds);
+      await applyDiscordBotEnableRequest(config, currentState.roleIds);
     }
     const adapterToken = readDiscordAdapterTokenForHostedBot(config);
     if (!adapterToken) {
@@ -2746,7 +2746,7 @@ async function handleApi(req, res) {
       // validateDiscordRoleIds() -- a single, non-comma value is exactly
       // one snowflake-pattern check -- rather than duplicating the regex.
       if (guildId && validateDiscordRoleIds(guildId).ok) {
-        persistHostedBotConnectedGuild(config, { guildId, guildName });
+        await persistHostedBotConnectedGuild(config, { guildId, guildName });
       } else if (guildId) {
         audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "invalid_guild_id_from_mentat" });
       }
