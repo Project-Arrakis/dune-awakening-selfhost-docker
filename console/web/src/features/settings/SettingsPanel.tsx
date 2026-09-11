@@ -814,7 +814,31 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
     {serverListingError && <p className="error settings-server-listing-error">{serverListingError}</p>}
     {serverListingVisible && serverListingEnabled && publicDirectory.probeError &&
       <p className="error settings-server-listing-error">Server listing issue: {publicDirectory.probeError}</p>}
+    {/* Sections below are ordered alphabetically by their visible header
+        text (UAT request, 2026-09-11), with one deliberate exception: the
+        Discord OAuth / Login Password pair keeps its own existing #676 §3
+        primary/secondary swap (whichever is the active sign-in path renders
+        first) rather than being split apart -- "Discord OAuth" and "Login
+        Password" already happen to sort adjacently to each other in this
+        list, so the swap's own internal order is preserved without
+        conflicting with the outer alphabetical order. */}
     <div className="settings-section-stack">
+      <div className={`playerAdmin_toggle settings-api-keys-toggle ${apiKeysOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={apiKeysOpen ? "Collapse API Keys" : "Expand API Keys"} onClick={() => setApiKeysOpen(!apiKeysOpen)}>{apiKeysOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>API Keys</span></button>
+        {apiKeysOpen && <div className="playerAdmin_toggleBody"><ApiKeysSection confirmAction={confirmAction} /></div>}
+      </div>
+
+      <div className={`playerAdmin_toggle ${discordBotOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={discordBotOpen ? "Collapse Discord Bot" : "Expand Discord Bot"} onClick={() => setDiscordBotOpen(!discordBotOpen)}>{discordBotOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Discord Bot</span></button>
+        {discordBotOpen && <DiscordBotSection />}
+      </div>
+      {/* #676 §3: Discord OAuth is primary (rendered first) once configured
+          and active; Password Sign-In is primary otherwise -- including when
+          Discord OAuth is soft-disabled, per the design's own "reverts to
+          primary" rule for that state. */}
+      {discordOAuthConfigured && !discordOAuthDisabled
+        ? <>{discordOAuthSection}{passwordSignInSection}</>
+        : <>{passwordSignInSection}{discordOAuthSection}</>}
       {serverListingVisible && <div className={`playerAdmin_toggle settings-public-profile-toggle ${publicProfileOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={publicProfileOpen ? "Collapse Public Listing Profile" : "Expand Public Listing Profile"} onClick={() => setPublicProfileOpen(!publicProfileOpen)}>
           {publicProfileOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
@@ -862,22 +886,6 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
             </span>}
           </div>
         </div>}
-      </div>
-      {/* #676 §3: Discord OAuth is primary (rendered first) once configured
-          and active; Password Sign-In is primary otherwise -- including when
-          Discord OAuth is soft-disabled, per the design's own "reverts to
-          primary" rule for that state. */}
-      {discordOAuthConfigured && !discordOAuthDisabled
-        ? <>{discordOAuthSection}{passwordSignInSection}</>
-        : <>{passwordSignInSection}{discordOAuthSection}</>}
-      <div className={`playerAdmin_toggle settings-api-keys-toggle ${apiKeysOpen ? "open" : ""}`}>
-        <button className="playerAdmin_toggleHeader" aria-label={apiKeysOpen ? "Collapse API Keys" : "Expand API Keys"} onClick={() => setApiKeysOpen(!apiKeysOpen)}>{apiKeysOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>API Keys</span></button>
-        {apiKeysOpen && <div className="playerAdmin_toggleBody"><ApiKeysSection confirmAction={confirmAction} /></div>}
-      </div>
-
-      <div className={`playerAdmin_toggle ${discordBotOpen ? "open" : ""}`}>
-        <button className="playerAdmin_toggleHeader" aria-label={discordBotOpen ? "Collapse Discord Bot" : "Expand Discord Bot"} onClick={() => setDiscordBotOpen(!discordBotOpen)}>{discordBotOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Discord Bot</span></button>
-        {discordBotOpen && <DiscordBotSection />}
       </div>
     </div>
   </section>;
