@@ -63,6 +63,12 @@ const CAPABILITY_BY_TIER = Object.freeze({
 
 export function normalizeRoleMapping(value = {}) {
   return {
+    // dune-awakening-selfhost-docker#748+: field renamed observer -> player
+    // to match adapter.js's discordRoleMappingFromEnv() (the source mapping
+    // this function normalizes). The "observer" TIER name below was renamed
+    // to "player" too in a later tier1-upstream commit (see
+    // DISCORD_ROLE_TIERS above) -- both the field and the tier are "player"
+    // now, not just the field.
     playerRoleIds: normalizeStringList(value.playerRoleIds),
     moderatorRoleIds: normalizeStringList(value.moderatorRoleIds),
     adminRoleIds: normalizeStringList(value.adminRoleIds),
