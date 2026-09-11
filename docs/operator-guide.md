@@ -73,21 +73,36 @@ Special Vendor decrees (Vehicles/Weapons/Armor/Utilities) active for the
 current term, so that vendor's stock is available to players even if no
 house has organically won the Landsraad cycle. This deliberately
 **bypasses the game's normal win requirement** — it is not something
-Red-Blink's upstream project supports, and it does not affect which
-house is credited with winning the term (that state is left alone). It
-exists because a low-population self-hosted server may rarely or never
-reach the participation threshold needed to win a term naturally,
-permanently locking out this content otherwise. "Force Now" behind a
-confirmation applies for the current term; use "Revert" to undo it.
+Red-Blink's upstream project supports. "Force Now" behind a confirmation
+applies for the current term; use "Revert" to undo it.
 
-**Known limitation, unverified as of this writing:** whether the vendor
-actually becomes visible to every player, or only to players of whichever
-house the game engine treats as "reigning," once the decree is forced
-active has not been confirmed against a live game client with characters
-of different houses. If players report the vendor isn't appearing after
-you apply this, that is a known, currently-open question (see
-[issue #907](https://github.com/Project-Arrakis/dune-awakening-selfhost-docker/issues/907)),
-not necessarily something you did wrong.
+**Vendor visibility requires selecting a Target House — plain vendor
+forcing alone does not make it visible to any player.** Vendor access is
+gated on which house is *recorded as winning* the term, confirmed
+directly, not just which decree is active. The optional "Target House"
+dropdown also sets that term's winning house (Atreides or Harkonnen)
+when you select one — leaving it blank only forces the decree, which by
+itself will not make the vendor appear for anyone.
+
+**Selecting a Target House is a materially bigger action than the
+decree-only case — read the confirm dialog's warning before proceeding.**
+Two real consequences, named explicitly because they cannot be verified
+or fixed from this codebase:
+- It may grant that house's players real Landsraad rewards (currency/
+  items), not just vendor access — unconfirmed as of this writing, being
+  verified empirically (see [issue #907](https://github.com/Project-Arrakis/dune-awakening-selfhost-docker/issues/907)).
+- It **silently disables the game's own organic win-detection for the
+  rest of that term** — confirmed directly against this fork's schema: a
+  real trigger normally promotes a house to "winning" the moment it
+  completes a full task board, but only while that field is still empty.
+  Once you force it, any house's real win for the rest of the term goes
+  unrecorded, with no error and no way for "Revert" to recover it — Revert
+  can only undo the values this feature set, not restore a result that
+  happened while they were in place. This is a real, understood tradeoff
+  of using this feature at all, not a bug — most acceptable on the exact
+  servers this feature targets (population low enough that an organic win
+  was already unlikely to begin with), least acceptable on a healthier
+  server where real competition for the term is actually happening.
 
 ---
 

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { applyLandsraadVendorOverride, landsraadVendorCatalog, revertLandsraadVendorOverride } from "../src/duneDb.js";
+import { applyLandsraadVendorOverride, landsraadHouseFactionCatalog, landsraadVendorCatalog, revertLandsraadVendorOverride } from "../src/duneDb.js";
 import { createLandsraadVendorOverrideReconciler, normalizeLandsraadVendorOverridePreset, readLandsraadVendorOverridePreset, saveLandsraadVendorOverridePreset } from "../src/services/landsraadVendorOverride.js";
 
 const DECREE_IDS = {
@@ -13,16 +13,22 @@ const DECREE_IDS = {
   SpecialVendorActive_Utilities: "11"
 };
 
+const HOUSE_IDS = { Atreides: "1", Harkonnen: "2" };
+
 // Mirrors this codebase's own fake-db convention (see
 // applyLandsraadMilestonePreset's tests in db.test.js) -- a single `query`
 // matched by SQL substring, shared between the outer db and every tx.query
 // call, so the *real* applyLandsraadVendorOverride/revertLandsraadVendorOverride
 // functions run unmodified (not a stub -- see the design doc §5's note on
 // avoiding the tautology failure class this test file mirrors that
-// precedent specifically to avoid).
-function makeVendorOverrideDb({ decreeNames = Object.keys(DECREE_IDS), term, stateLastAppliedDecreeId = null, stateLastAppliedTermId, updateRowCount = 1 } = {}) {
+// precedent specifically to avoid). Extended for v2 (design doc §8) to also
+// support faction resolution -- deliberately without a silent default that
+// would mask a missing branch (design doc §9, QA/Test finding #11): every
+// new v2 query shape below has its own explicit, narrow match.
+function makeVendorOverrideDb({ decreeNames = Object.keys(DECREE_IDS), houseNames = Object.keys(HOUSE_IDS), term, stateLastAppliedDecreeId = null, stateLastAppliedTermId, stateLastAppliedFactionId = null, updateRowCount = 1 } = {}) {
   const calls = [];
   let writtenActiveDecreeId = term?.active_decree_id ?? null;
+  let writtenWinningFactionId = term?.winning_faction_id ?? null;
   const query = async (text, values = []) => {
     calls.push({ text, values });
     if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
@@ -32,14 +38,25 @@ function makeVendorOverrideDb({ decreeNames = Object.keys(DECREE_IDS), term, sta
     if (text.includes("select id::text as id, decree_name from dune.landsraad_decrees")) {
       return { rows: decreeNames.map((name) => ({ id: DECREE_IDS[name], decree_name: name })) };
     }
+    if (text.includes("select id::text as id, name from dune.factions")) {
+      return { rows: houseNames.map((name) => ({ id: HOUSE_IDS[name], name })) };
+    }
+    if (text.includes("select id::text as id from dune.factions where name = $1")) {
+      const name = values[0];
+      return { rows: houseNames.includes(name) ? [{ id: HOUSE_IDS[name] }] : [] };
+    }
     if (text.includes("create schema if not exists console")) return { rows: [] };
     if (text.includes("create table if not exists console.landsraad_vendor_override_state")) return { rows: [] };
+    if (text.includes("alter table console.landsraad_vendor_override_state")) return { rows: [] };
     if (text.includes("insert into console.landsraad_vendor_override_state")) return { rows: [] };
     if (text.includes("select last_applied_decree_id::text as last_applied_decree_id from console.landsraad_vendor_override_state")) {
       return { rows: [{ last_applied_decree_id: stateLastAppliedDecreeId }] };
     }
-    if (text.includes("select last_applied_term_id::text as last_applied_term_id from console.landsraad_vendor_override_state")) {
-      return { rows: [{ last_applied_term_id: stateLastAppliedTermId === undefined ? (term?.term_id ?? null) : stateLastAppliedTermId }] };
+    if (text.includes("select last_applied_term_id::text as last_applied_term_id, last_applied_faction_id::text as last_applied_faction_id from console.landsraad_vendor_override_state")) {
+      return { rows: [{
+        last_applied_term_id: stateLastAppliedTermId === undefined ? (term?.term_id ?? null) : stateLastAppliedTermId,
+        last_applied_faction_id: stateLastAppliedFactionId
+      }] };
     }
     if (text.includes("test_term,") && text.includes("from dune.landsraad_decree_term")) {
       return { rows: term ? [term] : [] };
@@ -47,11 +64,12 @@ function makeVendorOverrideDb({ decreeNames = Object.keys(DECREE_IDS), term, sta
     if (text.includes("update dune.landsraad_decree_term") && text.includes("returning term_id::text as term_id, active_decree_id")) {
       if (!updateRowCount) return { rows: [], rowCount: 0 };
       writtenActiveDecreeId = values[0];
+      if (values.length > 2) writtenWinningFactionId = values[1];
       return { rows: [{ term_id: term.term_id, active_decree_id: values[0] }], rowCount: updateRowCount };
     }
     if (text.includes("update console.landsraad_vendor_override_state")) return { rows: [] };
-    if (text.includes("select active_decree_id::text as active_decree_id from dune.landsraad_decree_term")) {
-      return { rows: [{ active_decree_id: writtenActiveDecreeId }] };
+    if (text.includes("select active_decree_id::text as active_decree_id, winning_faction_id::text as winning_faction_id from dune.landsraad_decree_term")) {
+      return { rows: [{ active_decree_id: writtenActiveDecreeId, winning_faction_id: writtenWinningFactionId }] };
     }
     if (text.includes("select term_id::text as term_id\n      from dune.landsraad_decree_term")) {
       return { rows: term ? [{ term_id: term.term_id }] : [] };
@@ -59,7 +77,7 @@ function makeVendorOverrideDb({ decreeNames = Object.keys(DECREE_IDS), term, sta
     if (text.includes("update dune.landsraad_decree_term") && text.includes("set active_decree_id = null")) {
       return { rows: term ? [{ term_id: term.term_id }] : [], rowCount: term ? 1 : 0 };
     }
-    return { rows: [] };
+    throw new Error(`unmocked query: ${text}`);
   };
   const db = { query, transaction: async (fn) => fn({ query }) };
   return { db, calls };
@@ -212,6 +230,127 @@ test("landsraad vendor override reconciler applies once per new term and never o
     assert.equal(second.reason, "already-applied");
     assert.equal(applyCount, 1);
     assert.equal(readLandsraadVendorOverridePreset(config).lastAppliedTermId, "42");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// -- v2 (design doc §8): forcing winning_faction_id/reigning_faction_id --
+
+test("applyLandsraadVendorOverride with a houseFaction also forces winning/reigning faction", async () => {
+  const term = { term_id: "73", test_term: false, active_decree_id: null, elected_decree_id: null, winning_faction_id: null, reigning_faction_id: null };
+  const { db, calls } = makeVendorOverrideDb({ term });
+  const result = await applyLandsraadVendorOverride(db, { vendorKeys: ["vehicles"], mode: "fixed", houseFaction: "atreides" });
+  assert.equal(result.applied, true);
+  assert.equal(result.houseFactionKey, "atreides");
+  assert.equal(result.houseFactionName, "Atreides");
+  assert.equal(result.confirmedWinningFactionId, "1");
+  const termUpdate = calls.find((call) => String(call.text).includes("returning term_id::text as term_id, active_decree_id"));
+  assert.ok(String(termUpdate.text).includes("winning_faction_id = $2") && String(termUpdate.text).includes("reigning_faction_id = $2"));
+  assert.deepEqual(termUpdate.values, ["8", "1", "73"]);
+});
+
+test("applyLandsraadVendorOverride is byte-identical when houseFaction is omitted -- no faction query, no faction SQL fragment", async () => {
+  const term = { term_id: "73", test_term: false, active_decree_id: null, elected_decree_id: null, winning_faction_id: null, reigning_faction_id: null };
+  const { db, calls } = makeVendorOverrideDb({ term });
+  const result = await applyLandsraadVendorOverride(db, { vendorKeys: ["vehicles"], mode: "fixed" });
+  assert.equal(result.applied, true);
+  assert.equal(result.houseFactionKey, null);
+  assert.equal(result.confirmedWinningFactionId, null);
+  assert.ok(!calls.some((call) => String(call.text).includes("dune.factions")), "must never query dune.factions when houseFaction is omitted");
+  const termUpdate = calls.find((call) => String(call.text).includes("returning term_id::text as term_id, active_decree_id"));
+  assert.ok(!String(termUpdate.text).includes("winning_faction_id"), "must never reference winning_faction_id in the UPDATE when houseFaction is omitted");
+  assert.deepEqual(termUpdate.values, ["8", "73"]);
+});
+
+test("applyLandsraadVendorOverride rejects an unknown house key without querying dune.factions", async () => {
+  const term = { term_id: "73", test_term: false, active_decree_id: null, elected_decree_id: null, winning_faction_id: null, reigning_faction_id: null };
+  const { db, calls } = makeVendorOverrideDb({ term });
+  await assert.rejects(() => applyLandsraadVendorOverride(db, { vendorKeys: ["vehicles"], mode: "fixed", houseFaction: "corrino" }), /not a supported Landsraad house/);
+  assert.ok(!calls.some((call) => String(call.text).includes("dune.factions")), "an unrecognized house key must be rejected before ever querying dune.factions");
+});
+
+test("applyLandsraadVendorOverride fails loud when the install's faction catalog is missing the requested house", async () => {
+  const { db } = makeVendorOverrideDb({ houseNames: ["Harkonnen"] });
+  await assert.rejects(
+    () => applyLandsraadVendorOverride(db, { vendorKeys: ["vehicles"], mode: "fixed", houseFaction: "atreides" }),
+    /does not include "Atreides"/
+  );
+});
+
+test("applyLandsraadVendorOverride is self-consistent: a tick right after this feature's own houseFaction write sees the term as already resolved", async () => {
+  const unresolvedTerm = { term_id: "73", test_term: false, active_decree_id: null, elected_decree_id: null, winning_faction_id: null, reigning_faction_id: null };
+  const { db: firstDb } = makeVendorOverrideDb({ term: unresolvedTerm });
+  const first = await applyLandsraadVendorOverride(firstDb, { vendorKeys: ["vehicles"], mode: "fixed", houseFaction: "atreides" });
+  assert.equal(first.applied, true);
+
+  // Simulate the next tick seeing the term this feature itself just resolved.
+  const nowResolvedTerm = { term_id: "73", test_term: false, active_decree_id: "8", elected_decree_id: "8", winning_faction_id: "1", reigning_faction_id: "1" };
+  const { db: secondDb } = makeVendorOverrideDb({ term: nowResolvedTerm });
+  const second = await applyLandsraadVendorOverride(secondDb, { vendorKeys: ["vehicles"], mode: "fixed", houseFaction: "atreides", allowOverrideResolvedTerm: false });
+  assert.equal(second.applied, false);
+  assert.match(second.reason, /already resolved/);
+});
+
+test("revertLandsraadVendorOverride also clears winning/reigning faction when this feature set them", async () => {
+  const term = { term_id: "73" };
+  const { db, calls } = makeVendorOverrideDb({ term, stateLastAppliedFactionId: "1" });
+  const result = await revertLandsraadVendorOverride(db);
+  assert.equal(result.applied, true);
+  assert.equal(result.revertedFaction, true);
+  const termUpdate = calls.find((call) => String(call.text).includes("set active_decree_id = null"));
+  assert.ok(String(termUpdate.text).includes("winning_faction_id = null") && String(termUpdate.text).includes("reigning_faction_id = null"));
+});
+
+test("revertLandsraadVendorOverride leaves winning/reigning faction untouched when this feature only set the decree", async () => {
+  const term = { term_id: "73" };
+  const { db, calls } = makeVendorOverrideDb({ term, stateLastAppliedFactionId: null });
+  const result = await revertLandsraadVendorOverride(db);
+  assert.equal(result.applied, true);
+  assert.equal(result.revertedFaction, false);
+  const termUpdate = calls.find((call) => String(call.text).includes("set active_decree_id = null"));
+  assert.ok(!String(termUpdate.text).includes("winning_faction_id"), "must not touch winning_faction_id when this feature never set it");
+});
+
+test("landsraadHouseFactionCatalog reports only the real Landsraad-eligible houses this install has, never None/Smuggler", async () => {
+  const { db } = makeVendorOverrideDb();
+  const catalog = await landsraadHouseFactionCatalog(db);
+  assert.deepEqual(catalog.map((entry) => entry.key).sort(), ["atreides", "harkonnen"]);
+  assert.ok(!catalog.some((entry) => entry.name === "None" || entry.name === "Smuggler"));
+});
+
+test("landsraad vendor override preset persists and validates houseFaction", () => {
+  const root = mkdtempSync(join(tmpdir(), "landsraad-vendor-house-"));
+  const config = { repoRoot: root, generatedDir: join(root, "runtime/generated") };
+  try {
+    const saved = saveLandsraadVendorOverridePreset(config, { enabled: true, mode: "fixed", vendorKeys: ["vehicles"], houseFaction: "atreides" });
+    assert.equal(saved.houseFaction, "atreides");
+    assert.equal(readLandsraadVendorOverridePreset(config).houseFaction, "atreides");
+    assert.throws(() => normalizeLandsraadVendorOverridePreset({ enabled: true, mode: "fixed", vendorKeys: ["vehicles"], houseFaction: "corrino" }), /not a supported Landsraad house/);
+    const omitted = saveLandsraadVendorOverridePreset(config, { enabled: true, mode: "fixed", vendorKeys: ["vehicles"] });
+    assert.equal(omitted.houseFaction, null, "omitting houseFaction must normalize to null, not undefined or a stale prior value");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("landsraad vendor override reconciler passes the preset's houseFaction through to applyPreset", async () => {
+  const root = mkdtempSync(join(tmpdir(), "landsraad-vendor-reconcile-house-"));
+  const config = { repoRoot: root, generatedDir: join(root, "runtime/generated") };
+  const db = { query: async () => ({ rows: [{ term_id: "50" }] }) };
+  try {
+    saveLandsraadVendorOverridePreset(config, { enabled: true, mode: "fixed", vendorKeys: ["vehicles"], houseFaction: "harkonnen" });
+    const reconciler = createLandsraadVendorOverrideReconciler(config, {
+      getDb: () => db,
+      intervalMs: 10_000,
+      applyPreset: async (_db, options) => {
+        assert.equal(options.houseFaction, "harkonnen");
+        return { ok: true, applied: true, termId: "50", decreeKey: "vehicles", decreeName: "SpecialVendorActive_Vehicles", houseFactionKey: "harkonnen", houseFactionName: "Harkonnen" };
+      }
+    });
+    const result = await reconciler.tick(20_000);
+    assert.equal(result.result.applied, true);
+    assert.match(readLandsraadVendorOverridePreset(config).lastResult, /Harkonnen winning/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

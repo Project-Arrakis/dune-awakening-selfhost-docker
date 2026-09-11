@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { adminApi, type LandsraadMilestonePreset, type LandsraadOverview, type LandsraadReward, type LandsraadTask, type LandsraadVendorCatalogEntry, type LandsraadVendorKey, type LandsraadVendorOverridePreset } from "../../api/admin";
+import { adminApi, type LandsraadHouseFactionCatalogEntry, type LandsraadHouseFactionKey, type LandsraadMilestonePreset, type LandsraadOverview, type LandsraadReward, type LandsraadTask, type LandsraadVendorCatalogEntry, type LandsraadVendorKey, type LandsraadVendorOverridePreset } from "../../api/admin";
 import { mapsApi } from "../../api/maps";
 import { playersApi } from "../../api/players";
 import { serverApi } from "../../api/server";
@@ -10,7 +10,7 @@ import { InlineActionResult, type InlineActionResultState } from "../../componen
 import { conciseTaskError } from "../../lib/taskDisplay";
 import { friendlyInlineError } from "../players/playerAdminUtils";
 
-type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) => Promise<boolean>;
+type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; warning?: string; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
 
 type LandsraadAdminSectionProps = {
   confirmAction: ConfirmAction;
@@ -73,8 +73,9 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
   const [milestonePreset, setMilestonePreset] = useState<LandsraadMilestonePreset | null>(null);
   const [milestoneDraft, setMilestoneDraft] = useState({ enabled: false, goalAmount: "", thresholds: [] as string[] });
   const [vendorCatalog, setVendorCatalog] = useState<LandsraadVendorCatalogEntry[]>([]);
+  const [houseFactionCatalog, setHouseFactionCatalog] = useState<LandsraadHouseFactionCatalogEntry[]>([]);
   const [vendorPreset, setVendorPreset] = useState<LandsraadVendorOverridePreset | null>(null);
-  const [vendorDraft, setVendorDraft] = useState({ enabled: false, mode: "fixed" as "fixed" | "rotate", vendorKeys: [] as LandsraadVendorKey[] });
+  const [vendorDraft, setVendorDraft] = useState({ enabled: false, mode: "fixed" as "fixed" | "rotate", vendorKeys: [] as LandsraadVendorKey[], houseFaction: null as LandsraadHouseFactionKey | null });
   const [contributionPlayer, setContributionPlayer] = useState("");
   const [contributionTask, setContributionTask] = useState("");
   const [contributionAmount, setContributionAmount] = useState("");
@@ -117,10 +118,12 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
         adminApi.landsraadVendorOverride()
       ]);
       setVendorCatalog(vendorResponse.catalog);
+      setHouseFactionCatalog(vendorResponse.houseCatalog);
       setVendorPreset(vendorResponse.preset);
       setVendorDraft({
         enabled: vendorResponse.preset.enabled,
         mode: vendorResponse.preset.mode,
+        houseFaction: vendorResponse.preset.houseFaction,
         vendorKeys: vendorResponse.preset.vendorKeys
       });
       setOverview(nextOverview);
@@ -297,16 +300,38 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
     overview?.term?.active_decree || overview?.term?.elected_decree || overview?.term?.winning_faction
   );
 
+  // Four-way confirm-dialog copy matrix (design doc §8.2/§9, UI/UX hat
+  // finding: the first draft only ever showed one of these four real
+  // combinations). Selecting a house is materially higher-stakes than the
+  // decree-only path -- see the `warning` text, which names both the
+  // plausible economy-reward side effect and the confirmed organic-win-
+  // masking mechanism (design doc §8.1) -- so it always renders as `danger`,
+  // even on an otherwise-unresolved term.
   async function forceVendorOverride() {
     if (!vendorDraft.vendorKeys.length) {
       setResult({ key: "vendor-override", text: "Select at least one vendor type.", tone: "danger" });
       return;
     }
     const label = vendorDraft.vendorKeys.map((key) => VENDOR_LABELS[key]).join(", ");
-    const message = termAlreadyResolved
-      ? `This term has already resolved${overview?.term?.winning_faction ? ` (won by ${overview.term.winning_faction})` : ""}${overview?.term?.active_decree || overview?.term?.elected_decree ? ` with ${overview?.term?.active_decree || overview?.term?.elected_decree} active` : ""}. Forcing ${label} will overwrite that result. This cannot be undone within this term.`
-      : `Force the ${label} active for the current Landsraad term? This bypasses the normal win requirement -- the vendor becomes available regardless of whether any house has won this cycle.`;
-    if (!(await confirmAction(message, { title: "Force Landsraad Vendor Override", confirmLabel: "Force Now", danger: termAlreadyResolved }))) return;
+    const house = vendorDraft.houseFaction ? houseFactionCatalog.find((entry) => entry.key === vendorDraft.houseFaction)?.name ?? vendorDraft.houseFaction : null;
+    const alreadyResolvedNote = termAlreadyResolved
+      ? `This term has already resolved${overview?.term?.winning_faction ? ` (won by ${overview.term.winning_faction})` : ""}${overview?.term?.active_decree || overview?.term?.elected_decree ? ` with ${overview?.term?.active_decree || overview?.term?.elected_decree} active` : ""}. `
+      : "";
+    const message = house
+      ? `${alreadyResolvedNote}Force ${label} active and set ${house} as this term's winning house?`
+      : termAlreadyResolved
+        ? `${alreadyResolvedNote}Forcing ${label} will overwrite that result. This cannot be undone within this term.`
+        : `Force the ${label} active for the current Landsraad term? This bypasses the normal win requirement -- the vendor becomes available regardless of whether any house has won this cycle.`;
+    const warning = house
+      ? `This may grant ${house}'s players real Landsraad rewards, not just vendor access (unconfirmed, being verified -- see issue #907). It will also silently prevent any house's real, organic Landsraad win from being recorded for the rest of this term -- Revert can undo the values this sets, but cannot recover a win that happened while they were in place.${termAlreadyResolved ? ` This overwrites ${overview?.term?.winning_faction || "the existing result"}.` : ""}`
+      : undefined;
+    if (!(await confirmAction(message, {
+      title: "Force Landsraad Vendor Override",
+      confirmLabel: "Force Now",
+      danger: termAlreadyResolved || Boolean(house),
+      warning,
+      details: house ? [{ label: "Vendor", value: label }, { label: "Target House", value: house, tone: "danger" }] : undefined
+    }))) return;
 
     const responseRef: { current: Awaited<ReturnType<typeof adminApi.saveLandsraadVendorOverride>> | null } = { current: null };
     await run(
@@ -322,7 +347,11 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
   }
 
   async function revertVendorOverride() {
-    if (!(await confirmAction("Revert the Landsraad vendor override for the current term? This clears the active/elected decree back to none.", { title: "Revert Landsraad Vendor Override", confirmLabel: "Revert", danger: true }))) return;
+    const hadFaction = Boolean(vendorPreset?.houseFaction);
+    const message = hadFaction
+      ? "Revert the Landsraad vendor override for the current term? This clears the active/elected decree and, since a house was forced for this term, also clears the recorded winning house back to none."
+      : "Revert the Landsraad vendor override for the current term? This clears the active/elected decree back to none.";
+    if (!(await confirmAction(message, { title: "Revert Landsraad Vendor Override", confirmLabel: "Revert", danger: true }))) return;
     await run("vendor-override", "Reverting vendor override", () => adminApi.revertLandsraadVendorOverride(), "Vendor Override Reverted");
   }
 
@@ -468,9 +497,10 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
           {vendorPreset?.lastResult && <span className="landsraad-preset-status">{vendorPreset.lastResult}</span>}
         </div>
         <p className="empty landsraad-vendor-override-caveat">
-          Whether vendor visibility is per-house or server-wide once active has not been confirmed against a live game client.
-          If players report the vendor isn't appearing after this is applied, that is a known, currently-unverified limitation --
-          not necessarily a misconfiguration. See issue #907.
+          Vendor visibility is per-house, gated on which house is recorded as winning this term (confirmed). Selecting a
+          Target House below is required for the vendor to actually be visible to that house's players -- see the warning
+          shown when forcing with a house selected for what that does to the term's real win record for the rest of this
+          cycle. See issue #907.
         </p>
         {vendorCatalog.length ? <>
           <div className="landsraad-vendor-checkboxes">
@@ -488,6 +518,15 @@ export function LandsraadPanel({ confirmAction, onError, restartGate }: Landsraa
               {VENDOR_LABELS[entry.key]}
             </label>)}
           </div>
+          {houseFactionCatalog.length > 0 && <div className="landsraad-vendor-house">
+            <label className="compact-select">Target House (optional -- leave blank to only force the vendor, without declaring a winning house)<select
+              value={vendorDraft.houseFaction ?? ""}
+              onChange={(event) => setVendorDraft((current) => ({ ...current, houseFaction: (event.target.value || null) as LandsraadHouseFactionKey | null }))}
+            >
+              <option value="">None -- vendor only</option>
+              {houseFactionCatalog.map((entry) => <option key={entry.key} value={entry.key}>{entry.name}</option>)}
+            </select></label>
+          </div>}
           <div className="landsraad-vendor-mode">
             <label className="compact-select">Mode<select
               value={vendorDraft.mode}

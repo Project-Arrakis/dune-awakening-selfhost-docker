@@ -6,6 +6,7 @@ const DEFAULT_PRESET = {
   enabled: false,
   vendorKeys: [],
   mode: "fixed",
+  houseFaction: null,
   lastAppliedTermId: null,
   lastAppliedAt: "",
   lastResult: ""
@@ -29,6 +30,7 @@ export function saveLandsraadVendorOverridePreset(config, input = {}) {
   const previous = readLandsraadVendorOverridePreset(config);
   const unchanged = previous.enabled === settings.enabled
     && previous.mode === settings.mode
+    && previous.houseFaction === settings.houseFaction
     && previous.vendorKeys.length === settings.vendorKeys.length
     && previous.vendorKeys.every((value, index) => value === settings.vendorKeys[index]);
   const next = {
@@ -57,13 +59,16 @@ export async function applySavedLandsraadVendorOverride(config, db, { allowOverr
   const result = await applyLandsraadVendorOverride(db, {
     vendorKeys: preset.vendorKeys,
     mode: preset.mode,
+    houseFaction: preset.houseFaction,
     allowOverrideResolvedTerm
   });
   const next = {
     ...preset,
     lastAppliedTermId: result.applied ? String(result.termId) : preset.lastAppliedTermId,
     lastAppliedAt: result.applied ? new Date().toISOString() : preset.lastAppliedAt,
-    lastResult: result.applied ? `Applied - ${result.decreeName}` : String(result.reason || "Waiting")
+    lastResult: result.applied
+      ? `Applied - ${result.decreeName}${result.houseFactionName ? ` - ${result.houseFactionName} winning` : ""}`
+      : String(result.reason || "Waiting")
   };
   writePreset(config, next);
   return { preset: next, result };
@@ -109,12 +114,14 @@ export function createLandsraadVendorOverrideReconciler(config, options = {}) {
         if (!termId) return { skipped: true, reason: "no-term" };
         if (String(preset.lastAppliedTermId || "") === String(termId)) return { skipped: true, reason: "already-applied", termId };
 
-        const result = await applyPreset(db, { vendorKeys: preset.vendorKeys, mode: preset.mode, allowOverrideResolvedTerm: false });
+        const result = await applyPreset(db, { vendorKeys: preset.vendorKeys, mode: preset.mode, houseFaction: preset.houseFaction, allowOverrideResolvedTerm: false });
         const next = {
           ...preset,
           lastAppliedTermId: result.applied ? String(result.termId) : preset.lastAppliedTermId,
           lastAppliedAt: result.applied ? new Date(now).toISOString() : preset.lastAppliedAt,
-          lastResult: result.applied ? `Applied Automatically - ${result.decreeName}` : String(result.reason || "Waiting")
+          lastResult: result.applied
+            ? `Applied Automatically - ${result.decreeName}${result.houseFactionName ? ` - ${result.houseFactionName} winning` : ""}`
+            : String(result.reason || "Waiting")
         };
         writePreset(config, next);
         return { skipped: false, preset: next, result };
@@ -124,6 +131,15 @@ export function createLandsraadVendorOverrideReconciler(config, options = {}) {
     }
   };
 }
+
+// houseFaction is deliberately validated against the same narrow allow-list
+// duneDb.js's LANDSRAAD_HOUSE_FACTION_NAMES uses (kept as a second, small,
+// independently-maintained copy here rather than importing duneDb.js's
+// internal constant -- this file is DB-agnostic by design, matching
+// landsraadMilestones.js's own preset-layer/DB-layer separation). Both
+// layers validate; neither trusts the other alone (design doc §9, Security
+// Architect L1 audit finding on duneDb.js's parallel validKeys precedent).
+const VALID_HOUSE_FACTIONS = new Set(["atreides", "harkonnen"]);
 
 export function normalizeLandsraadVendorOverridePreset(input = {}, options = {}) {
   if (typeof input.enabled !== "boolean") throw new Error("Automatic Landsraad vendor override must be enabled or disabled.");
@@ -139,7 +155,11 @@ export function normalizeLandsraadVendorOverridePreset(input = {}, options = {})
     if (!validKeys.has(key)) throw new Error(`"${key}" is not a supported Landsraad vendor type.`);
   }
   if (new Set(vendorKeys).size !== vendorKeys.length) throw new Error("Each Landsraad vendor type can only be selected once.");
-  return { enabled: input.enabled, mode, vendorKeys };
+  const houseFaction = input.houseFaction == null || input.houseFaction === "" ? null : String(input.houseFaction);
+  if (houseFaction != null && !VALID_HOUSE_FACTIONS.has(houseFaction)) {
+    throw new Error(`"${houseFaction}" is not a supported Landsraad house.`);
+  }
+  return { enabled: input.enabled, mode, vendorKeys, houseFaction };
 }
 
 function nullableTermId(value) {
