@@ -118,7 +118,7 @@ export function createPendingStateStore({
   return { issue, consume, size: () => pending.size };
 }
 
-function constantTimeStringEqual(left, right) {
+export function constantTimeStringEqual(left, right) {
   const a = Buffer.from(String(left || ""));
   const b = Buffer.from(String(right || ""));
   if (a.length === 0) return false;
