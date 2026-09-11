@@ -91,7 +91,7 @@ The bot uses Discord roles to control who can use which commands.
 
 | Role | Purpose | Who Gets It |
 |------|---------|-------------|
-| **Dune Observer** | Can use all read-only commands | Trusted members |
+| **Dune Player** | Can use all read-only commands | Trusted members |
 | **Dune Admin** | Can use admin commands + diagnostics | Server admins |
 
 3. Assign roles to yourself and your trusted members.
@@ -180,7 +180,7 @@ DUNE_DISCORD_ADAPTER_TOKEN=PASTE_YOUR_ADAPTER_TOKEN_HERE
 
 # === Roles (use your actual role IDs from Step 5) ===
 DISCORD_RBAC_MODE=restricted
-DISCORD_OBSERVER_ROLE_IDS=PASTE_OBSERVER_ROLE_ID
+DISCORD_PLAYER_ROLE_IDS=PASTE_PLAYER_ROLE_ID
 DISCORD_ADMIN_ROLE_IDS=PASTE_ADMIN_ROLE_ID
 
 # === Guild (for instant command registration) ===
