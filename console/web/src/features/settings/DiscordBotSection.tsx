@@ -129,6 +129,22 @@ const RESTART_COUNTDOWN_SECONDS = 10;
 // pluggable backend -- this is consistent with that, not a new pattern.
 const MENTAT_BOT_INVITE_URL = "https://discord.com/oauth2/authorize?client_id=1546203607807041697&scope=bot%20applications.commands&permissions=128";
 
+const DISCORD_POPUP_WIDTH = 500;
+const DISCORD_POPUP_HEIGHT = 800;
+
+// Real UAT finding (2026-09-11): with no left/top given, browsers place a
+// new popup wherever they see fit (often flush to a screen corner, not
+// relative to the browser window the operator is actually looking at) --
+// centers it within the CURRENT browser window instead (screenX/screenY +
+// outerWidth/outerHeight, not the whole monitor, so it lands where the
+// operator's eyes already are on a multi-monitor setup too). Shared by
+// both window.open() call sites below rather than duplicated.
+function centeredPopupFeatures(width: number, height: number): string {
+  const left = window.screenX + Math.max(0, (window.outerWidth - width) / 2);
+  const top = window.screenY + Math.max(0, (window.outerHeight - height) / 2);
+  return `width=${width},height=${height},left=${Math.round(left)},top=${Math.round(top)}`;
+}
+
 // openBotInviteWindow: a popup, not a full-page navigation, so the
 // operator never loses their place in this wizard. Discord's own
 // bot-invite consent flow needs no redirect_uri at all -- approving (or
@@ -138,7 +154,7 @@ const MENTAT_BOT_INVITE_URL = "https://discord.com/oauth2/authorize?client_id=15
 // postMessage from Discord's page) is what lets the wizard notice the
 // operator is back without requiring them to click anything else here.
 function openBotInviteWindow(onClosed: () => void) {
-  const popup = window.open(MENTAT_BOT_INVITE_URL, "discord-bot-invite", "width=500,height=800");
+  const popup = window.open(MENTAT_BOT_INVITE_URL, "discord-bot-invite", centeredPopupFeatures(DISCORD_POPUP_WIDTH, DISCORD_POPUP_HEIGHT));
   if (!popup) return; // popup blocked -- the link below still works as a normal click-through
   const timer = window.setInterval(() => {
     if (popup.closed) {
@@ -618,7 +634,7 @@ export function DiscordBotSection() {
     // now and setting its location once startAutoInvite() resolves
     // preserves activation, unlike the old (buggy) ordering that opened
     // the popup only after the await.
-    const popup = window.open("", "discord-auto-invite", "width=500,height=800");
+    const popup = window.open("", "discord-auto-invite", centeredPopupFeatures(DISCORD_POPUP_WIDTH, DISCORD_POPUP_HEIGHT));
     try {
       const { authorizeUrl } = await discordHostedBotApi.startAutoInvite(window.location.origin);
       if (!popup || popup.closed) {
