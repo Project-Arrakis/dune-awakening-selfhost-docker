@@ -243,6 +243,163 @@ export function DiscordBotSection() {
   const restartCountdownResolveRef = useRef<(() => void) | null>(null);
   const [restartCountdownSeconds, setRestartCountdownSeconds] = useState<number | null>(null);
 
+  // Phase 6 (dune-awakening-selfhost-docker#832/#865): the fully-automated
+  // auto-invite flow, shipped ALONGSIDE renderHostedBotConnection() below
+  // (unchanged, not modified), per the design doc's §9 Option B rollout --
+  // the old independent-Discord-Application flow is only removed once this
+  // new flow is confirmed working end-to-end (a later, separate change),
+  // not in this one.
+  //
+  // "idle": nothing started yet, or the operator abandoned a popup mid-flow
+  //   (design doc §6 -- "no error, not a dead end", so this state is also
+  //   what an abandoned attempt resets back to, not "failed").
+  // "awaiting-popup": popup open, no outcome yet.
+  // "waiting-for-owner": the popup reported ok:true and self-closed -- this
+  //   means "staged, verified owner notified," NOT "connected" (mentat's
+  //   own signedRedirect fires at staging time, not at Confirm time -- see
+  //   mentat/src/setupServer.js's own documented reinterpretation of the
+  //   design doc's sequence diagram). Core has no live signal for when/if
+  //   the owner actually confirms -- that mechanism is explicitly deferred
+  //   (server.js's own /auto-invite/complete comment) -- so this state is
+  //   terminal from this component's own point of view until the operator
+  //   reloads or starts over.
+  // "failed": the popup reported ok:false, with a reason code to explain.
+  const [autoInviteStatus, setAutoInviteStatus] = useState<"idle" | "awaiting-popup" | "waiting-for-owner" | "failed">("idle");
+  const [autoInviteReclaimed, setAutoInviteReclaimed] = useState(false);
+  const [autoInviteFailureReason, setAutoInviteFailureReason] = useState("");
+  const [autoInvitePopupBlockedUrl, setAutoInvitePopupBlockedUrl] = useState<string | null>(null);
+  const autoInvitePopupRef = useRef<Window | null>(null);
+  // Automated review finding (PR #868): a real backend request can still
+  // be outstanding on mentat's side even after the operator clicks "Start
+  // over" (which only resets the VISIBLE autoInviteStatus back to "idle"
+  // client-side -- there is no cancel endpoint to actually tell mentat to
+  // discard the staged pendingOwnerConfirmation). Gating the guard below
+  // purely on autoInviteStatus meant "Start over" silently re-armed
+  // Regenerate Token/Disable/Save Role IDs while mentat could still
+  // complete registration later using a now-stale adapter token -- the
+  // exact desync this guard exists to prevent. autoInviteBlockUntil is a
+  // separate timestamp, set only when a request is genuinely staged
+  // (never cleared by "Start over"), that self-expires after mentat's own
+  // pendingOwnerConfirmations TTL (15 minutes, design doc §4.5) -- past
+  // that point mentat has itself discarded the pending record on timeout
+  // (§4.2 Path F), so continuing to block is no longer protecting
+  // anything real.
+  const AUTO_INVITE_BLOCK_MS = 15 * 60 * 1000;
+  const [autoInviteBlockUntil, setAutoInviteBlockUntil] = useState<number | null>(null);
+  useEffect(() => {
+    if (autoInviteBlockUntil === null) return undefined;
+    const remaining = autoInviteBlockUntil - Date.now();
+    if (remaining <= 0) { setAutoInviteBlockUntil(null); return undefined; }
+    const timer = window.setTimeout(() => setAutoInviteBlockUntil(null), remaining);
+    return () => window.clearTimeout(timer);
+  }, [autoInviteBlockUntil]);
+  // Layer 2 audit finding (HIGH, PR #868): a request is genuinely in
+  // flight -- either the popup is open, or mentat has staged the
+  // registration and is waiting on the owner's Discord confirmation --
+  // for as long as this is true. The adapter token this component just
+  // sent to mentat as part of that request must not be invalidated (by
+  // Regenerate Token or Disable) or have the console restarted out from
+  // under it (by Save Role IDs) while it's still relying on that exact
+  // token/liveness -- mentat's own pending records hold a COPY of the
+  // token captured at staging time, so regenerating it afterward silently
+  // desyncs mentat's copy from Core's real, live value. Also applied to
+  // the OLD, advanced flow's own Connect/Register buttons below (a narrow,
+  // audit-required exception to renderHostedBotConnection() otherwise
+  // being left unchanged) -- running both flows concurrently for the same
+  // guild is never a safe combination.
+  const autoInvitePending = autoInviteStatus === "awaiting-popup" || autoInviteBlockUntil !== null;
+
+  // Listens for the popup's own autoInviteCompletePage() postMessage
+  // (autoInvite.js, Core's /auto-invite/complete route) -- targetOrigin is
+  // always window.location.origin there (never "*"), so this handler only
+  // ever needs to trust same-origin messages, matching that page's own
+  // documented contract.
+  useEffect(() => {
+    function onMessage(event: MessageEvent) {
+      if (event.origin !== window.location.origin) return;
+      const data = event.data as { type?: string; result?: { ok?: boolean; guildName?: string; reason?: string; reclaimed?: boolean } } | null;
+      if (!data || data.type !== "hosted-bot-auto-invite-complete" || !data.result) return;
+      if (data.result.ok) {
+        setAutoInviteStatus("waiting-for-owner");
+        setAutoInviteReclaimed(Boolean(data.result.reclaimed));
+        setAutoInviteBlockUntil(Date.now() + AUTO_INVITE_BLOCK_MS);
+      } else {
+        setAutoInviteStatus("failed");
+        setAutoInviteFailureReason(data.result.reason || "");
+      }
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  // Detects the operator closing the popup themselves before any outcome
+  // ever arrives (design doc §6: "normal abandonment, not a failure") --
+  // the postMessage listener above can't distinguish "still working" from
+  // "gave up," so this is the only signal for that case, mirroring
+  // openBotInviteWindow's own existing `.closed`-poll pattern.
+  useEffect(() => {
+    if (autoInviteStatus !== "awaiting-popup") return undefined;
+    const timer = window.setInterval(() => {
+      if (autoInvitePopupRef.current?.closed) {
+        window.clearInterval(timer);
+        setAutoInviteStatus((prev) => (prev === "awaiting-popup" ? "idle" : prev));
+      }
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [autoInviteStatus]);
+
+  function autoInviteFailureMessage(reason: string) {
+    switch (reason) {
+      case "denied": return "You cancelled on Discord's consent screen — try again whenever you're ready.";
+      case "not_owner": return "Discord says you don't own this server — only the server owner can connect it.";
+      case "expired": return "This connection attempt expired — try again.";
+      case "discord_unreachable": return "Could not reach Discord — try again in a moment.";
+      default: return "Could not connect — try again, or use the advanced setup below.";
+    }
+  }
+
+  async function handleStartAutoInvite() {
+    if (submitting) return;
+    setSubmitting(true);
+    setError("");
+    setAutoInvitePopupBlockedUrl(null);
+    // Layer 2 audit finding (MEDIUM, PR #868): clear any previous
+    // failed-attempt state before a retry -- otherwise a first attempt
+    // that failed, followed by a second attempt whose popup gets
+    // blocked, would render both the old failure message AND the new
+    // popup-blocked message at once, contradicting each other.
+    setAutoInviteStatus("idle");
+    setAutoInviteFailureReason("");
+    // Automated review finding (PR #868): window.open() must be called
+    // SYNCHRONOUSLY inside this click handler, before any await -- once a
+    // promise is awaited first, the call loses the click's own "transient
+    // activation" and browsers treat it as programmatic, not user-
+    // initiated (Safari always blocks it this way; Chrome/Firefox once the
+    // network round trip exceeds a few seconds). Opening a blank popup
+    // now and setting its location once startAutoInvite() resolves
+    // preserves activation, unlike the old (buggy) ordering that opened
+    // the popup only after the await.
+    const popup = window.open("", "discord-auto-invite", "width=500,height=800");
+    try {
+      const { authorizeUrl } = await discordHostedBotApi.startAutoInvite(window.location.origin);
+      if (!popup || popup.closed) {
+        // Popup blocked -- same failure mode openBotInviteWindow() already
+        // handles for the old flow (design doc §6); a plain link the
+        // operator can click through manually is the fallback here too.
+        setAutoInvitePopupBlockedUrl(authorizeUrl);
+        return;
+      }
+      popup.location.href = authorizeUrl;
+      autoInvitePopupRef.current = popup;
+      setAutoInviteStatus("awaiting-popup");
+    } catch (err) {
+      popup?.close();
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   function waitForRestartCountdown(seconds: number) {
     return new Promise<void>((resolve) => {
       restartCountdownResolveRef.current = resolve;
@@ -738,6 +895,48 @@ export function DiscordBotSection() {
     }
   }
 
+  // Phase 6 (dune-awakening-selfhost-docker#832/#865): the new, primary
+  // hosted-bot connection UI -- one button, one Discord consent screen,
+  // covering both bot-install and ownership verification (design doc G1).
+  // Shared between wizard step 1 and the enabled-phase management view,
+  // same convention as renderHostedBotConnection() below.
+  function renderAutoInviteConnection() {
+    if (autoInviteStatus === "waiting-for-owner") {
+      return (
+        <div className="settings-auto-invite-waiting" role="status">
+          <p>Request sent — check Discord to confirm the connection. This can take a few minutes.</p>
+          {autoInviteReclaimed && (
+            <p className="muted">This server was previously connected to a different console — that connection has been replaced, and role configuration was reset. Please reconfigure roles in the next step.</p>
+          )}
+          <button type="button" onClick={() => setAutoInviteStatus("idle")}>Start over</button>
+          {/* Automated review finding, PR #868: "Start over" only resets
+              this VISIBLE state -- there is no way to cancel the request
+              already staged on mentat's side, which can still complete if
+              the owner confirms later. Token/role actions elsewhere on
+              this page stay guarded (autoInviteBlockUntil) regardless of
+              this button, so this note explains why they may still look
+              disabled after clicking it. */}
+          <p className="muted">"Start over" only resets this screen -- the request already sent may still complete if the server owner confirms it later.</p>
+        </div>
+      );
+    }
+    return (
+      <div className="settings-auto-invite">
+        <button type="button" disabled={submitting || autoInviteStatus === "awaiting-popup"} onClick={() => { void handleStartAutoInvite(); }}>
+          {autoInviteStatus === "awaiting-popup" ? "Waiting for Discord…" : "Add & Connect Bot"}
+        </button>
+        {autoInviteStatus === "awaiting-popup" && <p className="muted" role="status">Finish in the Discord popup, then come back here.</p>}
+        {autoInviteStatus === "failed" && <p className="muted" role="status">{autoInviteFailureMessage(autoInviteFailureReason)}</p>}
+        {autoInvitePopupBlockedUrl && (
+          <p className="muted" role="status">
+            Your browser blocked the popup.{" "}
+            <a href={autoInvitePopupBlockedUrl} target="_blank" rel="noopener noreferrer">Click here to continue in a new tab</a>.
+          </p>
+        )}
+      </div>
+    );
+  }
+
   // Real UAT finding (2026-09-10): shared between wizard step 1 ("Add bot
   // to Discord", first-time setup) and the post-setup management view
   // (phase === "enabled") -- operators need to redo this after initial
@@ -745,6 +944,14 @@ export function DiscordBotSection() {
   // Regenerate Token clears the connection, change the Discord
   // Application's credentials). One rendering, two call sites, so they
   // can never drift out of sync with each other.
+  //
+  // Phase 6 (#832/#865): kept fully unchanged, own its own -- no longer the
+  // default step-1 UI (renderAutoInviteConnection() above is), reachable
+  // instead via an "Advanced: use my own Discord Application" disclosure
+  // (design doc §9 Option B's rollout: not removed yet, no longer the
+  // primary path either). This directly addresses the real UAT complaint
+  // that drove this whole redesign ("showing additional not required
+  // fields and info") -- this form no longer renders by default.
   function renderHostedBotConnection() {
     return (
       <>
@@ -771,7 +978,7 @@ export function DiscordBotSection() {
         {!ownedGuilds && !connectedGuildName && (
           <>
             <button type="button" onClick={() => openBotInviteWindow(() => setBotInviteWindowClosed(true))}>Add to Discord</button>
-            <button disabled={submitting} onClick={() => { void handleConnectToHostedBot(); }}>Connect to hosted bot</button>
+            <button disabled={submitting || autoInvitePending} onClick={() => { void handleConnectToHostedBot(); }}>Connect to hosted bot</button>
             {botInviteWindowClosed && <p className="muted" role="status">Welcome back — click Connect to hosted bot once you've invited the bot.</p>}
           </>
         )}
@@ -792,7 +999,7 @@ export function DiscordBotSection() {
                 </li>
               ))}
             </ul>
-            {pickedGuild && <button disabled={submitting} onClick={() => { void handleRegisterGuild(); }}>Register</button>}
+            {pickedGuild && <button disabled={submitting || autoInvitePending} onClick={() => { void handleRegisterGuild(); }}>Register</button>}
           </div>
         )}
       </>
@@ -904,12 +1111,30 @@ export function DiscordBotSection() {
                 <p className="muted">Setting up your console's connection…</p>
               ) : (
                 <>
-                  {/* Independent UI/UX review (MEDIUM M4): neither button
-                      below names the bot -- an operator learned what
-                      they were actually authorizing only once already
-                      inside Discord's own consent screen. */}
-                  <p className="muted">Invite Sahir Venn, the hosted bot, to your Discord server, then connect it to this console. Both are required before you can continue.</p>
-                  {renderHostedBotConnection()}
+                  {/* Phase 6 (#832/#865): the new auto-invite flow covers
+                      bot-install + ownership verification in a single
+                      Discord consent screen -- neither button names the
+                      bot up front (Independent UI/UX review, MEDIUM M4),
+                      an operator learns what they're authorizing once
+                      already inside Discord's own consent screen. */}
+                  <p className="muted">Invite Sahir Venn, the hosted bot, to your Discord server and connect it to this console — one click, one Discord screen.</p>
+                  {/* Layer 2 audit finding (HIGH, PR #868): don't show the
+                      new flow's primary CTA as if nothing is connected when
+                      a guild is already connected (e.g. via the advanced
+                      flow, then "Change" back to step 1) -- same reasoning
+                      as the enabled-phase management view below. */}
+                  {connectedGuildName ? <p className="settings-auto-invite-already-connected">This server is already connected: <strong>{connectedGuildName}</strong>.</p> : renderAutoInviteConnection()}
+                  {/* Design doc §9 Option B: the old, independent-Discord-
+                      Application flow is not removed yet -- kept reachable
+                      here as an opt-in fallback, no longer the default
+                      (real UAT finding: it was previously shown
+                      unconditionally, with fields most operators never
+                      needed). */}
+                  <details className="settings-hosted-bot-advanced">
+                    <summary>Advanced: use my own Discord Application instead</summary>
+                    <p className="muted">Invite the bot manually, then connect it using your own Discord Application's credentials. Both are required before you can continue this way.</p>
+                    {renderHostedBotConnection()}
+                  </details>
                 </>
               )}
               {/* Independent UI/UX review (HIGH H1): "Add to Discord" and
@@ -921,15 +1146,20 @@ export function DiscordBotSection() {
                   actually completed from here (see openBotInviteWindow's
                   own comment) -- this is a lightweight, honest mitigation:
                   it doesn't guarantee correctness, but it stops Continue
-                  from being reachable without a conscious confirmation. */}
+                  from being reachable without a conscious confirmation.
+                  Only relevant to the OLD, advanced flow above (renders
+                  when connectedGuildName is set, which only that flow's
+                  own handleRegisterGuild() ever sets) -- the new
+                  auto-invite flow's single consent screen already covers
+                  both actions at once, so it has no separate checkbox. */}
               {connectedGuildName && (
                 <label className="settings-wizard-invite-ack">
                   <input type="checkbox" checked={botInviteAcknowledged} onChange={(event) => setBotInviteAcknowledged(event.target.checked)} />
                   {" "}I've invited the bot to this Discord server
                 </label>
               )}
-              <button disabled={!connectedGuildName || !botInviteAcknowledged} onClick={() => setWizardStep(2)}>Continue</button>
-              {!connectedGuildName && !silentEnabling && <p className="muted" role="status">Continue unlocks once the bot is connected above.</p>}
+              <button disabled={!(autoInviteStatus === "waiting-for-owner" || (connectedGuildName && botInviteAcknowledged))} onClick={() => setWizardStep(2)}>Continue</button>
+              {autoInviteStatus !== "waiting-for-owner" && !connectedGuildName && !silentEnabling && <p className="muted" role="status">Continue unlocks once the bot is connected above.</p>}
               {connectedGuildName && !botInviteAcknowledged && <p className="muted" role="status">Continue unlocks once you confirm you've invited the bot.</p>}
             </div>
           )}
@@ -1018,10 +1248,26 @@ export function DiscordBotSection() {
           <label>Player role IDs<input value={playerRoleIds} onChange={(event) => setPlayerRoleIds(event.target.value)} /></label>
           <label>Moderator role IDs<input value={moderatorRoleIds} onChange={(event) => setModeratorRoleIds(event.target.value)} /></label>
           <label>Admin role IDs<input value={adminRoleIds} onChange={(event) => setAdminRoleIds(event.target.value)} /></label>
-          <button disabled={submitting} onClick={() => { void handleUpdateRoleIds(); }}>Save Role IDs</button>
-          <button disabled={submitting} onClick={() => { void handleRegenerate(); }}>Regenerate Token</button>
-          <button disabled={submitting} onClick={() => { void handleDisable(); }}>Disable Discord Bot Integration</button>
-          {choice === "hosted" && renderHostedBotConnection()}
+          <button disabled={submitting || autoInvitePending} onClick={() => { void handleUpdateRoleIds(); }}>Save Role IDs</button>
+          <button disabled={submitting || autoInvitePending} onClick={() => { void handleRegenerate(); }}>Regenerate Token</button>
+          <button disabled={submitting || autoInvitePending} onClick={() => { void handleDisable(); }}>Disable Discord Bot Integration</button>
+          {autoInvitePending && <p className="muted" role="status">Role/token actions are paused while a Discord connection request is in progress.</p>}
+          {choice === "hosted" && (
+            <>
+              {/* Layer 2 audit finding (HIGH, PR #868): must not show the
+                  new flow's "Add & Connect Bot" as the primary action when
+                  a guild is already connected (via the old, advanced
+                  flow's own handleRegisterGuild()) -- that previously
+                  rendered an unconditional, misleading CTA suggesting
+                  nothing was connected, with the real "Connected to X"
+                  status hidden behind the collapsed Advanced disclosure. */}
+              {connectedGuildName ? <p className="settings-auto-invite-already-connected">This server is already connected: <strong>{connectedGuildName}</strong>.</p> : renderAutoInviteConnection()}
+              <details className="settings-hosted-bot-advanced">
+                <summary>Advanced: use my own Discord Application instead</summary>
+                {renderHostedBotConnection()}
+              </details>
+            </>
+          )}
           {choice === "self-hosted" && (
             <div className="settings-self-hosted-handoff">
               <p>Your console side is ready. To finish, deploy your own bot instance under your own Discord Application:</p>
