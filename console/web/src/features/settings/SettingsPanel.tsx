@@ -836,13 +836,15 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
         <button className="playerAdmin_toggleHeader" aria-label={discordBotOpen ? "Collapse Discord Bot" : "Expand Discord Bot"} onClick={() => setDiscordBotOpen(!discordBotOpen)}>{discordBotOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Discord Bot</span></button>
         {discordBotOpen && <DiscordBotSection />}
       </div>
-      {/* #676 §3: Discord OAuth is primary (rendered first) once configured
-          and active; Password Sign-In is primary otherwise -- including when
-          Discord OAuth is soft-disabled, per the design's own "reverts to
-          primary" rule for that state. */}
-      {discordOAuthConfigured && !discordOAuthDisabled
-        ? <>{discordOAuthSection}{passwordSignInSection}</>
-        : <>{passwordSignInSection}{discordOAuthSection}</>}
+      {/* UAT follow-up (2026-09-11): always alphabetical (Discord OAuth
+          before Login Password) regardless of which is the active sign-in
+          method -- superseding #676 §3's earlier state-based primary/
+          secondary swap for THIS panel's section order specifically. Each
+          section's own content still independently reflects which is
+          primary (e.g. Login Password's own header shows "(fallback)" once
+          Discord OAuth is configured, via discordOAuthConfigured below) --
+          only the render order changed, not which section is state-primary. */}
+      {discordOAuthSection}{passwordSignInSection}
       {serverListingVisible && <div className={`playerAdmin_toggle settings-public-profile-toggle ${publicProfileOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={publicProfileOpen ? "Collapse Public Listing Profile" : "Expand Public Listing Profile"} onClick={() => setPublicProfileOpen(!publicProfileOpen)}>
           {publicProfileOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
