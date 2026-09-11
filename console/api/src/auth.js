@@ -62,11 +62,11 @@ export function createAuth(config) {
   // re-checked by commit() at confirm time so a stale/concurrent resetup
   // session can't overwrite an authenticator a different session already
   // replaced (review finding, upstream PR #201, 2026-09-06).
-  function makeSession({ tier = "owner", userId = "", username = "", guildId = "", scope = null, ttlMs = DEFAULT_TTL_MS, renewable = true, expectedFactorVersion = null } = {}) {
+  function makeSession({ tier = "owner", userId = "", username = "", displayName = "", guildId = "", scope = null, ttlMs = DEFAULT_TTL_MS, renewable = true, expectedFactorVersion = null } = {}) {
     const id = randomBytes(32).toString("base64url");
     const csrf = randomBytes(24).toString("base64url");
     const expiresAt = now() + ttlMs;
-    const session = { id, csrf, expiresAt, tier, userId, username, guildId, scope, renewable, expectedFactorVersion };
+    const session = { id, csrf, expiresAt, tier, userId, username, displayName, guildId, scope, renewable, expectedFactorVersion };
     sessions.set(id, session);
     return { ...session, cookie: `${id}.${sign(id)}` };
   }
@@ -86,6 +86,15 @@ export function createAuth(config) {
     return session;
   }
 
+  // Invalidate one session by id (enrollment completion, logout, rotation).
+  // Server-side lookup by session id, for a flow that must hand data back to
+  // a specific live session it did not receive a cookie for (the Discord setup
+  // callback). Expiry is honored exactly as readSession does.
+  function readSessionById(id) {
+    const session = sessions.get(id);
+    if (!session || session.expiresAt < now()) return null;
+    return session;
+  }
   function invalidateSession(id) {
     return sessions.delete(id);
   }
@@ -161,7 +170,7 @@ export function createAuth(config) {
     return session;
   }
 
-  return { makeSession, readSession, passwordMatches, requireAuth, invalidateSession, invalidatePasswordSessions, invalidateResetupSessions };
+  return { makeSession, readSession, readSessionById, passwordMatches, requireAuth, invalidateSession, invalidatePasswordSessions, invalidateResetupSessions };
 }
 
 export function setSessionCookie(res, session, config = {}, { maxAgeSeconds = 43200 } = {}) {
