@@ -173,6 +173,90 @@ export const ROUTE_ACTIONS = {
   "POST /api/settings/api-keys":               "settings:write",
   "POST /api/settings/public-directory":       "settings:write",
   "POST /api/settings/public-directory/claim": "settings:write",
+  // --- Discord Bot Adapter Settings ---
+  // GET uses updates:read, not settings:read -- audit finding #6 (LOW):
+  // admin is denied settings:* (see the Deny wildcard in policy.js) but IS
+  // allowed updates:* (self-update already reaches this class of
+  // capability), and the POST routes below already use updates:apply --
+  // an admin who can mutate this feature's state must also be able to read
+  // it back first. updates:read requires zero DEFAULT_POLICIES changes,
+  // matching this feature's existing pattern of reusing an existing
+  // wildcard rather than editing policies.
+  "GET /api/settings/discord-bot":              "updates:read",
+  // Real UAT finding (2026-09-10): the 3-step wizard's early choice-persist
+  // -- no restart, so same non-destructive tier as enable/role-ids.
+  "POST /api/settings/discord-bot/choice":      "updates:apply",
+  "POST /api/settings/discord-bot/enable":      "updates:apply",
+  "POST /api/settings/discord-bot/role-ids":    "updates:apply",
+  "POST /api/settings/discord-bot/regenerate-token": "settings:discord-bot-regenerate-token",
+  // Real UAT finding (2026-09-09): the explicit restart trigger split out
+  // of /enable and /role-ids above -- same action as both, since it's the
+  // second half of the exact same "apply this pending settings change"
+  // capability those two routes already require.
+  "POST /api/settings/discord-bot/restart":     "updates:apply",
+  // Real UAT finding (2026-09-09, "I see no path to remove the bot"): a
+  // destructive, hard-to-reverse action (invalidates the live token, wipes
+  // role-ID mappings including admin-tier ones) -- owner-only, same tier
+  // restriction as settings:discord-bot-regenerate-token above, via its own
+  // distinct action name (falls under the settings:* Deny-for-admin
+  // wildcard already in policy.js, same as regenerate-token, with no new
+  // policy.js entry needed).
+  "POST /api/settings/discord-bot/disable":     "settings:discord-bot-disable",
+  // Real UAT finding (2026-09-09): the hosted-bot connection's own,
+  // independent Discord Application config -- see server.js's own comment
+  // on these 2 routes for why they're separate from Settings -> Discord
+  // OAuth. Same tier as enable/role-ids/restart above, not owner-only:
+  // this is prerequisite setup, not a destructive/credential-invalidating
+  // action the way regenerate-token/disable are.
+  // dune-awakening-selfhost-docker#859: these two routes replace the
+  // hosted-bot Discord Application's Client ID/Secret/Redirect URI --
+  // exactly the class of credential-replacement action every OTHER route
+  // in this flow (regenerate-token, disable, /register) already maps to a
+  // dedicated, owner-only settings:* action, per the Deny list below. This
+  // pair was the one place that convention wasn't applied: `updates:apply`
+  // let an admin (not owner) substitute their own Discord Application and
+  // an attacker-controlled redirectUri, then harvest the real owner's
+  // Discord identity/access token the next time the owner completed the
+  // (now-hijacked) OAuth consent flow.
+  "POST /api/settings/discord-bot/oauth-config": "settings:discord-bot-oauth-config",
+  "POST /api/settings/discord-bot/oauth-secret": "settings:discord-bot-oauth-secret",
+
+  // --- Hosted Bot Registration ---
+  // start/callback use updates:read (the same real precedent as
+  // GET /api/settings/discord-bot -- NOT settings:read, which does not
+  // exist as a mapped action for this section and would strand every
+  // admin-tier operator; verified against the sibling feature's own
+  // ROUTE_ACTIONS entries during this plan's own research).
+  // dune-awakening-selfhost-docker#861: previously updates:read
+  // (admin-reachable). Only the owner can ever complete the downstream
+  // /register call this OAuth round trip exists for -- letting a non-owner
+  // admin start it anyway served no purpose but let them hold a live
+  // Discord access token in the pending-registration store under the
+  // guise of the shared hosted-bot flow. Gated to owner-only, matching
+  // /register itself.
+  "GET /api/integrations/discord/hosted-bot/oauth/start":    "settings:discord-bot-hosted-oauth",
+  "GET /api/integrations/discord/hosted-bot/oauth/callback": "settings:discord-bot-hosted-oauth",
+  // register is a new, dedicated, owner-only action -- this route forwards
+  // a live external OAuth credential and the local adapter secret across
+  // an organizational trust boundary, at least as sensitive as this
+  // codebase's own existing settings:discord-bot-regenerate-token
+  // precedent (also owner-only via the same settings:* Deny wildcard).
+  "POST /api/integrations/discord/hosted-bot/register":      "settings:discord-bot-hosted-register",
+
+  // mentat#343+/dune-awakening-selfhost-docker#832 Phase 6: the new,
+  // fully-automated auto-invite flow -- same owner-only trust tier as the
+  // OLD hosted-bot routes immediately above (this flow mints/uses the
+  // same adapter token and forwards it across the same organizational
+  // trust boundary), reusing the existing settings:discord-bot-hosted-oauth
+  // action name since both are steps of conceptually the same "start a
+  // Discord round trip for the hosted bot connection" capability, not a
+  // newly-invented trust tier.
+  "POST /api/integrations/discord/hosted-bot/auto-invite/start":    "settings:discord-bot-hosted-oauth",
+  "GET /api/integrations/discord/hosted-bot/auto-invite/complete":  "settings:discord-bot-hosted-oauth",
+  // Round 4 (dune-awakening-selfhost-docker#876, design doc §13): the
+  // completion-signal poll -- same trust tier as the two routes above,
+  // it's a read of this same in-flight connection's own status.
+  "GET /api/integrations/discord/hosted-bot/auto-invite/confirmation-status": "settings:discord-bot-hosted-oauth",
 
   // --- Players (read) ---
   "GET /api/players":                          "players:read",
