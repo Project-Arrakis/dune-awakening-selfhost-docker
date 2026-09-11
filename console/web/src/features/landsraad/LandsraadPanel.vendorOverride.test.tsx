@@ -73,8 +73,13 @@ function renderPanel(overrides: { overview?: typeof OVERVIEW } & Partial<Paramet
   return props;
 }
 
+// The "Special Vendor Override" heading itself renders unconditionally on
+// first mount, before the async adminApi.landsraadVendorOverride() catalog
+// fetch resolves -- waiting on that text alone is a real race (passed
+// reliably locally, failed in CI's different scheduling). Wait for the
+// actual checkbox instead, which only renders once vendorCatalog is populated.
 async function waitForVendorSection() {
-  await screen.findByText("Special Vendor Override");
+  await screen.findByLabelText("Vehicle Vendor");
 }
 
 describe("LandsraadPanel Special Vendor Override", () => {
