@@ -293,6 +293,42 @@ test("POST /enable and /role-ids degrade gracefully (no 500) when the request bo
   }
 });
 
+// Code-review finding, round 2 (dune-awakening-selfhost-docker#872 fix PR):
+// discordRoleMappingFromEnv() never validated .env-sourced role IDs against
+// SNOWFLAKE_PATTERN (this UI predates that validator) -- a legacy or
+// manually-edited .env entry that doesn't match the pattern must not block
+// a request that never touches that tier. Seeds an invalid value directly
+// via the process env (bypassing the API's own validator entirely, the way
+// a manually-edited .env file would).
+test("POST /role-ids does not re-validate a legacy, already-invalid .env role-ID value for a tier the request never mentions", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-legacy-invalid-roleids-"));
+  const console = startConsole(port, tempDir, { DISCORD_PLAYER_ROLE_IDS: "not-a-real-snowflake" });
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+
+    const before = await (await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie })).json();
+    assert.deepEqual(before.roleIds.player, ["not-a-real-snowflake"], "the legacy invalid value should be readable as-is");
+
+    // Only touch adminRoleIds -- playerRoleIds is never mentioned in the body.
+    const res = await api(port, "/api/settings/discord-bot/role-ids", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { adminRoleIds: "222222222222222222" }
+    });
+    assert.equal(res.status, 202, "an update that never touches the tier with the legacy invalid value must not 400");
+
+    const after = await (await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie })).json();
+    assert.deepEqual(after.roleIds.player, ["not-a-real-snowflake"], "the legacy invalid value must survive untouched");
+    assert.deepEqual(after.roleIds.admin, ["222222222222222222"], "the field actually present in the body must still apply");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 // Real UAT finding (2026-09-09, "I see no path to remove the bot"): this
 // feature previously had no way back to "never configured" once enabled.
 test("POST /api/settings/discord-bot/disable fully resets an enabled adapter back to never-configured, and is recorded in the real audit log", async () => {

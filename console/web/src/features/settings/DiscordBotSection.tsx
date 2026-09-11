@@ -8,6 +8,20 @@ import { copyText } from "../../lib/clipboard";
 import { SecretInput } from "../../components/SecretInput";
 
 const TASK_KEY = "arrakis.discordAdapterEnableTask";
+// GitHub automated-review finding on this PR's own first remediation
+// attempt (dune-awakening-selfhost-docker#872): an in-memory `attempts`
+// counter inside the polling effect bounds per-*mount*, not per-task --
+// SettingsPanel.tsx renders this component conditionally
+// (`{discordBotOpen && <DiscordBotSection />}`), so collapsing/re-expanding
+// that accordion while phase is "enabling" unmounts/remounts this
+// component, tearing down and recreating the effect with attempts reset to
+// 0. runId/phase resume correctly from TASK_KEY, but the timeout budget
+// re-arms in full every time -- a genuinely stuck task (the exact case this
+// fix targets) could be kept hung forever by anyone toggling that section.
+// Fixed by persisting the deadline itself (a wall-clock timestamp), not an
+// in-memory tick count -- surviving remounts the same way runId/phase
+// already do.
+const POLL_DEADLINE_KEY = "arrakis.discordAdapterEnableTaskDeadline";
 const CHOICE_KEY = "arrakis.discordAdapterChoice";
 const POLL_INTERVAL_MS = 2000;
 // dune-awakening-selfhost-docker#872 (automated review finding on
@@ -23,11 +37,30 @@ const POLL_INTERVAL_MS = 2000;
 // with no error and no way forward except manually clearing localStorage.
 // 3 minutes is generous for a real discordAdapterApply restart (which
 // normally completes in well under a minute) while still bounding the wait
-// to something finite. Derived from POLL_INTERVAL_MS (code-review finding:
-// a bare attempt count silently changes its real wall-clock meaning if the
-// interval is ever retuned) rather than hardcoded separately.
+// to something finite.
 const POLL_TIMEOUT_BUDGET_MS = 3 * 60 * 1000;
-const MAX_POLL_ATTEMPTS = Math.ceil(POLL_TIMEOUT_BUDGET_MS / POLL_INTERVAL_MS);
+
+function persistPollDeadline(deadline: number | null) {
+  if (typeof window === "undefined") return;
+  try {
+    if (deadline === null) window.localStorage.removeItem(POLL_DEADLINE_KEY);
+    else window.localStorage.setItem(POLL_DEADLINE_KEY, String(deadline));
+  } catch {
+    // The visible page state still works if localStorage is unavailable --
+    // the in-effect fallback below covers this case too.
+  }
+}
+
+function loadPollDeadline(): number | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(POLL_DEADLINE_KEY);
+    const parsed = raw ? Number(raw) : NaN;
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 // Real UAT finding: the existing "this will restart the console" confirm
 // dialog is a single click, and the moment it's confirmed the actual
 // restart fires immediately with no further warning -- it felt abrupt and
@@ -639,13 +672,22 @@ export function DiscordBotSection() {
 
   useEffect(() => {
     if (phase !== "enabling" || !runId) return undefined;
-    let attempts = 0;
+    // A deadline may already be persisted (a task started before this
+    // component last mounted, or before a page reload). If not -- a fresh
+    // task, or one persisted by an older build that predates this fix --
+    // start a fresh budget from now rather than treating it as already
+    // expired.
+    let deadline = loadPollDeadline();
+    if (deadline === null) {
+      deadline = Date.now() + POLL_TIMEOUT_BUDGET_MS;
+      persistPollDeadline(deadline);
+    }
     // Code-review finding on the timeout fix above (dune-awakening-selfhost-docker#872
     // fix PR): stackProgress() can occasionally take longer than
     // POLL_INTERVAL_MS to resolve (the console is "briefly unreachable"
     // during a real recreate, per the catch block below). Without a guard,
     // an overlapping tick could still be in flight when a later tick hits
-    // MAX_POLL_ATTEMPTS and sets phase "failed" -- if the slow call then
+    // the deadline and sets phase "failed" -- if the slow call then
     // resolves "succeeded" afterward, whichever setState lands last wins,
     // silently overwriting the other outcome. `stopped` is checked
     // immediately after every await so a call whose result is already moot
@@ -655,7 +697,6 @@ export function DiscordBotSection() {
     const interval = setInterval(async () => {
       if (stopped || inFlight) return;
       inFlight = true;
-      attempts += 1;
       try {
         const progress = await updatesApi.stackProgress(runId);
         if (stopped) return;
@@ -663,6 +704,7 @@ export function DiscordBotSection() {
           stopped = true;
           clearInterval(interval);
           persistUpdateTask(TASK_KEY, null);
+          persistPollDeadline(null);
           setRunId(null);
           if (progress.discordHealthOk === false) {
             setPhase("failed");
@@ -675,6 +717,7 @@ export function DiscordBotSection() {
           stopped = true;
           clearInterval(interval);
           persistUpdateTask(TASK_KEY, null);
+          persistPollDeadline(null);
           setRunId(null);
           setPhase("failed");
           setError(progress.message || "Applying Discord Bot settings failed.");
@@ -696,12 +739,16 @@ export function DiscordBotSection() {
       // ever reached the succeeded/failed branches above to clear this
       // interval. Without a bound, this left phase stuck on "enabling"
       // permanently, with no error and no way forward except manually
-      // clearing localStorage. See POLL_TIMEOUT_BUDGET_MS above for the
-      // real wall-clock budget this attempt count is derived from.
-      if (attempts >= MAX_POLL_ATTEMPTS) {
+      // clearing localStorage. Checked against the persisted `deadline`
+      // (wall-clock, see POLL_DEADLINE_KEY's comment above) rather than an
+      // in-memory tick count, so the budget survives this component
+      // unmounting/remounting (e.g. the Discord Bot accordion being
+      // collapsed and reopened) instead of re-arming every time.
+      if (Date.now() >= deadline) {
         stopped = true;
         clearInterval(interval);
         persistUpdateTask(TASK_KEY, null);
+        persistPollDeadline(null);
         setRunId(null);
         setPhase("failed");
         setError("Applying Discord Bot settings is taking much longer than expected. Check the console's logs, then Retry.");
@@ -759,6 +806,7 @@ export function DiscordBotSection() {
 
       const { task } = await discordAdapterSettingsApi.restart();
       persistUpdateTask(TASK_KEY, task);
+      persistPollDeadline(Date.now() + POLL_TIMEOUT_BUDGET_MS);
       setRunId(task.id);
       setPhase("enabling");
     } catch (err) {
@@ -803,6 +851,7 @@ export function DiscordBotSection() {
         deploymentChoice: choice
       });
       persistUpdateTask(TASK_KEY, task);
+      persistPollDeadline(Date.now() + POLL_TIMEOUT_BUDGET_MS);
       setRunId(task.id);
       setPhase("enabling");
     } catch (err) {
@@ -853,6 +902,7 @@ export function DiscordBotSection() {
 
       const { task } = await discordAdapterSettingsApi.restart();
       persistUpdateTask(TASK_KEY, task);
+      persistPollDeadline(Date.now() + POLL_TIMEOUT_BUDGET_MS);
       setRunId(task.id);
       setPhase("enabling");
     } catch (err) {

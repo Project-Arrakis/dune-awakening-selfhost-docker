@@ -1496,8 +1496,19 @@ async function handleApi(req, res) {
   function normalizeSettingsBody(parsedBody) {
     return parsedBody && typeof parsedBody === "object" && !Array.isArray(parsedBody) ? parsedBody : {};
   }
-  function roleIdsFieldOrCurrent(body, fieldName, currentTierIds) {
-    return fieldName in body ? body[fieldName] : currentTierIds.join(",");
+  // Code-review finding (dune-awakening-selfhost-docker#872 fix PR, round
+  // 2): the previous version of this helper re-ran the OMITTED field's
+  // current value back through validateDiscordRoleIds(). That's wrong --
+  // discordRoleMappingFromEnv() never validated .env-sourced role IDs
+  // against SNOWFLAKE_PATTERN in the first place (this UI predates that
+  // validator), so a legacy/manually-edited .env entry that doesn't match
+  // the pattern would now 400 a request that never touched that tier at
+  // all. The current, already-persisted value is trusted as-is when the
+  // field is absent; only a field genuinely present in the body goes
+  // through the strict validator.
+  function resolveRoleIdsTier(body, fieldName, currentTierIds) {
+    if (!(fieldName in body)) return { ok: true, roleIds: currentTierIds };
+    return validateDiscordRoleIds(body[fieldName]);
   }
   // Real UAT finding (2026-09-10): the 3-step wizard redesign needs
   // deploymentChoice persisted the moment the operator picks "Hosted bot",
@@ -1530,11 +1541,11 @@ async function handleApi(req, res) {
     // it. The only real caller (DiscordBotSection.tsx) always sends all
     // three fields together, so this is a no-op for it.
     const currentState = readDiscordBotSettingsState(config);
-    const player = validateDiscordRoleIds(roleIdsFieldOrCurrent(body, "playerRoleIds", currentState.roleIds.player));
+    const player = resolveRoleIdsTier(body, "playerRoleIds", currentState.roleIds.player);
     if (!player.ok) return json(res, 400, { error: player.error });
-    const moderator = validateDiscordRoleIds(roleIdsFieldOrCurrent(body, "moderatorRoleIds", currentState.roleIds.moderator));
+    const moderator = resolveRoleIdsTier(body, "moderatorRoleIds", currentState.roleIds.moderator);
     if (!moderator.ok) return json(res, 400, { error: moderator.error });
-    const admin = validateDiscordRoleIds(roleIdsFieldOrCurrent(body, "adminRoleIds", currentState.roleIds.admin));
+    const admin = resolveRoleIdsTier(body, "adminRoleIds", currentState.roleIds.admin);
     if (!admin.ok) return json(res, 400, { error: admin.error });
 
     // Audit finding #2 (HIGH): DISCORD_ADMIN_ROLE_IDS was read-only from
@@ -1588,11 +1599,11 @@ async function handleApi(req, res) {
     // mapping, not silently wipe it, matching this route's own
     // API-REFERENCE.md documentation ("optional" fields).
     const currentState = readDiscordBotSettingsState(config);
-    const player = validateDiscordRoleIds(roleIdsFieldOrCurrent(body, "playerRoleIds", currentState.roleIds.player));
+    const player = resolveRoleIdsTier(body, "playerRoleIds", currentState.roleIds.player);
     if (!player.ok) return json(res, 400, { error: player.error });
-    const moderator = validateDiscordRoleIds(roleIdsFieldOrCurrent(body, "moderatorRoleIds", currentState.roleIds.moderator));
+    const moderator = resolveRoleIdsTier(body, "moderatorRoleIds", currentState.roleIds.moderator);
     if (!moderator.ok) return json(res, 400, { error: moderator.error });
-    const admin = validateDiscordRoleIds(roleIdsFieldOrCurrent(body, "adminRoleIds", currentState.roleIds.admin));
+    const admin = resolveRoleIdsTier(body, "adminRoleIds", currentState.roleIds.admin);
     if (!admin.ok) return json(res, 400, { error: admin.error });
 
     // Audit finding #2 (HIGH): same owner-only gate as /enable above.
