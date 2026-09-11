@@ -98,11 +98,40 @@ require_compose() {
   fi
 }
 
+# prepare_discord_hosted_bot_oauth_secret (dune-awakening-selfhost-docker#900)
+#
+# Resolves the hosted-bot wizard's Discord OAuth client secret on the
+# HOST, before docker compose starts the console -- matching the
+# existing pattern for server-login-password-secret/
+# username-server-login-secret exactly (age/DUNE_KEK_FILE/
+# DUNE_AGE_IDENTITY_FILE are host-side concepts; the age identity
+# deliberately lives outside the repo and is never bind-mounted into
+# any container, per docs/security/age-secrets.md). Only exports when
+# the resolver produces a non-empty value, so an operator who never
+# configured this secret (or who set it directly via .env/shell
+# env) sees zero behavior change -- Compose's own precedence already
+# prefers a real shell-exported value over whatever .env says for the
+# same key, so this only ever adds a value, never silently overrides
+# one already present another way.
+prepare_discord_hosted_bot_oauth_secret() {
+  if [ -n "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}" ]; then
+    return 0
+  fi
+  # shellcheck disable=SC1091
+  . runtime/scripts/lib/console-secrets-env.sh
+  local resolved
+  resolved="$(resolve_discord_hosted_bot_oauth_client_secret)"
+  if [ -n "$resolved" ]; then
+    export DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET="$resolved"
+  fi
+}
+
 restart_console() {
   local previous_image_id current_image_id
   require_compose
   prepare_docker_socket_gid
   prepare_host_user_ids
+  prepare_discord_hosted_bot_oauth_secret
   export ADMIN_BIND_PORT="${ADMIN_WEB_PORT:-${ADMIN_BIND_PORT:-}}"
   mkdir -p runtime/generated
   previous_image_id="$(docker image inspect --format '{{.Id}}' redblink-dune-docker-console:dev 2>/dev/null || true)"

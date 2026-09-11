@@ -57,10 +57,13 @@ if command -v shellcheck >/dev/null 2>&1; then
     tests/metrics-stack-unit.sh \
     tests/security-pr-checks.sh \
     runtime/scripts/lib/secrets.sh \
+    runtime/scripts/lib/console-secrets-env.sh \
     runtime/scripts/secrets-cli.sh \
+    runtime/scripts/console.sh \
     runtime/tests/test-secrets-lib.sh \
     runtime/tests/test-secrets-aead-cross-language.sh \
-    runtime/tests/test-secrets-stage2.sh
+    runtime/tests/test-secrets-stage2.sh \
+    runtime/tests/test-secrets-stage3.sh
 else
   printf 'SKIP: shellcheck is not installed.\n'
 fi
