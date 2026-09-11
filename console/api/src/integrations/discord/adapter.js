@@ -169,6 +169,20 @@ export function discordRoleMappingFromEnv(env = process.env) {
 
 export function discordRolePolicyHealth(mapping = discordRoleMappingFromEnv()) {
   return {
+    // dune-awakening-selfhost-docker#872 (automated review finding on
+    // already-merged #748): playerConfigured is a rename of the field
+    // this endpoint used to call observerConfigured. The equivalent
+    // env-var rename (DISCORD_OBSERVER_ROLE_IDS -> DISCORD_PLAYER_ROLE_IDS)
+    // correctly kept a legacy-fallback read, but this JSON field's own
+    // rename shipped with no back-compat alias -- a real, documented
+    // external contract break: docs/integrations/discord-control-bot/
+    // admin-guide.md's own "Expected role policy shape" example and
+    // 403-troubleshooting steps instruct checking
+    // `rolePolicy.observerConfigured` directly, and that repo's own
+    // smoke-runner-style consumers read this exact field. Emit both so
+    // neither an old nor a new consumer silently misreads a
+    // correctly-configured Player role as unconfigured.
+    observerConfigured: mapping.playerRoleIds.length > 0,
     playerConfigured: mapping.playerRoleIds.length > 0,
     moderatorConfigured: mapping.moderatorRoleIds.length > 0,
     adminConfigured: mapping.adminRoleIds.length > 0,
