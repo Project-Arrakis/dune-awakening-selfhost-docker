@@ -1629,7 +1629,7 @@ export function DiscordBotSection() {
               {connectedGuildName ? <p className="settings-auto-invite-already-connected">This server is already connected: <strong>{connectedGuildName}</strong>.</p> : renderAutoInviteConnection()}
               <details className="settings-hosted-bot-advanced">
                 <summary>Advanced: connect manually instead</summary>
-                <p className="muted">Still uses the same hosted bot (Sahir Venn) above -- this is only a different way to prove you own the Discord server, using your own Discord Application's OAuth credentials instead of the one-click screen. It does not run a separate bot.</p>
+                <p className="muted">Still uses the same hosted bot (Sahir Venn) -- this is only a different way to prove you own the Discord server, using your own Discord Application's OAuth credentials instead of the one-click screen. It does not run a separate bot.</p>
                 {renderHostedBotConnection()}
               </details>
             </>
