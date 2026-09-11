@@ -123,6 +123,32 @@ OCCUPIED=1
 handle_demand CB_Overland_S_04 1 unrelated-request request
 [ ! -s "$SPAWN_LOG" ]
 
+# Director-classified party instances scale even when the local Director
+# configuration does not carry a map-specific MaxParties override. This
+# covers the difficulty-selectable Testing Stations, Old Quarry, and story
+# activities without maintaining another hardcoded map list.
+for map in \
+  CB_Ecolab_Bronze_Green_024 \
+  CB_Ecolab_Bronze_Green_089 \
+  CB_Ecolab_Bronze_Green_136 \
+  CB_Ecolab_Bronze_Green_152 \
+  CB_Ecolab_Bronze_Green_195 \
+  CB_Dungeon_ThePit \
+  CB_Story_BanditFortress01; do
+  : >"$SPAWN_LOG"
+  handle_demand "$map" 1 "classical-$map" request ClassicalInstancing
+  [ "$(cat "$SPAWN_LOG")" = "$map" ]
+done
+
+# Dimension-routed and ordinary dedicated requests must retain their existing
+# allocation behavior; a running instance remains sufficient for those.
+: >"$SPAWN_LOG"
+handle_demand CB_Dungeon_ThePit 1 dimension-request request Dimension
+[ ! -s "$SPAWN_LOG" ]
+: >"$SPAWN_LOG"
+handle_demand CB_Dungeon_ThePit 1 unspecified-request request
+[ ! -s "$SPAWN_LOG" ]
+
 # Verify request and queue records carry their source into the allocator.
 : >"$SPAWN_LOG"
 cat >"$TEST_ROOT/director.log" <<'EOF'
@@ -131,16 +157,20 @@ cat >"$TEST_ROOT/director.log" <<'EOF'
 2026-09-08T20:00:02.000000000Z Processing travel queue for ClassicalInstancing group CB_Overland_S_08 (servers: [29 (server-a)], num: 1)
 2026-09-08T20:00:03.000000000Z Received travel request for 1 player(s) to CB_Overland_S_06 (instancingMode=ClassicalInstancing)
 2026-09-08T20:00:04.000000000Z Processing travel queue for ClassicalInstancing group CB_Overland_S_06 (servers: [28 (server-b)], num: 1)
+2026-09-08T20:00:05.000000000Z Received travel request for 1 player(s) to CB_Dungeon_ThePit (instancingMode=ClassicalInstancing)
+2026-09-08T20:00:06.000000000Z Received travel request for 1 player(s) to DeepDesert_1 (instancingMode=Dimension)
 EOF
-handle_demand() { printf '%s|%s|%s\n' "$1" "$2" "$4" >>"$SPAWN_LOG"; }
+handle_demand() { printf '%s|%s|%s|%s\n' "$1" "$2" "$4" "$5" >>"$SPAWN_LOG"; }
 docker() { cat "$TEST_ROOT/director.log"; }
 SINCE=30s
 scan_travel_demand
 diff -u <(printf '%s\n' \
-  'CB_Overland_S_07|1|request' \
-  'CB_Overland_S_07|1|request' \
-  'CB_Overland_S_08|1|queue' \
-  'CB_Overland_S_06|1|request') "$SPAWN_LOG"
+  'CB_Overland_S_07|1|request|ClassicalInstancing' \
+  'CB_Overland_S_07|1|request|ClassicalInstancing' \
+  'CB_Overland_S_08|1|queue|ClassicalInstancing' \
+  'CB_Overland_S_06|1|request|ClassicalInstancing' \
+  'CB_Dungeon_ThePit|1|request|ClassicalInstancing' \
+  'DeepDesert_1|1|request|Dimension') "$SPAWN_LOG"
 
 grep -q 'docker logs --timestamps --since "$SINCE" dune-director' "$TEST_ROOT/functions.sh"
 SH
