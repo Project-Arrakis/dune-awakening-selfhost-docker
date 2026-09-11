@@ -440,6 +440,30 @@ export function DiscordBotSection() {
     return () => clearTimeout(timer);
   }, [restartCountdownSeconds]);
 
+  // dune-awakening-selfhost-docker#870 (automated review finding on #801,
+  // real/normal severity): if this component unmounts while a restart
+  // countdown is in flight -- e.g. the operator collapses the Settings
+  // accordion that conditionally renders DiscordBotSection -- the ticking
+  // effect's own cleanup above only clears its setTimeout; it never
+  // resolves the Promise waitForRestartCountdown() handed back to
+  // handleDisable()/handleEnable()/handleUpdateRoleIds(). Those handlers
+  // keep running after unmount (an already-invoked async function is not
+  // tied to component lifecycle), but with the Promise never settling
+  // they never reach their own restart() call. For Disable specifically
+  // this is a real security gap, not just a stuck spinner: disable()
+  // already wiped the adapter token server-side (its own confirm dialog
+  // says "cannot be undone"), but the restart that's supposed to make
+  // that live never fires, so the "invalidated" token's bot process keeps
+  // running indefinitely. A mount-once effect whose cleanup only runs on
+  // true unmount guarantees the countdown always resolves, regardless of
+  // which handler is waiting on it.
+  useEffect(() => {
+    return () => {
+      restartCountdownResolveRef.current?.();
+      restartCountdownResolveRef.current = null;
+    };
+  }, []);
+
   function updateChoice(value: Choice) {
     setChoice(value);
     persistChoice(value);

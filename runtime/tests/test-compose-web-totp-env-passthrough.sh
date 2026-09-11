@@ -38,6 +38,7 @@ echo "PASS: CONSOLE_TOTP_ENABLED is wired into docker-compose.web.yml's console 
 for hosted_bot_var in \
   DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE \
   DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI \
+  DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID \
   DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID \
   DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME; do
   grep -qE "^\\s*${hosted_bot_var}:\\s*\"\\\$\\{${hosted_bot_var}:-" "$compose_file" \
