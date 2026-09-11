@@ -82,9 +82,38 @@ resolve_discord_hosted_bot_oauth_client_secret() {
   fi
 
   # No migration history and no legacy file: genuinely never
-  # configured. Print nothing and succeed (rc 0) -- the caller
-  # (entrypoint.sh) must treat empty output as "do not export this
-  # env var," not as an error, and must NOT abort container startup
-  # over a hosted-bot OAuth secret that was simply never set up.
+  # configured. Print nothing and succeed (rc 0) -- callers must treat
+  # empty output as "do not export this env var," not as an error, and
+  # must NOT abort console startup/recreation over a hosted-bot OAuth
+  # secret that was simply never set up.
   return 0
+}
+
+# export_discord_hosted_bot_oauth_client_secret
+#
+# Shared by every place that starts or recreates the console container
+# (dune-awakening-selfhost-docker#901, Layer 2 audit finding on PR
+# #902): console.sh's restart_console() and self-update.sh's
+# prepare_web_console_rebuild_env() -- the latter covers BOTH
+# rebuild_web_console_now() (the real self-update apply flow) and
+# recreate_discord_adapter_env() (Settings -> Discord Bot enable/
+# role-ID changes), since both call it immediately before their own
+# `docker compose ... up --force-recreate`. Originally duplicated
+# inline at each call site; extracted here so there is exactly one
+# place defining "how to resolve and export this secret," not three
+# copies that can silently drift out of sync.
+#
+# Only exports when the resolver produces a non-empty value, and never
+# overrides an already-set env var (an operator who set it directly
+# via .env/shell env is left alone, matching config.js's own env-var-
+# wins precedence).
+export_discord_hosted_bot_oauth_client_secret() {
+  if [ -n "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}" ]; then
+    return 0
+  fi
+  local resolved
+  resolved="$(resolve_discord_hosted_bot_oauth_client_secret)"
+  if [ -n "$resolved" ]; then
+    export DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET="$resolved"
+  fi
 }

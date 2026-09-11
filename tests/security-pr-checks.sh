@@ -60,6 +60,7 @@ if command -v shellcheck >/dev/null 2>&1; then
     runtime/scripts/lib/console-secrets-env.sh \
     runtime/scripts/secrets-cli.sh \
     runtime/scripts/console.sh \
+    runtime/scripts/self-update.sh \
     runtime/tests/test-secrets-lib.sh \
     runtime/tests/test-secrets-aead-cross-language.sh \
     runtime/tests/test-secrets-stage2.sh \

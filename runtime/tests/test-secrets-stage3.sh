@@ -153,37 +153,22 @@ set -e
 rm -f /tmp/scope-out.$$ /tmp/scope-out2.$$
 echo "PASS: Test 5 (cleanup-legacy, and the allow-list still rejects everything else, including the similarly-named but unrelated console-sign-in secret)"
 
-# --- Test 6: the prepare_discord_hosted_bot_oauth_secret() export
-# pattern console.sh uses actually exports the resolved value, and
-# does NOT export anything (leaves the var genuinely unset) when the
-# secret was never configured at all. NOTE: this re-declares the
-# function body inline rather than sourcing runtime/scripts/console.sh
-# itself -- that file's own top-level statements (cd to repo root,
-# unconditionally sourcing compose-project.sh, computing the real
-# compose project name) run the instant it's sourced, which this
-# isolated test_root cannot support and a unit test for this one
-# function shouldn't need to. If console.sh's real
-# prepare_discord_hosted_bot_oauth_secret() implementation ever
-# changes, keep this copy in sync by hand -- there is no automated
-# guard against drift between the two. ---
+# --- Test 6: export_discord_hosted_bot_oauth_client_secret() (shared
+# by console.sh's restart_console() and self-update.sh's
+# prepare_web_console_rebuild_env(), Layer 2 audit finding on PR #902)
+# actually exports the resolved value, and does NOT export anything
+# (leaves the var genuinely unset) when the secret was never
+# configured at all. Calls the REAL function directly (no
+# reimplementation to drift out of sync with) -- console-secrets-env.sh
+# has no top-level side effects beyond sourcing secrets.sh, so it's
+# safe to source directly in this isolated test_root. ---
 (
   unset DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET 2>/dev/null || true
   # shellcheck disable=SC1091
   source runtime/scripts/lib/console-secrets-env.sh
-  # Deliberately scoped to this subshell only (SC2030/SC2031).
-  prepare_discord_hosted_bot_oauth_secret() {
-    # shellcheck disable=SC2031
-    if [ -n "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}" ]; then return 0; fi
-    local resolved
-    resolved="$(resolve_discord_hosted_bot_oauth_client_secret)"
-    if [ -n "$resolved" ]; then
-      # shellcheck disable=SC2030,SC2031
-      export DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET="$resolved"
-    fi
-  }
-  prepare_discord_hosted_bot_oauth_secret
+  export_discord_hosted_bot_oauth_client_secret
   # shellcheck disable=SC2031
-  [ "$DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET" = "operator-typed-client-secret-value" ] || fail "Test 6: prepare_discord_hosted_bot_oauth_secret did not export the resolved value"
+  [ "$DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET" = "operator-typed-client-secret-value" ] || fail "Test 6: export_discord_hosted_bot_oauth_client_secret did not export the resolved value"
 )
 rm -f runtime/secrets/discord-hosted-bot-oauth-client-secret.enc
 rm -f runtime/generated/.secrets-migrated/discord-hosted-bot-oauth-client-secret.done
@@ -191,21 +176,31 @@ rm -f runtime/generated/.secrets-migrated/discord-hosted-bot-oauth-client-secret
   unset DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET DUNE_KEK_FILE DUNE_AGE_IDENTITY_FILE 2>/dev/null || true
   # shellcheck disable=SC1091
   source runtime/scripts/lib/console-secrets-env.sh
-  # Deliberately scoped to this subshell only (SC2030/SC2031).
-  prepare_discord_hosted_bot_oauth_secret() {
-    # shellcheck disable=SC2031
-    if [ -n "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}" ]; then return 0; fi
-    local resolved
-    resolved="$(resolve_discord_hosted_bot_oauth_client_secret)"
-    if [ -n "$resolved" ]; then
-      # shellcheck disable=SC2030,SC2031
-      export DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET="$resolved"
-    fi
-  }
-  prepare_discord_hosted_bot_oauth_secret
+  export_discord_hosted_bot_oauth_client_secret
   # shellcheck disable=SC2031
-  [ -z "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}" ] || fail "Test 6b: prepare_discord_hosted_bot_oauth_secret exported a value for a never-configured secret"
+  [ -z "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}" ] || fail "Test 6b: export_discord_hosted_bot_oauth_client_secret exported a value for a never-configured secret"
 )
-echo "PASS: Test 6 (console.sh's prepare_discord_hosted_bot_oauth_secret exports correctly, and stays silent when unconfigured)"
+echo "PASS: Test 6 (export_discord_hosted_bot_oauth_client_secret exports correctly, and stays silent when unconfigured)"
+
+# --- Test 7: an already-set DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET
+# (operator set it directly via .env/shell env) is never overridden,
+# even when a DIFFERENT, genuinely resolvable value exists -- matching
+# config.js's own env-var-wins precedence. Re-migrates a fresh value
+# first (Test 6's own cleanup deleted the prior .enc/marker/legacy
+# file) so this guard is actually exercised against a real competing
+# value, not trivially "passing" because nothing was resolvable. ---
+printf 'a-different-value-that-must-not-win' > runtime/secrets/discord-hosted-bot-oauth-client-secret.txt
+chmod 600 runtime/secrets/discord-hosted-bot-oauth-client-secret.txt
+bash runtime/scripts/secrets-cli.sh migrate discord-hosted-bot-oauth-client-secret >/dev/null
+(
+  # Deliberately scoped to this subshell only (SC2031).
+  # shellcheck disable=SC2031
+  export DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET="operator-set-directly"
+  # shellcheck disable=SC1091
+  source runtime/scripts/lib/console-secrets-env.sh
+  export_discord_hosted_bot_oauth_client_secret
+  [ "$DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET" = "operator-set-directly" ] || fail "Test 7: export_discord_hosted_bot_oauth_client_secret overrode an already-set env var with a genuinely different resolvable value"
+)
+echo "PASS: Test 7 (an already-set env var is never overridden, even when a different value would otherwise resolve)"
 
 echo "All Stage 3 secrets tests passed."

@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT_DIR="$(pwd)"
 
+# shellcheck disable=SC1091
 . runtime/scripts/compose-project.sh
 DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$ROOT_DIR")"
 export DUNE_COMPOSE_PROJECT_NAME
@@ -1035,6 +1036,23 @@ prepare_web_console_rebuild_env() {
   persist_env_file_value DUNE_HOST_UID "$DUNE_HOST_UID"
   persist_env_file_value DUNE_HOST_GID "$DUNE_HOST_GID"
   restore_local_state_ownership
+  # dune-awakening-selfhost-docker#901 (Layer 2 audit finding on PR
+  # #902): the only other place besides console.sh's own
+  # restart_console() that force-recreates the web console -- both
+  # rebuild_web_console_now() (the real self-update apply flow) and
+  # recreate_discord_adapter_env() (Settings -> Discord Bot enable/
+  # role-ID changes) call this shared prep function immediately before
+  # `docker compose ... up --force-recreate`. Without this, an operator
+  # who migrated discord-hosted-bot-oauth-client-secret and ran
+  # cleanup-legacy (deleting the plaintext .txt) would have hosted-bot
+  # OAuth silently break on the very next self-update or role-ID save,
+  # since the container's env var would go unset and config.js's
+  # readInlineOrFile() falls back to a now-deleted file. Hooking it
+  # into this ONE shared function, rather than each call site
+  # separately, covers both paths without duplicating the call.
+  # shellcheck disable=SC1091
+  . runtime/scripts/lib/console-secrets-env.sh
+  export_discord_hosted_bot_oauth_client_secret
 }
 
 rebuild_web_console_now() {
