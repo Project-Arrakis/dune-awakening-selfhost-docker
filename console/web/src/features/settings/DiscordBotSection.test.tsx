@@ -377,6 +377,52 @@ describe("DiscordBotSection", () => {
     expect(screen.queryByRole("button", { name: /Retry/i })).toBeNull();
   });
 
+  // dune-awakening-selfhost-docker#872 (automated review finding on
+  // already-merged #748): if the backend task fails before ever writing a
+  // status file, stackProgress() keeps returning state:"pending" forever
+  // -- this used to leave phase stuck on "enabling" permanently, with no
+  // error and no way forward. The polling effect must eventually give up
+  // and transition to "failed" with a real error, not hang indefinitely.
+  it("gives up and shows a real error after the backend task never resolves (stuck at state:\"pending\" forever)", async () => {
+    const persistedTask = {
+      id: "task-stuck",
+      type: "discordAdapterApply",
+      operation: "enable",
+      status: "running",
+      currentStep: "Restarting console",
+      progressMessage: "",
+      logLines: [],
+      warnings: [],
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      errorMessage: null
+    };
+    window.localStorage.setItem(TASK_KEY, JSON.stringify(persistedTask));
+    mockApi.mockResolvedValue({ runId: "task-stuck", state: "pending", stage: "launching", percent: 0, message: "" } as never);
+
+    vi.useFakeTimers();
+    render(<DiscordBotSection />);
+    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
+
+    // 89 attempts (all still "pending") must NOT give up yet.
+    for (let i = 0; i < 89; i += 1) {
+      // eslint-disable-next-line no-await-in-loop -- each tick must
+      // complete (including its own microtask/state-update chain) before
+      // the next one advances, matching how the real setInterval fires.
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    }
+    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Retry/i })).toBeNull();
+
+    // The 90th attempt must finally give up with a real, actionable error.
+    // A synchronous query, not findByRole/waitFor -- those poll with real
+    // timers internally and would hang forever while fake timers are
+    // active with nothing left to advance them.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
+    expect(screen.getByText(/taking much longer than expected/i)).toBeInTheDocument();
+  }, 20000);
+
   it("does not clobber typed role IDs when Retry is clicked after a failed enable task (finding 4)", async () => {
     mockApi.mockImplementation((path: string) => {
       if (path === "/api/settings/discord-bot") {

@@ -10,6 +10,21 @@ import { SecretInput } from "../../components/SecretInput";
 const TASK_KEY = "arrakis.discordAdapterEnableTask";
 const CHOICE_KEY = "arrakis.discordAdapterChoice";
 const POLL_INTERVAL_MS = 2000;
+// dune-awakening-selfhost-docker#872 (automated review finding on
+// already-merged #748): the enable/save-role-ids polling effect below
+// only ever branched on state === "succeeded"/"failed" from
+// updatesApi.stackProgress(), with no bound -- if runDiscordAdapterApplyTask
+// throws before its shell helper ever writes a status file (a real,
+// reachable path: cleanupStaleSelfUpdateHelpers's own "already running"
+// contention error, or a docker command rejection), readSelfUpdateStatus's
+// ENOENT branch returns {state:"pending"} with HTTP 200 forever, and this
+// effect's own catch block swallows transient fetch errors as "keep
+// polling" -- so the UI was stuck on phase === "enabling" permanently,
+// with no error and no way forward except manually clearing localStorage.
+// 90 attempts * 2s = 3 minutes, generous for a real discordAdapterApply
+// restart (which normally completes in well under a minute) while still
+// bounding the wait to something finite.
+const MAX_POLL_ATTEMPTS = 90;
 // Real UAT finding: the existing "this will restart the console" confirm
 // dialog is a single click, and the moment it's confirmed the actual
 // restart fires immediately with no further warning -- it felt abrupt and
@@ -597,7 +612,9 @@ export function DiscordBotSection() {
 
   useEffect(() => {
     if (phase !== "enabling" || !runId) return undefined;
+    let attempts = 0;
     const interval = setInterval(async () => {
+      attempts += 1;
       try {
         const progress = await updatesApi.stackProgress(runId);
         if (progress.state === "succeeded") {
@@ -610,15 +627,36 @@ export function DiscordBotSection() {
           } else {
             await refresh();
           }
+          return;
         } else if (progress.state === "failed") {
           clearInterval(interval);
           persistUpdateTask(TASK_KEY, null);
           setRunId(null);
           setPhase("failed");
           setError(progress.message || "Applying Discord Bot settings failed.");
+          return;
         }
       } catch {
         // The console is mid-recreate and briefly unreachable -- keep polling.
+      }
+      // dune-awakening-selfhost-docker#872 (automated review finding on
+      // already-merged #748): if runDiscordAdapterApplyTask throws before
+      // its shell helper ever writes a status file (e.g.
+      // cleanupStaleSelfUpdateHelpers's own "already running" contention
+      // error, or a docker command rejection), stackProgress() keeps
+      // returning state:"pending" forever, and a transient fetch error
+      // above is deliberately swallowed as "keep polling" -- neither path
+      // ever reached the succeeded/failed branches above to clear this
+      // interval. Without a bound, this left phase stuck on "enabling"
+      // permanently, with no error and no way forward except manually
+      // clearing localStorage. 90 attempts * 2s = 3 minutes, generous for
+      // a real discordAdapterApply restart (normally well under a minute).
+      if (attempts >= MAX_POLL_ATTEMPTS) {
+        clearInterval(interval);
+        persistUpdateTask(TASK_KEY, null);
+        setRunId(null);
+        setPhase("failed");
+        setError("Applying Discord Bot settings is taking much longer than expected. Check the console's logs, then Retry.");
       }
     }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);

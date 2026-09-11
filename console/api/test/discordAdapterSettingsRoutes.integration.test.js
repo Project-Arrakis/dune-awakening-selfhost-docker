@@ -207,6 +207,50 @@ test("an authenticated owner session can read, enable, update role IDs, and rege
   }
 });
 
+// dune-awakening-selfhost-docker#872 (automated review finding on
+// already-merged #748): API-REFERENCE.md documents playerRoleIds/
+// moderatorRoleIds/adminRoleIds as optional on both /enable and
+// /role-ids, implying a caller can update one tier at a time --
+// but the route used to treat "field omitted from the body" the same
+// as "field explicitly cleared," silently wiping the other tiers.
+test("POST /enable and /role-ids preserve a tier's existing role IDs when that field is omitted from the request body, not wipe it", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-omitted-field-"));
+  const console = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const session = await login(port, ADMIN_PASSWORD);
+
+    // Seed all 3 tiers via a genuine first enable that sends every field.
+    await api(port, "/api/settings/discord-bot/enable", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "222222222222222222", adminRoleIds: "" }
+    });
+
+    // Now update ONLY adminRoleIds via /role-ids -- omitting playerRoleIds
+    // and moderatorRoleIds entirely from the body (not sending them as
+    // empty strings, genuinely absent keys), matching what a caller
+    // following the documented "optional" contract would do.
+    const roleIds = await api(port, "/api/settings/discord-bot/role-ids", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { adminRoleIds: "333333333333333333" }
+    });
+    assert.equal(roleIds.status, 202);
+
+    const after = await (await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie })).json();
+    assert.deepEqual(after.roleIds.player, ["111111111111111111"], "player role IDs must survive a request that never mentioned that field");
+    assert.deepEqual(after.roleIds.moderator, ["222222222222222222"], "moderator role IDs must survive a request that never mentioned that field");
+    assert.deepEqual(after.roleIds.admin, ["333333333333333333"], "the field actually present in the body must still apply");
+  } finally {
+    await stopProcess(console.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 // Real UAT finding (2026-09-09, "I see no path to remove the bot"): this
 // feature previously had no way back to "never configured" once enabled.
 test("POST /api/settings/discord-bot/disable fully resets an enabled adapter back to never-configured, and is recorded in the real audit log", async () => {
