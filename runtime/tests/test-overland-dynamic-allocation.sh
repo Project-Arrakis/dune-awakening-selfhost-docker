@@ -5,7 +5,27 @@ cd "$(dirname "$0")/../.."
 
 test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT
-mkdir -p "$test_root/runtime/scripts"
+mkdir -p "$test_root/runtime/scripts" "$test_root/runtime/director/config"
+
+cat >"$test_root/runtime/director/config/director_config.ini" <<'EOF'
+[CB_Overland_S_04]
+NumExtraServers=0
+
+[CB_Overland_S_06]
+NumExtraServers=0
+MaxParties=1
+
+[CB_Overland_S_07]
+NumExtraServers=0
+MaxParties=1
+
+[CB_Overland_S_08]
+NumExtraServers=0
+MaxParties=1
+
+[Future_Isolated_Activity]
+MaxParties = 1 ; one party per dimension
+EOF
 
 python3 - "$test_root/functions.sh" <<'PY'
 from pathlib import Path
@@ -19,6 +39,7 @@ def function(name, next_name):
     return source[start:end].rstrip() + "\n"
 
 selected = [
+    function("director_map_max_parties", "map_requires_isolated_party_dimension"),
     function("map_requires_isolated_party_dimension", "map_exists"),
     function("handle_demand", "handle_idle_row"),
     function("scan_travel_demand", "follow_director_travel_demand"),
@@ -56,9 +77,24 @@ occupied_dimensions_for_map() { echo "$OCCUPIED"; }
 max_dimensions_for_map() { echo "$MAX_DIMENSIONS"; }
 map_uses_dedicated_scaling() { echo "$DEDICATED"; }
 
+map_requires_isolated_party_dimension CB_Overland_S_06
+map_requires_isolated_party_dimension CB_Overland_S_07
+map_requires_isolated_party_dimension CB_Overland_S_08
+map_requires_isolated_party_dimension Future_Isolated_Activity
+if map_requires_isolated_party_dimension CB_Overland_S_04; then
+  echo "shared-party map unexpectedly received isolated allocation" >&2
+  exit 1
+fi
+
 : >"$SPAWN_LOG"
 handle_demand CB_Overland_S_07 1 second-request request
 [ "$(cat "$SPAWN_LOG")" = "CB_Overland_S_07" ]
+
+# Smuggler's Run also needs a new dimension when another independent player
+# arrives, while retaining its separate immediate fresh-process retirement.
+: >"$SPAWN_LOG"
+handle_demand CB_Overland_S_06 1 second-smugglers-request request
+[ "$(cat "$SPAWN_LOG")" = "CB_Overland_S_06" ]
 
 # The second dimension is warming. Repeated queue summaries must not start a
 # third instance while one occupied dimension plus one waiter needs only two.
@@ -93,6 +129,8 @@ cat >"$TEST_ROOT/director.log" <<'EOF'
 2026-09-08T20:00:00.000000000Z Received travel request for 1 player(s) to CB_Overland_S_07 (instancingMode=ClassicalInstancing)
 2026-09-08T20:00:01.000000000Z Received travel request for 1 player(s) to CB_Overland_S_07 (instancingMode=ClassicalInstancing)
 2026-09-08T20:00:02.000000000Z Processing travel queue for ClassicalInstancing group CB_Overland_S_08 (servers: [29 (server-a)], num: 1)
+2026-09-08T20:00:03.000000000Z Received travel request for 1 player(s) to CB_Overland_S_06 (instancingMode=ClassicalInstancing)
+2026-09-08T20:00:04.000000000Z Processing travel queue for ClassicalInstancing group CB_Overland_S_06 (servers: [28 (server-b)], num: 1)
 EOF
 handle_demand() { printf '%s|%s|%s\n' "$1" "$2" "$4" >>"$SPAWN_LOG"; }
 docker() { cat "$TEST_ROOT/director.log"; }
@@ -101,7 +139,8 @@ scan_travel_demand
 diff -u <(printf '%s\n' \
   'CB_Overland_S_07|1|request' \
   'CB_Overland_S_07|1|request' \
-  'CB_Overland_S_08|1|queue') "$SPAWN_LOG"
+  'CB_Overland_S_08|1|queue' \
+  'CB_Overland_S_06|1|request') "$SPAWN_LOG"
 
 grep -q 'docker logs --timestamps --since "$SINCE" dune-director' "$TEST_ROOT/functions.sh"
 SH
@@ -116,9 +155,9 @@ matches = re.findall(r"cat >>? runtime/director/config/director_config.ini <<'EO
 assert matches, "Director configuration blocks were not found"
 config = configparser.ConfigParser()
 config.read_string("\n".join(matches))
-for map_name in ("CB_Overland_S_07", "CB_Overland_S_08"):
+for map_name in ("CB_Overland_S_06", "CB_Overland_S_07", "CB_Overland_S_08"):
     assert config.getint(map_name, "MaxParties") == 1
     assert config.getint(map_name, "NumExtraServers") == 0
 PY
 
-echo "dynamic Landsraad demand scales one isolated party dimension at a time"
+echo "dynamic activity demand scales one isolated party dimension at a time"
