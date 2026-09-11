@@ -25,10 +25,10 @@ function mockBackend(config: Record<string, unknown>, { enrolled = false }: { en
   });
 }
 
-describe("SettingsPanel: Discord OAuth tri-state ordering (#676 §3)", () => {
+describe("SettingsPanel: Discord OAuth tri-state ordering (#676 §3, superseded for render order by the 2026-09-11 alphabetical sort -- the tri-state CONTENT/labeling below is still #676 §3, only the fixed Discord-OAuth-before-Login-Password order is new)", () => {
   beforeEach(() => { vi.clearAllMocks(); confirmAction.mockResolvedValue(true); });
 
-  it("not configured: Password Sign-In section renders before the Discord OAuth accordion", async () => {
+  it("not configured: the Discord OAuth accordion renders before Login Password (always-alphabetical order)", async () => {
     mockBackend({});
     const { container } = render(<SettingsPanel onPasswordChanged={vi.fn()} confirmAction={confirmAction} onTotpEnrollmentStarted={vi.fn()} />);
     await screen.findByLabelText("Expand Login Password");
@@ -37,7 +37,7 @@ describe("SettingsPanel: Discord OAuth tri-state ordering (#676 §3)", () => {
     const discordIndex = headers.findIndex((t) => t === "Discord OAuth");
     expect(loginIndex).toBeGreaterThanOrEqual(0);
     expect(discordIndex).toBeGreaterThanOrEqual(0);
-    expect(loginIndex).toBeLessThan(discordIndex);
+    expect(discordIndex).toBeLessThan(loginIndex);
   });
 
   it("configured and active: the Discord OAuth accordion renders before Login Password, open by default", async () => {
@@ -70,7 +70,7 @@ describe("SettingsPanel: Discord OAuth tri-state ordering (#676 §3)", () => {
     expect(screen.queryByText(/break-glass fallback/i)).toBeNull();
   });
 
-  it("soft-disabled: Password Sign-In reverts to primary (before Discord OAuth), which renders as the disabled banner", async () => {
+  it("soft-disabled: the disabled banner still renders before Login Password (always-alphabetical order)", async () => {
     mockBackend({ discordOAuthDisabled: true });
     const { container } = render(<SettingsPanel onPasswordChanged={vi.fn()} confirmAction={confirmAction} onTotpEnrollmentStarted={vi.fn()} />);
     await screen.findByText("Discord Sign-In (disabled)");
@@ -79,7 +79,7 @@ describe("SettingsPanel: Discord OAuth tri-state ordering (#676 §3)", () => {
     const disabledIndex = headers.findIndex((t) => t === "Discord Sign-In (disabled)");
     expect(loginIndex).toBeGreaterThanOrEqual(0);
     expect(disabledIndex).toBeGreaterThanOrEqual(0);
-    expect(loginIndex).toBeLessThan(disabledIndex);
+    expect(disabledIndex).toBeLessThan(loginIndex);
     // The wizard itself must not render in this state.
     expect(screen.queryByTestId("discord-setup-wizard-stub")).toBeNull();
   });
