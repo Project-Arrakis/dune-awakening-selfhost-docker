@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { adminApi, type LandsraadHouseFactionCatalogEntry, type LandsraadVendorCatalogEntry } from "../../api/admin";
+import { adminApi, type LandsraadHouseFactionCatalogEntry, type LandsraadVendorCatalogEntry, type LandsraadVendorOverridePreset } from "../../api/admin";
 import { mapsApi } from "../../api/maps";
 import { playersApi } from "../../api/players";
 import { LandsraadPanel } from "./LandsraadPanel";
@@ -53,14 +53,14 @@ const VENDOR_CATALOG: LandsraadVendorCatalogEntry[] = [
   { key: "utilities", decreeName: "SpecialVendorActive_Utilities" }
 ];
 
-const VENDOR_PRESET = { enabled: false, mode: "fixed" as const, vendorKeys: [], houseFaction: null, lastAppliedTermId: null, lastAppliedAt: "", lastResult: "" };
+const VENDOR_PRESET: LandsraadVendorOverridePreset = { enabled: false, mode: "fixed", vendorKeys: [], houseFaction: null, lastAppliedTermId: null, lastAppliedAt: "", lastResult: "" };
 const HOUSE_CATALOG: LandsraadHouseFactionCatalogEntry[] = [
   { key: "atreides", name: "Atreides" },
   { key: "harkonnen", name: "Harkonnen" }
 ];
 
-function renderPanel(overrides: { overview?: typeof OVERVIEW } & Partial<Parameters<typeof LandsraadPanel>[0]> = {}) {
-  const { overview, ...propOverrides } = overrides;
+function renderPanel(overrides: { overview?: typeof OVERVIEW; vendorPreset?: typeof VENDOR_PRESET } & Partial<Parameters<typeof LandsraadPanel>[0]> = {}) {
+  const { overview, vendorPreset, ...propOverrides } = overrides;
   const props = {
     confirmAction: vi.fn().mockResolvedValue(true),
     onError: vi.fn(),
@@ -69,7 +69,7 @@ function renderPanel(overrides: { overview?: typeof OVERVIEW } & Partial<Paramet
   };
   vi.mocked(adminApi.landsraad).mockResolvedValue(overview ?? OVERVIEW);
   vi.mocked(adminApi.landsraadMilestonePreset).mockResolvedValue({ preset: MILESTONE_PRESET });
-  vi.mocked(adminApi.landsraadVendorOverride).mockResolvedValue({ preset: VENDOR_PRESET, catalog: VENDOR_CATALOG, houseCatalog: HOUSE_CATALOG });
+  vi.mocked(adminApi.landsraadVendorOverride).mockResolvedValue({ preset: vendorPreset ?? VENDOR_PRESET, catalog: VENDOR_CATALOG, houseCatalog: HOUSE_CATALOG });
   vi.mocked(playersApi.listAll).mockResolvedValue({ rows: [], totalCount: 0 });
   vi.mocked(mapsApi.userSettingsValues).mockResolvedValue({ stdout: "" });
   vi.mocked(mapsApi.userSettingsRestartPending).mockResolvedValue({ pending: false });
@@ -158,6 +158,19 @@ describe("LandsraadPanel Special Vendor Override", () => {
     expect(adminApi.saveLandsraadVendorOverride).not.toHaveBeenCalled();
   });
 
+  it("revert copy also mentions the winning house when the preset last had one", async () => {
+    const { confirmAction } = renderPanel({ vendorPreset: { ...VENDOR_PRESET, houseFaction: "atreides" } });
+    await waitForVendorSection();
+    vi.mocked(adminApi.revertLandsraadVendorOverride).mockResolvedValue({ preset: VENDOR_PRESET, result: { applied: true } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Revert" }));
+
+    await waitFor(() => expect(confirmAction).toHaveBeenCalledWith(
+      expect.stringContaining("also clears the recorded winning house back to none"),
+      expect.objectContaining({ title: "Revert Landsraad Vendor Override" })
+    ));
+  });
+
   it("does not apply when the confirm dialog is declined", async () => {
     const { confirmAction } = renderPanel({ confirmAction: vi.fn().mockResolvedValue(false) });
     await waitForVendorSection();
@@ -218,6 +231,43 @@ describe("LandsraadPanel Special Vendor Override", () => {
 
     await waitFor(() => expect(adminApi.saveLandsraadVendorOverride).toHaveBeenCalledWith(
       expect.objectContaining({ houseFaction: null })
+    ));
+  });
+
+  it("selecting a house then resetting to None sends houseFaction: null, not the stale house", async () => {
+    renderPanel();
+    await waitForVendorSection();
+    vi.mocked(adminApi.saveLandsraadVendorOverride).mockResolvedValue({ preset: VENDOR_PRESET, result: { applied: true } });
+
+    fireEvent.click(screen.getByLabelText("Vehicle Vendor"));
+    fireEvent.change(screen.getByLabelText(/Target House/), { target: { value: "atreides" } });
+    fireEvent.change(screen.getByLabelText(/Target House/), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Force Now" }));
+
+    await waitFor(() => expect(adminApi.saveLandsraadVendorOverride).toHaveBeenCalledWith(
+      expect.objectContaining({ houseFaction: null })
+    ));
+  });
+
+  it("house selected on an already-resolved term combines both the overwrite warning and the house-forcing warning", async () => {
+    const resolvedOverview = { ...OVERVIEW, term: { ...OVERVIEW.term, winning_faction: "Harkonnen", active_decree: "SpecialVendorActive_Weapons" } };
+    const { confirmAction } = renderPanel({ overview: resolvedOverview });
+    await waitForVendorSection();
+    vi.mocked(adminApi.saveLandsraadVendorOverride).mockResolvedValue({ preset: VENDOR_PRESET, result: { applied: true } });
+
+    fireEvent.click(screen.getByLabelText("Vehicle Vendor"));
+    fireEvent.change(screen.getByLabelText(/Target House/), { target: { value: "atreides" } });
+    fireEvent.click(screen.getByRole("button", { name: "Force Now" }));
+
+    await waitFor(() => expect(confirmAction).toHaveBeenCalledWith(
+      expect.stringMatching(/already resolved.*won by Harkonnen.*set Atreides as this term's winning house/s),
+      expect.objectContaining({
+        danger: true,
+        warning: expect.stringContaining("This overwrites Harkonnen")
+      })
+    ));
+    await waitFor(() => expect(adminApi.saveLandsraadVendorOverride).toHaveBeenCalledWith(
+      expect.objectContaining({ houseFaction: "atreides", overrideResolvedTerm: true })
     ));
   });
 

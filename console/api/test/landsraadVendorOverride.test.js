@@ -25,13 +25,18 @@ const HOUSE_IDS = { Atreides: "1", Harkonnen: "2" };
 // support faction resolution -- deliberately without a silent default that
 // would mask a missing branch (design doc §9, QA/Test finding #11): every
 // new v2 query shape below has its own explicit, narrow match.
-function makeVendorOverrideDb({ decreeNames = Object.keys(DECREE_IDS), houseNames = Object.keys(HOUSE_IDS), term, stateLastAppliedDecreeId = null, stateLastAppliedTermId, stateLastAppliedFactionId = null, updateRowCount = 1 } = {}) {
+const FULL_TERM_COLUMNS = ["term_id", "start_time", "end_time", "active_decree_id", "elected_decree_id", "winning_faction_id", "reigning_faction_id", "test_term", "last_processed_reveal_day"];
+
+function makeVendorOverrideDb({ decreeNames = Object.keys(DECREE_IDS), houseNames = Object.keys(HOUSE_IDS), termColumns = FULL_TERM_COLUMNS, term, stateLastAppliedDecreeId = null, stateLastAppliedTermId, stateLastAppliedFactionId = null, updateRowCount = 1 } = {}) {
   const calls = [];
   let writtenActiveDecreeId = term?.active_decree_id ?? null;
   let writtenWinningFactionId = term?.winning_faction_id ?? null;
   const query = async (text, values = []) => {
     calls.push({ text, values });
     if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+    if (text.includes("select column_name") && text.includes("table_name = $2") && values[1] === "landsraad_decree_term") {
+      return { rows: termColumns.map((column_name) => ({ column_name })) };
+    }
     if (text.includes("select decree_name from dune.landsraad_decrees")) {
       return { rows: decreeNames.map((name) => ({ decree_name: name })) };
     }
@@ -111,6 +116,18 @@ test("applyLandsraadVendorOverride fails loud when the install's decree catalog 
   await assert.rejects(
     () => applyLandsraadVendorOverride(db, { vendorKeys: ["vehicles"], mode: "fixed" }),
     /does not include the expected vendor decrees \(SpecialVendorActive_Vehicles\)/
+  );
+});
+
+test("applyLandsraadVendorOverride fails loud, not with a raw Postgres error, when the term table is missing an expected column", async () => {
+  // landsraadOverview already treats these 4 columns as install-dependent
+  // (termColumns.has(...) guards) -- caught in PR #911's own bot review:
+  // without this check, an install missing them would hit a raw 42703
+  // undefined_column error instead of this file's usual graceful message.
+  const { db } = makeVendorOverrideDb({ termColumns: ["term_id", "start_time", "end_time", "test_term"] });
+  await assert.rejects(
+    () => applyLandsraadVendorOverride(db, { vendorKeys: ["vehicles"], mode: "fixed" }),
+    /requires active_decree_id\/elected_decree_id\/winning_faction_id\/reigning_faction_id/
   );
 });
 
@@ -278,7 +295,14 @@ test("applyLandsraadVendorOverride fails loud when the install's faction catalog
   );
 });
 
-test("applyLandsraadVendorOverride is self-consistent: a tick right after this feature's own houseFaction write sees the term as already resolved", async () => {
+// Note: this exercises the alreadyResolved guard against the exact values a
+// real prior houseFaction apply would leave behind (two independent
+// applyLandsraadVendorOverride calls against two fake dbs, not one
+// continuous db whose second read reflects the first write) -- it does NOT
+// drive an actual createLandsraadVendorOverrideReconciler tick. See
+// "landsraad vendor override reconciler applies once per new term..." above
+// for reconciler-level coverage of the plain-decree case.
+test("applyLandsraadVendorOverride's resolved-term guard correctly fires against the exact state its own prior houseFaction write would leave behind", async () => {
   const unresolvedTerm = { term_id: "73", test_term: false, active_decree_id: null, elected_decree_id: null, winning_faction_id: null, reigning_faction_id: null };
   const { db: firstDb } = makeVendorOverrideDb({ term: unresolvedTerm });
   const first = await applyLandsraadVendorOverride(firstDb, { vendorKeys: ["vehicles"], mode: "fixed", houseFaction: "atreides" });

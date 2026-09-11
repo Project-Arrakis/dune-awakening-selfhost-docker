@@ -725,9 +725,23 @@ const LANDSRAAD_VENDOR_DECREE_NAMES = Object.freeze({
 // itself produced (no term anywhere has ever had these set while
 // winning_faction_id/reigning_faction_id stayed NULL). That residual risk
 // cannot be fully closed from this codebase alone -- see the design doc §6.
+// Also checks the specific columns this feature writes actually exist --
+// landsraadOverview (line ~369) already treats active_decree_id/
+// elected_decree_id/winning_faction_id/reigning_faction_id as
+// install-dependent, absent on some schemas (that's why it goes through
+// termColumns.has(...) guards rather than referencing them unconditionally).
+// Without this check here too, an UPDATE referencing a genuinely missing
+// column would throw a raw Postgres 42703 undefined_column error instead of
+// this file's usual graceful "not supported on this install" message
+// (caught in review on PR #911, bot review, before this ever shipped).
 async function requireLandsraadVendorOverrideCapability(db) {
   await requireCapability(await tableExists(db, "landsraad_decree_term"), "Landsraad vendor override requires dune.landsraad_decree_term.");
   await requireCapability(await tableExists(db, "landsraad_decrees"), "Landsraad vendor override requires dune.landsraad_decrees.");
+  const termColumns = await columnsFor(db, "landsraad_decree_term");
+  await requireCapability(
+    termColumns.has("active_decree_id") && termColumns.has("elected_decree_id") && termColumns.has("winning_faction_id") && termColumns.has("reigning_faction_id"),
+    "Landsraad vendor override requires active_decree_id/elected_decree_id/winning_faction_id/reigning_faction_id on dune.landsraad_decree_term."
+  );
   if (typeof db.transaction !== "function") throw new Error("Landsraad vendor override requires rollback-safe transaction support.");
 }
 
@@ -899,8 +913,11 @@ async function ensureLandsraadVendorOverrideStateTable(tx) {
 // codebase; only documentable (surfaced in the confirm-dialog warning, see
 // the frontend).
 export async function applyLandsraadVendorOverride(db, { vendorKeys, mode, houseFaction, allowOverrideResolvedTerm = false } = {}) {
-  await requireLandsraadVendorOverrideCapability(db);
+  // Cheap, DB-independent input validation first -- fail fast on a bad
+  // request without ever touching the database, rather than after already
+  // running capability/table-existence queries.
   const safeVendorKeys = normalizeLandsraadVendorKeys(vendorKeys);
+  await requireLandsraadVendorOverrideCapability(db);
   const safeMode = mode === "rotate" ? "rotate" : "fixed";
   const { idByKey, keyById } = await resolveLandsraadVendorDecrees(db, safeVendorKeys);
   const resolvedHouse = await resolveLandsraadHouseFaction(db, houseFaction ?? null);
