@@ -5,6 +5,7 @@
 **Status:** L1 design, drafted through a research/brainstorming dialogue with the operator (architectural path). A real, dispatched Eight-Hats audit (8 independent agent reviews, not a solo pass) has been run against the first draft of this document; every CRITICAL/HIGH finding has been resolved directly in the sections below, not deferred. See §7 for the full findings register, STRIDE table, and resolution status.
 **Scope:** a new "Special Vendor Override" section inside the existing Core admin-console **Landsraad** tab (`console/web/src/features/landsraad/LandsraadPanel.tsx`) that lets an operator force one of the four Landsraad "Special Vendor" decrees active for the current term, independent of whether any house has organically won that term.
 **Explicitly out of scope (v1):** forcing `winning_faction_id`/`reigning_faction_id` (see §2.1 for why this may limit v1's real-world effect, and the go/no-go gate that follows from it); anything about which specific *house* benefits; any change to Landsraad voting/decree-rotation mechanics; an upstream PR to Red-Blink (§6).
+**Update 2026-09-11 (v2, §8):** the operator has directly confirmed the real game mechanic is per-house, gated on which house *won* — "if Atreides wins Landsraad, then that vendor is available [to Atreides]." This resolves §2.1's outcome (c): v1 as scoped (decree-only) is confirmed to be a no-op for every player, since `winning_faction_id` never becomes non-null under it. §8 designs the required extension (also forcing `winning_faction_id`/`reigning_faction_id` to an operator-chosen house) and its own audit. **v1 (§3) alone must not be shipped/enabled as a complete feature — only v1+v2 (§3+§8) together achieve the stated goal.**
 
 ---
 
@@ -205,3 +206,41 @@ Core is a public, multi-operator fork. This feature is additive and opt-in: a ne
 | Elevation of Privilege | #2 (admin-tier reach for a win-fabricating write) | HIGH | Resolved |
 
 All CRITICAL and HIGH findings (#1-11) are resolved directly in §§2-6 above. All MEDIUM findings (#12-23, #26) are resolved inline or explicitly named as accepted residual risk with rationale. All LOW findings (#24, #25, #27, #28, #29, #30) are either resolved, explicitly deferred to a named follow-up issue, or noted for the implementer — none silently dropped, per Requirement 20.
+
+---
+
+## 8. v2 — Forcing `winning_faction_id`/`reigning_faction_id` (required for v1 to actually work)
+
+**Trigger:** the operator directly confirmed the real game mechanic (2026-09-11): vendor access is gated per-house, on which house *won* — "if Atreides wins Landsraad, then that vendor is available [to Atreides]." This resolves §2.1's outcome (c). §3's decree-only write leaves `winning_faction_id` permanently `NULL`, so v1 alone never makes the vendor visible to anyone. This section is not optional polish — without it, the feature does not do what it was built for.
+
+### 8.1 Blast-radius research (done before designing this, not assumed)
+
+Investigated directly on `dune-dev` before writing this section, per Requirement 0:
+
+- **`dune.landsraad_decree_term` has no triggers of its own** (confirmed via `\d dune.landsraad_decree_term` — no "Triggers:" section). Writing `winning_faction_id`/`reigning_faction_id` fires no Postgres-level side effect, same as the decree columns v1 already writes.
+- **The one real concern from §6 (`landsraad_house_rewards`'s `NOTIFY` trigger) is on a *different, separate* table** this feature does not touch. Confirmed the trigger function body directly (`landsraad_notify_house_rewards_changed()`): it fires `AFTER INSERT OR UPDATE` on `landsraad_house_rewards` itself, notifying `landsraad_notify_channel` with the affected player id — it is not attached to `landsraad_decree_term` and is not triggered by this write. §6's framing ("`winning_faction_id` plausibly gates... `landsraad_house_rewards`") was correct in spirit but imprecise in mechanism — there is no direct DB-level cascade.
+- **The real, unavoidable unknown is what the closed-source engine itself does when it next reads a non-null `winning_faction_id`** — most plausibly, crediting `landsraad_house_rewards` rows (real in-game currency/items) to players of that house, which is the actual mechanism by which "winning" becomes a player-visible reward. This is a genuine, named risk: forcing `winning_faction_id` may cause the engine to grant real economy rewards to an entire house's player base, not just unlock a vendor NPC. This is the same *class* of risk this org's Deny-list precedent (`carepackage:grant-all`, "server-wide economy injection in one call") already exists to gate — mitigated here by reusing the same owner-only `landsraad:vendor-override:write` action rather than a broader one (§8.3).
+- **Confirmed real playable houses on this install**: `dune.factions` has exactly 4 rows — `Atreides` (1), `Harkonnen` (2), `None` (3), `Smuggler` (4). Only Atreides/Harkonnen are real Landsraad-eligible houses; `None`/`Smuggler` are not. (Corrino, part of the wider game's lore, does not exist as a row on this install/version — resolved by name at apply time per §8.2, not hardcoded, so an install where it does exist is still supported.)
+- **`landsraad_tasks.winning_faction_id`** (per-task, which house completed that task's board) is a distinct column on a distinct table from the term's own `winning_faction_id` — confirmed this feature's write never touches it, no interaction.
+
+### 8.2 Design
+
+Extends (does not replace) v1's existing function and UI:
+
+- `applyLandsraadVendorOverride(db, { vendorKeys, mode, houseFaction, allowOverrideResolvedTerm })` — new optional `houseFaction` parameter (`"atreides" | "harkonnen"`, extensible if a future install has more). When present, resolved by **faction name** (mirroring the existing decree-name-resolution pattern, §3.1) against `dune.factions` at apply time — fail loud, not silent, if the requested name doesn't exist on this install. The same locked transaction that writes `active_decree_id`/`elected_decree_id` also sets `winning_faction_id = reigning_faction_id = <resolved id>`. When `houseFaction` is omitted, behavior is byte-identical to v1 (decree-only) — this is additive, not a breaking change to the existing function's contract.
+- The existing "already resolved" guard (§3.1) is unchanged and continues to cover this: if the term already has a real, organic `winning_faction_id`, the reconciler still never overwrites it, and "Force Now" still requires the stronger already-resolved confirm.
+- **No new RBAC action.** This reuses `landsraad:vendor-override:write` (already Deny-listed at `admin`, owner-only) rather than minting a new one — the plausible economy-injection side effect (§8.1) is exactly the class of risk that action is already scoped to gate, and splitting it further would add ceremony without adding real protection (owner is already the only reachable tier).
+- **Frontend**: a new "Target House" dropdown in the existing Special Vendor Override section, populated from a live-resolved faction catalog (mirroring `landsraadVendorCatalog`'s pattern — a new `landsraadHouseFactionCatalog(db)` returning only the real, Landsraad-eligible house names present on this install), optional (leaving it unset preserves v1's decree-only behavior for an operator who, for some reason, only wants that). The confirm-dialog copy is extended to name the target house and explicitly state the economy-reward implication: *"Force {Vendor Name} Vendor active and set {House} as the winning house for the current term? This may grant {House}'s players real Landsraad rewards, not just vendor access."*
+- **Revert** (§3.4) is extended to also null `winning_faction_id`/`reigning_faction_id` when this feature's own state table confirms it was the one that set them for this term (same guard as v1's revert, §7 finding #7's fix) — it must not revert a house's real, organic win any more than it may revert a real, organic decree.
+
+### 8.3 What stays out of scope, even in v2
+
+- Any attempt to reach into `landsraad_house_rewards` directly (e.g., to grant or preview specific reward amounts) — that table's real population logic is entirely engine-owned and opaque; this feature only ever sets the term-level `winning_faction_id` and lets the engine do whatever it does next.
+- Real Corrino support beyond name-resolution being generically written to handle it if a given install's `dune.factions` includes it — no install-specific hardcoding either way.
+- An upstream PR to Red-Blink — if anything, v2 makes this decision even more clearly a fork-only "cheat" than v1 alone, given the plausible real-economy-reward side effect.
+
+### 8.4 Testing
+
+Extends the existing `landsraadVendorOverride.test.js` fake-db harness: faction-name resolution and its fail-loud path (mirroring the decree-name tests), `houseFaction` omitted preserves exact v1 behavior (regression-guard test against the byte-identical claim in §8.2), the extended "already resolved" and revert guards. Manual dune-dev verification, per Requirement 0, now specifically includes watching for any `landsraad_house_rewards` rows appearing for the target house's players after applying — confirming (or ruling out) the §8.1 economy-reward hypothesis empirically, since this cannot be determined from schema alone.
+
+*(Layer 1 Eight-Hats audit for §8 to follow before implementation, per the same process as §§1-7.)*
