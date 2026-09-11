@@ -1,4 +1,4 @@
-import { post } from "./client";
+import { api, post } from "./client";
 
 export type OwnedDiscordGuild = { id: string; name: string; owner: true };
 
@@ -52,5 +52,15 @@ export const discordHostedBotApi = {
   // (server.js's own comment), so there is no separate "Enable" step first.
   startAutoInvite: (consoleUrl: string) => {
     return post<{ authorizeUrl: string }>("/api/integrations/discord/hosted-bot/auto-invite/start", { consoleUrl });
+  },
+  // Round 4 (dune-awakening-selfhost-docker#876, design doc §13): the
+  // completion-signal poll. Called repeatedly (every 10s) by
+  // DiscordBotSection's own bounded polling loop while it shows "waiting
+  // for owner" -- this is how Core ever learns the Discord owner actually
+  // confirmed.
+  pollConfirmationStatus: (confirmationId: string) => {
+    return api<{ status: "pending" | "confirmed" | "denied" | "owner_changed" | "timed_out" | "not_found"; guildName?: string }>(
+      `/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=${encodeURIComponent(confirmationId)}`
+    );
   }
 };

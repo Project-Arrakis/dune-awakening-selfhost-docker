@@ -121,6 +121,36 @@ export function clearAutoInviteStateCookie(secure = true) {
   return `auto_invite_state=; HttpOnly; SameSite=Lax; Path=/api/integrations/discord/hosted-bot/auto-invite; Max-Age=0${securePart}`;
 }
 
+// Round 4 (dune-awakening-selfhost-docker#876, design doc §13). Layer 2
+// audit finding: the new confirmation-status poll route only ever checked
+// that confirmationId was non-empty, with no binding to the specific
+// session/console that legitimately received it from /auto-invite/complete
+// -- unlike EVERY other step of this flow, which double-submit-cookies its
+// own opaque value (state above, handle in hostedBotOAuth.js). A GET
+// request with no CSRF protection of its own, carrying only a valid
+// session cookie (asc_session is SameSite=Lax, which DOES ride along on a
+// cross-site top-level navigation, e.g. a crafted link or auto-redirecting
+// page -- just not on cross-site subresource loads), could otherwise let
+// an attacker who separately staged/knows a confirmationId (their own
+// guild's, or one that leaked) trick a logged-in operator's browser into
+// persisting an unrelated guild's connection into THIS console via
+// persistHostedBotConnectedGuild() -- contradicting that function's own
+// documented precondition that guildId is already verified against the
+// caller's own owned-guild set before it's ever called. Same double-
+// submit-cookie mechanism as autoInviteStateCookie above closes this: the
+// cookie is set ONLY by /complete, when the browser is trusted to have
+// its own legitimately-received confirmationId, and /confirmation-status
+// then requires the presented value to match it.
+export function autoInviteConfirmationIdCookie(value, secure = true) {
+  const securePart = secure ? "; Secure" : "";
+  return `auto_invite_confirmation_id=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/api/integrations/discord/hosted-bot/auto-invite; Max-Age=1200${securePart}`;
+}
+
+export function clearAutoInviteConfirmationIdCookie(secure = true) {
+  const securePart = secure ? "; Secure" : "";
+  return `auto_invite_confirmation_id=; HttpOnly; SameSite=Lax; Path=/api/integrations/discord/hosted-bot/auto-invite; Max-Age=0${securePart}`;
+}
+
 // autoInviteCompletePage: the popup's own return page (design doc §4.1:
 // "Core-->>Op: Small return page (mirrors existing hostedBotOAuthReturnPage()),
 // auto-closes popup"). Deliberately DIFFERENT closing behavior from
@@ -142,8 +172,13 @@ export function clearAutoInviteStateCookie(secure = true) {
 // entirely rather than relying on getting it right in this template
 // string. postMessage's targetOrigin is this page's own window.location.origin
 // (never "*") -- the opener is always this exact same console origin.
-export function autoInviteCompletePage({ ok, guildName = "", reason = "", reclaimed = false }) {
-  const payload = { ok: Boolean(ok), guildName: String(guildName), reason: String(reason), reclaimed: Boolean(reclaimed) };
+// Round 4 (dune-awakening-selfhost-docker#876, design doc §13, issue #879):
+// confirmationId added to this postMessage payload -- this popup self-closes
+// ~1.2s after loading, so this is the ONLY hop where the opener window can
+// ever pick up the value it needs to later poll
+// /api/integrations/discord/hosted-bot/auto-invite/confirmation-status.
+export function autoInviteCompletePage({ ok, guildName = "", reason = "", reclaimed = false, confirmationId = "" }) {
+  const payload = { ok: Boolean(ok), guildName: String(guildName), reason: String(reason), reclaimed: Boolean(reclaimed), confirmationId: String(confirmationId) };
   const safeJson = JSON.stringify(payload).replace(/</g, "\\u003c");
   const message = ok ? "Request sent — check Discord to confirm the connection." : "Could not connect. Check the console for details.";
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Connecting…</title></head><body><p>${message}</p><noscript><p>Close this window and return to the console.</p></noscript><script>

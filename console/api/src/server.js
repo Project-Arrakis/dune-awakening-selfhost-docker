@@ -34,9 +34,9 @@ import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute, readDiscordBotApiToken } from "./integrations/discord/routes.js";
-import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie } from "./integrations/discord/oauth.js";
+import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie, constantTimeStringEqual } from "./integrations/discord/oauth.js";
 import { fetchOwnedDiscordGuilds, createPendingRegistrationStore, hostedBotOAuthStateCookie, clearHostedBotOAuthStateCookie, hostedBotRegistrationHandleCookie, clearHostedBotRegistrationHandleCookie, hostedBotOAuthReturnPage } from "./integrations/discord/hostedBotOAuth.js";
-import { buildAutoInviteAuthorizeUrl, createAutoInvitePendingStateStore, autoInviteStateCookie, clearAutoInviteStateCookie, autoInviteCompletePage } from "./integrations/discord/autoInvite.js";
+import { buildAutoInviteAuthorizeUrl, createAutoInvitePendingStateStore, autoInviteStateCookie, clearAutoInviteStateCookie, autoInviteCompletePage, autoInviteConfirmationIdCookie, clearAutoInviteConfirmationIdCookie } from "./integrations/discord/autoInvite.js";
 import { fetchWithTimeoutAndRetry } from "./services/httpWithRetry.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
@@ -2028,6 +2028,11 @@ async function handleApi(req, res) {
     const guildName = completeUrl.searchParams.get("guildName") || "";
     const reason = completeUrl.searchParams.get("reason") || "";
     const reclaimed = completeUrl.searchParams.get("reclaimed") === "true";
+    // Round 4 (dune-awakening-selfhost-docker#876, design doc §13, issue
+    // #879): read alongside the existing fields -- the first of the three
+    // hops confirmationId must flow through so the frontend can later poll
+    // /api/integrations/discord/hosted-bot/auto-invite/confirmation-status.
+    const confirmationId = completeUrl.searchParams.get("confirmationId") || "";
     const cookieState = parseCookies(req.headers.cookie || "").get("auto_invite_state") || "";
 
     const consumed = hostedBotAutoInvitePendingStates.consume(state, cookieState);
@@ -2042,13 +2047,107 @@ async function handleApi(req, res) {
     // reasoning for why the signed redirect fires at staging time, not
     // after the owner actually confirms) -- NOT "the guild is connected."
     // persistHostedBotConnectedGuild() is deliberately NOT called on this
-    // path; the local display cache is only updated once a later,
-    // separate mechanism confirms the owner actually clicked Confirm (not
-    // yet built -- this route's own job ends at showing the operator the
-    // right "waiting" state, matching design doc §6's failure-mode table).
-    res.setHeader("Set-Cookie", clearAutoInviteStateCookie(config.secureCookies));
+    // path; the local display cache is only updated once the new
+    // confirmation-status poll (round 4, dune-awakening-selfhost-docker#876,
+    // design doc §13) observes the owner actually clicked Confirm -- this
+    // route's own job ends at showing the operator the right "waiting"
+    // state, matching design doc §6's failure-mode table, and handing
+    // confirmationId to the frontend so it can start that poll.
+    // Layer 2 audit finding: the confirmation-status route below has no
+    // CSRF protection of its own beyond a valid session -- an attacker who
+    // separately knows/stages a confirmationId could otherwise trick a
+    // logged-in operator's browser (asc_session is SameSite=Lax, which
+    // does ride along on a cross-site top-level navigation) into polling
+    // with an UNRELATED confirmationId, persisting a wrong guild's
+    // connection. Same double-submit-cookie mechanism as auto_invite_state
+    // above: this cookie is set ONLY here, when the browser is trusted to
+    // have just legitimately received this exact confirmationId, and
+    // confirmation-status requires the presented value to match it.
+    const cookiesToSet = [clearAutoInviteStateCookie(config.secureCookies)];
+    if (ok && confirmationId) cookiesToSet.push(autoInviteConfirmationIdCookie(confirmationId, config.secureCookies));
+    res.setHeader("Set-Cookie", cookiesToSet);
     audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/complete"), "hosted-bot.auto-invite.complete", { ok, reason: ok ? undefined : reason, reclaimed });
-    return html(res, 200, autoInviteCompletePage({ ok, guildName, reason, reclaimed }));
+    return html(res, 200, autoInviteCompletePage({ ok, guildName, reason, reclaimed, confirmationId }));
+  }
+
+  // Round 4 (dune-awakening-selfhost-docker#876, design doc §13): the
+  // completion signal itself. Before this route existed, Core had no way
+  // to ever learn the Discord owner actually confirmed a pending
+  // connection -- an operator could complete the entire flow successfully
+  // and the console would never reflect it. This route is called
+  // repeatedly by the frontend's own bounded polling loop while it shows
+  // "waiting for owner," and forwards to mentat-link's own
+  // /confirmation-status proxy (no MENTAT_PROXY_SHARED_SECRET on Core's
+  // side, same reasoning as /auto-invite/start above).
+  if (path === "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status" && req.method === "GET") {
+    const confirmationId = String(url.searchParams.get("confirmationId") || "");
+    if (!confirmationId) {
+      return json(res, 400, { error: "confirmationId is required" });
+    }
+    // Layer 2 audit finding: double-submit cookie check, matching
+    // /auto-invite/complete's own state-cookie pattern -- a valid session
+    // alone is not enough to trust an arbitrary caller-supplied
+    // confirmationId, since persisting the wrong guild here has a real
+    // (if narrow) blast radius. Only /complete ever sets this cookie, and
+    // only for the confirmationId this exact browser just legitimately
+    // received.
+    const cookieConfirmationId = parseCookies(req.headers.cookie || "").get("auto_invite_confirmation_id") || "";
+    if (!cookieConfirmationId || !constantTimeStringEqual(confirmationId, cookieConfirmationId)) {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "confirmation_id_cookie_mismatch" });
+      return json(res, 403, { error: "This connection request could not be verified. Start over from the settings page." });
+    }
+    let mentatLinkResponse;
+    try {
+      mentatLinkResponse = await fetchWithTimeoutAndRetry(
+        `${config.mentatLinkConfirmationStatusUrl}?confirmationId=${encodeURIComponent(confirmationId)}`,
+        { method: "GET" },
+        { timeoutMs: 15000 }
+      );
+    } catch {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "mentat_unreachable" });
+      return json(res, 502, { error: "Couldn't reach the hosted bot service. Try again in a moment." });
+    }
+    if (!mentatLinkResponse.ok) {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "mentat_rejected", status: mentatLinkResponse.status });
+      return json(res, 502, { error: "Could not check the connection status. Try again in a moment." });
+    }
+    let statusBody;
+    try {
+      statusBody = await mentatLinkResponse.json();
+    } catch {
+      statusBody = null;
+    }
+    const status = String(statusBody?.status || "not_found");
+    // On "confirmed", persist the connection locally -- the same function
+    // the OLD, advanced flow's own handleRegisterGuild() already calls
+    // (server.js's existing persistHostedBotConnectedGuild() call site),
+    // just reached via this new path. This is the one place in the entire
+    // new auto-invite flow that finally closes the gap this round exists
+    // to fix.
+    if (status === "confirmed") {
+      const guildId = String(statusBody?.guildId || "");
+      const guildName = String(statusBody?.guildName || "");
+      // Automated review finding: persistHostedBotConnectedGuild()'s only
+      // existing caller (POST /register above) sources guildId from Core's
+      // own OAuth-verified owned-guild list -- a real Discord snowflake by
+      // construction, which is why no format check was ever applied to it
+      // (only guildName gets the #870/#860 allowlist sanitization). This
+      // route is the first caller to source guildId from an inbound
+      // response Core does not independently re-verify (no shared secret
+      // to/from mentat-link on Core's side) -- if mentat-link were ever
+      // compromised, MITM'd, or simply buggy, an unvalidated guildId
+      // string would reach the same .env-write/shell-source path #870's
+      // CRITICAL fix hardened guildName against. Reuses
+      // validateDiscordRoleIds() -- a single, non-comma value is exactly
+      // one snowflake-pattern check -- rather than duplicating the regex.
+      if (guildId && validateDiscordRoleIds(guildId).ok) {
+        persistHostedBotConnectedGuild(config, { guildId, guildName });
+      } else if (guildId) {
+        audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "invalid_guild_id_from_mentat" });
+      }
+    }
+    audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: true, status });
+    return json(res, 200, { status, guildName: status === "confirmed" ? String(statusBody?.guildName || "") : undefined });
   }
 
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);

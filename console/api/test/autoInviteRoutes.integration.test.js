@@ -94,10 +94,10 @@ async function closeServer(server) {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
-function api(port, path, { method, cookie, csrf, body } = {}) {
+function api(port, path, { method, cookie, csrf, body, extraCookie } = {}) {
   const headers = {};
   if (body !== undefined) headers["content-type"] = "application/json";
-  if (cookie) headers.cookie = `asc_session=${cookie}`;
+  if (cookie) headers.cookie = `asc_session=${cookie}${extraCookie ? `; ${extraCookie}` : ""}`;
   if (csrf) headers["x-csrf-token"] = csrf;
   return fetch(`http://127.0.0.1:${port}${path}`, {
     method: method || (body !== undefined ? "POST" : "GET"),
@@ -501,7 +501,7 @@ test("auto-invite/start -> auto-invite/complete round trip succeeds and renders 
     // happened on mentat-link's side (see that repo's return.js), which is
     // out of scope for THIS integration test.
     const complete = await fetch(
-      `http://127.0.0.1:${port}/api/integrations/discord/hosted-bot/auto-invite/complete?state=${encodeURIComponent(stateCookie)}&ok=true&guildName=${encodeURIComponent("Fleetyard")}&reclaimed=false`,
+      `http://127.0.0.1:${port}/api/integrations/discord/hosted-bot/auto-invite/complete?state=${encodeURIComponent(stateCookie)}&ok=true&guildName=${encodeURIComponent("Fleetyard")}&reclaimed=false&confirmationId=confirmation-xyz`,
       { redirect: "manual", headers: { cookie: `asc_session=${session.cookie}; auto_invite_state=${stateCookie}` } }
     );
     assert.equal(complete.status, 200);
@@ -509,8 +509,14 @@ test("auto-invite/start -> auto-invite/complete round trip succeeds and renders 
     assert.match(text, /Request sent — check Discord to confirm the connection\./);
     assert.match(text, /"guildName":"Fleetyard"/);
     assert.match(text, /"ok":true/);
+    assert.match(text, /"confirmationId":"confirmation-xyz"/);
     const clearedState = (complete.headers.getSetCookie() || []).some((c) => c.startsWith("auto_invite_state=;"));
     assert.ok(clearedState, "the now-consumed auto_invite_state cookie must be cleared");
+    // Round 4 Layer 2 audit fix: on a real ok:true outcome with a
+    // confirmationId, /complete must set the double-submit cookie the new
+    // /confirmation-status route requires.
+    const confirmationIdCookie = cookieFrom(complete.headers.getSetCookie() || [], "auto_invite_confirmation_id");
+    assert.equal(confirmationIdCookie, "confirmation-xyz");
 
     // ok:true here means "staged and owner notified," not "connected" --
     // this route must never mark the guild as connected on its own (design
@@ -563,6 +569,250 @@ test("auto-invite/complete renders ok:false with the caller's reason when mentat
   } finally {
     await stopProcess(console_.child);
     await closeServer(mentatLink.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// ─── GET /api/integrations/discord/hosted-bot/auto-invite/confirmation-status
+// (dune-awakening-selfhost-docker#876, design doc §13, round 4): the
+// completion-signal poll. Before this route existed, Core had no way to
+// ever learn whether/when the Discord owner actually confirmed. ──────────
+
+// Fake mentat-link /confirmation-status proxy, mirroring
+// startFakeMentatLinkStart()'s own pattern above.
+function startFakeMentatLinkConfirmationStatus(port, { status = 200, body = { status: "pending" } } = {}) {
+  let hitCount = 0;
+  const requestUrls = [];
+  const server = createServer((req, res) => {
+    hitCount += 1;
+    requestUrls.push(req.url);
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+  });
+  return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve({ server, hits: () => hitCount, urls: () => requestUrls })));
+}
+
+test("GET .../auto-invite/confirmation-status requires a real session (401 unauthenticated)", async () => {
+  const port = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-noauth-"));
+  const console_ = startConsole(port, tempDir);
+  try {
+    await waitForHealth(port);
+    const res = await fetch(`http://127.0.0.1:${port}/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=x`, { redirect: "manual" });
+    assert.equal(res.status, 401);
+  } finally {
+    await stopProcess(console_.child);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("GET .../auto-invite/confirmation-status requires the confirmationId query param (400, never calls mentat-link)", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-missing-id-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_CONFIRMATION_STATUS_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/confirmation-status`
+  });
+  const mentatLink = await startFakeMentatLinkConfirmationStatus(mentatLinkPort);
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status", { cookie: session.cookie });
+    assert.equal(res.status, 400);
+    assert.equal(mentatLink.hits(), 0, "a missing confirmationId must never reach mentat-link at all");
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(mentatLink.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// Layer 2 audit finding on this exact route: a valid session alone was
+// not enough to trust an arbitrary caller-supplied confirmationId --
+// persisting the wrong guild has a real, if narrow, blast radius. These
+// two tests lock in the double-submit-cookie fix.
+test("GET .../auto-invite/confirmation-status rejects a confirmationId with no matching cookie at all (403), never reaching mentat-link", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-no-cookie-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_CONFIRMATION_STATUS_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/confirmation-status`
+  });
+  const mentatLink = await startFakeMentatLinkConfirmationStatus(mentatLinkPort, { body: { status: "confirmed", guildId: "999999999999999999", guildName: "Attacker Guild" } });
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+    // A valid session, but this browser never went through /complete for
+    // this (or any) confirmationId -- no auto_invite_confirmation_id
+    // cookie at all, simulating an attacker-crafted link/CSRF attempt.
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=attacker-chosen-id", { cookie: session.cookie });
+    assert.equal(res.status, 403);
+    assert.equal(mentatLink.hits(), 0, "an unverified confirmationId must never even reach mentat-link");
+
+    const settings = await (await api(port, "/api/settings/discord-bot", { cookie: session.cookie })).json();
+    assert.equal(settings.hostedBotConnectedGuildId, null, "nothing must be persisted from an unverified request");
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(mentatLink.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("GET .../auto-invite/confirmation-status rejects a confirmationId that does NOT match the double-submit cookie (403) -- the actual CSRF-style attack this fix closes", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-mismatch-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_CONFIRMATION_STATUS_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/confirmation-status`
+  });
+  const mentatLink = await startFakeMentatLinkConfirmationStatus(mentatLinkPort, { body: { status: "confirmed", guildId: "999999999999999999", guildName: "Attacker Guild" } });
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+    // This browser DID legitimately go through /complete for its OWN
+    // confirmationId ("real-own-id") -- but the request here asks about a
+    // DIFFERENT one ("attacker-chosen-id"), exactly what an attacker
+    // exploiting a leaked/staged confirmationId would attempt against a
+    // logged-in operator's browser.
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=attacker-chosen-id", {
+      cookie: session.cookie,
+      extraCookie: "auto_invite_confirmation_id=real-own-id"
+    });
+    assert.equal(res.status, 403);
+    assert.equal(mentatLink.hits(), 0);
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(mentatLink.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("GET .../auto-invite/confirmation-status forwards confirmationId to mentat-link and returns its status verbatim when still pending", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-pending-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_CONFIRMATION_STATUS_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/confirmation-status`
+  });
+  const mentatLink = await startFakeMentatLinkConfirmationStatus(mentatLinkPort, { body: { status: "pending" } });
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=abc123", { cookie: session.cookie, extraCookie: "auto_invite_confirmation_id=abc123" });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, "pending");
+    assert.equal(mentatLink.hits(), 1);
+    assert.match(mentatLink.urls()[0], /confirmationId=abc123/);
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(mentatLink.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// This is THE closing test for issue #876 -- the console actually learning
+// a connection succeeded, and persisting it the same way the OLD flow's
+// own /register route already does.
+test("GET .../auto-invite/confirmation-status persists the connected guild via persistHostedBotConnectedGuild when mentat-link reports confirmed", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-confirmed-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_CONFIRMATION_STATUS_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/confirmation-status`
+  });
+  const mentatLink = await startFakeMentatLinkConfirmationStatus(mentatLinkPort, { body: { status: "confirmed", guildId: "111111111111111111", guildName: "Fleetyard" } });
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=abc123", { cookie: session.cookie, extraCookie: "auto_invite_confirmation_id=abc123" });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, "confirmed");
+    assert.equal(body.guildName, "Fleetyard");
+
+    // The real assertion: this actually reached persistHostedBotConnectedGuild(),
+    // reflected on a subsequent settings read -- exactly the gap issue #876
+    // exists to close.
+    const settings = await (await api(port, "/api/settings/discord-bot", { cookie: session.cookie })).json();
+    assert.equal(settings.hostedBotConnectedGuildId, "111111111111111111");
+    assert.equal(settings.hostedBotConnectedGuildName, "Fleetyard");
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(mentatLink.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// Automated review finding on this PR's own first commit: guildId (unlike
+// guildName) never went through any format check before reaching
+// persistHostedBotConnectedGuild() -- this route is the first caller to
+// source guildId from a response Core doesn't independently re-verify, so
+// a compromised/buggy/MITM'd mentat-link could otherwise inject a
+// malicious guildId into the same .env-write/shell-source path issue #870
+// hardened guildName against.
+test("GET .../auto-invite/confirmation-status does NOT persist a malformed (non-snowflake) guildId from mentat-link", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-bad-guildid-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_CONFIRMATION_STATUS_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/confirmation-status`
+  });
+  const mentatLink = await startFakeMentatLinkConfirmationStatus(mentatLinkPort, { body: { status: "confirmed", guildId: "not-a-real-snowflake-$(evil)", guildName: "Fleetyard" } });
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=abc123", { cookie: session.cookie, extraCookie: "auto_invite_confirmation_id=abc123" });
+    assert.equal(res.status, 200, "the poll response itself is still returned normally to the frontend");
+
+    const settings = await (await api(port, "/api/settings/discord-bot", { cookie: session.cookie })).json();
+    assert.equal(settings.hostedBotConnectedGuildId, null, "a malformed guildId must never be persisted, regardless of what mentat-link claims");
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(mentatLink.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("GET .../auto-invite/confirmation-status does NOT persist anything when the status is denied/pending/not_found", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-denied-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_CONFIRMATION_STATUS_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/confirmation-status`
+  });
+  const mentatLink = await startFakeMentatLinkConfirmationStatus(mentatLinkPort, { body: { status: "denied" } });
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=abc123", { cookie: session.cookie, extraCookie: "auto_invite_confirmation_id=abc123" });
+    const body = await res.json();
+    assert.equal(body.status, "denied");
+
+    const settings = await (await api(port, "/api/settings/discord-bot", { cookie: session.cookie })).json();
+    assert.equal(settings.hostedBotConnectedGuildId, null, "a denied outcome must never persist a connected guild");
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(mentatLink.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("GET .../auto-invite/confirmation-status returns 502 when mentat-link is unreachable", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-unreachable-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_CONFIRMATION_STATUS_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/confirmation-status`
+  });
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=abc123", { cookie: session.cookie, extraCookie: "auto_invite_confirmation_id=abc123" });
+    assert.equal(res.status, 502);
+  } finally {
+    await stopProcess(console_.child);
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
