@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchOwnedDiscordGuilds, createPendingRegistrationStore, hostedBotOAuthStateCookie, hostedBotRegistrationHandleCookie, hostedBotOAuthReturnPage } from "../src/integrations/discord/hostedBotOAuth.js";
+import { fetchOwnedDiscordGuilds, createPendingRegistrationStore, hostedBotOAuthStateCookie, clearHostedBotOAuthStateCookie, hostedBotRegistrationHandleCookie, hostedBotOAuthReturnPage } from "../src/integrations/discord/hostedBotOAuth.js";
 
 test("fetchOwnedDiscordGuilds keeps only owner:true guilds and preserves id+name+owner", async () => {
   const fetchImpl = async (url) => {
@@ -60,7 +60,7 @@ test("pending-registration store enforces a capacity cap", () => {
 });
 
 test("hostedBotOAuthStateCookie and hostedBotRegistrationHandleCookie use distinct, path-scoped, HttpOnly cookies", () => {
-  const stateCookie = hostedBotOAuthStateCookie("abc123", true);
+  const stateCookie = hostedBotOAuthStateCookie("abc123");
   assert.match(stateCookie, /^hosted_bot_oauth_state=abc123/);
   assert.match(stateCookie, /HttpOnly/);
   assert.match(stateCookie, /Path=\/api\/integrations\/discord\/hosted-bot\/oauth\/callback/);
@@ -68,6 +68,48 @@ test("hostedBotOAuthStateCookie and hostedBotRegistrationHandleCookie use distin
   assert.match(handleCookie, /^hosted_bot_registration_handle=xyz789/);
   assert.match(handleCookie, /HttpOnly/);
   assert.notEqual(stateCookie.split("=")[0], handleCookie.split("=")[0], "the two cookies must have distinct names");
+});
+
+// Layer 3 audit finding (CRITICAL): mirrors oauth.js's own already-fixed,
+// already-pinned regression test ("oauth state cookie is always Secure").
+// hostedBotOAuthStateCookie()/clearHostedBotOAuthStateCookie() used to accept
+// a `secure` parameter that every real call site fed with config.secureCookies
+// -- false by default (docker-compose.web.yml's ADMIN_SECURE_COOKIES:-0) on
+// every fresh install. SameSite=None without Secure is rejected outright by
+// every modern browser (not just weaker), so this hosted-bot OAuth flow's
+// state cookie never survived the Discord redirect on any default install.
+test("hosted-bot OAuth state cookie is always Secure: SameSite=None mandates Secure, independent of ADMIN_SECURE_COOKIES", () => {
+  const set = hostedBotOAuthStateCookie("abc123");
+  assert.match(set, /SameSite=None/);
+  assert.match(set, /;\s*Secure/);
+  assert.match(set, /HttpOnly/);
+  assert.match(clearHostedBotOAuthStateCookie(), /SameSite=None/);
+  assert.match(clearHostedBotOAuthStateCookie(), /;\s*Secure/);
+});
+
+// Layer 3 audit finding (HIGH): discordJsonRequest() (used by
+// fetchOwnedDiscordGuilds during the hosted-bot OAuth callback) used to be a
+// bare `await fetchImpl(...)` with no bound at all -- unlike oauth.js's
+// near-identical helper, which passes an AbortController-derived signal
+// specifically to prevent a Discord brownout hanging the request for
+// undici's multi-minute default. A real 5s wait to prove the abort actually
+// fires isn't worth the wall-clock cost this suite doesn't otherwise pay
+// anywhere -- this confirms the wiring directly: every request this
+// function makes now carries a real AbortSignal, which is the mechanism the
+// timeout depends on.
+test("fetchOwnedDiscordGuilds requests carry a real AbortSignal, so a hung Discord response can actually be aborted", async () => {
+  const signals = [];
+  const fetchImpl = async (url, init) => {
+    signals.push(init?.signal);
+    if (url.includes("/users/@me/guilds")) return { ok: true, json: async () => [] };
+    return { ok: true, json: async () => ({ id: "999999999999999999", username: "someone" }) };
+  };
+  await fetchOwnedDiscordGuilds({ accessToken: "tok", fetchImpl });
+  assert.equal(signals.length, 2, "both the identity and guilds calls must go through discordJsonRequest");
+  for (const signal of signals) {
+    assert.ok(signal instanceof AbortSignal, "every Discord request must carry a real AbortSignal, not none at all");
+    assert.equal(signal.aborted, false, "the signal must not already be aborted for a fast, successful response");
+  }
 });
 
 test("hostedBotOAuthReturnPage embeds the owned-guilds list as JSON the SPA can read via sessionStorage, and never embeds a token", () => {

@@ -720,6 +720,30 @@ export function DiscordBotSection() {
     persistChoice(value);
   }
 
+  // Layer 3 audit finding (HIGH): the "enabled" management view's own
+  // choice toggle (below) used to call plain updateChoice(), which only
+  // ever touches local state/localStorage -- never the server. But the
+  // "Connect to hosted bot" UI (the auto-invite flow and the Advanced
+  // manual-connect disclosure) renders based on that same local `choice`
+  // value, appearing immediately on click, well before deploymentChoice is
+  // actually persisted server-side (only "Save Role IDs" does that, via
+  // handleUpdateRoleIds). An operator who clicked "Connect to hosted bot"
+  // in that window hit a real 403 from /oauth/start's server-side
+  // deploymentChoice gate (server.js), which reads the real, saved value,
+  // not what the button just showed. Mirrors chooseAndAdvance()'s own
+  // already-established, already-audited pattern (used by the wizard's
+  // step-1 picker) -- persist immediately, so the UI is never ahead of
+  // what the server will actually accept.
+  async function updateChoiceAndPersist(value: Choice) {
+    updateChoice(value);
+    setError("");
+    try {
+      await discordAdapterSettingsApi.setChoice(value === "hosted" ? "hosted" : "self-hosted");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   // Picking a choice on the wizard's first step records it and, for
   // self-hosted, advances straight to role config -- unchanged. The choice
   // buttons in the ongoing-management view (phase === "enabled") use plain
@@ -1622,8 +1646,8 @@ export function DiscordBotSection() {
               appear once it's persisted as "hosted". */}
           <div className="settings-choice">
             <p>Which are you using?</p>
-            <button className={choice === "hosted" ? "active" : ""} aria-pressed={choice === "hosted"} onClick={() => updateChoice("hosted")}>Hosted bot</button>
-            <button className={choice === "self-hosted" ? "active" : ""} aria-pressed={choice === "self-hosted"} onClick={() => updateChoice("self-hosted")}>Self-hosting</button>
+            <button className={choice === "hosted" ? "active" : ""} aria-pressed={choice === "hosted"} onClick={() => { void updateChoiceAndPersist("hosted"); }}>Hosted bot</button>
+            <button className={choice === "self-hosted" ? "active" : ""} aria-pressed={choice === "self-hosted"} onClick={() => { void updateChoiceAndPersist("self-hosted"); }}>Self-hosting</button>
           </div>
           {/* The real, one-time reveal (plaintext value + Copy button) now
               lives in the hoisted block above, so it also survives a
