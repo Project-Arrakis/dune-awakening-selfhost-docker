@@ -745,6 +745,36 @@ test("GET .../auto-invite/confirmation-status persists the connected guild via p
   }
 });
 
+// Automated review finding on this PR's own first commit: guildId (unlike
+// guildName) never went through any format check before reaching
+// persistHostedBotConnectedGuild() -- this route is the first caller to
+// source guildId from a response Core doesn't independently re-verify, so
+// a compromised/buggy/MITM'd mentat-link could otherwise inject a
+// malicious guildId into the same .env-write/shell-source path issue #870
+// hardened guildName against.
+test("GET .../auto-invite/confirmation-status does NOT persist a malformed (non-snowflake) guildId from mentat-link", async () => {
+  const port = await getFreePort();
+  const mentatLinkPort = await getFreePort();
+  const tempDir = mkdtempSync(join(tmpdir(), "auto-invite-routes-e2e-confirmation-status-bad-guildid-"));
+  const console_ = startConsole(port, tempDir, {
+    MENTAT_LINK_CONFIRMATION_STATUS_URL: `http://127.0.0.1:${mentatLinkPort}/api/consoles/auto-invite/confirmation-status`
+  });
+  const mentatLink = await startFakeMentatLinkConfirmationStatus(mentatLinkPort, { body: { status: "confirmed", guildId: "not-a-real-snowflake-$(evil)", guildName: "Fleetyard" } });
+  try {
+    await waitForHealth(port);
+    const session = await loginAsOwner(port);
+    const res = await api(port, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=abc123", { cookie: session.cookie, extraCookie: "auto_invite_confirmation_id=abc123" });
+    assert.equal(res.status, 200, "the poll response itself is still returned normally to the frontend");
+
+    const settings = await (await api(port, "/api/settings/discord-bot", { cookie: session.cookie })).json();
+    assert.equal(settings.hostedBotConnectedGuildId, null, "a malformed guildId must never be persisted, regardless of what mentat-link claims");
+  } finally {
+    await stopProcess(console_.child);
+    await closeServer(mentatLink.server);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("GET .../auto-invite/confirmation-status does NOT persist anything when the status is denied/pending/not_found", async () => {
   const port = await getFreePort();
   const mentatLinkPort = await getFreePort();

@@ -283,6 +283,17 @@ export function DiscordBotSection() {
   });
   const [pickedGuild, setPickedGuild] = useState<OwnedDiscordGuild | null>(null);
   const [connectedGuildName, setConnectedGuildName] = useState<string | null>(null);
+  // GitHub automated review finding (round 4, #891): the OLD flow's own
+  // invite-acknowledgement checkbox below is gated on connectedGuildName
+  // alone, on the assumption (stated in that checkbox's own comment) that
+  // only the OLD flow's handleRegisterGuild() ever sets it. The new
+  // auto-invite poll effect's confirmed branch also sets connectedGuildName
+  // (so the "already connected" banner above renders correctly even while
+  // "Advanced" stays open and wizardStep never advances) -- without this
+  // flag that broke the checkbox's own invariant, showing the OLD flow's
+  // "confirm you've invited the bot" checkbox/copy for a connection that
+  // was never a manual invite.
+  const [connectedViaAutoInvite, setConnectedViaAutoInvite] = useState(false);
   // Set once the "Add to Discord" popup closes (see openBotInviteWindow
   // above) -- purely a UI acknowledgement so the operator gets some
   // feedback that they're back, since there's no reliable cross-origin
@@ -507,7 +518,17 @@ export function DiscordBotSection() {
     const { confirmationId, deadline } = persisted;
     let stopped = false;
     let inFlight = false;
-    const startedAt = Date.now();
+    // GitHub automated review finding (round 4, #891): deriving startedAt
+    // from Date.now() here reset the elapsed-time display to 0 on every
+    // remount (e.g. collapsing/reopening the "Advanced" accordion) --
+    // exactly the reload/remount scenario issue #880's persisted-poll fix
+    // above was meant to survive. `deadline` is persisted alongside
+    // confirmationId (loadConfirmationPoll(), read fresh every mount) and
+    // was always set to the real start time plus the fixed
+    // CONFIRMATION_POLL_BUDGET_MS, so it can be inverted back to the real
+    // start time instead of assuming "now" is when polling began.
+    const startedAt = deadline - CONFIRMATION_POLL_BUDGET_MS;
+    setConfirmationPollElapsedMs(Date.now() - startedAt);
     const interval = window.setInterval(async () => {
       if (stopped || inFlight) return;
       inFlight = true;
@@ -521,6 +542,7 @@ export function DiscordBotSection() {
           persistConfirmationPoll(null);
           setAutoInviteBlockUntil(null);
           setConnectedGuildName(result.guildName || "");
+          setConnectedViaAutoInvite(true);
           // UI/UX finding (issue #888): don't yank the operator away from
           // the "Advanced" fallback form if they have it open.
           if (wizardStep === 1 && !advancedDetailsRef.current?.open) {
@@ -1180,6 +1202,11 @@ export function DiscordBotSection() {
     try {
       await discordHostedBotApi.register(pickedGuild.id, pickedGuild.name, window.location.origin);
       setConnectedGuildName(pickedGuild.name);
+      // If a prior auto-invite attempt (possibly for a different guild)
+      // had already confirmed, this manual OLD-flow registration now
+      // supersedes it -- restore the invite-acknowledgement checkbox
+      // instead of leaving it hidden for a connection this call never made.
+      setConnectedViaAutoInvite(false);
       setOwnedGuilds(null);
       setPickedGuild(null);
     } catch (err) {
@@ -1490,15 +1517,15 @@ export function DiscordBotSection() {
                   own handleRegisterGuild() ever sets) -- the new
                   auto-invite flow's single consent screen already covers
                   both actions at once, so it has no separate checkbox. */}
-              {connectedGuildName && (
+              {connectedGuildName && !connectedViaAutoInvite && (
                 <label className="settings-wizard-invite-ack">
                   <input type="checkbox" checked={botInviteAcknowledged} onChange={(event) => setBotInviteAcknowledged(event.target.checked)} />
                   {" "}I've invited the bot to this Discord server
                 </label>
               )}
-              <button disabled={!(autoInviteStatus === "waiting-for-owner" || (connectedGuildName && botInviteAcknowledged))} onClick={() => setWizardStep(2)}>Continue</button>
+              <button disabled={!(autoInviteStatus === "waiting-for-owner" || connectedViaAutoInvite || (connectedGuildName && botInviteAcknowledged))} onClick={() => setWizardStep(2)}>Continue</button>
               {autoInviteStatus !== "waiting-for-owner" && !connectedGuildName && !silentEnabling && <p className="muted" role="status">Continue unlocks once the bot is connected above.</p>}
-              {connectedGuildName && !botInviteAcknowledged && <p className="muted" role="status">Continue unlocks once you confirm you've invited the bot.</p>}
+              {connectedGuildName && !connectedViaAutoInvite && !botInviteAcknowledged && <p className="muted" role="status">Continue unlocks once you confirm you've invited the bot.</p>}
             </div>
           )}
 

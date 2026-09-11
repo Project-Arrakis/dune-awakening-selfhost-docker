@@ -2093,7 +2093,7 @@ async function handleApi(req, res) {
     // received.
     const cookieConfirmationId = parseCookies(req.headers.cookie || "").get("auto_invite_confirmation_id") || "";
     if (!cookieConfirmationId || !constantTimeStringEqual(confirmationId, cookieConfirmationId)) {
-      audit(config, req, "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "confirmation_id_cookie_mismatch" });
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "confirmation_id_cookie_mismatch" });
       return json(res, 403, { error: "This connection request could not be verified. Start over from the settings page." });
     }
     let mentatLinkResponse;
@@ -2104,11 +2104,11 @@ async function handleApi(req, res) {
         { timeoutMs: 15000 }
       );
     } catch {
-      audit(config, req, "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "mentat_unreachable" });
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "mentat_unreachable" });
       return json(res, 502, { error: "Couldn't reach the hosted bot service. Try again in a moment." });
     }
     if (!mentatLinkResponse.ok) {
-      audit(config, req, "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "mentat_rejected", status: mentatLinkResponse.status });
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "mentat_rejected", status: mentatLinkResponse.status });
       return json(res, 502, { error: "Could not check the connection status. Try again in a moment." });
     }
     let statusBody;
@@ -2127,9 +2127,26 @@ async function handleApi(req, res) {
     if (status === "confirmed") {
       const guildId = String(statusBody?.guildId || "");
       const guildName = String(statusBody?.guildName || "");
-      if (guildId) persistHostedBotConnectedGuild(config, { guildId, guildName });
+      // Automated review finding: persistHostedBotConnectedGuild()'s only
+      // existing caller (POST /register above) sources guildId from Core's
+      // own OAuth-verified owned-guild list -- a real Discord snowflake by
+      // construction, which is why no format check was ever applied to it
+      // (only guildName gets the #870/#860 allowlist sanitization). This
+      // route is the first caller to source guildId from an inbound
+      // response Core does not independently re-verify (no shared secret
+      // to/from mentat-link on Core's side) -- if mentat-link were ever
+      // compromised, MITM'd, or simply buggy, an unvalidated guildId
+      // string would reach the same .env-write/shell-source path #870's
+      // CRITICAL fix hardened guildName against. Reuses
+      // validateDiscordRoleIds() -- a single, non-comma value is exactly
+      // one snowflake-pattern check -- rather than duplicating the regex.
+      if (guildId && validateDiscordRoleIds(guildId).ok) {
+        persistHostedBotConnectedGuild(config, { guildId, guildName });
+      } else if (guildId) {
+        audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: false, reason: "invalid_guild_id_from_mentat" });
+      }
     }
-    audit(config, req, "hosted-bot.auto-invite.confirmation-status", { ok: true, status });
+    audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/auto-invite/confirmation-status"), "hosted-bot.auto-invite.confirmation-status", { ok: true, status });
     return json(res, 200, { status, guildName: status === "confirmed" ? String(statusBody?.guildName || "") : undefined });
   }
 
