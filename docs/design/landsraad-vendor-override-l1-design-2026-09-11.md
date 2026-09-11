@@ -188,10 +188,10 @@ Core is a public, multi-operator fork. This feature is additive and opt-in: a ne
 | — | Network | — | No findings — confirmed no new listener/port/outbound call; rides entirely on existing console API/DB connection | N/A |
 | — | Cloud Security | — | No findings — confirmed no new credential/secret/cloud-provider config introduced | N/A |
 
-**Follow-up issues to file separately (pre-existing gaps this design surfaced but does not itself need to fix):**
-- Backfill the "term changed while applying" test for the existing, already-shipped `applyLandsraadMilestonePreset` (finding #9).
-- Add a `test_term = true` guard to `applyLandsraadMilestonePreset` itself, matching the new guard this design adds (finding #24).
-- `audit()`'s lack of authenticated-actor identity, project-wide (finding #29).
+**Follow-up issues filed (pre-existing gaps this design surfaced but does not itself need to fix):**
+- [#908](https://github.com/Project-Arrakis/dune-awakening-selfhost-docker/issues/908) — backfill the "term changed while applying" test for the existing, already-shipped `applyLandsraadMilestonePreset` (finding #9).
+- [#909](https://github.com/Project-Arrakis/dune-awakening-selfhost-docker/issues/909) — add a `test_term = true` guard to `applyLandsraadMilestonePreset` itself, matching the new guard this design adds (finding #24).
+- [#910](https://github.com/Project-Arrakis/dune-awakening-selfhost-docker/issues/910) — `audit()`'s lack of authenticated-actor identity, project-wide (finding #29).
 
 ### STRIDE table
 
