@@ -177,6 +177,7 @@ jobs:
           runtime/tests/test-secrets-lib.sh
           runtime/tests/test-secrets-aead-cross-language.sh
           runtime/tests/test-secrets-stage2.sh
+          runtime/tests/test-secrets-stage3.sh
 
   container-lifecycle:
     runs-on: ubuntu-latest

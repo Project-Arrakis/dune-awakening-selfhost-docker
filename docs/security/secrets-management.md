@@ -16,16 +16,17 @@
 | Funcom service token | `runtime/secrets/funcom-token.txt` | Plaintext JWT | 600 | No (operator) | Via Funcom portal |
 | Discord OAuth client secret | `runtime/secrets/discord-oauth-client-secret.txt` | Plaintext | 600 | No (operator) | Via Discord portal |
 | Discord adapter token | `runtime/secrets/discord-adapter-token.txt` | Plaintext | 600 | No (operator) | Automated (Settings → Discord Bot → Regenerate Token) |
+| Discord hosted-bot OAuth client secret (`dune-awakening-selfhost-docker#901`) | `runtime/secrets/discord-hosted-bot-oauth-client-secret.txt` | Plaintext (age-encryptable, opt-in -- see `age-secrets.md`) | 600 | No (operator, hosted-bot wizard's Advanced fallback) | Via Discord portal |
 | Discord bot handoff secret | `runtime/secrets/discord-bot-handoff-secret.txt` | Plaintext | 600 | No (operator) | Manual |
 | FLS API key | `runtime/secrets/fls-apikey.txt` | Plaintext | 600 | No (operator) | Via Funcom |
 | RMQ HTTP token secret | `runtime/secrets/rmq-http-token-auth-secret.txt` | Plaintext | 600 | Manual | Manual |
-| Server login password secret | `runtime/secrets/server-login-password-secret.txt` | Plaintext | 600 | Manual | Manual |
-| Username server login secret | `runtime/secrets/username-server-login-secret.txt` | Plaintext | 600 | Manual | Manual |
+| Server login password secret | `runtime/secrets/server-login-password-secret.txt` | Plaintext (age-encryptable, opt-in -- see `age-secrets.md`) | 600 | Manual | Manual |
+| Username server login secret | `runtime/secrets/username-server-login-secret.txt` | Plaintext (age-encryptable, opt-in -- see `age-secrets.md`) | 600 | Manual | Manual |
 | Public directory JSON | `runtime/secrets/public-directory.json` | Plaintext JSON | 600 | Auto-managed | N/A |
 | Mentat bot adapter token | `arrakis-control-panel/data/acp.db` (bot repo path/filename unchanged as of this writing -- credential vars/paths are a separate, not-yet-done pass, see the bot repo's own `docs/env-var-compatibility.md`) | AES-256-GCM encrypted | 600 | Per-guild setup | Manual |
 | Mentat Discord bot token | `arrakis-control-panel/.env` (same caveat) | Plaintext env var | 600 | No (operator) | Via Discord portal |
 
-**Total: 10+ secrets in 2 repos, all plaintext files except the bot's SQLite encryption layer.**
+**Total: 11+ secrets in 2 repos, all plaintext files except the bot's SQLite encryption layer.** Three of these (server login password, username server login, and the hosted-bot OAuth client secret) can additionally be migrated to optional per-secret age-based envelope encryption -- see `age-secrets.md` -- while remaining plain flat files on disk otherwise; this is a real, shipped, opt-in mechanism, distinct from the single-vault-blob architecture this document evaluates as a candidate below.
 
 ### 1.2 How Secrets Are Loaded Today
 

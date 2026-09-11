@@ -112,6 +112,23 @@ services:
       # unreachable) in any real docker-compose deployment, even after an
       # operator saves it via Settings -> Discord Bot.
       DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID: "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID:-}"
+      # dune-awakening-selfhost-docker#901: this key's own sibling
+      # (CLIENT_ID, above) has always been read from here, but the
+      # secret itself never needed an entry -- config.js's
+      # readInlineOrFile() falls back to reading the bind-mounted
+      # runtime/secrets/discord-hosted-bot-oauth-client-secret.txt file
+      # directly when this env var is unset, which is all a plaintext
+      # install ever needed. Added so runtime/scripts/console.sh's new
+      # prepare_discord_hosted_bot_oauth_secret() (Stage 3 age-secrets
+      # wiring) has somewhere to hand off the *decrypted* value once
+      # an operator migrates this secret -- the container can never
+      # reach the age identity itself (deliberately outside the repo,
+      # never bind-mounted), so the host must decrypt and pass the
+      # plaintext value through here instead. `:-` (empty string) is
+      # correct, not `-`: readInlineOrFile() treats "" exactly like
+      # unset, so an operator who never configures this secret at all,
+      # or who never migrates it, sees zero behavior change.
+      DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET: "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}"
       DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP: "${DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP:-0}"
       DISCORD_HOME_GUILD_ID: "${DISCORD_HOME_GUILD_ID:-}"
       DISCORD_OAUTH_OWNER_ALLOWLIST: "${DISCORD_OAUTH_OWNER_ALLOWLIST:-}"
