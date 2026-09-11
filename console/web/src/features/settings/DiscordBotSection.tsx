@@ -383,7 +383,7 @@ export function DiscordBotSection() {
   // Round 4 (dune-awakening-selfhost-docker#876, design doc §13, issue
   // #888): the confirmation-status poll auto-advances the wizard on
   // success -- this ref lets that logic check whether the operator has the
-  // "Advanced: use my own Discord Application instead" disclosure open
+  // "Advanced: connect manually instead" disclosure open
   // before yanking them to step 2 out from under it.
   const advancedDetailsRef = useRef<HTMLDetailsElement | null>(null);
   // The confirmation-status poll's own elapsed-time-aware wait copy (issue
@@ -1628,7 +1628,8 @@ export function DiscordBotSection() {
                   status hidden behind the collapsed Advanced disclosure. */}
               {connectedGuildName ? <p className="settings-auto-invite-already-connected">This server is already connected: <strong>{connectedGuildName}</strong>.</p> : renderAutoInviteConnection()}
               <details className="settings-hosted-bot-advanced">
-                <summary>Advanced: use my own Discord Application instead</summary>
+                <summary>Advanced: connect manually instead</summary>
+                <p className="muted">Still uses the same hosted bot (Sahir Venn) -- this is only a different way to prove you own the Discord server, using your own Discord Application's OAuth credentials instead of the one-click screen. It does not run a separate bot.</p>
                 {renderHostedBotConnection()}
               </details>
             </>
