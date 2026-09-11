@@ -58,7 +58,7 @@ issue if you get stuck on one of those.
 | Admin Tools | GM/admin toolbox: item grants, XP/skill grants, teleport, broadcasts, scheduled restarts | [`docs/console/restart-queue.md`](console/restart-queue.md) |
 | Live Map | Real-time map/player activity view | — |
 | Maps | Per-map mode configuration (dynamic / always-on / disabled) | — |
-| Landsraad | The in-game faction/political system | — |
+| Landsraad | The in-game faction/political system | [`docs/console/API-REFERENCE.md`](console/API-REFERENCE.md) (Landsraad section) |
 | Database | Schema/table browsing, SQL preview/export | — |
 | Backups | Database and base backups | §4 below, [`docs/console/database-backups.md`](console/database-backups.md) |
 | Updates | Game-server content updates | §5 below |
@@ -66,6 +66,20 @@ issue if you get stuck on one of those.
 | Exchange | Read-only view of the game's live CHOAM market listings | [`docs/console/exchange.md`](console/exchange.md) |
 | Addons | Browse, install, enable, and approve permissions for Community Addons | §6 below |
 | Settings | Public Server Directory claim, Web Console port, login password | §7 below |
+
+**Landsraad Special Vendor Override (fork-only):** the Landsraad panel's
+"Special Vendor Override" section lets you force one of the game's
+Special Vendor decrees (Vehicles/Weapons/Armor/Utilities) active for the
+current term, so that vendor's stock is available to players even if no
+house has organically won the Landsraad cycle. This deliberately
+**bypasses the game's normal win requirement** — it is not something
+Red-Blink's upstream project supports, and it does not affect which
+house is credited with winning the term (that state is left alone). It
+exists because a low-population self-hosted server may rarely or never
+reach the participation threshold needed to win a term naturally,
+permanently locking out this content otherwise. "Force Now" behind a
+confirmation is a one-way action for the current term; use "Revert" to
+undo it.
 
 ---
 

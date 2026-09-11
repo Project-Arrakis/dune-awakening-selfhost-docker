@@ -704,6 +704,218 @@ export async function setLandsraadPlayerContribution(db, { playerId, taskId, amo
   });
 }
 
+// The Landsraad "Special Vendor" decrees. This resolves ids by decree_name
+// at apply time rather than hardcoding integer ids (an operator's decree
+// catalog is game content, not guaranteed to assign the same ids across
+// every install -- see docs/design/landsraad-vendor-override-l1-design-
+// 2026-09-11.md §3.1). If any expected name is missing on an install, the
+// feature fails loudly (requireCapability) instead of silently writing a
+// wrong id.
+const LANDSRAAD_VENDOR_DECREE_NAMES = Object.freeze({
+  vehicles: "SpecialVendorActive_Vehicles",
+  weapons: "SpecialVendorActive_Weapons",
+  armor: "SpecialVendorActive_Armor",
+  utilities: "SpecialVendorActive_Utilities"
+});
+
+// This is a fork-only feature (not proposed for the Red-Blink upstream --
+// see the design doc §6). It force-writes dune.landsraad_decree_term's
+// active_decree_id/elected_decree_id, a state combination that, as far as
+// this design could establish, the closed-source game engine has never
+// itself produced (no term anywhere has ever had these set while
+// winning_faction_id/reigning_faction_id stayed NULL). That residual risk
+// cannot be fully closed from this codebase alone -- see the design doc §6.
+async function requireLandsraadVendorOverrideCapability(db) {
+  await requireCapability(await tableExists(db, "landsraad_decree_term"), "Landsraad vendor override requires dune.landsraad_decree_term.");
+  await requireCapability(await tableExists(db, "landsraad_decrees"), "Landsraad vendor override requires dune.landsraad_decrees.");
+  if (typeof db.transaction !== "function") throw new Error("Landsraad vendor override requires rollback-safe transaction support.");
+}
+
+// Which of the 4 known vendor types this install's decree catalog actually
+// supports, for the admin UI to populate its checkboxes from -- never
+// hardcoded client-side (design doc §3.1/§3.4).
+export async function landsraadVendorCatalog(db) {
+  await requireLandsraadVendorOverrideCapability(db);
+  const names = Object.values(LANDSRAAD_VENDOR_DECREE_NAMES);
+  const result = await db.query(
+    "select decree_name from dune.landsraad_decrees where decree_name = any($1)",
+    [names]
+  );
+  const present = new Set(result.rows.map((row) => row.decree_name));
+  return Object.entries(LANDSRAAD_VENDOR_DECREE_NAMES)
+    .filter(([, name]) => present.has(name))
+    .map(([key, name]) => ({ key, decreeName: name }));
+}
+
+async function resolveLandsraadVendorDecrees(db, vendorKeys) {
+  const names = vendorKeys.map((key) => LANDSRAAD_VENDOR_DECREE_NAMES[key]);
+  const result = await db.query(
+    "select id::text as id, decree_name from dune.landsraad_decrees where decree_name = any($1)",
+    [names]
+  );
+  const idByName = new Map(result.rows.map((row) => [row.decree_name, row.id]));
+  const missing = names.filter((name) => !idByName.has(name));
+  if (missing.length) {
+    throw new UnsupportedCapabilityError(
+      `This install's Landsraad decree catalog does not include the expected vendor decrees (${missing.join(", ")}). Landsraad vendor override is not supported on this install.`
+    );
+  }
+  const idByKey = new Map(vendorKeys.map((key) => [key, idByName.get(LANDSRAAD_VENDOR_DECREE_NAMES[key])]));
+  const keyById = new Map(vendorKeys.map((key) => [idByName.get(LANDSRAAD_VENDOR_DECREE_NAMES[key]), key]));
+  return { idByKey, keyById };
+}
+
+function normalizeLandsraadVendorKeys(vendorKeys) {
+  if (!Array.isArray(vendorKeys) || !vendorKeys.length) {
+    const error = new Error("Select at least one Landsraad vendor type.");
+    error.statusCode = 400;
+    throw error;
+  }
+  for (const key of vendorKeys) {
+    if (!Object.prototype.hasOwnProperty.call(LANDSRAAD_VENDOR_DECREE_NAMES, key)) {
+      const error = new Error(`"${key}" is not a supported Landsraad vendor type.`);
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+  return vendorKeys;
+}
+
+async function ensureLandsraadVendorOverrideStateTable(tx) {
+  await tx.query("create schema if not exists console");
+  await tx.query(`
+    create table if not exists console.landsraad_vendor_override_state (
+      id smallint primary key default 1,
+      last_applied_term_id bigint,
+      last_applied_decree_id bigint,
+      updated_at timestamp with time zone not null default now(),
+      check (id = 1)
+    )`);
+  await tx.query(`
+    insert into console.landsraad_vendor_override_state (id)
+    values (1)
+    on conflict (id) do nothing`);
+}
+
+// mode: "fixed" always targets vendorKeys[0]. "rotate" advances to the next
+// key after whichever decree id was last applied (by this feature), reading
+// and writing that position inside the same locked transaction as the write
+// itself -- a JSON-preset-file-based rotation position would otherwise race
+// against a concurrent reconciler tick (design doc §3.1, DBA hat finding).
+//
+// allowOverrideResolvedTerm: false (the reconciler's setting, always) means
+// this never overwrites a term that has already organically resolved
+// (active/elected decree or winning/reigning faction already set) -- it
+// no-ops with a reason instead. true (only ever passed for an explicit,
+// UI-confirmed "Force Now" on an already-resolved term) allows the override,
+// since only a deliberate, attended admin action may discard a real win.
+export async function applyLandsraadVendorOverride(db, { vendorKeys, mode, allowOverrideResolvedTerm = false } = {}) {
+  await requireLandsraadVendorOverrideCapability(db);
+  const safeVendorKeys = normalizeLandsraadVendorKeys(vendorKeys);
+  const safeMode = mode === "rotate" ? "rotate" : "fixed";
+  const { idByKey, keyById } = await resolveLandsraadVendorDecrees(db, safeVendorKeys);
+
+  const applied = await db.transaction(async (tx) => {
+    await ensureLandsraadVendorOverrideStateTable(tx);
+    const state = await tx.query(
+      "select last_applied_decree_id::text as last_applied_decree_id from console.landsraad_vendor_override_state where id = 1 for update"
+    );
+    const term = await tx.query(`
+      select term_id::text as term_id, test_term,
+             active_decree_id, elected_decree_id, winning_faction_id, reigning_faction_id
+      from dune.landsraad_decree_term
+      order by term_id desc
+      limit 1
+      for update`);
+    const termRow = term.rows[0];
+    if (!termRow) return { ok: true, applied: false, reason: "No current Landsraad term is available yet." };
+    if (termRow.test_term) return { ok: true, applied: false, reason: "The current Landsraad term is a test term." };
+
+    const alreadyResolved = termRow.active_decree_id != null
+      || termRow.elected_decree_id != null
+      || termRow.winning_faction_id != null
+      || termRow.reigning_faction_id != null;
+    if (alreadyResolved && !allowOverrideResolvedTerm) {
+      return { ok: true, applied: false, reason: "This Landsraad term has already resolved (a house has won or a decree is active). The automatic override does not overwrite an organic result.", termId: termRow.term_id };
+    }
+
+    let targetKey = safeVendorKeys[0];
+    if (safeMode === "rotate") {
+      const lastAppliedDecreeId = state.rows[0]?.last_applied_decree_id ?? null;
+      const lastKey = lastAppliedDecreeId != null ? keyById.get(lastAppliedDecreeId) : undefined;
+      const lastIndex = lastKey != null ? safeVendorKeys.indexOf(lastKey) : -1;
+      const nextIndex = lastIndex === -1 ? 0 : (lastIndex + 1) % safeVendorKeys.length;
+      targetKey = safeVendorKeys[nextIndex];
+    }
+    const targetId = idByKey.get(targetKey);
+
+    const updated = await tx.query(`
+      update dune.landsraad_decree_term
+         set active_decree_id = $1,
+             elected_decree_id = $1
+       where term_id = $2
+         and test_term = false
+       returning term_id::text as term_id, active_decree_id::text as active_decree_id`,
+      [targetId, termRow.term_id]);
+    if (!updated.rowCount) {
+      return { ok: true, applied: false, reason: "The Landsraad term changed while the override was being applied." };
+    }
+
+    await tx.query(`
+      update console.landsraad_vendor_override_state
+         set last_applied_term_id = $1,
+             last_applied_decree_id = $2,
+             updated_at = now()
+       where id = 1`, [termRow.term_id, targetId]);
+
+    return {
+      ok: true,
+      applied: true,
+      termId: updated.rows[0].term_id,
+      decreeId: updated.rows[0].active_decree_id,
+      decreeKey: targetKey,
+      decreeName: LANDSRAAD_VENDOR_DECREE_NAMES[targetKey]
+    };
+  });
+
+  if (!applied.applied) return applied;
+
+  // Post-apply re-read, outside the transaction, confirming the commit
+  // actually stuck -- this can only confirm the *database* accepted the
+  // write, not that the closed-source engine treats this state the way an
+  // organically-resolved term would (an accepted, named residual risk; see
+  // the design doc §6).
+  const confirmed = await db.query(
+    "select active_decree_id::text as active_decree_id from dune.landsraad_decree_term where term_id = $1",
+    [applied.termId]
+  );
+  return {
+    ...applied,
+    confirmedActiveDecreeId: confirmed.rows[0]?.active_decree_id ?? null
+  };
+}
+
+export async function revertLandsraadVendorOverride(db) {
+  await requireLandsraadVendorOverrideCapability(db);
+  return db.transaction(async (tx) => {
+    const term = await tx.query(`
+      select term_id::text as term_id
+      from dune.landsraad_decree_term
+      order by term_id desc
+      limit 1
+      for update`);
+    const termRow = term.rows[0];
+    if (!termRow) return { ok: true, applied: false, reason: "No current Landsraad term is available yet." };
+    const updated = await tx.query(`
+      update dune.landsraad_decree_term
+         set active_decree_id = null,
+             elected_decree_id = null
+       where term_id = $1
+       returning term_id::text as term_id`, [termRow.term_id]);
+    return { ok: true, applied: Boolean(updated.rowCount), termId: termRow.term_id };
+  });
+}
+
 async function rowReference(db, schema, table, rowId) {
   const raw = String(rowId || "").trim();
   if (/^\(\d+,\d+\)$/.test(raw)) return { type: "ctid", params: [raw] };
