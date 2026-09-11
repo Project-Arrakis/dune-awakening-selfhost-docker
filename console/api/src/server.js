@@ -2365,7 +2365,7 @@ async function handleApi(req, res) {
       return json(res, 429, { error: "Too many hosted-bot connection attempts in progress. Try again in a moment." });
     }
     const { state: oauthState, challenge } = pendingState;
-    res.setHeader("Set-Cookie", hostedBotOAuthStateCookie(oauthState, config.secureCookies));
+    res.setHeader("Set-Cookie", hostedBotOAuthStateCookie(oauthState));
     const authorizeUrl = buildAuthorizeUrl({ clientId: config.discordHostedBotOAuthClientId, redirectUri: config.discordHostedBotOAuthRedirectUri, state: oauthState, codeChallenge: challenge });
     res.writeHead(302, { Location: authorizeUrl });
     res.end();
@@ -2403,7 +2403,7 @@ async function handleApi(req, res) {
       // handle cookie in Task 6's fix round -- the state has already been
       // consumed/rejected either way, so leaving the cookie in the browser
       // for its remaining Max-Age serves no purpose.
-      res.setHeader("Set-Cookie", clearHostedBotOAuthStateCookie(config.secureCookies));
+      res.setHeader("Set-Cookie", clearHostedBotOAuthStateCookie());
       audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/callback"), "hosted-bot.oauth.callback", { ok: false, reason: consumedState.reason });
       return html(res, 400, oauthErrorPage("This request was invalid or expired. Go back to Settings and try connecting to the hosted bot again."));
     }
@@ -2423,7 +2423,7 @@ async function handleApi(req, res) {
       // Same cookie-hygiene fix as above -- the state was already
       // successfully consumed to reach this catch block, so only the
       // cookie remains to clear.
-      res.setHeader("Set-Cookie", clearHostedBotOAuthStateCookie(config.secureCookies));
+      res.setHeader("Set-Cookie", clearHostedBotOAuthStateCookie());
       audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/callback"), "hosted-bot.oauth.callback", { ok: false, reason: error.code || "oauth_error" });
       return html(res, 400, oauthErrorPage("Connecting to Discord failed. Go back to Settings and try again."));
     }
@@ -2434,11 +2434,11 @@ async function handleApi(req, res) {
     });
     if (!pending) {
       // Same cookie-hygiene fix as above.
-      res.setHeader("Set-Cookie", clearHostedBotOAuthStateCookie(config.secureCookies));
+      res.setHeader("Set-Cookie", clearHostedBotOAuthStateCookie());
       audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/callback"), "hosted-bot.oauth.callback", { ok: false, reason: "too_many_pending" });
       return html(res, 429, oauthErrorPage("Too many connection attempts in progress. Try again in a moment."));
     }
-    res.setHeader("Set-Cookie", [hostedBotRegistrationHandleCookie(pending.handle, config.secureCookies), clearHostedBotOAuthStateCookie(config.secureCookies)]);
+    res.setHeader("Set-Cookie", [hostedBotRegistrationHandleCookie(pending.handle, config.secureCookies), clearHostedBotOAuthStateCookie()]);
     audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/oauth/callback"), "hosted-bot.oauth.callback", { ok: true, ownedGuildCount: owned.guilds.length });
     return html(res, 200, hostedBotOAuthReturnPage(owned.guilds));
   }

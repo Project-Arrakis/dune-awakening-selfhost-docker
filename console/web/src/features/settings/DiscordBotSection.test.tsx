@@ -153,6 +153,33 @@ describe("DiscordBotSection", () => {
     ));
   });
 
+  // Layer 3 audit finding (HIGH): clicking a choice button in the Enabled
+  // phase used to only touch local state/localStorage -- the "Connect to
+  // hosted bot" UI (gated on that same local `choice` value) appeared
+  // immediately, well before deploymentChoice was actually saved server-
+  // side (only Save Role IDs did that). An operator who clicked through in
+  // that window hit a real 403 from /oauth/start's server-side gate, which
+  // reads the real persisted value, not what the UI just showed. Confirms
+  // the choice is now persisted immediately on click, with no separate
+  // Save Role IDs step required first.
+  it("persists the choice server-side immediately when picked in the Enabled phase, before Save Role IDs is ever clicked", async () => {
+    mockApi.mockResolvedValue({
+      enabled: true,
+      roleIds: { player: [], moderator: [], admin: [] },
+      tokenConfigured: true,
+      deploymentChoice: null
+    } as never);
+    mockPost.mockResolvedValue({ ok: true } as never);
+    render(<DiscordBotSection />);
+    await screen.findByText(/Enabled/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
+      "/api/settings/discord-bot/choice",
+      { deploymentChoice: "hosted" }
+    ));
+  });
+
   it("shows a disambiguating note distinguishing this section from Discord OAuth", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     render(<DiscordBotSection />);

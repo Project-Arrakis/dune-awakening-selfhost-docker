@@ -408,11 +408,18 @@ test("web console rebuild stops at the configured build timeout", async () => {
   }
 });
 
-// Audit finding #4 (HIGH): resolve_discord_adapter_token() must check the
-// token FILE before the direct DUNE_DISCORD_ADAPTER_TOKEN env var --
-// otherwise the post-recreate health check can authenticate against a
-// stale, still-valid direct credential and report success even though the
-// freshly-issued token shown to the operator ("Copy this now") is dead.
+// Layer 3 audit finding (HIGH): resolve_discord_adapter_token() must match
+// readDiscordBotApiToken()'s (routes.js) REAL, current precedence exactly --
+// direct DUNE_DISCORD_ADAPTER_TOKEN first, token file as fallback -- since
+// that JS function is what actually authenticates the live adapter this
+// health check probes. An earlier revision of this function (and this test)
+// had that backwards on the mistaken belief that routes.js had also been
+// changed to prefer the file; it never was (confirmed by reading it
+// directly). Checking the file first meant an operator who minted a fresh
+// token via the Settings UI while a stale direct value still lingered in
+// .env got a false-unhealthy report: the live adapter authenticates with
+// the stale direct value (real precedence), while this shell check sent the
+// fresh file token and got a real 401 from a genuinely healthy adapter.
 //
 // self-update.sh is an entrypoint that runs its full case-statement
 // dispatch on execution/sourcing (no `[ "${BASH_SOURCE[0]}" = "$0" ]`
@@ -440,7 +447,7 @@ function runShellFunction(functionsSource, callExpression, cwd) {
   return result.stdout.toString();
 }
 
-test("resolve_discord_adapter_token prefers the token FILE over a direct DUNE_DISCORD_ADAPTER_TOKEN value", () => {
+test("resolve_discord_adapter_token prefers the direct DUNE_DISCORD_ADAPTER_TOKEN value over the token FILE, matching readDiscordBotApiToken()'s real precedence", () => {
   const source = readFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), "utf8");
   const functionsSource = [
     extractShellFunction(source, "read_env_file_value"),
@@ -452,13 +459,13 @@ test("resolve_discord_adapter_token prefers the token FILE over a direct DUNE_DI
     const tokenFile = join(dir, "discord-adapter-token.txt");
     writeFileSync(tokenFile, "fresh-file-token\n");
     writeFileSync(join(dir, ".env"), [
-      "DUNE_DISCORD_ADAPTER_TOKEN=stale-direct-token",
+      "DUNE_DISCORD_ADAPTER_TOKEN=direct-token",
       `DUNE_DISCORD_ADAPTER_TOKEN_FILE=${tokenFile}`,
       ""
     ].join("\n"));
 
     const output = runShellFunction(functionsSource, "resolve_discord_adapter_token", dir);
-    assert.equal(output, "fresh-file-token", "the file-based token must win when both are present, matching the post-fix .env state after Enable/Regenerate");
+    assert.equal(output, "direct-token", "the direct env var must win when both are present -- this is the same credential the live adapter (routes.js) actually authenticates with");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -1285,23 +1285,32 @@ recreate_discord_adapter_env() {
 # the adapter isn't responding") the frontend surfaces distinctly (§4 of the
 # design doc), not a reason to make the whole recreate report as failed --
 # the container recreate itself did succeed.
-# resolve_discord_adapter_token: token-file-FIRST, direct-env-var fallback.
+# resolve_discord_adapter_token: direct-env-var FIRST, token-file fallback --
+# must match readDiscordBotApiToken()'s real, current precedence exactly
+# (console/api/src/integrations/discord/routes.js), since that function is
+# the one actually authenticating the live adapter this health check probes.
 #
-# Audit finding #4 (HIGH): this used to check DUNE_DISCORD_ADAPTER_TOKEN
-# (direct) before the token file -- the exact same precedence bug as
-# readDiscordBotApiToken() (console/api/src/integrations/discord/routes.js).
-# adapterSettings.js's enableDiscordBotAdapter()/regenerateDiscordBotToken()
-# now always clear the direct var in .env when they mint a fresh
-# file-based token, so post-fix, the direct var is only ever non-empty for
-# an operator who set it manually and has not (yet, or ever) touched the
-# new Settings UI. Checking the file first here means this health check
-# verifies the SAME credential the operator was just shown ("Copy this
-# now -- it won't be shown again") -- which is the whole point of this
-# check -- rather than possibly re-validating a stale direct value left
-# over from before this fix shipped, which is what silently masked a dead
-# new token reporting a false "healthy" result.
+# Layer 3 audit finding (HIGH): a prior revision of this comment claimed
+# routes.js had ALSO been fixed to prefer the file first, and reordered this
+# function to match that assumption -- but readDiscordBotApiToken() was
+# never changed; it still checks the direct var first, confirmed directly
+# by reading it (`if (directToken) return ...`, before the file branch is
+# even reached). That made this shell-side check diverge FROM the real
+# server, not converge with it: an operator who minted a fresh token via the
+# Settings UI (writing the file) while a stale direct DUNE_DISCORD_ADAPTER_TOKEN
+# still lingered in .env would have the live adapter authenticate with the
+# stale direct value (routes.js's real precedence) while this health check
+# sent the fresh file token instead -- a 401 reporting the adapter unhealthy
+# even though it was genuinely fine under the credential actually in use.
+# Reverted to match routes.js's real precedence; the file's own only-when-
+# direct-is-empty role is unchanged.
 resolve_discord_adapter_token() {
   local token="" token_file
+  token="$(read_env_file_value DUNE_DISCORD_ADAPTER_TOKEN || true)"
+  if [ -n "$token" ]; then
+    printf '%s' "$token"
+    return
+  fi
   token_file="$(read_env_file_value DUNE_DISCORD_ADAPTER_TOKEN_FILE || true)"
   # Finding 3 (IMPORTANT, final review): readDiscordBotApiToken() (routes.js)
   # falls back to the legacy DUNE_BOT_API_TOKEN_FILE var when
@@ -1315,9 +1324,6 @@ resolve_discord_adapter_token() {
   fi
   if [ -n "$token_file" ] && [ -f "$token_file" ]; then
     token="$(tr -d '[:space:]' < "$token_file")"
-  fi
-  if [ -z "$token" ]; then
-    token="$(read_env_file_value DUNE_DISCORD_ADAPTER_TOKEN || true)"
   fi
   printf '%s' "$token"
 }
