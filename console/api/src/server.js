@@ -64,6 +64,7 @@ import { resolveSandstormStatus } from "./services/sandstormStatus.js";
 import { deliverMapChatToRecipients } from "./services/mapChatDelivery.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
+import { getCommunityBlueprint, getCommunityBlueprintPreview, listCommunityBlueprints } from "./services/blueprintCatalog.js";
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { grantAddonItem } from "./addonItemGrants.js";
@@ -1710,6 +1711,9 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/storage\/[^/]+\/remove-items$/) && req.method === "POST") return storageRemoveItemsRoute(req, res, path);
   if (path.match(/^\/api\/storage\/[^/]+\/export$/)) return exportJson(res, `storage-${decodeURIComponent(path.split("/")[3])}.json`, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path === "/api/blueprints" && req.method === "GET") return dbJson(res, () => listBlueprints(db));
+  if (path === "/api/blueprints/community" && req.method === "GET") return communityBlueprintListRoute(res, url);
+  if (path.match(/^\/api\/blueprints\/community\/[^/]+\/preview$/) && req.method === "GET") return communityBlueprintPreviewRoute(res, path);
+  if (path.match(/^\/api\/blueprints\/community\/[^/]+\/install$/) && req.method === "POST") return communityBlueprintInstallRoute(req, res, path);
   if (path === "/api/blueprints/export" && req.method === "POST") return blueprintBulkExportRoute(req, res);
   if (path.match(/^\/api\/blueprints\/([^/]+)\/export$/) && req.method === "GET") return blueprintExportRoute(req, res, path);
   if (path === "/api/blueprints/import" && req.method === "POST") return blueprintImportRoute(req, res);
@@ -6472,6 +6476,58 @@ async function blueprintImportRoute(req, res) {
   } catch (error) {
     if (error.unsupported) return json(res, 501, { supported: false, error: redact(error?.message || "Unexpected error.") });
     return json(res, 500, { ok: false, error: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+async function communityBlueprintListRoute(res, url) {
+  try {
+    const result = await listCommunityBlueprints({
+      q: url.searchParams.get("q") || "",
+      set: url.searchParams.get("set") || "",
+      sort: url.searchParams.get("sort") || "newest",
+      limit: url.searchParams.get("limit") || 20,
+      offset: url.searchParams.get("offset") || 0
+    });
+    return json(res, 200, result);
+  } catch (error) {
+    return json(res, Number(error?.statusCode) || 502, { error: redact(error?.message || "The Blueprint catalog could not be reached.") });
+  }
+}
+
+async function communityBlueprintPreviewRoute(res, path) {
+  const id = decodeURIComponent(path.split("/")[4] || "");
+  try {
+    const preview = await getCommunityBlueprintPreview(id);
+    res.writeHead(200, withSecurityHeaders({
+      "cache-control": "private, max-age=300",
+      "content-length": String(preview.bytes.length),
+      "content-type": preview.contentType,
+      "x-content-type-options": "nosniff"
+    }));
+    return res.end(preview.bytes);
+  } catch (error) {
+    return json(res, Number(error?.statusCode) || 502, { error: redact(error?.message || "The Blueprint preview could not be loaded.") });
+  }
+}
+
+async function communityBlueprintInstallRoute(req, res, path) {
+  const id = decodeURIComponent(path.split("/")[4] || "");
+  try {
+    const body = await readJson(req);
+    const playerPawnId = Number(body.playerId);
+    if (!Number.isSafeInteger(playerPawnId) || playerPawnId < 1) return json(res, 400, { error: "Invalid player ID." });
+    const source = await getCommunityBlueprint(id);
+    const result = await importBlueprint(db, playerPawnId, source.blueprint, `${source.summary?.title || "Community Blueprint"}.json`);
+    audit(config, req, "blueprints.community-install", {
+      communityBlueprintId: id,
+      communityBlueprintVersion: source.summary?.version || null,
+      playerPawnId,
+      result
+    });
+    return json(res, 200, { ...result, source: source.summary });
+  } catch (error) {
+    if (error?.unsupported) return json(res, 501, { supported: false, error: redact(error?.message || "Blueprint import is unavailable.") });
+    return json(res, Number(error?.statusCode) || 500, { error: redact(error?.message || "The community Blueprint could not be installed.") });
   }
 }
 

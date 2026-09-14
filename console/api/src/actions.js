@@ -322,6 +322,7 @@ export const ROUTE_ACTIONS = {
 
   // --- Blueprints ---
   "GET /api/blueprints":                       "blueprints:read",
+  "GET /api/blueprints/community":             "blueprints:read",
   // POST-shaped but read-only in effect: blueprintBulkExportRoute only calls
   // exportBlueprint() per id and zips the results, and GET
   // /api/blueprints/{id}/export already resolves to blueprints:read. It is
@@ -564,6 +565,10 @@ export const REGEX_ACTIONS_BY_METHOD = {
 // the part that would distinguish them. Routes that need that distinction
 // go here instead, tested as a real regex before the prefix fallback.
 export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
+  // Installing a public community Blueprint writes a Solido item and its
+  // Blueprint rows for the selected player. Keep it under the existing
+  // blueprint import permission, never the read-only /api/blueprints prefix.
+  { method: "POST", pattern: /^\/api\/blueprints\/community\/[^/]+\/install$/, action: "blueprints:import" },
   // DELETE /api/bases/{baseId} — the actual, irreversible base delete.
   // Deliberately its own action rather than the shared bases:mutate bucket
   // every other base mutation uses (refills, permission edits, cancelling
