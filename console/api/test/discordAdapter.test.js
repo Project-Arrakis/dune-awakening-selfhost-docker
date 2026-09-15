@@ -513,6 +513,116 @@ test("adapter routes respond through mounted HTTP server path", async () => {
   }
 });
 
+// Players cheater-tracking route (meta#64 "Chronicles of Kanly",
+// mentat#361) — Requirement 20 Layer 3 QA finding: db.test.js and
+// discordPolicy.test.js each cover half of the real gate (the query
+// function in isolation, and the policy table in isolation) but nothing
+// exercised the actual routes.js handler, so a deleted
+// requireDiscordCapability() call or a removed missing-actorId guard
+// would have passed every existing test. This closes that gap the same
+// way the "logs" route's admin/moderator split is covered above.
+test("cheater-tracking route enforces admin/owner tier and requires an explicit actorId", async () => {
+  const tokenFile = "/tmp/discord-adapter-cheater-tracking-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-cheater-tracking-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-cheater-tracking-test-generated" };
+
+  // Matches the exact query shapes verified live and already covered by
+  // db.test.js's own playerCheaterTracking tests (unsupported / no-FLS-id
+  // / happy-path) — reused here at the route level, not re-derived.
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.actors a") && text.includes("a.id = $1")) {
+        assert.deepEqual(values, [7]);
+        return { rows: [{ actor_id: 7, account_id: 11, controller_id: 13, player_state_id: 1, online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.accounts ac") && text.includes("ac.id = $1")) {
+        assert.deepEqual(values, [11]);
+        return { rows: [{ fls_id: "fls-route-test" }] };
+      }
+      if (text.includes("from dune.cheater_tracking")) {
+        assert.deepEqual(values, ["fls-route-test"]);
+        return { rows: [] };
+      }
+      // Permissive fallback for migrateDiscordAdapterSchema()'s own DDL,
+      // which runs ahead of route dispatch on every request through this
+      // handler (see the player-link tests above for the same pattern) --
+      // this test only cares about the cheater-tracking query shapes above.
+      return { rows: [], rowCount: 0 };
+    }
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+      const route = "/api/integrations/discord/players/cheater-tracking";
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+
+          // Moderator tier: rejected outright, before actorId is even
+          // inspected -- proves requireDiscordCapability actually gates
+          // this route rather than being dead code.
+          const moderatorResponse = await fetch(`${base}${route}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-moderator"]), actorId: 7 })
+          });
+          assert.equal(moderatorResponse.status, 403);
+          assert.equal((await moderatorResponse.json()).code, "not_authorized");
+
+          // Admin tier, no actorId: authorized but rejected for the
+          // missing target -- proves the "actorId required" guard is
+          // live, not dead code either.
+          const missingActorIdResponse = await fetch(`${base}${route}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-admin"]) })
+          });
+          assert.equal(missingActorIdResponse.status, 400);
+          assert.equal((await missingActorIdResponse.json()).code, "missing_actor_id");
+
+          // Admin tier with an explicit target actorId: real success path.
+          const okResponse = await fetch(`${base}${route}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-admin"]), actorId: 7 })
+          });
+          assert.equal(okResponse.status, 200);
+          const okBody = await okResponse.json();
+          assert.equal(okBody.flsId, "fls-route-test");
+          assert.deepEqual(okBody.rows, []);
+
+          // Owner tier is authorized too (admin/owner, not admin-only).
+          const ownerResponse = await fetch(`${base}${route}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-owner"]), actorId: 7 })
+          });
+          assert.equal(ownerResponse.status, 200);
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
 // Actor signature enforcement — FINDING-LINK-1
 // (docs/security/discord-player-link-hardening.md): when
 // DUNE_DISCORD_ACTOR_SECRET is configured, the bearer token alone is no
