@@ -40,6 +40,7 @@ describe("CustomizationsTab", () => {
     vi.mocked(playersApi.grantCustomizations).mockResolvedValue({
       ok: true,
       granted: 1,
+      requested: 0,
       skipped: 1,
       failed: 0,
       results: [
@@ -57,5 +58,24 @@ describe("CustomizationsTab", () => {
     }));
     expect(confirmAction).toHaveBeenCalled();
     expect(await screen.findByText(/1 granted · 1 already pending/i)).toBeInTheDocument();
+  });
+
+  it("reports an accepted but immediately consumed token as a delivery request", async () => {
+    vi.mocked(playersApi.grantCustomizations).mockResolvedValue({
+      ok: true,
+      granted: 0,
+      requested: 1,
+      skipped: 0,
+      failed: 0,
+      results: [
+        { itemId: "B1C3_Atre_Maula_Pistol", status: "Processing", ok: true, verified: false, deliveryRequested: true }
+      ]
+    });
+    render(<CustomizationsTab dbPlayerId="123" playerName="Chani" confirmAction={vi.fn().mockResolvedValue(true)} />);
+    await screen.findByText("Atreides Pistol");
+    fireEvent.click(screen.getAllByRole("button", { name: "Grant" })[0]);
+    expect(await screen.findByText(/^1 delivery requested\./i)).toBeInTheDocument();
+    expect(screen.getByText(/cosmetic ownership cannot be verified/i)).toBeInTheDocument();
+    expect(screen.queryByText(/1 failed/i)).not.toBeInTheDocument();
   });
 });
