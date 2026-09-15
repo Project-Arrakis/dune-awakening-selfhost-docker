@@ -51,7 +51,7 @@ import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
 import { evaluate, loadPolicies, getAllPolicies, setPolicies, allKnownActions, resolveAllowedActions } from "./policy.js";
-import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
+import { customizationGrantOutcome, liveItemGrantOk, liveItemGrantPublished, liveItemGrantWarning, summarizeCustomizationGrantResults } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
 import * as restartQueue from "./services/restartQueue.js";
@@ -62,6 +62,7 @@ import { liveMapPoi } from "./services/liveMapPoi.js";
 import { deliverMapChatToRecipients } from "./services/mapChatDelivery.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
+import { getCommunityBlueprint, getCommunityBlueprintPreview, listCommunityBlueprints } from "./services/blueprintCatalog.js";
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { grantAddonItem } from "./addonItemGrants.js";
@@ -1938,6 +1939,9 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/storage\/[^/]+\/give-item$/) && req.method === "POST") return storageGiveItemRoute(req, res, path);
   if (path.match(/^\/api\/storage\/[^/]+\/export$/)) return exportJson(res, `storage-${decodeURIComponent(path.split("/")[3])}.json`, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path === "/api/blueprints" && req.method === "GET") return dbJson(res, () => listBlueprints(db));
+  if (path === "/api/blueprints/community" && req.method === "GET") return communityBlueprintListRoute(res, url);
+  if (path.match(/^\/api\/blueprints\/community\/[^/]+\/preview$/) && req.method === "GET") return communityBlueprintPreviewRoute(res, path);
+  if (path.match(/^\/api\/blueprints\/community\/[^/]+\/install$/) && req.method === "POST") return communityBlueprintInstallRoute(req, res, path);
   if (path === "/api/blueprints/export" && req.method === "POST") return blueprintBulkExportRoute(req, res);
   if (path.match(/^\/api\/blueprints\/([^/]+)\/export$/) && req.method === "GET") return blueprintExportRoute(req, res, path);
   if (path === "/api/blueprints/import" && req.method === "POST") return blueprintImportRoute(req, res);
@@ -6325,6 +6329,58 @@ async function blueprintImportRoute(req, res) {
   }
 }
 
+async function communityBlueprintListRoute(res, url) {
+  try {
+    const result = await listCommunityBlueprints({
+      q: url.searchParams.get("q") || "",
+      set: url.searchParams.get("set") || "",
+      sort: url.searchParams.get("sort") || "newest",
+      limit: url.searchParams.get("limit") || 20,
+      offset: url.searchParams.get("offset") || 0
+    });
+    return json(res, 200, result);
+  } catch (error) {
+    return json(res, Number(error?.statusCode) || 502, { error: redact(error?.message || "The Blueprint catalog could not be reached.") });
+  }
+}
+
+async function communityBlueprintPreviewRoute(res, path) {
+  const id = decodeURIComponent(path.split("/")[4] || "");
+  try {
+    const preview = await getCommunityBlueprintPreview(id);
+    res.writeHead(200, withSecurityHeaders({
+      "cache-control": "private, max-age=300",
+      "content-length": String(preview.bytes.length),
+      "content-type": preview.contentType,
+      "x-content-type-options": "nosniff"
+    }));
+    return res.end(preview.bytes);
+  } catch (error) {
+    return json(res, Number(error?.statusCode) || 502, { error: redact(error?.message || "The Blueprint preview could not be loaded.") });
+  }
+}
+
+async function communityBlueprintInstallRoute(req, res, path) {
+  const id = decodeURIComponent(path.split("/")[4] || "");
+  try {
+    const body = await readJson(req);
+    const playerPawnId = Number(body.playerId);
+    if (!Number.isSafeInteger(playerPawnId) || playerPawnId < 1) return json(res, 400, { error: "Invalid player ID." });
+    const source = await getCommunityBlueprint(id);
+    const result = await importBlueprint(db, playerPawnId, source.blueprint, `${source.summary?.title || "Community Blueprint"}.json`);
+    audit(config, req, "blueprints.community-install", {
+      communityBlueprintId: id,
+      communityBlueprintVersion: source.summary?.version || null,
+      playerPawnId,
+      result
+    });
+    return json(res, 200, { ...result, source: source.summary });
+  } catch (error) {
+    if (error?.unsupported) return json(res, 501, { supported: false, error: redact(error?.message || "Blueprint import is unavailable.") });
+    return json(res, Number(error?.statusCode) || 500, { error: redact(error?.message || "The community Blueprint could not be installed.") });
+  }
+}
+
 function sanitizeFilename(s, fallback = "export") {
   return String(s).replace(/[\x00-\x1f\x7f<>:"/\\|?*]/g, "_").trim() || fallback;
 }
@@ -6535,17 +6591,25 @@ async function customizationGrantRoute(req, res, path) {
       }
       try {
         const result = await grantPlayerItem(playerId, { itemId: item.itemId, quantity: 1 }, target);
-        results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: result.ok, status: result.ok ? (target.online ? "Processing" : "Pending") : "Available", result });
+        const outcome = customizationGrantOutcome(result);
+        results.push({
+          itemId: item.itemId,
+          name: item.name,
+          groupId: item.groupId,
+          ...outcome,
+          status: outcome.ok ? (target.online ? "Processing" : "Pending") : "Available",
+          warning: outcome.deliveryRequested
+            ? "Dune accepted the delivery request, but cosmetic ownership cannot be verified because customization tokens may be consumed immediately."
+            : result.warning,
+          result
+        });
       } catch (error) {
         results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: false, status: "Available", error: redact(error?.message || "Unexpected error.") });
       }
     }
-    const ok = results.every((result) => result.ok);
-    const granted = results.filter((result) => result.ok && !result.skipped).length;
-    const skipped = results.filter((result) => result.skipped).length;
-    const failed = results.filter((result) => !result.ok).length;
-    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, granted, skipped, failed, ok, results });
-    return json(res, ok ? 200 : 207, { ok, granted, skipped, failed, results });
+    const { ok, granted, requested, skipped, failed } = summarizeCustomizationGrantResults(results);
+    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, granted, requested, skipped, failed, ok, results });
+    return json(res, ok ? 200 : 207, { ok, granted, requested, skipped, failed, results });
   } catch (error) {
     audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, ok: false, error: redact(error?.message || "Unexpected error.") });
     return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
@@ -6609,6 +6673,7 @@ async function grantPlayerItem(playerId, item, target) {
   const warning = liveItemGrantWarning(result);
   return {
     ok: liveItemGrantOk(result),
+    published: liveItemGrantPublished(result),
     operation,
     item: payload,
     stdout: result.stdout,
