@@ -135,6 +135,7 @@ jobs:
           runtime/tests/test-deepdesert-overrides-combat-state-publication.sh
           runtime/tests/test-deepdesert-startup-publisher-consistency.sh
           runtime/tests/test-sietch-combat-state-publication.sh
+          runtime/tests/test-sietch-heartbeat-publication.sh
       - name: Test runtime safety regressions
         run: |
           runtime/tests/test-command-auth-token.sh

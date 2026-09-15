@@ -1843,6 +1843,48 @@ body.debug .technical-details { display: block; }
 .blueprints-table th:last-child, .blueprints-table td:last-child { width: 154px; text-align: center; overflow: visible; }
 .blueprint-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-strong); font-weight: 700; }
 .blueprint-actions-column .icon-toggle-group { justify-content: center; }
+.blueprint-view-tabs { display: flex; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid rgba(214, 185, 140, .14); }
+.blueprint-view-tabs button { width: auto; min-height: 40px; display: inline-flex; align-items: center; gap: 7px; background: #171a1d; color: var(--muted-warm); }
+.blueprint-view-tabs button.active { border-color: var(--accent); background: rgba(198, 139, 74, .16); color: #ffd08a; }
+.community-blueprint-browser { display: grid; gap: 14px; min-width: 0; }
+.community-blueprint-intro { display: flex; align-items: start; justify-content: space-between; gap: 18px; padding: 14px; border: 1px solid #302b25; border-radius: 8px; background: linear-gradient(135deg, rgba(198, 139, 74, .1), rgba(16, 19, 22, .72)); }
+.community-blueprint-intro h5 { margin: 0 0 5px; color: #ffd08a; font-size: 17px; }
+.community-blueprint-intro p { margin: 0; color: var(--muted-warm); line-height: 1.45; }
+.community-blueprint-intro a, .community-blueprint-details a { display: inline-flex; align-items: center; gap: 6px; color: #ffd08a; font-weight: 700; white-space: nowrap; }
+.community-blueprint-filters { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(150px, .45fr) minmax(160px, .45fr) auto; align-items: end; gap: 10px; }
+.community-blueprint-filters label { display: grid; gap: 5px; min-width: 0; color: var(--muted-warm); font-size: 13px; }
+.community-blueprint-filters input, .community-blueprint-filters select { width: 100%; min-height: 40px; }
+.community-blueprint-filters > button { width: auto; min-height: 40px; }
+.community-blueprint-search { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 40px; padding-left: 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: #17191b; }
+.community-blueprint-search:focus-within { border-color: var(--accent); }
+.community-blueprint-search input { min-width: 0; padding-left: 0; border: 0; background: transparent; outline: 0; }
+.community-blueprint-table-wrap { max-width: 100%; overflow: auto; border: 1px solid #302b25; border-radius: 8px; background: #101316; }
+.community-blueprint-table { width: 100%; min-width: 1060px; border-collapse: collapse; table-layout: fixed; }
+.community-blueprint-table th, .community-blueprint-table td { padding: 10px; border-bottom: 1px solid #302b25; text-align: left; vertical-align: middle; }
+.community-blueprint-table th { position: sticky; top: 0; z-index: 1; background: #171a1d; color: #ffd08a; font-size: 12px; }
+.community-blueprint-table th:nth-child(1) { width: 150px; }.community-blueprint-table th:nth-child(2) { width: 190px; }.community-blueprint-table th:nth-child(3) { width: 130px; }.community-blueprint-table th:nth-child(4) { width: 125px; }.community-blueprint-table th:nth-child(5) { width: 110px; }.community-blueprint-table th:nth-child(6) { width: 90px; }.community-blueprint-table th:nth-child(7) { width: 250px; }
+.community-blueprint-table td > strong, .community-blueprint-table td > small { display: block; }
+.community-blueprint-table td > strong { color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; }
+.community-blueprint-table td > small { margin-top: 4px; color: var(--muted); }
+.community-blueprint-thumbnail { width: 128px; aspect-ratio: 16 / 9; display: grid; place-items: center; overflow: hidden; border: 1px solid #3a342c; border-radius: 6px; background: #171a1d; color: var(--muted); font-size: 11px; }
+.community-blueprint-thumbnail img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.community-blueprint-actions { display: flex; align-items: center; gap: 7px; }
+.community-blueprint-actions button { width: auto; min-height: 36px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.community-blueprint-actions button[aria-expanded="true"] svg { transform: rotate(180deg); }
+.community-blueprint-detail-row td { padding: 0; background: #15181a; }
+.community-blueprint-details { display: grid; grid-template-columns: minmax(260px, 38%) 1fr; gap: 18px; padding: 16px; }
+.community-blueprint-details > div:first-child { min-height: 170px; aspect-ratio: 16 / 9; display: grid; place-items: center; overflow: hidden; border: 1px solid #3a342c; border-radius: 7px; background: #24201b; }
+.community-blueprint-details img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.community-blueprint-details section { align-content: start; display: grid; gap: 9px; }
+.community-blueprint-details h5, .community-blueprint-details p { margin: 0; }
+.community-blueprint-details h5 { color: #ffd08a; font-size: 18px; }
+.community-blueprint-details p { color: #d6c7ae; line-height: 1.5; white-space: normal; }
+.community-blueprint-no-preview { color: var(--muted); }
+.community-blueprint-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.community-blueprint-tags span { padding: 4px 7px; border: 1px solid #4a4033; border-radius: 999px; background: rgba(198, 139, 74, .08); color: #e6c99d; font-size: 11px; }
+.community-blueprint-empty { height: 120px; color: var(--muted-warm); text-align: center !important; }
+.community-blueprint-pagination { margin: 0; align-items: center; color: var(--muted-warm); }
+.community-blueprint-pagination .action-help-note { margin: 0; }
 .guild-add-member-search-row { align-items: center; }
 .guild-add-member-search-row input { flex: 1 1 auto; min-width: 0; }
 .guild-add-member-results { display: grid; gap: 6px; max-height: 220px; overflow-y: auto; }
@@ -2232,6 +2274,14 @@ body.debug .technical-details { display: block; }
   .blueprint-list-toolbar, .blueprint-list-toolbar .service-actions { align-items: stretch; }
   .blueprint-list-toolbar .service-actions { width: 100%; margin-left: 0; justify-content: flex-start; }
   .blueprints-table { min-width: 720px; }
+  .blueprint-view-tabs, .community-blueprint-intro, .community-blueprint-pagination { align-items: stretch; flex-direction: column; }
+  .blueprint-view-tabs button { justify-content: center; flex: 1 1 0; }
+  .community-blueprint-intro a { white-space: normal; }
+  .community-blueprint-filters { grid-template-columns: 1fr 1fr; }
+  .community-blueprint-filters label:first-child { grid-column: 1 / -1; }
+  .community-blueprint-filters > button { width: 100%; }
+  .community-blueprint-details { grid-template-columns: 1fr; }
+  .community-blueprint-pagination .database-pagination-controls { justify-content: flex-start; }
   .bases-pagination-footer { align-items: stretch; }
   .bases-pagination-footer .database-pagination-controls { justify-content: flex-start; }
 }
