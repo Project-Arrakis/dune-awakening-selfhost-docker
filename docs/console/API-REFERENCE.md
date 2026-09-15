@@ -848,6 +848,7 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | GET | `/api/integrations/discord/players/storage` | Get player storage | `inventory:read` |
 | GET | `/api/integrations/discord/players/find` | Find player | `players:read` |
 | GET | `/api/integrations/discord/players/inventory-search` | Search inventory | `inventory:read` |
+| POST | `/api/integrations/discord/players/cheater-tracking` | Staff-only: anti-cheat flag history for a target player under trust-role review (meta#64, mentat#361) -- not self-scoped, admin/owner tier | `cheater-tracking:read` |
 
 ### Guilds & Data
 

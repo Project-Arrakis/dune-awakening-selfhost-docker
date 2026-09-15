@@ -39,7 +39,14 @@ export const DISCORD_CAPABILITIES = Object.freeze({
   // distinct capability (not a reuse of PLAYER_LINK_WRITE) so the two
   // linking flows can be enabled/disabled or audited independently.
   ACCOUNT_LINK_WRITE: "account-link:write",
-  BROADCAST_SEND: "broadcast:send"
+  BROADCAST_SEND: "broadcast:send",
+  // CHEATER_TRACKING_READ (meta#64, mentat#361): deliberately excluded from
+  // the moderator tier's explicit Set below, same reasoning as the OPS_*
+  // capabilities' own comment there -- this exposes another player's
+  // anti-cheat flag history, a materially more sensitive disclosure than
+  // moderator's existing INVENTORY_READ/STORAGE_READ/GUILD_READ grants, so
+  // it is admin/owner only.
+  CHEATER_TRACKING_READ: "cheater-tracking:read"
 });
 
 export const DISCORD_WRITE_CAPABILITIES = Object.freeze(new Set([
