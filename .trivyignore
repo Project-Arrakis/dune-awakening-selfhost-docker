@@ -114,6 +114,15 @@ CVE-2026-76957  # libexpat1 -- memory corruption allows RCE or DoS; no fix in De
 CVE-2026-11940  # libpython3.13-minimal/libpython3.13-stdlib/python3.13/python3.13-minimal -- tarfile extraction filter bypass; tarfile is never imported here
 CVE-2026-15308  # same python3.13 package set -- html.parser CPU DoS; html is never imported here
 CVE-2026-7210   # same python3.13 package set -- expat/XML DoS; no XML parsing here
+# Added 2026-09-15 (issue #934's trivy-image-scan run). Another tarfile
+# advisory in the same python3.13 package set (file modification/content
+# disclosure via crafted archives), same package/version already tracked
+# above -- per this file's policy a version bump was checked FIRST: trivy
+# reports `Status: affected`, no Fixed Version, so no bump exists. Same
+# exposure-nil reasoning as CVE-2026-11940 above: tarfile is never imported
+# anywhere in runtime/scripts/*.py. Re-check whenever Debian publishes a
+# fixed python3.13.
+CVE-2026-82049  # same python3.13 package set -- tarfile file modification/content disclosure via crafted archives; tarfile is never imported here
 
 # npm CLI's own bundled node_modules -- shipped inside node:24-trixie-slim's
 # npm installation itself, not this project's application dependencies
