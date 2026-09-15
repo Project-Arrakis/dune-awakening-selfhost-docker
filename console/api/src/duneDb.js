@@ -2781,8 +2781,16 @@ async function specializationKeystoneCounts(db, controllerId) {
 // (meta#64 "Chronicles of Kanly", mentat#361 -- gates Swordmaster/Sietch
 // Guard trust-role approval). dune.cheater_tracking is keyed by the
 // player's stable dune.accounts.user ("FLS") id, not by actor/controller
-// id, so this resolves the target the same way playerTeleportIdentity()
-// does (actorId -> accountId -> dune.accounts.user) before querying.
+// id, so this resolves accountId -> dune.accounts.user before querying --
+// the same *starting point* (resolvePlayerMutationTarget -> accountId) as
+// playerTeleportIdentity(), but NOT the same resolution: that function
+// additionally inner-joins dune.player_state/dune.actors and fails closed
+// (throws) when the account has no live pawn, since it needs a current
+// position for a real teleport. This function queries dune.accounts alone
+// and fails open (flsId: null, rows: []) when the account has no FLS id --
+// deliberate, since "no data" is more useful to a staff reviewer than a
+// hard error for a possibly-offline or pawn-less applicant. Do not treat
+// these two functions as equivalent identity-resolution paths.
 // Schema verified directly against a live instance, not assumed: fls_id
 // (text), cheat_type (enum, cast to text same as other enum columns in
 // this file e.g. specialization track_type), event_time (timestamptz).

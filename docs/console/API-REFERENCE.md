@@ -850,6 +850,8 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | GET | `/api/integrations/discord/players/inventory-search` | Search inventory | `inventory:read` |
 | POST | `/api/integrations/discord/players/cheater-tracking` | Staff-only: anti-cheat flag history for a target player under trust-role review (meta#64, mentat#361) -- not self-scoped, admin/owner tier | `cheater-tracking:read` |
 
+> **`cheater-tracking` response semantics:** `rows: []`/`count: 0` alone does NOT mean "clean record." Check `capabilities.cheaterTracking` and `flsId` first: `capabilities.cheaterTracking: false` means the feature is unsupported on this instance (no signal either way); `capabilities.cheaterTracking: true` with `flsId: null` means the player resolved but has no stable FLS id (no signal either way); only `capabilities.cheaterTracking: true` with a non-null `flsId` and `rows: []` is a verified clean record. A consumer that branches on `count === 0` alone risks a false "clean" result for a trust/safety gate.
+
 ### Guilds & Data
 
 | Method | Route | Description | Capability |
