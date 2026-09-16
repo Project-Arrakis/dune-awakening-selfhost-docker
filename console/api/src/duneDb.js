@@ -2777,6 +2777,51 @@ async function specializationKeystoneCounts(db, controllerId) {
   }]));
 }
 
+// playerCheaterTracking: read-only anti-cheat signal for a given player
+// (meta#64 "Chronicles of Kanly", mentat#361 -- gates Swordmaster/Sietch
+// Guard trust-role approval). dune.cheater_tracking is keyed by the
+// player's stable dune.accounts.user ("FLS") id, not by actor/controller
+// id, so this resolves accountId -> dune.accounts.user before querying --
+// the same *starting point* (resolvePlayerMutationTarget -> accountId) as
+// playerTeleportIdentity(), but NOT the same resolution: that function
+// additionally inner-joins dune.player_state/dune.actors and fails closed
+// (throws) when the account has no live pawn, since it needs a current
+// position for a real teleport. This function queries dune.accounts alone
+// and fails open (flsId: null, rows: []) when the account has no FLS id --
+// deliberate, since "no data" is more useful to a staff reviewer than a
+// hard error for a possibly-offline or pawn-less applicant. Do not treat
+// these two functions as equivalent identity-resolution paths.
+// Schema verified directly against a live instance, not assumed: fls_id
+// (text), cheat_type (enum, cast to text same as other enum columns in
+// this file e.g. specialization track_type), event_time (timestamptz).
+// Both dune.cheater_tracking.fls_id and .event_time are indexed.
+export async function playerCheaterTracking(db, id) {
+  if (!(await tableExists(db, "cheater_tracking"))) return unsupported("cheaterTracking", ["dune.cheater_tracking"]);
+  const player = await resolvePlayerMutationTarget(db, id);
+  const identity = await db.query(`
+    select coalesce(ac."user", '') as fls_id
+    from dune.accounts ac
+    where ac.id = $1
+    limit 1`, [player.accountId]);
+  const flsId = identity.rows[0]?.fls_id || null;
+  if (!flsId) return { capabilities: { cheaterTracking: true }, player, flsId: null, rows: [] };
+  const result = await db.query(`
+    select fls_id, cheat_type::text as cheat_type, event_time
+    from dune.cheater_tracking
+    where fls_id = $1
+    order by event_time desc`, [flsId]);
+  return {
+    capabilities: { cheaterTracking: true },
+    player,
+    flsId: String(flsId),
+    rows: result.rows.map((row) => ({
+      flsId: String(row.fls_id),
+      cheatType: String(row.cheat_type || ""),
+      eventTime: row.event_time
+    }))
+  };
+}
+
 export async function playerSpecs(db, id) {
   if (!(await tableExists(db, "specialization_tracks"))) return unsupported("specs", ["dune.specialization_tracks"]);
   const player = await resolvePlayerMutationTarget(db, id);

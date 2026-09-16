@@ -580,6 +580,26 @@ export const COMMAND_METADATA = Object.freeze({
       { name: "search", bodyField: "query", type: "STRING", required: false, description: "Filter by item name (optional)." }
     ]
   },
+  // meta#64 "Chronicles of Kanly" / mentat#361: staff-only trust-role
+  // vetting lookup, not a player-facing subcommand of its own -- Mentat
+  // calls this internally when a staff member reviews a Swordmaster/Sietch
+  // Guard application, the same "internal, not directly Discord-facing"
+  // shape as GUILD_FACTION_SUMMARY above.
+  [DISCORD_ADAPTER_ROUTES.PLAYERS_CHEATER_TRACKING]: {
+    group: "player", subcommand: "cheater-tracking",
+    description: "Staff-only: anti-cheat flag history for a specific applicant under trust-role review.",
+    capability: DISCORD_CAPABILITIES.CHEATER_TRACKING_READ,
+    // params: [] -- same reasoning as GUILD_FACTION_SUMMARY above: the
+    // route's real body.actorId is an internal dune.actors id Mentat
+    // resolves itself (from the applicant it's already vetting), never a
+    // value a staff member types into a literal Discord slash-command
+    // option. Code review (2026-09-15) correctly flagged an earlier draft
+    // that declared this as a required, Discord-facing STRING param --
+    // this file's own convention only does that for genuinely
+    // user-typeable values (see PLAYERS_LINK's character name), never a
+    // raw internal primary key.
+    params: []
+  },
   [DISCORD_ADAPTER_ROUTES.VERSION]: {
     group: "infra", subcommand: "version",
     description: "Show Dune stack version.",
