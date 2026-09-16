@@ -222,6 +222,18 @@ test("ITEM_AUDIT_LOG_READ is granted to moderator tier and up", () => {
   );
 });
 
+// CORIOLIS_READ (mentat#370, issue #942) is granted at public tier and up --
+// the farm-wide storm seed/next-cycle timing is genuinely public in-game
+// knowledge, not staff-gated like most other read capabilities.
+test("CORIOLIS_READ is granted to public tier and up", () => {
+  assert.equal(discordActorCan(actor([]), mapping, DISCORD_CAPABILITIES.CORIOLIS_READ), true);
+  assert.equal(discordActorCan(actor(["role-player"]), mapping, DISCORD_CAPABILITIES.CORIOLIS_READ), true);
+  assert.equal(discordActorCan(actor(["role-moderator"]), mapping, DISCORD_CAPABILITIES.CORIOLIS_READ), true);
+  assert.equal(discordActorCan(actor(["role-admin"]), mapping, DISCORD_CAPABILITIES.CORIOLIS_READ), true);
+  assert.equal(discordActorCan(actor(["role-owner"]), mapping, DISCORD_CAPABILITIES.CORIOLIS_READ), true);
+  assert.doesNotThrow(() => requireDiscordCapability(actor([]), mapping, DISCORD_CAPABILITIES.CORIOLIS_READ));
+});
+
 // minTierForCapability() (added alongside issue #337's command catalog so
 // commandCatalog.js has a real, exported way to derive "minimum tier for
 // this capability" instead of hand-maintaining a second, parallel table

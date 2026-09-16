@@ -47,6 +47,8 @@ import {
 } from "./inventoryProvider.js";
 import { broadcastProvider } from "./broadcastProvider.js";
 import { itemAuditLogProvider } from "./itemAuditLogProvider.js";
+import { coriolisCycleProvider } from "./coriolisProvider.js";
+import { resolveCoriolisCycle } from "../../services/coriolisSeed.js";
 import { cheaterTrackingProvider } from "./trustVettingProvider.js";
 import { buildDuneArgs, runDockerLogs, runDune, validateServiceName } from "../../runner.js";
 import { sanitizeDiscordValue } from "./sanitize.js";
@@ -132,7 +134,8 @@ export async function handleDiscordAdapterRoute({
   statusProvider, readinessProvider, servicesProvider, populationProvider,
   commandRunner = runDune,
   dockerLogsRunner = runDockerLogs,
-  announcementsProvider = readPlayerAnnouncements
+  announcementsProvider = readPlayerAnnouncements,
+  coriolisCycleResolver = resolveCoriolisCycle
 }) {
   const safeStatusProvider = typeof statusProvider === "function" ? statusProvider : () => discordStatusProvider(config);
   const safeReadinessProvider = typeof readinessProvider === "function" ? readinessProvider : () => discordReadinessProvider(config);
@@ -307,6 +310,15 @@ export async function handleDiscordAdapterRoute({
     }
 
     const mapping = discordRoleMappingFromEnv();
+
+    // World Coriolis cycle (mentat#370, issue #942) -- public tier, no
+    // per-player target, just the farm-wide storm seed/next-cycle timing.
+    if (path === DISCORD_ADAPTER_ROUTES.WORLD_CORIOLIS && req.method === "POST") {
+      const body = await readJsonWithActorSignature(req);
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.CORIOLIS_READ);
+      return json(res, 200, await coriolisCycleProvider({ resolveCycle: coriolisCycleResolver }));
+    }
 
     // Players link
     if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_LINK && req.method === "POST") {

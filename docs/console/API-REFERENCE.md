@@ -811,6 +811,7 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | GET | `/api/integrations/discord/readiness` | Service readiness | `readiness:read` |
 | GET | `/api/integrations/discord/services` | Services list | `services:read` |
 | GET | `/api/integrations/discord/population` | Player population | `population:read` |
+| POST | `/api/integrations/discord/world/coriolis` | Farm-wide Coriolis storm seed + next-cycle timing (meta#64, mentat#370) -- public tier | `coriolis:read` |
 | GET | `/api/integrations/discord/version` | Adapter version | None |
 | GET | `/api/integrations/discord/servers` | Servers list | None |
 | GET | `/api/integrations/discord/ports` | Ports list | None |
