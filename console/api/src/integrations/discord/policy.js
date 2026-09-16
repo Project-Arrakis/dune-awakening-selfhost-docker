@@ -2,6 +2,11 @@ export const DISCORD_ROLE_TIERS = ["public", "observer", "moderator", "admin", "
 
 export const DISCORD_CAPABILITIES = Object.freeze({
   STATUS_READ: "status:read",
+  // CORIOLIS_READ (mentat#370): the farm-wide Coriolis storm seed and next-
+  // cycle timestamp are genuinely public in-game knowledge (every player on
+  // the server experiences the same storm at the same time) -- public tier,
+  // same as STATUS_READ, not staff-gated like most other read capabilities.
+  CORIOLIS_READ: "coriolis:read",
   READINESS_READ: "readiness:read",
   SERVICES_READ: "services:read",
   POPULATION_READ: "population:read",
@@ -79,14 +84,16 @@ export const EXPERIMENTAL_READ_ONLY_CAPABILITIES = Object.freeze(
 );
 
 const CAPABILITY_BY_TIER = Object.freeze({
-  public: new Set([DISCORD_CAPABILITIES.STATUS_READ]),
+  public: new Set([DISCORD_CAPABILITIES.STATUS_READ, DISCORD_CAPABILITIES.CORIOLIS_READ]),
   observer: new Set([
     DISCORD_CAPABILITIES.STATUS_READ,
+    DISCORD_CAPABILITIES.CORIOLIS_READ,
     DISCORD_CAPABILITIES.READINESS_READ,
     DISCORD_CAPABILITIES.SERVICES_READ
   ]),
   moderator: new Set([
     DISCORD_CAPABILITIES.STATUS_READ,
+    DISCORD_CAPABILITIES.CORIOLIS_READ,
     DISCORD_CAPABILITIES.READINESS_READ,
     DISCORD_CAPABILITIES.SERVICES_READ,
     DISCORD_CAPABILITIES.POPULATION_READ,

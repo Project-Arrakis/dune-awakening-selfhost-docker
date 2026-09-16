@@ -6,6 +6,12 @@ import { discordSafeError, sanitizeDiscordPublicStatus, sanitizeDiscordValue } f
 export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   HEALTH: "/api/integrations/discord/health",
   STATUS: "/api/integrations/discord/status",
+  // WORLD_CORIOLIS (mentat#370, issue #942): public tier, farm-wide storm
+  // seed + next-cycle timestamp, parsed from each running game-server
+  // container's own startup log via resolveCoriolisCycle() -- already used
+  // by the general (non-Discord) /api/map/markers and /api/map/spice
+  // routes, just not previously exposed to the Discord adapter.
+  WORLD_CORIOLIS: "/api/integrations/discord/world/coriolis",
   READINESS: "/api/integrations/discord/readiness",
   SERVICES: "/api/integrations/discord/services",
   POPULATION: "/api/integrations/discord/population",
@@ -105,6 +111,7 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
 export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.HEALTH,
   DISCORD_ADAPTER_ROUTES.STATUS,
+  DISCORD_ADAPTER_ROUTES.WORLD_CORIOLIS,
   DISCORD_ADAPTER_ROUTES.READINESS,
   DISCORD_ADAPTER_ROUTES.SERVICES,
   DISCORD_ADAPTER_ROUTES.POPULATION,

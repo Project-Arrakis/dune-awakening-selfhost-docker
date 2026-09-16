@@ -102,7 +102,8 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/servers",
     "/api/integrations/discord/services",
     "/api/integrations/discord/status",
-    "/api/integrations/discord/version"
+    "/api/integrations/discord/version",
+    "/api/integrations/discord/world/coriolis"
   ].sort());
   // ops/activity, ops/combat, ops/resources, ops/economy, ops/inventory,
   // ops/soc, ops/prometheus are now wired to real data sources and moved
@@ -240,7 +241,8 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/servers",
     "/api/integrations/discord/services",
     "/api/integrations/discord/status",
-    "/api/integrations/discord/version"
+    "/api/integrations/discord/version",
+    "/api/integrations/discord/world/coriolis"
   ].sort());
   // guild-character-grants/* (issue #696) is a deliberate, narrow
   // exception to this naming lint's "grant" term. The URL itself is a
@@ -723,6 +725,61 @@ test("item-audit-log route enforces moderator tier and up and requires an explic
             body: JSON.stringify({ actor: actor(["role-admin"]), actorId: 7 })
           });
           assert.equal(adminResponse.status, 200);
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
+// World Coriolis cycle route (mentat#370, issue #942) — public tier, no
+// actorId/target at all (farm-wide, not per-player).
+test("world/coriolis route is reachable at public tier and returns the resolved seed/nextCycleAt", async () => {
+  const tokenFile = "/tmp/discord-adapter-coriolis-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-coriolis-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-coriolis-test-generated" };
+  const db = { query: async () => ({ rows: [], rowCount: 0 }) };
+  const coriolisCycleResolver = async ({ map } = {}) => {
+    assert.equal(map, "HaggaBasin");
+    return { seed: "2", nextCycleAt: "2026-09-20T05:00:00.000Z" };
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db, coriolisCycleResolver });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+      const route = "/api/integrations/discord/world/coriolis";
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+
+          // Public tier (no configured role at all) is authorized -- this
+          // is genuinely public in-game knowledge, not staff-gated.
+          const publicResponse = await fetch(`${base}${route}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor([]) })
+          });
+          assert.equal(publicResponse.status, 200);
+          const body = await publicResponse.json();
+          assert.equal(body.ok, true);
+          assert.equal(body.seed, "2");
+          assert.equal(body.nextCycleAt, "2026-09-20T05:00:00.000Z");
 
           server.close();
           resolve();

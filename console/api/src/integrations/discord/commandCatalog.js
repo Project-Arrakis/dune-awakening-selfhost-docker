@@ -164,6 +164,12 @@ export const COMMAND_METADATA = Object.freeze({
       { name: "diagnostic", type: "BOOLEAN", required: false, description: "Admin-only: full diagnostic with containers table." }
     ]
   },
+  [DISCORD_ADAPTER_ROUTES.WORLD_CORIOLIS]: {
+    group: "server", subcommand: "coriolis",
+    description: "Show the current Coriolis storm seed and next-cycle timing.",
+    capability: DISCORD_CAPABILITIES.CORIOLIS_READ,
+    params: []
+  },
   [DISCORD_ADAPTER_ROUTES.READINESS]: {
     group: "server", subcommand: "readiness",
     description: "Show readiness and preflight state.",
