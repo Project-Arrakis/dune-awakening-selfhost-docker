@@ -137,7 +137,7 @@ test("saveMarketItemOverrides remaps Treadwheel vehicle masks on new items", () 
   });
 });
 
-test("saveMarketItemOverrides remaps Icehunter depth-2 ranged masks on new items", () => {
+test("saveMarketItemOverrides remaps legacy depth-2 ranged masks on new items", () => {
   withRepo((repo) => {
     seedPlanFile(repo);
     seedAdminItems(repo, [{ id: "ChoamSda9", name: "Maula Pistol Mk9", category: "weapons", source: "Weapons" }]);

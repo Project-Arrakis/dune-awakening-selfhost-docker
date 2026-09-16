@@ -572,7 +572,7 @@ test("loadBuybackSeedPlan remaps Treadwheel vehicle masks", () => {
   }
 });
 
-test("loadBuybackSeedPlan remaps Icehunter depth-2 ranged masks", () => {
+test("loadBuybackSeedPlan remaps legacy depth-2 ranged masks", () => {
   const repoRoot = makeRepoRoot({
     price_multiplier: 5,
     rows: [

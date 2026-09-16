@@ -304,7 +304,7 @@ test("loadMarketSeedPlan remaps Treadwheel vehicle masks before seeding", () => 
   }
 });
 
-test("loadMarketSeedPlan remaps Icehunter depth-2 ranged masks before seeding", () => {
+test("loadMarketSeedPlan remaps legacy depth-2 ranged masks before seeding", () => {
   const repoRoot = makeRepoRoot({
     plan: {
       panel_version: "test",

@@ -38882,8 +38882,8 @@
     "Vehicle locomotion stocks deeper than the default 2: sandbike treads 3, buggy treads 4, scout wings 4, assault wings 6, carrier wings 8 (per existing rank/template). Unique locomotion modules under those families use the same counts; schematics stay at 2.",
     "Excluded: non-tradeable, contracts, customization/construction, emotes, mementos, plot/story/NPC items, templates with no string-table name, unreleased resources (Water, Corpse), social wearables, unusable set packs.",
     "Write actions run through RedBlink's permissioned database:write addon bridge.",
-    "Ranged weapon category_mask values were remapped from Icehunter/EDA depth-2 type codes (pistol=2 \u2026 lasgun=13, ammo=14) onto the in-game Weapons tab: Melee(0), Ranged(1), Ammunition(2), Unique Schematics(3). Physical guns now nest at depth 3 under Ranged Weapons so the CHOAM prefix filter no longer lists only Maula pistols in the ammunition/ranged slot.",
-    "Treadwheel category_mask values were remapped off Icehunter's sandcrawler folder (d2=5; unique schematics d3=5) onto Funcom's One-Man Groundcar folder (d2=0, same depth-3 slots as Sandbike; unique schematics d3=0). Icehunter has no items/vehicles/treadwheel path, so CHOAM listed Treadwheel parts under Sandcrawler. Real Sandcrawler* rows are unchanged."
+    "Ranged weapon category_mask values were remapped from legacy depth-2 type codes (pistol=2 \u2026 lasgun=13, ammo=14) onto the in-game Weapons tab: Melee(0), Ranged(1), Ammunition(2), Unique Schematics(3). Physical guns now nest at depth 3 under Ranged Weapons so the CHOAM prefix filter no longer lists only Maula pistols in the ammunition/ranged slot.",
+    "Treadwheel category_mask values were remapped off the legacy plan's sandcrawler folder (d2=5; unique schematics d3=5) onto Funcom's One-Man Groundcar folder (d2=0, same depth-3 slots as Sandbike; unique schematics d3=0). The legacy mapping had no items/vehicles/treadwheel path, so CHOAM listed Treadwheel parts under Sandcrawler. Real Sandcrawler* rows are unchanged."
   ],
   "unsafe_template_ids": [
     "AtreLMGRadiationNPC",
