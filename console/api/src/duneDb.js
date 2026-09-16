@@ -4239,7 +4239,7 @@ async function baseChildAccessSupported(db) {
 // A child piece set to any other level was deliberately opened wider (Public,
 // Guild) or narrowed further (Co-Owner, Owner) than that default.
 const SUB_FIEF_ACCESS_LEVEL = 3;
-const ACCESS_LEVEL_LABELS = { 1: "Public", 2: "Guild", 3: "Associate", 4: "Co-Owner", 5: "Owner" };
+const ACCESS_LEVEL_LABELS = { 1: "Owner", 2: "Co-Owner", 3: "Associate", 4: "Guild", 5: "Public" };
 
 // Categorizes a child piece for the Base Permissions tab's Type filter.
 // Deliberately its own map, not a reuse of BASE_INVENTORY_TYPES: that one
