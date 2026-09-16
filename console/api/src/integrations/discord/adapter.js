@@ -71,6 +71,14 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   // Discord servers at all) and returns aggregate counts only, never a
   // per-user mapping.
   GUILD_FACTION_SUMMARY: "/api/integrations/discord/guilds/faction-summary",
+  // PLAYERS_CHEATER_TRACKING (meta#64 "Chronicles of Kanly", mentat#361):
+  // staff-only, admin/owner tier -- unlike every other PLAYERS_* route,
+  // this is NOT self-scoped (it deliberately takes an explicit target
+  // actorId in the request body, never the caller's own linked player) --
+  // Mentat calls it to check an APPLICANT's anti-cheat record when a staff
+  // member reviews a Swordmaster/Sietch Guard trust-role application, which
+  // is almost never the reviewing staff member's own character.
+  PLAYERS_CHEATER_TRACKING: "/api/integrations/discord/players/cheater-tracking",
   // PLAYERS_ITEM_AUDIT_LOG (meta#64 "Chronicles of Kanly", mentat#368):
   // moderator tier and up -- like PLAYERS_FIND/GUILD_FIND this is a
   // targeted lookup, but unlike them it is NOT self-scoped: the request
@@ -135,6 +143,7 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.GUILD_STORAGE,
   DISCORD_ADAPTER_ROUTES.GUILD_FIND,
   DISCORD_ADAPTER_ROUTES.GUILD_FACTION_SUMMARY,
+  DISCORD_ADAPTER_ROUTES.PLAYERS_CHEATER_TRACKING,
   DISCORD_ADAPTER_ROUTES.PLAYERS_ITEM_AUDIT_LOG,
   DISCORD_ADAPTER_ROUTES.VERSION,
   DISCORD_ADAPTER_ROUTES.SERVERS,

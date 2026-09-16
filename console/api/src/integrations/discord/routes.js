@@ -47,6 +47,7 @@ import {
 } from "./inventoryProvider.js";
 import { broadcastProvider } from "./broadcastProvider.js";
 import { itemAuditLogProvider } from "./itemAuditLogProvider.js";
+import { cheaterTrackingProvider } from "./trustVettingProvider.js";
 import { buildDuneArgs, runDockerLogs, runDune, validateServiceName } from "../../runner.js";
 import { sanitizeDiscordValue } from "./sanitize.js";
 import { initializeDiscordAdapterSchema } from "./schema.js";
@@ -540,6 +541,25 @@ export async function handleDiscordAdapterRoute({
         playerPawnId: linked.player_pawn_id,
         query: body.query
       }));
+    }
+
+    // Players cheater tracking (meta#64, mentat#361) -- staff-only trust-role
+    // vetting signal, deliberately NOT self-scoped: body.actorId names the
+    // applicant under review, not the calling staff member's own character.
+    if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_CHEATER_TRACKING && req.method === "POST") {
+      const body = await readJsonWithActorSignature(req);
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.CHEATER_TRACKING_READ);
+      if (!body.actorId) {
+        throw policyError("missing_actor_id", "actorId (the target player's dune.actors id) is required.");
+      }
+      const response = await cheaterTrackingProvider(db, { actorId: body.actorId });
+      audit(config, req, "discord.trust.cheater_tracking_read", {
+        actorId: actor.userId,
+        targetActorId: body.actorId,
+        flagCount: response.count
+      });
+      return json(res, 200, response);
     }
 
     // Players item-audit-log (meta#64, mentat#368) -- staff/system

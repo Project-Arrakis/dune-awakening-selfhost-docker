@@ -184,6 +184,25 @@ test("OPS capability enforcement fails closed for unprivileged actors", () => {
   );
 });
 
+// CHEATER_TRACKING_READ (meta#64, mentat#361) is deliberately admin/owner
+// only, same reasoning as OPS_* above -- it discloses another player's
+// anti-cheat flag history, more sensitive than moderator's existing
+// INVENTORY_READ/STORAGE_READ/GUILD_READ grants.
+test("CHEATER_TRACKING_READ is granted only to admin and owner tiers", () => {
+  assert.equal(discordActorCan(actor(["role-player"]), mapping, DISCORD_CAPABILITIES.CHEATER_TRACKING_READ), false);
+  assert.equal(discordActorCan(actor(["role-moderator"]), mapping, DISCORD_CAPABILITIES.CHEATER_TRACKING_READ), false);
+  assert.equal(discordActorCan(actor(["role-admin"]), mapping, DISCORD_CAPABILITIES.CHEATER_TRACKING_READ), true);
+  assert.equal(discordActorCan(actor(["role-owner"]), mapping, DISCORD_CAPABILITIES.CHEATER_TRACKING_READ), true);
+
+  assert.throws(
+    () => requireDiscordCapability(actor(["role-moderator"]), mapping, DISCORD_CAPABILITIES.CHEATER_TRACKING_READ),
+    (error) => error.code === "not_authorized" && error.statusCode === 403
+  );
+  assert.doesNotThrow(() =>
+    requireDiscordCapability(actor(["role-admin"]), mapping, DISCORD_CAPABILITIES.CHEATER_TRACKING_READ)
+  );
+});
+
 // ITEM_AUDIT_LOG_READ (meta#64, mentat#368) is granted to moderator and up
 // -- unlike CHEATER_TRACKING_READ (admin/owner only), it's the same
 // sensitivity class as the existing INVENTORY_READ/STORAGE_READ/GUILD_READ

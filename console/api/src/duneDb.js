@@ -2777,6 +2777,51 @@ async function specializationKeystoneCounts(db, controllerId) {
   }]));
 }
 
+// playerCheaterTracking: read-only anti-cheat signal for a given player
+// (meta#64 "Chronicles of Kanly", mentat#361 -- gates Swordmaster/Sietch
+// Guard trust-role approval). dune.cheater_tracking is keyed by the
+// player's stable dune.accounts.user ("FLS") id, not by actor/controller
+// id, so this resolves accountId -> dune.accounts.user before querying --
+// the same *starting point* (resolvePlayerMutationTarget -> accountId) as
+// playerTeleportIdentity(), but NOT the same resolution: that function
+// additionally inner-joins dune.player_state/dune.actors and fails closed
+// (throws) when the account has no live pawn, since it needs a current
+// position for a real teleport. This function queries dune.accounts alone
+// and fails open (flsId: null, rows: []) when the account has no FLS id --
+// deliberate, since "no data" is more useful to a staff reviewer than a
+// hard error for a possibly-offline or pawn-less applicant. Do not treat
+// these two functions as equivalent identity-resolution paths.
+// Schema verified directly against a live instance, not assumed: fls_id
+// (text), cheat_type (enum, cast to text same as other enum columns in
+// this file e.g. specialization track_type), event_time (timestamptz).
+// Both dune.cheater_tracking.fls_id and .event_time are indexed.
+export async function playerCheaterTracking(db, id) {
+  if (!(await tableExists(db, "cheater_tracking"))) return unsupported("cheaterTracking", ["dune.cheater_tracking"]);
+  const player = await resolvePlayerMutationTarget(db, id);
+  const identity = await db.query(`
+    select coalesce(ac."user", '') as fls_id
+    from dune.accounts ac
+    where ac.id = $1
+    limit 1`, [player.accountId]);
+  const flsId = identity.rows[0]?.fls_id || null;
+  if (!flsId) return { capabilities: { cheaterTracking: true }, player, flsId: null, rows: [] };
+  const result = await db.query(`
+    select fls_id, cheat_type::text as cheat_type, event_time
+    from dune.cheater_tracking
+    where fls_id = $1
+    order by event_time desc`, [flsId]);
+  return {
+    capabilities: { cheaterTracking: true },
+    player,
+    flsId: String(flsId),
+    rows: result.rows.map((row) => ({
+      flsId: String(row.fls_id),
+      cheatType: String(row.cheat_type || ""),
+      eventTime: row.event_time
+    }))
+  };
+}
+
 // ensureItemAuditLogIndexes: dune.item_audit_log is a closed-source
 // game-server-owned table (this fork does not create it, unlike e.g.
 // dune.player_death_log in deathPoller.js), and had no index beyond its own
@@ -2796,13 +2841,41 @@ async function specializationKeystoneCounts(db, controllerId) {
 // (implicit, autocommitted) transaction, and db.query() here is a bare
 // pool.query() per call (see db.js), so this is safe as separate calls but
 // would NOT be safe combined into one multi-statement string.
+//
+// DBA hat finding (Requirement 20 Layer 3, issue #935): tracked once
+// in-process (moduleIndexesEnsured) so a successful ensure only re-runs the
+// two CREATE INDEX statements once per server process, not on every single
+// request -- IF NOT EXISTS made repeated attempts safe, but not free
+// (catalog lookup + a moment of lock contention if many requests raced to
+// build the same index simultaneously). A non-"already exists" pg error is
+// now logged distinctly (console.warn) rather than silently swallowed by a
+// bare catch, so a real failure (permissions, disk) is visible instead of
+// looking identical to the benign "index already exists" case.
+let itemAuditLogIndexesEnsured = false;
 async function ensureItemAuditLogIndexes(db) {
-  try {
-    await db.query(`create index concurrently if not exists idx_item_audit_log_logged_at on dune.item_audit_log (logged_at)`);
-  } catch { /* best effort -- may already exist, or be mid-build from a concurrent request */ }
-  try {
-    await db.query(`create index concurrently if not exists idx_item_audit_log_inventory_id on dune.item_audit_log (inventory_id)`);
-  } catch { /* best effort */ }
+  if (itemAuditLogIndexesEnsured) return;
+  const statements = [
+    { name: "idx_item_audit_log_logged_at", sql: `create index concurrently if not exists idx_item_audit_log_logged_at on dune.item_audit_log (logged_at)` },
+    { name: "idx_item_audit_log_inventory_id", sql: `create index concurrently if not exists idx_item_audit_log_inventory_id on dune.item_audit_log (inventory_id)` }
+  ];
+  for (const { name, sql } of statements) {
+    try {
+      await db.query(sql);
+    } catch (error) {
+      // Postgres 23505/42P07-family "already exists"/"already building"
+      // codes are the expected, benign outcome of a concurrent ensure --
+      // anything else (permissions, disk, unexpected schema drift) is
+      // logged so it isn't silently indistinguishable from that case.
+      if (!["23505", "42P07"].includes(error?.code)) {
+        console.warn(`ensureItemAuditLogIndexes: unexpected error creating ${name}: ${error?.message || "unknown error"}`);
+      }
+    }
+  }
+  itemAuditLogIndexesEnsured = true;
+}
+
+export function _resetItemAuditLogIndexesEnsuredForTests() {
+  itemAuditLogIndexesEnsured = false;
 }
 
 // playerItemAuditLog: read-only item-movement history for a given player's
@@ -2821,6 +2894,13 @@ async function ensureItemAuditLogIndexes(db) {
 // actor_id, confirmed live), NOT the FLS-id path playerCheaterTracking()
 // uses (that table's disclosure question is a different one -- see that
 // function's own comment for why the two identity paths aren't the same).
+//
+// No documented rollback/down-migration exists for the two indexes
+// ensureItemAuditLogIndexes() creates -- they are created directly against
+// the live, game-owned database, outside any migration system this fork
+// has. If they ever need to be removed, an operator must run, by hand:
+//   DROP INDEX CONCURRENTLY idx_item_audit_log_logged_at;
+//   DROP INDEX CONCURRENTLY idx_item_audit_log_inventory_id;
 export async function playerItemAuditLog(db, id, { windowHours, limit } = {}) {
   if (!(await tableExists(db, "item_audit_log"))) return unsupported("itemAuditLog", ["dune.item_audit_log"]);
   await ensureItemAuditLogIndexes(db);

@@ -35,7 +35,20 @@ ENV NODE_ENV=production
 #
 # Everything under runtime/scripts/*.py is pure stdlib, so the bare interpreter
 # is enough -- no python3-yaml, no pip packages.
+#
+# libpcre2-8-0 is targeted for an explicit --only-upgrade (2026-09-15,
+# issue #934's trivy-image-scan run, CVE-2026-86145/CVE-2026-89161): it's a
+# base-image package we never install ourselves, so `apt-get update` alone
+# refreshes the index but does not pull the newer, already-fixed
+# 10.46-1~deb13u2 that a fresh index makes available -- a real version bump
+# per .trivyignore's own policy, not a suppression, so it's applied here
+# rather than added to that file. Deliberately NOT a blanket `apt-get
+# upgrade` (hadolint DL3005, and see .hadolint.yaml's own note on why
+# OS-package freshness is handled via targeted fixes/base-image bumps, not
+# a full-system upgrade every build).
 RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade \
+        libpcre2-8-0 \
     && apt-get install -y --no-install-recommends \
         iproute2 \
         ca-certificates \
