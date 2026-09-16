@@ -230,7 +230,7 @@ test("CSV import remaps Treadwheel vehicle masks by template_id", () => {
   assert.equal(sandcrawler.category_mask, 0x02050000);
 });
 
-test("CSV import remaps Icehunter depth-2 ranged weapon masks", () => {
+test("CSV import remaps legacy depth-2 ranged weapon masks", () => {
   const rows = csvToPlanRows(
     "template_id,kind,price,category_mask,category_depth\nChoamSda2,equippable,6500,16908288,2\nAmmo,ammunition,50,17694720,2\nCustomUniqueSchematic,schematic,4000,16973824,2\n",
     SAMPLE_PLAN,

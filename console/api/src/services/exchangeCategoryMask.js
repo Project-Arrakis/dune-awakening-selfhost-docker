@@ -11,15 +11,13 @@
 //   category_depth >= in_depth AND (category_mask >> shift) = (in_mask >> shift)
 // so a folder listing is every row whose mask shares the folder's leading bytes.
 //
-// Weapons tab depth-2 folders, confirmed from Icehunter/dune-admin unique-
-// schematic menu screenshots and DASH (snapetech/DuneAwakeningSelfHost) GUI
-// category assets:
+// Weapons tab depth-2 folders from the in-game menu hierarchy:
 //   0 Melee Weapons
 //   1 Ranged Weapons
 //   2 Ammunition
 //   3 Unique Schematics
 //
-// Icehunter/EDA CategoryMask() remaps melee under folder 0 at depth 3
+// The legacy seed category mapping places melee under folder 0 at depth 3
 // (short blades / long blades) but leaves each ranged type as a depth-2
 // sibling: pistol=2 … lasgun=13, ammunition=14. That is the same type-code
 // order Unique Schematics uses at depth 3. The in-game Weapons tab does not
@@ -29,15 +27,13 @@
 //   - every other gun is invisible when browsing Ranged Weapons (depth-2
 //     code 1 is empty);
 //   - heavy pistols at depth-2 code 3 leak into Unique Schematics.
-// Icehunter later treated those static maps as guesses and learned true
-// masks from player listings (dune-admin#295). This console seeds from a
-// frozen EDA plan, so it has to correct the maps itself.
+// The bundled static seed plan needs these category corrections before use.
 //
 // Nested ranged weapons reuse those unique-schematic type codes as depth-3
-// indexes under Ranged Weapons (DASH observed weapons/ranged as 0x01010700).
+// indexes under Ranged Weapons (for example, 0x01010700).
 // Ammunition guessed at code 14 moves to folder 2.
 //
-// Vehicles tab depth-2 folders, same Icehunter/DASH sources:
+// Vehicles tab depth-2 folders:
 //   0 One-Man Groundcar (Sandbike and Treadwheel)
 //   1 Buggy
 //   2 Light Ornithopter
@@ -46,7 +42,7 @@
 //   5 Sandcrawler
 //   6 Unique Schematics
 //
-// Icehunter item-data has no items/vehicles/treadwheel path, so Lost Harvest
+// The legacy item category mapping had no treadwheel path, so Lost Harvest
 // Treadwheel parts were filed under sandcrawler (d2=5) using the same depth-3
 // slots sandbike uses (chassis=0, hull=1, engine=2, psu=3, locomotion=4,
 // utility=5). Unique Treadwheel schematics used sandcrawler's unique slot
@@ -121,7 +117,7 @@ function normalizeTreadwheelVehicleCategory(decoded, mask, depth, itemKind, temp
     };
   }
 
-  // Unique schematics use Vehicles d2=6; Icehunter used sandcrawler's d3=5.
+  // Unique schematics use Vehicles d2=6; the legacy mapping used sandcrawler's d3=5.
   if (
     itemKind === "schematic"
     && decoded.depth2 === VEHICLES_UNIQUE_SCHEMATICS

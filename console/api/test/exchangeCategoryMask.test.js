@@ -32,7 +32,7 @@ test("Maula pistol guessed mask is the ammunition folder, not Ranged Weapons", (
   assert.equal(exchangeMaskMatches(guessedMaula, 2, WEAPONS_RANGED_FOLDER_MASK, 2), false);
 });
 
-test("nests Icehunter depth-2 ranged types under Ranged Weapons", () => {
+test("nests legacy depth-2 ranged types under Ranged Weapons", () => {
   const maula = normalizeExchangeCategory({ categoryMask: 0x01020000, categoryDepth: 2, kind: "equippable" });
   assert.deepEqual(maula, { categoryMask: 0x01010200, categoryDepth: 3 });
   assert.equal(exchangeMaskMatches(maula.categoryMask, maula.categoryDepth, WEAPONS_RANGED_FOLDER_MASK, 2), true);
