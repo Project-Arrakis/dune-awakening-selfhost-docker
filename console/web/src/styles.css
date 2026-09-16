@@ -5446,6 +5446,73 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .landsraad-milestone-result .inline-action-result-wrap { min-height: 38px; justify-content: center; }
 .landsraad-milestone-actions > button { min-width: 132px; }
 .landsraad-cycle-toggle { min-width: max-content; }
+/* Mode-first vendor-override controls (design doc §8, UI/UX redesign):
+   segment groups mirror .bases-rank-segments/.bases-rank-segment exactly --
+   own class names per this codebase's established convention of letting
+   each feature diverge later even when the rules start out identical
+   (see rosterEditor.tsx's RankSegments comment). A visually distinct
+   "pill group" reads as a true single-choice control, unlike a checkbox
+   row, which is the whole point of this redesign: only one vendor and
+   one house are ever live at once, and the control should say so. */
+.landsraad-vendor-mode-segments, .landsraad-vendor-segments {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  height: 38px;
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: #151719;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.landsraad-mode-segment, .landsraad-vendor-segment {
+  position: relative;
+  display: flex;
+  gap: 0;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 10px;
+  border-left: 1px solid var(--border);
+  color: var(--muted-warm);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.landsraad-mode-segment:first-child, .landsraad-vendor-segment:first-child { border-left: 0; }
+.landsraad-mode-segment input, .landsraad-vendor-segment input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+}
+.landsraad-mode-segment:hover, .landsraad-vendor-segment:hover { background: rgba(198, 139, 74, .12); color: var(--text-strong); }
+.landsraad-mode-segment:has(input:checked), .landsraad-vendor-segment:has(input:checked) { background: #9b5f2a; color: var(--text-strong); }
+.landsraad-mode-segment:has(input:focus-visible), .landsraad-vendor-segment:has(input:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
+.landsraad-vendor-mode-help { margin: 0 0 8px; }
+.landsraad-vendor-checkboxes { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-bottom: 4px; }
+.landsraad-vendor-checkbox { display: flex; align-items: center; gap: 6px; }
+.landsraad-vendor-position {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #9b5f2a;
+  color: var(--text-strong);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+.landsraad-vendor-cycle-preview, .landsraad-vendor-live-preview { margin: 4px 0 8px; }
 .landsraad-task-table th, .landsraad-task-table td,
 .landsraad-reward-table th, .landsraad-reward-table td { vertical-align: middle; }
 .landsraad-number-input { width: 110px; min-width: 90px; }

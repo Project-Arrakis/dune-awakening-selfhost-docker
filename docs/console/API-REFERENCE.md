@@ -707,6 +707,9 @@ Layers legend's default-settings mechanism.
 | POST | `/api/admin/landsraad/term-task-goals` | Update term task goals | `termId`, `goalAmount` |
 | POST | `/api/admin/landsraad/reward-tier` | Update reward tier | `rowLocator`, `taskId`, `threshold`, `newThreshold`, `templateId`, `amount` |
 | POST | `/api/admin/landsraad/player-contribution` | Set player contribution | `playerId`, `taskId`, `amount` |
+| GET | `/api/admin/landsraad/vendor-override` | Get Special Vendor override preset + supported vendor/house catalogs | None |
+| POST | `/api/admin/landsraad/vendor-override` | Force a Landsraad Special Vendor decree active for the current term, bypassing the normal win requirement, and optionally force a house as the term's winning house (fork-only; owner-only) | `enabled`, `mode` (`fixed`\|`rotate`), `vendorKeys[]` (`vehicles`\|`weapons`\|`armor`\|`utilities`), `houseFaction` (`atreides`\|`harkonnen`\|omit), `overrideResolvedTerm` (bool) |
+| POST | `/api/admin/landsraad/vendor-override/revert` | Clear the current term's forced active/elected decree, and forced winning/reigning house if this feature set it (owner-only) | None |
 
 ### Broadcasts & Messages
 

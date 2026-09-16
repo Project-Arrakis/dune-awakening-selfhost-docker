@@ -704,6 +704,372 @@ export async function setLandsraadPlayerContribution(db, { playerId, taskId, amo
   });
 }
 
+// The Landsraad "Special Vendor" decrees. This resolves ids by decree_name
+// at apply time rather than hardcoding integer ids (an operator's decree
+// catalog is game content, not guaranteed to assign the same ids across
+// every install -- see docs/design/landsraad-vendor-override-l1-design-
+// 2026-09-11.md §3.1). If any expected name is missing on an install, the
+// feature fails loudly (requireCapability) instead of silently writing a
+// wrong id.
+const LANDSRAAD_VENDOR_DECREE_NAMES = Object.freeze({
+  vehicles: "SpecialVendorActive_Vehicles",
+  weapons: "SpecialVendorActive_Weapons",
+  armor: "SpecialVendorActive_Armor",
+  utilities: "SpecialVendorActive_Utilities"
+});
+
+// This is a fork-only feature (not proposed for the Red-Blink upstream --
+// see the design doc §6). It force-writes dune.landsraad_decree_term's
+// active_decree_id/elected_decree_id, a state combination that, as far as
+// this design could establish, the closed-source game engine has never
+// itself produced (no term anywhere has ever had these set while
+// winning_faction_id/reigning_faction_id stayed NULL). That residual risk
+// cannot be fully closed from this codebase alone -- see the design doc §6.
+// Also checks the specific columns this feature writes actually exist --
+// landsraadOverview (line ~369) already treats active_decree_id/
+// elected_decree_id/winning_faction_id/reigning_faction_id as
+// install-dependent, absent on some schemas (that's why it goes through
+// termColumns.has(...) guards rather than referencing them unconditionally).
+// Without this check here too, an UPDATE referencing a genuinely missing
+// column would throw a raw Postgres 42703 undefined_column error instead of
+// this file's usual graceful "not supported on this install" message
+// (caught in review on PR #911, bot review, before this ever shipped).
+async function requireLandsraadVendorOverrideCapability(db) {
+  await requireCapability(await tableExists(db, "landsraad_decree_term"), "Landsraad vendor override requires dune.landsraad_decree_term.");
+  await requireCapability(await tableExists(db, "landsraad_decrees"), "Landsraad vendor override requires dune.landsraad_decrees.");
+  const termColumns = await columnsFor(db, "landsraad_decree_term");
+  await requireCapability(
+    termColumns.has("active_decree_id") && termColumns.has("elected_decree_id") && termColumns.has("winning_faction_id") && termColumns.has("reigning_faction_id"),
+    "Landsraad vendor override requires active_decree_id/elected_decree_id/winning_faction_id/reigning_faction_id on dune.landsraad_decree_term."
+  );
+  if (typeof db.transaction !== "function") throw new Error("Landsraad vendor override requires rollback-safe transaction support.");
+}
+
+// Which of the 4 known vendor types this install's decree catalog actually
+// supports, for the admin UI to populate its checkboxes from -- never
+// hardcoded client-side (design doc §3.1/§3.4).
+export async function landsraadVendorCatalog(db) {
+  await requireLandsraadVendorOverrideCapability(db);
+  const names = Object.values(LANDSRAAD_VENDOR_DECREE_NAMES);
+  const result = await db.query(
+    "select decree_name from dune.landsraad_decrees where decree_name = any($1)",
+    [names]
+  );
+  const present = new Set(result.rows.map((row) => row.decree_name));
+  return Object.entries(LANDSRAAD_VENDOR_DECREE_NAMES)
+    .filter(([, name]) => present.has(name))
+    .map(([key, name]) => ({ key, decreeName: name }));
+}
+
+async function resolveLandsraadVendorDecrees(db, vendorKeys) {
+  const names = vendorKeys.map((key) => LANDSRAAD_VENDOR_DECREE_NAMES[key]);
+  const result = await db.query(
+    "select id::text as id, decree_name from dune.landsraad_decrees where decree_name = any($1)",
+    [names]
+  );
+  const idByName = new Map(result.rows.map((row) => [row.decree_name, row.id]));
+  const missing = names.filter((name) => !idByName.has(name));
+  if (missing.length) {
+    throw new UnsupportedCapabilityError(
+      `This install's Landsraad decree catalog does not include the expected vendor decrees (${missing.join(", ")}). Landsraad vendor override is not supported on this install.`
+    );
+  }
+  const idByKey = new Map(vendorKeys.map((key) => [key, idByName.get(LANDSRAAD_VENDOR_DECREE_NAMES[key])]));
+  const keyById = new Map(vendorKeys.map((key) => [idByName.get(LANDSRAAD_VENDOR_DECREE_NAMES[key]), key]));
+  return { idByKey, keyById };
+}
+
+function normalizeLandsraadVendorKeys(vendorKeys) {
+  if (!Array.isArray(vendorKeys) || !vendorKeys.length) {
+    const error = new Error("Select at least one Landsraad vendor type.");
+    error.statusCode = 400;
+    throw error;
+  }
+  for (const key of vendorKeys) {
+    if (!Object.prototype.hasOwnProperty.call(LANDSRAAD_VENDOR_DECREE_NAMES, key)) {
+      const error = new Error(`"${key}" is not a supported Landsraad vendor type.`);
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+  return vendorKeys;
+}
+
+// v2 (design doc §8): forcing which house "won" the term, on top of v1's
+// decree-only write -- required because vendor visibility is gated on
+// winning_faction_id, not just active_decree_id (confirmed by the operator).
+// Hardcoded allow-list, deliberately NOT a bare lookup against every row in
+// dune.factions -- that table also has "None" and "Smuggler", real rows that
+// are not actual Landsraad-eligible houses (design doc §8.1/§8.2, a CRITICAL
+// finding in the §8 Eight-Hats audit: the first draft had no allow-list at
+// all and could have forced either of those as the "winning house").
+const LANDSRAAD_HOUSE_FACTION_NAMES = Object.freeze({
+  atreides: "Atreides",
+  harkonnen: "Harkonnen"
+});
+
+// The house catalog this install's admin UI can offer, filtered to the
+// allow-list above -- mirrors landsraadVendorCatalog's shape, but note this
+// is a single-name-or-none lookup, not resolveLandsraadVendorDecrees's
+// all-required completeness check (design doc §8.2, Architect hat finding:
+// those two have genuinely different shapes and must not be literally
+// mirrored).
+export async function landsraadHouseFactionCatalog(db) {
+  await requireLandsraadVendorOverrideCapability(db);
+  const names = Object.values(LANDSRAAD_HOUSE_FACTION_NAMES);
+  const result = await db.query(
+    "select id::text as id, name from dune.factions where name = any($1)",
+    [names]
+  );
+  const idByName = new Map(result.rows.map((row) => [row.name, row.id]));
+  return Object.entries(LANDSRAAD_HOUSE_FACTION_NAMES)
+    .filter(([, name]) => idByName.has(name))
+    .map(([key, name]) => ({ key, name }));
+}
+
+// Returns null when houseFactionKey is null/undefined (the "decree-only,
+// don't touch winning_faction_id at all" path) -- never silently resolves
+// an unrecognized key to null, which would be indistinguishable from "not
+// requested" and let an invalid key slip through unnoticed.
+async function resolveLandsraadHouseFaction(db, houseFactionKey) {
+  if (houseFactionKey == null) return null;
+  if (!Object.prototype.hasOwnProperty.call(LANDSRAAD_HOUSE_FACTION_NAMES, houseFactionKey)) {
+    const error = new Error(`"${houseFactionKey}" is not a supported Landsraad house.`);
+    error.statusCode = 400;
+    throw error;
+  }
+  const name = LANDSRAAD_HOUSE_FACTION_NAMES[houseFactionKey];
+  const result = await db.query("select id::text as id from dune.factions where name = $1", [name]);
+  const id = result.rows[0]?.id;
+  if (id == null) {
+    throw new UnsupportedCapabilityError(
+      `This install's faction catalog does not include "${name}". Forcing a winning house is not supported on this install.`
+    );
+  }
+  return { key: houseFactionKey, id, name };
+}
+
+// CREATE ... IF NOT EXISTS is idempotent but not race-free under true
+// concurrency -- two transactions that both see "doesn't exist yet" can
+// both attempt the CREATE, and Postgres raises duplicate_schema (42P06) /
+// duplicate_table (42P07) on the loser (2026-09-11 Layer 2 audit, DBA hat
+// finding). This is NOT caught-and-continued here: once any statement in
+// a Postgres transaction errors, the whole transaction is aborted and every
+// later statement fails too (25P02) until rollback -- swallowing just the
+// CREATE's error would only move the failure to the next statement, not
+// prevent it. Deliberately left as a hard failure instead: it can only
+// happen in the narrow, one-time window before this table has ever been
+// created on a given install (a fresh deploy's reconciler tick racing an
+// admin's first "Force Now" click), the whole apply/revert attempt fails
+// and rolls back cleanly (no partial state), and the loser's natural retry
+// (the reconciler's next ~60s tick, or the admin re-clicking) succeeds
+// once the winner's CREATE has committed.
+async function ensureLandsraadVendorOverrideStateTable(tx) {
+  await tx.query("create schema if not exists console");
+  await tx.query(`
+    create table if not exists console.landsraad_vendor_override_state (
+      id smallint primary key default 1,
+      last_applied_term_id bigint,
+      last_applied_decree_id bigint,
+      last_applied_faction_id bigint,
+      updated_at timestamp with time zone not null default now(),
+      check (id = 1)
+    )`);
+  // Additive migration (Requirement 26) for any install that created this
+  // table under v1, before last_applied_faction_id existed (design doc §8.2).
+  await tx.query("alter table console.landsraad_vendor_override_state add column if not exists last_applied_faction_id bigint");
+  await tx.query(`
+    insert into console.landsraad_vendor_override_state (id)
+    values (1)
+    on conflict (id) do nothing`);
+}
+
+// mode: "fixed" always targets vendorKeys[0]. "rotate" advances to the next
+// key after whichever decree id was last applied (by this feature), reading
+// and writing that position inside the same locked transaction as the write
+// itself -- a JSON-preset-file-based rotation position would otherwise race
+// against a concurrent reconciler tick (design doc §3.1, DBA hat finding).
+//
+// allowOverrideResolvedTerm: false (the reconciler's setting, always) means
+// this never overwrites a term that has already organically resolved
+// (active/elected decree or winning/reigning faction already set) -- it
+// no-ops with a reason instead. true (only ever passed for an explicit,
+// UI-confirmed "Force Now" on an already-resolved term) allows the override,
+// since only a deliberate, attended admin action may discard a real win.
+// houseFaction (design doc §8): when omitted/null, behavior is byte-identical
+// to the decree-only v1 write -- winning_faction_id/reigning_faction_id are
+// never referenced in the UPDATE at all, not set-to-NULL (§8.2, Architect +
+// QA/Test finding: an always-set-to-houseFaction-or-NULL implementation would
+// silently null a real, organic winning_faction_id as a side effect of a
+// decree-only "Force Now" on an already-resolved term -- exactly the
+// accidental-discard the resolved-term guard below exists to prevent
+// consciously). When present, forcing it is a materially bigger, separately
+// named risk than the decree write alone -- see LANDSRAAD_HOUSE_FACTION_NAMES
+// and the design doc §8.1: a real Postgres trigger
+// (landsraad_tasks_check_term_won_state on dune.landsraad_tasks) organically
+// sets winning_faction_id on a real sysselraad win, guarded by
+// "WHERE winning_faction_id IS NULL" -- forcing this column silently disables
+// that trigger's effect for the rest of the term. Not fixable from this
+// codebase; only documentable (surfaced in the confirm-dialog warning, see
+// the frontend).
+export async function applyLandsraadVendorOverride(db, { vendorKeys, mode, houseFaction, allowOverrideResolvedTerm = false } = {}) {
+  // Cheap, DB-independent input validation first -- fail fast on a bad
+  // request without ever touching the database, rather than after already
+  // running capability/table-existence queries.
+  const safeVendorKeys = normalizeLandsraadVendorKeys(vendorKeys);
+  await requireLandsraadVendorOverrideCapability(db);
+  const safeMode = mode === "rotate" ? "rotate" : "fixed";
+  const { idByKey, keyById } = await resolveLandsraadVendorDecrees(db, safeVendorKeys);
+  const resolvedHouse = await resolveLandsraadHouseFaction(db, houseFaction ?? null);
+
+  const applied = await db.transaction(async (tx) => {
+    await ensureLandsraadVendorOverrideStateTable(tx);
+    const state = await tx.query(
+      "select last_applied_decree_id::text as last_applied_decree_id from console.landsraad_vendor_override_state where id = 1 for update"
+    );
+    const term = await tx.query(`
+      select term_id::text as term_id, test_term,
+             active_decree_id, elected_decree_id, winning_faction_id, reigning_faction_id
+      from dune.landsraad_decree_term
+      order by term_id desc
+      limit 1
+      for update`);
+    const termRow = term.rows[0];
+    if (!termRow) return { ok: true, applied: false, reason: "No current Landsraad term is available yet." };
+    if (termRow.test_term) return { ok: true, applied: false, reason: "The current Landsraad term is a test term." };
+
+    const alreadyResolved = termRow.active_decree_id != null
+      || termRow.elected_decree_id != null
+      || termRow.winning_faction_id != null
+      || termRow.reigning_faction_id != null;
+    if (alreadyResolved && !allowOverrideResolvedTerm) {
+      return { ok: true, applied: false, reason: "This Landsraad term has already resolved (a house has won or a decree is active). The automatic override does not overwrite an organic result.", termId: termRow.term_id };
+    }
+
+    let targetKey = safeVendorKeys[0];
+    if (safeMode === "rotate") {
+      const lastAppliedDecreeId = state.rows[0]?.last_applied_decree_id ?? null;
+      const lastKey = lastAppliedDecreeId != null ? keyById.get(lastAppliedDecreeId) : undefined;
+      const lastIndex = lastKey != null ? safeVendorKeys.indexOf(lastKey) : -1;
+      const nextIndex = lastIndex === -1 ? 0 : (lastIndex + 1) % safeVendorKeys.length;
+      targetKey = safeVendorKeys[nextIndex];
+    }
+    const targetId = idByKey.get(targetKey);
+
+    const setClauses = ["active_decree_id = $1", "elected_decree_id = $1"];
+    const values = [targetId];
+    if (resolvedHouse) {
+      values.push(resolvedHouse.id);
+      setClauses.push(`winning_faction_id = $${values.length}`, `reigning_faction_id = $${values.length}`);
+    }
+    values.push(termRow.term_id);
+    const termIdParam = values.length;
+
+    const updated = await tx.query(`
+      update dune.landsraad_decree_term
+         set ${setClauses.join(",\n             ")}
+       where term_id = $${termIdParam}
+         and test_term = false
+       returning term_id::text as term_id, active_decree_id::text as active_decree_id`,
+      values);
+    if (!updated.rowCount) {
+      return { ok: true, applied: false, reason: "The Landsraad term changed while the override was being applied." };
+    }
+
+    const stateSetClauses = ["last_applied_term_id = $1", "last_applied_decree_id = $2"];
+    const stateValues = [termRow.term_id, targetId];
+    if (resolvedHouse) {
+      stateValues.push(resolvedHouse.id);
+      stateSetClauses.push(`last_applied_faction_id = $${stateValues.length}`);
+    }
+    await tx.query(`
+      update console.landsraad_vendor_override_state
+         set ${stateSetClauses.join(",\n             ")},
+             updated_at = now()
+       where id = 1`, stateValues);
+
+    return {
+      ok: true,
+      applied: true,
+      termId: updated.rows[0].term_id,
+      decreeId: updated.rows[0].active_decree_id,
+      decreeKey: targetKey,
+      decreeName: LANDSRAAD_VENDOR_DECREE_NAMES[targetKey],
+      houseFactionKey: resolvedHouse?.key ?? null,
+      houseFactionName: resolvedHouse?.name ?? null
+    };
+  });
+
+  if (!applied.applied) return applied;
+
+  // Post-apply re-read, outside the transaction, confirming the commit
+  // actually stuck -- this can only confirm the *database* accepted the
+  // write, not that the closed-source engine treats this state the way an
+  // organically-resolved term would (an accepted, named residual risk; see
+  // the design doc §6/§8.1).
+  const confirmed = await db.query(
+    "select active_decree_id::text as active_decree_id, winning_faction_id::text as winning_faction_id from dune.landsraad_decree_term where term_id = $1",
+    [applied.termId]
+  );
+  return {
+    ...applied,
+    confirmedActiveDecreeId: confirmed.rows[0]?.active_decree_id ?? null,
+    confirmedWinningFactionId: confirmed.rows[0]?.winning_faction_id ?? null
+  };
+}
+
+// Only clears active_decree_id/elected_decree_id if THIS feature's own
+// state table says it was the one that set them for the current term --
+// otherwise this would silently null a term a house actually, organically
+// won (2026-09-11 Layer 2 audit, Architect hat finding: the original
+// version reverted unconditionally, with no way to tell "this feature's
+// override" apart from "a real win", a materially weaker guarantee than
+// applyLandsraadVendorOverride's own guard on the way in).
+// Also clears winning_faction_id/reigning_faction_id, but ONLY when this
+// feature's own state table recorded that it set them for this term
+// (design doc §8.2) -- same ownership-guard discipline as the decree
+// columns above. This cannot recover a real, organic win that happened
+// while the forced values were in place (design doc §8.1's masking risk) --
+// it can only clear what this feature itself is responsible for.
+export async function revertLandsraadVendorOverride(db) {
+  await requireLandsraadVendorOverrideCapability(db);
+  return db.transaction(async (tx) => {
+    await ensureLandsraadVendorOverrideStateTable(tx);
+    const state = await tx.query(
+      "select last_applied_term_id::text as last_applied_term_id, last_applied_faction_id::text as last_applied_faction_id from console.landsraad_vendor_override_state where id = 1 for update"
+    );
+    const term = await tx.query(`
+      select term_id::text as term_id
+      from dune.landsraad_decree_term
+      order by term_id desc
+      limit 1
+      for update`);
+    const termRow = term.rows[0];
+    if (!termRow) return { ok: true, applied: false, reason: "No current Landsraad term is available yet." };
+    if (state.rows[0]?.last_applied_term_id !== termRow.term_id) {
+      return { ok: true, applied: false, reason: "This term's decree was not set by the vendor override -- nothing to revert.", termId: termRow.term_id };
+    }
+    const hadFaction = state.rows[0]?.last_applied_faction_id != null;
+    const setClauses = ["active_decree_id = null", "elected_decree_id = null"];
+    if (hadFaction) setClauses.push("winning_faction_id = null", "reigning_faction_id = null");
+    const updated = await tx.query(`
+      update dune.landsraad_decree_term
+         set ${setClauses.join(",\n             ")}
+       where term_id = $1
+       returning term_id::text as term_id`, [termRow.term_id]);
+    if (updated.rowCount) {
+      await tx.query(`
+        update console.landsraad_vendor_override_state
+           set last_applied_term_id = null,
+               last_applied_decree_id = null,
+               last_applied_faction_id = null,
+               updated_at = now()
+         where id = 1`);
+    }
+    return { ok: true, applied: Boolean(updated.rowCount), termId: termRow.term_id, revertedFaction: hadFaction };
+  });
+}
+
 async function rowReference(db, schema, table, rowId) {
   const raw = String(rowId || "").trim();
   if (/^\(\d+,\d+\)$/.test(raw)) return { type: "ctid", params: [raw] };

@@ -317,6 +317,15 @@ export const ROUTE_ACTIONS = {
   "POST /api/admin/landsraad/milestone-preset":"landsraad:write",
   "POST /api/admin/landsraad/reward-tier":     "landsraad:write",
   "POST /api/admin/landsraad/player-contribution":"landsraad:write",
+  "GET /api/admin/landsraad/vendor-override":  "landsraad:read",
+  // Dedicated action, not landsraad:write -- this write fabricates a
+  // Landsraad term's win/decree outcome (never overwritten by any other
+  // landsraad:write action). Deny-listed at admin in policy.js, owner-only,
+  // same remediation pattern as server:restart/carepackage:grant-all
+  // (#859). See docs/design/landsraad-vendor-override-l1-design-
+  // 2026-09-11.md §3.3.
+  "POST /api/admin/landsraad/vendor-override": "landsraad:vendor-override:write",
+  "POST /api/admin/landsraad/vendor-override/revert": "landsraad:vendor-override:write",
 
   // --- Addons ---
   "GET /api/addons/community":                 "addons:read",

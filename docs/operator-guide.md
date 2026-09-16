@@ -58,7 +58,7 @@ issue if you get stuck on one of those.
 | Admin Tools | GM/admin toolbox: item grants, XP/skill grants, teleport, broadcasts, scheduled restarts | [`docs/console/restart-queue.md`](console/restart-queue.md) |
 | Live Map | Real-time map/player activity view | — |
 | Maps | Per-map mode configuration (dynamic / always-on / disabled) | — |
-| Landsraad | The in-game faction/political system | — |
+| Landsraad | The in-game faction/political system | [`docs/console/API-REFERENCE.md`](console/API-REFERENCE.md) (Landsraad section) |
 | Database | Schema/table browsing, SQL preview/export | — |
 | Backups | Database and base backups | §4 below, [`docs/console/database-backups.md`](console/database-backups.md) |
 | Updates | Game-server content updates | §5 below |
@@ -66,6 +66,52 @@ issue if you get stuck on one of those.
 | Exchange | Read-only view of the game's live CHOAM market listings | [`docs/console/exchange.md`](console/exchange.md) |
 | Addons | Browse, install, enable, and approve permissions for Community Addons | §6 below |
 | Settings | Public Server Directory claim, Web Console port, login password | §7 below |
+
+**Landsraad Special Vendor Override (fork-only):** the Landsraad panel's
+"Special Vendor Override" section lets you force one of the game's
+Special Vendor decrees (Vehicles/Weapons/Armor/Utilities) active for the
+current term, so that vendor will sell to players even if no house has
+organically won the Landsraad cycle. This deliberately **bypasses the
+game's normal win requirement** — it is not something Red-Blink's
+upstream project supports. "Force Now" behind a confirmation applies for
+the current term; use "Revert" to undo it.
+
+**Only one vendor, and one house, are ever live at once — the UI reflects
+this directly.** The section is mode-first: pick Fixed (a true
+single-select — exactly one vendor type) or Rotate (an ordered list that
+cycles one vendor per term, since only one can ever be active
+simultaneously) before picking which vendor(s).
+
+**Confirmed live (2026-09-11): the vendor NPC itself is always visible to
+every player, regardless of decree or house state. What's actually gated
+is whether it will *sell* to a given player — that requires their house
+to currently have favor (be recorded as winning the term).** Forcing only
+a vendor, with no Target House selected, makes the decree active but
+leaves nobody able to buy — confirmed empirically, not just inferred from
+schema. The optional "Target House" dropdown is what actually grants
+selling rights to that house's players (Atreides or Harkonnen); tested
+directly: the targeted house could buy, the other house (no favor)
+could not.
+
+**Selecting a Target House is a materially bigger action than the
+decree-only case — read the confirm dialog's warning before proceeding.**
+Two real consequences, named explicitly because they cannot be verified
+or fixed from this codebase:
+- It may grant that house's players real Landsraad rewards (currency/
+  items), not just selling rights — unconfirmed as of this writing, being
+  verified empirically (see [issue #907](https://github.com/Project-Arrakis/dune-awakening-selfhost-docker/issues/907)).
+- It **silently disables the game's own organic win-detection for the
+  rest of that term** — confirmed directly against this fork's schema: a
+  real trigger normally promotes a house to "winning" the moment it
+  completes a full task board, but only while that field is still empty.
+  Once you force it, any house's real win for the rest of the term goes
+  unrecorded, with no error and no way for "Revert" to recover it — Revert
+  can only undo the values this feature set, not restore a result that
+  happened while they were in place. This is a real, understood tradeoff
+  of using this feature at all, not a bug — most acceptable on the exact
+  servers this feature targets (population low enough that an organic win
+  was already unlikely to begin with), least acceptable on a healthier
+  server where real competition for the term is actually happening.
 
 ---
 
