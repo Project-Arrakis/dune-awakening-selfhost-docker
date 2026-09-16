@@ -13,7 +13,7 @@ import {
 } from "../src/integrations/discord/policy.js";
 
 const mapping = {
-  playerRoleIds: ["role-observer"],
+  playerRoleIds: ["role-player"],
   moderatorRoleIds: ["role-moderator"],
   adminRoleIds: ["role-admin"],
   ownerRoleIds: ["role-owner"]
@@ -34,7 +34,7 @@ test("discordActorTier grants owner via real guild ownership, with zero configur
 });
 
 test("discordActorTier: real guild ownership outranks and short-circuits any role mapping", () => {
-  const realOwnerWithObserverRole = actor(["role-observer"], { userId: "the-owner", guildOwnerId: "the-owner" });
+  const realOwnerWithObserverRole = actor(["role-player"], { userId: "the-owner", guildOwnerId: "the-owner" });
   assert.equal(discordActorTier(realOwnerWithObserverRole, mapping), "owner");
 });
 
@@ -89,7 +89,7 @@ test("discordActorCan never grants PLAYER_LINK_WRITE via the tier ladder, even f
 });
 
 test("requireSelfScopedCapability allows any recognized principal (observer tier) to link their own account", () => {
-  const observerActor = actor(["role-observer"]);
+  const observerActor = actor(["role-player"]);
   assert.doesNotThrow(() => requireSelfScopedCapability(observerActor, mapping, DISCORD_CAPABILITIES.PLAYER_LINK_WRITE));
 });
 
@@ -110,7 +110,7 @@ test("requireSelfScopedCapability rejects an actor with no configured role at al
 });
 
 test("requireSelfScopedCapability rejects a tier-gated capability like STATUS_READ", () => {
-  const observerActor = actor(["role-observer"]);
+  const observerActor = actor(["role-player"]);
   assert.throws(
     () => requireSelfScopedCapability(observerActor, mapping, DISCORD_CAPABILITIES.STATUS_READ),
     (error) => error.code === "invalid_capability"
@@ -118,7 +118,7 @@ test("requireSelfScopedCapability rejects a tier-gated capability like STATUS_RE
 });
 
 test("requireDiscordCapability still works normally for ordinary tier-gated capabilities", () => {
-  const observerActor = actor(["role-observer"]);
+  const observerActor = actor(["role-player"]);
   assert.doesNotThrow(() => requireDiscordCapability(observerActor, mapping, DISCORD_CAPABILITIES.STATUS_READ));
   const publicActor = actor([]);
   assert.throws(
@@ -145,7 +145,7 @@ test("requireDiscordCapability rejects ACCOUNT_LINK_WRITE entirely — must use 
 });
 
 test("requireSelfScopedCapability allows any recognized principal to use ACCOUNT_LINK_WRITE, and rejects public tier", () => {
-  const observerActor = actor(["role-observer"]);
+  const observerActor = actor(["role-player"]);
   assert.doesNotThrow(() => requireSelfScopedCapability(observerActor, mapping, DISCORD_CAPABILITIES.ACCOUNT_LINK_WRITE));
   const publicActor = actor([]);
   assert.throws(
@@ -167,7 +167,7 @@ test("OPS capabilities are granted only to admin and owner tiers", () => {
 
   assert.equal(opsCapabilities.length, 8);
   for (const capability of opsCapabilities) {
-    assert.equal(discordActorCan(actor(["role-observer"]), mapping, capability), false);
+    assert.equal(discordActorCan(actor(["role-player"]), mapping, capability), false);
     assert.equal(discordActorCan(actor(["role-moderator"]), mapping, capability), false);
     assert.equal(discordActorCan(actor(["role-admin"]), mapping, capability), true);
     assert.equal(discordActorCan(actor(["role-owner"]), mapping, capability), true);
@@ -189,7 +189,7 @@ test("OPS capability enforcement fails closed for unprivileged actors", () => {
 // anti-cheat flag history, more sensitive than moderator's existing
 // INVENTORY_READ/STORAGE_READ/GUILD_READ grants.
 test("CHEATER_TRACKING_READ is granted only to admin and owner tiers", () => {
-  assert.equal(discordActorCan(actor(["role-observer"]), mapping, DISCORD_CAPABILITIES.CHEATER_TRACKING_READ), false);
+  assert.equal(discordActorCan(actor(["role-player"]), mapping, DISCORD_CAPABILITIES.CHEATER_TRACKING_READ), false);
   assert.equal(discordActorCan(actor(["role-moderator"]), mapping, DISCORD_CAPABILITIES.CHEATER_TRACKING_READ), false);
   assert.equal(discordActorCan(actor(["role-admin"]), mapping, DISCORD_CAPABILITIES.CHEATER_TRACKING_READ), true);
   assert.equal(discordActorCan(actor(["role-owner"]), mapping, DISCORD_CAPABILITIES.CHEATER_TRACKING_READ), true);
@@ -200,6 +200,25 @@ test("CHEATER_TRACKING_READ is granted only to admin and owner tiers", () => {
   );
   assert.doesNotThrow(() =>
     requireDiscordCapability(actor(["role-admin"]), mapping, DISCORD_CAPABILITIES.CHEATER_TRACKING_READ)
+  );
+});
+
+// ITEM_AUDIT_LOG_READ (meta#64, mentat#368) is granted to moderator and up
+// -- unlike CHEATER_TRACKING_READ (admin/owner only), it's the same
+// sensitivity class as the existing INVENTORY_READ/STORAGE_READ/GUILD_READ
+// moderator grants (item contents, just historical).
+test("ITEM_AUDIT_LOG_READ is granted to moderator tier and up", () => {
+  assert.equal(discordActorCan(actor(["role-player"]), mapping, DISCORD_CAPABILITIES.ITEM_AUDIT_LOG_READ), false);
+  assert.equal(discordActorCan(actor(["role-moderator"]), mapping, DISCORD_CAPABILITIES.ITEM_AUDIT_LOG_READ), true);
+  assert.equal(discordActorCan(actor(["role-admin"]), mapping, DISCORD_CAPABILITIES.ITEM_AUDIT_LOG_READ), true);
+  assert.equal(discordActorCan(actor(["role-owner"]), mapping, DISCORD_CAPABILITIES.ITEM_AUDIT_LOG_READ), true);
+
+  assert.throws(
+    () => requireDiscordCapability(actor(["role-player"]), mapping, DISCORD_CAPABILITIES.ITEM_AUDIT_LOG_READ),
+    (error) => error.code === "not_authorized" && error.statusCode === 403
+  );
+  assert.doesNotThrow(() =>
+    requireDiscordCapability(actor(["role-moderator"]), mapping, DISCORD_CAPABILITIES.ITEM_AUDIT_LOG_READ)
   );
 });
 
@@ -220,7 +239,7 @@ test("minTierForCapability returns the lowest tier that actually grants each non
     const claimedIndex = DISCORD_ROLE_TIERS.indexOf(claimedMinTier);
     for (let i = claimedIndex; i < DISCORD_ROLE_TIERS.length; i++) {
       const tier = DISCORD_ROLE_TIERS[i];
-      const roleIdsForTier = { public: [], observer: ["role-observer"], moderator: ["role-moderator"], admin: ["role-admin"], owner: ["role-owner"] }[tier];
+      const roleIdsForTier = { public: [], observer: ["role-player"], moderator: ["role-moderator"], admin: ["role-admin"], owner: ["role-owner"] }[tier];
       assert.equal(discordActorCan(actor(roleIdsForTier), mapping, capability), true,
         `minTierForCapability(${capability}) claims "${claimedMinTier}" but tier "${tier}" (>= claimed) is not actually granted the capability per discordActorCan`);
     }
@@ -229,7 +248,7 @@ test("minTierForCapability returns the lowest tier that actually grants each non
     // the capability (otherwise the claimed min tier is too high/strict).
     if (claimedIndex > 0) {
       const belowTier = DISCORD_ROLE_TIERS[claimedIndex - 1];
-      const roleIdsBelow = { public: [], observer: ["role-observer"], moderator: ["role-moderator"], admin: ["role-admin"] }[belowTier];
+      const roleIdsBelow = { public: [], observer: ["role-player"], moderator: ["role-moderator"], admin: ["role-admin"] }[belowTier];
       assert.equal(discordActorCan(actor(roleIdsBelow), mapping, capability), false,
         `minTierForCapability(${capability}) claims "${claimedMinTier}" but the tier below it, "${belowTier}", is ALSO granted the capability per discordActorCan -- claimed min tier is too high`);
     }
@@ -258,7 +277,7 @@ test("minTierForCapability returns the lowest tier that actually grants each cap
   // Cross-check against discordActorCan() directly, rather than re-reading
   // CAPABILITY_BY_TIER's shape a second time -- this is an independent
   // verification path, not a restatement of the same table.
-  const roleIdForTier = { public: null, observer: "role-observer", moderator: "role-moderator", admin: "role-admin", owner: "role-owner" };
+  const roleIdForTier = { public: null, observer: "role-player", moderator: "role-moderator", admin: "role-admin", owner: "role-owner" };
   for (const capability of Object.values(DISCORD_CAPABILITIES)) {
     const claimedMinTier = minTierForCapability(capability);
     // Self-scoped capabilities (PLAYER_LINK_WRITE, ACCOUNT_LINK_WRITE) are

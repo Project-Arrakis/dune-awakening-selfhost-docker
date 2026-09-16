@@ -6,8 +6,10 @@
 |------|-------|----------|------------------|----------------|
 | **O** | Operator-Secret | `ADMIN_PASSWORD`, `DISCORD_OAUTH_CLIENT_SECRET`, `DISCORD_BOT_HANDOFF_SECRET`, adapter bearer token | Owner (write only via config/env) | All access |
 | **I** | Identity-Binding | `console.discord_account_links` (Discord user ID ↔ character), `dune.accounts.platform_id` (SteamID64) | Admin, Owner (read); self-scoped for Player tier | All reads + writes |
-| **G** | Game-State | Player inventories, positions, guild rosters, base locations, landsraad data, storage contents | Read: all tiers (scoped for Player). Write: Admin, Owner (moderator: limited) | All writes |
+| **G** | Game-State | Player inventories, positions, guild rosters, base locations, landsraad data, storage contents, `dune.item_audit_log` (item-movement history)[^item-audit-log] | Read: all tiers (scoped for Player). Write: Admin, Owner (moderator: limited) | All writes; `dune.item_audit_log` reads also audited (see below) |
 | **D** | Disciplinary/Trust | `dune.cheater_tracking` (anti-cheat flag history) | Admin, Owner only — not self-scoped even for the player the record describes, and deliberately excluded from moderator's grants (materially more sensitive disclosure than moderator's existing `G`-tier reads) | All reads |
+
+[^item-audit-log]: `dune.item_audit_log` deviates from this row's general "all tiers, scoped for Player" read pattern: it has no self-scoped route at all (a player cannot look up their own history), and the only route (`players/item-audit-log`, issue #935) is moderator-tier-and-up, targeting an explicit *other* player under investigation. Same sensitivity class as this row's other examples, different access shape -- noted here rather than given its own tier letter since the underlying data (item contents/movement) is otherwise G-tier.
 
 ## Access Review Cadence
 
@@ -27,3 +29,4 @@ The `console.discord_account_links` and `console.discord_player_links` tables re
 - All game-state-modifying endpoints: audit planned (#177)
 - IAM policy changes: audit planned
 - `discord.trust.cheater_tracking_read` (every read of Tier-D anti-cheat data via the console adapter API): audited (issue #934, deployed 2026-09-15). Downstream handling once this data crosses into the consuming Discord bot (posting to a staff review channel, retention) is that bot's own responsibility, out of scope for this repo — see `mentat`#361.
+- `discord.trust.item_audit_log_read` (every read of a target player's item-movement history via the console adapter API): audited (issue #935, deployed 2026-09-15).

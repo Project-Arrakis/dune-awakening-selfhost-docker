@@ -9,6 +9,7 @@ import { assertIdentifier, bigintParam, discoverDbConfig, isReadOnlySql, quoteQu
 import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 import {
   UnsupportedCapabilityError,
+  _resetItemAuditLogIndexesEnsuredForTests,
   _resetPlayerTargetCacheForTests,
   _resetRefillPartitionDwellForTests,
   addBaseContainerItem,
@@ -126,6 +127,7 @@ import {
   playerInventory,
   playerInventoryAll,
   playerInventoryItemIds,
+  playerItemAuditLog,
   playerItemAugmentState,
   playerJourney,
   playerOwnedStorageQuery,
@@ -192,6 +194,7 @@ import {
 
 beforeEach(() => {
   _resetPlayerTargetCacheForTests();
+  _resetItemAuditLogIndexesEnsuredForTests();
 });
 
 test("bigint parameters preserve identifiers beyond JavaScript's safe integer range", () => {
@@ -3725,6 +3728,142 @@ test("playerCheaterTracking returns the player's cheat-flag history keyed by the
   assert.equal(result.capabilities.cheaterTracking, true);
   assert.equal(result.flsId, "fls-abc-123");
   assert.deepEqual(result.rows, [{ flsId: "fls-abc-123", cheatType: "speed_hack", eventTime: "2026-09-01T00:00:00.000Z" }]);
+});
+
+// playerItemAuditLog (meta#64 "Chronicles of Kanly", mentat#368): schema
+// verified directly against a live dune-dev instance (issue #936) --
+// audit_id, logged_at, op, item_id, inventory_id, template_id, stack_size,
+// position_index; joins through dune.inventories.actor_id since
+// item_audit_log itself has no fls_id/actor_id column. beforeEach() above
+// resets ensureItemAuditLogIndexes()'s in-process "already ensured" flag
+// (duneDb.js), so each of these tests independently observes its own
+// index-creation attempts regardless of execution order.
+test("playerItemAuditLog reports unsupported when dune.item_audit_log is missing", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        assert.deepEqual(values, ["dune.item_audit_log"]);
+        return { rows: [{ exists: false }] };
+      }
+      return assert.fail(`unexpected query when table is missing: ${text}`);
+    }
+  };
+  const result = await playerItemAuditLog(db, "2");
+  assert.equal(result.capabilities.itemAuditLog, false);
+  assert.deepEqual(result.rows, []);
+});
+
+test("playerItemAuditLog attempts concurrent index creation before querying, best-effort, only once per process", async () => {
+  const indexQueries = [];
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("create index concurrently")) {
+        indexQueries.push(text);
+        const error = new Error("simulated: index already exists / build in progress");
+        error.code = "42P07";
+        throw error;
+      }
+      if (text.includes("from dune.actors a") && text.includes("a.id = $1")) {
+        assert.deepEqual(values, [2]);
+        return { rows: [{ actor_id: 2, account_id: 5, controller_id: 9, player_state_id: 1, online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.item_audit_log a") && text.includes("join dune.inventories inv")) {
+        assert.deepEqual(values, [2, 168, 200]);
+        assert.match(text, /inv\.actor_id = \$1/);
+        assert.match(text, /order by a\.logged_at desc/);
+        assert.match(text, /limit \$3/);
+        return { rows: [] };
+      }
+      return assert.fail(`unexpected query: ${text}`);
+    }
+  };
+  const result = await playerItemAuditLog(db, "2");
+  // Both index-creation attempts ran (and their benign "already exists"
+  // failure was swallowed) before the real query -- confirms the "must be
+  // its own db.query() call, not combined with anything else" contract.
+  assert.equal(indexQueries.length, 2);
+  assert.match(indexQueries[0], /idx_item_audit_log_logged_at/);
+  assert.match(indexQueries[1], /idx_item_audit_log_inventory_id/);
+  assert.equal(result.capabilities.itemAuditLog, true);
+  assert.equal(result.windowHours, 168);
+  assert.deepEqual(result.rows, []);
+
+  // A second call within the same process does NOT re-attempt index
+  // creation -- confirms the in-process "already ensured" cache actually
+  // short-circuits, not just that it exists.
+  const result2 = await playerItemAuditLog(db, "2");
+  assert.equal(indexQueries.length, 2, "index creation must not be re-attempted on a second call in the same process");
+  assert.equal(result2.capabilities.itemAuditLog, true);
+});
+
+test("playerItemAuditLog logs, but does not throw or block, an unexpected (non-already-exists) index-creation error", async () => {
+  const warnCalls = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnCalls.push(args.join(" "));
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("create index concurrently")) {
+        const error = new Error("permission denied for table item_audit_log");
+        error.code = "42501";
+        throw error;
+      }
+      if (text.includes("from dune.actors a") && text.includes("a.id = $1")) {
+        return { rows: [{ actor_id: 2, account_id: 5, controller_id: 9, player_state_id: 1, online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.item_audit_log a")) return { rows: [] };
+      return assert.fail(`unexpected query: ${text}`);
+    }
+  };
+  try {
+    const result = await playerItemAuditLog(db, "2");
+    assert.equal(result.capabilities.itemAuditLog, true);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(warnCalls.length, 2, "both unexpected index-creation errors should be logged, not silently swallowed");
+  assert.match(warnCalls[0], /idx_item_audit_log_logged_at/);
+  assert.match(warnCalls[1], /idx_item_audit_log_inventory_id/);
+});
+
+test("playerItemAuditLog caps windowHours and limit, and returns real rows keyed by the target's inventories", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("create index concurrently")) return { rows: [] };
+      if (text.includes("from dune.actors a") && text.includes("a.id = $1")) {
+        return { rows: [{ actor_id: 2, account_id: 5, controller_id: 9, player_state_id: 1, online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.item_audit_log a")) {
+        // windowHours (9999) capped to 720, limit (9999) capped to 500.
+        assert.deepEqual(values, [2, 720, 500]);
+        return {
+          rows: [{
+            audit_id: 42,
+            logged_at: "2026-09-15T00:00:00.000Z",
+            op: "DELETE",
+            item_id: 555,
+            template_id: "spice-sample",
+            stack_size: 3,
+            position_index: 1
+          }]
+        };
+      }
+      return assert.fail(`unexpected query: ${text}`);
+    }
+  };
+  const result = await playerItemAuditLog(db, "2", { windowHours: 9999, limit: 9999 });
+  assert.equal(result.windowHours, 720);
+  assert.deepEqual(result.rows, [{
+    auditId: "42",
+    loggedAt: "2026-09-15T00:00:00.000Z",
+    op: "DELETE",
+    itemId: "555",
+    templateId: "spice-sample",
+    stackSize: 3,
+    positionIndex: 1
+  }]);
 });
 
 test("addon leadership players derive character level from level component XP", async () => {

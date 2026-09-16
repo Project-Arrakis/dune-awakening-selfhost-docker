@@ -5,7 +5,7 @@ import { DISCORD_ADAPTER_ROUTES, DISCORD_CATALOG_PROTOCOL_VERSION, discordAdapte
 const OLD_ENV = { ...process.env };
 
 function resetEnv() {
-  process.env.DISCORD_OBSERVER_ROLE_IDS = "role-observer";
+  process.env.DISCORD_OBSERVER_ROLE_IDS = "role-player";
   process.env.DISCORD_MODERATOR_ROLE_IDS = "role-moderator";
   process.env.DISCORD_ADMIN_ROLE_IDS = "role-admin";
   process.env.DISCORD_OWNER_ROLE_IDS = "role-owner";
@@ -90,6 +90,7 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/players/find",
     "/api/integrations/discord/players/inventory",
     "/api/integrations/discord/players/inventory-search",
+    "/api/integrations/discord/players/item-audit-log",
     "/api/integrations/discord/players/link",
     "/api/integrations/discord/players/link/verify",
     "/api/integrations/discord/players/me",
@@ -227,6 +228,7 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/players/find",
     "/api/integrations/discord/players/inventory",
     "/api/integrations/discord/players/inventory-search",
+    "/api/integrations/discord/players/item-audit-log",
     "/api/integrations/discord/players/link",
     "/api/integrations/discord/players/link/verify",
     "/api/integrations/discord/players/me",
@@ -310,7 +312,7 @@ test("requires admin capability before diagnostic status provider runs", async (
 test("allows observer readiness and services", async () => {
   const readiness = await discordAdapterReadiness({
     config,
-    actorPayload: actor(["role-observer"]),
+    actorPayload: actor(["role-player"]),
     readinessProvider: async () => ({ ready: true, overall: "READY", issues: [] })
   });
   assert.equal(readiness.ok, true);
@@ -318,7 +320,7 @@ test("allows observer readiness and services", async () => {
 
   const services = await discordAdapterServices({
     config,
-    actorPayload: actor(["role-observer"]),
+    actorPayload: actor(["role-player"]),
     servicesProvider: async () => ({ overall: "OK", services: [{ name: "Database", status: "up" }], issues: [] })
   });
   assert.equal(services.ok, true);
@@ -440,15 +442,15 @@ test("adapter routes respond through mounted HTTP server path", async () => {
           assert.equal(health.enabled, true);
 
           // Status
-          const status = await (await fetch(`${base}/api/integrations/discord/status`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-observer"]) }) })).json();
+          const status = await (await fetch(`${base}/api/integrations/discord/status`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-player"]) }) })).json();
           assert.equal(status.ok, true);
 
           // Readiness
-          const readiness = await (await fetch(`${base}/api/integrations/discord/readiness`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-observer"]) }) })).json();
+          const readiness = await (await fetch(`${base}/api/integrations/discord/readiness`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-player"]) }) })).json();
           assert.equal(readiness.ok, true);
 
           // Services
-          const services = await (await fetch(`${base}/api/integrations/discord/services`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-observer"]) }) })).json();
+          const services = await (await fetch(`${base}/api/integrations/discord/services`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-player"]) }) })).json();
           assert.equal(services.ok, true);
           assert.ok(Array.isArray(services.result.services));
 
@@ -456,7 +458,7 @@ test("adapter routes respond through mounted HTTP server path", async () => {
           const pop = await (await fetch(`${base}/api/integrations/discord/population`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-moderator"]) }) })).json();
           assert.equal(pop.ok, true);
 
-          const maintenance = await (await fetch(`${base}/api/integrations/discord/maintenance`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-observer"]) }) })).json();
+          const maintenance = await (await fetch(`${base}/api/integrations/discord/maintenance`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-player"]) }) })).json();
           assert.equal(maintenance.ok, true);
           assert.match(maintenance.output, /READY/);
 
@@ -623,6 +625,115 @@ test("cheater-tracking route enforces admin/owner tier and requires an explicit 
   }
 });
 
+// Players item-audit-log route (meta#64 "Chronicles of Kanly", mentat#368)
+// — Requirement 20 Layer 3 QA finding on THIS route specifically (2026-09-16):
+// an earlier pass added the route to the two static route-list arrays above
+// but never actually wrote this HTTP-level test, despite claiming to have
+// learned the lesson from the identical cheater-tracking gap immediately
+// above. Closing that gap for real, mirroring the cheater-tracking test's
+// shape but for the moderator-tier-and-up gate this route actually uses.
+test("item-audit-log route enforces moderator tier and up and requires an explicit actorId", async () => {
+  const tokenFile = "/tmp/discord-adapter-item-audit-log-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-item-audit-log-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-item-audit-log-test-generated" };
+
+  // Matches the exact query shapes verified live and already covered by
+  // db.test.js's own playerItemAuditLog tests — reused here at the route
+  // level, not re-derived.
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("create index concurrently")) return { rows: [] };
+      if (text.includes("from dune.actors a") && text.includes("a.id = $1")) {
+        assert.deepEqual(values, [7]);
+        return { rows: [{ actor_id: 7, account_id: 11, controller_id: 13, player_state_id: 1, online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.item_audit_log a") && text.includes("join dune.inventories inv")) {
+        assert.deepEqual(values, [7, 168, 200]);
+        return { rows: [] };
+      }
+      // Permissive fallback for migrateDiscordAdapterSchema()'s own DDL,
+      // which runs ahead of route dispatch on every request through this
+      // handler (see the player-link tests above for the same pattern) --
+      // this test only cares about the item-audit-log query shapes above.
+      return { rows: [], rowCount: 0 };
+    }
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+      const route = "/api/integrations/discord/players/item-audit-log";
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+
+          // Player tier: rejected outright, before actorId is even
+          // inspected -- proves requireDiscordCapability actually gates
+          // this route rather than being dead code.
+          const playerResponse = await fetch(`${base}${route}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-player"]), actorId: 7 })
+          });
+          assert.equal(playerResponse.status, 403);
+          assert.equal((await playerResponse.json()).code, "not_authorized");
+
+          // Moderator tier, no actorId: authorized but rejected for the
+          // missing target -- proves the "actorId required" guard is
+          // live, not dead code either.
+          const missingActorIdResponse = await fetch(`${base}${route}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-moderator"]) })
+          });
+          assert.equal(missingActorIdResponse.status, 400);
+          assert.equal((await missingActorIdResponse.json()).code, "missing_actor_id");
+
+          // Moderator tier with an explicit target actorId: real success
+          // path -- unlike cheater-tracking, moderator (not just
+          // admin/owner) must be allowed here.
+          const okResponse = await fetch(`${base}${route}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-moderator"]), actorId: 7 })
+          });
+          assert.equal(okResponse.status, 200);
+          const okBody = await okResponse.json();
+          assert.equal(okBody.capabilities.itemAuditLog, true);
+          assert.deepEqual(okBody.rows, []);
+
+          // Admin/owner tiers are authorized too (moderator-and-up, not
+          // moderator-only).
+          const adminResponse = await fetch(`${base}${route}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor(["role-admin"]), actorId: 7 })
+          });
+          assert.equal(adminResponse.status, 200);
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
 // Actor signature enforcement — FINDING-LINK-1
 // (docs/security/discord-player-link-hardening.md): when
 // DUNE_DISCORD_ACTOR_SECRET is configured, the bearer token alone is no
@@ -655,7 +766,7 @@ test("adapter route rejects an unsigned or spoofed actor when DUNE_DISCORD_ACTOR
       server.listen(async () => {
         try {
           const base = `http://127.0.0.1:${server.address().port}`;
-          const observerActor = actor(["role-observer"]);
+          const observerActor = actor(["role-player"]);
 
           // Valid bearer token but no actor signature at all: rejected even
           // though this exact request would have succeeded before
@@ -759,7 +870,7 @@ test("adapter route strips an unsigned guildOwnerId self-escalation attempt when
           const base = `http://127.0.0.1:${server.address().port}`;
           // No admin/owner role -- only what a real observer-tier member
           // would legitimately hold.
-          const lowPrivActor = actor(["role-observer"]);
+          const lowPrivActor = actor(["role-player"]);
           const timestamp = Math.floor(Date.now() / 1000);
           const route = "/api/integrations/discord/ops/activity";
           // Signature covers ONLY the 5 real SIGNED_ACTOR_FIELDS -- it is
@@ -835,7 +946,7 @@ test("a signature valid for one route is rejected when replayed against a differ
       server.listen(async () => {
         try {
           const base = `http://127.0.0.1:${server.address().port}`;
-          const observerActor = actor(["role-observer"]);
+          const observerActor = actor(["role-player"]);
           const timestamp = Math.floor(Date.now() / 1000);
           const { signature } = signActorPayload(observerActor, "cross-route-test-secret", timestamp, "/api/integrations/discord/status");
           const headers = {
@@ -956,7 +1067,7 @@ test("player-link route rejects a public-tier actor and allows an observer-tier 
           // linkPlayerProvider() and returns a normal business result
           // (no player found, since the db stub returns no rows) rather
           // than a 403.
-          const observerActor = actor(["role-observer"]);
+          const observerActor = actor(["role-player"]);
           const observerResponse = await fetch(`${base}${route}`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, route) },
@@ -1029,7 +1140,7 @@ test("player-link verify route rate limits repeated wrong-code attempts for one 
         try {
           const base = `http://127.0.0.1:${server.address().port}`;
           const route = "/api/integrations/discord/players/link/verify";
-          const observerActor = actor(["role-observer"]);
+          const observerActor = actor(["role-player"]);
           const verifyOnce = () => fetch(`${base}${route}`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, route) },
@@ -1149,7 +1260,7 @@ test("account-link routes reject a public-tier actor and allow an observer-tier 
           // Observer tier is authorized: the list route reaches
           // listAccountsProvider without a 403 and returns a normal empty
           // result for a user with no linked accounts yet.
-          const observerActor = actor(["role-observer"]);
+          const observerActor = actor(["role-player"]);
           const listResponse = await fetch(`${base}${listRoute}`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, listRoute) },
@@ -1237,7 +1348,7 @@ test("link-steam route unconditionally returns disabled, regardless of actor tie
           // Observer tier: identical disabled response -- proves the
           // disablement is unconditional, not merely a side effect of the
           // public actor's own lack of authorization.
-          const observerActor = actor(["role-observer"]);
+          const observerActor = actor(["role-player"]);
           const observerResponse = await fetch(`${base}${route}`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json" },
@@ -1311,7 +1422,7 @@ test("account-link verify route rate limits independently from the single-link v
       server.listen(async () => {
         try {
           const base = `http://127.0.0.1:${server.address().port}`;
-          const observerActor = actor(["role-observer"]);
+          const observerActor = actor(["role-player"]);
           const accountVerifyRoute = "/api/integrations/discord/players/accounts/link/verify";
           const singleVerifyRoute = "/api/integrations/discord/players/link/verify";
 
@@ -1658,7 +1769,7 @@ test("players/faction route dispatches to playerFactionProvider through the real
           const observerResponse = await fetch(`${base}/api/integrations/discord/players/faction`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json" },
-            body: JSON.stringify({ actor: actor(["role-observer"]) })
+            body: JSON.stringify({ actor: actor(["role-player"]) })
           });
           assert.equal(observerResponse.status, 403);
 
@@ -1744,7 +1855,7 @@ test("guild-character-grants/* routes dispatch through the real HTTP path, scope
           // Any recognized principal can enable their OWN character
           // (self-scoped ACCOUNT_LINK_WRITE, same gate as
           // players/accounts/unlink) -- observer tier is enough.
-          const observerActor = actor(["role-observer"]);
+          const observerActor = actor(["role-player"]);
           const enableResponse = await fetch(`${base}${enableRoute}`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json", ...signedHeaders(observerActor, enableRoute) },
@@ -1872,7 +1983,7 @@ test("guilds/faction-summary route dispatches to guildFactionSummaryProvider thr
           const observerResponse = await fetch(`${base}/api/integrations/discord/guilds/faction-summary`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json" },
-            body: JSON.stringify({ actor: actor(["role-observer"]), discordUserIds: ["discord-1"] })
+            body: JSON.stringify({ actor: actor(["role-player"]), discordUserIds: ["discord-1"] })
           });
           assert.equal(observerResponse.status, 403);
 

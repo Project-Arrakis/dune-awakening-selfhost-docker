@@ -2822,6 +2822,115 @@ export async function playerCheaterTracking(db, id) {
   };
 }
 
+// ensureItemAuditLogIndexes: dune.item_audit_log is a closed-source
+// game-server-owned table (this fork does not create it, unlike e.g.
+// dune.player_death_log in deathPoller.js), and had no index beyond its own
+// primary key -- confirmed directly against a live instance (issue #936).
+// Operator explicitly approved adding these two indexes (#936 comment,
+// 2026-09-15) after Requirement 0's "could this desynchronize from
+// something outside this codebase" question was raised: an index is
+// transparent to the game server's own reads/writes, so this carries none
+// of the command-auth-token incident's risk (that fix changed a *value*
+// the game server independently validated; this only speeds up reads).
+// CONCURRENTLY avoids locking writes from the live game server during
+// index build -- unlike deathPoller.ensureTable()'s plain (non-concurrent)
+// precedent, which is safe there only because that table is small and
+// fork-owned. Each index is its own db.query() call, not combined into one
+// multi-statement string the way deathPoller.ensureTableSQL() is --
+// CREATE INDEX CONCURRENTLY must be the only statement in its own
+// (implicit, autocommitted) transaction, and db.query() here is a bare
+// pool.query() per call (see db.js), so this is safe as separate calls but
+// would NOT be safe combined into one multi-statement string.
+//
+// DBA hat finding (Requirement 20 Layer 3, issue #935): tracked once
+// in-process (moduleIndexesEnsured) so a successful ensure only re-runs the
+// two CREATE INDEX statements once per server process, not on every single
+// request -- IF NOT EXISTS made repeated attempts safe, but not free
+// (catalog lookup + a moment of lock contention if many requests raced to
+// build the same index simultaneously). A non-"already exists" pg error is
+// now logged distinctly (console.warn) rather than silently swallowed by a
+// bare catch, so a real failure (permissions, disk) is visible instead of
+// looking identical to the benign "index already exists" case.
+let itemAuditLogIndexesEnsured = false;
+async function ensureItemAuditLogIndexes(db) {
+  if (itemAuditLogIndexesEnsured) return;
+  const statements = [
+    { name: "idx_item_audit_log_logged_at", sql: `create index concurrently if not exists idx_item_audit_log_logged_at on dune.item_audit_log (logged_at)` },
+    { name: "idx_item_audit_log_inventory_id", sql: `create index concurrently if not exists idx_item_audit_log_inventory_id on dune.item_audit_log (inventory_id)` }
+  ];
+  for (const { name, sql } of statements) {
+    try {
+      await db.query(sql);
+    } catch (error) {
+      // Postgres 23505/42P07-family "already exists"/"already building"
+      // codes are the expected, benign outcome of a concurrent ensure --
+      // anything else (permissions, disk, unexpected schema drift) is
+      // logged so it isn't silently indistinguishable from that case.
+      if (!["23505", "42P07"].includes(error?.code)) {
+        console.warn(`ensureItemAuditLogIndexes: unexpected error creating ${name}: ${error?.message || "unknown error"}`);
+      }
+    }
+  }
+  itemAuditLogIndexesEnsured = true;
+}
+
+export function _resetItemAuditLogIndexesEnsuredForTests() {
+  itemAuditLogIndexesEnsured = false;
+}
+
+// playerItemAuditLog: read-only item-movement history for a given player's
+// inventories (meta#64 "Chronicles of Kanly", mentat#368 -- proactive
+// stolen-goods cross-reference against new Exchange listings). Unbounded
+// full-table scans are explicitly disallowed by issue #935's own scope --
+// dune.item_audit_log grows without bound (2,341+ rows and counting), so
+// every query is time-windowed (default 7 days, capped at 30) and row-capped
+// (default 200, capped at 500). Schema verified directly against a live
+// instance (issue #936): audit_id, logged_at, op (INSERT/DELETE/UPDATE),
+// item_id, inventory_id, template_id, stack_size, position_index,
+// quality_level, volume_override, is_new, stats (jsonb) -- this function
+// only selects the columns issue #935 actually asked for. The table has no
+// fls_id/actor_id column at all -- the only join path to a specific player
+// is inventory_id -> dune.inventories.actor_id (already indexed on
+// actor_id, confirmed live), NOT the FLS-id path playerCheaterTracking()
+// uses (that table's disclosure question is a different one -- see that
+// function's own comment for why the two identity paths aren't the same).
+//
+// No documented rollback/down-migration exists for the two indexes
+// ensureItemAuditLogIndexes() creates -- they are created directly against
+// the live, game-owned database, outside any migration system this fork
+// has. If they ever need to be removed, an operator must run, by hand:
+//   DROP INDEX CONCURRENTLY idx_item_audit_log_logged_at;
+//   DROP INDEX CONCURRENTLY idx_item_audit_log_inventory_id;
+export async function playerItemAuditLog(db, id, { windowHours, limit } = {}) {
+  if (!(await tableExists(db, "item_audit_log"))) return unsupported("itemAuditLog", ["dune.item_audit_log"]);
+  await ensureItemAuditLogIndexes(db);
+  const player = await resolvePlayerMutationTarget(db, id);
+  const cappedWindowHours = Math.min(Math.max(Number(windowHours) || 168, 1), 720);
+  const cappedLimit = Math.min(Math.max(Number(limit) || 200, 1), 500);
+  const result = await db.query(`
+    select a.audit_id, a.logged_at, a.op, a.item_id, a.template_id, a.stack_size, a.position_index
+    from dune.item_audit_log a
+    join dune.inventories inv on inv.id = a.inventory_id
+    where inv.actor_id = $1
+      and a.logged_at >= now() - ($2 || ' hours')::interval
+    order by a.logged_at desc
+    limit $3`, [player.actorId, cappedWindowHours, cappedLimit]);
+  return {
+    capabilities: { itemAuditLog: true },
+    player,
+    windowHours: cappedWindowHours,
+    rows: result.rows.map((row) => ({
+      auditId: String(row.audit_id),
+      loggedAt: row.logged_at,
+      op: String(row.op || ""),
+      itemId: row.item_id != null ? String(row.item_id) : null,
+      templateId: row.template_id || null,
+      stackSize: row.stack_size != null ? Number(row.stack_size) : null,
+      positionIndex: row.position_index != null ? Number(row.position_index) : null
+    }))
+  };
+}
+
 export async function playerSpecs(db, id) {
   if (!(await tableExists(db, "specialization_tracks"))) return unsupported("specs", ["dune.specialization_tracks"]);
   const player = await resolvePlayerMutationTarget(db, id);
