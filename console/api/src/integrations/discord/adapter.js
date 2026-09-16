@@ -71,6 +71,14 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   // Discord servers at all) and returns aggregate counts only, never a
   // per-user mapping.
   GUILD_FACTION_SUMMARY: "/api/integrations/discord/guilds/faction-summary",
+  // PLAYERS_ITEM_AUDIT_LOG (meta#64 "Chronicles of Kanly", mentat#368):
+  // moderator tier and up -- like PLAYERS_FIND/GUILD_FIND this is a
+  // targeted lookup, but unlike them it is NOT self-scoped: the request
+  // body names an explicit target actorId (the player under theft
+  // investigation), never the calling staff member's own character, since
+  // Mentat calls this to proactively cross-reference base theft against
+  // new Exchange listings, not for a player to look up their own history.
+  PLAYERS_ITEM_AUDIT_LOG: "/api/integrations/discord/players/item-audit-log",
   VERSION: "/api/integrations/discord/version",
   SERVERS: "/api/integrations/discord/servers",
   PORTS: "/api/integrations/discord/ports",
@@ -127,6 +135,7 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.GUILD_STORAGE,
   DISCORD_ADAPTER_ROUTES.GUILD_FIND,
   DISCORD_ADAPTER_ROUTES.GUILD_FACTION_SUMMARY,
+  DISCORD_ADAPTER_ROUTES.PLAYERS_ITEM_AUDIT_LOG,
   DISCORD_ADAPTER_ROUTES.VERSION,
   DISCORD_ADAPTER_ROUTES.SERVERS,
   DISCORD_ADAPTER_ROUTES.PORTS,

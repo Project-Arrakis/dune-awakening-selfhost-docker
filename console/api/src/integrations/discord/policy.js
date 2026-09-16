@@ -39,7 +39,15 @@ export const DISCORD_CAPABILITIES = Object.freeze({
   // distinct capability (not a reuse of PLAYER_LINK_WRITE) so the two
   // linking flows can be enabled/disabled or audited independently.
   ACCOUNT_LINK_WRITE: "account-link:write",
-  BROADCAST_SEND: "broadcast:send"
+  BROADCAST_SEND: "broadcast:send",
+  // ITEM_AUDIT_LOG_READ (meta#64, mentat#368): item-movement history for a
+  // specific player's inventories, used to cross-reference base theft
+  // against new Exchange listings. Same sensitivity class as the existing
+  // INVENTORY_READ/STORAGE_READ/GUILD_READ grants (item contents, just
+  // historical instead of point-in-time) -- unlike CHEATER_TRACKING_READ,
+  // this is not a categorically more sensitive disciplinary record, so it
+  // is granted to moderator, not admin/owner only.
+  ITEM_AUDIT_LOG_READ: "item-audit-log:read"
 });
 
 export const DISCORD_WRITE_CAPABILITIES = Object.freeze(new Set([
@@ -79,7 +87,8 @@ const CAPABILITY_BY_TIER = Object.freeze({
     DISCORD_CAPABILITIES.BACKUPS_READ,
     DISCORD_CAPABILITIES.INVENTORY_READ,
     DISCORD_CAPABILITIES.STORAGE_READ,
-    DISCORD_CAPABILITIES.GUILD_READ
+    DISCORD_CAPABILITIES.GUILD_READ,
+    DISCORD_CAPABILITIES.ITEM_AUDIT_LOG_READ
     // OPS_* capabilities are deliberately admin/owner only, not granted to
     // moderator -- confirmed via upstream's own test ("OPS capabilities are
     // granted only to admin and owner tiers", discordPolicy.test.js) and

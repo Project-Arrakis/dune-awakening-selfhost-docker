@@ -2777,6 +2777,80 @@ async function specializationKeystoneCounts(db, controllerId) {
   }]));
 }
 
+// ensureItemAuditLogIndexes: dune.item_audit_log is a closed-source
+// game-server-owned table (this fork does not create it, unlike e.g.
+// dune.player_death_log in deathPoller.js), and had no index beyond its own
+// primary key -- confirmed directly against a live instance (issue #936).
+// Operator explicitly approved adding these two indexes (#936 comment,
+// 2026-09-15) after Requirement 0's "could this desynchronize from
+// something outside this codebase" question was raised: an index is
+// transparent to the game server's own reads/writes, so this carries none
+// of the command-auth-token incident's risk (that fix changed a *value*
+// the game server independently validated; this only speeds up reads).
+// CONCURRENTLY avoids locking writes from the live game server during
+// index build -- unlike deathPoller.ensureTable()'s plain (non-concurrent)
+// precedent, which is safe there only because that table is small and
+// fork-owned. Each index is its own db.query() call, not combined into one
+// multi-statement string the way deathPoller.ensureTableSQL() is --
+// CREATE INDEX CONCURRENTLY must be the only statement in its own
+// (implicit, autocommitted) transaction, and db.query() here is a bare
+// pool.query() per call (see db.js), so this is safe as separate calls but
+// would NOT be safe combined into one multi-statement string.
+async function ensureItemAuditLogIndexes(db) {
+  try {
+    await db.query(`create index concurrently if not exists idx_item_audit_log_logged_at on dune.item_audit_log (logged_at)`);
+  } catch { /* best effort -- may already exist, or be mid-build from a concurrent request */ }
+  try {
+    await db.query(`create index concurrently if not exists idx_item_audit_log_inventory_id on dune.item_audit_log (inventory_id)`);
+  } catch { /* best effort */ }
+}
+
+// playerItemAuditLog: read-only item-movement history for a given player's
+// inventories (meta#64 "Chronicles of Kanly", mentat#368 -- proactive
+// stolen-goods cross-reference against new Exchange listings). Unbounded
+// full-table scans are explicitly disallowed by issue #935's own scope --
+// dune.item_audit_log grows without bound (2,341+ rows and counting), so
+// every query is time-windowed (default 7 days, capped at 30) and row-capped
+// (default 200, capped at 500). Schema verified directly against a live
+// instance (issue #936): audit_id, logged_at, op (INSERT/DELETE/UPDATE),
+// item_id, inventory_id, template_id, stack_size, position_index,
+// quality_level, volume_override, is_new, stats (jsonb) -- this function
+// only selects the columns issue #935 actually asked for. The table has no
+// fls_id/actor_id column at all -- the only join path to a specific player
+// is inventory_id -> dune.inventories.actor_id (already indexed on
+// actor_id, confirmed live), NOT the FLS-id path playerCheaterTracking()
+// uses (that table's disclosure question is a different one -- see that
+// function's own comment for why the two identity paths aren't the same).
+export async function playerItemAuditLog(db, id, { windowHours, limit } = {}) {
+  if (!(await tableExists(db, "item_audit_log"))) return unsupported("itemAuditLog", ["dune.item_audit_log"]);
+  await ensureItemAuditLogIndexes(db);
+  const player = await resolvePlayerMutationTarget(db, id);
+  const cappedWindowHours = Math.min(Math.max(Number(windowHours) || 168, 1), 720);
+  const cappedLimit = Math.min(Math.max(Number(limit) || 200, 1), 500);
+  const result = await db.query(`
+    select a.audit_id, a.logged_at, a.op, a.item_id, a.template_id, a.stack_size, a.position_index
+    from dune.item_audit_log a
+    join dune.inventories inv on inv.id = a.inventory_id
+    where inv.actor_id = $1
+      and a.logged_at >= now() - ($2 || ' hours')::interval
+    order by a.logged_at desc
+    limit $3`, [player.actorId, cappedWindowHours, cappedLimit]);
+  return {
+    capabilities: { itemAuditLog: true },
+    player,
+    windowHours: cappedWindowHours,
+    rows: result.rows.map((row) => ({
+      auditId: String(row.audit_id),
+      loggedAt: row.logged_at,
+      op: String(row.op || ""),
+      itemId: row.item_id != null ? String(row.item_id) : null,
+      templateId: row.template_id || null,
+      stackSize: row.stack_size != null ? Number(row.stack_size) : null,
+      positionIndex: row.position_index != null ? Number(row.position_index) : null
+    }))
+  };
+}
+
 export async function playerSpecs(db, id) {
   if (!(await tableExists(db, "specialization_tracks"))) return unsupported("specs", ["dune.specialization_tracks"]);
   const player = await resolvePlayerMutationTarget(db, id);

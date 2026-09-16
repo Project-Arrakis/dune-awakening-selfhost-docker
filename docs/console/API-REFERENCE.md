@@ -848,6 +848,7 @@ See [../integrations/discord-integration/README.md](../integrations/discord-inte
 | GET | `/api/integrations/discord/players/storage` | Get player storage | `inventory:read` |
 | GET | `/api/integrations/discord/players/find` | Find player | `players:read` |
 | GET | `/api/integrations/discord/players/inventory-search` | Search inventory | `inventory:read` |
+| POST | `/api/integrations/discord/players/item-audit-log` | Staff-only: item-movement history for a target player's inventories, for stolen-goods cross-reference (meta#64, mentat#368) -- not self-scoped, moderator tier and up, time-windowed (default 7d/cap 30d) and row-capped (default 200/cap 500) | `item-audit-log:read` |
 
 ### Guilds & Data
 

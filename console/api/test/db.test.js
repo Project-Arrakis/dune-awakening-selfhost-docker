@@ -125,6 +125,7 @@ import {
   playerInventory,
   playerInventoryAll,
   playerInventoryItemIds,
+  playerItemAuditLog,
   playerItemAugmentState,
   playerJourney,
   playerOwnedStorageQuery,
@@ -3657,6 +3658,100 @@ test("player identity boundary rejects world actors without a current player paw
     }
   };
   await assert.rejects(resolvePlayerTarget(db, "2"), (error) => error.statusCode === 404 && error.message === "Player not found");
+});
+
+// playerItemAuditLog (meta#64 "Chronicles of Kanly", mentat#368): schema
+// verified directly against a live dune-dev instance (issue #936) --
+// audit_id, logged_at, op, item_id, inventory_id, template_id, stack_size,
+// position_index; joins through dune.inventories.actor_id since
+// item_audit_log itself has no fls_id/actor_id column.
+test("playerItemAuditLog reports unsupported when dune.item_audit_log is missing", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        assert.deepEqual(values, ["dune.item_audit_log"]);
+        return { rows: [{ exists: false }] };
+      }
+      return assert.fail(`unexpected query when table is missing: ${text}`);
+    }
+  };
+  const result = await playerItemAuditLog(db, "2");
+  assert.equal(result.capabilities.itemAuditLog, false);
+  assert.deepEqual(result.rows, []);
+});
+
+test("playerItemAuditLog attempts concurrent index creation before querying, best-effort", async () => {
+  const indexQueries = [];
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("create index concurrently")) {
+        indexQueries.push(text);
+        throw new Error("simulated: index already exists / build in progress");
+      }
+      if (text.includes("from dune.actors a") && text.includes("a.id = $1")) {
+        assert.deepEqual(values, [2]);
+        return { rows: [{ actor_id: 2, account_id: 5, controller_id: 9, player_state_id: 1, online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.item_audit_log a") && text.includes("join dune.inventories inv")) {
+        assert.deepEqual(values, [2, 168, 200]);
+        assert.match(text, /inv\.actor_id = \$1/);
+        assert.match(text, /order by a\.logged_at desc/);
+        assert.match(text, /limit \$3/);
+        return { rows: [] };
+      }
+      return assert.fail(`unexpected query: ${text}`);
+    }
+  };
+  const result = await playerItemAuditLog(db, "2");
+  // Both index-creation attempts ran (and their failure was swallowed,
+  // best-effort) before the real query -- confirms the "must be its own
+  // db.query() call, not combined with anything else" contract.
+  assert.equal(indexQueries.length, 2);
+  assert.match(indexQueries[0], /idx_item_audit_log_logged_at/);
+  assert.match(indexQueries[1], /idx_item_audit_log_inventory_id/);
+  assert.equal(result.capabilities.itemAuditLog, true);
+  assert.equal(result.windowHours, 168);
+  assert.deepEqual(result.rows, []);
+});
+
+test("playerItemAuditLog caps windowHours and limit, and returns real rows keyed by the target's inventories", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("create index concurrently")) return { rows: [] };
+      if (text.includes("from dune.actors a") && text.includes("a.id = $1")) {
+        return { rows: [{ actor_id: 2, account_id: 5, controller_id: 9, player_state_id: 1, online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.item_audit_log a")) {
+        // windowHours (9999) capped to 720, limit (9999) capped to 500.
+        assert.deepEqual(values, [2, 720, 500]);
+        return {
+          rows: [{
+            audit_id: 42,
+            logged_at: "2026-09-15T00:00:00.000Z",
+            op: "DELETE",
+            item_id: 555,
+            template_id: "spice-sample",
+            stack_size: 3,
+            position_index: 1
+          }]
+        };
+      }
+      return assert.fail(`unexpected query: ${text}`);
+    }
+  };
+  const result = await playerItemAuditLog(db, "2", { windowHours: 9999, limit: 9999 });
+  assert.equal(result.windowHours, 720);
+  assert.deepEqual(result.rows, [{
+    auditId: "42",
+    loggedAt: "2026-09-15T00:00:00.000Z",
+    op: "DELETE",
+    itemId: "555",
+    templateId: "spice-sample",
+    stackSize: 3,
+    positionIndex: 1
+  }]);
 });
 
 test("addon leadership players derive character level from level component XP", async () => {

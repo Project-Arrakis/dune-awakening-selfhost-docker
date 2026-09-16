@@ -580,6 +580,18 @@ export const COMMAND_METADATA = Object.freeze({
       { name: "search", bodyField: "query", type: "STRING", required: false, description: "Filter by item name (optional)." }
     ]
   },
+  // meta#64 "Chronicles of Kanly" / mentat#368: staff/system stolen-goods
+  // cross-reference lookup, not a player-facing subcommand of its own --
+  // same "internal, not directly Discord-facing" shape as
+  // GUILD_FACTION_SUMMARY and PLAYERS_CHEATER_TRACKING above. actorId is
+  // an internal dune.actors id Mentat resolves itself, never a value a
+  // staff member types into a literal Discord slash-command option.
+  [DISCORD_ADAPTER_ROUTES.PLAYERS_ITEM_AUDIT_LOG]: {
+    group: "player", subcommand: "item-audit-log",
+    description: "Staff-only: item-movement history for a specific player's inventories, for stolen-goods cross-reference.",
+    capability: DISCORD_CAPABILITIES.ITEM_AUDIT_LOG_READ,
+    params: []
+  },
   [DISCORD_ADAPTER_ROUTES.VERSION]: {
     group: "infra", subcommand: "version",
     description: "Show Dune stack version.",

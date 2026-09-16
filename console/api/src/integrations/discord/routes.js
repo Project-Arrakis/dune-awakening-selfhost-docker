@@ -46,6 +46,7 @@ import {
   inventorySearchProvider
 } from "./inventoryProvider.js";
 import { broadcastProvider } from "./broadcastProvider.js";
+import { itemAuditLogProvider } from "./itemAuditLogProvider.js";
 import { buildDuneArgs, runDockerLogs, runDune, validateServiceName } from "../../runner.js";
 import { sanitizeDiscordValue } from "./sanitize.js";
 import { initializeDiscordAdapterSchema } from "./schema.js";
@@ -539,6 +540,27 @@ export async function handleDiscordAdapterRoute({
         playerPawnId: linked.player_pawn_id,
         query: body.query
       }));
+    }
+
+    // Players item-audit-log (meta#64, mentat#368) -- staff/system
+    // stolen-goods cross-reference signal, deliberately NOT self-scoped:
+    // body.actorId names the player under investigation, not the calling
+    // actor's own character.
+    if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_ITEM_AUDIT_LOG && req.method === "POST") {
+      const body = await readJsonWithActorSignature(req);
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.ITEM_AUDIT_LOG_READ);
+      if (!body.actorId) {
+        throw policyError("missing_actor_id", "actorId (the target player's dune.actors id) is required.");
+      }
+      const response = await itemAuditLogProvider(db, { actorId: body.actorId, windowHours: body.windowHours, limit: body.limit });
+      audit(config, req, "discord.trust.item_audit_log_read", {
+        actorId: actor.userId,
+        targetActorId: body.actorId,
+        windowHours: response.windowHours,
+        rowCount: response.count
+      });
+      return json(res, 200, response);
     }
 
     // Guild storage
