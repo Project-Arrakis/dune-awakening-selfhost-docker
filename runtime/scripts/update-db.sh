@@ -57,6 +57,8 @@ DO \$dune_restore_trigger\$
 BEGIN
   EXECUTE \$dune_trigger_definition\$${trigger_definition}\$dune_trigger_definition\$;
 EXCEPTION
+  WHEN duplicate_object THEN
+    RAISE NOTICE 'Project-owned database trigger already present: %', SQLERRM;
   WHEN invalid_schema_name OR undefined_function OR undefined_table THEN
     RAISE NOTICE 'Skipping stale project-owned database trigger: %', SQLERRM;
 END
