@@ -8039,15 +8039,28 @@ end`;
 // Shared by the admin Vehicles pages and the dunedocker.app player snapshot.
 // The game database always gives us a current value for fuel/durability when it
 // records one, but it does not consistently persist a corresponding maximum.
-// A stored module maximum is authoritative. Otherwise, infer a maximum only
-// when at least two non-null observations exist for the exact same template.
+// A verified known maximum is authoritative, followed by a stored module
+// maximum. Otherwise, infer a maximum only when at least two non-null
+// observations exist for the exact same template.
 // Missing current values remain unknown: they must never become 0% or 100%.
-const VEHICLE_STATUS_CTES_SQL = `module_raw as (
+// These two Mk6 Assault Ornithopter modules are a verified exception: their
+// game maximum is 2000, while damaged historical rows can contain an inflated
+// current/decayed value. Treating the largest observation as the maximum made
+// the Console preserve 3557 (178%) instead of repairing it back to 2000.
+const VEHICLE_MODULE_KNOWN_MAXIMA_SQL = `known_template_maxima(template_id, max_durability) as (
+  values
+    ('ornithoptermediumengine_6'::text, 2000::numeric),
+    ('ornithoptermediumgenerator_6'::text, 2000::numeric)
+)`;
+
+const VEHICLE_STATUS_CTES_SQL = `${VEHICLE_MODULE_KNOWN_MAXIMA_SQL}, module_raw as (
   select vm.id, vm.vehicle_id, vm.template_id,
     (vm.stats->'FVehicleModuleDurabilityStats'->1->>'CurrentDurability')::numeric own_current,
     nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0) own_decayed,
-    nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric, 0) own_max
+    nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric, 0) own_max,
+    known.max_durability known_max
   from dune.vehicle_modules vm
+  left join known_template_maxima known on known.template_id=lower(vm.template_id)
 ), module_observed as (
   select module_raw.*,
     count(own_current) over(partition by template_id)::int current_samples,
@@ -8056,10 +8069,10 @@ const VEHICLE_STATUS_CTES_SQL = `module_raw as (
 ), module_durability as (
   select id, vehicle_id, template_id,
     own_current current_durability,
-    coalesce(own_max, own_decayed,
+    coalesce(known_max, own_max, own_decayed,
       case when current_samples >= 2 then observed_max else null end) max_durability,
     case
-      when own_max is not null or own_decayed is not null then false
+      when known_max is not null or own_max is not null or own_decayed is not null then false
       when current_samples >= 2 and observed_max is not null then true
       else null
     end max_inferred
@@ -13790,12 +13803,13 @@ export async function repairGear(db, id) {
 }
 
 // Vehicle-module rows in current dedicated-server databases commonly omit
-// MaxDurability altogether. Prefer any authoritative stored maximum for the
-// exact template; otherwise infer a conservative cap only when at least two
-// modules of that template provide a positive current or decayed-cap sample.
+// MaxDurability altogether. Prefer a verified game maximum, then a stored
+// maximum for the exact module; otherwise infer a conservative cap only when
+// at least two modules of that template provide a positive current or
+// decayed-cap sample.
 // Both repair queries use this CTE so their eligibility and reported counts
 // cannot disagree.
-const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
+const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `${VEHICLE_MODULE_KNOWN_MAXIMA_SQL}, module_samples as (
   select vm.template_id,
          case
            when (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
@@ -13808,8 +13822,10 @@ const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
          case
            when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
              then nullif((durability->>'MaxDurability')::numeric, 0)
-         end as stored_max_durability
+         end as stored_max_durability,
+         known.max_durability as known_max_durability
   from dune.vehicle_modules vm
+  left join known_template_maxima known on known.template_id=lower(vm.template_id)
   cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
   where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
     and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
@@ -13817,6 +13833,7 @@ const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
 ), template_maxima as (
   select template_id,
          coalesce(
+           max(known_max_durability),
            max(stored_max_durability),
            case
              when count(*) filter (
@@ -13824,9 +13841,19 @@ const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
              ) >= 2
                then greatest(max(current_durability), max(decayed_max_durability))
            end
-         ) as max_durability
+         ) as max_durability,
+         max(known_max_durability) as known_max_durability
   from module_samples
   group by template_id
+)`;
+
+const VEHICLE_REPAIR_EFFECTIVE_MAX_SQL = `coalesce(
+  tm.known_max_durability,
+  case
+    when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+      then nullif((durability->>'MaxDurability')::numeric, 0)
+  end,
+  tm.max_durability
 )`;
 
 function vehicleRepairThreshold(value) {
@@ -13877,20 +13904,14 @@ export async function inspectVehicleDecayRepair(db, id, { thresholdPercent = 50 
         and jsonb_typeof(durability) = 'object'
         and durability ? 'CurrentDurability'
         and (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-        and coalesce(
-              case
-                when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                  then nullif((durability->>'MaxDurability')::numeric, 0)
-              end,
-              tm.max_durability
-            ) > 0
-        and (durability->>'CurrentDurability')::numeric < (coalesce(
-              case
-                when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                  then nullif((durability->>'MaxDurability')::numeric, 0)
-              end,
-              tm.max_durability
-            ) * $${thresholdParam})
+        and ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} > 0
+        and (
+          (durability->>'CurrentDurability')::numeric < (${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} * $${thresholdParam})
+          or (
+            tm.known_max_durability is not null
+            and (durability->>'CurrentDurability')::numeric > ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL}
+          )
+        )
     )
     select e.partition_id,
            min(e.actor_map) as actor_map,
@@ -13948,6 +13969,7 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
         select vm.vehicle_id,
                vm.stats->'FVehicleModuleDurabilityStats'->1 as durability,
                coalesce(
+                 tm.known_max_durability,
                  case
                    when (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
                      then nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric, 0)
@@ -13987,13 +14009,7 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
       with ${VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE}, eligible as (
         select vm.id,
                vm.vehicle_id,
-               coalesce(
-                 case
-                   when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                     then nullif((durability->>'MaxDurability')::numeric, 0)
-                 end,
-                 tm.max_durability
-               ) as max_durability
+               ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} as max_durability
         from dune.vehicle_modules vm
         join dune.actors a on a.id = vm.vehicle_id
         left join template_maxima tm on tm.template_id = vm.template_id
@@ -14010,20 +14026,14 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
           and jsonb_typeof(durability) = 'object'
           and durability ? 'CurrentDurability'
           and (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-          and coalesce(
-                case
-                  when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                    then nullif((durability->>'MaxDurability')::numeric, 0)
-                end,
-                tm.max_durability
-              ) > 0
-          and (durability->>'CurrentDurability')::numeric < (coalesce(
-                case
-                  when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                    then nullif((durability->>'MaxDurability')::numeric, 0)
-                end,
-                tm.max_durability
-              ) * $${thresholdParam})
+          and ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} > 0
+          and (
+            (durability->>'CurrentDurability')::numeric < (${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} * $${thresholdParam})
+            or (
+              tm.known_max_durability is not null
+              and (durability->>'CurrentDurability')::numeric > ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL}
+            )
+          )
       )
       update dune.vehicle_modules vm
       set stats = case
