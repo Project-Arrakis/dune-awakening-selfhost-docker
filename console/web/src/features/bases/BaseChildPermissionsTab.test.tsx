@@ -29,7 +29,7 @@ function row(
 ): BaseChildAccessRow {
   return {
     actorId, name, buildingType, group, currentAccess,
-    currentAccessLabel: { 1: "Public", 2: "Guild", 3: "Associate", 4: "Co-Owner", 5: "Owner" }[currentAccess],
+    currentAccessLabel: { 1: "Owner", 2: "Co-Owner", 3: "Associate", 4: "Guild", 5: "Public" }[currentAccess],
     isSubFief: currentAccess === 3
   };
 }
@@ -59,12 +59,19 @@ beforeEach(() => {
 });
 
 describe("BaseChildPermissionsTab", () => {
+  it.each([
+    [1, "Owner"], [2, "Co-Owner"], [3, "Associate"], [4, "Guild"], [5, "Public"]
+  ] as const)("shows game access value %i as %s", async (value, label) => {
+    mockRows([row("14274", "Atre Garage Door", "Atre_Garage_Door_Placeable", value)]);
+    renderTab();
+    expect(await screen.findByRole("radio", { name: `${label} for Atre Garage Door` })).toBeChecked();
+  });
   it("lists pieces with their current level checked in the segmented control", async () => {
     mockRows([row("14274", "Generator", "Generator_Placeable", 2)]);
     renderTab();
 
     expect(await screen.findByText("Generator", { selector: "strong" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "Guild for Generator" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Co-Owner for Generator" })).toBeChecked();
     expect(screen.getByRole("radio", { name: "Associate for Generator" })).not.toBeChecked();
   });
 
@@ -116,11 +123,11 @@ describe("BaseChildPermissionsTab", () => {
     mockRows([row("14274", "Generator", "Generator_Placeable", 2)]);
     renderTab();
 
-    fireEvent.click(await screen.findByRole("radio", { name: "Owner for Generator" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Public for Generator" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Revert" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Revert" }));
 
-    await waitFor(() => expect(screen.getByRole("radio", { name: "Guild for Generator" })).toBeChecked());
+    await waitFor(() => expect(screen.getByRole("radio", { name: "Co-Owner for Generator" })).toBeChecked());
     expect(basesApi.setChildAccess).not.toHaveBeenCalled();
   });
 
@@ -143,7 +150,7 @@ describe("BaseChildPermissionsTab", () => {
     fireEvent.change(screen.getByLabelText("Apply"), { target: { value: "5" } });
     fireEvent.click(screen.getByRole("button", { name: "Apply to Selected" }));
 
-    await waitFor(() => expect(screen.getByRole("radio", { name: "Owner for Generator" })).toBeChecked());
+    await waitFor(() => expect(screen.getByRole("radio", { name: "Public for Generator" })).toBeChecked());
   });
 
   it("filters the list by master category, and Select All only selects the currently visible pieces", async () => {
@@ -209,10 +216,10 @@ describe("BaseChildPermissionsTab", () => {
     renderTab();
 
     expect(await screen.findByText(/will be written when its map next restarts/i)).toBeInTheDocument();
-    expect(await screen.findByText(/Owner at restart/)).toBeInTheDocument();
-    // Still Guild -- the queued level must not be shown as if already applied.
-    await waitFor(() => expect(screen.getByRole("radio", { name: "Guild for Generator" })).toBeChecked());
-    expect(screen.getByRole("radio", { name: "Owner for Generator" })).not.toBeChecked();
+    expect(await screen.findByText(/Public at restart/)).toBeInTheDocument();
+    // Still Co-Owner -- the queued level must not be shown as if already applied.
+    await waitFor(() => expect(screen.getByRole("radio", { name: "Co-Owner for Generator" })).toBeChecked());
+    expect(screen.getByRole("radio", { name: "Public for Generator" })).not.toBeChecked();
   });
 
   it("reports a queued save rather than claiming the level was updated", async () => {

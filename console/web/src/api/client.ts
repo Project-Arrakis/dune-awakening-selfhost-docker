@@ -90,7 +90,12 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
 const ENROLLMENT_ROUTES = new Set(["/api/auth/2fa/setup", "/api/auth/2fa/confirm"]);
 
 function isSessionAuthFailure(status: number, message: string, path = "") {
-  if (status === 401) return !ENROLLMENT_ROUTES.has(path);
+  // A rejected login is likewise not an expired session -- preserve the
+  // API's specific error so the sign-in form reports an incorrect password
+  // accurately (upstream fix, merged alongside the enrollment-route carve-out
+  // above; both exclude a route whose 401 means "credential rejected", not
+  // "session expired").
+  if (status === 401) return path !== "/api/auth/login" && !ENROLLMENT_ROUTES.has(path);
   return status === 403 && /authentication required|csrf token|session expired|login session|sign in to begin/i.test(message);
 }
 
