@@ -100,6 +100,8 @@ export function collectPlayerPortalContext(config, directorySnapshot = {}) {
 
 const CLIENT_INI_MAX_BYTES = 64 * 1024;
 const CLIENT_INI_FORBIDDEN = /(?:password|secret|token|privatekey|Bgd\.ServerDisplayName|\bPort\s*=|\bIGWPort\s*=)/i;
+const CLIENT_GAME_INI_INSTALL_PATH = "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\Windows";
+const CLIENT_ENGINE_INI_INSTALL_PATH = "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\WindowsClient";
 
 function playerSafeClientIni(content) {
   const text = String(content || "").replace(/\r\n?/g, "\n");
@@ -118,7 +120,12 @@ export async function collectPlayerPortalClientConfiguration(config, runDuneImpl
     return {
       available: true,
       generatedAt: new Date().toISOString(),
-      installPath: "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\WindowsClient",
+      // Retain installPath for older directory clients. New clients use the
+      // file-specific paths because Funcom loads these INIs from different
+      // configuration folders.
+      installPath: CLIENT_ENGINE_INI_INSTALL_PATH,
+      gameInstallPath: CLIENT_GAME_INI_INSTALL_PATH,
+      engineInstallPath: CLIENT_ENGINE_INI_INSTALL_PATH,
       gameIni: playerSafeClientIni(game.stdout),
       engineIni: playerSafeClientIni(engine.stdout)
     };
@@ -126,7 +133,9 @@ export async function collectPlayerPortalClientConfiguration(config, runDuneImpl
     return {
       available: false,
       generatedAt: "",
-      installPath: "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\WindowsClient",
+      installPath: CLIENT_ENGINE_INI_INSTALL_PATH,
+      gameInstallPath: CLIENT_GAME_INI_INSTALL_PATH,
+      engineInstallPath: CLIENT_ENGINE_INI_INSTALL_PATH,
       gameIni: "",
       engineIni: ""
     };

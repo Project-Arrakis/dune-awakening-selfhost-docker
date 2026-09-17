@@ -27,6 +27,19 @@ describe("API authentication handling", () => {
     expect(expired).toHaveBeenCalledOnce();
   });
 
+  it("preserves an incorrect-password response instead of calling it an expired session", async () => {
+    const expired = vi.fn();
+    window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, expired, { once: true });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: "Incorrect password. Please try again!" }),
+      { status: 401, headers: { "content-type": "application/json" } }
+    )));
+
+    await expect(api("/api/auth/login", { method: "POST", body: "{}" })).rejects.toThrow("Incorrect password. Please try again!");
+    expect(expired).not.toHaveBeenCalled();
+    window.removeEventListener(AUTH_SESSION_EXPIRED_EVENT, expired);
+  });
+
   it("refreshes a stale CSRF token without signing the user out", async () => {
     const expired = vi.fn();
     window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, expired, { once: true });
