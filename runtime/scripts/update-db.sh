@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 [ -r runtime/generated/image-tags.env ] && . runtime/generated/image-tags.env
+source runtime/scripts/host-paths.sh
 source runtime/scripts/image-tags.sh
 source runtime/scripts/runtime-env.sh
 WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
@@ -20,7 +21,7 @@ PROJECT_DB_ROLE="dune"
 PROJECT_ROLE_WAS_SUPERUSER=""
 ROLE_ELEVATION_MARKER="${DUNE_DB_UPDATE_ROLE_MARKER:-runtime/generated/db-update-role-elevated}"
 EXTERNAL_TRIGGER_MARKER="${DUNE_DB_UPDATE_EXTERNAL_TRIGGER_MARKER:-runtime/generated/db-update-external-triggers.sql}"
-DB_UPDATE_PG_DUMP_WRAPPER="$(pwd)/runtime/scripts/db-update-pg-dump"
+DB_UPDATE_PG_DUMP_WRAPPER="$(host_path "$PWD/runtime/scripts/db-update-pg-dump")"
 START_POSTGRES_SCRIPT="${DUNE_DB_UPDATE_START_POSTGRES_SCRIPT:-runtime/scripts/start-postgres.sh}"
 
 ensure_postgres_ready() {
