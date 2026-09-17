@@ -1035,7 +1035,7 @@ async function syncChangedFactionReputation(db, before, after) {
 async function supportsTutorialLiveRefresh(db) {
   try {
     return await tableExists(db, "tutorial_per_player") &&
-      await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)");
+      Boolean(await tutorialEntryStateType(db));
   } catch {
     return false;
   }
@@ -1049,7 +1049,7 @@ async function tutorialSnapshot(db) {
   return new Map(result.rows.map((row) => [`${row.player_id}:${row.tutorial_id}`, {
     playerId: String(row.player_id),
     tutorialId: Number(row.tutorial_id),
-    state: Number(row.tutorial_state || 0)
+    state: tutorialStateToLegacyNumber(row.tutorial_state) ?? 0
   }]));
 }
 
@@ -1057,7 +1057,7 @@ async function syncChangedTutorials(db, before, after) {
   for (const [key, next] of after) {
     const previous = before.get(key);
     if (previous && previous.state === next.state) continue;
-    await db.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, $3::smallint)", [next.playerId, next.tutorialId, next.state]);
+    await writeTutorialEntry(db, next.playerId, next.tutorialId, next.state);
   }
 }
 
@@ -2545,6 +2545,38 @@ function playerJourneyIdentity(player, columnName) {
   return player.accountId;
 }
 
+// A later game build replaced tutorial_per_player.tutorial_state's smallint
+// column with a dune.tutorialstate enum (Active/Revealed/Completed/Canceled/
+// None), and create_or_update_tutorial_entry's third parameter changed to
+// match. Both generations are live across deployments, so every read and
+// write goes through these two helpers instead of assuming one shape.
+const TUTORIAL_STATE_ENUM_LABELS = { 0: "None", 1: "Revealed", 2: "Completed" };
+
+function tutorialStateToLegacyNumber(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return value;
+  const text = String(value);
+  if (/^-?\d+$/.test(text)) return Number(text);
+  if (text === "Completed") return 2;
+  if (text === "Revealed" || text === "Active") return 1;
+  return 0;
+}
+
+async function tutorialEntryStateType(db) {
+  if (await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,dune.tutorialstate)")) return "enum";
+  if (await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)")) return "smallint";
+  return null;
+}
+
+async function writeTutorialEntry(db, playerId, tutorialId, legacyState) {
+  if (await tutorialEntryStateType(db) === "enum") {
+    const label = TUTORIAL_STATE_ENUM_LABELS[legacyState] || "None";
+    await db.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, $3::dune.tutorialstate)", [playerId, tutorialId, label]);
+    return;
+  }
+  await db.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, $3::smallint)", [playerId, tutorialId, legacyState]);
+}
+
 async function playerLastSeenSelect(db) {
   const candidates = [
     ["player_state", "ps", ["last_seen", "last_seen_at", "last_online", "last_online_at", "last_avatar_activity", "last_login", "last_login_at", "last_login_time", "last_activity", "last_activity_at", "updated_at"]],
@@ -3798,18 +3830,28 @@ const RESOURCE_FIELD_PARTITION_JOIN = `
       and wp.dimension_index = rfs.dimension_index`;
 
 // Currently-active spice fields of any size for the live map's "Active
-// Spice Blows" layer. field_kind_id=1 is spice; value_remaining tiers are
-// 5,000/150,000/2,500,000 for Small/Medium/Large -- `size` is computed by
-// threshold (not exact match), so a field mid-harvest still classifies as
-// its spawned tier until it drops below that tier's own floor (a known,
-// accepted imprecision, same class of edge case the original Large-only
-// threshold already had). Left join, not inner, since a dimension can
-// still lack a world_partition row (confirmed live) -- partition_id stays
-// null rather than a sentinel in that case.
+// Spice Blows" layer. resourcefield_state's field_kind_id column is gone on
+// updated servers (dropped in the same game update that reshaped
+// dune.markers, confirmed live) -- columnsFor probes for it so this still
+// works unmodified against an older, not-yet-updated schema that still has
+// it. Once it's gone, spice and flour sand are the only two kinds this
+// table ever held, and flour sand's value_remaining never leaves its single
+// fixed tier (60,000, see liveMapFlourSandFieldRows below), so "not exactly
+// 60,000" is the correct complement rather than an inexact tier-membership
+// list. value_remaining tiers are 5,000/150,000/2,500,000 for
+// Small/Medium/Large -- `size` is computed by threshold (not exact match),
+// so a field mid-harvest still classifies as its spawned tier until it
+// drops below that tier's own floor (a known, accepted imprecision, same
+// class of edge case the original Large-only threshold already had). Left
+// join, not inner, since a dimension can still lack a world_partition row
+// (confirmed live) -- partition_id stays null rather than a sentinel in
+// that case.
 export async function liveMapSpiceFieldRows(db, map = "") {
   if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
     return unsupportedMap("spiceActive", ["dune.resourcefield_state", "dune.world_partition"]);
   }
+  const hasKindColumn = (await columnsFor(db, "resourcefield_state")).has("field_kind_id");
+  const spiceFilter = hasKindColumn ? "rfs.field_kind_id = 1" : "rfs.value_remaining <> 60000";
   const values = [];
   const where = mapFilterClause(map, values, "rfs");
   const result = await db.query(`
@@ -3824,7 +3866,7 @@ export async function liveMapSpiceFieldRows(db, map = "") {
            end as size
     from dune.resourcefield_state rfs
     ${RESOURCE_FIELD_PARTITION_JOIN}
-    where rfs.field_kind_id = 1 ${where}
+    where ${spiceFilter} ${where}
     order by rfs.field_id`, values);
   return {
     capabilities: { spiceActive: true },
@@ -3832,12 +3874,15 @@ export async function liveMapSpiceFieldRows(db, map = "") {
   };
 }
 
-// Currently-active flour sand fields (field_kind_id=0) -- a single fixed
-// tier (60,000), not size-classed like spice, so no value threshold needed.
+// Currently-active flour sand fields -- a single fixed tier (60,000), not
+// size-classed like spice. See liveMapSpiceFieldRows above for why this is
+// filtered by that fixed value once field_kind_id is gone.
 export async function liveMapFlourSandFieldRows(db, map = "") {
   if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
     return unsupportedMap("flourSand", ["dune.resourcefield_state", "dune.world_partition"]);
   }
+  const hasKindColumn = (await columnsFor(db, "resourcefield_state")).has("field_kind_id");
+  const flourFilter = hasKindColumn ? "rfs.field_kind_id = 0" : "rfs.value_remaining = 60000";
   const values = [];
   const where = mapFilterClause(map, values, "rfs");
   const result = await db.query(`
@@ -3847,7 +3892,7 @@ export async function liveMapFlourSandFieldRows(db, map = "") {
            rfs.value_remaining
     from dune.resourcefield_state rfs
     ${RESOURCE_FIELD_PARTITION_JOIN}
-    where rfs.field_kind_id = 0 ${where}
+    where ${flourFilter} ${where}
     order by rfs.field_id`, values);
   return {
     capabilities: { flourSand: true },
@@ -3856,12 +3901,11 @@ export async function liveMapFlourSandFieldRows(db, map = "") {
 }
 
 // dune.markers is the static-POI atlas (23,413+ entries on a full server --
-// caves, ore veins, scrap wrecks, vendors, hazards, etc). `marker` is a
-// composite type with real named fields (marker_type, x, y, z, payload_type)
-// -- confirmed live, no need for the text-parsing SPLIT_PART approach some
-// third-party docs use. One generic, parameterized query serves every
-// category: add a pattern-table entry for a new category and it works with
-// no new SQL.
+// caves, ore veins, scrap wrecks, vendors, hazards, etc). marker_type is a
+// flat text column and x/y/z live on the `position` composite (type
+// dune.vector) -- confirmed live. One generic, parameterized query serves
+// every category: add a pattern-table entry for a new category and it works
+// with no new SQL.
 // Suffix-only (no leading %) -- a substring match on "%ore%" was sweeping in
 // HarkoRecustomization (an unrelated NPC/customization POI, confirmed live)
 // because "HarkoRecustomization" contains "kore" -> "ore". All real resource
@@ -3908,14 +3952,14 @@ export async function liveMapPoiMarkers(db, map, category) {
   }
   const result = await db.query(`
     select m.marker_hash_id::text as id,
-           (m.marker).marker_type as marker_type,
-           (m.marker).x as x,
-           (m.marker).y as y,
-           (m.marker).z as z,
+           m.marker_type as marker_type,
+           (m.position).x as x,
+           (m.position).y as y,
+           (m.position).z as z,
            coalesce(mn.map_name, '') as map
     from dune.markers m
     join dune.map_names mn on mn.map_name_id = m.map_name_id
-    where (m.marker).marker_type ilike any($1) and (m.marker).marker_type not ilike 'NoIcon' ${where}
+    where m.marker_type ilike any($1) and m.marker_type not ilike 'NoIcon' ${where}
     order by m.marker_hash_id`, values);
   return {
     capabilities: { [category]: true },
@@ -6755,8 +6799,8 @@ async function attachVehicleRegions(db, rows) {
       cross join lateral (
         select m.area_id
         from dune.markers m
-        where m.map_name_id = $1 and m.area_id <> 0 and (m.marker).x is not null
-        order by power((m.marker).x - p.vx, 2) + power((m.marker).y - p.vy, 2)
+        where m.map_name_id = $1 and m.area_id <> 0 and (m.position).x is not null
+        order by power((m.position).x - p.vx, 2) + power((m.position).y - p.vy, 2)
         limit 1
       ) near`, values);
 
@@ -7058,18 +7102,21 @@ export async function playerJourney(db, id, journeyTagsData = {}) {
   ].sort((a, b) => a.rawName.localeCompare(b.rawName));
   const codexIds = codex.rows.map((row) => row.story_node_id).filter(Boolean);
   const codexRows = codexIds.map((nodeId) => journeyNodeRow(nodeId, "Codex", state, {}, codexIds, journeyAliases));
-  const tutorial = tutorialRows.rows.map((row) => ({
-    id: String(row.id),
-    name: journeyDisplayName(row.name),
-    rawName: String(row.name || ""),
-    category: "Tutorial",
-    depth: 0,
-    parentId: "",
-    status: tutorialStatus(row.tutorial_state),
-    complete: Number(row.tutorial_state) === 2,
-    state: row.tutorial_state === null || row.tutorial_state === undefined ? null : Number(row.tutorial_state),
-    tags: 0
-  }));
+  const tutorial = tutorialRows.rows.map((row) => {
+    const legacyState = tutorialStateToLegacyNumber(row.tutorial_state);
+    return {
+      id: String(row.id),
+      name: journeyDisplayName(row.name),
+      rawName: String(row.name || ""),
+      category: "Tutorial",
+      depth: 0,
+      parentId: "",
+      status: tutorialStatus(legacyState),
+      complete: legacyState === 2,
+      state: legacyState,
+      tags: 0
+    };
+  });
   return { capabilities: { journey: true }, player, rows: { story: storyRows, contract: contractRows, codex: codexRows, tutorial } };
 }
 
@@ -8837,7 +8884,7 @@ export async function completeTutorial(db, id, { tutorialId }) {
     const player = await resolvePlayerMutationTarget(tx, id);
     const known = await tx.query("select exists (select 1 from dune.tutorials where id = $1) as exists", [safeTutorialId]);
     if (!known.rows[0]?.exists) throw new Error(`Tutorial ${safeTutorialId} was not found in the game database.`);
-    await tx.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, 2::smallint)", [player.controllerId, safeTutorialId]);
+    await writeTutorialEntry(tx, player.controllerId, safeTutorialId, 2);
     return { ok: true, player, tutorialId: safeTutorialId, state: 2 };
   });
 }
@@ -13611,7 +13658,7 @@ async function supportsJourneySchema(db, schema) {
 async function supportsTutorials(db) {
   return await tableExists(db, "tutorials") &&
     await tableExists(db, "tutorial_per_player") &&
-    await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)");
+    Boolean(await tutorialEntryStateType(db));
 }
 
 function journeyGroup(nodeId) {
@@ -14477,11 +14524,17 @@ function emptyActivitySummary() {
   };
 }
 
+// field_kind_id filters below use "<> 60000" rather than the dropped
+// field_kind_id column -- see liveMapSpiceFieldRows's comment for why
+// value_remaining <> 60000 is the correct complement once it's gone (flour
+// sand is the only other kind, and it never leaves its single fixed 60,000
+// tier). columnsFor probes for the column so this still works unmodified
+// against an older, not-yet-updated schema that still has it.
 export async function addonOpsResourcesSummary(db) {
   if (!(await tableExists(db, "resourcefield_state"))) return emptyResourcesSummary();
   const resourceColumns = await columnsFor(db, "resourcefield_state");
-  const spiceFilter = resourceColumns.has("field_kind_id") ? "where field_kind_id = 1" : "";
-  const correlatedSpiceFilter = resourceColumns.has("field_kind_id") ? "and rfs.field_kind_id = 1" : "";
+  const spiceFilter = resourceColumns.has("field_kind_id") ? "where field_kind_id = 1" : "where value_remaining <> 60000";
+  const correlatedSpiceFilter = resourceColumns.has("field_kind_id") ? "and rfs.field_kind_id = 1" : "and rfs.value_remaining <> 60000";
 
   const result = await db.query(`
     select count(*)::int as total_fields,

@@ -96,8 +96,8 @@ test("ops.resources.summary — live DB — supports current resource-field sche
   const result = await addonOpsResourcesSummary(database);
   assert.ok(result.totalFields >= 0);
   assert.ok(result.totalValueRemaining >= 0);
-  // Older schemas filter spice via field_kind_id; refactored schemas contain
-  // only the remaining generic resource-field state columns.
+  // Older schemas filter spice via field_kind_id; schemas that dropped that
+  // column filter by excluding flour sand's fixed 60,000 tier instead.
 });
 
 // ─── ops.combat.deaths integration ───
