@@ -108,6 +108,11 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | POST | `/api/updates/auto-game` | Save auto-update config | `enabled`, `intervalMinutes`, `applyEnabled`, `notifyEnabled`, `notifyMinutes`, `waitUntilEmpty`, `maxWaitMinutes`, `confirmation` |
 | POST | `/api/updates/repair-runtime` | Repair runtime installation | None |
 
+Successful game checks are cached for 30 minutes in
+`runtime/generated/game-update-check.json`, including across Console restarts.
+Authenticated browser requests may pass `fresh: true` to force a live Steam
+query; API keys always use the shared cached path.
+
 ---
 
 ## Backups
@@ -429,10 +434,11 @@ always immediate rather than queued when the map is live. See
 name, type, owner, map, and exact id. Response fields mirror the paginated-list
 convention (`rows`, `totalCount`, unfiltered `totalVehicles`). Owner resolves from
 the rank-1 permission holder, falling back to the actor's account owner; the
-`shared_with` roster is the rank 2/3 holders. A component's maximum durability is
-read from its own stats blob (`MaxDurability`, else the decayed cap). If no stored
-maximum exists, it is inferred only when at least two non-null current-durability
-observations exist for the same template; inferred rows set `maxInferred: true`.
+`shared_with` roster is the rank 2/3 holders. A component's maximum durability uses
+a verified game-data override when one is available, then its own stats blob
+(`MaxDurability`, else the decayed cap). If no known or stored maximum exists, it
+is inferred only when at least two non-null current-durability observations exist
+for the same template; inferred rows set `maxInferred: true`.
 Missing current durability remains null and is never treated as 0% or 100%.
 `condition_percent` is the lowest comparable component and
 `condition_estimated` reports whether an inferred maximum contributed. Fuel
@@ -449,6 +455,11 @@ Each row also carries a `region` sub-region name where the map has a region tabl
 covered). It is resolved from the nearest `dune.markers.area_id` and is best-effort
 — absent when marker data is unavailable. Deep Desert instead exposes its A–I/1–9
 sector grid as the `sector` field, derived from each row's coordinates.
+`partition_id` remains null when Funcom has not deployed the vehicle into a
+current world partition; it is never rewritten as the nonexistent partition 0.
+When available, `lifecycle_state` explains these records (`Travel`,
+`VehicleBackup`, or `VehicleRecovery`) so clients can label them as in transit
+or stored rather than spawned.
 
 The separate `/api/admin/vehicles*` routes under [Admin Tools](#admin-tools) are a
 different, CLI-backed surface (blueprint catalog and spawning), not this Postgres
@@ -826,6 +837,17 @@ Successful and partially delivered grants are preserved as compact eligibility r
 ### Player Identity Bridge
 
 `players.identity.list` requires an approved `players:read` addon permission. It returns the minimal player identity data needed to correlate addon events: `name`, `actorId`, `controllerId`, `accountId`, `funcomId`, `flsId`, `platformId`, `platformName`, `status`, and `map`. Addons do not need direct access to the Console player REST endpoints.
+
+### Addon Runtime Bridge
+
+`players.summary.list` and `players.progression.get` provide typed player and
+supported progression data under `players:read`. `addon.storage.*` provides
+versioned addon-scoped JSON storage under `files:addon-data`.
+`rewards.deliver`, `rewards.status`, and `rewards.list` provide persistent,
+idempotent reward delivery under `rewards:grant`. `players.message.*` provides
+queued private messages under `players:message`. See
+[Addon Runtime API](../addons/addon-runtime-api.md) for payloads and delivery
+semantics.
 
 ### Hardware Status Bridge
 

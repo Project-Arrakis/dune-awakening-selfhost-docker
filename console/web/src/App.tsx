@@ -305,6 +305,7 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode }[] }
 const COMMUNITY_CONTRIBUTORS_URL = "https://github.com/Red-Blink/dune-awakening-selfhost-docker/graphs/contributors";
 const DUNE_DOCKER_WEBSITE_URL = "https://dunedocker.app/";
 const DUNE_DOCKER_DOCS_URL = "https://docs.dunedocker.app/";
+const DUNE_DOCKER_BASE_BUILDER_URL = "https://blueprints.dunedocker.app/";
 
 function publicServerListingUrl(serverId: string) {
   return `${DUNE_DOCKER_WEBSITE_URL}server.html?id=${encodeURIComponent(serverId)}`;
@@ -347,9 +348,11 @@ function AppFooter() {
         </span>
       </div>
       <div className="app-footer-directory">
-        <a href={DUNE_DOCKER_DOCS_URL} target="_blank" rel="noreferrer">Documentation</a>
-        <span aria-hidden="true">·</span>
         <a href={DUNE_DOCKER_WEBSITE_URL} target="_blank" rel="noreferrer">Public Server Directory</a>
+        <span aria-hidden="true">·</span>
+        <a href={DUNE_DOCKER_BASE_BUILDER_URL} target="_blank" rel="noreferrer">Base Builder</a>
+        <span aria-hidden="true">·</span>
+        <a href={DUNE_DOCKER_DOCS_URL} target="_blank" rel="noreferrer">Documentation</a>
       </div>
     </footer>
   );
@@ -687,7 +690,7 @@ export function App() {
       <main className="login-screen">
         <section className="login-panel">
           <h1>Dune Docker Console</h1>
-          <p className="loading-dots">Loading setup</p>
+          <p className="loading-dots">Loading Console</p>
         </section>
       </main>
     );

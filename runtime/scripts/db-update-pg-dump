@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+real_pg_dump="${DUNE_REAL_PG_DUMP:-/usr/bin/pg_dump}"
+
+# Funcom's patch validator replays a schema-only dump into a database that only
+# contains its own schemas. Keep Console- and addon-owned schemas out of that
+# temporary validation dump, while leaving ordinary backup/data dumps complete.
+for argument in "$@"; do
+  if [ "$argument" = "--schema-only" ]; then
+    exec "$real_pg_dump" --schema='dune' --schema='ext' --schema='public' "$@"
+  fi
+done
+
+exec "$real_pg_dump" "$@"

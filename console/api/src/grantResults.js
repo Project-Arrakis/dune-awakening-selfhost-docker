@@ -1,5 +1,6 @@
 const INVENTORY_UNCHANGED_RE = /inventory stack did not increase/i;
 const INVENTORY_PARTIAL_RE = /inventory grant was incomplete: requested (\d+), verified (\d+)/i;
+const GRANT_PUBLISHED_RE = /grant item command published/i;
 
 export function liveItemGrantWarning(result = {}) {
   const stderr = String(result.stderr || "");
@@ -15,4 +16,28 @@ export function liveItemGrantWarning(result = {}) {
 
 export function liveItemGrantOk(result = {}) {
   return Number(result.code || 0) === 0 && !liveItemGrantWarning(result);
+}
+
+export function liveItemGrantPublished(result = {}) {
+  return Number(result.code ?? -1) === 0 && GRANT_PUBLISHED_RE.test(String(result.stdout || ""));
+}
+
+export function customizationGrantOutcome(result = {}) {
+  const verified = result.ok === true;
+  const deliveryRequested = !verified && result.published === true;
+  return {
+    ok: verified || deliveryRequested,
+    verified,
+    deliveryRequested
+  };
+}
+
+export function summarizeCustomizationGrantResults(results = []) {
+  return {
+    ok: results.every((result) => result.ok),
+    granted: results.filter((result) => result.ok && !result.skipped && !result.deliveryRequested).length,
+    requested: results.filter((result) => result.deliveryRequested).length,
+    skipped: results.filter((result) => result.skipped).length,
+    failed: results.filter((result) => !result.ok).length
+  };
 }

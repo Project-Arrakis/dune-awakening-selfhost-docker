@@ -19,11 +19,67 @@ ORPHAN_BACKUP_ON_DETECT="${DUNE_DB_BACKUP_ON_ORPHAN_DETECT:-1}"
 PROJECT_DB_ROLE="dune"
 PROJECT_ROLE_WAS_SUPERUSER=""
 ROLE_ELEVATION_MARKER="${DUNE_DB_UPDATE_ROLE_MARKER:-runtime/generated/db-update-role-elevated}"
+EXTERNAL_TRIGGER_MARKER="${DUNE_DB_UPDATE_EXTERNAL_TRIGGER_MARKER:-runtime/generated/db-update-external-triggers.sql}"
+DB_UPDATE_PG_DUMP_WRAPPER="$(pwd)/runtime/scripts/db-update-pg-dump"
+
+restore_external_triggers() {
+  [ -f "$EXTERNAL_TRIGGER_MARKER" ] || return 0
+  if ! docker exec -i dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 \
+    -f - < "$EXTERNAL_TRIGGER_MARKER" >/dev/null; then
+    echo "Failed to restore project-owned database triggers after the update." >&2
+    return 1
+  fi
+
+  rm -f "$EXTERNAL_TRIGGER_MARKER"
+}
+
+detach_external_triggers() {
+  local trigger_definitions
+
+  trigger_definitions="$(docker exec dune-postgres psql -U postgres -d dune -Atc \
+    "SELECT pg_get_triggerdef(t.oid, true) || ';'
+       FROM pg_catalog.pg_trigger t
+       JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+       JOIN pg_catalog.pg_namespace table_schema ON table_schema.oid = c.relnamespace
+       JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid
+       JOIN pg_catalog.pg_namespace function_schema ON function_schema.oid = p.pronamespace
+      WHERE table_schema.nspname = 'dune'
+        AND function_schema.nspname NOT IN ('dune', 'pg_catalog')
+        AND NOT t.tgisinternal
+      ORDER BY t.tgname;")"
+  [ -n "$trigger_definitions" ] || return 0
+
+  mkdir -p "$(dirname "$EXTERNAL_TRIGGER_MARKER")"
+  printf '%s\n' "$trigger_definitions" > "$EXTERNAL_TRIGGER_MARKER"
+  chmod 600 "$EXTERNAL_TRIGGER_MARKER"
+  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 \
+    -c "DO \$block\$
+        DECLARE trigger_row record;
+        BEGIN
+          FOR trigger_row IN
+            SELECT t.tgname, table_schema.nspname AS schema_name, c.relname AS table_name
+              FROM pg_catalog.pg_trigger t
+              JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+              JOIN pg_catalog.pg_namespace table_schema ON table_schema.oid = c.relnamespace
+              JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid
+              JOIN pg_catalog.pg_namespace function_schema ON function_schema.oid = p.pronamespace
+             WHERE table_schema.nspname = 'dune'
+               AND function_schema.nspname NOT IN ('dune', 'pg_catalog')
+               AND NOT t.tgisinternal
+          LOOP
+            EXECUTE format('DROP TRIGGER %I ON %I.%I', trigger_row.tgname, trigger_row.schema_name, trigger_row.table_name);
+          END LOOP;
+        END
+        \$block\$;" >/dev/null
+}
 
 restore_project_role_privileges() {
   local status=$?
 
   trap - EXIT
+  if ! restore_external_triggers; then
+    [ "$status" -ne 0 ] || status=1
+  fi
   if [ "$PROJECT_ROLE_WAS_SUPERUSER" = "false" ]; then
     if ! docker exec dune-postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
       -c "ALTER ROLE ${PROJECT_DB_ROLE} NOSUPERUSER;" >/dev/null; then
@@ -68,7 +124,7 @@ prepare_project_role_for_update() {
 }
 
 audit_db_orphans() {
-  local summary detailed ts report_file total
+  local summary ts report_file total
   mkdir -p "$ORPHAN_AUDIT_DIR"
 
   summary="$(bash runtime/scripts/db-orphan-audit.sh summary 2>/dev/null || true)"
@@ -99,6 +155,14 @@ echo "Image: $IMAGE"
 
 audit_db_orphans
 
+# Console features and community addons can attach triggers to game-owned
+# tables while keeping their functions in separately owned schemas. Funcom's
+# updater copies game tables into an isolated validation database without those
+# external schemas, so preserve and detach every such trigger for the migration.
+# The EXIT trap restores each exact definition on every exit path.
+restore_external_triggers
+detach_external_triggers
+
 # Funcom's updater restores a schema dump as the project role. PostgreSQL checks
 # superuser privileges for CREATE EXTENSION even when IF NOT EXISTS is used, so
 # temporarily elevate that role and always restore its original state.
@@ -113,14 +177,14 @@ docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name "$CONTAINER_NAME" \
   --network dune-net \
+  -v "$DB_UPDATE_PG_DUMP_WRAPPER:/tmp/pg17/bin/pg_dump:ro" \
   --entrypoint sh \
   "$IMAGE" \
   -lc '
-set -e
+set -eo pipefail
 
 mkdir -p /tmp/pg17/bin
 ln -sf /usr/bin/psql /tmp/pg17/bin/psql
-ln -sf /usr/bin/pg_dump /tmp/pg17/bin/pg_dump
 ln -sf /usr/bin/pg_restore /tmp/pg17/bin/pg_restore
 ln -sf /usr/bin/pg_isready /tmp/pg17/bin/pg_isready
 
@@ -135,7 +199,7 @@ python -u /root/PSQL/updatedb.py \
   --postgres-installation /tmp/pg17 \
   --ignore-backup-failure \
   --unattended \
-  > /tmp/dune-db-update.log 2>&1
+  2>&1 | tee /tmp/dune-db-update.log
 '
 
 start_ts="$(date +%s)"
@@ -176,6 +240,7 @@ finish_database_update() {
   echo
   echo "=== Apply post-migration database compatibility patches ==="
   runtime/scripts/patch-coriolis-base-backups.sh
+  runtime/scripts/patch-vehicle-recovery-guard.sh
   exit 0
 }
 
@@ -184,7 +249,9 @@ while true; do
   elapsed="$((now_ts - start_ts))"
   running="$(docker inspect --format '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || echo false)"
   exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$CONTAINER_NAME" 2>/dev/null || echo 1)"
-  last_logs="$(docker exec "$CONTAINER_NAME" sh -lc 'cat /tmp/dune-db-update.log 2>/dev/null || true' 2>/dev/null || true)"
+  # Container stdout is durable after exit; docker exec is not. Reading logs
+  # here preserves the actual updater error when the helper exits quickly.
+  last_logs="$(docker logs "$CONTAINER_NAME" 2>/dev/null || true)"
 
   if printf '%s\n' "$last_logs" | grep -Eq "$FAILURE_MARKER_REGEX"; then
     echo "$last_logs"

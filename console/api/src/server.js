@@ -25,7 +25,7 @@ import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
-import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishServerCommand } from "./rmq.js";
+import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishCarePackageWhisper, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, maintainCarePackageHistory, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
 import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
@@ -46,7 +46,7 @@ import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { actionForRoute, ROUTE_ACTIONS } from "./actions.js";
 import { evaluate, loadPolicies, getAllPolicies, setPolicies, allKnownActions } from "./policy.js";
-import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
+import { customizationGrantOutcome, liveItemGrantOk, liveItemGrantPublished, liveItemGrantWarning, summarizeCustomizationGrantResults } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
 import * as restartQueue from "./services/restartQueue.js";
@@ -57,9 +57,12 @@ import { liveMapPoi } from "./services/liveMapPoi.js";
 import { deliverMapChatToRecipients } from "./services/mapChatDelivery.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
+import { getCommunityBlueprint, getCommunityBlueprintPreview, listCommunityBlueprints } from "./services/blueprintCatalog.js";
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { grantAddonItem } from "./addonItemGrants.js";
+import { deleteAddonData, listAddonData, readAddonData, writeAddonData } from "./addonDataStore.js";
+import { createAddonDeliveryService, deferAddonDelivery } from "./addonDeliveries.js";
 import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, refreshBuybackLog, readBuybackLog, clearBuybackLog, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
@@ -199,6 +202,17 @@ const tasks = new TaskManager(config, {
   }
 });
 let db = createDb(config);
+const addonDeliveryService = createAddonDeliveryService(config, {
+  canRun: (addonId, permission) => {
+    try {
+      assertInstalledAddonPermission(config, addonId, permission);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  deliver: (payload, context) => deliverAddonPayload(payload, context)
+});
 const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db });
 let carePackageAutoRunning = false;
 let carePackageAutoLastRun = 0;
@@ -324,6 +338,7 @@ setInterval(() => {
   runBackgroundTick("Message of the Day", messageOfTheDayAutoTick);
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
   runBackgroundTick("Addon scheduled jobs", () => addonJobScheduler.tick());
+  runBackgroundTick("Addon queued deliveries", () => addonDeliveryService.tick());
   runBackgroundTick("Scheduled map messages", () => scheduledMapMessages.tick());
   runBackgroundTick("Landsraad milestone preset", () => landsraadMilestoneReconciler.tick());
   // Daily, but gated inside the tick like every other long-period job here.
@@ -601,7 +616,7 @@ async function handleApi(req, res) {
       return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
     }
     const body = await readJson(req);
-    if (!config.authDisabled && !auth.passwordMatches(body.password)) {
+    if (!config.authDisabled && !(await auth.passwordMatches(body.password))) {
       loginRateLimiter.recordFailure(rateKey);
       return json(res, 401, { error: "Incorrect password. Please try again!" });
     }
@@ -1119,6 +1134,9 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/storage\/[^/]+\/give-item$/) && req.method === "POST") return storageGiveItemRoute(req, res, path);
   if (path.match(/^\/api\/storage\/[^/]+\/export$/)) return exportJson(res, `storage-${decodeURIComponent(path.split("/")[3])}.json`, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path === "/api/blueprints" && req.method === "GET") return dbJson(res, () => listBlueprints(db));
+  if (path === "/api/blueprints/community" && req.method === "GET") return communityBlueprintListRoute(res, url);
+  if (path.match(/^\/api\/blueprints\/community\/[^/]+\/preview$/) && req.method === "GET") return communityBlueprintPreviewRoute(res, path);
+  if (path.match(/^\/api\/blueprints\/community\/[^/]+\/install$/) && req.method === "POST") return communityBlueprintInstallRoute(req, res, path);
   if (path === "/api/blueprints/export" && req.method === "POST") return blueprintBulkExportRoute(req, res);
   if (path.match(/^\/api\/blueprints\/([^/]+)\/export$/) && req.method === "GET") return blueprintExportRoute(req, res, path);
   if (path === "/api/blueprints/import" && req.method === "POST") return blueprintImportRoute(req, res);
@@ -1297,10 +1315,62 @@ async function addonBridgeRoute(req, res, path) {
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
     return json(res, 200, { ok: true, result });
   }
+  if (action === "players.summary.list") {
+    const addon = assertInstalledAddonPermission(config, id, "players:read");
+    const result = await duneDb.addonLeadershipPlayers(db);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
   if (action === "players.identity.list") {
     const addon = assertInstalledAddonPermission(config, id, "players:read");
     const result = await duneDb.addonPlayerIdentities(db);
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "players.progression.get") {
+    const addon = assertInstalledAddonPermission(config, id, "players:read");
+    const playerId = String(body.playerId || "").trim();
+    if (!playerId) return json(res, 400, { error: "playerId is required." });
+    const result = await duneDb.addonPlayerProgression(db, playerId, journeyTagsData);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, playerId, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "addon.storage.get" || action === "addon.storage.list" || action === "addon.storage.put" || action === "addon.storage.delete") {
+    const addon = assertInstalledAddonPermission(config, id, "files:addon-data");
+    const writeAction = action === "addon.storage.put" || action === "addon.storage.delete";
+    if (writeAction && !applyMutationRateLimit(req, res, `addon:${id}:${action}`)) return;
+    const result = action === "addon.storage.get"
+      ? readAddonData(config, addon.id, body.key)
+      : action === "addon.storage.list"
+        ? listAddonData(config, addon.id, body)
+        : action === "addon.storage.put"
+          ? await writeAddonData(config, addon.id, body)
+          : await deleteAddonData(config, addon.id, body);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, key: String(body.key || ""), ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "rewards.deliver" || action === "rewards.status" || action === "rewards.list") {
+    const addon = assertInstalledAddonPermission(config, id, "rewards:grant");
+    if (action === "rewards.deliver" && !applyMutationRateLimit(req, res, `addon:${id}:rewards.deliver`)) return;
+    let result = action === "rewards.deliver"
+      ? await addonDeliveryService.request(addon.id, body, { permission: addon.permission })
+      : action === "rewards.status"
+        ? addonDeliveryService.get(addon.id, body.requestId)
+        : addonDeliveryService.list(addon.id, body, { kind: "reward" });
+    if (action === "rewards.status" && result?.delivery?.type === "message") result = null;
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, requestId: String(body.requestId || ""), status: result?.status || "", ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "players.message.send" || action === "players.message.status" || action === "players.message.list") {
+    const addon = assertInstalledAddonPermission(config, id, "players:message");
+    if (action === "players.message.send" && !applyMutationRateLimit(req, res, `addon:${id}:players.message.send`)) return;
+    let result = action === "players.message.send"
+      ? await addonDeliveryService.request(addon.id, body, { permission: addon.permission, kind: "message" })
+      : action === "players.message.status"
+        ? addonDeliveryService.get(addon.id, body.requestId)
+        : addonDeliveryService.list(addon.id, body, { kind: "message" });
+    if (action === "players.message.status" && result?.delivery?.type !== "message") result = null;
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, requestId: String(body.requestId || ""), status: result?.status || "", ok: true });
     return json(res, 200, { ok: true, result });
   }
   if (action === "ops.health.summary" || action === "ops.health.players" || action === "ops.health.farms" || action === "ops.health.summary.v2") {
@@ -2138,7 +2208,7 @@ async function adminPasswordRoute(req, res) {
   const body = await readJson(req);
   if (config.authDisabled) return json(res, 400, { error: "Login password changes are unavailable while admin authentication is disabled." });
   if (config.adminPasswordEnvManaged) return json(res, 400, { error: "The login password is managed by ADMIN_PASSWORD. Update the environment value instead." });
-  if (!auth.passwordMatches(body.currentPassword)) return json(res, 400, { error: "Current password is incorrect." });
+  if (!(await auth.passwordMatches(body.currentPassword))) return json(res, 400, { error: "Current password is incorrect." });
   const password = validateAdminPassword(body.newPassword);
   writeFileSync(config.adminPasswordFile, `${password}\n`, { mode: 0o600 });
   try {
@@ -3373,10 +3443,77 @@ async function resolvePlayerGrantTarget(playerId) {
   await duneDb.resolvePlayerTarget(db, actorId);
   return {
     actionId: String(player.action_player_id || player.funcom_id || player.fls_id || ""),
+    funcomId: String(player.funcom_id || player.action_player_id || player.fls_id || ""),
+    flsId: String(player.fls_id || player.action_player_id || ""),
     actorId,
     characterName: player.character_name || "",
     online: playerIsOnlineForLiveAction(player)
   };
+}
+
+async function deliverAddonPayload(payload, { addonId, requestId } = {}) {
+  const target = await resolvePlayerGrantTarget(payload.playerId);
+  if (payload.type === "item") {
+    if (!target.online) deferAddonDelivery("Player is offline; the item reward will be delivered after they connect.");
+    const result = await grantPlayerItem(payload.playerId, {
+      itemId: payload.itemId,
+      quantity: payload.amount,
+      quality: payload.quality
+    }, target);
+    if (!result.ok) throw new Error(result.warning || "The game did not verify the item reward.");
+    return { ok: true, type: payload.type, itemId: payload.itemId, amount: payload.amount, quality: payload.quality };
+  }
+  if (payload.type === "xp") {
+    if (!target.online) deferAddonDelivery("Player is offline; the XP reward will be delivered after they connect.");
+    if (!config.mockMode) await runDune(config, buildDuneArgs("adminAddXp", { playerId: target.actionId || payload.playerId, amount: payload.amount }));
+    return { ok: true, type: payload.type, amount: payload.amount };
+  }
+  if (payload.type === "currency") {
+    const result = config.mockMode
+      ? { amount: payload.amount, currencyId: payload.currencyId }
+      : await duneDb.addCurrency(db, target.actorId, { currencyId: payload.currencyId, amount: payload.amount });
+    return { ok: true, type: payload.type, amount: Number(result.amount ?? payload.amount), currencyId: Number(result.currencyId ?? payload.currencyId) };
+  }
+  if (payload.type === "intel") {
+    if (target.online) deferAddonDelivery("Player is online; the Intel reward will be delivered safely after they disconnect.");
+    const result = config.mockMode
+      ? { amount: payload.amount, newValue: payload.amount }
+      : await duneDb.addIntel(db, target.actorId, { amount: payload.amount });
+    return { ok: true, type: payload.type, amount: Number(result.amount ?? payload.amount), newValue: Number(result.newValue ?? payload.amount), capped: Boolean(result.capped) };
+  }
+  if (payload.type === "building-unlock") {
+    const resolved = resolveCatalogItem(config.repoRoot, { itemId: payload.itemId });
+    if (!isBuildingUnlockItem(resolved)) throw new Error("The requested reward is not a verified Building Sets unlock.");
+    if (target.actorId) {
+      const state = await duneDb.playerBuildingUnlockState(db, target.actorId);
+      if (!state.capabilities?.buildingUnlockOwnership) throw new Error("This game database cannot verify building-set ownership.");
+      const status = buildingUnlockStatus(resolved.itemId, { ...state, supported: true });
+      if (status === "Owned" || status === "Pending") return { ok: true, type: payload.type, itemId: resolved.itemId, status, alreadyGranted: true };
+    }
+    const result = await grantPlayerItem(payload.playerId, { itemId: resolved.itemId, quantity: 1 }, target);
+    if (!result.ok) throw new Error(result.warning || "The game did not verify the building unlock reward.");
+    return { ok: true, type: payload.type, itemId: resolved.itemId, status: target.online ? "Processing" : "Pending" };
+  }
+  if (payload.type === "message") {
+    if (!target.online) deferAddonDelivery("Player is offline; the message will be delivered after they connect.");
+    const persona = config.mockMode
+      ? { funcomId: "Server#4242", hexFlsId: "5E121CE000000001" }
+      : await ensureCarePackageServerPersona(db);
+    if (!target.flsId) throw new Error("The online player has no stable message queue identity.");
+    if (!config.mockMode) {
+      await publishCarePackageWhisper(config, {
+        recipientFuncomId: target.funcomId,
+        recipientCharacterName: target.characterName,
+        recipientQueue: `${target.flsId}_queue`,
+        senderFuncomId: persona.funcomId,
+        senderHexFlsId: persona.hexFlsId,
+        message: payload.message,
+        messageId: `addon-${addonId}-${requestId}`.slice(0, 120)
+      });
+    }
+    return { ok: true, type: payload.type, delivered: true };
+  }
+  throw new Error("Unsupported addon delivery type.");
 }
 
 function queryParams(url, names) {
@@ -4889,6 +5026,58 @@ async function blueprintImportRoute(req, res) {
   }
 }
 
+async function communityBlueprintListRoute(res, url) {
+  try {
+    const result = await listCommunityBlueprints({
+      q: url.searchParams.get("q") || "",
+      set: url.searchParams.get("set") || "",
+      sort: url.searchParams.get("sort") || "newest",
+      limit: url.searchParams.get("limit") || 20,
+      offset: url.searchParams.get("offset") || 0
+    });
+    return json(res, 200, result);
+  } catch (error) {
+    return json(res, Number(error?.statusCode) || 502, { error: redact(error?.message || "The Blueprint catalog could not be reached.") });
+  }
+}
+
+async function communityBlueprintPreviewRoute(res, path) {
+  const id = decodeURIComponent(path.split("/")[4] || "");
+  try {
+    const preview = await getCommunityBlueprintPreview(id);
+    res.writeHead(200, withSecurityHeaders({
+      "cache-control": "private, max-age=300",
+      "content-length": String(preview.bytes.length),
+      "content-type": preview.contentType,
+      "x-content-type-options": "nosniff"
+    }));
+    return res.end(preview.bytes);
+  } catch (error) {
+    return json(res, Number(error?.statusCode) || 502, { error: redact(error?.message || "The Blueprint preview could not be loaded.") });
+  }
+}
+
+async function communityBlueprintInstallRoute(req, res, path) {
+  const id = decodeURIComponent(path.split("/")[4] || "");
+  try {
+    const body = await readJson(req);
+    const playerPawnId = Number(body.playerId);
+    if (!Number.isSafeInteger(playerPawnId) || playerPawnId < 1) return json(res, 400, { error: "Invalid player ID." });
+    const source = await getCommunityBlueprint(id);
+    const result = await importBlueprint(db, playerPawnId, source.blueprint, `${source.summary?.title || "Community Blueprint"}.json`);
+    audit(config, req, "blueprints.community-install", {
+      communityBlueprintId: id,
+      communityBlueprintVersion: source.summary?.version || null,
+      playerPawnId,
+      result
+    });
+    return json(res, 200, { ...result, source: source.summary });
+  } catch (error) {
+    if (error?.unsupported) return json(res, 501, { supported: false, error: redact(error?.message || "Blueprint import is unavailable.") });
+    return json(res, Number(error?.statusCode) || 500, { error: redact(error?.message || "The community Blueprint could not be installed.") });
+  }
+}
+
 function sanitizeFilename(s, fallback = "export") {
   return String(s).replace(/[\x00-\x1f\x7f<>:"/\\|?*]/g, "_").trim() || fallback;
 }
@@ -5099,17 +5288,25 @@ async function customizationGrantRoute(req, res, path) {
       }
       try {
         const result = await grantPlayerItem(playerId, { itemId: item.itemId, quantity: 1 }, target);
-        results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: result.ok, status: result.ok ? (target.online ? "Processing" : "Pending") : "Available", result });
+        const outcome = customizationGrantOutcome(result);
+        results.push({
+          itemId: item.itemId,
+          name: item.name,
+          groupId: item.groupId,
+          ...outcome,
+          status: outcome.ok ? (target.online ? "Processing" : "Pending") : "Available",
+          warning: outcome.deliveryRequested
+            ? "Dune accepted the delivery request, but cosmetic ownership cannot be verified because customization tokens may be consumed immediately."
+            : result.warning,
+          result
+        });
       } catch (error) {
         results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: false, status: "Available", error: redact(error?.message || "Unexpected error.") });
       }
     }
-    const ok = results.every((result) => result.ok);
-    const granted = results.filter((result) => result.ok && !result.skipped).length;
-    const skipped = results.filter((result) => result.skipped).length;
-    const failed = results.filter((result) => !result.ok).length;
-    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, granted, skipped, failed, ok, results });
-    return json(res, ok ? 200 : 207, { ok, granted, skipped, failed, results });
+    const { ok, granted, requested, skipped, failed } = summarizeCustomizationGrantResults(results);
+    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, granted, requested, skipped, failed, ok, results });
+    return json(res, ok ? 200 : 207, { ok, granted, requested, skipped, failed, results });
   } catch (error) {
     audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, ok: false, error: redact(error?.message || "Unexpected error.") });
     return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
@@ -5173,6 +5370,7 @@ async function grantPlayerItem(playerId, item, target) {
   const warning = liveItemGrantWarning(result);
   return {
     ok: liveItemGrantOk(result),
+    published: liveItemGrantPublished(result),
     operation,
     item: payload,
     stdout: result.stdout,

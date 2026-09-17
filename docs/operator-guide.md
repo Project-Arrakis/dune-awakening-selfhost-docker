@@ -205,7 +205,11 @@ the Web UI's Updates panel — do not confuse them:
   `dune update auto enable [interval-minutes] ...` / `disable` /
   `status`, backed by a systemd timer that runs 5 minutes after boot and
   then repeats on a rolling interval (default: every 60 minutes,
-  configurable via the first argument to `auto enable`).
+  configurable via the first argument to `auto enable`). A successful Web
+  Console check is cached for 30 minutes and survives Console restarts;
+  **Refresh Game Check** always requests a live result. Read-only checks use
+  two short, bounded Steam attempts by default, while actual installations
+  retain the longer content-host retry policy needed for downloads.
 - **`dune self-update`** (alias `dune stack-update`) — updates **this
   repository/stack itself** (fetching a new GitHub release of
   `dune-awakening-selfhost-docker`). Subcommands: `check`, `list`,
@@ -255,6 +259,11 @@ service. From the **Console Settings page** you can:
 - Claim your server's listing to verify ownership.
 - Manage your public profile and Discord invite link.
 - Enable or disable the public listing at any time.
+
+Direct personalized latency uses UDP `32000-32015`. Permit or forward that
+range through both the host firewall and any internet-to-DMZ edge firewall or
+NAT device. This is optional: installations that leave it closed remain listed
+and use the Dune Docker relay for latency measurements.
 
 Local and LAN-only servers are never listed. By default, installations
 contribute only an anonymous server count (never server names, addresses,

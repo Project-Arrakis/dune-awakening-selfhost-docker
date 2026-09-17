@@ -1903,10 +1903,17 @@ export async function addonLeadershipPlayers(db) {
       const controllerId = String(row.player_controller_id || "");
       const actorId = String(row.actor_id || "");
       const accountId = String(row.account_id || "");
+      const flsId = String(row.fls_id || "");
+      const funcomId = String(row.funcom_id || "");
+      const actionPlayerId = String(row.action_player_id || flsId || funcomId || actorId);
       return {
+        playerId: actionPlayerId,
+        actionPlayerId,
         actorId,
         controllerId,
         accountId,
+        flsId,
+        funcomId,
         name: row.character_name || `Player ${actorId}`,
         level: levels.get(controllerId) || levels.get(actorId) || 0,
         faction: factions.get(controllerId) || factions.get(actorId) || "Unassigned",
@@ -1916,6 +1923,53 @@ export async function addonLeadershipPlayers(db) {
         lastSeen: row.last_seen || ""
       };
     })
+  };
+}
+
+// Stable, typed progression surface for addons. Keep unsupported categories
+// explicit instead of inviting third-party SQL to guess at a changing Funcom
+// schema or treating Codex discovery as achievement/exploration progress.
+export async function addonPlayerProgression(db, id, journeyTagsData = {}) {
+  const resolvedPlayer = await resolvePlayerTargetCached(db, id);
+  const actorId = resolvedPlayer.actorId;
+  const safe = (promise, capability, reason) => promise.catch((error) => ({
+    capabilities: { [capability]: false },
+    reason: String(error?.message || reason)
+  }));
+  const [progression, factions, journey] = await Promise.all([
+    safe(playerProgression(db, actorId), "progression", "Player progression is unavailable."),
+    safe(playerFactions(db, actorId, journeyTagsData), "factions", "Faction progression is unavailable."),
+    safe(playerJourney(db, actorId, journeyTagsData), "journey", "Story and side-quest progression is unavailable.")
+  ]);
+  const player = progression.player || factions.player || journey.player || resolvedPlayer;
+  return {
+    player,
+    capabilities: {
+      level: Boolean(progression.capabilities?.progression),
+      faction: Boolean(factions.capabilities?.factions),
+      story: Boolean(journey.capabilities?.journey),
+      sideQuests: Boolean(journey.capabilities?.journey),
+      exploration: false,
+      achievements: false
+    },
+    level: progression.capabilities?.progression ? {
+      level: Number(progression.level || 0),
+      xp: Number(progression.xp || 0),
+      totalSkillPoints: Number(progression.totalSkillPoints || 0),
+      unspentSkillPoints: Number(progression.unspentSkillPoints || 0)
+    } : null,
+    faction: factions.capabilities?.factions ? factions.rows || [] : [],
+    story: journey.capabilities?.journey ? journey.rows?.story || [] : [],
+    sideQuests: journey.capabilities?.journey ? journey.rows?.contract || [] : [],
+    unsupported: {
+      exploration: "The current game database has no verified exploration-progress source.",
+      achievements: "The current game database has no verified achievement-progress source."
+    },
+    reasons: {
+      level: progression.reason || "",
+      faction: factions.reason || "",
+      story: journey.reason || ""
+    }
   };
 }
 
@@ -3744,11 +3798,13 @@ const RESOURCE_FIELD_PARTITION_JOIN = `
       and wp.dimension_index = rfs.dimension_index`;
 
 // Currently-active spice fields of any size for the live map's "Active
-// Spice Blows" layer. resourcefield_state's field_kind_id column is gone
-// (dropped in the same game update that reshaped dune.markers, confirmed
-// live) -- spice and flour sand are the only two kinds this table ever
-// held, and flour sand's value_remaining never leaves its single fixed
-// tier (60,000, see liveMapFlourSandFieldRows below), so "not exactly
+// Spice Blows" layer. resourcefield_state's field_kind_id column is gone on
+// updated servers (dropped in the same game update that reshaped
+// dune.markers, confirmed live) -- columnsFor probes for it so this still
+// works unmodified against an older, not-yet-updated schema that still has
+// it. Once it's gone, spice and flour sand are the only two kinds this
+// table ever held, and flour sand's value_remaining never leaves its single
+// fixed tier (60,000, see liveMapFlourSandFieldRows below), so "not exactly
 // 60,000" is the correct complement rather than an inexact tier-membership
 // list. value_remaining tiers are 5,000/150,000/2,500,000 for
 // Small/Medium/Large -- `size` is computed by threshold (not exact match),
@@ -3762,6 +3818,8 @@ export async function liveMapSpiceFieldRows(db, map = "") {
   if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
     return unsupportedMap("spiceActive", ["dune.resourcefield_state", "dune.world_partition"]);
   }
+  const hasKindColumn = (await columnsFor(db, "resourcefield_state")).has("field_kind_id");
+  const spiceFilter = hasKindColumn ? "rfs.field_kind_id = 1" : "rfs.value_remaining <> 60000";
   const values = [];
   const where = mapFilterClause(map, values, "rfs");
   const result = await db.query(`
@@ -3776,7 +3834,7 @@ export async function liveMapSpiceFieldRows(db, map = "") {
            end as size
     from dune.resourcefield_state rfs
     ${RESOURCE_FIELD_PARTITION_JOIN}
-    where rfs.value_remaining <> 60000 ${where}
+    where ${spiceFilter} ${where}
     order by rfs.field_id`, values);
   return {
     capabilities: { spiceActive: true },
@@ -3786,11 +3844,13 @@ export async function liveMapSpiceFieldRows(db, map = "") {
 
 // Currently-active flour sand fields -- a single fixed tier (60,000), not
 // size-classed like spice. See liveMapSpiceFieldRows above for why this is
-// filtered by that fixed value rather than the now-removed field_kind_id.
+// filtered by that fixed value once field_kind_id is gone.
 export async function liveMapFlourSandFieldRows(db, map = "") {
   if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
     return unsupportedMap("flourSand", ["dune.resourcefield_state", "dune.world_partition"]);
   }
+  const hasKindColumn = (await columnsFor(db, "resourcefield_state")).has("field_kind_id");
+  const flourFilter = hasKindColumn ? "rfs.field_kind_id = 0" : "rfs.value_remaining = 60000";
   const values = [];
   const where = mapFilterClause(map, values, "rfs");
   const result = await db.query(`
@@ -3800,7 +3860,7 @@ export async function liveMapFlourSandFieldRows(db, map = "") {
            rfs.value_remaining
     from dune.resourcefield_state rfs
     ${RESOURCE_FIELD_PARTITION_JOIN}
-    where rfs.value_remaining = 60000 ${where}
+    where ${flourFilter} ${where}
     order by rfs.field_id`, values);
   return {
     capabilities: { flourSand: true },
@@ -4191,7 +4251,7 @@ async function baseChildAccessSupported(db) {
 // A child piece set to any other level was deliberately opened wider (Public,
 // Guild) or narrowed further (Co-Owner, Owner) than that default.
 const SUB_FIEF_ACCESS_LEVEL = 3;
-const ACCESS_LEVEL_LABELS = { 1: "Public", 2: "Guild", 3: "Associate", 4: "Co-Owner", 5: "Owner" };
+const ACCESS_LEVEL_LABELS = { 1: "Owner", 2: "Co-Owner", 3: "Associate", 4: "Guild", 5: "Public" };
 
 // Categorizes a child piece for the Base Permissions tab's Type filter.
 // Deliberately its own map, not a reuse of BASE_INVENTORY_TYPES: that one
@@ -7535,15 +7595,28 @@ end`;
 // Shared by the admin Vehicles pages and the dunedocker.app player snapshot.
 // The game database always gives us a current value for fuel/durability when it
 // records one, but it does not consistently persist a corresponding maximum.
-// A stored module maximum is authoritative. Otherwise, infer a maximum only
-// when at least two non-null observations exist for the exact same template.
+// A verified known maximum is authoritative, followed by a stored module
+// maximum. Otherwise, infer a maximum only when at least two non-null
+// observations exist for the exact same template.
 // Missing current values remain unknown: they must never become 0% or 100%.
-const VEHICLE_STATUS_CTES_SQL = `module_raw as (
+// These two Mk6 Assault Ornithopter modules are a verified exception: their
+// game maximum is 2000, while damaged historical rows can contain an inflated
+// current/decayed value. Treating the largest observation as the maximum made
+// the Console preserve 3557 (178%) instead of repairing it back to 2000.
+const VEHICLE_MODULE_KNOWN_MAXIMA_SQL = `known_template_maxima(template_id, max_durability) as (
+  values
+    ('ornithoptermediumengine_6'::text, 2000::numeric),
+    ('ornithoptermediumgenerator_6'::text, 2000::numeric)
+)`;
+
+const VEHICLE_STATUS_CTES_SQL = `${VEHICLE_MODULE_KNOWN_MAXIMA_SQL}, module_raw as (
   select vm.id, vm.vehicle_id, vm.template_id,
     (vm.stats->'FVehicleModuleDurabilityStats'->1->>'CurrentDurability')::numeric own_current,
     nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0) own_decayed,
-    nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric, 0) own_max
+    nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric, 0) own_max,
+    known.max_durability known_max
   from dune.vehicle_modules vm
+  left join known_template_maxima known on known.template_id=lower(vm.template_id)
 ), module_observed as (
   select module_raw.*,
     count(own_current) over(partition by template_id)::int current_samples,
@@ -7552,10 +7625,10 @@ const VEHICLE_STATUS_CTES_SQL = `module_raw as (
 ), module_durability as (
   select id, vehicle_id, template_id,
     own_current current_durability,
-    coalesce(own_max, own_decayed,
+    coalesce(known_max, own_max, own_decayed,
       case when current_samples >= 2 then observed_max else null end) max_durability,
     case
-      when own_max is not null or own_decayed is not null then false
+      when known_max is not null or own_max is not null or own_decayed is not null then false
       when current_samples >= 2 and observed_max is not null then true
       else null
     end max_inferred
@@ -7603,6 +7676,15 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
       return { ...result, capabilities: { ...result.capabilities, vehiclePermissions: false, vehicleDelete: false, vehicleDeleteQueue: false }, totalCount: 0, totalVehicles: 0 };
     }
   }
+
+  // actor_state is absent from some older schemas, so keep it optional. When
+  // present it is the authoritative explanation for vehicle rows that are not
+  // currently deployed in a world partition (Travel / VehicleBackup /
+  // VehicleRecovery). Without this, the UI used to invent "Partition 0" for
+  // a NULL partition and make Funcom's stored recovery records look spawned.
+  const vehicleLifecycleStateSql = await tableExists(db, "actor_state")
+    ? `coalesce((select ast.state::text from dune.actor_state ast where ast.actor_id=v.id limit 1), 'Default')`
+    : `'Default'::text`;
 
   const safePageSize = intParam(pageSize, "pageSize", 1, 200);
   const safePage = intParam(page, "page", 0);
@@ -7660,7 +7742,8 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
           ${VEHICLE_TYPE_SQL} as type,
           ${VEHICLE_CUSTOM_NAME_SQL} as clean_name,
           coalesce(a.map, '') as map,
-          coalesce(a.partition_id, 0)::int as partition_id,
+          a.partition_id::int as partition_id,
+          ${vehicleLifecycleStateSql} as lifecycle_state,
           a.transform,
           a.owner_account_id
         from dune.vehicles v
@@ -7682,6 +7765,7 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
             greatest(0, least(100, floor(100 * fuel.current_fuel / nullif(cap.max_fuel, 0))))::int
           else null end fuel_percent,
           vc.map, vc.partition_id,
+          vc.lifecycle_state,
           ((vc.transform).location).x::numeric x,
           ((vc.transform).location).y::numeric y,
           ((vc.transform).location).z::numeric z,
@@ -7714,7 +7798,7 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
         left join fuel_capacity cap on cap.generator_template=fuel.generator_template
         left join module_durability md on md.vehicle_id=vc.id
         ${filterClause}
-        group by vc.id, vc.type, vc.clean_name, vc.map, vc.partition_id, vc.transform,
+        group by vc.id, vc.type, vc.clean_name, vc.map, vc.partition_id, vc.lifecycle_state, vc.transform,
           vc.owner_account_id, own.owner, ${player ? "viewer.rank," : ""} fuel.current_fuel, cap.max_fuel, cap.fuel_samples
       ), totals as (
         select count(*)::int as total_count from matched
@@ -8316,7 +8400,7 @@ export async function portalVehicles(db, playerIds) {
       case when capacity.fuel_samples >= 2 then
         greatest(0, least(100, floor(100 * fuel.current_fuel / nullif(capacity.max_fuel, 0))))::int
       else null end fuel_percent,
-      coalesce(a.map, '') map, coalesce(a.partition_id, 0)::int partition_id,
+      coalesce(a.map, '') map, a.partition_id::int partition_id,
       ((a.transform).location).x::numeric x,
       ((a.transform).location).y::numeric y,
       ((a.transform).location).z::numeric z,
@@ -13179,12 +13263,13 @@ export async function repairGear(db, id) {
 }
 
 // Vehicle-module rows in current dedicated-server databases commonly omit
-// MaxDurability altogether. Prefer any authoritative stored maximum for the
-// exact template; otherwise infer a conservative cap only when at least two
-// modules of that template provide a positive current or decayed-cap sample.
+// MaxDurability altogether. Prefer a verified game maximum, then a stored
+// maximum for the exact module; otherwise infer a conservative cap only when
+// at least two modules of that template provide a positive current or
+// decayed-cap sample.
 // Both repair queries use this CTE so their eligibility and reported counts
 // cannot disagree.
-const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
+const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `${VEHICLE_MODULE_KNOWN_MAXIMA_SQL}, module_samples as (
   select vm.template_id,
          case
            when (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
@@ -13197,8 +13282,10 @@ const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
          case
            when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
              then nullif((durability->>'MaxDurability')::numeric, 0)
-         end as stored_max_durability
+         end as stored_max_durability,
+         known.max_durability as known_max_durability
   from dune.vehicle_modules vm
+  left join known_template_maxima known on known.template_id=lower(vm.template_id)
   cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
   where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
     and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
@@ -13206,6 +13293,7 @@ const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
 ), template_maxima as (
   select template_id,
          coalesce(
+           max(known_max_durability),
            max(stored_max_durability),
            case
              when count(*) filter (
@@ -13213,9 +13301,19 @@ const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
              ) >= 2
                then greatest(max(current_durability), max(decayed_max_durability))
            end
-         ) as max_durability
+         ) as max_durability,
+         max(known_max_durability) as known_max_durability
   from module_samples
   group by template_id
+)`;
+
+const VEHICLE_REPAIR_EFFECTIVE_MAX_SQL = `coalesce(
+  tm.known_max_durability,
+  case
+    when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+      then nullif((durability->>'MaxDurability')::numeric, 0)
+  end,
+  tm.max_durability
 )`;
 
 function vehicleRepairThreshold(value) {
@@ -13266,20 +13364,14 @@ export async function inspectVehicleDecayRepair(db, id, { thresholdPercent = 50 
         and jsonb_typeof(durability) = 'object'
         and durability ? 'CurrentDurability'
         and (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-        and coalesce(
-              case
-                when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                  then nullif((durability->>'MaxDurability')::numeric, 0)
-              end,
-              tm.max_durability
-            ) > 0
-        and (durability->>'CurrentDurability')::numeric < (coalesce(
-              case
-                when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                  then nullif((durability->>'MaxDurability')::numeric, 0)
-              end,
-              tm.max_durability
-            ) * $${thresholdParam})
+        and ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} > 0
+        and (
+          (durability->>'CurrentDurability')::numeric < (${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} * $${thresholdParam})
+          or (
+            tm.known_max_durability is not null
+            and (durability->>'CurrentDurability')::numeric > ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL}
+          )
+        )
     )
     select e.partition_id,
            min(e.actor_map) as actor_map,
@@ -13337,6 +13429,7 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
         select vm.vehicle_id,
                vm.stats->'FVehicleModuleDurabilityStats'->1 as durability,
                coalesce(
+                 tm.known_max_durability,
                  case
                    when (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
                      then nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric, 0)
@@ -13376,13 +13469,7 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
       with ${VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE}, eligible as (
         select vm.id,
                vm.vehicle_id,
-               coalesce(
-                 case
-                   when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                     then nullif((durability->>'MaxDurability')::numeric, 0)
-                 end,
-                 tm.max_durability
-               ) as max_durability
+               ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} as max_durability
         from dune.vehicle_modules vm
         join dune.actors a on a.id = vm.vehicle_id
         left join template_maxima tm on tm.template_id = vm.template_id
@@ -13399,20 +13486,14 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
           and jsonb_typeof(durability) = 'object'
           and durability ? 'CurrentDurability'
           and (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-          and coalesce(
-                case
-                  when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                    then nullif((durability->>'MaxDurability')::numeric, 0)
-                end,
-                tm.max_durability
-              ) > 0
-          and (durability->>'CurrentDurability')::numeric < (coalesce(
-                case
-                  when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                    then nullif((durability->>'MaxDurability')::numeric, 0)
-                end,
-                tm.max_durability
-              ) * $${thresholdParam})
+          and ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} > 0
+          and (
+            (durability->>'CurrentDurability')::numeric < (${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} * $${thresholdParam})
+            or (
+              tm.known_max_durability is not null
+              and (durability->>'CurrentDurability')::numeric > ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL}
+            )
+          )
       )
       update dune.vehicle_modules vm
       set stats = case
@@ -14409,17 +14490,22 @@ function emptyActivitySummary() {
 }
 
 // field_kind_id filters below use "<> 60000" rather than the dropped
-// field_kind_id column -- see liveMapSpiceFieldRows's comment for why that's
-// the correct complement (flour sand is the only other kind, and it never
-// leaves its single fixed 60,000 tier).
+// field_kind_id column -- see liveMapSpiceFieldRows's comment for why
+// value_remaining <> 60000 is the correct complement once it's gone (flour
+// sand is the only other kind, and it never leaves its single fixed 60,000
+// tier). columnsFor probes for the column so this still works unmodified
+// against an older, not-yet-updated schema that still has it.
 export async function addonOpsResourcesSummary(db) {
   if (!(await tableExists(db, "resourcefield_state"))) return emptyResourcesSummary();
+  const resourceColumns = await columnsFor(db, "resourcefield_state");
+  const spiceFilter = resourceColumns.has("field_kind_id") ? "where field_kind_id = 1" : "where value_remaining <> 60000";
+  const correlatedSpiceFilter = resourceColumns.has("field_kind_id") ? "and rfs.field_kind_id = 1" : "and rfs.value_remaining <> 60000";
 
   const result = await db.query(`
     select count(*)::int as total_fields,
            coalesce(sum(value_remaining), 0)::bigint as total_value
     from dune.resourcefield_state
-    where value_remaining <> 60000`);
+    ${spiceFilter}`);
 
   const r = result.rows?.[0] || {};
 
@@ -14430,7 +14516,7 @@ export async function addonOpsResourcesSummary(db) {
                count(*)::int as fields,
                coalesce(sum(value_remaining), 0)::bigint as total_value
         from dune.resourcefield_state
-        where value_remaining <> 60000
+        ${spiceFilter}
         group by map
         order by fields desc`);
     resourcesByMap = mapResult.rows || [];
@@ -14447,10 +14533,10 @@ export async function addonOpsResourcesSummary(db) {
                coalesce(sum(sft.max_globally_active), 0)::int as max_active,
                (select coalesce(sum(value_remaining), 0)::bigint
                 from dune.resourcefield_state rfs
-                where rfs.map = sft.map_name and rfs.value_remaining <> 60000) as total_value,
+                where rfs.map = sft.map_name ${correlatedSpiceFilter}) as total_value,
                (select count(*)::int
                 from dune.resourcefield_state rfs
-                where rfs.map = sft.map_name and rfs.value_remaining <> 60000) as active_fields
+                where rfs.map = sft.map_name ${correlatedSpiceFilter}) as active_fields
         from dune.spicefield_types sft
         where sft.is_spawning_active = true
         group by sft.field_type, sft.map_name
