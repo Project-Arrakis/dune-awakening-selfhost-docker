@@ -276,6 +276,9 @@ export function UpdatesPanel({
   useEffect(() => {
     if (!gameUpdateTask || isTerminalTask(gameUpdateTask.status)) {
       persistUpdateTask(GAME_UPDATE_TASK_KEY, gameUpdateTask);
+      if (gameUpdateTask?.status === "failed" || gameUpdateTask?.status === "cancelled") {
+        setGameStatus((current) => gameUpdateTerminalStatus(gameUpdateTask, current));
+      }
       return;
     }
     let cancelled = false;
@@ -620,6 +623,16 @@ function summarizeGameUpdateProgress(task: Task) {
     return { title: "Updating", percent: Math.max(42, gameUpdatePercent(text)), message: `Downloading server files with SteamCMD. Attempt ${attemptMatch[1]} of ${attemptMatch[2]}.` };
   }
   return { title: "Updating", percent: gameUpdatePercent(text), message: friendlyGameUpdateMessage(text, latestLine) };
+}
+
+export function gameUpdateTerminalStatus(task: Task, previous: Record<string, string> = {}) {
+  if (task.status === "failed") {
+    return { ...previous, status: "Update Failed", reason: conciseTaskError(task) };
+  }
+  if (task.status === "cancelled") {
+    return { ...previous, status: "Update Cancelled", reason: task.errorMessage || "The game update was cancelled." };
+  }
+  return previous;
 }
 
 function isSteamcmdUpdateActive(text: string) {

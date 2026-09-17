@@ -14479,12 +14479,15 @@ function emptyActivitySummary() {
 
 export async function addonOpsResourcesSummary(db) {
   if (!(await tableExists(db, "resourcefield_state"))) return emptyResourcesSummary();
+  const resourceColumns = await columnsFor(db, "resourcefield_state");
+  const spiceFilter = resourceColumns.has("field_kind_id") ? "where field_kind_id = 1" : "";
+  const correlatedSpiceFilter = resourceColumns.has("field_kind_id") ? "and rfs.field_kind_id = 1" : "";
 
   const result = await db.query(`
     select count(*)::int as total_fields,
            coalesce(sum(value_remaining), 0)::bigint as total_value
     from dune.resourcefield_state
-    where field_kind_id = 1`);
+    ${spiceFilter}`);
 
   const r = result.rows?.[0] || {};
 
@@ -14495,7 +14498,7 @@ export async function addonOpsResourcesSummary(db) {
                count(*)::int as fields,
                coalesce(sum(value_remaining), 0)::bigint as total_value
         from dune.resourcefield_state
-        where field_kind_id = 1
+        ${spiceFilter}
         group by map
         order by fields desc`);
     resourcesByMap = mapResult.rows || [];
@@ -14512,10 +14515,10 @@ export async function addonOpsResourcesSummary(db) {
                coalesce(sum(sft.max_globally_active), 0)::int as max_active,
                (select coalesce(sum(value_remaining), 0)::bigint
                 from dune.resourcefield_state rfs
-                where rfs.map = sft.map_name and rfs.field_kind_id = 1) as total_value,
+                where rfs.map = sft.map_name ${correlatedSpiceFilter}) as total_value,
                (select count(*)::int
                 from dune.resourcefield_state rfs
-                where rfs.map = sft.map_name and rfs.field_kind_id = 1) as active_fields
+                where rfs.map = sft.map_name ${correlatedSpiceFilter}) as active_fields
         from dune.spicefield_types sft
         where sft.is_spawning_active = true
         group by sft.field_type, sft.map_name

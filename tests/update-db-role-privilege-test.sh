@@ -12,14 +12,19 @@ run_case() {
   local updater_exit_code="$3"
   local expected_script_exit="$4"
   local stale_marker="${5:-0}"
+  local updater_log="${6:-}"
+  local initial_market_trigger="${7:-absent}"
   local bin_dir="$tmp_dir/$name/bin"
   local docker_log="$tmp_dir/$name/docker.log"
   local output="$tmp_dir/$name/output.log"
   local role_state="$tmp_dir/$name/role-state"
   local role_marker="$tmp_dir/$name/role-elevated"
+  local market_trigger_state="$tmp_dir/$name/market-trigger-state"
+  local external_trigger_marker="$tmp_dir/$name/external-triggers.sql"
 
   mkdir -p "$bin_dir"
   printf '%s\n' "$initial_superuser" > "$role_state"
+  printf '%s\n' "$initial_market_trigger" > "$market_trigger_state"
   [ "$stale_marker" != "1" ] || : > "$role_marker"
   cat > "$bin_dir/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -29,6 +34,26 @@ printf '%s\n' "$*" >> "$MOCK_DOCKER_LOG"
 
 if [ "${1:-}" = "exec" ] && [[ "$*" == *"SELECT rolsuper FROM pg_roles"* ]]; then
   cat "$MOCK_ROLE_STATE"
+  exit 0
+fi
+
+if [ "${1:-}" = "exec" ] && [[ "$*" == *"pg_get_triggerdef"* ]]; then
+  if [ "$(cat "$MOCK_MARKET_TRIGGER_STATE")" = "present" ]; then
+    printf '%s\n' 'CREATE TRIGGER console_market_history_capture AFTER INSERT OR UPDATE OF stack_size ON dune.dune_exchange_fulfilled_orders FOR EACH ROW EXECUTE FUNCTION console_market_history.capture_fulfilled_order()'
+  fi
+  exit 0
+fi
+
+if [ "${1:-}" = "exec" ] && [[ "$*" == *"DROP TRIGGER %I ON %I.%I"* ]]; then
+  printf '%s\n' absent > "$MOCK_MARKET_TRIGGER_STATE"
+  exit 0
+fi
+
+if [ "${1:-}" = "exec" ] && [ "${2:-}" = "-i" ]; then
+  stdin="$(cat)"
+  if [[ "$stdin" == *"CREATE TRIGGER console_market_history_capture"* ]]; then
+    printf '%s\n' present > "$MOCK_MARKET_TRIGGER_STATE"
+  fi
   exit 0
 fi
 
@@ -44,6 +69,11 @@ fi
 
 if [ "${1:-}" = "run" ]; then
   printf '%s\n' mock-update-container
+  exit 0
+fi
+
+if [ "${1:-}" = "logs" ]; then
+  printf '%s\n' "$MOCK_UPDATER_LOG"
   exit 0
 fi
 
@@ -69,8 +99,11 @@ EOF
   PATH="$bin_dir:$PATH" \
     MOCK_DOCKER_LOG="$docker_log" \
     MOCK_ROLE_STATE="$role_state" \
+    MOCK_MARKET_TRIGGER_STATE="$market_trigger_state" \
     MOCK_UPDATER_EXIT_CODE="$updater_exit_code" \
+    MOCK_UPDATER_LOG="$updater_log" \
     DUNE_DB_UPDATE_ROLE_MARKER="$role_marker" \
+    DUNE_DB_UPDATE_EXTERNAL_TRIGGER_MARKER="$external_trigger_marker" \
     DUNE_DB_BACKUP_ON_ORPHAN_DETECT=0 \
     runtime/scripts/update-db.sh >"$output" 2>&1
   local actual_script_exit=$?
@@ -80,6 +113,10 @@ EOF
     echo "FAIL $name: expected exit $expected_script_exit, got $actual_script_exit"
     cat "$output"
     exit 1
+  fi
+
+  if [ -n "$updater_log" ]; then
+    grep -Fq "$updater_log" "$output"
   fi
 
   if [ "$updater_exit_code" = "0" ]; then
@@ -106,6 +143,16 @@ EOF
     exit 1
   fi
 
+  if [ -e "$external_trigger_marker" ]; then
+    echo "FAIL $name: updater left its external-trigger marker behind"
+    exit 1
+  fi
+
+  if [ "$(cat "$market_trigger_state")" != "$initial_market_trigger" ]; then
+    echo "FAIL $name: market-history trigger state was not restored"
+    exit 1
+  fi
+
   local expected_role_state="$initial_superuser"
   [ "$stale_marker" != "1" ] || expected_role_state=f
   if [ "$(cat "$role_state")" != "$expected_role_state" ]; then
@@ -117,6 +164,8 @@ EOF
 }
 
 run_case success-restores-role f 0 0
-run_case failure-restores-role f 128 1
+run_case failure-restores-role f 128 1 0 'ERROR preserved updater failure detail'
 run_case existing-superuser-unchanged t 0 0
 run_case interrupted-update-recovers-role t 0 0 1
+run_case market-trigger-restored-after-success f 0 0 0 '' present
+run_case market-trigger-restored-after-failure f 128 1 0 'ERROR migration failed' present
