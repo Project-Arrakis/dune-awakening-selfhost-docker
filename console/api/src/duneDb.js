@@ -1036,7 +1036,7 @@ async function syncChangedFactionReputation(db, before, after) {
 async function supportsTutorialLiveRefresh(db) {
   try {
     return await tableExists(db, "tutorial_per_player") &&
-      await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)");
+      Boolean(await tutorialEntryStateType(db));
   } catch {
     return false;
   }
@@ -1050,7 +1050,7 @@ async function tutorialSnapshot(db) {
   return new Map(result.rows.map((row) => [`${row.player_id}:${row.tutorial_id}`, {
     playerId: String(row.player_id),
     tutorialId: Number(row.tutorial_id),
-    state: Number(row.tutorial_state || 0)
+    state: tutorialStateToLegacyNumber(row.tutorial_state) ?? 0
   }]));
 }
 
@@ -1058,7 +1058,7 @@ async function syncChangedTutorials(db, before, after) {
   for (const [key, next] of after) {
     const previous = before.get(key);
     if (previous && previous.state === next.state) continue;
-    await db.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, $3::smallint)", [next.playerId, next.tutorialId, next.state]);
+    await writeTutorialEntry(db, next.playerId, next.tutorialId, next.state);
   }
 }
 
@@ -2548,6 +2548,38 @@ async function journeyIdentitySchema(db) {
 function playerJourneyIdentity(player, columnName) {
   if (columnName === "character_id") return player.playerStateId;
   return player.accountId;
+}
+
+// A later game build replaced tutorial_per_player.tutorial_state's smallint
+// column with a dune.tutorialstate enum (Active/Revealed/Completed/Canceled/
+// None), and create_or_update_tutorial_entry's third parameter changed to
+// match. Both generations are live across deployments, so every read and
+// write goes through these two helpers instead of assuming one shape.
+const TUTORIAL_STATE_ENUM_LABELS = { 0: "None", 1: "Revealed", 2: "Completed" };
+
+function tutorialStateToLegacyNumber(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return value;
+  const text = String(value);
+  if (/^-?\d+$/.test(text)) return Number(text);
+  if (text === "Completed") return 2;
+  if (text === "Revealed" || text === "Active") return 1;
+  return 0;
+}
+
+async function tutorialEntryStateType(db) {
+  if (await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,dune.tutorialstate)")) return "enum";
+  if (await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)")) return "smallint";
+  return null;
+}
+
+async function writeTutorialEntry(db, playerId, tutorialId, legacyState) {
+  if (await tutorialEntryStateType(db) === "enum") {
+    const label = TUTORIAL_STATE_ENUM_LABELS[legacyState] || "None";
+    await db.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, $3::dune.tutorialstate)", [playerId, tutorialId, label]);
+    return;
+  }
+  await db.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, $3::smallint)", [playerId, tutorialId, legacyState]);
 }
 
 async function playerLastSeenSelect(db) {
@@ -7513,18 +7545,21 @@ export async function playerJourney(db, id, journeyTagsData = {}) {
   ].sort((a, b) => a.rawName.localeCompare(b.rawName));
   const codexIds = codex.rows.map((row) => row.story_node_id).filter(Boolean);
   const codexRows = codexIds.map((nodeId) => journeyNodeRow(nodeId, "Codex", state, {}, codexIds, journeyAliases));
-  const tutorial = tutorialRows.rows.map((row) => ({
-    id: String(row.id),
-    name: journeyDisplayName(row.name),
-    rawName: String(row.name || ""),
-    category: "Tutorial",
-    depth: 0,
-    parentId: "",
-    status: tutorialStatus(row.tutorial_state),
-    complete: Number(row.tutorial_state) === 2,
-    state: row.tutorial_state === null || row.tutorial_state === undefined ? null : Number(row.tutorial_state),
-    tags: 0
-  }));
+  const tutorial = tutorialRows.rows.map((row) => {
+    const legacyState = tutorialStateToLegacyNumber(row.tutorial_state);
+    return {
+      id: String(row.id),
+      name: journeyDisplayName(row.name),
+      rawName: String(row.name || ""),
+      category: "Tutorial",
+      depth: 0,
+      parentId: "",
+      status: tutorialStatus(legacyState),
+      complete: legacyState === 2,
+      state: legacyState,
+      tags: 0
+    };
+  });
   return { capabilities: { journey: true }, player, rows: { story: storyRows, contract: contractRows, codex: codexRows, tutorial } };
 }
 
@@ -9292,7 +9327,7 @@ export async function completeTutorial(db, id, { tutorialId }) {
     const player = await resolvePlayerMutationTarget(tx, id);
     const known = await tx.query("select exists (select 1 from dune.tutorials where id = $1) as exists", [safeTutorialId]);
     if (!known.rows[0]?.exists) throw new Error(`Tutorial ${safeTutorialId} was not found in the game database.`);
-    await tx.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, 2::smallint)", [player.controllerId, safeTutorialId]);
+    await writeTutorialEntry(tx, player.controllerId, safeTutorialId, 2);
     return { ok: true, player, tutorialId: safeTutorialId, state: 2 };
   });
 }
@@ -14162,7 +14197,7 @@ async function supportsJourneySchema(db, schema) {
 async function supportsTutorials(db) {
   return await tableExists(db, "tutorials") &&
     await tableExists(db, "tutorial_per_player") &&
-    await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)");
+    Boolean(await tutorialEntryStateType(db));
 }
 
 function journeyGroup(nodeId) {

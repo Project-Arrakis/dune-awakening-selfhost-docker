@@ -644,6 +644,11 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   async function playerAdmin_completeJourney(row: JourneyRow) {
     const key = `journey:${row.category}:${row.id}`;
     onError("");
+    if (!(await confirmAction(`Mark "${row.name}" complete for ${playerName}? The player must be fully offline; the change takes effect on the next login.`, {
+      title: "Complete Journey Node",
+      confirmLabel: "Complete",
+      details: [{ label: "Player", value: playerName, tone: "accent" }, { label: "Node", value: row.name }]
+    }))) return;
     playerAdmin_showResult(key, `Completing ${row.name} for ${playerName}`, "neutral", true);
     try {
       const response = row.category === "Tutorial"
@@ -662,6 +667,12 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   async function playerAdmin_resetJourney(row: JourneyRow) {
     const key = `journey:${row.category}:${row.id}`;
     onError("");
+    if (!(await confirmAction(`Reset "${row.name}" for ${playerName}? The player must be fully offline. Rewards already granted are kept, and a consumed Contract item cannot be recreated.`, {
+      title: "Reset Journey Node",
+      confirmLabel: "Reset",
+      danger: true,
+      details: [{ label: "Player", value: playerName, tone: "accent" }, { label: "Node", value: row.name, tone: "danger" }]
+    }))) return;
     playerAdmin_showResult(key, `Resetting ${row.name} for ${playerName}`, "neutral", true);
     try {
       const response = row.category === "Tutorial"

@@ -8052,6 +8052,27 @@ test("journey listing groups story contract codex and tutorial rows with player 
   assert.ok(calls.some((call) => call.text.includes("from dune.tutorials")));
 });
 
+test("journey listing reads the dune.tutorialstate enum label on a newer game build", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    tutorialRows: [
+      { id: 7, name: "AttackTutorial", tutorial_state: "Completed" },
+      { id: 8, name: "MoveTutorial", tutorial_state: "Revealed" },
+      { id: 9, name: "BuildTutorial", tutorial_state: null }
+    ]
+  });
+  const result = await playerJourney(db, 123, { journey_node_tags: {} });
+  const [completed, revealed, notStarted] = result.rows.tutorial;
+  assert.equal(completed.status, "Complete");
+  assert.equal(completed.complete, true);
+  assert.equal(completed.state, 2);
+  assert.equal(revealed.status, "Started");
+  assert.equal(revealed.complete, false);
+  assert.equal(revealed.state, 1);
+  assert.equal(notStarted.status, "Not Started");
+  assert.equal(notStarted.state, null);
+});
+
 test("journey listing includes faction contract aliases from game data", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
@@ -8191,6 +8212,32 @@ test("tutorial complete and reset use player controller tutorial records", async
   const reset = await resetTutorial(resetDb, 123, { tutorialId: 7 });
   assert.equal(reset.deletedRows, 1);
   assert.ok(resetCalls.some((call) => call.text.includes("delete from dune.tutorial_per_player") && call.values[0] === 55 && call.values[1] === 7));
+});
+
+test("tutorial completion writes the enum label on a build with dune.tutorialstate", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { tutorialExists: true, tutorialEntryProc: "enum" });
+  const complete = await completeTutorial(db, 123, { tutorialId: 7 });
+  assert.equal(complete.state, 2);
+  const write = calls.find((call) => call.text.includes("create_or_update_tutorial_entry"));
+  assert.ok(write.text.includes("dune.tutorialstate"));
+  assert.deepEqual(write.values, [55, 7, "Completed"]);
+});
+
+test("tutorial completion writes the legacy smallint on a build without dune.tutorialstate", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { tutorialExists: true, tutorialEntryProc: "smallint" });
+  const complete = await completeTutorial(db, 123, { tutorialId: 7 });
+  assert.equal(complete.state, 2);
+  const write = calls.find((call) => call.text.includes("create_or_update_tutorial_entry"));
+  assert.ok(!write.text.includes("dune.tutorialstate"));
+  assert.deepEqual(write.values, [55, 7, 2]);
+});
+
+test("tutorial completion is unavailable when neither create_or_update_tutorial_entry signature matches", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { tutorialExists: true, tutorialEntryProc: "none" });
+  await assert.rejects(() => completeTutorial(db, 123, { tutorialId: 7 }), UnsupportedCapabilityError);
 });
 
 
@@ -8443,7 +8490,15 @@ function fakeMutationDb(calls, fixtures = {}) {
     async query(text, values = []) {
       calls.push({ text, values });
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
-      if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regprocedure")) {
+        const signature = String(values[0] || "");
+        if (signature.includes("create_or_update_tutorial_entry")) {
+          const mode = fixtures.tutorialEntryProc || "enum";
+          const isEnumSignature = signature.includes("dune.tutorialstate");
+          return { rows: [{ exists: mode === "none" ? false : mode === (isEnumSignature ? "enum" : "smallint") }] };
+        }
+        return { rows: [{ exists: true }] };
+      }
       if (text.includes("information_schema.columns")) {
         const table = values[1];
         const names = table === "inventories"
