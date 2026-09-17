@@ -616,7 +616,7 @@ async function handleApi(req, res) {
       return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
     }
     const body = await readJson(req);
-    if (!config.authDisabled && !auth.passwordMatches(body.password)) {
+    if (!config.authDisabled && !(await auth.passwordMatches(body.password))) {
       loginRateLimiter.recordFailure(rateKey);
       return json(res, 401, { error: "Incorrect password. Please try again!" });
     }
@@ -2208,7 +2208,7 @@ async function adminPasswordRoute(req, res) {
   const body = await readJson(req);
   if (config.authDisabled) return json(res, 400, { error: "Login password changes are unavailable while admin authentication is disabled." });
   if (config.adminPasswordEnvManaged) return json(res, 400, { error: "The login password is managed by ADMIN_PASSWORD. Update the environment value instead." });
-  if (!auth.passwordMatches(body.currentPassword)) return json(res, 400, { error: "Current password is incorrect." });
+  if (!(await auth.passwordMatches(body.currentPassword))) return json(res, 400, { error: "Current password is incorrect." });
   const password = validateAdminPassword(body.newPassword);
   writeFileSync(config.adminPasswordFile, `${password}\n`, { mode: 0o600 });
   try {

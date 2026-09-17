@@ -56,7 +56,7 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
     }
   }
   const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
-  if (isSessionAuthFailure(response.status, String(record.error || ""))) {
+  if (isSessionAuthFailure(response.status, String(record.error || ""), path)) {
     if (response.status === 403 && !csrfRetried && await refreshCsrfToken()) {
       return apiRequest<T>(path, options, true);
     }
@@ -68,7 +68,10 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
   return data as T;
 }
 
-function isSessionAuthFailure(status: number, message: string) {
+function isSessionAuthFailure(status: number, message: string, path = "") {
+  // A rejected login is not an expired session. Preserve the API's specific
+  // error so the sign-in form reports an incorrect password accurately.
+  if (path === "/api/auth/login") return false;
   return status === 401 || (status === 403 && /authentication required|csrf token|session expired|login session/i.test(message));
 }
 
