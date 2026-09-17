@@ -1305,6 +1305,10 @@ runtime/scripts/extract-partition-catalog.sh
 runtime/scripts/extract-server-catalog.sh
 echo "Generated map catalogs refreshed."
 
+echo
+echo "=== Reconcile official world partitions ==="
+runtime/scripts/reconcile-world-partitions.sh
+
 if [ "${DUNE_STORAGE_AUTO_CLEANUP:-1}" = "1" ]; then
   echo
   echo "=== Remove obsolete Dune game images ==="
