@@ -108,6 +108,11 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | POST | `/api/updates/auto-game` | Save auto-update config | `enabled`, `intervalMinutes`, `applyEnabled`, `notifyEnabled`, `notifyMinutes`, `waitUntilEmpty`, `maxWaitMinutes`, `confirmation` |
 | POST | `/api/updates/repair-runtime` | Repair runtime installation | None |
 
+Successful game checks are cached for 30 minutes in
+`runtime/generated/game-update-check.json`, including across Console restarts.
+Authenticated browser requests may pass `fresh: true` to force a live Steam
+query; API keys always use the shared cached path.
+
 ---
 
 ## Backups
