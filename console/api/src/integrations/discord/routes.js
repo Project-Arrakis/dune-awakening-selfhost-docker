@@ -49,6 +49,8 @@ import { broadcastProvider } from "./broadcastProvider.js";
 import { itemAuditLogProvider } from "./itemAuditLogProvider.js";
 import { coriolisCycleProvider } from "./coriolisProvider.js";
 import { resolveCoriolisCycle } from "../../services/coriolisSeed.js";
+import { sietchAtlasProvider } from "./atlasProvider.js";
+import { buildSietchAtlas } from "../../services/sietchAtlas.js";
 import { cheaterTrackingProvider } from "./trustVettingProvider.js";
 import { buildDuneArgs, runDockerLogs, runDune, validateServiceName } from "../../runner.js";
 import { sanitizeDiscordValue } from "./sanitize.js";
@@ -135,7 +137,8 @@ export async function handleDiscordAdapterRoute({
   commandRunner = runDune,
   dockerLogsRunner = runDockerLogs,
   announcementsProvider = readPlayerAnnouncements,
-  coriolisCycleResolver = resolveCoriolisCycle
+  coriolisCycleResolver = resolveCoriolisCycle,
+  sietchAtlasBuilder = buildSietchAtlas
 }) {
   const safeStatusProvider = typeof statusProvider === "function" ? statusProvider : () => discordStatusProvider(config);
   const safeReadinessProvider = typeof readinessProvider === "function" ? readinessProvider : () => discordReadinessProvider(config);
@@ -318,6 +321,15 @@ export async function handleDiscordAdapterRoute({
       const actor = validateDiscordActor(body.actor);
       requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.CORIOLIS_READ);
       return json(res, 200, await coriolisCycleProvider({ resolveCycle: coriolisCycleResolver }));
+    }
+
+    // #the-atlas (mentat#376, issue #938) -- public tier, per-sietch PvP/PvE
+    // + live sandstorm status + the farm-wide Coriolis cycle.
+    if (path === DISCORD_ADAPTER_ROUTES.WORLD_ATLAS && req.method === "POST") {
+      const body = await readJsonWithActorSignature(req);
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.ATLAS_READ);
+      return json(res, 200, await sietchAtlasProvider(config, db, { buildAtlas: sietchAtlasBuilder }));
     }
 
     // Players link

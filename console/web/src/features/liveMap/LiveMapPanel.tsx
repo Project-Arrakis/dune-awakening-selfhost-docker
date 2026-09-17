@@ -181,6 +181,9 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   const layerSettingsRef = useRef<HTMLDivElement | null>(null);
   const [coriolisSeed, setCoriolisSeed] = useState("");
   const [coriolisNextCycleAt, setCoriolisNextCycleAt] = useState("");
+  // Heuristic, not a confirmed ongoing storm -- see sandstormStatus.js: neither map logs a
+  // storm-end line, so "active" just means a start line was seen within the active window.
+  const [sandstormActive, setSandstormActive] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [subtypeFilters, setSubtypeFilters] = useState<Record<string, Record<string, boolean>>>({});
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
@@ -251,6 +254,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
       setPartitions(result.partitions || []);
       setCoriolisSeed(result.coriolisSeed || "");
       setCoriolisNextCycleAt(result.coriolisNextCycleAt || "");
+      setSandstormActive(Boolean(result.sandstormActive));
       if (!partitionId) {
         const mapName = result.map?.actorMap || result.map?.key;
         const available = (result.partitions || []).filter((row) => row.map === mapName);
@@ -755,6 +759,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
             <div className="key-value-item"><span>Zoom</span><strong>{zoomDisplayPercent}%</strong></div>
             {coriolisSeed && <div className="key-value-item"><span>Coriolis Seed</span><strong>{coriolisSeedNumber(coriolisSeed)}</strong></div>}
             {coriolisNextCycleAt && <div className="key-value-item"><span>Coriolis Countdown</span><strong>{formatCoriolisCountdown(coriolisNextCycleAt, now)}</strong></div>}
+            {sandstormActive && <div className="key-value-item"><span>Storm</span><strong className="live-map-sandstorm-active">Active Storm</strong></div>}
           </div>
         </div>
       </div>

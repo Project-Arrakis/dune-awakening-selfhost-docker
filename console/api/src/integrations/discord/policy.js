@@ -7,6 +7,10 @@ export const DISCORD_CAPABILITIES = Object.freeze({
   // the server experiences the same storm at the same time) -- public tier,
   // same as STATUS_READ, not staff-gated like most other read capabilities.
   CORIOLIS_READ: "coriolis:read",
+  // ATLAS_READ (mentat#376, issue #938): per-sietch PvP/PvE and live
+  // sandstorm status are the same kind of genuinely public in-game
+  // knowledge as CORIOLIS_READ -- public tier, not staff-gated.
+  ATLAS_READ: "atlas:read",
   READINESS_READ: "readiness:read",
   SERVICES_READ: "services:read",
   POPULATION_READ: "population:read",
@@ -84,16 +88,18 @@ export const EXPERIMENTAL_READ_ONLY_CAPABILITIES = Object.freeze(
 );
 
 const CAPABILITY_BY_TIER = Object.freeze({
-  public: new Set([DISCORD_CAPABILITIES.STATUS_READ, DISCORD_CAPABILITIES.CORIOLIS_READ]),
+  public: new Set([DISCORD_CAPABILITIES.STATUS_READ, DISCORD_CAPABILITIES.CORIOLIS_READ, DISCORD_CAPABILITIES.ATLAS_READ]),
   observer: new Set([
     DISCORD_CAPABILITIES.STATUS_READ,
     DISCORD_CAPABILITIES.CORIOLIS_READ,
+    DISCORD_CAPABILITIES.ATLAS_READ,
     DISCORD_CAPABILITIES.READINESS_READ,
     DISCORD_CAPABILITIES.SERVICES_READ
   ]),
   moderator: new Set([
     DISCORD_CAPABILITIES.STATUS_READ,
     DISCORD_CAPABILITIES.CORIOLIS_READ,
+    DISCORD_CAPABILITIES.ATLAS_READ,
     DISCORD_CAPABILITIES.READINESS_READ,
     DISCORD_CAPABILITIES.SERVICES_READ,
     DISCORD_CAPABILITIES.POPULATION_READ,

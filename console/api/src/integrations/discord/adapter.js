@@ -12,6 +12,11 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   // by the general (non-Discord) /api/map/markers and /api/map/spice
   // routes, just not previously exposed to the Discord adapter.
   WORLD_CORIOLIS: "/api/integrations/discord/world/coriolis",
+  // WORLD_ATLAS (mentat#376, issue #938): public tier, per-sietch/per-Deep-
+  // Desert-instance summary (PvP/PvE, live sandstorm status, the farm-wide
+  // Coriolis cycle) -- reuses the same combat-state/Coriolis/sandstorm
+  // resolvers already used elsewhere (see services/sietchAtlas.js).
+  WORLD_ATLAS: "/api/integrations/discord/world/atlas",
   READINESS: "/api/integrations/discord/readiness",
   SERVICES: "/api/integrations/discord/services",
   POPULATION: "/api/integrations/discord/population",
@@ -112,6 +117,7 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.HEALTH,
   DISCORD_ADAPTER_ROUTES.STATUS,
   DISCORD_ADAPTER_ROUTES.WORLD_CORIOLIS,
+  DISCORD_ADAPTER_ROUTES.WORLD_ATLAS,
   DISCORD_ADAPTER_ROUTES.READINESS,
   DISCORD_ADAPTER_ROUTES.SERVICES,
   DISCORD_ADAPTER_ROUTES.POPULATION,

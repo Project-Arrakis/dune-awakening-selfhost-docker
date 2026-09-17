@@ -234,6 +234,18 @@ test("CORIOLIS_READ is granted to public tier and up", () => {
   assert.doesNotThrow(() => requireDiscordCapability(actor([]), mapping, DISCORD_CAPABILITIES.CORIOLIS_READ));
 });
 
+// ATLAS_READ (mentat#376, issue #938) is granted at public tier and up --
+// per-sietch PvP/PvE and live sandstorm status are the same kind of
+// genuinely public in-game knowledge as CORIOLIS_READ.
+test("ATLAS_READ is granted to public tier and up", () => {
+  assert.equal(discordActorCan(actor([]), mapping, DISCORD_CAPABILITIES.ATLAS_READ), true);
+  assert.equal(discordActorCan(actor(["role-player"]), mapping, DISCORD_CAPABILITIES.ATLAS_READ), true);
+  assert.equal(discordActorCan(actor(["role-moderator"]), mapping, DISCORD_CAPABILITIES.ATLAS_READ), true);
+  assert.equal(discordActorCan(actor(["role-admin"]), mapping, DISCORD_CAPABILITIES.ATLAS_READ), true);
+  assert.equal(discordActorCan(actor(["role-owner"]), mapping, DISCORD_CAPABILITIES.ATLAS_READ), true);
+  assert.doesNotThrow(() => requireDiscordCapability(actor([]), mapping, DISCORD_CAPABILITIES.ATLAS_READ));
+});
+
 // minTierForCapability() (added alongside issue #337's command catalog so
 // commandCatalog.js has a real, exported way to derive "minimum tier for
 // this capability" instead of hand-maintaining a second, parallel table

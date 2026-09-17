@@ -103,6 +103,7 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/services",
     "/api/integrations/discord/status",
     "/api/integrations/discord/version",
+    "/api/integrations/discord/world/atlas",
     "/api/integrations/discord/world/coriolis"
   ].sort());
   // ops/activity, ops/combat, ops/resources, ops/economy, ops/inventory,
@@ -242,6 +243,7 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/services",
     "/api/integrations/discord/status",
     "/api/integrations/discord/version",
+    "/api/integrations/discord/world/atlas",
     "/api/integrations/discord/world/coriolis"
   ].sort());
   // guild-character-grants/* (issue #696) is a deliberate, narrow
@@ -780,6 +782,71 @@ test("world/coriolis route is reachable at public tier and returns the resolved 
           assert.equal(body.ok, true);
           assert.equal(body.seed, "2");
           assert.equal(body.nextCycleAt, "2026-09-20T05:00:00.000Z");
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+});
+
+// #the-atlas route (mentat#376, issue #938) — public tier, per-sietch
+// PvP/PvE + live sandstorm status + the farm-wide Coriolis cycle.
+test("world/atlas route is reachable at public tier and returns the built atlas", async () => {
+  const tokenFile = "/tmp/discord-adapter-atlas-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-atlas-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-atlas-test-generated" };
+  const db = { query: async () => ({ rows: [], rowCount: 0 }) };
+  const sietchAtlasBuilder = async (passedConfig, passedDb) => {
+    assert.equal(passedConfig, testConfig);
+    assert.equal(passedDb, db);
+    return {
+      coriolisSeed: "cor-6",
+      coriolisNextCycleAt: "2026-09-22T11:00:00.000Z",
+      sietches: {
+        HaggaBasin: [{ map: "HaggaBasin", partitionId: "1", serverDisplayName: "Sietch Kadir", runtimeStatus: "RUNNING", combatState: "PVE", sandstormActive: false, sandstormLastStartAt: null }],
+        DeepDesert: []
+      }
+    };
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db, sietchAtlasBuilder });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+      const route = "/api/integrations/discord/world/atlas";
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+
+          // Public tier (no configured role at all) is authorized -- this
+          // is genuinely public in-game knowledge, not staff-gated.
+          const publicResponse = await fetch(`${base}${route}`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: JSON.stringify({ actor: actor([]) })
+          });
+          assert.equal(publicResponse.status, 200);
+          const body = await publicResponse.json();
+          assert.equal(body.ok, true);
+          assert.equal(body.coriolisSeed, "cor-6");
+          assert.equal(body.sietches.HaggaBasin.length, 1);
+          assert.equal(body.sietches.HaggaBasin[0].combatState, "PVE");
+          assert.deepEqual(body.sietches.DeepDesert, []);
 
           server.close();
           resolve();

@@ -50,6 +50,7 @@ import * as restartQueue from "./services/restartQueue.js";
 import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 import { liveMapSpice } from "./services/liveMapSpice.js";
 import { liveMapPoi } from "./services/liveMapPoi.js";
+import { resolveSandstormStatus } from "./services/sandstormStatus.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
 import { createZipArchive } from "./services/zipArchive.js";
@@ -2448,11 +2449,17 @@ async function liveMapMarkersRoute(res, url) {
     const activeMap = configPayload.map.actorMap || configPayload.map.key;
     const partitionId = url.searchParams.get("partitionId") || "";
     const includeStatic = url.searchParams.get("static") !== "0";
-    const [markers, partitions, spice, poi] = await Promise.all([
+    const [markers, partitions, spice, poi, sandstorm] = await Promise.all([
       duneDb.liveMapMarkers(db, activeMap),
       duneDb.liveMapPartitions(db).catch(() => ({ rows: [] })),
       liveMapSpice(db, config, activeMap, { partitionId, includeStaticPool: includeStatic }).catch(() => ({ capabilities: { ...(includeStatic ? { spice: false } : {}), spice_active: false, flour_sand: false }, rows: [] })),
-      includeStatic ? liveMapPoi(db, activeMap).catch(() => ({ capabilities: {}, rows: [] })) : Promise.resolve({ capabilities: {}, rows: [] })
+      includeStatic ? liveMapPoi(db, activeMap).catch(() => ({ capabilities: {}, rows: [] })) : Promise.resolve({ capabilities: {}, rows: [] }),
+      // Unlike the Coriolis seed/cycle (farm-wide, any container answers the
+      // same value), a sandstorm's active status is genuinely per-partition
+      // -- no partitionId selected ("All Partitions") means no single
+      // container to ask, so this deliberately reports inactive rather than
+      // guessing at a default one.
+      resolveSandstormStatus({ map: activeMap, partitionId }).catch(() => ({ active: false, lastStartAt: null }))
     ]);
     return {
       ...markers,
@@ -2467,6 +2474,12 @@ async function liveMapMarkersRoute(res, url) {
       // overmap/survival-1 default.
       coriolisSeed: spice.currentSeed || "",
       coriolisNextCycleAt: spice.nextCycleAt || "",
+      // Sandstorm status is a heuristic (no storm-end log line exists on
+      // either map, see sandstormStatus.js) -- "active" means a start line
+      // was seen within the last ACTIVE_WINDOW_MS, not a confirmed ongoing
+      // storm.
+      sandstormActive: sandstorm.active || false,
+      sandstormLastStartAt: sandstorm.lastStartAt || "",
       partitions: partitions.rows || []
     };
   });
