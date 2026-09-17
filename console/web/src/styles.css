@@ -658,6 +658,7 @@ main { padding: 22px; min-width: 0; }
 .restart-queue-banner .panel-title .switch-state { flex: 0 0 auto; }
 .restart-messages-modal { width: min(560px, calc(100vw - 32px)); }
 .restart-messages-tab-flag { margin-left: 6px; color: var(--danger-text); font-weight: 800; }
+.live-map-sandstorm-active { color: var(--danger-text); }
 .restart-messages-field { display: grid; gap: 4px; }
 .restart-messages-field label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
 .restart-messages-field input, .restart-messages-field textarea { width: 100%; }
