@@ -97,6 +97,13 @@ else
   run_timed_step "Ensuring Database Is Up To Date" runtime/scripts/update-db.sh
 fi
 
+run_timed_step "Refreshing Map Catalogs" bash -c '
+runtime/scripts/extract-server-catalog.sh
+runtime/scripts/extract-partition-catalog.sh
+'
+
+run_timed_step "Reconciling Official World Partitions" runtime/scripts/reconcile-world-partitions.sh
+
 if runtime/scripts/deepdesert.sh dual configured >/dev/null 2>&1; then
   run_timed_step "Reconciling Dual Deep Desert" runtime/scripts/deepdesert.sh dual repair --yes
 fi

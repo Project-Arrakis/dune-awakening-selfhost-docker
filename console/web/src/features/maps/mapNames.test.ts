@@ -9,6 +9,11 @@ describe("map friendly names", () => {
     ["DeepDesert_1", "Deep Desert"],
     ["CB_Dungeon_ThePit", "The Old Quarry"],
     ["CB_Dungeon_Hephaestus", "Wreck Of Hephaestus"],
+    ["CB_Story_DestroyedZanovar", "Zanovar"],
+    ["CB_Story_OrbitalMonitor", "Arrakeen Spaceport"],
+    ["CB_Arrakis_Story_Paranoid_PrayerRoom", "Place of Contemplation"],
+    ["CB_Arrakis_Story_Glutton_DiningRoom", "The Glutton's Dining Room"],
+    ["CB_Arrakis_Generic_Sietch_Room", "Sietch Talab"],
     ["CB_Dungeon_OldCarthag", "Ruins Of Old Carthag"],
     ["Story_Faction_Outpost_Hark", "Arsunt Garrison (Harkonnen)"]
   ])("maps %s to %s", (mapId, displayName) => {
