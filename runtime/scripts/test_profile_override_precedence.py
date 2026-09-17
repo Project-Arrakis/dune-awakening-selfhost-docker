@@ -477,6 +477,8 @@ class ClientGameIniAllowlistTests(ProfilePathTestCase):
 
         rendered = usersettings.client_game_ini(profile, MAP_NAME)
 
+        self.assertIn("Saved/Config/Windows/Game.ini", rendered)
+        self.assertNotIn("Saved/Config/WindowsClient/Game.ini", rendered)
         self.assertIn("m_WaterConsumptionRate=2.0", rendered)
         self.assertIn("m_MaxNumLandclaimSegments=20", rendered)
         self.assertIn("m_bBuildingRestrictionLimitsEnabled=False", rendered)
