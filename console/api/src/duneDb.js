@@ -3744,14 +3744,20 @@ const RESOURCE_FIELD_PARTITION_JOIN = `
       and wp.dimension_index = rfs.dimension_index`;
 
 // Currently-active spice fields of any size for the live map's "Active
-// Spice Blows" layer. field_kind_id=1 is spice; value_remaining tiers are
-// 5,000/150,000/2,500,000 for Small/Medium/Large -- `size` is computed by
-// threshold (not exact match), so a field mid-harvest still classifies as
-// its spawned tier until it drops below that tier's own floor (a known,
-// accepted imprecision, same class of edge case the original Large-only
-// threshold already had). Left join, not inner, since a dimension can
-// still lack a world_partition row (confirmed live) -- partition_id stays
-// null rather than a sentinel in that case.
+// Spice Blows" layer. resourcefield_state's field_kind_id column is gone
+// (dropped in the same game update that reshaped dune.markers, confirmed
+// live) -- spice and flour sand are the only two kinds this table ever
+// held, and flour sand's value_remaining never leaves its single fixed
+// tier (60,000, see liveMapFlourSandFieldRows below), so "not exactly
+// 60,000" is the correct complement rather than an inexact tier-membership
+// list. value_remaining tiers are 5,000/150,000/2,500,000 for
+// Small/Medium/Large -- `size` is computed by threshold (not exact match),
+// so a field mid-harvest still classifies as its spawned tier until it
+// drops below that tier's own floor (a known, accepted imprecision, same
+// class of edge case the original Large-only threshold already had). Left
+// join, not inner, since a dimension can still lack a world_partition row
+// (confirmed live) -- partition_id stays null rather than a sentinel in
+// that case.
 export async function liveMapSpiceFieldRows(db, map = "") {
   if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
     return unsupportedMap("spiceActive", ["dune.resourcefield_state", "dune.world_partition"]);
@@ -3770,7 +3776,7 @@ export async function liveMapSpiceFieldRows(db, map = "") {
            end as size
     from dune.resourcefield_state rfs
     ${RESOURCE_FIELD_PARTITION_JOIN}
-    where rfs.field_kind_id = 1 ${where}
+    where rfs.value_remaining <> 60000 ${where}
     order by rfs.field_id`, values);
   return {
     capabilities: { spiceActive: true },
@@ -3778,8 +3784,9 @@ export async function liveMapSpiceFieldRows(db, map = "") {
   };
 }
 
-// Currently-active flour sand fields (field_kind_id=0) -- a single fixed
-// tier (60,000), not size-classed like spice, so no value threshold needed.
+// Currently-active flour sand fields -- a single fixed tier (60,000), not
+// size-classed like spice. See liveMapSpiceFieldRows above for why this is
+// filtered by that fixed value rather than the now-removed field_kind_id.
 export async function liveMapFlourSandFieldRows(db, map = "") {
   if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
     return unsupportedMap("flourSand", ["dune.resourcefield_state", "dune.world_partition"]);
@@ -3793,7 +3800,7 @@ export async function liveMapFlourSandFieldRows(db, map = "") {
            rfs.value_remaining
     from dune.resourcefield_state rfs
     ${RESOURCE_FIELD_PARTITION_JOIN}
-    where rfs.field_kind_id = 0 ${where}
+    where rfs.value_remaining = 60000 ${where}
     order by rfs.field_id`, values);
   return {
     capabilities: { flourSand: true },
@@ -14401,6 +14408,10 @@ function emptyActivitySummary() {
   };
 }
 
+// field_kind_id filters below use "<> 60000" rather than the dropped
+// field_kind_id column -- see liveMapSpiceFieldRows's comment for why that's
+// the correct complement (flour sand is the only other kind, and it never
+// leaves its single fixed 60,000 tier).
 export async function addonOpsResourcesSummary(db) {
   if (!(await tableExists(db, "resourcefield_state"))) return emptyResourcesSummary();
 
@@ -14408,7 +14419,7 @@ export async function addonOpsResourcesSummary(db) {
     select count(*)::int as total_fields,
            coalesce(sum(value_remaining), 0)::bigint as total_value
     from dune.resourcefield_state
-    where field_kind_id = 1`);
+    where value_remaining <> 60000`);
 
   const r = result.rows?.[0] || {};
 
@@ -14419,7 +14430,7 @@ export async function addonOpsResourcesSummary(db) {
                count(*)::int as fields,
                coalesce(sum(value_remaining), 0)::bigint as total_value
         from dune.resourcefield_state
-        where field_kind_id = 1
+        where value_remaining <> 60000
         group by map
         order by fields desc`);
     resourcesByMap = mapResult.rows || [];
@@ -14436,10 +14447,10 @@ export async function addonOpsResourcesSummary(db) {
                coalesce(sum(sft.max_globally_active), 0)::int as max_active,
                (select coalesce(sum(value_remaining), 0)::bigint
                 from dune.resourcefield_state rfs
-                where rfs.map = sft.map_name and rfs.field_kind_id = 1) as total_value,
+                where rfs.map = sft.map_name and rfs.value_remaining <> 60000) as total_value,
                (select count(*)::int
                 from dune.resourcefield_state rfs
-                where rfs.map = sft.map_name and rfs.field_kind_id = 1) as active_fields
+                where rfs.map = sft.map_name and rfs.value_remaining <> 60000) as active_fields
         from dune.spicefield_types sft
         where sft.is_spawning_active = true
         group by sft.field_type, sft.map_name

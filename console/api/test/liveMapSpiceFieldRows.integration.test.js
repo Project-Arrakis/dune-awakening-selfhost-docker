@@ -8,6 +8,10 @@ import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgInteg
 // dimension_index), not field_id alone: the same field_id genuinely repeats
 // across Deep Desert's two dimensions (confirmed live), so the query under
 // test must be dimension-aware rather than treating field_id as unique.
+// field_kind_id is gone from the live table entirely (dropped in the same
+// game update that reshaped dune.markers) -- spice vs. flour sand is now
+// told apart solely by flour sand's single fixed value_remaining tier
+// (60,000), so this fixture omits the column too.
 //
 // resourcefield_state.map and world_partition.map are different namespaces
 // (confirmed live) -- resourcefield_state uses the friendly game-map name
@@ -23,7 +27,6 @@ const SCHEMA = `
     dimension_index integer not null,
     spawn_time double precision not null,
     value_remaining bigint not null,
-    field_kind_id smallint not null,
     primary key (field_id, map, dimension_index)
   );
   create table dune.world_partition (
@@ -51,23 +54,24 @@ test("real PostgreSQL: liveMapSpiceFieldRows resolves partition_id per dimension
 
       -- The exact field_id collision confirmed live: same physical position,
       -- both dimensions, both currently Large.
-      insert into dune.resourcefield_state (field_id, map, dimension_index, spawn_time, value_remaining, field_kind_id) values
-        (9205150785405452288, 'DeepDesert', 0, 0, 2500000, 1),
-        (9205150785405452288, 'DeepDesert', 1, 0, 2500000, 1),
+      insert into dune.resourcefield_state (field_id, map, dimension_index, spawn_time, value_remaining) values
+        (9205150785405452288, 'DeepDesert', 0, 0, 2500000),
+        (9205150785405452288, 'DeepDesert', 1, 0, 2500000),
         -- Medium spice, exact tier value -- now included, since the Large-only threshold was widened.
-        (1234567890123456, 'DeepDesert', 0, 0, 150000, 1),
+        (1234567890123456, 'DeepDesert', 0, 0, 150000),
         -- Small spice, exact tier value.
-        (1234567890123457, 'DeepDesert', 0, 0, 5000, 1),
+        (1234567890123457, 'DeepDesert', 0, 0, 5000),
         -- Between the Small and Medium thresholds (not an exact tier value) -- classifies as
         -- Medium by the threshold rule. Also stands in for the known, accepted imprecision: a
         -- genuinely-Large field drained down into this same range would classify identically,
         -- and the query has no way to tell the two apart.
-        (1234567890123458, 'DeepDesert', 0, 0, 75000, 1),
-        -- Flour sand (field_kind_id=0) at Large-sized value -- must be excluded regardless of value.
-        (2222222222222222, 'DeepDesert', 0, 0, 2500000, 0),
+        (1234567890123458, 'DeepDesert', 0, 0, 75000),
+        -- Flour sand at its one fixed tier -- must be excluded from spice results even though
+        -- it lands inside the Small/Medium boundary range numerically.
+        (2222222222222222, 'DeepDesert', 0, 0, 60000),
         -- Hagga Basin only ever has Small-tier spice (confirmed live) -- resolves against the
         -- Survival_1 partition, not filtered out (no map filter passed to this query).
-        (3333333333333333, 'HaggaBasin', 0, 0, 5000, 1);
+        (3333333333333333, 'HaggaBasin', 0, 0, 5000);
     `);
 
     const db = pgTransactionalDb(pool);
@@ -86,7 +90,7 @@ test("real PostgreSQL: liveMapSpiceFieldRows resolves partition_id per dimension
   });
 });
 
-test("real PostgreSQL: liveMapFlourSandFieldRows returns only field_kind_id=0 rows, no value threshold, and resolves Hagga Basin's partition too", async (t) => {
+test("real PostgreSQL: liveMapFlourSandFieldRows returns only the 60,000 tier, no value threshold, and resolves Hagga Basin's partition too", async (t) => {
   await withIsolatedDatabase(t, {
     namePrefix: "dune_flour_sand_rows",
     unavailableLabel: "the flour-sand-rows integration test",
@@ -98,12 +102,12 @@ test("real PostgreSQL: liveMapFlourSandFieldRows returns only field_kind_id=0 ro
         (8, 'DeepDesert_1', 0, 'PvP'),
         (1, 'Survival_1', 0, 'Hagga Basin');
 
-      insert into dune.resourcefield_state (field_id, map, dimension_index, spawn_time, value_remaining, field_kind_id) values
-        (4444444444444444, 'DeepDesert', 0, 0, 60000, 0),
-        -- Large spice at the same map/dimension -- must be excluded (field_kind_id=1, not 0).
-        (5555555555555555, 'DeepDesert', 0, 0, 2500000, 1),
+      insert into dune.resourcefield_state (field_id, map, dimension_index, spawn_time, value_remaining) values
+        (4444444444444444, 'DeepDesert', 0, 0, 60000),
+        -- Large spice at the same map/dimension -- must be excluded (not the 60,000 tier).
+        (5555555555555555, 'DeepDesert', 0, 0, 2500000),
         -- Flour sand on Hagga Basin (confirmed live) -- resolves against the Survival_1 partition.
-        (6666666666666667, 'HaggaBasin', 0, 0, 60000, 0);
+        (6666666666666667, 'HaggaBasin', 0, 0, 60000);
     `);
 
     const db = pgTransactionalDb(pool);
@@ -130,9 +134,9 @@ test("real PostgreSQL: rows survive when world_partition has no matching row (co
       -- world_partition deliberately empty -- reproduces the live bug where
       -- Deep Desert's partition rows were briefly absent and an inner join
       -- silently dropped every real spice/flour-sand row.
-      insert into dune.resourcefield_state (field_id, map, dimension_index, spawn_time, value_remaining, field_kind_id) values
-        (6666666666666666, 'DeepDesert', 0, 0, 2500000, 1),
-        (7777777777777777, 'DeepDesert', 0, 0, 60000, 0);
+      insert into dune.resourcefield_state (field_id, map, dimension_index, spawn_time, value_remaining) values
+        (6666666666666666, 'DeepDesert', 0, 0, 2500000),
+        (7777777777777777, 'DeepDesert', 0, 0, 60000);
     `);
 
     const db = pgTransactionalDb(pool);

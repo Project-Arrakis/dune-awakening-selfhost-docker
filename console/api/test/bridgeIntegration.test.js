@@ -89,14 +89,14 @@ test("ops.resources.summary — live DB — returns valid structure", async () =
   }
 });
 
-test("ops.resources.summary — live DB — spice only (field_kind_id=1)", async () => {
+test("ops.resources.summary — live DB — spice only (excludes the flour sand tier)", async () => {
   const database = await getDb();
   if (!database) return;
 
   const result = await addonOpsResourcesSummary(database);
   assert.ok(result.totalFields >= 0);
   assert.ok(result.totalValueRemaining >= 0);
-  // Spice fields should be a subset of total with field_kind_id=1 filter
+  // Spice fields should be a subset of total, excluding flour sand's fixed 60,000 tier
 });
 
 // ─── ops.combat.deaths integration ───
