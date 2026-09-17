@@ -44,7 +44,7 @@ detach_external_triggers() {
        JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid
        JOIN pg_catalog.pg_namespace function_schema ON function_schema.oid = p.pronamespace
       WHERE table_schema.nspname = 'dune'
-        AND function_schema.nspname IN ('console_market_history', 'dune_runtime')
+        AND function_schema.nspname NOT IN ('dune', 'pg_catalog')
         AND NOT t.tgisinternal
       ORDER BY t.tgname;")"
   [ -n "$trigger_definitions" ] || return 0
@@ -64,7 +64,7 @@ detach_external_triggers() {
               JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid
               JOIN pg_catalog.pg_namespace function_schema ON function_schema.oid = p.pronamespace
              WHERE table_schema.nspname = 'dune'
-               AND function_schema.nspname IN ('console_market_history', 'dune_runtime')
+               AND function_schema.nspname NOT IN ('dune', 'pg_catalog')
                AND NOT t.tgisinternal
           LOOP
             EXECUTE format('DROP TRIGGER %I ON %I.%I', trigger_row.tgname, trigger_row.schema_name, trigger_row.table_name);
@@ -155,10 +155,11 @@ echo "Image: $IMAGE"
 
 audit_db_orphans
 
-# The Console attaches an observability trigger to a game-owned table. Funcom's
-# updater copies that table into an isolated validation database without the
-# Console-owned schema, so preserve and detach the trigger for the migration.
-# The EXIT trap restores its exact definition on every exit path.
+# Console features and community addons can attach triggers to game-owned
+# tables while keeping their functions in separately owned schemas. Funcom's
+# updater copies game tables into an isolated validation database without those
+# external schemas, so preserve and detach every such trigger for the migration.
+# The EXIT trap restores each exact definition on every exit path.
 restore_external_triggers
 detach_external_triggers
 
