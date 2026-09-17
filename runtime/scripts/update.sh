@@ -28,6 +28,7 @@ AUTO_TIMER_FILE="/etc/systemd/system/$AUTO_TIMER_NAME"
 AUTO_DEFAULT_TIME="${DUNE_AUTO_UPDATE_TIME:-05:00}"
 AUTO_DEFAULT_INTERVAL_MINUTES="${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-60}"
 AUTO_PENDING_FILE="${DUNE_AUTO_UPDATE_PENDING_FILE:-runtime/generated/update-auto-pending.env}"
+UPDATE_CHECK_CACHE_FILE="runtime/generated/game-update-check.json"
 
 positive_integer_or_default() {
   local value="$1"
@@ -796,20 +797,25 @@ if [ "$cmd" = "check" ] || [ "$cmd" = "status" ]; then
   echo "=== Check Steam for available update ==="
 
   steam_check_attempt=1
-  steam_check_max_attempts="$(positive_integer_or_default "${DUNE_STEAMCMD_CONTENT_MAX_ATTEMPTS:-6}" 6)"
-  steam_check_retry_sleep="$(positive_integer_or_default "${DUNE_STEAMCMD_RETRY_SLEEP:-20}" 20)"
+  # A status check must stay responsive. Actual installs retain the more
+  # patient content-host retry policy below, but making an operator wait five
+  # minutes just to learn that Steam is unreachable is counterproductive.
+  steam_check_max_attempts="$(positive_integer_or_default "${DUNE_STEAMCMD_CHECK_MAX_ATTEMPTS:-2}" 2)"
+  steam_check_retry_sleep="$(positive_integer_or_default "${DUNE_STEAMCMD_CHECK_RETRY_SLEEP:-5}" 5)"
+  steam_check_timeout="$(positive_integer_or_default "${DUNE_STEAMCMD_CHECK_TIMEOUT_SECONDS:-45}" 45)"
 
   while [ "$steam_check_attempt" -le "$steam_check_max_attempts" ]; do
     steam_check_log="$(mktemp)"
     steam_check_content_lines="$(steamcmd_content_log_line_count)"
     set +e
-    docker compose exec -T -e APP_ID="$APP_ID" orchestrator bash -lc '
+    docker compose exec -T -e APP_ID="$APP_ID" -e STEAM_CHECK_TIMEOUT_SECONDS="$steam_check_timeout" orchestrator bash -lc '
 set -euo pipefail
 
 STEAMCMD_SH=/srv/dune/steam/steamcmd.sh
 STEAMCMD_BIN=/srv/dune/steam/linux32/steamcmd
 INSTALL_DIR=/srv/dune/server
 APP_ID="${APP_ID:-4754530}"
+STEAM_CHECK_TIMEOUT_SECONDS="${STEAM_CHECK_TIMEOUT_SECONDS:-45}"
 APPINFO="/tmp/dune-appinfo-${APP_ID}.txt"
 MANIFEST="${INSTALL_DIR}/steamapps/appmanifest_${APP_ID}.acf"
 
@@ -825,12 +831,19 @@ fi
 echo "Steam app id: $APP_ID"
 echo "Install dir:  $INSTALL_DIR"
 
-if ! "$STEAMCMD" \
+set +e
+timeout --signal=TERM --kill-after=5s "${STEAM_CHECK_TIMEOUT_SECONDS}s" "$STEAMCMD" \
   +@sSteamCmdForcePlatformType linux \
   +login anonymous \
   +app_info_update 1 \
   +app_info_print "$APP_ID" \
-  +quit > "$APPINFO" 2>&1; then
+  +quit > "$APPINFO" 2>&1
+steamcmd_rc=$?
+set -e
+if [ "$steamcmd_rc" -ne 0 ]; then
+  if [ "$steamcmd_rc" -eq 124 ] || [ "$steamcmd_rc" -eq 137 ]; then
+    echo "SteamCMD metadata check timed out after ${STEAM_CHECK_TIMEOUT_SECONDS}s."
+  fi
   echo "SteamCMD could not retrieve the current app information."
   tail -n 80 "$APPINFO" || true
   exit 2
@@ -1292,6 +1305,10 @@ runtime/scripts/extract-partition-catalog.sh
 runtime/scripts/extract-server-catalog.sh
 echo "Generated map catalogs refreshed."
 
+echo
+echo "=== Reconcile official world partitions ==="
+runtime/scripts/reconcile-world-partitions.sh
+
 if [ "${DUNE_STORAGE_AUTO_CLEANUP:-1}" = "1" ]; then
   echo
   echo "=== Remove obsolete Dune game images ==="
@@ -1301,6 +1318,10 @@ if [ "${DUNE_STORAGE_AUTO_CLEANUP:-1}" = "1" ]; then
   fi
   runtime/scripts/storage.sh "${storage_args[@]}" || echo "WARN Obsolete image cleanup did not complete; the update itself remains valid."
 fi
+
+# The installed build has changed. Do not let a scheduled/CLI update leave the
+# Web Console showing the pre-update result from its durable cache.
+rm -f "$UPDATE_CHECK_CACHE_FILE"
 
 echo
 if [ "$cmd" = "install" ]; then

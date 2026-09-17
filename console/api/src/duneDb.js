@@ -741,7 +741,11 @@ async function updateCurrencyBalanceViaGameFunction(db, safeTable, rowRef, value
   const row = current.rows[0];
   if (!row) return { ok: true, updatedRows: 0, schema: "dune", table: "player_virtual_currency_balances" };
   const controllerId = intParam(values.player_controller_id ?? row.player_controller_id, "player controller id", 1);
-  const currencyId = intParam(values.currency_id ?? row.currency_id, "currency id", 0, 32767);
+  const currencyMode = await currencyStorageMode(db);
+  const requestedCurrency = values.currency_id ?? row.currency_id;
+  const currencyId = currencyMode === "enum"
+    ? String(requestedCurrency || "").trim()
+    : intParam(requestedCurrency, "currency id", 0, 32767);
   if (String(controllerId) !== String(row.player_controller_id) || String(currencyId) !== String(row.currency_id)) {
     throw new Error("Currency row editing can change balance only. Edit player_controller_id or currency_id with explicit SQL if needed.");
   }
@@ -749,7 +753,11 @@ async function updateCurrencyBalanceViaGameFunction(db, safeTable, rowRef, value
   const newBalance = BigInt(String(values.balance ?? 0));
   const delta = newBalance - oldBalance;
   if (delta !== 0n) {
-    await db.query("select dune.adjust_player_virtual_currency_balance($1::bigint, $2::smallint, $3::bigint)", [controllerId, currencyId, delta.toString()]);
+    if (currencyMode === "enum") {
+      await db.query("select dune.adjust_player_virtual_currency_balance($1::bigint, $2::dune.virtualwallettype, $3::bigint)", [controllerId, currencyId, delta.toString()]);
+    } else {
+      await db.query("select dune.adjust_player_virtual_currency_balance($1::bigint, $2::smallint, $3::bigint)", [controllerId, currencyId, delta.toString()]);
+    }
   }
   const state = await db.query(`
     select coalesce(online_status::text, 'Offline') as online_status
@@ -969,37 +977,42 @@ async function withKnownLiveRefresh(db, fn, { features = [] } = {}) {
 
 async function supportsSolarisLiveRefresh(db) {
   try {
-    return await tableExists(db, "player_virtual_currency_balances") &&
-      await functionExists(db, "dune.get_solaris_id()") &&
+    const mode = await currencyStorageMode(db);
+    return Boolean(mode) &&
       await functionExists(db, "dune.log_event_solaris(oid,dune.logmessagetype,bigint,bigint,bigint)") &&
-      await functionExists(db, "dune.adjust_player_virtual_currency_balance(bigint,smallint,bigint)");
+      (mode === "enum" || await functionExists(db, "dune.get_solaris_id()"));
   } catch {
     return false;
   }
 }
 
 async function solarisBalanceSnapshot(db) {
+  const mode = await currencyStorageMode(db);
   const result = await db.query(`
     select player_controller_id::text as player_controller_id, balance::text as balance
     from dune.player_virtual_currency_balances
-    where currency_id = dune.get_solaris_id()
+    where currency_id = ${mode === "enum" ? "'Solaris'::dune.virtualwallettype" : "dune.get_solaris_id()"}
     order by player_controller_id`);
   return new Map(result.rows.map((row) => [String(row.player_controller_id), BigInt(row.balance || 0)]));
 }
 
 async function emitChangedSolarisBalances(db, before, after) {
+  const mode = await currencyStorageMode(db);
+  const adjustmentSignature = mode === "enum"
+    ? "dune.adjust_player_virtual_currency_balance(bigint,dune.virtualwallettype,bigint)"
+    : "dune.adjust_player_virtual_currency_balance(bigint,smallint,bigint)";
   for (const [controllerId, balance] of after) {
     const previous = before.get(controllerId);
     if (previous === undefined || previous === balance) continue;
     const delta = balance - previous;
     await db.query(`
       select dune.log_event_solaris(
-        'dune.adjust_player_virtual_currency_balance(bigint,smallint,bigint)'::regprocedure::oid,
+        $4::regprocedure::oid,
         'update_solaris'::dune.logmessagetype,
         $1::bigint,
         $2::bigint,
         $3::bigint
-      )`, [controllerId, balance.toString(), delta.toString()]);
+      )`, [controllerId, balance.toString(), delta.toString(), adjustmentSignature]);
   }
 }
 
@@ -1035,7 +1048,7 @@ async function syncChangedFactionReputation(db, before, after) {
 async function supportsTutorialLiveRefresh(db) {
   try {
     return await tableExists(db, "tutorial_per_player") &&
-      await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)");
+      Boolean(await tutorialEntryStateType(db));
   } catch {
     return false;
   }
@@ -1049,7 +1062,7 @@ async function tutorialSnapshot(db) {
   return new Map(result.rows.map((row) => [`${row.player_id}:${row.tutorial_id}`, {
     playerId: String(row.player_id),
     tutorialId: Number(row.tutorial_id),
-    state: Number(row.tutorial_state || 0)
+    state: tutorialStateToLegacyNumber(row.tutorial_state) ?? 0
   }]));
 }
 
@@ -1057,7 +1070,7 @@ async function syncChangedTutorials(db, before, after) {
   for (const [key, next] of after) {
     const previous = before.get(key);
     if (previous && previous.state === next.state) continue;
-    await db.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, $3::smallint)", [next.playerId, next.tutorialId, next.state]);
+    await writeTutorialEntry(db, next.playerId, next.tutorialId, next.state);
   }
 }
 
@@ -2576,6 +2589,38 @@ function playerJourneyIdentity(player, columnName) {
   return player.accountId;
 }
 
+// A later game build replaced tutorial_per_player.tutorial_state's smallint
+// column with a dune.tutorialstate enum (Active/Revealed/Completed/Canceled/
+// None), and create_or_update_tutorial_entry's third parameter changed to
+// match. Both generations are live across deployments, so every read and
+// write goes through these two helpers instead of assuming one shape.
+const TUTORIAL_STATE_ENUM_LABELS = { 0: "None", 1: "Revealed", 2: "Completed" };
+
+function tutorialStateToLegacyNumber(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return value;
+  const text = String(value);
+  if (/^-?\d+$/.test(text)) return Number(text);
+  if (text === "Completed") return 2;
+  if (text === "Revealed" || text === "Active") return 1;
+  return 0;
+}
+
+async function tutorialEntryStateType(db) {
+  if (await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,dune.tutorialstate)")) return "enum";
+  if (await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)")) return "smallint";
+  return null;
+}
+
+async function writeTutorialEntry(db, playerId, tutorialId, legacyState) {
+  if (await tutorialEntryStateType(db) === "enum") {
+    const label = TUTORIAL_STATE_ENUM_LABELS[legacyState] || "None";
+    await db.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, $3::dune.tutorialstate)", [playerId, tutorialId, label]);
+    return;
+  }
+  await db.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, $3::smallint)", [playerId, tutorialId, legacyState]);
+}
+
 async function playerLastSeenSelect(db) {
   const candidates = [
     ["player_state", "ps", ["last_seen", "last_seen_at", "last_online", "last_online_at", "last_avatar_activity", "last_login", "last_login_at", "last_login_time", "last_activity", "last_activity_at", "updated_at"]],
@@ -2633,7 +2678,11 @@ export async function playerProfile(db, id) {
   row.faction = assignedFaction || "Neutral";
   row.faction_assigned = Boolean(assignedFaction);
   row.guild = guilds.get(controllerId) || guilds.get(actorIdKey) || guilds.get(accountIdKey) || "—";
-  return { capabilities: await playerCapabilities(db), player: row };
+  return {
+    capabilities: await playerCapabilities(db),
+    currencyOptions: await currencyOptions(db),
+    player: row
+  };
 }
 
 // Player-carried inventory containers keyed by dune.inventories.inventory_type.
@@ -2756,6 +2805,34 @@ export async function playerInventoryAll(db, id) {
 export async function playerCurrency(db, id) {
   if (!(await tableExists(db, "player_virtual_currency_balances"))) return unsupported("currency", ["dune.player_virtual_currency_balances"]);
   const actorId = intParam(id, "player id", 1);
+  const mode = await currencyStorageMode(db);
+  if (!mode) return unsupported("currency", ["dune.adjust_player_virtual_currency_balance"]);
+  if (mode === "enum") {
+    const result = await db.query(`
+      select currency_id::text as currency_key, balance
+      from dune.player_virtual_currency_balances
+      where player_controller_id = $1
+         or player_controller_id = (select coalesce(player_controller_id, 0) from dune.player_state where player_pawn_id = $1 limit 1)
+      order by currency_id::text`, [actorId]);
+    const options = await currencyOptions(db);
+    const byKey = new Map(options.map((option) => [option.key, option]));
+    const rows = result.rows.map((row) => {
+      const option = byKey.get(String(row.currency_key));
+      return {
+        currency_id: option?.id ?? String(row.currency_key),
+        balance: row.balance,
+        label: option?.label ?? String(row.currency_key)
+      };
+    });
+    for (const option of options) {
+      if (!rows.some((row) => String(row.currency_id) === String(option.id))) {
+        rows.push({ currency_id: option.id, balance: 0, label: option.label });
+      }
+    }
+    rows.sort((a, b) => Number(a.currency_id) - Number(b.currency_id));
+    return { capabilities: { currency: true }, rows };
+  }
+
   const hasSolarisId = await functionExists(db, "dune.get_solaris_id()");
   const solarisId = hasSolarisId ? Number((await db.query("select dune.get_solaris_id() as id")).rows[0].id) : null;
   const result = await db.query(`
@@ -3829,18 +3906,28 @@ const RESOURCE_FIELD_PARTITION_JOIN = `
       and wp.dimension_index = rfs.dimension_index`;
 
 // Currently-active spice fields of any size for the live map's "Active
-// Spice Blows" layer. field_kind_id=1 is spice; value_remaining tiers are
-// 5,000/150,000/2,500,000 for Small/Medium/Large -- `size` is computed by
-// threshold (not exact match), so a field mid-harvest still classifies as
-// its spawned tier until it drops below that tier's own floor (a known,
-// accepted imprecision, same class of edge case the original Large-only
-// threshold already had). Left join, not inner, since a dimension can
-// still lack a world_partition row (confirmed live) -- partition_id stays
-// null rather than a sentinel in that case.
+// Spice Blows" layer. resourcefield_state's field_kind_id column is gone on
+// updated servers (dropped in the same game update that reshaped
+// dune.markers, confirmed live) -- columnsFor probes for it so this still
+// works unmodified against an older, not-yet-updated schema that still has
+// it. Once it's gone, spice and flour sand are the only two kinds this
+// table ever held, and flour sand's value_remaining never leaves its single
+// fixed tier (60,000, see liveMapFlourSandFieldRows below), so "not exactly
+// 60,000" is the correct complement rather than an inexact tier-membership
+// list. value_remaining tiers are 5,000/150,000/2,500,000 for
+// Small/Medium/Large -- `size` is computed by threshold (not exact match),
+// so a field mid-harvest still classifies as its spawned tier until it
+// drops below that tier's own floor (a known, accepted imprecision, same
+// class of edge case the original Large-only threshold already had). Left
+// join, not inner, since a dimension can still lack a world_partition row
+// (confirmed live) -- partition_id stays null rather than a sentinel in
+// that case.
 export async function liveMapSpiceFieldRows(db, map = "") {
   if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
     return unsupportedMap("spiceActive", ["dune.resourcefield_state", "dune.world_partition"]);
   }
+  const hasKindColumn = (await columnsFor(db, "resourcefield_state")).has("field_kind_id");
+  const spiceFilter = hasKindColumn ? "rfs.field_kind_id = 1" : "rfs.value_remaining <> 60000";
   const values = [];
   const where = mapFilterClause(map, values, "rfs");
   const result = await db.query(`
@@ -3855,7 +3942,7 @@ export async function liveMapSpiceFieldRows(db, map = "") {
            end as size
     from dune.resourcefield_state rfs
     ${RESOURCE_FIELD_PARTITION_JOIN}
-    where rfs.field_kind_id = 1 ${where}
+    where ${spiceFilter} ${where}
     order by rfs.field_id`, values);
   return {
     capabilities: { spiceActive: true },
@@ -3863,12 +3950,15 @@ export async function liveMapSpiceFieldRows(db, map = "") {
   };
 }
 
-// Currently-active flour sand fields (field_kind_id=0) -- a single fixed
-// tier (60,000), not size-classed like spice, so no value threshold needed.
+// Currently-active flour sand fields -- a single fixed tier (60,000), not
+// size-classed like spice. See liveMapSpiceFieldRows above for why this is
+// filtered by that fixed value once field_kind_id is gone.
 export async function liveMapFlourSandFieldRows(db, map = "") {
   if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
     return unsupportedMap("flourSand", ["dune.resourcefield_state", "dune.world_partition"]);
   }
+  const hasKindColumn = (await columnsFor(db, "resourcefield_state")).has("field_kind_id");
+  const flourFilter = hasKindColumn ? "rfs.field_kind_id = 0" : "rfs.value_remaining = 60000";
   const values = [];
   const where = mapFilterClause(map, values, "rfs");
   const result = await db.query(`
@@ -3878,7 +3968,7 @@ export async function liveMapFlourSandFieldRows(db, map = "") {
            rfs.value_remaining
     from dune.resourcefield_state rfs
     ${RESOURCE_FIELD_PARTITION_JOIN}
-    where rfs.field_kind_id = 0 ${where}
+    where ${flourFilter} ${where}
     order by rfs.field_id`, values);
   return {
     capabilities: { flourSand: true },
@@ -3887,12 +3977,11 @@ export async function liveMapFlourSandFieldRows(db, map = "") {
 }
 
 // dune.markers is the static-POI atlas (23,413+ entries on a full server --
-// caves, ore veins, scrap wrecks, vendors, hazards, etc). `marker` is a
-// composite type with real named fields (marker_type, x, y, z, payload_type)
-// -- confirmed live, no need for the text-parsing SPLIT_PART approach some
-// third-party docs use. One generic, parameterized query serves every
-// category: add a pattern-table entry for a new category and it works with
-// no new SQL.
+// caves, ore veins, scrap wrecks, vendors, hazards, etc). marker_type is a
+// flat text column and x/y/z live on the `position` composite (type
+// dune.vector) -- confirmed live. One generic, parameterized query serves
+// every category: add a pattern-table entry for a new category and it works
+// with no new SQL.
 // Suffix-only (no leading %) -- a substring match on "%ore%" was sweeping in
 // HarkoRecustomization (an unrelated NPC/customization POI, confirmed live)
 // because "HarkoRecustomization" contains "kore" -> "ore". All real resource
@@ -3939,14 +4028,14 @@ export async function liveMapPoiMarkers(db, map, category) {
   }
   const result = await db.query(`
     select m.marker_hash_id::text as id,
-           (m.marker).marker_type as marker_type,
-           (m.marker).x as x,
-           (m.marker).y as y,
-           (m.marker).z as z,
+           m.marker_type as marker_type,
+           (m.position).x as x,
+           (m.position).y as y,
+           (m.position).z as z,
            coalesce(mn.map_name, '') as map
     from dune.markers m
     join dune.map_names mn on mn.map_name_id = m.map_name_id
-    where (m.marker).marker_type ilike any($1) and (m.marker).marker_type not ilike 'NoIcon' ${where}
+    where m.marker_type ilike any($1) and m.marker_type not ilike 'NoIcon' ${where}
     order by m.marker_hash_id`, values);
   return {
     capabilities: { [category]: true },
@@ -4270,7 +4359,7 @@ async function baseChildAccessSupported(db) {
 // A child piece set to any other level was deliberately opened wider (Public,
 // Guild) or narrowed further (Co-Owner, Owner) than that default.
 const SUB_FIEF_ACCESS_LEVEL = 3;
-const ACCESS_LEVEL_LABELS = { 1: "Public", 2: "Guild", 3: "Associate", 4: "Co-Owner", 5: "Owner" };
+const ACCESS_LEVEL_LABELS = { 1: "Owner", 2: "Co-Owner", 3: "Associate", 4: "Guild", 5: "Public" };
 
 // Categorizes a child piece for the Base Permissions tab's Type filter.
 // Deliberately its own map, not a reuse of BASE_INVENTORY_TYPES: that one
@@ -5969,26 +6058,30 @@ export async function exportRows(db, query) {
 }
 
 export async function addCurrency(db, id, { currencyId = 0, amount }) {
-  await requireCapability(await supportsCurrencyMutation(db), "Currency mutation requires dune.player_virtual_currency_balances plus dune.adjust_player_virtual_currency_balance(bigint,smallint,bigint).");
+  await requireCapability(await supportsCurrencyMutation(db), "Currency mutation requires dune.player_virtual_currency_balances plus the game's currency adjustment function.");
   const delta = intParam(amount, "currency amount", -1000000000000, 1000000000000);
   if (delta === 0) throw new Error("Currency amount cannot be zero");
-  const resolvedCurrencyId = await resolveCurrencyId(db, currencyId);
+  const currency = await resolveCurrency(db, currencyId);
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
-    await tx.query("select dune.adjust_player_virtual_currency_balance($1::bigint, $2::smallint, $3::bigint)", [player.controllerId, resolvedCurrencyId, delta]);
+    if (currency.mode === "enum") {
+      await tx.query("select dune.adjust_player_virtual_currency_balance($1::bigint, $2::dune.virtualwallettype, $3::bigint)", [player.controllerId, currency.dbValue, delta]);
+    } else {
+      await tx.query("select dune.adjust_player_virtual_currency_balance($1::bigint, $2::smallint, $3::bigint)", [player.controllerId, currency.dbValue, delta]);
+    }
     const balance = await tx.query(`
       select currency_id, balance
       from dune.player_virtual_currency_balances
-      where player_controller_id = $1 and currency_id = $2`, [player.controllerId, resolvedCurrencyId]);
+      where player_controller_id = $1 and currency_id = $2`, [player.controllerId, currency.dbValue]);
     return {
       ok: true,
       player,
-      currencyId: resolvedCurrencyId,
+      currencyId: currency.id,
       amount: delta,
       balance: balance.rows[0] || null,
       message: playerOnline(player)
-        ? "Solari Credit was updated in the database. The player may need to relog before the new credit balance appears in-game."
-        : "Solari Credit was updated in the database and will be loaded when the player next joins."
+        ? `${currency.label} was updated in the database. The player may need to relog before the new balance appears in-game.`
+        : `${currency.label} was updated in the database and will be loaded when the player next joins.`
     };
   });
 }
@@ -6786,8 +6879,8 @@ async function attachVehicleRegions(db, rows) {
       cross join lateral (
         select m.area_id
         from dune.markers m
-        where m.map_name_id = $1 and m.area_id <> 0 and (m.marker).x is not null
-        order by power((m.marker).x - p.vx, 2) + power((m.marker).y - p.vy, 2)
+        where m.map_name_id = $1 and m.area_id <> 0 and (m.position).x is not null
+        order by power((m.position).x - p.vx, 2) + power((m.position).y - p.vy, 2)
         limit 1
       ) near`, values);
 
@@ -7089,18 +7182,21 @@ export async function playerJourney(db, id, journeyTagsData = {}) {
   ].sort((a, b) => a.rawName.localeCompare(b.rawName));
   const codexIds = codex.rows.map((row) => row.story_node_id).filter(Boolean);
   const codexRows = codexIds.map((nodeId) => journeyNodeRow(nodeId, "Codex", state, {}, codexIds, journeyAliases));
-  const tutorial = tutorialRows.rows.map((row) => ({
-    id: String(row.id),
-    name: journeyDisplayName(row.name),
-    rawName: String(row.name || ""),
-    category: "Tutorial",
-    depth: 0,
-    parentId: "",
-    status: tutorialStatus(row.tutorial_state),
-    complete: Number(row.tutorial_state) === 2,
-    state: row.tutorial_state === null || row.tutorial_state === undefined ? null : Number(row.tutorial_state),
-    tags: 0
-  }));
+  const tutorial = tutorialRows.rows.map((row) => {
+    const legacyState = tutorialStateToLegacyNumber(row.tutorial_state);
+    return {
+      id: String(row.id),
+      name: journeyDisplayName(row.name),
+      rawName: String(row.name || ""),
+      category: "Tutorial",
+      depth: 0,
+      parentId: "",
+      status: tutorialStatus(legacyState),
+      complete: legacyState === 2,
+      state: legacyState,
+      tags: 0
+    };
+  });
   return { capabilities: { journey: true }, player, rows: { story: storyRows, contract: contractRows, codex: codexRows, tutorial } };
 }
 
@@ -7614,15 +7710,28 @@ end`;
 // Shared by the admin Vehicles pages and the dunedocker.app player snapshot.
 // The game database always gives us a current value for fuel/durability when it
 // records one, but it does not consistently persist a corresponding maximum.
-// A stored module maximum is authoritative. Otherwise, infer a maximum only
-// when at least two non-null observations exist for the exact same template.
+// A verified known maximum is authoritative, followed by a stored module
+// maximum. Otherwise, infer a maximum only when at least two non-null
+// observations exist for the exact same template.
 // Missing current values remain unknown: they must never become 0% or 100%.
-const VEHICLE_STATUS_CTES_SQL = `module_raw as (
+// These two Mk6 Assault Ornithopter modules are a verified exception: their
+// game maximum is 2000, while damaged historical rows can contain an inflated
+// current/decayed value. Treating the largest observation as the maximum made
+// the Console preserve 3557 (178%) instead of repairing it back to 2000.
+const VEHICLE_MODULE_KNOWN_MAXIMA_SQL = `known_template_maxima(template_id, max_durability) as (
+  values
+    ('ornithoptermediumengine_6'::text, 2000::numeric),
+    ('ornithoptermediumgenerator_6'::text, 2000::numeric)
+)`;
+
+const VEHICLE_STATUS_CTES_SQL = `${VEHICLE_MODULE_KNOWN_MAXIMA_SQL}, module_raw as (
   select vm.id, vm.vehicle_id, vm.template_id,
     (vm.stats->'FVehicleModuleDurabilityStats'->1->>'CurrentDurability')::numeric own_current,
     nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'DecayedMaxDurability')::numeric, 0) own_decayed,
-    nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric, 0) own_max
+    nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric, 0) own_max,
+    known.max_durability known_max
   from dune.vehicle_modules vm
+  left join known_template_maxima known on known.template_id=lower(vm.template_id)
 ), module_observed as (
   select module_raw.*,
     count(own_current) over(partition by template_id)::int current_samples,
@@ -7631,10 +7740,10 @@ const VEHICLE_STATUS_CTES_SQL = `module_raw as (
 ), module_durability as (
   select id, vehicle_id, template_id,
     own_current current_durability,
-    coalesce(own_max, own_decayed,
+    coalesce(known_max, own_max, own_decayed,
       case when current_samples >= 2 then observed_max else null end) max_durability,
     case
-      when own_max is not null or own_decayed is not null then false
+      when known_max is not null or own_max is not null or own_decayed is not null then false
       when current_samples >= 2 and observed_max is not null then true
       else null
     end max_inferred
@@ -8855,7 +8964,7 @@ export async function completeTutorial(db, id, { tutorialId }) {
     const player = await resolvePlayerMutationTarget(tx, id);
     const known = await tx.query("select exists (select 1 from dune.tutorials where id = $1) as exists", [safeTutorialId]);
     if (!known.rows[0]?.exists) throw new Error(`Tutorial ${safeTutorialId} was not found in the game database.`);
-    await tx.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, 2::smallint)", [player.controllerId, safeTutorialId]);
+    await writeTutorialEntry(tx, player.controllerId, safeTutorialId, 2);
     return { ok: true, player, tutorialId: safeTutorialId, state: 2 };
   });
 }
@@ -13269,12 +13378,13 @@ export async function repairGear(db, id) {
 }
 
 // Vehicle-module rows in current dedicated-server databases commonly omit
-// MaxDurability altogether. Prefer any authoritative stored maximum for the
-// exact template; otherwise infer a conservative cap only when at least two
-// modules of that template provide a positive current or decayed-cap sample.
+// MaxDurability altogether. Prefer a verified game maximum, then a stored
+// maximum for the exact module; otherwise infer a conservative cap only when
+// at least two modules of that template provide a positive current or
+// decayed-cap sample.
 // Both repair queries use this CTE so their eligibility and reported counts
 // cannot disagree.
-const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
+const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `${VEHICLE_MODULE_KNOWN_MAXIMA_SQL}, module_samples as (
   select vm.template_id,
          case
            when (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
@@ -13287,8 +13397,10 @@ const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
          case
            when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
              then nullif((durability->>'MaxDurability')::numeric, 0)
-         end as stored_max_durability
+         end as stored_max_durability,
+         known.max_durability as known_max_durability
   from dune.vehicle_modules vm
+  left join known_template_maxima known on known.template_id=lower(vm.template_id)
   cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
   where jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
     and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
@@ -13296,6 +13408,7 @@ const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
 ), template_maxima as (
   select template_id,
          coalesce(
+           max(known_max_durability),
            max(stored_max_durability),
            case
              when count(*) filter (
@@ -13303,9 +13416,19 @@ const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
              ) >= 2
                then greatest(max(current_durability), max(decayed_max_durability))
            end
-         ) as max_durability
+         ) as max_durability,
+         max(known_max_durability) as known_max_durability
   from module_samples
   group by template_id
+)`;
+
+const VEHICLE_REPAIR_EFFECTIVE_MAX_SQL = `coalesce(
+  tm.known_max_durability,
+  case
+    when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+      then nullif((durability->>'MaxDurability')::numeric, 0)
+  end,
+  tm.max_durability
 )`;
 
 function vehicleRepairThreshold(value) {
@@ -13356,20 +13479,14 @@ export async function inspectVehicleDecayRepair(db, id, { thresholdPercent = 50 
         and jsonb_typeof(durability) = 'object'
         and durability ? 'CurrentDurability'
         and (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-        and coalesce(
-              case
-                when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                  then nullif((durability->>'MaxDurability')::numeric, 0)
-              end,
-              tm.max_durability
-            ) > 0
-        and (durability->>'CurrentDurability')::numeric < (coalesce(
-              case
-                when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                  then nullif((durability->>'MaxDurability')::numeric, 0)
-              end,
-              tm.max_durability
-            ) * $${thresholdParam})
+        and ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} > 0
+        and (
+          (durability->>'CurrentDurability')::numeric < (${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} * $${thresholdParam})
+          or (
+            tm.known_max_durability is not null
+            and (durability->>'CurrentDurability')::numeric > ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL}
+          )
+        )
     )
     select e.partition_id,
            min(e.actor_map) as actor_map,
@@ -13427,6 +13544,7 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
         select vm.vehicle_id,
                vm.stats->'FVehicleModuleDurabilityStats'->1 as durability,
                coalesce(
+                 tm.known_max_durability,
                  case
                    when (vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
                      then nullif((vm.stats->'FVehicleModuleDurabilityStats'->1->>'MaxDurability')::numeric, 0)
@@ -13466,13 +13584,7 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
       with ${VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE}, eligible as (
         select vm.id,
                vm.vehicle_id,
-               coalesce(
-                 case
-                   when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                     then nullif((durability->>'MaxDurability')::numeric, 0)
-                 end,
-                 tm.max_durability
-               ) as max_durability
+               ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} as max_durability
         from dune.vehicle_modules vm
         join dune.actors a on a.id = vm.vehicle_id
         left join template_maxima tm on tm.template_id = vm.template_id
@@ -13489,20 +13601,14 @@ export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {})
           and jsonb_typeof(durability) = 'object'
           and durability ? 'CurrentDurability'
           and (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-          and coalesce(
-                case
-                  when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                    then nullif((durability->>'MaxDurability')::numeric, 0)
-                end,
-                tm.max_durability
-              ) > 0
-          and (durability->>'CurrentDurability')::numeric < (coalesce(
-                case
-                  when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
-                    then nullif((durability->>'MaxDurability')::numeric, 0)
-                end,
-                tm.max_durability
-              ) * $${thresholdParam})
+          and ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} > 0
+          and (
+            (durability->>'CurrentDurability')::numeric < (${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL} * $${thresholdParam})
+            or (
+              tm.known_max_durability is not null
+              and (durability->>'CurrentDurability')::numeric > ${VEHICLE_REPAIR_EFFECTIVE_MAX_SQL}
+            )
+          )
       )
       update dune.vehicle_modules vm
       set stats = case
@@ -13632,7 +13738,7 @@ async function supportsJourneySchema(db, schema) {
 async function supportsTutorials(db) {
   return await tableExists(db, "tutorials") &&
     await tableExists(db, "tutorial_per_player") &&
-    await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)");
+    Boolean(await tutorialEntryStateType(db));
 }
 
 function journeyGroup(nodeId) {
@@ -13905,8 +14011,7 @@ async function materializeResearchCraftingRecipe(db, actorId, recipeId) {
 }
 
 async function supportsCurrencyMutation(db) {
-  return await tableExists(db, "player_virtual_currency_balances") &&
-    await functionExists(db, "dune.adjust_player_virtual_currency_balance(bigint,smallint,bigint)");
+  return Boolean(await currencyStorageMode(db));
 }
 
 async function supportsFactionMutation(db) {
@@ -14112,16 +14217,48 @@ function requireOfflinePlayer(player, actionName) {
   }
 }
 
-async function resolveCurrencyId(db, currencyId) {
+async function currencyStorageMode(db) {
+  if (!(await tableExists(db, "player_virtual_currency_balances"))) return null;
+  if (await functionExists(db, "dune.adjust_player_virtual_currency_balance(bigint,dune.virtualwallettype,bigint)")) return "enum";
+  if (await functionExists(db, "dune.adjust_player_virtual_currency_balance(bigint,smallint,bigint)")) return "smallint";
+  return null;
+}
+
+async function currencyOptions(db) {
+  const mode = await currencyStorageMode(db);
+  if (mode === "enum") {
+    return [
+      { id: 0, key: "Solaris", label: "Solari Credit" },
+      { id: 1, key: "HouseCredit", label: "House Credit" }
+    ];
+  }
+  if (mode === "smallint") {
+    return [
+      { id: 0, key: "Solaris", label: "Solari Credit" },
+      { id: 1, key: "Scrip", label: "Scrip" }
+    ];
+  }
+  return [];
+}
+
+async function resolveCurrency(db, currencyId) {
+  const mode = await currencyStorageMode(db);
+  if (!mode) throw new UnsupportedCapabilityError("The game currency adjustment function is unavailable in this schema.");
   const raw = String(currencyId ?? "0").trim().toLowerCase();
+  if (mode === "enum") {
+    if (!raw || raw === "0" || raw === "solaris") return { id: 0, dbValue: "Solaris", label: "Solari Credit", mode };
+    if (raw === "1" || raw === "housecredit" || raw === "house credit") return { id: 1, dbValue: "HouseCredit", label: "House Credit", mode };
+    throw new Error("Currency id must be 0 (Solaris) or 1 (House Credit).");
+  }
   if (!raw || raw === "0" || raw === "solaris") {
     if (!(await functionExists(db, "dune.get_solaris_id()"))) {
       throw new UnsupportedCapabilityError("Solaris currency requires dune.get_solaris_id() in this schema.");
     }
     const result = await db.query("select dune.get_solaris_id()::int as currency_id");
-    return intParam(result.rows[0]?.currency_id, "currency id", 0, 32767);
+    return { id: 0, dbValue: intParam(result.rows[0]?.currency_id, "currency id", 0, 32767), label: "Solari Credit", mode };
   }
-  return intParam(raw, "currency id", 0, 32767);
+  const numericId = intParam(raw, "currency id", 0, 32767);
+  return { id: numericId, dbValue: numericId, label: numericId === 1 ? "Scrip" : `Currency ${numericId}`, mode };
 }
 
 async function syncFactionComponent(db, actorId) {
@@ -14498,14 +14635,23 @@ function emptyActivitySummary() {
   };
 }
 
+// field_kind_id filters below use "<> 60000" rather than the dropped
+// field_kind_id column -- see liveMapSpiceFieldRows's comment for why
+// value_remaining <> 60000 is the correct complement once it's gone (flour
+// sand is the only other kind, and it never leaves its single fixed 60,000
+// tier). columnsFor probes for the column so this still works unmodified
+// against an older, not-yet-updated schema that still has it.
 export async function addonOpsResourcesSummary(db) {
   if (!(await tableExists(db, "resourcefield_state"))) return emptyResourcesSummary();
+  const resourceColumns = await columnsFor(db, "resourcefield_state");
+  const spiceFilter = resourceColumns.has("field_kind_id") ? "where field_kind_id = 1" : "where value_remaining <> 60000";
+  const correlatedSpiceFilter = resourceColumns.has("field_kind_id") ? "and rfs.field_kind_id = 1" : "and rfs.value_remaining <> 60000";
 
   const result = await db.query(`
     select count(*)::int as total_fields,
            coalesce(sum(value_remaining), 0)::bigint as total_value
     from dune.resourcefield_state
-    where field_kind_id = 1`);
+    ${spiceFilter}`);
 
   const r = result.rows?.[0] || {};
 
@@ -14516,7 +14662,7 @@ export async function addonOpsResourcesSummary(db) {
                count(*)::int as fields,
                coalesce(sum(value_remaining), 0)::bigint as total_value
         from dune.resourcefield_state
-        where field_kind_id = 1
+        ${spiceFilter}
         group by map
         order by fields desc`);
     resourcesByMap = mapResult.rows || [];
@@ -14533,10 +14679,10 @@ export async function addonOpsResourcesSummary(db) {
                coalesce(sum(sft.max_globally_active), 0)::int as max_active,
                (select coalesce(sum(value_remaining), 0)::bigint
                 from dune.resourcefield_state rfs
-                where rfs.map = sft.map_name and rfs.field_kind_id = 1) as total_value,
+                where rfs.map = sft.map_name ${correlatedSpiceFilter}) as total_value,
                (select count(*)::int
                 from dune.resourcefield_state rfs
-                where rfs.map = sft.map_name and rfs.field_kind_id = 1) as active_fields
+                where rfs.map = sft.map_name ${correlatedSpiceFilter}) as active_fields
         from dune.spicefield_types sft
         where sft.is_spawning_active = true
         group by sft.field_type, sft.map_name

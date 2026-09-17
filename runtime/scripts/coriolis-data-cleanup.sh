@@ -62,25 +62,62 @@ CREATE TEMP TABLE coriolis_marker_cleanup_targets (
   PRIMARY KEY (map_name, marker_type)
 ) ON COMMIT DROP;
 
+-- Patch 1.5 flattened markers.marker.marker_type into markers.marker_type.
+-- Snapshot either supported shape behind one stable interface so cleanup stays
+-- safe during rolling upgrades and never references a column that is absent.
+CREATE TEMP TABLE coriolis_marker_source (
+  map_name text NOT NULL,
+  marker_type text NOT NULL
+) ON COMMIT DROP;
+
+DO $cleanup$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'dune' AND table_name = 'markers' AND column_name = 'marker_type'
+  ) THEN
+    EXECUTE $query$
+      INSERT INTO coriolis_marker_source (map_name, marker_type)
+      SELECT mn.map_name, m.marker_type::text
+      FROM dune.markers m
+      JOIN dune.map_names mn USING (map_name_id)
+      WHERE m.marker_type IS NOT NULL
+    $query$;
+  ELSIF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'dune' AND table_name = 'markers' AND column_name = 'marker'
+  ) THEN
+    EXECUTE $query$
+      INSERT INTO coriolis_marker_source (map_name, marker_type)
+      SELECT mn.map_name, (m.marker).marker_type::text
+      FROM dune.markers m
+      JOIN dune.map_names mn USING (map_name_id)
+      WHERE (m.marker).marker_type IS NOT NULL
+    $query$;
+  ELSE
+    RAISE EXCEPTION 'Unsupported dune.markers schema: marker_type is unavailable';
+  END IF;
+END
+$cleanup$;
+
 INSERT INTO coriolis_marker_cleanup_targets (map_name, marker_type)
-SELECT DISTINCT mn.map_name, (m.marker).marker_type
-FROM dune.markers m
-JOIN dune.map_names mn USING (map_name_id)
+SELECT DISTINCT m.map_name, m.marker_type
+FROM coriolis_marker_source m
 WHERE
   (
     EXISTS (SELECT 1 FROM coriolis_cleanup_scope WHERE map_name = 'DeepDesert')
-    AND mn.map_name = 'DeepDesert'
+    AND m.map_name = 'DeepDesert'
     AND (
-      (m.marker).marker_type ~ '(Ore|Pickup|Rock|Part|Wreckage|Bush|Field|Seed)$'
-      OR (m.marker).marker_type IN ('Cave', 'Shipwreck', 'EnemyCamp', 'EnemyOutpost', 'EnemyLaborOutpost')
-      OR (m.marker).marker_type LIKE 'Hazard\_%' ESCAPE '\'
+      m.marker_type ~ '(Ore|Pickup|Rock|Part|Wreckage|Bush|Field|Seed)$'
+      OR m.marker_type IN ('Cave', 'Shipwreck', 'EnemyCamp', 'EnemyOutpost', 'EnemyLaborOutpost')
+      OR m.marker_type LIKE 'Hazard\_%' ESCAPE '\'
     )
   )
   OR
   (
     EXISTS (SELECT 1 FROM coriolis_cleanup_scope WHERE map_name = 'HaggaBasin')
-    AND mn.map_name = 'HaggaBasin'
-    AND (m.marker).marker_type ~ '(Ore|Pickup|Rock|Part|Wreckage|Bush|Field|Seed)$'
+    AND m.map_name = 'HaggaBasin'
+    AND m.marker_type ~ '(Ore|Pickup|Rock|Part|Wreckage|Bush|Field|Seed)$'
   );
 
 DO $cleanup$
@@ -95,19 +132,17 @@ BEGIN
     END IF;
 
     SELECT count(*) INTO removed_count
-    FROM dune.markers m
-    JOIN dune.map_names mn USING (map_name_id)
+    FROM coriolis_marker_source m
     JOIN coriolis_marker_cleanup_targets t
-      ON t.map_name = mn.map_name AND t.marker_type = (m.marker).marker_type
-    WHERE mn.map_name = current_map;
+      ON t.map_name = m.map_name AND t.marker_type = m.marker_type
+    WHERE m.map_name = current_map;
 
-    SELECT coalesce(array_agg(DISTINCT (m.marker).marker_type), ARRAY[]::text[])
+    SELECT coalesce(array_agg(DISTINCT m.marker_type), ARRAY[]::text[])
       INTO keep_types
-    FROM dune.markers m
-    JOIN dune.map_names mn USING (map_name_id)
+    FROM coriolis_marker_source m
     LEFT JOIN coriolis_marker_cleanup_targets t
-      ON t.map_name = mn.map_name AND t.marker_type = (m.marker).marker_type
-    WHERE mn.map_name = current_map AND t.marker_type IS NULL;
+      ON t.map_name = m.map_name AND t.marker_type = m.marker_type
+    WHERE m.map_name = current_map AND t.marker_type IS NULL;
 
     PERFORM dune.delete_markers_for_all_players(keep_types, current_map);
     RAISE NOTICE 'Coriolis marker cleanup: map=%, removed=%', current_map, removed_count;

@@ -52,6 +52,10 @@ TEST_DEEPDESERT_WIPE=False TEST_HAGGA_WIPE=True \
 grep -q -- '-v cleanup_deepdesert=1 -v cleanup_hagga=0' "$TEST_DOCKER_ARGS"
 grep -q 'delete_markers_for_all_players' "$TEST_SQL_INPUT"
 grep -q "DELETE FROM dune.resourcefield_state WHERE map = 'DeepDesert'" "$TEST_SQL_INPUT"
+grep -q 'column_name = '\''marker_type'\''' "$TEST_SQL_INPUT"
+grep -q 'm.marker_type::text' "$TEST_SQL_INPUT"
+grep -q '(m.marker).marker_type::text' "$TEST_SQL_INPUT"
+grep -q 'FROM coriolis_marker_source m' "$TEST_SQL_INPUT"
 if grep -q 'delete_actors_and_respawns_on_server' "$TEST_SQL_INPUT"; then
   echo "Unsafe actor cleanup appeared in the Coriolis cleanup transaction." >&2
   exit 1
