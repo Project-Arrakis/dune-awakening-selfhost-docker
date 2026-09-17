@@ -120,6 +120,11 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | POST | `/api/updates/qa/apply` | Apply the latest QA pre-release build | None |
 | POST | `/api/updates/qa/reinstall-release` | Reinstall the public release, overwriting a QA pre-release build | None |
 
+Successful game checks are cached for 30 minutes in
+`runtime/generated/game-update-check.json`, including across Console restarts.
+Authenticated browser requests may pass `fresh: true` to force a live Steam
+query; API keys always use the shared cached path.
+
 ---
 
 ## Backups
