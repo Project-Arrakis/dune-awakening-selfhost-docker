@@ -170,6 +170,12 @@ export const COMMAND_METADATA = Object.freeze({
     capability: DISCORD_CAPABILITIES.CORIOLIS_READ,
     params: []
   },
+  [DISCORD_ADAPTER_ROUTES.WORLD_ATLAS]: {
+    group: "server", subcommand: "atlas",
+    description: "Show per-sietch PvP/PvE and live sandstorm status, plus the Coriolis cycle.",
+    capability: DISCORD_CAPABILITIES.ATLAS_READ,
+    params: []
+  },
   [DISCORD_ADAPTER_ROUTES.READINESS]: {
     group: "server", subcommand: "readiness",
     description: "Show readiness and preflight state.",
