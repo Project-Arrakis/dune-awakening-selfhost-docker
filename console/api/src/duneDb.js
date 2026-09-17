@@ -3802,12 +3802,11 @@ export async function liveMapFlourSandFieldRows(db, map = "") {
 }
 
 // dune.markers is the static-POI atlas (23,413+ entries on a full server --
-// caves, ore veins, scrap wrecks, vendors, hazards, etc). `marker` is a
-// composite type with real named fields (marker_type, x, y, z, payload_type)
-// -- confirmed live, no need for the text-parsing SPLIT_PART approach some
-// third-party docs use. One generic, parameterized query serves every
-// category: add a pattern-table entry for a new category and it works with
-// no new SQL.
+// caves, ore veins, scrap wrecks, vendors, hazards, etc). marker_type is a
+// flat text column and x/y/z live on the `position` composite (type
+// dune.vector) -- confirmed live. One generic, parameterized query serves
+// every category: add a pattern-table entry for a new category and it works
+// with no new SQL.
 // Suffix-only (no leading %) -- a substring match on "%ore%" was sweeping in
 // HarkoRecustomization (an unrelated NPC/customization POI, confirmed live)
 // because "HarkoRecustomization" contains "kore" -> "ore". All real resource
@@ -3854,14 +3853,14 @@ export async function liveMapPoiMarkers(db, map, category) {
   }
   const result = await db.query(`
     select m.marker_hash_id::text as id,
-           (m.marker).marker_type as marker_type,
-           (m.marker).x as x,
-           (m.marker).y as y,
-           (m.marker).z as z,
+           m.marker_type as marker_type,
+           (m.position).x as x,
+           (m.position).y as y,
+           (m.position).z as z,
            coalesce(mn.map_name, '') as map
     from dune.markers m
     join dune.map_names mn on mn.map_name_id = m.map_name_id
-    where (m.marker).marker_type ilike any($1) and (m.marker).marker_type not ilike 'NoIcon' ${where}
+    where m.marker_type ilike any($1) and m.marker_type not ilike 'NoIcon' ${where}
     order by m.marker_hash_id`, values);
   return {
     capabilities: { [category]: true },
@@ -6701,8 +6700,8 @@ async function attachVehicleRegions(db, rows) {
       cross join lateral (
         select m.area_id
         from dune.markers m
-        where m.map_name_id = $1 and m.area_id <> 0 and (m.marker).x is not null
-        order by power((m.marker).x - p.vx, 2) + power((m.marker).y - p.vy, 2)
+        where m.map_name_id = $1 and m.area_id <> 0 and (m.position).x is not null
+        order by power((m.position).x - p.vx, 2) + power((m.position).y - p.vy, 2)
         limit 1
       ) near`, values);
 
