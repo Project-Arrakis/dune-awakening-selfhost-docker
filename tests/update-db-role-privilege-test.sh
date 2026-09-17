@@ -187,6 +187,7 @@ EOF
   fi
 
   if [ -n "$existing_trigger_marker" ]; then
+    grep -Fq 'WHEN duplicate_object THEN' "$psql_stdin_log"
     grep -Fq 'WHEN invalid_schema_name OR undefined_function OR undefined_table THEN' "$psql_stdin_log"
     grep -Fq "$existing_trigger_marker" "$psql_stdin_log"
   fi
