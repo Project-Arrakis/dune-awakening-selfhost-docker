@@ -969,7 +969,7 @@ test("database table list returns exact row counts", async () => {
   assert.match(calls[1].text, /"dune"\."player_virtual_currency_balances"/);
 });
 
-test("database currency writes emit Solaris live refresh hook", async () => {
+test("database currency writes emit Solaris live refresh hook for the current wallet enum", async () => {
   const calls = [];
   let solarisSnapshot = 0;
   const db = {
@@ -986,7 +986,7 @@ test("database currency writes emit Solaris live refresh hook", async () => {
             : [];
         return { rows: names.map((column_name) => ({ column_name })) };
       }
-      if (text.includes("from dune.player_virtual_currency_balances") && text.includes("dune.get_solaris_id()")) {
+      if (text.includes("from dune.player_virtual_currency_balances") && text.includes("'Solaris'::dune.virtualwallettype")) {
         solarisSnapshot += 1;
         return { rows: [{ player_controller_id: "719", balance: solarisSnapshot === 1 ? "101" : "5000" }] };
       }
@@ -995,36 +995,38 @@ test("database currency writes emit Solaris live refresh hook", async () => {
   };
   const result = await runSql(db, "update dune.player_virtual_currency_balances set balance = 5000", true);
   assert.equal(result.rowCount, 1);
-  assert.ok(calls.some((call) => String(call.text).includes("dune.log_event_solaris")));
+  const refresh = calls.find((call) => String(call.text).includes("dune.log_event_solaris"));
+  assert.ok(refresh);
+  assert.equal(refresh.values[3], "dune.adjust_player_virtual_currency_balance(bigint,dune.virtualwallettype,bigint)");
 });
 
-test("player currency labels Solari Credit and Scrip, falls back to a generic label for other ids", async () => {
+test("player currency maps the current wallet enum to stable API ids and labels", async () => {
   const db = {
     query: async (text, values = []) => {
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
-      if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
-      if (text.includes("select dune.get_solaris_id() as id")) return { rows: [{ id: 0 }] };
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: String(values[0]).includes("dune.virtualwallettype") }] };
       if (text.includes("from dune.player_virtual_currency_balances")) {
         assert.deepEqual(values, [91]);
         return { rows: [
-          { currency_id: 0, balance: "5000", label: "Solari Credit" },
-          { currency_id: 1, balance: "250", label: "Scrip" },
-          { currency_id: 7, balance: "12", label: "Currency 7" }
+          { currency_key: "Solaris", balance: "5000" },
+          { currency_key: "HouseCredit", balance: "250" }
         ] };
       }
       return { rows: [] };
     }
   };
   const result = await playerCurrency(db, "91");
-  assert.deepEqual(result.rows.map((row) => row.label), ["Solari Credit", "Scrip", "Currency 7"]);
+  assert.deepEqual(result.rows, [
+    { currency_id: 0, balance: "5000", label: "Solari Credit" },
+    { currency_id: 1, balance: "250", label: "House Credit" }
+  ]);
 });
 
-test("player currency fills in zero balances for Solari Credit and Scrip when the player has neither", async () => {
+test("player currency fills in zero balances for current wallet currencies", async () => {
   const db = {
     query: async (text, values = []) => {
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
-      if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
-      if (text.includes("select dune.get_solaris_id() as id")) return { rows: [{ id: 0 }] };
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: String(values[0]).includes("dune.virtualwallettype") }] };
       if (text.includes("from dune.player_virtual_currency_balances")) {
         assert.deepEqual(values, [91]);
         return { rows: [] };
@@ -1035,8 +1037,29 @@ test("player currency fills in zero balances for Solari Credit and Scrip when th
   const result = await playerCurrency(db, "91");
   assert.deepEqual(result.rows, [
     { currency_id: 0, balance: 0, label: "Solari Credit" },
-    { currency_id: 1, balance: 0, label: "Scrip" }
+    { currency_id: 1, balance: 0, label: "House Credit" }
   ]);
+});
+
+test("player currency retains legacy Solaris and Scrip compatibility", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regprocedure")) {
+        return { rows: [{ exists: String(values[0]).includes("bigint,smallint,bigint") || String(values[0]).includes("get_solaris_id") }] };
+      }
+      if (text.includes("select dune.get_solaris_id() as id")) return { rows: [{ id: 0 }] };
+      if (text.includes("from dune.player_virtual_currency_balances")) {
+        return { rows: [
+          { currency_id: 0, balance: "5000", label: "Solari Credit" },
+          { currency_id: 1, balance: "250", label: "Scrip" }
+        ] };
+      }
+      return { rows: [] };
+    }
+  };
+  const result = await playerCurrency(db, "91");
+  assert.deepEqual(result.rows.map((row) => row.label), ["Solari Credit", "Scrip"]);
 });
 
 test("player currency reports unsupported when the balances table is missing", async () => {
@@ -1506,6 +1529,40 @@ test("manual currency row edit uses game balance function", async () => {
   const adjustCall = calls.find((call) => String(call.text).includes("adjust_player_virtual_currency_balance"));
   assert.ok(adjustCall);
   assert.deepEqual(adjustCall.values, [719, 0, "-4450"]);
+});
+
+test("manual currency row edit uses the current wallet enum function", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regprocedure")) {
+        return { rows: [{ exists: String(values[0]).includes("dune.virtualwallettype") }] };
+      }
+      if (text.includes("information_schema.columns")) {
+        return { rows: [
+          { name: "player_controller_id" },
+          { name: "currency_id" },
+          { name: "balance" }
+        ] };
+      }
+      if (text.includes("select player_controller_id, currency_id, balance")) {
+        return { rows: [{ player_controller_id: "719", currency_id: "HouseCredit", balance: "250" }] };
+      }
+      return { fields: [], rows: [], rowCount: 1, command: "SELECT" };
+    }
+  };
+  const result = await updateTableRow(db, "dune", "player_virtual_currency_balances", "(1,1)", {
+    player_controller_id: "719",
+    currency_id: "HouseCredit",
+    balance: "300"
+  });
+  assert.equal(result.updatedRows, 1);
+  const adjustCall = calls.find((call) => String(call.text).includes("adjust_player_virtual_currency_balance"));
+  assert.ok(adjustCall);
+  assert.match(adjustCall.text, /dune\.virtualwallettype/);
+  assert.deepEqual(adjustCall.values, [719, "HouseCredit", "50"]);
 });
 
 test("database faction writes sync reputation component", async () => {
@@ -6916,7 +6973,7 @@ test("storage give-item reports unsupported when volume_override cannot be writt
   assert.equal(calls.some((call) => call.text.includes("insert into dune.items")), false);
 });
 
-test("currency mutation resolves Solaris and calls adjust function in a transaction", async () => {
+test("currency mutation maps stable ids to the current wallet enum", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
     balanceRows: [{ currency_id: 0, balance: 1234 }]
@@ -6924,9 +6981,21 @@ test("currency mutation resolves Solaris and calls adjust function in a transact
   const result = await addCurrency(db, 123, { currencyId: 0, amount: 25 });
   assert.equal(result.currencyId, 0);
   assert.equal(result.balance.balance, 1234);
-  const adjust = calls.find((call) => call.text.includes("adjust_player_virtual_currency_balance"));
+  const adjust = calls.find((call) => call.text.includes("adjust_player_virtual_currency_balance") && call.text.includes("dune.virtualwallettype"));
   assert.ok(adjust);
-  assert.deepEqual(adjust.values, [55, 0, 25]);
+  assert.deepEqual(adjust.values, [55, "Solaris", 25]);
+});
+
+test("currency mutation maps id 1 to House Credit on the current schema", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    balanceRows: [{ currency_id: "HouseCredit", balance: 20 }]
+  });
+  const result = await addCurrency(db, 123, { currencyId: 1, amount: 20 });
+  assert.equal(result.currencyId, 1);
+  assert.match(result.message, /House Credit/);
+  const adjust = calls.find((call) => call.text.includes("adjust_player_virtual_currency_balance") && call.text.includes("dune.virtualwallettype"));
+  assert.deepEqual(adjust.values, [55, "HouseCredit", 20]);
 });
 
 test("faction mutation clamps reputation and syncs actor component JSON", async () => {

@@ -16,6 +16,7 @@ vi.mock("../../api/players", () => ({
     inventory: vi.fn(),
     specs: vi.fn(),
     giveItems: vi.fn(),
+    addCurrency: vi.fn(),
     setSkillModule: vi.fn(),
     setSkillPoints: vi.fn()
   }
@@ -46,6 +47,33 @@ beforeEach(() => {
   });
   vi.mocked(playersApi.inventory).mockResolvedValue({} as Awaited<ReturnType<typeof playersApi.inventory>>);
   vi.mocked(playersApi.specs).mockResolvedValue({ rows: [], skillModules: [], capabilities: {} });
+  vi.mocked(playersApi.addCurrency).mockResolvedValue({ supported: true, result: {} });
+});
+
+describe("CharacterAdminUI currency schema", () => {
+  it("uses the current House Credit option and stable currency id", async () => {
+    render(<CharacterAdminUI
+      {...baseProps}
+      detail={{
+        player: { actual_online_status: "Offline" },
+        capabilities: { addCurrency: true },
+        currencyOptions: [{ id: 0, label: "Solari Credit" }, { id: 1, label: "House Credit" }]
+      }}
+    />);
+
+    const row = screen.getByText("Give Currency").closest(".playerAdmin_actionRow");
+    expect(row).not.toBeNull();
+    const select = row!.querySelector("select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "1" } });
+    fireEvent.click(row!.querySelector("button") as HTMLButtonElement);
+
+    await waitFor(() => expect(playersApi.addCurrency).toHaveBeenCalledWith("101", {
+      currencyId: 1,
+      amount: 100,
+      confirmation: "ADD CURRENCY"
+    }));
+    expect(screen.getByText("OfflinePlayer's House Credit was updated. Relog required.")).toBeInTheDocument();
+  });
 });
 
 describe("CharacterAdminUI skill live grants", () => {
