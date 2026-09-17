@@ -21,11 +21,55 @@ PROJECT_ROLE_WAS_SUPERUSER=""
 ROLE_ELEVATION_MARKER="${DUNE_DB_UPDATE_ROLE_MARKER:-runtime/generated/db-update-role-elevated}"
 EXTERNAL_TRIGGER_MARKER="${DUNE_DB_UPDATE_EXTERNAL_TRIGGER_MARKER:-runtime/generated/db-update-external-triggers.sql}"
 DB_UPDATE_PG_DUMP_WRAPPER="$(pwd)/runtime/scripts/db-update-pg-dump"
+START_POSTGRES_SCRIPT="${DUNE_DB_UPDATE_START_POSTGRES_SCRIPT:-runtime/scripts/start-postgres.sh}"
+
+ensure_postgres_ready() {
+  if ! docker inspect -f '{{.State.Running}}' dune-postgres 2>/dev/null | grep -qx true; then
+    echo "Postgres is not running; starting it before the database update."
+    "$START_POSTGRES_SCRIPT"
+  fi
+
+  if ! docker exec dune-postgres pg_isready -h 127.0.0.1 -p 5432 -U postgres -d dune >/dev/null 2>&1; then
+    echo "Postgres is running but is not ready for the database update." >&2
+    return 1
+  fi
+}
+
+write_guarded_trigger_restore_sql() {
+  local trigger_definition
+  local trigger_delimiter="\$dune_trigger_definition\$"
+
+  while IFS= read -r trigger_definition || [ -n "$trigger_definition" ]; do
+    [ -n "$trigger_definition" ] || continue
+    case "$trigger_definition" in
+      CREATE\ TRIGGER*) ;;
+      *)
+        echo "Invalid project-owned trigger recovery entry; refusing to execute it." >&2
+        return 1
+        ;;
+    esac
+    if [[ "$trigger_definition" == *"$trigger_delimiter"* ]]; then
+      echo "Invalid project-owned trigger recovery entry; refusing to execute it." >&2
+      return 1
+    fi
+    cat <<SQL
+DO \$dune_restore_trigger\$
+BEGIN
+  EXECUTE \$dune_trigger_definition\$${trigger_definition}\$dune_trigger_definition\$;
+EXCEPTION
+  WHEN invalid_schema_name OR undefined_function OR undefined_table THEN
+    RAISE NOTICE 'Skipping stale project-owned database trigger: %', SQLERRM;
+END
+\$dune_restore_trigger\$;
+SQL
+  done < "$EXTERNAL_TRIGGER_MARKER"
+}
 
 restore_external_triggers() {
   [ -f "$EXTERNAL_TRIGGER_MARKER" ] || return 0
-  if ! docker exec -i dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 \
-    -f - < "$EXTERNAL_TRIGGER_MARKER" >/dev/null; then
+  if ! write_guarded_trigger_restore_sql \
+    | docker exec -i dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 \
+      -f - >/dev/null; then
     echo "Failed to restore project-owned database triggers after the update." >&2
     return 1
   fi
@@ -149,6 +193,8 @@ audit_db_orphans() {
     DB_BACKUP_ORIGIN=pre-update bash runtime/scripts/db.sh backup runtime/backups/db >/dev/null
   fi
 }
+
+ensure_postgres_ready
 
 echo "=== Running Dune DB update/migration ==="
 echo "Image: $IMAGE"
