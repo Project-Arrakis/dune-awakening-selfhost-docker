@@ -17,15 +17,20 @@ chmod +x "$mock_pg_dump"
 
 MOCK_ARGUMENTS_FILE="$arguments_file" DUNE_REAL_PG_DUMP="$mock_pg_dump" \
   runtime/scripts/db-update-pg-dump -d dune --schema-only
-grep -Fxq -- '--exclude-schema=console_*' "$arguments_file"
-grep -Fxq -- '--exclude-schema=dune_runtime' "$arguments_file"
+grep -Fxq -- '--schema=dune' "$arguments_file"
+grep -Fxq -- '--schema=ext' "$arguments_file"
+grep -Fxq -- '--schema=public' "$arguments_file"
 grep -Fxq -- '--schema-only' "$arguments_file"
-echo "PASS schema validation excludes Console-owned schemas"
+if grep -Fq -- '--exclude-schema=' "$arguments_file"; then
+  echo "FAIL schema validation must use a Funcom-owned allowlist" >&2
+  exit 1
+fi
+echo "PASS schema validation includes only Funcom-owned schemas"
 
 MOCK_ARGUMENTS_FILE="$arguments_file" DUNE_REAL_PG_DUMP="$mock_pg_dump" \
   runtime/scripts/db-update-pg-dump -d dune --data-only
-if grep -Fq -- '--exclude-schema=' "$arguments_file"; then
-  echo "FAIL ordinary database dumps must include Console-owned schemas" >&2
+if grep -Eq -- '--(exclude-)?schema=' "$arguments_file"; then
+  echo "FAIL ordinary database dumps must include every schema" >&2
   exit 1
 fi
 grep -Fxq -- '--data-only' "$arguments_file"
