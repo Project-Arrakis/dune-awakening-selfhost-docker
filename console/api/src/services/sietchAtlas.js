@@ -18,7 +18,22 @@ import { resolveSandstormStatus } from "./sandstormStatus.js";
 // Sandworm/storm-cadence config (usersettings.py's partition_engine scope)
 // is deliberately NOT included yet -- tracked as a fast-follow, not blocking
 // the first real #the-atlas content.
-const ATLAS_MAPS = ["HaggaBasin", "DeepDesert"];
+//
+// Real bug, caught live on first deploy (2026-09-18): resolveMapCombatState/
+// mapCombatPartitionRows key off dune.world_partition's own internal map
+// name ("Survival_1"/"DeepDesert_1"), NOT the Live Map's display/actorMap
+// name ("HaggaBasin"/"DeepDesert") that resolveCoriolisCycle/
+// resolveSandstormStatus use -- exactly the two-name-space split
+// LiveMapPanel.tsx's own LIVE_MAP_TO_COMBAT_STATE_MAP already exists to
+// bridge (HaggaBasin -> Survival_1, DeepDesert -> DeepDesert_1), which this
+// service missed on first pass and passed "HaggaBasin"/"DeepDesert"
+// straight into the combat-state resolver, silently returning zero rows for
+// every real sietch. Track both names explicitly per map instead of
+// assuming they're the same string.
+const ATLAS_MAPS = [
+  { displayMap: "HaggaBasin", combatMap: "Survival_1" },
+  { displayMap: "DeepDesert", combatMap: "DeepDesert_1" }
+];
 
 function partitionRowsFromCombatResult(result) {
   if (result?.capabilities?.combatState === false || !Array.isArray(result?.rows)) return [];
@@ -33,15 +48,15 @@ function partitionRowsFromCombatResult(result) {
   }));
 }
 
-async function sietchesForMap(config, map, db, mapCombatPartitionRows, resolveCombatState, resolveStorm) {
-  const partitionResult = await mapCombatPartitionRows(db, map).catch(() => ({ rows: [], capabilities: { combatState: false } }));
+async function sietchesForMap(config, displayMap, combatMap, db, mapCombatPartitionRows, resolveCombatState, resolveStorm) {
+  const partitionResult = await mapCombatPartitionRows(db, combatMap).catch(() => ({ rows: [], capabilities: { combatState: false } }));
   const rows = partitionRowsFromCombatResult(partitionResult);
   if (rows.length === 0) return [];
-  const combat = await resolveCombatState(config, map, rows);
+  const combat = await resolveCombatState(config, combatMap, rows);
   return Promise.all(combat.partitions.map(async (partition) => {
-    const sandstorm = await resolveStorm({ map, partitionId: partition.partitionId }).catch(() => ({ active: false, lastStartAt: null }));
+    const sandstorm = await resolveStorm({ map: displayMap, partitionId: partition.partitionId }).catch(() => ({ active: false, lastStartAt: null }));
     return {
-      map: partition.map,
+      map: displayMap,
       partitionId: partition.partitionId,
       serverDisplayName: partition.serverDisplayName,
       runtimeStatus: partition.runtimeStatus,
@@ -61,11 +76,11 @@ export async function buildSietchAtlas(config, db, {
 } = {}) {
   const [coriolis, ...sietchesByMap] = await Promise.all([
     resolveCycle({ map: "HaggaBasin" }).catch(() => ({ seed: null, nextCycleAt: null })),
-    ...maps.map((map) => sietchesForMap(config, map, db, mapCombatPartitionRows, resolveCombatState, resolveStorm))
+    ...maps.map(({ displayMap, combatMap }) => sietchesForMap(config, displayMap, combatMap, db, mapCombatPartitionRows, resolveCombatState, resolveStorm))
   ]);
 
   const sietches = {};
-  maps.forEach((map, index) => { sietches[map] = sietchesByMap[index]; });
+  maps.forEach(({ displayMap }, index) => { sietches[displayMap] = sietchesByMap[index]; });
 
   return {
     coriolisSeed: coriolis.seed || null,
