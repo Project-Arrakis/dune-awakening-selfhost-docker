@@ -63,7 +63,7 @@ release is covered by an existing Read grant without every key needing to be re-
 | `logs` | `logs:read` | *nothing — no write action exists* |
 | `backups` | `backups:read` | `create`, `delete`, `import`, `restore`, `write-config` |
 | `updates` | `updates:check`, `updates:read` | *nothing — write actions are denied to keys* |
-| `carepackage` | `carepackage:read` | `clear-history`, `grant`, `scan`, `write-config` |
+| `carepackage` | `carepackage:read` | `clear-history`, `grant`, `grant-all`, `scan`, `write-config` |
 | `addons` | `addons:read` | *nothing — write actions are denied to keys* |
 | `admin` | `admin:announcements:read`, `admin:history:read`, `admin:items:read`, `admin:motd:read`, `admin:skills:read`, `admin:transfer-settings:read`, `admin:vehicles:read` | `announcements:write`, `broadcast`, `broadcast-shutdown`, `history:clear`, `map-chat`, `motd:write`, `transfer-settings:write` |
 

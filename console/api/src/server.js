@@ -3325,9 +3325,15 @@ async function adminPasswordRoute(req, res) {
     return json(res, status, payload);
   };
   const body = await readJson(req);
-  // readJson returns raw JSON.parse output, so a literal `null` body used to
-  // throw a TypeError and surface as a 500 with an internal JS message (#527).
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
+  // readJsonBody now normalizes a literal `null` body to {} (upstream sync
+  // #964, resolved a TypeError-to-500 bug affecting every readJson caller,
+  // see httpSafety.js) -- so a null/missing body can no longer be told apart
+  // from a real object by `!body` alone. The empty-object check below
+  // restores that distinction: an empty body still gets classified as
+  // malformed_body rather than falling through to a misleading bad_password
+  // audit reason, which the credential-stuffing audit trail this route was
+  // hardened for (#547) depends on.
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length === 0) {
     return deny(400, { error: "Request body must be a JSON object." }, "malformed_body");
   }
   if (config.authDisabled) {
@@ -3405,7 +3411,9 @@ async function recoveryCodesRegenerateRoute(req, res) {
   }
 
   const body = await readJson(req);
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
+  // See adminPasswordRoute's matching check above for why Object.keys(...)
+  // === 0 is needed too, now that readJsonBody normalizes a null body to {}.
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length === 0) {
     return deny(400, { error: "Request body must be a JSON object." }, { reason: "malformed_body" });
   }
 

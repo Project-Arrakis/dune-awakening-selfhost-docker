@@ -132,6 +132,7 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | GET | `/api/backups/{backup}/download` | Download backup archive | `backup` (string) |
 | DELETE | `/api/backups/{backup}` | Delete backup | `backup` (string) |
 | POST | `/api/backups/delete-all` | Delete all backups | None |
+| POST | `/api/backups/delete-selected` | Delete a chosen subset of backups | `backups` (array of filenames) |
 | POST | `/api/backups/import-external` | Import external backup | multipart form: `backup`, `metadata` |
 | GET | `/api/backups/auto` | Get auto-backup status | None |
 | POST | `/api/backups/auto` | Save auto-backup config | `enabled`, `time`, `retentionDays`, `intervalHours` |
