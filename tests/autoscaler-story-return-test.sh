@@ -52,7 +52,8 @@ assert "Teleport not allowed" in rejected
 assert "CB_Story_(?:DestroyedZanovar|OrbitalMonitor)" in rejected
 assert "target_fs.ready = true" in rejected
 assert "target_fs.alive = true" in rejected
-assert "ps.server_id = source_wp.server_id" in rejected
+assert "ps.server_id in ('$source_server', '$target_server')" in rejected
+assert "join dune.world_partition source_wp" not in rejected
 assert "with moved as (" in rejected
 assert "update dune.encrypted_player_state" in rejected
 assert "delete from dune.travel_return_info" in rejected
@@ -150,7 +151,12 @@ scan_rejected_story_returns")"
 
 test "$(grep -c '^STORY-RETURN account=42 request=0335A8724B8F8F5B0DB6908CCE7CEFCC ' <<<"$rejected_output")" -eq 1
 grep -Fq "server_id = 'targetServer31'" "$rejected_sql"
-grep -Fq "server_id = 'sourceServer133'" "$rejected_sql"
+grep -Fq "ps.server_id in ('sourceServer133', 'targetServer31')" "$rejected_sql"
+grep -Fq "server_id in ('sourceServer133', 'targetServer31')" "$rejected_sql"
+if grep -Fq 'join dune.world_partition source_wp' "$rejected_sql"; then
+  echo "story return recovery must not depend on the transient source partition row" >&2
+  exit 1
+fi
 grep -Fq 'previous_server_partition_id = 31' "$rejected_sql"
 grep -Fq 'return_dimension_index = 1' "$rejected_sql"
 grep -Fq 'delete from dune.travel_return_info' "$rejected_sql"

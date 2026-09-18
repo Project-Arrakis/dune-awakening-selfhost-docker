@@ -2151,7 +2151,7 @@ PY
   )"
   rm -f "$director_log_file"
 
-  while IFS='|' read -r request_id funcom_id target_partition target_server target_map target_dimension source_partition source_server source_map source_dimension; do
+  while IFS='|' read -r request_id funcom_id target_partition target_server target_map target_dimension source_partition source_server source_map _source_dimension; do
     [ -n "${request_id:-}" ] || continue
     hub_travel_seen "$request_id" && continue
 
@@ -2169,13 +2169,8 @@ PY
         on target_fs.server_id = target_wp.server_id
        and target_fs.ready = true
        and target_fs.alive = true
-      join dune.world_partition source_wp
-        on source_wp.partition_id = $source_partition
-       and source_wp.server_id = '$source_server'
-       and source_wp.map = '$source_map'
-       and coalesce(source_wp.dimension_index, 0) = $source_dimension
       where a.\"user\" = '$funcom_id'
-        and ps.server_id = source_wp.server_id
+        and ps.server_id in ('$source_server', '$target_server')
       limit 1;
     ")"
     [ -n "$account_id" ] || continue
@@ -2190,7 +2185,7 @@ PY
           return_dimension_index = $target_dimension,
           pending_respawn_location_id = null
         where account_id = $account_id
-          and server_id = '$source_server'
+          and server_id in ('$source_server', '$target_server')
         returning account_id
       ), cleared_return as (
         delete from dune.travel_return_info
