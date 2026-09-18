@@ -140,9 +140,10 @@ docker() { cat \"\$REJECTED_LOG\"; }
 hub_travel_seen() { grep -qx \"\$1\" \"\$REJECTED_SEEN\"; }
 remember_hub_travel() { printf '%s\\n' \"\$1\" >> \"\$REJECTED_SEEN\"; }
 psql_value() {
+  printf '%s\\n' \"\$1\" >> \"\$REJECTED_SQL\"
   case \"\$1\" in
     *'select a.id'*) printf '42\\n' ;;
-    *) printf '%s\\n' \"\$1\" >> \"\$REJECTED_SQL\"; printf '42\\n' ;;
+    *) printf '42\\n' ;;
   esac
 }
 NAMED_DESTINATION_SINCE=10m
