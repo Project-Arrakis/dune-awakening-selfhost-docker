@@ -887,6 +887,92 @@ export function readPublicModifiers(path) {
   }));
 }
 
+// readModifiersByScope (dune-awakening-selfhost-docker#938, #the-atlas):
+// unlike readPublicModifiers() above -- which deliberately collapses every
+// scope into one flat label->value(s) map for the public directory
+// heartbeat, discarding which map/partition a value came from -- #the-atlas
+// wants to show operators a real "what's non-default, globally vs. per
+// sietch" breakdown. Reuses the exact same PUBLIC_MODIFIER_SETTINGS
+// allowlist and value/format helpers as readPublicModifiers() (same
+// security boundary, not a second one), just keeps scope identity instead
+// of discarding it.
+//
+// "Global" here means Engine/Global/Map/MapEngine scope (farm-wide or
+// map-wide, not tied to one partition) -- compared against each setting's
+// hardcoded default. A per-partition (Partition/PartitionEngine) value is
+// only surfaced as an OVERRIDE if it differs from the *effective* baseline
+// (the global value if one is set for that key, else the hardcoded
+// default) -- so a value every sietch shares because it's set globally
+// isn't redundantly repeated under every sietch too; only a genuine
+// per-sietch anomaly is.
+function parseModifierHeader(header) {
+  const parts = header.split(":");
+  const scopeType = parts[0];
+  if (scopeType === "Engine" || scopeType === "Global") {
+    return { isGlobal: true, map: null, partitionId: null, sectionPath: parts.slice(1).join(":") };
+  }
+  if (scopeType === "Map" || scopeType === "MapEngine") {
+    return { isGlobal: true, map: parts[1] || null, partitionId: null, sectionPath: parts.slice(2).join(":") };
+  }
+  if (scopeType === "Partition" || scopeType === "PartitionEngine") {
+    return { isGlobal: false, map: parts[1] || null, partitionId: parts[2] || null, sectionPath: parts.slice(3).join(":") };
+  }
+  return { isGlobal: false, map: null, partitionId: null, sectionPath: "" };
+}
+
+export function readModifiersByScope(path) {
+  const globalRaw = new Map();
+  const partitionRaw = new Map();
+  if (existsSync(path)) {
+    let scope = { isGlobal: false, map: null, partitionId: null, sectionPath: "" };
+    for (const rawLine of readFileSync(path, "utf8").split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (line.startsWith("[") && line.endsWith("]")) {
+        scope = parseModifierHeader(line.slice(1, -1));
+        continue;
+      }
+      if (!line || line.startsWith(";") || line.startsWith("#")) continue;
+      const equals = line.indexOf("=");
+      if (equals < 1) continue;
+      const key = line.slice(0, equals).trim();
+      const settingKey = publicModifierKey(scope.sectionPath, key);
+      if (!PUBLIC_MODIFIER_SETTINGS.has(settingKey)) continue;
+      const value = line.slice(equals + 1).trim().replace(/^"|"$/g, "");
+      if (!value) continue;
+      if (scope.isGlobal) {
+        globalRaw.set(settingKey, value);
+      } else if (scope.map && scope.partitionId) {
+        const partitionKey = `${scope.map}:${scope.partitionId}`;
+        if (!partitionRaw.has(partitionKey)) partitionRaw.set(partitionKey, new Map());
+        partitionRaw.get(partitionKey).set(settingKey, value);
+      }
+    }
+  }
+
+  const global = {};
+  for (const [settingKey, value] of globalRaw) {
+    const setting = PUBLIC_MODIFIER_SETTINGS.get(settingKey);
+    if (publicModifierValuesEqual(value, setting.defaultValue, setting.format)) continue;
+    const formatted = formatPublicModifierValue(value, setting.format);
+    if (formatted) global[setting.label] = formatted;
+  }
+
+  const partitions = {};
+  for (const [partitionKey, settings] of partitionRaw) {
+    const overrides = {};
+    for (const [settingKey, value] of settings) {
+      const setting = PUBLIC_MODIFIER_SETTINGS.get(settingKey);
+      const baseline = globalRaw.has(settingKey) ? globalRaw.get(settingKey) : setting.defaultValue;
+      if (publicModifierValuesEqual(value, baseline, setting.format)) continue;
+      const formatted = formatPublicModifierValue(value, setting.format);
+      if (formatted) overrides[setting.label] = formatted;
+    }
+    if (Object.keys(overrides).length) partitions[partitionKey] = overrides;
+  }
+
+  return { global, partitions };
+}
+
 function publicModifier(section, key, label, defaultValue, format) {
   return [publicModifierKey(section, key), { label, defaultValue, format }];
 }

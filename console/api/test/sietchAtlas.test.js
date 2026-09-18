@@ -120,3 +120,43 @@ test("buildSietchAtlas degrades a single sietch's storm lookup failure to inacti
   assert.equal(result.sietches.HaggaBasin[0].sandstormActive, false);
   assert.equal(result.sietches.HaggaBasin[0].sandstormLastStartAt, null);
 });
+
+// worldModifiers / per-sietch modifiers (real operator request, 2026-09-18):
+// #the-atlas should show what's configured differently from default,
+// globally and per sietch.
+test("buildSietchAtlas exposes global modifiers and attaches only the matching partition's own overrides to each sietch", async () => {
+  const result = await buildSietchAtlas(config, db, {
+    maps: [MAPS[0]],
+    mapCombatPartitionRows: async () => combatRowsFor(["1", "37"]),
+    resolveCombatState: async (_config, map, rows) => ({
+      map,
+      mapState: "MIXED",
+      partitions: rows.map((row) => ({ map, partitionId: row.partitionId, serverDisplayName: `Sietch ${row.partitionId}`, runtimeStatus: "RUNNING", configuredState: "PVE" }))
+    }),
+    resolveCycle: async () => ({ seed: "cor-6", nextCycleAt: null }),
+    resolveStorm: async () => ({ active: false, lastStartAt: null }),
+    readModifiers: () => ({
+      global: { "Mining Output": "2x" },
+      partitions: { "Survival_1:37": { "PvP Resource Output": "5x" } }
+    })
+  });
+  assert.deepEqual(result.worldModifiers, { "Mining Output": "2x" });
+  assert.deepEqual(result.sietches.HaggaBasin.find((s) => s.partitionId === "1").modifiers, {});
+  assert.deepEqual(result.sietches.HaggaBasin.find((s) => s.partitionId === "37").modifiers, { "PvP Resource Output": "5x" });
+});
+
+test("buildSietchAtlas degrades to empty modifiers rather than failing the whole atlas when the ini can't be read", async () => {
+  const result = await buildSietchAtlas(config, db, {
+    maps: [MAPS[0]],
+    mapCombatPartitionRows: async () => combatRowsFor(["1"]),
+    resolveCombatState: async (_config, map, rows) => ({
+      map, mapState: "PVE",
+      partitions: rows.map((row) => ({ map, partitionId: row.partitionId, serverDisplayName: "Sietch", runtimeStatus: "RUNNING", configuredState: "PVE" }))
+    }),
+    resolveCycle: async () => ({ seed: "cor-6", nextCycleAt: null }),
+    resolveStorm: async () => ({ active: false, lastStartAt: null }),
+    readModifiers: () => { throw new Error("file read failed"); }
+  });
+  assert.deepEqual(result.worldModifiers, {});
+  assert.deepEqual(result.sietches.HaggaBasin[0].modifiers, {});
+});

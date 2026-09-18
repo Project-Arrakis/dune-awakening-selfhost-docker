@@ -1,7 +1,9 @@
+import { resolve } from "node:path";
 import * as duneDb from "../duneDb.js";
 import { resolveMapCombatState } from "./mapCombatState.js";
 import { resolveCoriolisCycle } from "./coriolisSeed.js";
 import { resolveSandstormStatus } from "./sandstormStatus.js";
+import { readModifiersByScope } from "./publicDirectory.js";
 
 // Public, per-sietch/per-Deep-Desert-instance summary for #the-atlas
 // (dune-awakening-selfhost-docker#938, mentat#376): PvP/PvE, live sandstorm
@@ -48,7 +50,7 @@ function partitionRowsFromCombatResult(result) {
   }));
 }
 
-async function sietchesForMap(config, displayMap, combatMap, db, mapCombatPartitionRows, resolveCombatState, resolveStorm) {
+async function sietchesForMap(config, displayMap, combatMap, db, mapCombatPartitionRows, resolveCombatState, resolveStorm, partitionModifiers) {
   const partitionResult = await mapCombatPartitionRows(db, combatMap).catch(() => ({ rows: [], capabilities: { combatState: false } }));
   const rows = partitionRowsFromCombatResult(partitionResult);
   if (rows.length === 0) return [];
@@ -62,9 +64,19 @@ async function sietchesForMap(config, displayMap, combatMap, db, mapCombatPartit
       runtimeStatus: partition.runtimeStatus,
       combatState: partition.configuredState,
       sandstormActive: sandstorm.active,
-      sandstormLastStartAt: sandstorm.lastStartAt
+      sandstormLastStartAt: sandstorm.lastStartAt,
+      // Real operator request (2026-09-18): show what's configured
+      // differently from default, globally (worldModifiers, top-level) and
+      // per sietch (only genuine overrides -- see readModifiersByScope's
+      // own comment for why a value shared with the global config isn't
+      // redundantly repeated here).
+      modifiers: partitionModifiers[`${combatMap}:${partition.partitionId}`] || {}
     };
   }));
+}
+
+function defaultReadModifiers(config) {
+  return readModifiersByScope(resolve(config.repoRoot, "runtime/generated/gameplay-profile.ini"));
 }
 
 export async function buildSietchAtlas(config, db, {
@@ -72,11 +84,19 @@ export async function buildSietchAtlas(config, db, {
   resolveCombatState = resolveMapCombatState,
   resolveCycle = resolveCoriolisCycle,
   resolveStorm = resolveSandstormStatus,
+  readModifiers = defaultReadModifiers,
   maps = ATLAS_MAPS
 } = {}) {
+  let modifiersByScope;
+  try {
+    modifiersByScope = readModifiers(config);
+  } catch {
+    modifiersByScope = { global: {}, partitions: {} };
+  }
+
   const [coriolis, ...sietchesByMap] = await Promise.all([
     resolveCycle({ map: "HaggaBasin" }).catch(() => ({ seed: null, nextCycleAt: null })),
-    ...maps.map(({ displayMap, combatMap }) => sietchesForMap(config, displayMap, combatMap, db, mapCombatPartitionRows, resolveCombatState, resolveStorm))
+    ...maps.map(({ displayMap, combatMap }) => sietchesForMap(config, displayMap, combatMap, db, mapCombatPartitionRows, resolveCombatState, resolveStorm, modifiersByScope.partitions))
   ]);
 
   const sietches = {};
@@ -85,6 +105,7 @@ export async function buildSietchAtlas(config, db, {
   return {
     coriolisSeed: coriolis.seed || null,
     coriolisNextCycleAt: coriolis.nextCycleAt || null,
+    worldModifiers: modifiersByScope.global,
     sietches
   };
 }
