@@ -391,6 +391,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
         const result = await playersApi.giveItems(grantTargetId, items.map((item) => ({ itemName: item.itemName, itemId: item.itemId, quantity: item.quantity, quality: itemGrade(item), durability: grantItemDurability(), augments: item.augments || [], augmentQuality: item.augments?.length ? playerAdmin_augmentGrade(item.augmentQuality) : undefined })));
         if (!result.ok) throw new Error(playerAdmin_bulkItemFailure(result.results));
         await playerAdmin_loadInventoryRows();
+        return result;
       },
       successText,
       { actionType: actionLabel, target: playerName, amount: String(items.length) },
