@@ -57,6 +57,10 @@ assert "join dune.world_partition source_wp" not in rejected
 assert "with moved as (" in rejected
 assert "update dune.encrypted_player_state" in rejected
 assert "delete from dune.travel_return_info" in rejected
+assert "returning account_id, player_controller_id" in rejected
+assert "select player_controller_id\n          from moved" in rejected
+assert "from dune.actors\n          where owner_account_id" not in rejected
+assert "(select count(*) from cleared_return)" in rejected
 assert '[ "$moved_account_id" = "$account_id" ] || continue' in rejected
 main_loop = text.rindex("while true; do")
 assert text.index("scan_rejected_story_returns", main_loop) < text.index("scan_named_destination_failures", main_loop)
@@ -143,7 +147,7 @@ psql_value() {
   printf '%s\\n' \"\$1\" >> \"\$REJECTED_SQL\"
   case \"\$1\" in
     *'select a.id'*) printf '42\\n' ;;
-    *) printf '42\\n' ;;
+    *) printf '42|1\\n' ;;
   esac
 }
 NAMED_DESTINATION_SINCE=10m
@@ -151,6 +155,7 @@ scan_rejected_story_returns
 scan_rejected_story_returns")"
 
 test "$(grep -c '^STORY-RETURN account=42 request=0335A8724B8F8F5B0DB6908CCE7CEFCC ' <<<"$rejected_output")" -eq 1
+grep -Fq 'cleared_return_rows=1' <<< "$rejected_output"
 grep -Fq "server_id = 'targetServer31'" "$rejected_sql"
 grep -Fq "ps.server_id in ('sourceServer133', 'targetServer31')" "$rejected_sql"
 grep -Fq "server_id in ('sourceServer133', 'targetServer31')" "$rejected_sql"
@@ -161,5 +166,47 @@ fi
 grep -Fq 'previous_server_partition_id = 31' "$rejected_sql"
 grep -Fq 'return_dimension_index = 1' "$rejected_sql"
 grep -Fq 'delete from dune.travel_return_info' "$rejected_sql"
+grep -Fq 'select player_controller_id' "$rejected_sql"
+grep -Fq 'from moved' "$rejected_sql"
+if grep -Fq 'from dune.actors' "$rejected_sql"; then
+  echo "story return cleanup must use the moved player's controller ID" >&2
+  exit 1
+fi
+
+# Exercise the exact recovery CTE against temporary PostgreSQL tables. The
+# controller has no actor ownership row, which used to leave its return state.
+if [ -n "${DUNE_TEST_POSTGRES_CONTAINER:-}" ]; then
+  pg_result="$(python3 - "$script" <<'PY' | docker exec -i "$DUNE_TEST_POSTGRES_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d dune -Atq
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+query = text.split('recovery_result="$(psql_value "', 1)[1].split('\n    ")', 1)[0]
+for old, new in (
+    ("dune.encrypted_player_state", "test_story_player_state"),
+    ("dune.travel_return_info", "test_story_return_info"),
+    ("$target_server", "target-hagga"),
+    ("$source_server", "source-story"),
+    ("$target_partition", "31"),
+    ("$target_dimension", "1"),
+    ("$account_id", "42"),
+):
+    query = query.replace(old, new)
+query = query.replace("select distinct account_id, (select count(*) from cleared_return) from moved;", "select 'moved=' || account_id || '|cleared=' || (select count(*) from cleared_return) from moved;")
+print("begin;")
+print("create temp table test_story_player_state (account_id bigint, player_controller_id bigint, server_id text, previous_server_partition_id bigint, return_dimension_index integer, pending_respawn_location_id bigint);")
+print("create temp table test_story_return_info (player_controller_id bigint, map text);")
+print("insert into test_story_player_state values (42, 1001, 'source-story', 133, 0, 7);")
+print("insert into test_story_return_info values (1001, 'CB_Story_OrbitalMonitor');")
+print(query)
+print("select 'remaining=' || count(*) from test_story_return_info;")
+print("select 'state=' || server_id || ':' || previous_server_partition_id || ':' || return_dimension_index from test_story_player_state where account_id = 42;")
+print("rollback;")
+PY
+  )"
+  grep -qx 'moved=42|cleared=1' <<< "$pg_result"
+  grep -qx 'remaining=0' <<< "$pg_result"
+  grep -qx 'state=target-hagga:31:1' <<< "$pg_result"
+fi
 
 echo "autoscaler recovers Hagga Basin returns from every running new-story instance"

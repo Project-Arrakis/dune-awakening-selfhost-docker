@@ -2129,8 +2129,8 @@ PY
     ")"
     [ -n "$account_id" ] || continue
 
-    local moved_account_id
-    moved_account_id="$(psql_value "
+    local recovery_result moved_account_id cleared_return_rows
+    recovery_result="$(psql_value "
       with moved as (
         update dune.encrypted_player_state
         set
@@ -2140,23 +2140,23 @@ PY
           pending_respawn_location_id = null
         where account_id = $account_id
           and server_id in ('$source_server', '$target_server')
-        returning account_id
+        returning account_id, player_controller_id
       ), cleared_return as (
         delete from dune.travel_return_info
         where player_controller_id in (
-          select id
-          from dune.actors
-          where owner_account_id in (select account_id from moved)
-            and class = '/Game/Dune/Characters/Player/BP_DunePlayerController.BP_DunePlayerController_C'
+          select player_controller_id
+          from moved
+          where player_controller_id is not null
         )
         returning player_controller_id
       )
-      select account_id from moved;
+      select distinct account_id, (select count(*) from cleared_return) from moved;
     ")"
+    IFS='|' read -r moved_account_id cleared_return_rows <<< "$recovery_result"
     [ "$moved_account_id" = "$account_id" ] || continue
 
     remember_hub_travel "$request_id" "$account_id" "$source_map" "$target_map" "$(date +%s)"
-    echo "STORY-RETURN account=$account_id request=$request_id from=$source_map partition=$source_partition to=$target_map partition=$target_partition dimension=$target_dimension"
+    echo "STORY-RETURN account=$account_id request=$request_id from=$source_map partition=$source_partition to=$target_map partition=$target_partition dimension=$target_dimension cleared_return_rows=$cleared_return_rows"
   done <<< "$rejected_rows"
 }
 
