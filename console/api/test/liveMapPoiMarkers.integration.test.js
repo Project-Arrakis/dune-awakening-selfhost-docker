@@ -3,22 +3,26 @@ import assert from "node:assert/strict";
 import { liveMapPoiMarkers } from "../src/duneDb.js";
 import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 
-// Real schema pulled from dune2's live database -- `marker` is a composite
-// type with real named fields (marker_type, x, y, z, payload_type), not the
-// unnamed/text-parsed structure some third-party docs assume.
+// Real schema pulled from dune2's live database, as of the Steam release
+// diffed in issue #963. A prior Funcom schema exposed a single composite
+// `marker` column (marker_type, x, y, z, payload_type combined); that
+// release split it into a top-level `marker_type` text column, a `position`
+// composite (named `vector`, but a plain 3-field double-precision composite
+// type -- not the pgvector extension), and a `payload_type` column, with no
+// successor to the old combined column at all.
 const SCHEMA = `
   create schema dune;
-  create type dune.marker as (
-    marker_type text,
+  create type dune.vector as (
     x double precision,
     y double precision,
-    z double precision,
-    payload_type text
+    z double precision
   );
   create table dune.markers (
     marker_hash_id integer primary key,
     dimension_index integer not null,
-    marker dune.marker not null,
+    marker_type text,
+    position dune.vector,
+    payload_type text,
     area_id smallint,
     area_radius real,
     long_range boolean,
@@ -40,16 +44,16 @@ test("real PostgreSQL: liveMapPoiMarkers filters by category pattern, excludes N
     await pool.query(SCHEMA);
     await pool.query(`
       insert into dune.map_names (map_name_id, map_name) values (11, 'HaggaBasin'), (7, 'DeepDesert');
-      insert into dune.markers (marker_hash_id, dimension_index, marker, map_name_id) values
-        (1, -1, ('RhyolitePickup', 87101, -15285, 2474, 'EMarkerPayloadType::Default')::dune.marker, 11),
-        (2, -1, ('AzuriteOre', 86702, -15439, 2480, 'EMarkerPayloadType::Default')::dune.marker, 11),
-        (3, -1, ('ScrapMetalWreckage', 88805, -21053, 2622, 'EMarkerPayloadType::Default')::dune.marker, 11),
-        (4, -1, ('NoIcon', 1, 2, 3, 'EMarkerPayloadType::Default')::dune.marker, 11),
-        (5, -1, ('AzurateOre', 1, 2, 3, 'EMarkerPayloadType::Default')::dune.marker, 7),
+      insert into dune.markers (marker_hash_id, dimension_index, marker_type, position, payload_type, map_name_id) values
+        (1, -1, 'RhyolitePickup', (87101, -15285, 2474)::dune.vector, 'EMarkerPayloadType::Default', 11),
+        (2, -1, 'AzuriteOre', (86702, -15439, 2480)::dune.vector, 'EMarkerPayloadType::Default', 11),
+        (3, -1, 'ScrapMetalWreckage', (88805, -21053, 2622)::dune.vector, 'EMarkerPayloadType::Default', 11),
+        (4, -1, 'NoIcon', (1, 2, 3)::dune.vector, 'EMarkerPayloadType::Default', 11),
+        (5, -1, 'AzurateOre', (1, 2, 3)::dune.vector, 'EMarkerPayloadType::Default', 7),
         -- Confirmed live false positive under the old substring patterns
         -- ("%ore%" matched the "kore" inside this name) -- the suffix-only
         -- patterns must exclude it since it doesn't end in Ore/Pickup/Rock.
-        (6, -1, ('HarkoRecustomization', 1, 2, 3, 'EMarkerPayloadType::Default')::dune.marker, 11);
+        (6, -1, 'HarkoRecustomization', (1, 2, 3)::dune.vector, 'EMarkerPayloadType::Default', 11);
     `);
 
     const db = pgTransactionalDb(pool);
@@ -79,12 +83,12 @@ test("real PostgreSQL: Fortress/House Representative/Trainer are their own categ
     await pool.query(SCHEMA);
     await pool.query(`
       insert into dune.map_names (map_name_id, map_name) values (11, 'HaggaBasin');
-      insert into dune.markers (marker_hash_id, dimension_index, marker, map_name_id) values
-        (1, -1, ('AtreidesFortress', 1, 2, 3, 'EMarkerPayloadType::Default')::dune.marker, 11),
-        (2, -1, ('HarkonnenFortress', 1, 2, 3, 'EMarkerPayloadType::Default')::dune.marker, 11),
-        (3, -1, ('HouseRepresentativeArgosaz', 1, 2, 3, 'EMarkerPayloadType::Default')::dune.marker, 11),
-        (4, -1, ('TrainerBeneGesserit', 1, 2, 3, 'EMarkerPayloadType::Default')::dune.marker, 11),
-        (5, -1, ('Cave', 1, 2, 3, 'EMarkerPayloadType::Default')::dune.marker, 11);
+      insert into dune.markers (marker_hash_id, dimension_index, marker_type, position, payload_type, map_name_id) values
+        (1, -1, 'AtreidesFortress', (1, 2, 3)::dune.vector, 'EMarkerPayloadType::Default', 11),
+        (2, -1, 'HarkonnenFortress', (1, 2, 3)::dune.vector, 'EMarkerPayloadType::Default', 11),
+        (3, -1, 'HouseRepresentativeArgosaz', (1, 2, 3)::dune.vector, 'EMarkerPayloadType::Default', 11),
+        (4, -1, 'TrainerBeneGesserit', (1, 2, 3)::dune.vector, 'EMarkerPayloadType::Default', 11),
+        (5, -1, 'Cave', (1, 2, 3)::dune.vector, 'EMarkerPayloadType::Default', 11);
     `);
 
     const db = pgTransactionalDb(pool);
