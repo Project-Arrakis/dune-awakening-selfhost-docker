@@ -4,6 +4,7 @@ COPY console/web/package.json ./
 COPY console/web/package-lock.json ./
 RUN npm ci
 COPY runtime/data/augment-compatibility.json /runtime/data/augment-compatibility.json
+COPY runtime/data/admin-skill-modules.json /runtime/data/admin-skill-modules.json
 COPY console/web ./
 RUN npm run build
 
