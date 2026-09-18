@@ -3723,18 +3723,28 @@ const RESOURCE_FIELD_PARTITION_JOIN = `
       and wp.dimension_index = rfs.dimension_index`;
 
 // Currently-active spice fields of any size for the live map's "Active
-// Spice Blows" layer. field_kind_id=1 is spice; value_remaining tiers are
-// 5,000/150,000/2,500,000 for Small/Medium/Large -- `size` is computed by
-// threshold (not exact match), so a field mid-harvest still classifies as
-// its spawned tier until it drops below that tier's own floor (a known,
-// accepted imprecision, same class of edge case the original Large-only
-// threshold already had). Left join, not inner, since a dimension can
-// still lack a world_partition row (confirmed live) -- partition_id stays
-// null rather than a sentinel in that case.
+// Spice Blows" layer. resourcefield_state.field_kind_id is gone on updated
+// servers (dropped in the same game update that reshaped dune.markers --
+// see issue #963) -- columnsFor probes for it so this still works
+// unmodified against an older, not-yet-updated schema that still has it.
+// Once it's gone, spice and flour sand are the only two kinds this table
+// ever held, and flour sand's value_remaining never leaves its single fixed
+// tier (60,000, see liveMapFlourSandFieldRows below), so "not exactly
+// 60,000" is the correct complement rather than an inexact tier-membership
+// list. value_remaining tiers are 5,000/150,000/2,500,000 for
+// Small/Medium/Large -- `size` is computed by threshold (not exact match),
+// so a field mid-harvest still classifies as its spawned tier until it
+// drops below that tier's own floor (a known, accepted imprecision, same
+// class of edge case the original Large-only threshold already had). Left
+// join, not inner, since a dimension can still lack a world_partition row
+// (confirmed live) -- partition_id stays null rather than a sentinel in
+// that case.
 export async function liveMapSpiceFieldRows(db, map = "") {
   if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
     return unsupportedMap("spiceActive", ["dune.resourcefield_state", "dune.world_partition"]);
   }
+  const hasKindColumn = (await columnsFor(db, "resourcefield_state")).has("field_kind_id");
+  const spiceFilter = hasKindColumn ? "rfs.field_kind_id = 1" : "rfs.value_remaining <> 60000";
   const values = [];
   const where = mapFilterClause(map, values, "rfs");
   const result = await db.query(`
@@ -3749,7 +3759,7 @@ export async function liveMapSpiceFieldRows(db, map = "") {
            end as size
     from dune.resourcefield_state rfs
     ${RESOURCE_FIELD_PARTITION_JOIN}
-    where rfs.field_kind_id = 1 ${where}
+    where ${spiceFilter} ${where}
     order by rfs.field_id`, values);
   return {
     capabilities: { spiceActive: true },
@@ -3757,12 +3767,15 @@ export async function liveMapSpiceFieldRows(db, map = "") {
   };
 }
 
-// Currently-active flour sand fields (field_kind_id=0) -- a single fixed
-// tier (60,000), not size-classed like spice, so no value threshold needed.
+// Currently-active flour sand fields -- a single fixed tier (60,000), not
+// size-classed like spice. See liveMapSpiceFieldRows above for why this is
+// filtered by that fixed value once field_kind_id is gone.
 export async function liveMapFlourSandFieldRows(db, map = "") {
   if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
     return unsupportedMap("flourSand", ["dune.resourcefield_state", "dune.world_partition"]);
   }
+  const hasKindColumn = (await columnsFor(db, "resourcefield_state")).has("field_kind_id");
+  const flourFilter = hasKindColumn ? "rfs.field_kind_id = 0" : "rfs.value_remaining = 60000";
   const values = [];
   const where = mapFilterClause(map, values, "rfs");
   const result = await db.query(`
@@ -3772,7 +3785,7 @@ export async function liveMapFlourSandFieldRows(db, map = "") {
            rfs.value_remaining
     from dune.resourcefield_state rfs
     ${RESOURCE_FIELD_PARTITION_JOIN}
-    where rfs.field_kind_id = 0 ${where}
+    where ${flourFilter} ${where}
     order by rfs.field_id`, values);
   return {
     capabilities: { flourSand: true },
@@ -3833,14 +3846,14 @@ export async function liveMapPoiMarkers(db, map, category) {
   }
   const result = await db.query(`
     select m.marker_hash_id::text as id,
-           (m.marker).marker_type as marker_type,
-           (m.marker).x as x,
-           (m.marker).y as y,
-           (m.marker).z as z,
+           m.marker_type as marker_type,
+           (m.position).x as x,
+           (m.position).y as y,
+           (m.position).z as z,
            coalesce(mn.map_name, '') as map
     from dune.markers m
     join dune.map_names mn on mn.map_name_id = m.map_name_id
-    where (m.marker).marker_type ilike any($1) and (m.marker).marker_type not ilike 'NoIcon' ${where}
+    where m.marker_type ilike any($1) and m.marker_type not ilike 'NoIcon' ${where}
     order by m.marker_hash_id`, values);
   return {
     capabilities: { [category]: true },
@@ -5815,8 +5828,8 @@ async function attachVehicleRegions(db, rows) {
       cross join lateral (
         select m.area_id
         from dune.markers m
-        where m.map_name_id = $1 and m.area_id <> 0 and (m.marker).x is not null
-        order by power((m.marker).x - p.vx, 2) + power((m.marker).y - p.vy, 2)
+        where m.map_name_id = $1 and m.area_id <> 0 and (m.position).x is not null
+        order by power((m.position).x - p.vx, 2) + power((m.position).y - p.vy, 2)
         limit 1
       ) near`, values);
 
@@ -12666,6 +12679,15 @@ async function resourcesSectionForDisplayMap(db, config, displayMap) {
   }
   const combatStateByDimension = new Map(combatState.partitions.map((p) => [Number(p.dimensionIndex), p]));
 
+  // resourcefield_state.field_kind_id is gone on updated servers (dropped
+  // in the same game update that reshaped dune.markers -- see issue #963);
+  // columnsFor probes for it so this still works unmodified against an
+  // older, not-yet-updated schema that still has it. See
+  // liveMapSpiceFieldRows's own comment for why "value_remaining <> 60000"
+  // is the correct spice complement once the column is gone.
+  const hasKindColumn = (await columnsFor(db, "resourcefield_state")).has("field_kind_id");
+  const spiceFilter = hasKindColumn ? "field_kind_id = 1" : "value_remaining <> 60000";
+
   // Real per-dimension field totals (count + summed remaining spice) --
   // ground truth, counted directly from live field rows, not a
   // separately-maintained counter.
@@ -12674,7 +12696,7 @@ async function resourcesSectionForDisplayMap(db, config, displayMap) {
            count(*)::int as active_fields,
            coalesce(sum(value_remaining), 0)::bigint as remaining_spice
     from dune.resourcefield_state
-    where map = $1 and field_kind_id = 1
+    where map = $1 and ${spiceFilter}
     group by dimension_index`, [displayMap]);
   const totalsByDimension = new Map(totalsResult.rows.map((r) => [Number(r.dimension_index), { activeFields: Number(r.active_fields || 0), remainingSpice: Number(r.remaining_spice || 0) }]));
 
@@ -12706,14 +12728,15 @@ async function resourcesSectionForDisplayMap(db, config, displayMap) {
   // value_remaining, used ONLY as input to resolvePerSizePotentialSpice's
   // rank-match attempt below -- resourcefield_state itself still has no
   // size-tier column (verified 2026-07-24: schema is field_id, map,
-  // dimension_index, spawn_time, value_remaining, field_kind_id only; no
-  // foreign key to spicefield_types).
+  // dimension_index, spawn_time, value_remaining, field_kind_id; no foreign
+  // key to spicefield_types. field_kind_id itself was later dropped -- see
+  // hasKindColumn above).
   let valueGroupsByDimension = new Map();
   try {
     const valuesResult = await db.query(`
       select dimension_index, value_remaining, count(*)::int as field_count
       from dune.resourcefield_state
-      where map = $1 and field_kind_id = 1
+      where map = $1 and ${spiceFilter}
       group by dimension_index, value_remaining
       order by dimension_index, value_remaining`, [displayMap]);
     for (const row of valuesResult.rows) {
