@@ -73,6 +73,22 @@ beforeEach(() => {
 });
 
 describe("MapsPanel modifier availability", () => {
+  it("force despawns the whole map instead of only its first partition", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: JSON.stringify({ maps: [{ map: "CB_Overland_S_08", status: "Ready", mode: "Dynamic", partitionId: "29" }] }) },
+      services: { stdout: "" },
+      readiness: { stdout: "" }
+    });
+    api.despawn.mockResolvedValue({ task: { id: "task-1", status: "succeeded" } });
+
+    renderMapsPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Force Despawn" }));
+
+    await waitFor(() => expect(api.despawn).toHaveBeenCalledWith("CB_Overland_S_08", "DESPAWN MAP"));
+  });
+
   it("opens settings while the live map-status request is still pending", async () => {
     const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
     api.status.mockImplementation(() => new Promise(() => {}));

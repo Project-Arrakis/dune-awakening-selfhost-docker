@@ -18,6 +18,7 @@ The project is experimental, and Funcom self-hosting behavior may change over ti
 - Control maps, Sietches, Deep Desert layouts, and live map activity
 - Configure memory, autoscaling, and game settings
 - Manage databases, bases, storage, and player blueprints
+- Plan, preview, and share base layouts in 3D with the Base Builder
 - Extend the console with optional Community Addons
 
 See the [Screenshots Gallery](docs/screenshots.md) for a closer look.
@@ -84,6 +85,14 @@ Owners can claim their listing directly from the Console Settings page to verify
 
 Local and LAN-only servers are never listed. For transparency, installations contribute only an anonymous server count by default—never server names, addresses, players, or settings—and this can be disabled separately in Settings.
 
+## Base Builder
+
+[Dune Docker Base Builder](https://blueprints.dunedocker.app/) is a browser-based 3D planning and sharing tool for Dune: Awakening bases. It lets you experiment with layouts before committing time and materials in-game, using a searchable catalog of structures and placeables with placement, snapping, rotation, collision, and claim-coverage tools.
+
+Preview designs from different angles, switch between day and night, walk through the finished layout, and capture screenshots. Existing layouts can be imported for planning, while completed designs can be exported for future use.
+
+Signed-in community members can save projects, choose public, unlisted, or private visibility, publish previews, explore shared community designs, and fork a published blueprint as a starting point. The Base Builder is also linked directly from the Console footer.
+
 ## Community Addons
 
 Community Addons provide optional tools that can be installed and managed from the Web UI. Addons declare their permissions before installation, and updates preserve their settings and require approval for any new permissions.
@@ -93,6 +102,7 @@ Developers can start with the [Official Addon Template](https://github.com/Red-B
 ## Help and Documentation
 
 - [Official Website](https://dunedocker.app/) — Project information, installation guidance, FAQ, and server directory
+- [Base Builder](https://blueprints.dunedocker.app/) — Plan, preview, save, and share Dune: Awakening base layouts in 3D
 - [Official Documentation](https://docs.dunedocker.app/) — Guides, feature documentation, technical references, and API documentation
 - [Discord Community](https://discord.gg/duneawakeningdocker) — Support, updates, addons, and community discussion
 - [Repository Documentation](docs/README.md) — Technical notes and references maintained alongside the source code

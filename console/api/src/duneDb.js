@@ -1908,10 +1908,17 @@ export async function addonLeadershipPlayers(db) {
       const controllerId = String(row.player_controller_id || "");
       const actorId = String(row.actor_id || "");
       const accountId = String(row.account_id || "");
+      const flsId = String(row.fls_id || "");
+      const funcomId = String(row.funcom_id || "");
+      const actionPlayerId = String(row.action_player_id || flsId || funcomId || actorId);
       return {
+        playerId: actionPlayerId,
+        actionPlayerId,
         actorId,
         controllerId,
         accountId,
+        flsId,
+        funcomId,
         name: row.character_name || `Player ${actorId}`,
         level: levels.get(controllerId) || levels.get(actorId) || 0,
         faction: factions.get(controllerId) || factions.get(actorId) || "Unassigned",
@@ -1921,6 +1928,53 @@ export async function addonLeadershipPlayers(db) {
         lastSeen: row.last_seen || ""
       };
     })
+  };
+}
+
+// Stable, typed progression surface for addons. Keep unsupported categories
+// explicit instead of inviting third-party SQL to guess at a changing Funcom
+// schema or treating Codex discovery as achievement/exploration progress.
+export async function addonPlayerProgression(db, id, journeyTagsData = {}) {
+  const resolvedPlayer = await resolvePlayerTargetCached(db, id);
+  const actorId = resolvedPlayer.actorId;
+  const safe = (promise, capability, reason) => promise.catch((error) => ({
+    capabilities: { [capability]: false },
+    reason: String(error?.message || reason)
+  }));
+  const [progression, factions, journey] = await Promise.all([
+    safe(playerProgression(db, actorId), "progression", "Player progression is unavailable."),
+    safe(playerFactions(db, actorId, journeyTagsData), "factions", "Faction progression is unavailable."),
+    safe(playerJourney(db, actorId, journeyTagsData), "journey", "Story and side-quest progression is unavailable.")
+  ]);
+  const player = progression.player || factions.player || journey.player || resolvedPlayer;
+  return {
+    player,
+    capabilities: {
+      level: Boolean(progression.capabilities?.progression),
+      faction: Boolean(factions.capabilities?.factions),
+      story: Boolean(journey.capabilities?.journey),
+      sideQuests: Boolean(journey.capabilities?.journey),
+      exploration: false,
+      achievements: false
+    },
+    level: progression.capabilities?.progression ? {
+      level: Number(progression.level || 0),
+      xp: Number(progression.xp || 0),
+      totalSkillPoints: Number(progression.totalSkillPoints || 0),
+      unspentSkillPoints: Number(progression.unspentSkillPoints || 0)
+    } : null,
+    faction: factions.capabilities?.factions ? factions.rows || [] : [],
+    story: journey.capabilities?.journey ? journey.rows?.story || [] : [],
+    sideQuests: journey.capabilities?.journey ? journey.rows?.contract || [] : [],
+    unsupported: {
+      exploration: "The current game database has no verified exploration-progress source.",
+      achievements: "The current game database has no verified achievement-progress source."
+    },
+    reasons: {
+      level: progression.reason || "",
+      faction: factions.reason || "",
+      story: journey.reason || ""
+    }
   };
 }
 
@@ -8054,6 +8108,15 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
     }
   }
 
+  // actor_state is absent from some older schemas, so keep it optional. When
+  // present it is the authoritative explanation for vehicle rows that are not
+  // currently deployed in a world partition (Travel / VehicleBackup /
+  // VehicleRecovery). Without this, the UI used to invent "Partition 0" for
+  // a NULL partition and make Funcom's stored recovery records look spawned.
+  const vehicleLifecycleStateSql = await tableExists(db, "actor_state")
+    ? `coalesce((select ast.state::text from dune.actor_state ast where ast.actor_id=v.id limit 1), 'Default')`
+    : `'Default'::text`;
+
   const safePageSize = intParam(pageSize, "pageSize", 1, 200);
   const safePage = intParam(page, "page", 0);
   const offset = safePage * safePageSize;
@@ -8110,7 +8173,8 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
           ${VEHICLE_TYPE_SQL} as type,
           ${VEHICLE_CUSTOM_NAME_SQL} as clean_name,
           coalesce(a.map, '') as map,
-          coalesce(a.partition_id, 0)::int as partition_id,
+          a.partition_id::int as partition_id,
+          ${vehicleLifecycleStateSql} as lifecycle_state,
           a.transform,
           a.owner_account_id
         from dune.vehicles v
@@ -8132,6 +8196,7 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
             greatest(0, least(100, floor(100 * fuel.current_fuel / nullif(cap.max_fuel, 0))))::int
           else null end fuel_percent,
           vc.map, vc.partition_id,
+          vc.lifecycle_state,
           ((vc.transform).location).x::numeric x,
           ((vc.transform).location).y::numeric y,
           ((vc.transform).location).z::numeric z,
@@ -8164,7 +8229,7 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
         left join fuel_capacity cap on cap.generator_template=fuel.generator_template
         left join module_durability md on md.vehicle_id=vc.id
         ${filterClause}
-        group by vc.id, vc.type, vc.clean_name, vc.map, vc.partition_id, vc.transform,
+        group by vc.id, vc.type, vc.clean_name, vc.map, vc.partition_id, vc.lifecycle_state, vc.transform,
           vc.owner_account_id, own.owner, ${player ? "viewer.rank," : ""} fuel.current_fuel, cap.max_fuel, cap.fuel_samples
       ), totals as (
         select count(*)::int as total_count from matched
@@ -8766,7 +8831,7 @@ export async function portalVehicles(db, playerIds) {
       case when capacity.fuel_samples >= 2 then
         greatest(0, least(100, floor(100 * fuel.current_fuel / nullif(capacity.max_fuel, 0))))::int
       else null end fuel_percent,
-      coalesce(a.map, '') map, coalesce(a.partition_id, 0)::int partition_id,
+      coalesce(a.map, '') map, a.partition_id::int partition_id,
       ((a.transform).location).x::numeric x,
       ((a.transform).location).y::numeric y,
       ((a.transform).location).z::numeric z,

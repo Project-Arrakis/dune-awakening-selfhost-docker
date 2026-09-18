@@ -462,6 +462,11 @@ Each row also carries a `region` sub-region name where the map has a region tabl
 covered). It is resolved from the nearest `dune.markers.area_id` and is best-effort
 — absent when marker data is unavailable. Deep Desert instead exposes its A–I/1–9
 sector grid as the `sector` field, derived from each row's coordinates.
+`partition_id` remains null when Funcom has not deployed the vehicle into a
+current world partition; it is never rewritten as the nonexistent partition 0.
+When available, `lifecycle_state` explains these records (`Travel`,
+`VehicleBackup`, or `VehicleRecovery`) so clients can label them as in transit
+or stored rather than spawned.
 
 The separate `/api/admin/vehicles*` routes under [Admin Tools](#admin-tools) are a
 different, CLI-backed surface (blueprint catalog and spawning), not this Postgres
@@ -843,6 +848,17 @@ Successful and partially delivered grants are preserved as compact eligibility r
 ### Player Identity Bridge
 
 `players.identity.list` requires an approved `players:read` addon permission. It returns the minimal player identity data needed to correlate addon events: `name`, `actorId`, `controllerId`, `accountId`, `funcomId`, `flsId`, `platformId`, `platformName`, `status`, and `map`. Addons do not need direct access to the Console player REST endpoints.
+
+### Addon Runtime Bridge
+
+`players.summary.list` and `players.progression.get` provide typed player and
+supported progression data under `players:read`. `addon.storage.*` provides
+versioned addon-scoped JSON storage under `files:addon-data`.
+`rewards.deliver`, `rewards.status`, and `rewards.list` provide persistent,
+idempotent reward delivery under `rewards:grant`. `players.message.*` provides
+queued private messages under `players:message`. See
+[Addon Runtime API](../addons/addon-runtime-api.md) for payloads and delivery
+semantics.
 
 ### Hardware Status Bridge
 
