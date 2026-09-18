@@ -2082,6 +2082,135 @@ PY
   done < <(named_destination_source_rows)
 }
 
+scan_rejected_story_returns() {
+  local director_log_file rejected_rows
+
+  director_log_file="$(mktemp)"
+  docker logs --timestamps --since "$NAMED_DESTINATION_SINCE" dune-director > "$director_log_file" 2>&1 || true
+  rejected_rows="$(LOG_FILE="$director_log_file" python3 - <<'PY'
+import os
+import re
+
+log_file = os.environ["LOG_FILE"]
+login_re = re.compile(
+    r'Handling LoginRequest request in LoginRequest \{ RequestID = ([A-F0-9]+), '
+    r'Player = Player \{ Id = ([A-F0-9]+), TargetDimension = ([0-9]+) \}'
+)
+refusal_re = re.compile(
+    r'Player ([A-F0-9]+) requested WorldPartition \{ '
+    r'PartitionId = ([0-9]+), ServerId = ([A-Za-z0-9_+\-/]+), Map = (Survival_1), .*?'
+    r'DimensionIndex = ([0-9]+), .*?\}\. Teleport not allowed, returning to WorldPartition \{ '
+    r'PartitionId = ([0-9]+), ServerId = ([A-Za-z0-9_+\-/]+), '
+    r'Map = (CB_Story_(?:DestroyedZanovar|OrbitalMonitor)), .*?'
+    r'DimensionIndex = ([0-9]+), .*?\}, setting return dimension to ([0-9]+)\.'
+)
+
+pending_logins = {}
+
+with open(log_file, encoding="utf-8", errors="replace") as f:
+    for line in f:
+        login = login_re.search(line)
+        if login:
+            request_id, player_id, target_dimension = login.groups()
+            pending_logins[player_id] = (request_id, target_dimension)
+            continue
+
+        refusal = refusal_re.search(line)
+        if not refusal:
+            continue
+
+        (
+            player_id,
+            target_partition,
+            target_server,
+            target_map,
+            target_dimension,
+            source_partition,
+            source_server,
+            source_map,
+            source_dimension,
+            return_dimension,
+        ) = refusal.groups()
+        login = pending_logins.get(player_id)
+        if not login or login[1] != target_dimension or return_dimension != target_dimension:
+            continue
+
+        print("|".join((
+            login[0],
+            player_id,
+            target_partition,
+            target_server,
+            target_map,
+            target_dimension,
+            source_partition,
+            source_server,
+            source_map,
+            source_dimension,
+        )))
+PY
+  )"
+  rm -f "$director_log_file"
+
+  while IFS='|' read -r request_id funcom_id target_partition target_server target_map target_dimension source_partition source_server source_map source_dimension; do
+    [ -n "${request_id:-}" ] || continue
+    hub_travel_seen "$request_id" && continue
+
+    local account_id
+    account_id="$(psql_value "
+      select a.id
+      from dune.accounts a
+      join dune.player_state ps on ps.account_id = a.id
+      join dune.world_partition target_wp
+        on target_wp.partition_id = $target_partition
+       and target_wp.server_id = '$target_server'
+       and target_wp.map = '$target_map'
+       and coalesce(target_wp.dimension_index, 0) = $target_dimension
+      join dune.farm_state target_fs
+        on target_fs.server_id = target_wp.server_id
+       and target_fs.ready = true
+       and target_fs.alive = true
+      join dune.world_partition source_wp
+        on source_wp.partition_id = $source_partition
+       and source_wp.server_id = '$source_server'
+       and source_wp.map = '$source_map'
+       and coalesce(source_wp.dimension_index, 0) = $source_dimension
+      where a.\"user\" = '$funcom_id'
+        and ps.server_id = source_wp.server_id
+      limit 1;
+    ")"
+    [ -n "$account_id" ] || continue
+
+    local moved_account_id
+    moved_account_id="$(psql_value "
+      with moved as (
+        update dune.encrypted_player_state
+        set
+          server_id = '$target_server',
+          previous_server_partition_id = $target_partition,
+          return_dimension_index = $target_dimension,
+          pending_respawn_location_id = null
+        where account_id = $account_id
+          and server_id = '$source_server'
+        returning account_id
+      ), cleared_return as (
+        delete from dune.travel_return_info
+        where player_controller_id in (
+          select id
+          from dune.actors
+          where owner_account_id in (select account_id from moved)
+            and class = '/Game/Dune/Characters/Player/BP_DunePlayerController.BP_DunePlayerController_C'
+        )
+        returning player_controller_id
+      )
+      select account_id from moved;
+    ")"
+    [ "$moved_account_id" = "$account_id" ] || continue
+
+    remember_hub_travel "$request_id" "$account_id" "$source_map" "$target_map" "$(date +%s)"
+    echo "STORY-RETURN account=$account_id request=$request_id from=$source_map partition=$source_partition to=$target_map partition=$target_partition dimension=$target_dimension"
+  done <<< "$rejected_rows"
+}
+
 scan_idle_servers() {
   local scope="${1:-standard}"
   local map_filter
@@ -2771,6 +2900,7 @@ while true; do
   scan_unscoped_stale_server_state
   progress_deepdesert_travel_handoffs
   scan_proactive_hagga_handoffs
+  scan_rejected_story_returns
   scan_named_destination_failures
   scan_idle_servers
   scan_reconnect_demand
