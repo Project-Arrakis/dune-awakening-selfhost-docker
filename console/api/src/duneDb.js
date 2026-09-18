@@ -9,6 +9,7 @@ import { redact } from "./redact.js";
 import { itemImagePath } from "./adminCatalog.js";
 import { clampInt, writeJsonAtomic } from "./jsonStore.js";
 import { isFiefClaimPlaceable } from "./blueprintSafety.js";
+import { withLiveMapSector } from "./liveMapSector.js";
 import { renderPlayerMessageTemplate } from "./services/messageTemplate.js";
 import { CARE_PACKAGE_SERVER_PERSONA, FUNCOM_GM_PERSONA, MESSAGE_OF_THE_DAY_PERSONA } from "./systemPersonas.js";
 import {
@@ -1454,28 +1455,40 @@ const PLAYER_SORT_COLUMNS = {
 
 const playerPlaytimeMigrations = new WeakMap();
 
-export function migratePlayerPlaytimeSchema(db) {
-  if (!playerPlaytimeMigrations.has(db)) {
-    const migrate = async (tx) => {
-      await tx.query(`
-        create table if not exists dune.console_player_playtime (
-          account_id bigint primary key,
-          total_seconds bigint not null default 0,
-          session_started_at timestamp with time zone,
-          session_login_at timestamp with time zone,
-          last_observed_at timestamp with time zone,
-          updated_at timestamp with time zone not null default current_timestamp,
-          constraint console_player_playtime_total_nonnegative check (total_seconds >= 0)
-        )`);
-    };
-    const promise = Promise.resolve(typeof db.transaction === "function" ? db.transaction(migrate) : migrate(db))
-      .catch((error) => {
-        playerPlaytimeMigrations.delete(db);
-        throw error;
-      });
-    playerPlaytimeMigrations.set(db, promise);
+export async function migratePlayerPlaytimeSchema(db) {
+  // A restore replaces the whole dune schema underneath the long-lived
+  // Console process. A backup from another installation may not contain this
+  // Console-owned table, so a previously resolved migration promise is not
+  // proof that the table still exists. Recheck before reusing the process-local
+  // cache and recreate it after a restore when necessary.
+  if (await tableExists(db, "console_player_playtime")) return;
+
+  const cached = playerPlaytimeMigrations.get(db);
+  if (cached) {
+    await cached;
+    if (await tableExists(db, "console_player_playtime")) return;
+    playerPlaytimeMigrations.delete(db);
   }
-  return playerPlaytimeMigrations.get(db);
+
+  const migrate = async (tx) => {
+    await tx.query(`
+      create table if not exists dune.console_player_playtime (
+        account_id bigint primary key,
+        total_seconds bigint not null default 0,
+        session_started_at timestamp with time zone,
+        session_login_at timestamp with time zone,
+        last_observed_at timestamp with time zone,
+        updated_at timestamp with time zone not null default current_timestamp,
+        constraint console_player_playtime_total_nonnegative check (total_seconds >= 0)
+      )`);
+  };
+  const promise = Promise.resolve(typeof db.transaction === "function" ? db.transaction(migrate) : migrate(db))
+    .catch((error) => {
+      playerPlaytimeMigrations.delete(db);
+      throw error;
+    });
+  playerPlaytimeMigrations.set(db, promise);
+  return promise;
 }
 
 // The game exposes current presence and the current session's login timestamp,
@@ -3479,7 +3492,26 @@ function safeDestinationFromTransform(row, forwardOffset, heightOffset) {
 }
 
 async function playerTeleportIdentity(db, actorId) {
-  const player = await resolvePlayerMutationTarget(db, actorId);
+  // Player pages address this action with the numeric pawn actor id, while
+  // Live Map markers deliberately expose the stable FLS id so the same marker
+  // can also be used by the offline-teleport path. Resolve either identity at
+  // this boundary instead of making the browser translate between them.
+  const rawId = String(actorId ?? "").trim();
+  let resolvedActorId = rawId;
+  if (!/^\d+$/.test(rawId)) {
+    const flsId = validatePlayerIdForDb(rawId);
+    const resolved = await db.query(`
+      select a.id as actor_id
+      from dune.accounts ac
+      join dune.player_state ps on ps.account_id = ac.id
+      join dune.actors a on a.id = ps.player_pawn_id
+      where ac."user" = $1
+        and a.class ilike '%PlayerCharacter%'
+      limit 1`, [flsId]);
+    if (!resolved.rows[0]?.actor_id) throw playerNotFoundError();
+    resolvedActorId = resolved.rows[0].actor_id;
+  }
+  const player = await resolvePlayerMutationTarget(db, resolvedActorId);
   const result = await db.query(`
     select coalesce(ac."user", '') as fls_id,
            coalesce(ps.character_name, '') as character_name,
@@ -4634,7 +4666,7 @@ function reconcileQueuedBaseChildAccess(repoRoot, outcomes) {
 // except each entry's payload is applied in 100-update batches (the cap
 // setBaseChildAccessLevels enforces) and stale pieces are skipped rather than
 // failing the whole entry.
-export async function flushBaseChildAccess(db, repoRoot, { now = Date.now, ignoreRetryBackoff = false } = {}) {
+export async function flushBaseChildAccess(db, repoRoot, { now = Date.now, ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) {
   const pending = listQueuedBaseChildAccess(repoRoot);
   if (!pending.length) return { flushed: [], pending: 0 };
   const observed = await observeRefillPartitions(db, { now });
@@ -4652,7 +4684,7 @@ export async function flushBaseChildAccess(db, repoRoot, { now = Date.now, ignor
       flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
       continue;
     }
-    if (!(await entryWriteSafe(db, observed, entry, now))) continue;
+    if (!(await entryWriteSafe(db, observed, entry, now, trustedDownPartitionIds))) continue;
     if (retryBackoffBlocks(entry, timestamp, ignoreRetryBackoff)) continue;
     // Declared outside the try because each batch below is its own
     // transaction: when a later batch throws, batches 1..k are already
@@ -11175,6 +11207,7 @@ export async function observeRefillPartitions(db, { now = Date.now } = {}) {
   const timestamp = now();
   const safe = new Set();
   const known = new Set();
+  const disconnected = new Set();
   for (const row of result.rows || []) {
     const partitionId = Number(row.partition_id || 0);
     if (partitionId <= 0) continue;
@@ -11183,6 +11216,7 @@ export async function observeRefillPartitions(db, { now = Date.now } = {}) {
       partitionDisconnectedSince.delete(partitionId);
       continue;
     }
+    disconnected.add(partitionId);
     if (row.unassigned) {
       partitionDisconnectedSince.delete(partitionId);
       safe.add(partitionId);
@@ -11195,17 +11229,22 @@ export async function observeRefillPartitions(db, { now = Date.now } = {}) {
   for (const partitionId of [...partitionDisconnectedSince.keys()]) {
     if (!known.has(partitionId)) partitionDisconnectedSince.delete(partitionId);
   }
-  return { safe, known };
+  return { safe, known, disconnected };
 }
 
 // A base outside any known partition is simulated by nothing, so it is always
 // safe; a null observation means the queue is unsupported and writes stay
 // immediate, matching the behaviour before the queue existed.
-function partitionWriteSafe(observed, partitionId) {
+function partitionWriteSafe(observed, partitionId, trustedDownPartitionIds) {
   if (!observed) return true;
   if (partitionId <= 0) return true;
   if (!observed.known.has(partitionId)) return true;
-  return observed.safe.has(partitionId);
+  if (observed.safe.has(partitionId)) return true;
+  // The restart task may bypass only the dwell timer for a partition it has
+  // just positively stopped. A fresh pg_stat_activity observation must still
+  // show it disconnected, so this cannot turn a live map into a write target.
+  return observed.disconnected?.has(partitionId)
+    && (trustedDownPartitionIds === "all" || trustedDownPartitionIds?.has?.(partitionId));
 }
 
 // Re-observed per entry rather than trusting the pass-start snapshot. Applying
@@ -11214,9 +11253,9 @@ function partitionWriteSafe(observed, partitionId) {
 // timeout abandoned but could not cancel, would otherwise still be treated as
 // down for every remaining entry -- writing to a live map, which is the one
 // thing these queues exist to avoid, since the game never picks those writes up.
-async function entryWriteSafe(db, observed, entry, now) {
+async function entryWriteSafe(db, observed, entry, now, trustedDownPartitionIds) {
   const fresh = await observeRefillPartitions(db, { now });
-  return partitionWriteSafe(fresh || observed, entry.partitionId);
+  return partitionWriteSafe(fresh || observed, entry.partitionId, trustedDownPartitionIds);
 }
 
 // generatorRefill accepts an already-known flag so a caller that just
@@ -11361,7 +11400,7 @@ function refillNoLongerApplicable(message) {
 // before the map servers) plus any single-map despawn, and polling for "this
 // partition has no server" catches both -- including restarts triggered by the
 // scheduler, an IP change, or the CLI, none of which run through the console.
-export async function flushGeneratorRefills(db, repoRoot, { now = Date.now, ignoreRetryBackoff = false } = {}) {
+export async function flushGeneratorRefills(db, repoRoot, { now = Date.now, ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) {
   const pending = listQueuedGeneratorRefills(repoRoot);
   if (!pending.length) return { flushed: [], pending: 0 };
   const observed = await observeRefillPartitions(db, { now });
@@ -11380,7 +11419,7 @@ export async function flushGeneratorRefills(db, repoRoot, { now = Date.now, igno
       flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
       continue;
     }
-    if (!(await entryWriteSafe(db, observed, entry, now))) continue;
+    if (!(await entryWriteSafe(db, observed, entry, now, trustedDownPartitionIds))) continue;
     if (retryBackoffBlocks(entry, timestamp, ignoreRetryBackoff)) continue;
     try {
       const result = await refillBaseGenerators(db, repoRoot, entry.baseId);
@@ -11562,7 +11601,7 @@ function baseDeleteAlreadyGone(message) {
 //     a failed safety backup is not about any one base, and deleting others
 //     without it would defeat the point just the same. Every entry stays
 //     queued and is retried, backup included, on the next tick.
-export async function flushBaseDeletes(db, repoRoot, { now = Date.now, onBeforeApply, ignoreRetryBackoff = false } = {}) {
+export async function flushBaseDeletes(db, repoRoot, { now = Date.now, onBeforeApply, ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) {
   const pending = listQueuedBaseDeletes(repoRoot);
   if (!pending.length) return { flushed: [], pending: 0 };
   const observed = await observeRefillPartitions(db, { now });
@@ -11582,7 +11621,7 @@ export async function flushBaseDeletes(db, repoRoot, { now = Date.now, onBeforeA
       flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
       continue;
     }
-    if (!(await entryWriteSafe(db, observed, entry, now))) continue;
+    if (!(await entryWriteSafe(db, observed, entry, now, trustedDownPartitionIds))) continue;
     if (retryBackoffBlocks(entry, timestamp, ignoreRetryBackoff)) continue;
     // Checked before the safety backup, not only inside the transaction. A
     // picked-up base is refused either way, but paying for a full-database
@@ -11769,7 +11808,7 @@ function vehicleDeleteAlreadyGone(message) {
 // Mirrors flushBaseDeletes. Same onBeforeApply-runs-at-most-once-per-pass
 // semantics, for the same reason: a full database backup is not cheap, and
 // several vehicles can flush in the same pass.
-export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBeforeApply, allowBlockedStates = false, ignoreRetryBackoff = false } = {}) {
+export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBeforeApply, allowBlockedStates = false, ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) {
   const pending = listQueuedVehicleDeletes(repoRoot);
   if (!pending.length) return { flushed: [], pending: 0 };
   const observed = await observeRefillPartitions(db, { now });
@@ -11787,8 +11826,23 @@ export async function flushVehicleDeletes(db, repoRoot, { now = Date.now, onBefo
       flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
       continue;
     }
-    if (!(await entryWriteSafe(db, observed, entry, now))) continue;
+    if (!(await entryWriteSafe(db, observed, entry, now, trustedDownPartitionIds))) continue;
     if (retryBackoffBlocks(entry, timestamp, ignoreRetryBackoff)) continue;
+    // Background retries must not create a full-database backup for a vehicle
+    // that the conservative delete path is guaranteed to refuse. These states
+    // can persist for days; probing first prevents one backup per retry while
+    // preserving the queue for the explicit map-down pass, where
+    // allowBlockedStates is intentionally enabled.
+    if (!allowBlockedStates) {
+      const blockedState = await vehicleBlockedDeleteState(db, entry.vehicleId).catch(() => "");
+      if (blockedState) {
+        const message = `This vehicle is currently ${blockedState} and cannot be deleted until that clears. Try again once the vehicle is no longer mid-transit or pending recovery.`;
+        const nextRetryAt = timestamp + pendingVehicleDeleteRetryDelayMs();
+        outcomes.set(entry.vehicleId, { queuedAt: entry.queuedAt, keep: true, attempts: entry.attempts, nextRetryAt, lastError: message });
+        flushed.push({ vehicleId: entry.vehicleId, map: entry.map, partitionId: entry.partitionId, ok: false, attempts: entry.attempts, dropped: false, error: message });
+        continue;
+      }
+    }
     if (!backedUp && onBeforeApply) {
       try {
         await onBeforeApply();
@@ -13494,7 +13548,7 @@ function reconcileQueuedWaterRefills(repoRoot, outcomes) {
 
 // Applies every queued water refill whose map is currently down and leaves
 // the rest queued. Same driver and reasoning as flushGeneratorRefills.
-export async function flushWaterRefills(db, repoRoot, { now = Date.now, ignoreRetryBackoff = false } = {}) {
+export async function flushWaterRefills(db, repoRoot, { now = Date.now, ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) {
   const pending = listQueuedWaterRefills(repoRoot);
   if (!pending.length) return { flushed: [], pending: 0 };
   const observed = await observeRefillPartitions(db, { now });
@@ -13511,7 +13565,7 @@ export async function flushWaterRefills(db, repoRoot, { now = Date.now, ignoreRe
       flushed.push({ baseId: entry.baseId, map: entry.map, partitionId: entry.partitionId, ok: false, expired: true, dropped: true, error: message });
       continue;
     }
-    if (!(await entryWriteSafe(db, observed, entry, now))) continue;
+    if (!(await entryWriteSafe(db, observed, entry, now, trustedDownPartitionIds))) continue;
     if (retryBackoffBlocks(entry, timestamp, ignoreRetryBackoff)) continue;
     try {
       const result = await refillBaseWater(db, entry.baseId);
@@ -14621,14 +14675,14 @@ async function offlineTeleportPlayerExists(db, playerId) {
 }
 
 function normalizeMarker(row) {
-  return {
+  return withLiveMapSector({
     ...row,
     id: Number(row.id),
     partition_id: Number(row.partition_id || 0),
     x: Number(row.x),
     y: Number(row.y),
     z: Number(row.z)
-  };
+  });
 }
 
 function unsupportedMap(feature, requiredTables) {

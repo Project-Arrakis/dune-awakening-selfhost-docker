@@ -461,7 +461,7 @@ Each row also carries a `region` sub-region name where the map has a region tabl
 (`runtime/data/hagga-regions.json`, extracted from the game paks; Hagga Basin is
 covered). It is resolved from the nearest `dune.markers.area_id` and is best-effort
 — absent when marker data is unavailable. Deep Desert instead exposes its A–I/1–9
-sector grid, derived client-side from coordinates.
+sector grid as the `sector` field, derived from each row's coordinates.
 
 The separate `/api/admin/vehicles*` routes under [Admin Tools](#admin-tools) are a
 different, CLI-backed surface (blueprint catalog and spawning), not this Postgres
@@ -690,6 +690,12 @@ Layers legend's default-settings mechanism, and what `coriolisLayout`
 drives: the WebGL renderer that draws the Deep Desert's own cartography
 meshes, and the conditions under which it falls back to the flat image.
 
+Coordinate-bearing Deep Desert marker rows include a `sector` field such as
+`"F6"`. It is `null` when a coordinate lies outside the A1–I9 grid. This applies
+to the combined marker response and the dedicated player, base, storage, spice,
+and POI responses, so announcement tools and bots do not need to duplicate the
+coordinate conversion.
+
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | GET | `/api/map/capabilities` | Get map feature capabilities | None |
@@ -797,6 +803,10 @@ pre-write backup before the query is rejected.
 ---
 
 ## Care Package System
+
+Automatic scans return skipped-player results without adding routine skips to grant history. When history reaches 8 MiB, background maintenance compacts it to the latest 500 non-skip records within a 4 MiB budget. Existing oversized files are streamed rather than loaded into memory in full. Older display records are removed, not rotated into additional archives.
+
+Successful and partially delivered grants are preserved as compact eligibility receipts independently of display history. These receipts and first-online claims are included in self-update backups; history cleanup does not reset eligibility or authorize duplicate rewards.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|

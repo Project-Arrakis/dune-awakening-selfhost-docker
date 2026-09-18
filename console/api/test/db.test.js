@@ -1910,7 +1910,7 @@ test("playtime tracker persists active sessions and closes players no longer onl
   const calls = [];
   const run = async (text, values = []) => {
     calls.push({ text, values });
-    if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+    if (text.includes("to_regclass")) return { rows: [{ exists: values[0] !== "dune.console_player_playtime" }] };
     if (text.includes("information_schema.columns")) {
       return { rows: ["account_id", "online_status", "last_login_time"].map((column_name) => ({ column_name })) };
     }
@@ -1934,7 +1934,7 @@ test("playtime tracker remains compatible without a session login timestamp", as
   const db = {
     query: async (text, values = []) => {
       calls.push({ text, values });
-      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regclass")) return { rows: [{ exists: values[0] !== "dune.console_player_playtime" }] };
       if (text.includes("information_schema.columns")) {
         return { rows: ["account_id", "online_status"].map((column_name) => ({ column_name })) };
       }
@@ -1945,6 +1945,31 @@ test("playtime tracker remains compatible without a session login timestamp", as
   await trackPlayerPlaytime(db);
   const tick = calls.find((call) => call.text.includes("with currently_online as"));
   assert.match(tick.text, /null::timestamp with time zone as session_login_at/);
+});
+
+test("playtime tracker recreates its Console-owned table after a database restore removes it", async () => {
+  const calls = [];
+  let playtimeTableExists = false;
+  const run = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes("to_regclass")) {
+      const name = String(values[0] || "");
+      return { rows: [{ exists: name === "dune.console_player_playtime" ? playtimeTableExists : true }] };
+    }
+    if (text.includes("information_schema.columns")) {
+      return { rows: ["account_id", "online_status", "last_login_time"].map((column_name) => ({ column_name })) };
+    }
+    if (text.includes("create table if not exists dune.console_player_playtime")) playtimeTableExists = true;
+    return { rows: [] };
+  };
+  const db = { query: run, transaction: async (fn) => fn({ query: run }) };
+
+  await trackPlayerPlaytime(db);
+  playtimeTableExists = false; // A foreign restore replaced the dune schema.
+  await trackPlayerPlaytime(db);
+
+  assert.equal(calls.filter((call) => call.text.includes("create table if not exists dune.console_player_playtime")).length, 2);
+  assert.equal(calls.filter((call) => call.text.includes("with currently_online as")).length, 2);
 });
 
 test("storage discovery includes verified developer storage containers", async () => {
@@ -4153,15 +4178,16 @@ test("live map player markers validate map filter and use parameterized transfor
     query: async (text, values = []) => {
       calls.push({ text, values });
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
-      return { rows: [{ id: 10, type: "player", name: "Red", online_status: "Online", map: "Survival_1", partition_id: 1, class: "Player", x: "1", y: "2", z: "3" }] };
+      return { rows: [{ id: 10, type: "player", name: "Red", online_status: "Online", map: "DeepDesert", partition_id: 1, class: "Player", x: "-52656", y: "-52066", z: "3" }] };
     }
   };
-  const result = await liveMapPlayers(db, "Survival_1");
+  const result = await liveMapPlayers(db, "DeepDesert");
   assert.equal(result.rows[0].type, "player");
+  assert.equal(result.rows[0].sector, "E5");
   const markerQuery = calls.find((call) => call.text.includes("join dune.player_state"));
   assert.ok(markerQuery);
   assert.match(markerQuery.text, /a\.map = \$1/);
-  assert.deepEqual(markerQuery.values, ["Survival_1"]);
+  assert.deepEqual(markerQuery.values, ["DeepDesert"]);
   await assert.rejects(() => liveMapPlayers(db, "bad;map"), /Invalid map name/);
 });
 
@@ -8353,6 +8379,32 @@ test("player live teleport builds a command with the actual FLS id", async () =>
     () => teleportPlayer(db, 42, { mode: "coordinates", x: 11.5, y: -22.5, z: 33.5, partitionId: 8 }),
     /only move a player within their current Sietch or map/i
   );
+});
+
+test("player live teleport resolves the stable FLS id used by Live Map markers", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes('where ac."user" = $1') && text.includes("a.class ilike")) {
+        return { rows: [{ actor_id: 42 }] };
+      }
+      if (text.includes("from dune.actors a") && text.includes("player_state ps") && text.includes("where a.id = $1")) {
+        return { rows: [{ actor_id: 42, account_id: 7, controller_id: 8, player_state_id: 9, online_status: "Online" }] };
+      }
+      if (text.includes("from dune.accounts ac")) {
+        return { rows: [{ fls_id: "FLS42", character_name: "To'bar", map: "HaggaBasin", partition_id: 4 }] };
+      }
+      throw new Error(`unexpected query: ${text}`);
+    }
+  };
+
+  const result = await teleportPlayer(db, "FLS42", { mode: "coordinates", x: 11.5, y: -22.5, z: 33.5, partitionId: 4 });
+
+  assert.equal(result.playerId, "FLS42");
+  assert.equal(result.partitionId, 4);
+  assert.deepEqual(calls[0].values, ["FLS42"]);
+  assert.deepEqual(calls[1].values, [42]);
 });
 
 function fakeMutationDb(calls, fixtures = {}) {

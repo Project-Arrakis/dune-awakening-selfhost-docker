@@ -4,6 +4,12 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 target="${1:-all}"
+docker_timeout_seconds="${DUNE_HEAL_READY_DOCKER_TIMEOUT_SECONDS:-12}"
+log_tail_lines="${DUNE_HEAL_READY_LOG_TAIL_LINES:-6000}"
+
+docker_timeout() {
+  timeout --kill-after=2s "${docker_timeout_seconds}s" "$@"
+}
 
 is_running() {
   local name="$1"
@@ -43,7 +49,7 @@ heal_partition_ready() {
     return 0
   fi
 
-  if ! docker logs "$container_name" 2>&1 | grep -Eq "$ready_pattern"; then
+  if ! docker_timeout docker logs --tail "$log_tail_lines" "$container_name" 2>&1 | grep -Eq "$ready_pattern"; then
     # Recent dedicated-server builds do not always emit or persist the old
     # READY marker for Survival_1, even after the farm row is fully connected.
     # Treat assigned, alive core partitions with both S2S directions as ready.

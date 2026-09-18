@@ -407,6 +407,8 @@ CLIENT_FILE_REQUIRED = {
     "players_drop_loot_on_defeat": "Game.ini",
     "players_drop_loot_on_death": "Game.ini",
     "base_backup_tool_time_restriction_seconds": "Game.ini",
+    "player_inventory_starting_size": "Game.ini",
+    "player_inventory_starting_volume_capacity": "Game.ini",
 }
 
 MAP_FIELDS = {

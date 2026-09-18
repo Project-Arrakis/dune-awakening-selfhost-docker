@@ -26,7 +26,7 @@ import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishServerCommand } from "./rmq.js";
-import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
+import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, maintainCarePackageHistory, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
 import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
 import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon } from "./addons.js";
@@ -81,9 +81,10 @@ import { autoRefillSettingsView, saveAutoRefillSettings } from "./services/autoR
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
 import { parseEffectiveGuildMemberLimit } from "./services/guildSettings.js";
 import { parseEffectivePermissionLimit } from "./services/permissionSettings.js";
-import { flushBaseRefillQueues } from "./services/baseRefillFlush.js";
+import { createSharedDeleteBackup, flushBaseRefillQueues } from "./services/baseRefillFlush.js";
 import { verifyBaseBackupState } from "./services/baseBackupSafety.js";
 import { createSingleFlight } from "./services/singleFlight.js";
+import { createReadCommandCache } from "./services/readCommandCache.js";
 import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
@@ -91,6 +92,7 @@ import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
 import { validateDiscordRoleIds, readDiscordBotSettingsState, applyDiscordBotEnableRequest, discordAdminRoleIdsChanged, updateDiscordBotRoleIds, regenerateDiscordBotToken, persistHostedBotConnectedGuild, disableDiscordBotAdapter, setDeploymentChoice } from "./integrations/discord/adapterSettings.js";
 import { createScheduledMapMessageScheduler } from "./services/scheduledMapMessages.js";
 import { createQaUpdates } from "./services/qaUpdates.js";
+import { SETUP_CONFIG_KEYS, validHostDatacenterId } from "./services/setupConfig.js";
 
 const config = loadConfig();
 // #141: ADMIN_AUTH_DISABLED bypasses both password auth (auth.js requireAuth)
@@ -117,6 +119,7 @@ if (config.authDisabled) {
   );
 }
 const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
+const readCommandCache = createReadCommandCache();
 const CONSOLE_PROCESS_STARTED_AT = Date.now();
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
 try {
@@ -365,6 +368,22 @@ const resolveOAuthTier = createOAuthTierResolver({
   },
   handoff: handoff.enabled ? handoff : null
 });
+
+async function trustedPartitionsForCompletedStop(operation, payload = {}) {
+  if (operation === "stopGameServersForDbWrites") return "all";
+  if (operation === "sietchesRestartStop") {
+    const partitionId = Number(payload.partitionId);
+    return Number.isInteger(partitionId) && partitionId > 0 ? new Set([partitionId]) : new Set();
+  }
+  if (operation === "restartServiceStop" && ["survival", "survival-1"].includes(String(payload.service || "").toLowerCase())) {
+    const targets = await duneDb.partitionRestartTargets(db);
+    return new Set([...targets.entries()]
+      .filter(([, target]) => target.map === "Survival_1" && target.dimensionIndex === 0)
+      .map(([partitionId]) => partitionId));
+  }
+  return new Set();
+}
+
 // Deferred db read: db is assigned below and is reassignable on reconnect.
 // Both flush paths go through flushQueuedGeneratorRefills/flushQueuedWaterRefills
 // so a write lands in the audit log no matter which one applied it.
@@ -373,20 +392,29 @@ const tasks = new TaskManager(config, {
   // started before the map stopped and so observed it as still live. Reusing
   // that result here would report "nothing to flush" for the one window in
   // which the queued writes are actually safe to apply.
-  onMapDown: () => flushBaseRefillQueues({
+  onMapDown: async (operation, payload) => {
+    const trustedDownPartitionIds = await trustedPartitionsForCompletedStop(operation, payload);
+    // Base and vehicle queues are independent, but the same database snapshot
+    // protects both destructive batches in this one write-safe window. Share
+    // the in-flight promise so mixed batches cannot dump the whole database
+    // twice in parallel.
+    const ensureDeleteBackup = createSharedDeleteBackup(config.mockMode ? undefined : () =>
+      runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } }));
+    return flushBaseRefillQueues({
     // ignoreRetryBackoff: the poller's 60s backoff would otherwise skip an
     // entry for ~55 of every 60 seconds, so most restarts silently applied
     // nothing. Only this hook sets it; the poller keeps backing off.
-    flushGenerators: () => flushQueuedGeneratorRefills({ forceFresh: true, ignoreRetryBackoff: true }),
-    flushWater: () => flushQueuedWaterRefills({ forceFresh: true, ignoreRetryBackoff: true }),
-    flushDeletes: () => flushQueuedBaseDeletes({ forceFresh: true, ignoreRetryBackoff: true }),
-    flushChildAccess: () => flushQueuedBaseChildAccess({ forceFresh: true, ignoreRetryBackoff: true }),
+    flushGenerators: () => flushQueuedGeneratorRefills({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds }),
+    flushWater: () => flushQueuedWaterRefills({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds }),
+    flushDeletes: () => flushQueuedBaseDeletes({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds, onBeforeApply: ensureDeleteBackup }),
+    flushChildAccess: () => flushQueuedBaseChildAccess({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds }),
     // The task hook runs only after the requested map servers have positively
     // stopped. At that point an explicit admin delete may safely remove even a
     // stale Travel/backup/recovery row; the background poller stays
     // conservative and leaves those states queued while maps may be live.
-    flushVehicleDeletes: () => flushQueuedVehicleDeletes({ forceFresh: true, allowBlockedStates: true, ignoreRetryBackoff: true })
-  })
+    flushVehicleDeletes: () => flushQueuedVehicleDeletes({ forceFresh: true, allowBlockedStates: true, ignoreRetryBackoff: true, trustedDownPartitionIds, onBeforeApply: ensureDeleteBackup })
+    });
+  }
 });
 let db = createDb(config);
 const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db });
@@ -620,15 +648,15 @@ setInterval(() => {
 // Every queued-refill write goes through here so it is audited whichever path
 // triggered it: the tick above, or the restart task runner's onMapDown hook.
 // These are real writes to player property, so an unaudited one is not acceptable.
-const flushQueuedGeneratorRefills = createSingleFlight(async ({ ignoreRetryBackoff = false } = {}) => {
-  const result = await duneDb.flushGeneratorRefills(db, config.repoRoot, { ignoreRetryBackoff });
+const flushQueuedGeneratorRefills = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) => {
+  const result = await duneDb.flushGeneratorRefills(db, config.repoRoot, { ignoreRetryBackoff, trustedDownPartitionIds });
   for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-refill", entry);
   return result;
 }, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
 
 // Same reasoning as flushQueuedGeneratorRefills, for the water queue.
-const flushQueuedWaterRefills = createSingleFlight(async ({ ignoreRetryBackoff = false } = {}) => {
-  const result = await duneDb.flushWaterRefills(db, config.repoRoot, { ignoreRetryBackoff });
+const flushQueuedWaterRefills = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) => {
+  const result = await duneDb.flushWaterRefills(db, config.repoRoot, { ignoreRetryBackoff, trustedDownPartitionIds });
   for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-water-refill", entry);
   return result;
 }, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
@@ -636,8 +664,8 @@ const flushQueuedWaterRefills = createSingleFlight(async ({ ignoreRetryBackoff =
 // Same reasoning as flushQueuedGeneratorRefills, for the base permission
 // queue. These change who can open a player's doors, so an unaudited apply is
 // not acceptable either.
-const flushQueuedBaseChildAccess = createSingleFlight(async ({ ignoreRetryBackoff = false } = {}) => {
-  const result = await duneDb.flushBaseChildAccess(db, config.repoRoot, { ignoreRetryBackoff });
+const flushQueuedBaseChildAccess = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) => {
+  const result = await duneDb.flushBaseChildAccess(db, config.repoRoot, { ignoreRetryBackoff, trustedDownPartitionIds });
   for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-child-access", entry);
   return result;
 }, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
@@ -646,15 +674,16 @@ const flushQueuedBaseChildAccess = createSingleFlight(async ({ ignoreRetryBackof
 // safety backup for this pass happens inside flushBaseDeletes's onBeforeApply
 // hook -- lazily, at most once, immediately before the first entry that is
 // actually about to be deleted, not merely because the queue is non-empty.
-const flushQueuedBaseDeletes = createSingleFlight(async ({ ignoreRetryBackoff = false } = {}) => {
+const flushQueuedBaseDeletes = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds, onBeforeApply } = {}) => {
   const result = await duneDb.flushBaseDeletes(db, config.repoRoot, {
     ignoreRetryBackoff,
+    trustedDownPartitionIds,
     // Matches databaseQuery's explicit mock-mode guard: this runs as a
     // background tick, not through directDbMutation, so it is not skipped
     // for free the way a request-time delete's backup call is.
     onBeforeApply: config.mockMode
       ? undefined
-      : () => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } })
+      : onBeforeApply || (() => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } }))
   });
   for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-delete", entry);
   if (result.backupFailed) {
@@ -668,13 +697,14 @@ const flushQueuedBaseDeletes = createSingleFlight(async ({ ignoreRetryBackoff = 
 // each call's options to the run function. Only the map-down hook sets it, and
 // that hook always sets forceFresh too, so it never rides along on a reused
 // in-flight result that was started without it.
-const flushQueuedVehicleDeletes = createSingleFlight(async ({ allowBlockedStates = false, ignoreRetryBackoff = false } = {}) => {
+const flushQueuedVehicleDeletes = createSingleFlight(async ({ allowBlockedStates = false, ignoreRetryBackoff = false, trustedDownPartitionIds, onBeforeApply } = {}) => {
   const result = await duneDb.flushVehicleDeletes(db, config.repoRoot, {
     allowBlockedStates,
     ignoreRetryBackoff,
+    trustedDownPartitionIds,
     onBeforeApply: config.mockMode
       ? undefined
-      : () => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "vehicle-delete" } })
+      : onBeforeApply || (() => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "vehicle-delete" } }))
   });
   for (const entry of result.flushed || []) audit(config, null, "vehicles.flush-queued-delete", entry);
   if (result.backupFailed) {
@@ -2895,7 +2925,7 @@ async function liveMapTeleportPlayerRoute(req, res) {
 async function commandJson(res, operation, payload = {}) {
   if (config.mockMode) return json(res, 200, mockCommand(operation));
   const args = buildDuneArgs(operation, payload);
-  const result = await runDune(config, args);
+  const result = await readCommandCache.run(JSON.stringify(args), () => runDune(config, args));
   return json(res, 200, { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code });
 }
 
@@ -3317,7 +3347,7 @@ async function marketItemsSaveRoute(req, res) {
 async function safeCommand(operation, payload = {}) {
   try {
     const args = buildDuneArgs(operation, payload);
-    const result = await runDune(config, args);
+    const result = await readCommandCache.run(JSON.stringify(args), () => runDune(config, args));
     return { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code };
   } catch (error) {
     return { operation, stdout: redact(error.stdout || ""), stderr: redact(error.stderr || error?.message || "Unexpected error."), exitCode: error.code || 1 };
@@ -6923,7 +6953,7 @@ function publicDirectorySettings() {
 }
 
 function readSetupConfigValues() {
-  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID",
+  const allowed = [...SETUP_CONFIG_KEYS,
     "DISCORD_HOME_GUILD_ID", "DISCORD_OAUTH_CLIENT_ID", "DISCORD_OAUTH_REDIRECT_URI", "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP", "DISCORD_OAUTH_OWNER_ALLOWLIST"];
   const values = {};
   for (const file of [resolve(config.repoRoot, ".env"), resolve(config.generatedDir, "battlegroup.env")]) {
@@ -7061,6 +7091,7 @@ async function carePackageAutoTick() {
   if (Date.now() < carePackageAutoNextAllowedRun) return;
   let kit;
   try {
+    await maintainCarePackageHistory(config);
     kit = carePackageConfig(config);
   } catch (error) {
     console.error(`Care Package auto-grant config read failed: ${redact(error?.message || "Unexpected error.")}`);
@@ -7165,9 +7196,12 @@ async function playerAnnouncementsAutoTick() {
 
 async function writeConfig(req, res) {
   const body = await readJson(req);
-  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID"];
+  const allowed = SETUP_CONFIG_KEYS;
+  if (body.HOST_DATACENTER_ID !== undefined && !validHostDatacenterId(body.HOST_DATACENTER_ID)) {
+    return json(res, 400, { error: "Datacenter ID must be a valid hostname or short ID using only letters, numbers, dots, and hyphens." });
+  }
   for (const key of allowed) {
-    if (body[key] !== undefined) updateEnvFileValue(key, String(body[key]));
+    if (body[key] !== undefined) updateEnvFileValue(key, key === "HOST_DATACENTER_ID" ? String(body[key]).trim() : String(body[key]));
   }
   audit(config, req, "setup.write-config", { keys: Object.keys(body).filter((key) => allowed.includes(key)) });
   return json(res, 200, { ok: true });
