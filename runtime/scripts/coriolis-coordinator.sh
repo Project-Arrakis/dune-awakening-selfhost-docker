@@ -7,6 +7,7 @@ SIGNAL_TEXT="LogCoriolis: Display: Coriolis Restart Farm"
 STATE_FILE="${DUNE_CORIOLIS_STATE_FILE:-runtime/generated/coriolis-coordinator.env}"
 STATE_LOCK_FILE="${DUNE_CORIOLIS_STATE_LOCK_FILE:-runtime/generated/coriolis-coordinator.lock}"
 RESTART_SCRIPT="${DUNE_CORIOLIS_RESTART_SCRIPT:-runtime/scripts/restart-game-farm.sh}"
+CLEANUP_SCRIPT="${DUNE_CORIOLIS_CLEANUP_SCRIPT:-runtime/scripts/coriolis-data-cleanup.sh}"
 POLL_SECONDS="${DUNE_CORIOLIS_POLL_SECONDS:-2}"
 LOOKBACK_SECONDS="${DUNE_CORIOLIS_LOOKBACK_SECONDS:-8}"
 INITIAL_LOOKBACK_SECONDS="${DUNE_CORIOLIS_INITIAL_LOOKBACK_SECONDS:-21600}"
@@ -72,8 +73,16 @@ perform_farm_restart() {
   "$RESTART_SCRIPT" coriolis
 }
 
+perform_cycle_data_cleanup() {
+  if [ ! -x "$CLEANUP_SCRIPT" ]; then
+    echo "Coriolis cycle data cleanup is unavailable; continuing with the farm restart." >&2
+    return 1
+  fi
+  "$CLEANUP_SCRIPT"
+}
+
 handle_restart_signal() {
-  local source_container="$1" now attempt
+  local source_container="$1" now attempt cleanup_failed=0
   now="$(date +%s)"
 
   mkdir -p "$(dirname "$STATE_LOCK_FILE")"
@@ -109,9 +118,17 @@ handle_restart_signal() {
     exec 9>&-
     return 0
   fi
+  if ! perform_cycle_data_cleanup; then
+    cleanup_failed=1
+    echo "Coriolis cycle data cleanup failed; continuing with the farm restart so the cycle is not blocked." >&2
+  fi
   for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     if perform_farm_restart; then
-      write_state succeeded "$now" "Coriolis game-farm restart completed successfully."
+      if [ "$cleanup_failed" = "1" ]; then
+        write_state succeeded "$now" "Coriolis game-farm restart completed, but cycle data cleanup failed."
+      else
+        write_state succeeded "$now" "Coriolis game-farm restart completed successfully."
+      fi
       echo "Coriolis game-farm restart completed successfully."
       flock -u 9
       exec 9>&-

@@ -9,10 +9,16 @@ export async function collectContainerHealth(options = {}) {
   const run = options.run || execFileText;
   const filter = `label=com.docker.compose.project=${projectName}`;
   try {
-    const [statsOutput, statusOutput] = await Promise.all([
-      run("docker", ["stats", "--no-stream", "--format", "{{json .}}", "--filter", filter]),
-      run("docker", ["ps", "--filter", filter, "--format", "{{json .}}"])
-    ]);
+    const statusOutput = await run("docker", ["ps", "--filter", filter, "--format", "{{json .}}"]);
+    const containerIds = parseJsonLines(statusOutput)
+      .map((row) => String(row.ID || "").trim())
+      .filter(Boolean);
+    if (containerIds.length === 0) return { containers: [] };
+
+    // `docker stats` has no --filter option. Resolve the Compose project's
+    // containers first, then pass only those explicit IDs so addons cannot
+    // obtain telemetry for unrelated host containers.
+    const statsOutput = await run("docker", ["stats", "--no-stream", "--format", "{{json .}}", ...containerIds]);
     return { containers: mergeContainerHealth(statsOutput, statusOutput) };
   } catch {
     return { containers: [], error: "Docker container statistics are unavailable." };

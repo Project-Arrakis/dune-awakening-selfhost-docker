@@ -68,7 +68,7 @@ const CORIOLIS_CYCLE_START_HOUR_FIELD = {
   clientFile: "",
   category: "",
   label: "Cycle Start Hour",
-  description: "UTC hour (0-23). Regional master schedules: Europe 05, North America 11, South America 08, Asia 09, and Oceania 19.",
+  description: "UTC hour (0-23). Regional master schedules: Europe 05, North America 10, South America 08, Asia 09, and Oceania 19.",
   minimum: 0,
   maximum: 23
 };
@@ -176,12 +176,12 @@ describe("MapsPanel Match Region toggle -- Cycle Start Hour", () => {
   it("locks the field when the saved value already matches the region's hour", async () => {
     const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
     api.userSettingsSchema.mockResolvedValue({ engine: [], mapEngine: [], partitionEngine: [], partition: [], game: BOTH_CORIOLIS_FIELDS });
-    mockCoriolisFields(api, { hour: "11", day: "7" });
+    mockCoriolisFields(api, { hour: "10", day: "7" });
     (setupApi.state as ReturnType<typeof vi.fn>).mockResolvedValue({ files: {}, config: {}, serverConfig: { SERVER_REGION: "North America" } });
 
     await openUserGameGlobalTab(api);
 
-    const hourInput = await screen.findByDisplayValue("11");
+    const hourInput = await screen.findByDisplayValue("10");
     expect(hourInput).toBeDisabled();
     expect(within(hourRadiogroup()).getByRole("radio", { name: "On" })).toBeChecked();
     // Migration is server-side only (see server.js's migrateCoriolisRegionFields)
@@ -206,12 +206,14 @@ describe("MapsPanel Match Region toggle -- Cycle Start Hour", () => {
   it("leaves an existing custom hour editable and does not overwrite it", async () => {
     const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
     api.userSettingsSchema.mockResolvedValue({ engine: [], mapEngine: [], partitionEngine: [], partition: [], game: BOTH_CORIOLIS_FIELDS });
-    mockCoriolisFields(api, { hour: "14", day: "7" });
+    // The former North America preset was 11. Treat an existing saved 11 as
+    // an explicit value after this correction rather than silently changing it.
+    mockCoriolisFields(api, { hour: "11", day: "7" });
     (setupApi.state as ReturnType<typeof vi.fn>).mockResolvedValue({ files: {}, config: {}, serverConfig: { SERVER_REGION: "North America" } });
 
     await openUserGameGlobalTab(api);
 
-    const hourInput = await screen.findByDisplayValue("14");
+    const hourInput = await screen.findByDisplayValue("11");
     expect(hourInput).toBeEnabled();
     expect(within(hourRadiogroup()).getByRole("radio", { name: "Off" })).toBeChecked();
     expect(api.saveUserSettings).not.toHaveBeenCalled();
@@ -220,15 +222,15 @@ describe("MapsPanel Match Region toggle -- Cycle Start Hour", () => {
   it("switches to manual editing when the toggle is turned Off", async () => {
     const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
     api.userSettingsSchema.mockResolvedValue({ engine: [], mapEngine: [], partitionEngine: [], partition: [], game: BOTH_CORIOLIS_FIELDS });
-    mockCoriolisFields(api, { hour: "11", day: "7" });
+    mockCoriolisFields(api, { hour: "10", day: "7" });
     (setupApi.state as ReturnType<typeof vi.fn>).mockResolvedValue({ files: {}, config: {}, serverConfig: { SERVER_REGION: "North America" } });
 
     await openUserGameGlobalTab(api);
-    await screen.findByDisplayValue("11");
+    await screen.findByDisplayValue("10");
 
     fireEvent.click(within(hourRadiogroup()).getByRole("radio", { name: "Off" }));
 
-    const hourInput = await screen.findByDisplayValue("11");
+    const hourInput = await screen.findByDisplayValue("10");
     expect(hourInput).toBeEnabled();
   });
 
@@ -243,7 +245,7 @@ describe("MapsPanel Match Region toggle -- Cycle Start Hour", () => {
 
     fireEvent.click(within(hourRadiogroup()).getByRole("radio", { name: "On" }));
 
-    const hourInput = await screen.findByDisplayValue("11");
+    const hourInput = await screen.findByDisplayValue("10");
     expect(hourInput).toBeDisabled();
     expect(api.saveUserSettings).not.toHaveBeenCalled();
   });
@@ -359,15 +361,15 @@ describe("MapsPanel Match Region -- Hour and Day toggles are independent", () =>
   it("locks one field while leaving the other editable, and toggling one does not affect the other", async () => {
     const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
     api.userSettingsSchema.mockResolvedValue({ engine: [], mapEngine: [], partitionEngine: [], partition: [], game: BOTH_CORIOLIS_FIELDS });
-    // North America: hour 11 matches (locked); day 6 is a deliberate custom
+    // North America: hour 10 matches (locked); day 6 is a deliberate custom
     // value that does not match North America's 3 (editable).
-    mockCoriolisFields(api, { hour: "11", day: "6" });
+    mockCoriolisFields(api, { hour: "10", day: "6" });
     (setupApi.state as ReturnType<typeof vi.fn>).mockResolvedValue({ files: {}, config: {}, serverConfig: { SERVER_REGION: "North America" } });
 
     await openUserGameGlobalTab(api);
-    await screen.findByDisplayValue("11");
+    await screen.findByDisplayValue("10");
 
-    const hourInput = screen.getByDisplayValue("11");
+    const hourInput = screen.getByDisplayValue("10");
     const dayInput = screen.getByDisplayValue("6");
     expect(hourInput).toBeDisabled();
     expect(dayInput).toBeEnabled();
@@ -380,7 +382,7 @@ describe("MapsPanel Match Region -- Hour and Day toggles are independent", () =>
 
     await waitFor(() => expect(screen.getByDisplayValue("3")).toBeDisabled());
     expect(within(hourRadiogroup()).getByRole("radio", { name: "On" })).toBeChecked();
-    expect(screen.getByDisplayValue("11")).toBeDisabled();
+    expect(screen.getByDisplayValue("10")).toBeDisabled();
     expect(api.saveUserSettings).not.toHaveBeenCalled();
   });
 });

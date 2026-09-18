@@ -270,6 +270,8 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 | DELETE | `/api/bases/{baseId}/queued-refill` | Cancel a base's queued generator refill | `baseId` |
 | GET | `/api/bases/auto-refill` | Get per-base auto-refill enrollment state | None |
 | POST | `/api/bases/{baseId}/auto-refill` | Enable/disable auto-refill for a base | `baseId`, `enabled` |
+| GET | `/api/bases/auto-refill/settings` | Get the threshold and scan interval for both auto-refill subsystems, with the source (`console`/`env`/`default`), reset value, and range of each | None |
+| POST | `/api/bases/auto-refill/settings` | Save auto-refill thresholds/intervals. A number sets, `null` resets to the env/default layer, an omitted key is unchanged. Rate limited; requires `bases:write-config`, not `bases:mutate` | `thresholdPercent?`, `intervalHours?`, `waterThresholdPercent?`, `waterIntervalHours?` |
 | GET | `/api/bases/{baseId}/water` | Get a base's water storage containers (count, volume, fill %; blood volume/fill for Blood Purifiers) | `baseId` |
 | POST | `/api/bases/{baseId}/refill-water` | Refill all base water storage (queued instead if the map isn't safely writable right now). Water only -- blood is never touched | `baseId` |
 | GET | `/api/bases/pending-water-refills` | List queued water refills, grouped by restart target | None |
@@ -683,17 +685,19 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 ## Live Map
 
 See [live-map.md](live-map.md) for how the panel uses these endpoints --
-partition display-name resolution, the spice/POI data model, and the
-Layers legend's default-settings mechanism.
+partition display-name resolution, the spice/POI data model, the
+Layers legend's default-settings mechanism, and what `coriolisLayout`
+drives: the WebGL renderer that draws the Deep Desert's own cartography
+meshes, and the conditions under which it falls back to the flat image.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | GET | `/api/map/capabilities` | Get map feature capabilities | None |
-| GET | `/api/map/markers` | Get map markers & configuration (actors, merged with spice/POI rows; response also includes `coriolisSeed`, `coriolisNextCycleAt`) | `map?`, `partitionId?`, `static?` (`0` omits static archive/POI rows for lightweight live refreshes) |
+| GET | `/api/map/markers` | Get map markers & configuration (actors, merged with spice/POI rows; response also includes `coriolisSeed`, `coriolisNextCycleAt`, `coriolisSeedStaleSince`, and `coriolisLayout`) | `map?`, `partitionId?`, `static?` (`0` omits static archive/POI rows for lightweight live refreshes) |
 | GET | `/api/map/spice` | Get spice/flour-sand layers (static pool, active blows, flour sand) for a map/partition | `map?`, `partitionId?` (query params) |
 | GET | `/api/map/poi` | Get registry-driven POI layers (ore, scrap, flora, poi, house_representative, trainer, fortress, hazard, enemy) for a map | `map?` (query param) |
-| POST | `/api/map/teleport-player` | Teleport player to map coords | `playerId`, `x`, `y`, `z`, `yaw?`, `partitionId?`, `online?` |
-| GET | `/api/map/partitions` | List map partitions | None |
+| POST | `/api/map/teleport-player` | Teleport a player to coordinates in the player's current ready partition; this never starts a dynamic map or crosses partitions | `playerId`, `x`, `y`, `z`, `yaw?`, `partitionId?`, `online?` |
+| GET | `/api/map/partitions` | List live-map partitions, including `alive` and `ready` runtime state for stopped dynamic maps | None |
 | GET | `/api/map/players` | Get player positions | `map?` (query param) |
 | GET | `/api/map/bases` | Get base locations | `map?` (query param) |
 | GET | `/api/map/storage` | Get storage locations | `map?` (query param) |
@@ -714,10 +718,31 @@ Layers legend's default-settings mechanism.
 | GET | `/api/database/tables/{schema}/{table}/count` | Get row count | `schema`, `table`, `filter?` |
 | PATCH | `/api/database/tables/{schema}/{table}/row` | Update table row | `rowId`, `values` (object) |
 | GET | `/api/database/search` | Search database | `q` or `term` (query param) |
-| POST | `/api/database/query` | Execute SQL query | `query` (read or write) |
+| POST | `/api/database/query` | Execute SQL query | `query` (read or write) — see note below |
 | POST | `/api/database/export` | Export query results | `query` (read-only SELECT/WITH/SHOW/EXPLAIN) |
 | POST | `/api/database/password` | Change database password | `password` |
 | GET | `/api/database/table/{table}` | Preview table | `table`, `limit?`, `offset?` |
+
+**`/api/database/query` authorizes on the SQL, not just the route.** The route
+resolves to `database:query`, which covers read-only SQL (`SELECT`, `WITH`,
+`SHOW`, `EXPLAIN`). SQL the classifier reads as a write additionally requires
+`database:execute`, checked inside the handler once the body is parsed; a caller
+without it gets `403` before the rate-limit tick and before the pre-write backup.
+
+**The permission is not the enforcement.** `database:execute` is selected by a
+classifier that a mutating `select dune.<fn>(...)` passes — so a write can be
+routed down the read path. That path executes inside a `set transaction read
+only` transaction, and Postgres refuses the write whatever the classifier
+concluded. The transaction is the guarantee; the action decides which path is
+taken and whether a backup is made.
+
+The default `admin` policy grants `database:query` and denies `database:execute`;
+`owner` holds both. Use `/api/database/export` for read-only result export.
+
+A body with nothing to execute — empty, whitespace, `;`, or entirely
+commented-out SQL — returns `400` first. Such input does not start with a read
+keyword, so without that check it classifies as a write and triggers a full
+pre-write backup before the query is rejected.
 
 ---
 
@@ -805,6 +830,10 @@ Layers legend's default-settings mechanism.
 | POST | `/api/addons/installed/{id}/bridge` | Addon bridge API | `id`, `action`, payload varies |
 | GET | `/api/addons/installed/{id}/content/{path}` | Get addon content file | `id`, `path` |
 
+### Player Identity Bridge
+
+`players.identity.list` requires an approved `players:read` addon permission. It returns the minimal player identity data needed to correlate addon events: `name`, `actorId`, `controllerId`, `accountId`, `funcomId`, `flsId`, `platformId`, `platformName`, `status`, and `map`. Addons do not need direct access to the Console player REST endpoints.
+
 ### Hardware Status Bridge
 
 `server.hardware.status` requires approved `server:status` addon permission and returns the core-owned hardware snapshot documented in [Addon Hardware Status Bridge](../addons/hardware-status.md). Addon packages are never permitted to execute their own telemetry scripts.
@@ -846,6 +875,36 @@ Layers legend's default-settings mechanism.
 | POST | `/api/settings/discord-bot/oauth-config` | Configure the hosted-bot connection's own, independent Discord Application (Client ID + Redirect URI) -- deliberately separate from Settings -> Discord OAuth's console-sign-in credentials; neither requires the other. Restart the console for changes to take effect. | `clientId?` (Discord snowflake), `redirectUri?` (URL) |
 | POST | `/api/settings/discord-bot/oauth-secret` | Save the hosted-bot connection's Discord Application client secret. File-only, written to its own secrets file, never echoed back. | `secret` (at least 20 characters) |
 | POST | `/api/settings/discord-bot/choice` | Persist the hosted/self-hosted deployment choice immediately, ahead of role config or enabling the adapter. Does not restart the console -- nothing about the live adapter's runtime behavior depends on this value. | `deploymentChoice` (`"hosted"` or `"self-hosted"`) |
+
+---
+
+## IAM Policies
+
+Per-tier Allow/Deny documents for the action catalog. Architecture and evaluation order: [../console-iam.md](../console-iam.md).
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/settings/iam/policies` | Active policy store, plus `actions`: the full sorted catalog of valid action names | None |
+| PUT | `/api/settings/iam/policy` | Validate and atomically save the complete policy store | Policy store object (every tier) |
+| POST | `/api/settings/iam/policy/test` | Evaluate one action for one tier without changing policy | `action`, `tier` |
+
+`PUT` refuses two kinds of bad action name, each with its own `400` payload:
+
+- **`unknownActions`** — the name matches nothing in the catalog. The test is
+  whether a pattern matches at least one catalogued action, so wildcards remain
+  legal (`players:*`, `bases:delete-*`) while near-misses that match nothing
+  (`player:*`, `players:reset-*`) are rejected. This matters because the failure
+  is asymmetric: a misspelled action in an `Allow` grants nothing, but in a
+  `Deny` it withholds nothing while reading exactly like a restriction.
+- **`deprecatedActions`** — the name is one the catalog used to have
+  (`players:mutate`, `guilds:mutate`, `blueprints:mutate`, `addons:mutate`). Each
+  entry carries `successors`, so the edit is mechanical. These still evaluate
+  with their original meaning, so a stored policy keeps working; only saving is
+  refused. See [../console-iam.md](../console-iam.md#upgrading-a-policy-that-names-a-removed-action).
+
+`POST .../test` returns `known` alongside `allowed`. A misspelled action answers
+`allowed: false`, which reads as a working `Deny`; `known: false` is what separates a
+real denial from a typo.
 
 ---
 

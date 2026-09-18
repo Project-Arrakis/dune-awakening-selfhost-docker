@@ -48,7 +48,7 @@ by nature, so it gets its own.
 ## Console (`console/api`, `console/web`)
 
 - [API-REFERENCE.md](console/API-REFERENCE.md) — Current. Full HTTP API reference for every console endpoint.
-- [api-keys.md](console/api-keys.md) — Current. Named, revocable API keys for external callers: per-namespace Read/Read+write scopes that default to no access, the `settings`/`database`/`setup` namespaces no key can ever reach and the write-denied `updates` and `addons`, hash-only storage with a one-time reveal, and per-key expiry, disable and rate limits.
+- [api-keys.md](console/api-keys.md) — Current. Named, revocable API keys for external callers: scopes that default to no access, given per namespace as Read/Read+write or as an explicit list of actions, the `settings`/`database`/`setup` namespaces no key can ever reach and the write-denied `updates` and `addons`, hash-only storage with a one-time reveal, and per-key expiry, disable and rate limits.
 - [blueprints.md](console/blueprints.md) — Current. Blueprint import/export developer documentation.
 - [PRE-AUGMENTED-GEAR.md](console/PRE-AUGMENTED-GEAR.md) — Current. API reference for granting gear with augments pre-applied.
 - [generator-fuel-burn-rates.md](console/generator-fuel-burn-rates.md) — Current. Per-generator fuel burn constants and where they live in code.
@@ -64,7 +64,7 @@ by nature, so it gets its own.
 - [database-backups.md](console/database-backups.md) — Current. Safe database restore behavior when the backup and current deployment use different Battlegroup IDs.
 - [restart-queue.md](console/restart-queue.md) — Current. The Restart Queue toggle: player-aware countdowns with in-game warnings, the two broadcast variants, concurrency rules, crash recovery, the "Restart later" deferred-restart option, and the join-lock limitation.
 - [exchange.md](console/exchange.md) — Current. The read-only Market Board: aggregated-by-item CHOAM exchange listings, seller resolution, how bot listings are identified, the bot/blacklist filter config, the Market Bot seed/buyback engine, and the Bot items tab's per-item catalog overrides.
-- [live-map.md](console/live-map.md) — Current. The Live Map panel: partition display-name resolution, the actor/spice/POI marker data model (static archive + live decode + self-learning pool, the registry-driven POI framework), the Layers legend's hide-if-empty and default-settings mechanism, and Coriolis seed/countdown resolution.
+- [live-map.md](console/live-map.md) — Current. The Live Map panel: partition display-name resolution, the actor/spice/POI marker data model (static archive + live decode + self-learning pool, the registry-driven POI framework), the Layers legend's hide-if-empty and default-settings mechanism, Coriolis seed/layout/countdown resolution, and the WebGL terrain renderer that draws the Deep Desert's own cartography meshes (with the conditions under which it falls back to the flat map image).
 
 ## Runtime (`runtime/`)
 

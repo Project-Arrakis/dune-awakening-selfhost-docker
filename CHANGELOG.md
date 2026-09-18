@@ -7,7 +7,7 @@ whatever upstream version is currently checked out, per the versioning
 convention documented in this account's operating docs. Entries are in
 Keep a Changelog style, grouped by upstream base version, newest first.
 
-## Unreleased (on top of upstream v1.4.5)
+## Unreleased (on top of upstream v1.4.7)
 
 ### Added
 
