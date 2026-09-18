@@ -806,6 +806,29 @@ test("spicefield controls list live DB rows", async () => {
   assert.ok(calls.some((call) => String(call.text).includes("from dune.spicefield_types")));
 });
 
+test("spicefield status reads active Patch 1.5 resource fields when legacy tuning was removed", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: values[0] === "dune.resourcefield_state" }] };
+      if (text.includes("information_schema.columns")) {
+        return { rows: ["field_id", "map", "dimension_index", "spawn_time", "value_remaining"].map((column_name) => ({ column_name })) };
+      }
+      return { rows: [{ field_id: "91", map_name: "HaggaBasin", dimension_index: 0, spawn_time: 123.5, value_remaining: "5000", field_type: "Small" }] };
+    }
+  };
+  const result = await listSpicefieldTypes(db);
+  assert.equal(result.capabilities.spicefields, true);
+  assert.equal(result.capabilities.spicefieldTuning, false);
+  assert.equal(result.mode, "resourcefields");
+  assert.deepEqual(result.rows, []);
+  assert.deepEqual(result.activeFields, [{ field_id: "91", map_name: "HaggaBasin", dimension_index: 0, spawn_time: 123.5, value_remaining: 5000, field_type: "Small" }]);
+  const query = calls.find((call) => String(call.text).includes("from dune.resourcefield_state"));
+  assert.ok(query);
+  assert.match(query.text, /value_remaining <> 60000/);
+});
+
 test("spicefield controls update only editable tuning columns", async () => {
   const calls = [];
   const db = {
