@@ -62,6 +62,11 @@ assert "select player_controller_id\n          from moved" in rejected
 assert "from dune.actors\n          where owner_account_id" not in rejected
 assert "(select count(*) from cleared_return)" in rejected
 assert '[ "$moved_account_id" = "$account_id" ] || continue' in rejected
+alignment = text[text.index("scan_live_player_partition_alignment()"):text.index("scan_travel_demand()", text.index("scan_live_player_partition_alignment()"))]
+assert "wp.map in ('CB_Story_DestroyedZanovar', 'CB_Story_OrbitalMonitor')" in alignment
+assert "return_wp.partition_id = ps.previous_server_partition_id" in alignment
+assert "coalesce(return_wp.dimension_index, 0) = ps.return_dimension_index" in alignment
+assert "return_fs.ready = true" in alignment and "return_fs.alive = true" in alignment
 main_loop = text.rindex("while true; do")
 assert text.index("scan_rejected_story_returns", main_loop) < text.index("scan_named_destination_failures", main_loop)
 PY
@@ -207,6 +212,36 @@ PY
   grep -qx 'moved=42|cleared=1' <<< "$pg_result"
   grep -qx 'remaining=0' <<< "$pg_result"
   grep -qx 'state=target-hagga:31:1' <<< "$pg_result"
+
+  alignment_result="$(python3 - "$script" <<'PY' | docker exec -i "$DUNE_TEST_POSTGRES_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d dune -Atq -F '|'
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+query = text.split('scan_live_player_partition_alignment() {', 1)[1].split('-c "', 1)[1].split('\n  " | while', 1)[0]
+for old, new in (
+    ("dune.player_state", "test_align_player_state"),
+    ("dune.world_partition", "test_align_world_partition"),
+    ("dune.farm_state", "test_align_farm_state"),
+):
+    query = query.replace(old, new)
+print("begin;")
+print("create temp table test_align_player_state (account_id bigint, server_id text, previous_server_partition_id bigint, return_dimension_index integer, online_status text);")
+print("create temp table test_align_world_partition (server_id text, partition_id bigint, map text, dimension_index integer);")
+print("create temp table test_align_farm_state (server_id text, ready boolean, alive boolean);")
+print("insert into test_align_world_partition values ('story-server', 133, 'CB_Story_OrbitalMonitor', 0), ('hagga-server', 31, 'Survival_1', 1), ('normal-server', 3, 'SH_Arrakeen', 0);")
+print("insert into test_align_farm_state values ('hagga-server', true, true);")
+print("insert into test_align_player_state values (2, 'story-server', 31, 1, 'Online'), (3, 'normal-server', 31, 1, 'Online'), (4, 'story-server', 31, 0, 'Online');")
+print(query)
+print("rollback;")
+PY
+  )"
+  grep -qx '3|normal-server|3|0|31' <<< "$alignment_result"
+  grep -qx '4|story-server|133|0|31' <<< "$alignment_result"
+  if grep -q '^2|' <<< "$alignment_result"; then
+    echo "live alignment must preserve the ready story return destination" >&2
+    exit 1
+  fi
 fi
 
 echo "autoscaler recovers Hagga Basin returns from every running new-story instance"
