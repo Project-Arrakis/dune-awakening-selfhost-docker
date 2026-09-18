@@ -2379,6 +2379,19 @@ scan_live_player_partition_alignment() {
     join dune.world_partition wp on wp.server_id = ps.server_id
     where ps.online_status <> 'Offline'
       and coalesce(ps.server_id, '') <> ''
+      and not (
+        wp.map in ('CB_Story_DestroyedZanovar', 'CB_Story_OrbitalMonitor')
+        and exists (
+          select 1
+          from dune.world_partition return_wp
+          join dune.farm_state return_fs on return_fs.server_id = return_wp.server_id
+          where return_wp.partition_id = ps.previous_server_partition_id
+            and return_wp.map = 'Survival_1'
+            and coalesce(return_wp.dimension_index, 0) = ps.return_dimension_index
+            and return_fs.ready = true
+            and return_fs.alive = true
+        )
+      )
       and (
         ps.previous_server_partition_id is distinct from wp.partition_id
         or ps.return_dimension_index is distinct from wp.dimension_index
