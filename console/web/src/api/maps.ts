@@ -3,7 +3,7 @@ import type { Task } from "./setup";
 import type { RestartDispatchResponse } from "./server";
 
 export type UserSettingField = {
-  scope: "engine" | "mapEngine" | "partitionEngine" | "game" | "partition";
+  scope: "engine" | "mapEngine" | "partitionEngine" | "game" | "partition" | "serverCustom";
   id: string;
   section: string | null;
   key: string | null;
@@ -23,6 +23,7 @@ export type UserSettingsSchema = {
   game: UserSettingField[];
   partition: UserSettingField[];
   partitionEngine: UserSettingField[];
+  serverCustom?: UserSettingField[];
 };
 
 export type LiveMapMemoryRow = {
@@ -172,9 +173,9 @@ export const mapsApi = {
   // resetUserSettings/saveRawUserSettings deferRestart field) -- distinct
   // from userSettingsRestartPending above, which only covers Landsraad fields.
   deferredRestartPending: () => api<{ pending: boolean; since?: string; label?: string }>("/api/maps/user-settings/deferred-pending"),
-  userSettingsValues: (scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition", map?: string, partitionId?: string) => api<{ stdout: string }>(`/api/maps/user-settings/values?scope=${encodeURIComponent(scope)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
+  userSettingsValues: (scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition" | "serverCustomGlobal" | "serverCustomMap" | "serverCustomPartition", map?: string, partitionId?: string) => api<{ stdout: string }>(`/api/maps/user-settings/values?scope=${encodeURIComponent(scope)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
   rawUserSettings: (kind: "engine" | "game" | "profile" | "client-game" | "client-engine", map?: string, partitionId?: string) => api<{ content: string }>(`/api/maps/user-settings/raw?kind=${encodeURIComponent(kind)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
-  saveUserSettings: ({ immediate, ...body }: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; values: Record<string, string>; restart?: boolean; immediate?: boolean; deferRestart?: boolean }) =>
+  saveUserSettings: ({ immediate, ...body }: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition" | "serverCustomGlobal" | "serverCustomMap" | "serverCustomPartition"; map?: string; partitionId?: string; values: Record<string, string>; restart?: boolean; immediate?: boolean; deferRestart?: boolean }) =>
     post<RestartDispatchResponse>(`/api/maps/user-settings/save${immediate ? "?restartQueue=immediate" : ""}`, body),
   resetUserSettings: ({ immediate, ...body }: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; confirmation: string; immediate?: boolean; deferRestart?: boolean }) =>
     post<RestartDispatchResponse>(`/api/maps/user-settings/reset${immediate ? "?restartQueue=immediate" : ""}`, body),
