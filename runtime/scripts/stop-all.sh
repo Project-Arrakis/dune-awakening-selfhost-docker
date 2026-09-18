@@ -5,6 +5,17 @@ cd "$(dirname "$0")/../.."
 
 mkdir -p runtime/generated
 
+LIFECYCLE_LOCK_FILE="${DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE:-runtime/generated/battlegroup-lifecycle.lock}"
+if [ "${DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD:-0}" != "1" ]; then
+  if flock -n -E 75 -o "$LIFECYCLE_LOCK_FILE" env DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD=1 "$0" "$@"; then
+    exit 0
+  else
+    rc=$?
+    [ "$rc" -ne 75 ] || echo "Another battlegroup lifecycle operation is already running." >&2
+    exit "$rc"
+  fi
+fi
+
 if [ "${DUNE_MANUAL_STOP:-0}" = "1" ]; then
   boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
   {
@@ -16,6 +27,10 @@ fi
 
 echo "=== Stopping autoscaler ==="
 runtime/scripts/autoscaler-control.sh stop || true
+
+echo
+echo "=== Stopping Coriolis coordinator ==="
+docker rm -f dune-coriolis-coordinator 2>/dev/null || true
 
 echo
 echo "=== Stopping sietch override publisher ==="

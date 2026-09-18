@@ -103,6 +103,7 @@ if (config.authDisabled) {
     "This is intended for local development only; never set it on an install anyone else can reach."
   );
 }
+const CONSOLE_PROCESS_STARTED_AT = Date.now();
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
 try {
   edaRetirement = retireLegacyEdaExchangeBot(config);
@@ -1141,7 +1142,17 @@ async function handleApi(req, res) {
   }
   if (path === "/api/updates/stack-progress") {
     try {
-      return json(res, 200, readSelfUpdateStatus(config.repoRoot, url.searchParams.get("runId")));
+      const taskStartedAt = url.searchParams.get("startedAt");
+      const progress = readSelfUpdateStatus(config.repoRoot, url.searchParams.get("runId"), {
+        taskStartedAt,
+        consoleStartedAt: CONSOLE_PROCESS_STARTED_AT
+      });
+      const taskStartedAtMs = Date.parse(String(taskStartedAt || progress.startedAt || ""));
+      return json(res, 200, {
+        ...progress,
+        consoleStartedAt: new Date(CONSOLE_PROCESS_STARTED_AT).toISOString(),
+        consoleReplaced: Number.isFinite(taskStartedAtMs) && CONSOLE_PROCESS_STARTED_AT > taskStartedAtMs + 1000
+      });
     } catch (error) {
       return json(res, error?.code === "INVALID_RUN_ID" ? 400 : 500, { error: redact(error?.message || "Could not read console update status.") });
     }

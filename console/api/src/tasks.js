@@ -4,6 +4,7 @@ import { statSync } from "node:fs";
 import { runDune, buildDuneArgs, validateServiceName } from "./runner.js";
 import { liveItemGrantWarning } from "./grantResults.js";
 import { createUpdateCheckCache } from "./services/updateCheckCache.js";
+import { initializeSelfUpdateStatus } from "./services/selfUpdateStatus.js";
 
 // Operations that leave a map down with the database still reachable, so
 // anything queued for that map can be applied before it comes back up. "stop"
@@ -172,6 +173,7 @@ export class TaskManager {
 
     task.currentStep = "Starting update helper";
     this.emit(task, "Starting detached update helper");
+    initializeSelfUpdateStatus(this.config.repoRoot, task.id);
     await cleanupStaleSelfUpdateHelpers(this.config.repoRoot, this.runDockerCommand);
     const result = await this.runDockerCommand(buildSelfUpdateHelperDockerArgs({
       helperName,
@@ -336,8 +338,9 @@ export function buildSelfUpdateHelperDockerArgs({
       "-e", `DOCKER_SOCKET_GID=${dockerSocketGid}`,
       ...extraEnv.flatMap((value) => ["-e", value]),
       "-w", "/repo",
+      "--entrypoint", "/bin/sh",
       helperImage,
-      "sh", "-lc", command
+      "-lc", command
     ];
 }
 
@@ -408,7 +411,7 @@ function shellQuote(value) {
 }
 
 export function taskTimeoutMs(config, operation) {
-  if (["start", "stop", "restartAll", "restartService", "restartServiceStop", "restartServiceStart", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "mapsRespawn", "sietchesSetActive", "sietchesRestart", "sietchesRestartStop", "sietchesRestartStart", "sietchesReconcile"].includes(operation)) {
+  if (["start", "stop", "restartAll", "restartService", "restartServiceStop", "restartServiceStart", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "mapsRespawn", "sietchesSetActive", "sietchesRestart", "sietchesRestartStop", "sietchesRestartStart", "sietchesReconcile", "deepdesertAction"].includes(operation)) {
     return Math.max(config.commandTimeoutMs, 30 * 60 * 1000);
   }
   return config.commandTimeoutMs;

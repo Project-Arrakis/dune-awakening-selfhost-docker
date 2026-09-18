@@ -282,7 +282,7 @@ echo "18. Docker storage growth controls"
 log_arg_scripts=(
   start-postgres.sh start-rabbitmq.sh start-text-router.sh start-director.sh
   start-server-gateway.sh start-server-overmap.sh start-server-survival-1.sh
-  spawn-server.sh start-autoscaler.sh update-db.sh
+  spawn-server.sh start-autoscaler.sh start-coriolis-coordinator.sh update-db.sh
 )
 missing_log_args=""
 for script in "${log_arg_scripts[@]}"; do

@@ -103,6 +103,7 @@ test("long-running server tasks get an extended timeout", () => {
   assert.equal(taskTimeoutMs(config, "storageCleanupImages"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "storageCleanupBuildCache"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "sietchesSetActive"), 30 * 60 * 1000);
+  assert.equal(taskTimeoutMs(config, "deepdesertAction"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "sietchesRestart"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "sietchesReconcile"), 30 * 60 * 1000);
   assert.equal(taskTimeoutMs(config, "restartServiceStop"), 30 * 60 * 1000);
@@ -136,6 +137,7 @@ test("web self-update helper mounts the host repo path", () => {
   assert(args.includes("DUNE_SELF_UPDATE_TOKEN"));
   assert(args.includes("DUNE_SELF_UPDATE_RUN_ID=123e4567-e89b-42d3-a456-426614174000"));
   assert(args.includes("io.github.red-blink.dune-selfhost.role=self-update-helper"));
+  assert.deepEqual(args.slice(args.indexOf("--entrypoint"), args.indexOf("--entrypoint") + 4), ["--entrypoint", "/bin/sh", "redblink-dune-docker-console:dev", "-lc"]);
   assert(!args.includes("/repo:/repo"));
 });
 
@@ -294,8 +296,9 @@ test("detached self-update stays running until durable helper status completes i
   const previousProject = process.env.DUNE_COMPOSE_PROJECT_NAME;
   process.env.DUNE_COMPOSE_PROJECT_NAME = "dune-test";
   const calls = [];
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-self-update-task-"));
   const manager = new TaskManager({
-    repoRoot: "/repo",
+    repoRoot,
     hostRepoRoot: "/host/repo",
     taskRetention: 20,
     commandTimeoutMs: 5000
@@ -320,6 +323,7 @@ test("detached self-update stays running until durable helper status completes i
     assert.equal(calls[0][0], "ps");
     assert(calls[1].includes(`DUNE_SELF_UPDATE_RUN_ID=${created.id}`));
     assert(calls[1].includes("DUNE_SELF_UPDATE_BUILD_TIMEOUT_SECONDS=1800"));
+    assert.match(readFileSync(join(repoRoot, "runtime", "generated", "self-update-status", `${created.id}.env`), "utf8"), /^stage=launching$/m);
   } finally {
     if (previousProject === undefined) delete process.env.DUNE_COMPOSE_PROJECT_NAME;
     else process.env.DUNE_COMPOSE_PROJECT_NAME = previousProject;

@@ -338,7 +338,7 @@ export function UpdatesPanel({
     void (async () => {
       while (!cancelled) {
         try {
-          const progress = await updatesApi.stackProgress(stackUpdateTask.id);
+          const progress = await updatesApi.stackProgress(stackUpdateTask.id, stackUpdateTask.startedAt);
           if (cancelled) return;
           setStackHelperProgress(progress);
           if (progress.state === "failed") {
@@ -395,9 +395,7 @@ export function UpdatesPanel({
       while (!cancelled) {
         const state = await fetchConsoleAuthState().catch(() => null);
         const runningVersion = String(state?.config?.version || "").trim();
-        const expected = normalizeUpdateVersion(expectedVersion);
-        const running = normalizeUpdateVersion(runningVersion);
-        if (running && (!expected || running === expected)) {
+        if (isUpdatedConsoleReady(stackHelperProgress, runningVersion, expectedVersion)) {
           const completedTask: Task = {
             ...stackUpdateTask,
             status: "succeeded",
@@ -732,7 +730,7 @@ function StackUpdateProgress({
     </div>
     <p>{formatResultMessage(progress.message)}</p>
     {refreshCountdown !== null && <div className="action-line"><button onClick={() => window.location.reload()}>Refresh Now</button></div>}
-    {refreshCountdown === null && helperProgress?.state === "succeeded" && <div className="action-line"><button onClick={() => window.location.reload()}>Refresh Now</button><span className="muted">The update helper finished. Refresh manually if this page does not detect it shortly.</span></div>}
+    {refreshCountdown === null && helperProgress?.state === "succeeded" && <div className="action-line stack-update-refresh-line"><button onClick={() => window.location.reload()}>Refresh Now</button><span className="muted">The update helper finished. Refresh manually if this page does not detect it shortly.</span></div>}
     {task.status === "succeeded" && !isDetachedStackUpdateTask(task) && <div className="action-line"><button onClick={() => window.location.reload()}>Refresh Console</button></div>}
     {task.status === "failed" && <div className="action-line"><button onClick={onRetry}>Retry Console Update</button></div>}
   </div>;
@@ -768,6 +766,13 @@ export function summarizeStackUpdateProgress(task: Task, helperProgress: StackUp
 
 export function isDetachedStackUpdateTask(task: Task) {
   return ["selfUpdateApply", "selfUpdateQaApply"].includes(task.operation) && /Update helper started/i.test(task.logLines.map((line) => line.line).join("\n"));
+}
+
+export function isUpdatedConsoleReady(progress: StackUpdateRunProgress | null, runningVersion: string, expectedVersion: string) {
+  const running = normalizeUpdateVersion(runningVersion);
+  if (!running) return false;
+  const expected = normalizeUpdateVersion(expectedVersion);
+  return progress?.consoleReplaced === true || !expected || running === expected;
 }
 
 function stackUpdateStageTitle(stage?: string) {
