@@ -37,7 +37,8 @@ test("self-update status is initialized durably before the detached helper start
       message: "Starting the update helper.",
       startedAt: "2026-08-24T21:04:18.000Z",
       updatedAt: "2026-08-24T21:04:18.000Z",
-      finishedAt: null
+      finishedAt: null,
+      discordHealthOk: null
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
