@@ -378,7 +378,7 @@ Covers A01-A10 static analysis checks for the blueprint API surface.
 - **Status**: OPEN
 - **Finding**: Game server crashes (P34) when previewing some imported blueprints in-game
 - **Fixed**: `PlayerBaseBackupId` added to stats JSON to match live solido format
-- **Fixed**: Imported transforms and pentashield scales now use the engine's zero-based PostgreSQL array bounds; existing Console imports are normalized after a successful database update
+- **Fixed**: Console imports retain the ordinary PostgreSQL array bounds verified before v1.4.26; the database-update repair targets only Console-owned imports and never rewrites native Funcom Blueprint rows
 - **Verification needed**: Test with different blueprints and map types
 - **Remaining root cause candidates**: hologram flag interaction, `building_blueprint_map` empty, invalid building types on target map
 
