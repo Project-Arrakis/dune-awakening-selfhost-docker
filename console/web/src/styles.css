@@ -1530,6 +1530,10 @@ body.debug .technical-details { display: block; }
 .playerAdmin_repairLabel > span:first-child { white-space: nowrap; }
 .playerAdmin_repairLabel em { color: #cbbd9f; font-size: 12px; font-style: italic; font-weight: 500; line-height: 1.25; }
 .playerAdmin_repairRow .inline-action-result-wrap { align-self: center; min-width: 0; }
+.playerAdmin_characterRecoveryRow { grid-template-columns: minmax(280px, 400px) minmax(330px, 1fr) minmax(0, 1fr); }
+.playerAdmin_characterRecoveryControls { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.playerAdmin_characterRecoveryControls select { flex: 1 1 auto; width: 100%; min-width: 0; color: #f1e4cf; }
+.playerAdmin_characterRecoveryControls button { flex: 0 0 auto; white-space: nowrap; }
 .playerAdmin_actionLabel em { color: #cbbd9f; font-size: 12px; font-style: italic; font-weight: 500; line-height: 1.25; }
 .playerAdmin_actionRow input, .playerAdmin_actionRow select, .playerAdmin_filterRow input, .playerAdmin_filterRow select { max-width: 220px; }
 .playerAdmin_actionRow .playerAdmin_fieldSlot { min-height: 1px; }
@@ -3178,9 +3182,10 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    pulls it over the strip's bottom border so the tab and the content below it
    read as one continuous surface. */
 /* Bases opts out of the shared .table-wrap height cap so the table grows with
-   its rows and the page scrolls instead of a container inside it. An expanded
-   row's panel is tall enough that the 620px cap left it fighting for room in a
-   nested scrollport. Row count stays bounded by the page-size control. */
+   its rows and the page scrolls instead of a container inside it. The expanded
+   details render after the table, keeping the sticky table header bounded to
+   actual base rows instead of carrying it through a tall editor panel. Row
+   count stays bounded by the page-size control. */
 /* Two-class selector deliberately: a later grouped rule re-declares
    `overflow: auto` on .table-wrap at equal specificity, so a single-class
    override here would lose on source order. */
@@ -3199,6 +3204,9 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bases-table-wrap .bases-table tbody > tr:last-child > td { border-bottom: 0; }
 .bases-table-wrap .bases-table tbody > tr:last-child > td:first-child { border-bottom-left-radius: 7px; }
 .bases-table-wrap .bases-table tbody > tr:last-child > td:last-child { border-bottom-right-radius: 7px; }
+.table-wrap.bases-table-wrap.has-expanded-row-after-table { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.bases-table-wrap.has-expanded-row-after-table .bases-table tbody > tr:last-child > td:first-child { border-bottom-left-radius: 0; }
+.bases-table-wrap.has-expanded-row-after-table .bases-table tbody > tr:last-child > td:last-child { border-bottom-right-radius: 0; }
 
 /* Below this width the twelve columns have nowhere to go. The table has no
    intrinsic minimum, so instead of overflowing it crushes -- cells collapse to
@@ -3212,13 +3220,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 @media (max-width: 1100px) {
   .table-wrap.bases-table-wrap { overflow: auto; }
   .bases-table { min-width: 860px; }
-  /* The expanded panel is a cell of that 860px table, so without this it
-     inherits the width and pushes its own controls off-screen -- the rank
-     dropdown, remove button and player picker all end up past the right edge.
-     Sticky-left pins the panel to the visible edge while the columns scroll
-     underneath, and the width cap keeps its controls inside the scrollport. */
-  .bases-table td.expanded-row-cell { position: sticky; left: 0; }
-  .bases-table td.expanded-row-cell > * { max-width: calc(100vw - 76px); }
+  .bases-table-wrap + .expanded-row-outside > .expanded-row-cell > * { max-width: calc(100vw - 76px); }
 }
 /* The shared `th` rule is already position:sticky, but an overflow:auto ancestor
    confines a sticky element to that ancestor's scrollport -- so with the height
@@ -4746,6 +4748,15 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bases-table td.expanded-row-cell {
   text-align: left;
 }
+.bases-table-wrap + .expanded-row-outside {
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: #101316;
+}
+.bases-table-wrap + .expanded-row-outside > .expanded-row-cell {
+  text-align: left;
+}
 /* A plain full-width column, not a grid: the auto-refill row and the reserve
    note need the row's true full width (flex's default align-items: stretch
    gives every direct child 100% width for free), while only the actual cards
@@ -4767,6 +4778,144 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   min-width: 0;
   padding: clamp(12px, 1.5vw, 18px);
   box-sizing: border-box;
+}
+.land-claim-editor { gap: 16px; }
+.land-claim-editor > .inline-task-result {
+  align-self: stretch;
+  flex: 0 0 auto;
+  width: auto;
+  max-width: none;
+  margin: 0;
+  box-sizing: border-box;
+}
+.land-claim-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
+}
+.land-claim-summary > div {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .018);
+}
+.land-claim-summary span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.land-claim-summary strong { color: var(--title); font-size: 15px; }
+.land-claim-warning,
+.land-claim-disclaimer,
+.land-claim-backup-note,
+.land-claim-restart-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  line-height: 1.45;
+}
+.land-claim-warning {
+  padding: 11px 13px;
+  border: 1px solid rgba(226, 173, 69, .42);
+  border-radius: 7px;
+  background: rgba(174, 116, 24, .1);
+  color: #e8c77f;
+}
+.land-claim-warning svg,
+.land-claim-disclaimer svg,
+.land-claim-backup-note svg,
+.land-claim-restart-note svg { flex: 0 0 auto; margin-top: 2px; }
+.land-claim-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  gap: 14px;
+  align-items: start;
+}
+.land-claim-grid-card,
+.land-claim-controls {
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, .12);
+}
+.land-claim-grid-card { padding: 14px; }
+.land-claim-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.land-claim-section-heading h3,
+.land-claim-controls h3 { margin: 0 0 4px; color: var(--title); font-size: 14px; }
+.land-claim-section-heading p { margin: 0; color: var(--muted); font-size: 12px; }
+.land-claim-section-heading button { width: auto; flex: 0 0 auto; }
+.land-claim-reload-icon { animation: spin 1s linear infinite; }
+.land-claim-grid-wrap {
+  min-height: 300px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-radius: 8px;
+  background-color: #171512;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, .025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, .025) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+.land-claim-grid { display: block; width: 100%; height: clamp(300px, 42vw, 500px); }
+.land-claim-cell {
+  vector-effect: non-scaling-stroke;
+  stroke-width: 1.25px;
+  transition: fill .15s ease, stroke .15s ease;
+}
+.land-claim-cell.origin { fill: #e3ad42; stroke: #ffcf66; }
+.land-claim-cell.existing { fill: rgba(88, 116, 132, .72); stroke: #8aa8b8; }
+.land-claim-cell.selected { fill: rgba(204, 151, 46, .76); stroke: #ffd36d; cursor: pointer; }
+.land-claim-cell.available { fill: rgba(255, 255, 255, .018); stroke: rgba(221, 197, 153, .45); stroke-dasharray: 3 3; cursor: pointer; }
+.land-claim-cell.available:hover,
+.land-claim-cell.available:focus { fill: rgba(227, 173, 66, .2); stroke: #e3ad42; outline: none; }
+.land-claim-cell.selected:hover,
+.land-claim-cell.selected:focus { fill: rgba(171, 74, 53, .72); stroke: #ff9178; outline: none; }
+.land-claim-cell-label {
+  fill: #17130c;
+  font-size: .36px;
+  font-weight: 900;
+  text-anchor: middle;
+  pointer-events: none;
+  user-select: none;
+}
+.land-claim-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 11px; color: var(--muted-warm); font-size: 11px; }
+.land-claim-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.land-claim-legend i { width: 11px; height: 11px; border: 1px solid; border-radius: 2px; }
+.land-claim-legend i.origin { background: #e3ad42; border-color: #ffcf66; }
+.land-claim-legend i.existing { background: #587484; border-color: #8aa8b8; }
+.land-claim-legend i.selected { background: #cc972e; border-color: #ffd36d; }
+.land-claim-legend i.available { background: transparent; border-color: rgba(221, 197, 153, .6); border-style: dashed; }
+.land-claim-axis-note { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.land-claim-controls { display: flex; flex-direction: column; gap: 11px; padding: 14px; }
+.land-claim-controls label { display: grid; gap: 6px; color: var(--muted-warm); font-size: 12px; }
+.land-claim-controls select { width: 100%; }
+.land-claim-controls p { margin: 0; font-size: 11px; line-height: 1.45; }
+.land-claim-controls dl { display: grid; grid-template-columns: 1fr auto; gap: 7px 12px; margin: 2px 0; font-size: 12px; }
+.land-claim-controls dt { color: var(--muted); }
+.land-claim-controls dd { margin: 0; color: var(--title); font-weight: 700; }
+.land-claim-controls button { width: 100%; }
+.land-claim-backup-note,
+.land-claim-restart-note { color: var(--muted-warm); }
+.land-claim-disclaimer {
+  padding-top: 2px;
+  color: var(--muted-warm);
+  font-size: 12px;
+}
+@media (max-width: 900px) {
+  .bases-expanded-tablist { overflow-x: auto; }
+  .bases-expanded-tab { flex: 0 0 auto; }
+  .land-claim-summary { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+  .land-claim-workspace { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .land-claim-summary { grid-template-columns: 1fr; }
+  .land-claim-section-heading { align-items: stretch; flex-direction: column; }
+  .land-claim-section-heading button { width: 100%; }
 }
 .bases-card-grid {
   display: grid;
@@ -5666,6 +5815,8 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
   .landsraad-persistent-actions button { width: 100%; }
   .playerAdmin_actionNote { padding-left: 0; }
   .playerAdmin_repairRow { grid-template-columns: 1fr; align-items: start; }
+  .playerAdmin_characterRecoveryRow { grid-template-columns: 1fr; }
+  .playerAdmin_characterRecoveryControls { width: 100%; }
   .playerAdmin_repairRow button { justify-self: start; }
   .playerAdmin_repairRow .inline-action-result-wrap { width: 100%; min-height: 24px; }
   .playerAdmin_factionControls { flex-wrap: wrap; }

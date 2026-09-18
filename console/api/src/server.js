@@ -1233,6 +1233,8 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/bases\/[^/]+\/queued-water-refill$/) && req.method === "DELETE") return baseCancelQueuedWaterRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill-water$/) && req.method === "POST") return baseAutoRefillWaterToggleRoute(req, res, path);
   if (path === "/api/bases/permission-candidates") return basePermissionCandidatesRoute(res, url);
+  if (path.match(/^\/api\/bases\/[^/]+\/land-claim$/) && req.method === "GET") return baseLandClaimRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/land-claim$/) && req.method === "PUT") return baseUpdateLandClaimRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "GET") return basePermissionsRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "PUT") return baseSetPermissionsRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/system-custodian$/) && req.method === "POST") return baseSystemCustodianRoute(req, res, path);
@@ -1322,6 +1324,9 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/add-currency$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-currency", "ADD CURRENCY", (playerId, body) => duneDb.addCurrency(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/add-faction-reputation$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-faction-reputation", "ADD FACTION REPUTATION", (playerId, body) => duneDb.addFactionReputation(db, playerId, body, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/repair-faction-reputation$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-faction-reputation", "REPAIR FACTION REPUTATION", (playerId) => duneDb.repairFactionReputation(db, playerId, journeyTagsData));
+  if (path.match(/^\/api\/players\/[^/]+\/repair-landsraad-quests$/) && req.method === "POST") return playerLandsraadQuestRepairRoute(req, res, path);
+  if (path.match(/^\/api\/players\/[^/]+\/character-recovery$/) && req.method === "POST") return playerCharacterRecoveryRoute(req, res, path);
+  if (path.match(/^\/api\/players\/[^/]+\/character-recovery$/) && req.method === "GET") return dbPlayerRoute(res, path, duneDb.inspectDeletedCharacterRecovery);
   if (path.match(/^\/api\/players\/[^/]+\/faction$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.assign-faction", "CHANGE PLAYER FACTION", (playerId, body) => duneDb.setPlayerFaction(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/add-intel$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.add-intel", "ADD INTEL", (playerId, body) => duneDb.addIntel(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/specializations\/add-xp$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.specializations.add-xp", "ADD SPECIALIZATION XP", (playerId, body) => duneDb.addSpecializationXp(db, playerId, body));
@@ -4351,6 +4356,62 @@ async function playerDbMutation(req, res, path, action, phrase, fn) {
   return directDbMutation(req, res, action, phrase, (body) => fn(playerId, body), { playerId });
 }
 
+async function playerLandsraadQuestRepairRoute(req, res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "players.repair-landsraad-quests", "REPAIR LANDSRAAD QUESTS", async () => {
+    // Diagnose first so a healthy player does not create a pointless full
+    // backup. repairLandsraadQuests repeats the diagnosis and offline check
+    // transactionally after the backup, so this preflight is never trusted as
+    // authorization to write stale state.
+    const diagnosis = await duneDb.inspectLandsraadQuestRepairs(db, playerId);
+    if (!diagnosis.repairCount) return diagnosis;
+    await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "restore-safety" } });
+    const result = await duneDb.repairLandsraadQuests(db, playerId);
+    return { ...result, backupCreated: true };
+  }, { playerId });
+}
+
+async function playerCharacterRecoveryRoute(req, res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "players.recover-deleted-character", "RECOVER DELETED CHARACTER", async (body) => {
+    const diagnosis = await duneDb.inspectDeletedCharacterRecovery(db, playerId);
+    const candidate = diagnosis.candidates.find((row) => row.characterStateId === String(body.candidateId || ""));
+    if (!candidate) throw new Error("The selected deleted character state was not found. Reload Player Admin and try again.");
+    if (!candidate.recoverable) throw new Error("The selected character cannot be recovered because its replacement event, original actors, or Survival partition could not be verified.");
+    if (diagnosis.online) throw new Error("Deleted-character recovery requires the player to be offline.");
+
+    await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "restore-safety" } });
+    const partitionPayload = { partitionId: candidate.partitionId };
+    await runDune(config, buildDuneArgs("sietchesRestartStop", partitionPayload), { timeoutMs: 30 * 60 * 1000 });
+
+    let result;
+    let recoveryError;
+    try {
+      result = await duneDb.recoverDeletedCharacter(db, playerId, candidate.characterStateId);
+    } catch (error) {
+      recoveryError = error;
+    }
+
+    let restartError;
+    try {
+      await runDune(config, buildDuneArgs("sietchesRestartStart", partitionPayload), { timeoutMs: 30 * 60 * 1000 });
+    } catch (error) {
+      restartError = error;
+    }
+    if (recoveryError) throw recoveryError;
+    if (restartError) {
+      return {
+        ...result,
+        backupCreated: true,
+        mapRestarted: false,
+        restartError: redact(restartError?.message || "The Survival partition did not restart."),
+        message: `${result.message} Recovery was saved, but the Survival partition did not restart; start it before the player reconnects.`
+      };
+    }
+    return { ...result, backupCreated: true, mapRestarted: true };
+  }, { playerId });
+}
+
 async function guildPromoteRoute(req, res, path) {
   const parts = path.split("/");
   const guildId = decodeURIComponent(parts[3]);
@@ -4612,6 +4673,37 @@ async function basePermissionsRoute(res, path) {
     const status = error.unsupported ? 501 : 400;
     return json(res, status, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
+}
+
+async function baseLandClaimRoute(res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(baseId) || baseId < 1 || baseId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid base ID" });
+  }
+  try {
+    return json(res, 200, { supported: true, ...(await duneDb.getBaseLandClaim(db, baseId)) });
+  } catch (error) {
+    const status = error.unsupported ? 501 : 400;
+    return json(res, status, {
+      supported: false,
+      error: redact(error?.message || "Unexpected error."),
+      reason: redact(error?.message || "Unexpected error.")
+    });
+  }
+}
+
+async function baseUpdateLandClaimRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(baseId) || baseId < 1 || baseId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid base ID" });
+  }
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.update-land-claim", "EDIT LAND CLAIM", async (body) => {
+    await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "land-claim-editor" } });
+    const result = await duneDb.updateBaseLandClaim(db, baseId, body);
+    return { ...result, backupCreated: true };
+  }, { baseId });
 }
 
 async function basePermissionCandidatesRoute(res, url) {

@@ -16,6 +16,8 @@ vi.mock("../../api/bases", () => ({
     pendingDeletes: vi.fn(),
     autoRefill: vi.fn(),
     setAutoRefill: vi.fn(),
+    landClaim: vi.fn(),
+    updateLandClaim: vi.fn(),
     permissions: vi.fn(),
     setPermissions: vi.fn(),
     transferToSystemCustodian: vi.fn(),
@@ -930,7 +932,11 @@ describe("BasesPanel permissions editing", () => {
     // into at least the Water tab -- so this base's lack of permission
     // support has to be checked by expanding it, not by the chevron's absence.
     fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
-    expect(screen.getByRole("tab", { name: "Power" })).toBeInTheDocument();
+    const powerTab = screen.getByRole("tab", { name: "Power" });
+    expect(powerTab).toBeInTheDocument();
+    // Details live outside the table so its sticky header ends with the final
+    // base row instead of following the page through a tall editor tab.
+    expect(powerTab.closest("table")).toBeNull();
     expect(screen.getByRole("tab", { name: "Water" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Inventory" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Sub-Fief Permissions" })).not.toBeInTheDocument();
@@ -967,7 +973,7 @@ describe("BasesPanel permissions editing", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
 
     const tabs = screen.getAllByRole("tab").map((tab) => tab.getAttribute("aria-label") || tab.textContent);
-    expect(tabs).toEqual(["Power", "Water", "Inventory"]);
+    expect(tabs).toEqual(["Power", "Water", "Inventory", "Land Claim Editor"]);
 
     fireEvent.click(screen.getByRole("tab", { name: "Inventory" }));
     // The tab opens on the container cards, not the item rollup.

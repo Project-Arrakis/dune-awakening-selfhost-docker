@@ -1546,6 +1546,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const pagedOrder = [...sortOrder, ...(sortOrder.includes("actor_id") ? [] : ["actor_id"])]
     .map((column) => `${column} ${safeSortDirection}`).join(", ");
   const playerStateColumns = await columnsFor(db, "player_state");
+  const hasWorldPartition = await tableExists(db, "world_partition");
   const encryptedAccountColumns = await tableExists(db, "encrypted_accounts")
     ? await columnsFor(db, "encrypted_accounts")
     : new Set();
@@ -1582,6 +1583,12 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   const playerPlaytimeJoin = hasPlayerPlaytime
     ? "left join dune.console_player_playtime player_playtime on player_playtime.account_id = a.owner_account_id"
     : "";
+  const worldPartitionJoin = hasWorldPartition
+    ? "left join dune.world_partition wp on wp.partition_id = a.partition_id"
+    : "";
+  const worldPartitionSelect = hasWorldPartition
+    ? "coalesce(wp.map, '') as partition_map, coalesce(wp.dimension_index, 0) as dimension_index,"
+    : "'' as partition_map, 0 as dimension_index,";
   const totalPlaytimeSelect = hasPlayerPlaytime
     ? `greatest(0, coalesce(player_playtime.total_seconds, 0) +
          case when player_playtime.session_started_at is not null
@@ -1664,6 +1671,8 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              end as action_player_id,
              a.class,
              coalesce(a.map, '') as map,
+             coalesce(a.partition_id, 0) as partition_id,
+             ${worldPartitionSelect}
              ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"} as actual_online_status,
              case when ${bannedExpression} then 'Banned'
                   else ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"}
@@ -1684,6 +1693,7 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
       left join dune.accounts ac on ac.id = a.owner_account_id
       ${playerPlaytimeJoin}
       ${encryptedAccountsJoin}
+      ${worldPartitionJoin}
       where ${where}
     ),
     deduped_players as (
@@ -1698,6 +1708,9 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
              action_player_id,
              class,
              map,
+             partition_id,
+             partition_map,
+             dimension_index,
              actual_online_status,
              online_status,
              is_banned,
@@ -1739,7 +1752,12 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     totalPlayers: totalsResult ? (totalsResult.rows[0] ? Number(totalsResult.rows[0].total_players) : 0) : undefined,
     rows: result.rows
       .filter((row) => row.actor_id !== null && row.actor_id !== undefined)
-      .map(({ total_count, ...row }) => row)
+      .map(({ total_count, partition_map, dimension_index, ...row }) => ({
+        ...row,
+        partition_id: Number(row.partition_id || 0),
+        partitionMap: String(partition_map || ""),
+        dimensionIndex: Number(dimension_index || 0)
+      }))
   };
 }
 
@@ -4562,6 +4580,172 @@ const BASE_NAME_SQL = `case
   else 'Unnamed Base'
 end`;
 
+const LAND_CLAIM_MAX_VERTICAL_LEVEL = 5;
+const LAND_CLAIM_MAX_COORDINATE = 128;
+const LAND_CLAIM_MAX_ADDITIONS = 100;
+
+async function supportsLandClaimEditor(db) {
+  for (const table of ["buildings", "building_instances", "actor_fgl_entities", "actors", "totems", "landclaim_segments"]) {
+    if (!(await tableExists(db, table))) return false;
+  }
+  const [totemColumns, segmentColumns] = await Promise.all([
+    columnsFor(db, "totems"),
+    columnsFor(db, "landclaim_segments")
+  ]);
+  return ["id", "landclaim_vertical_level", "landclaim_original_global_yaw_rotation"].every((column) => totemColumns.has(column))
+    && ["totem_id", "grid_location_x", "grid_location_y"].every((column) => segmentColumns.has(column));
+}
+
+async function resolveBaseTotem(db, baseId, { lock = false } = {}) {
+  const target = intParam(baseId, "base id", 1);
+  const result = await db.query(`
+    select t.id::text as totem_id,
+           coalesce(a.map, '') as map,
+           coalesce(a.partition_id, 0)::int as partition_id,
+           coalesce(t.landclaim_vertical_level, 0)::int as vertical_level,
+           coalesce(t.landclaim_original_global_yaw_rotation, 0)::real as yaw
+    from dune.buildings b
+    join dune.building_instances bi on bi.building_id = b.id
+    join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+    join dune.actors a on a.id = afe.actor_id
+    join dune.totems t on t.id = a.id
+    where b.id = $1
+    order by bi.instance_id
+    limit 1${lock ? "\n    for update of t" : ""}`, [target]);
+  if (!result.rowCount) {
+    const exists = await db.query("select 1 from dune.buildings where id = $1", [target]);
+    if (exists.rowCount) throw new Error(`Base ${target} does not have a resolvable Sub-Fief totem.`);
+    throw new Error(`Base ${target} was not found.`);
+  }
+  return { target, ...result.rows[0] };
+}
+
+async function landClaimState(db, baseId, options = {}) {
+  const totem = await resolveBaseTotem(db, baseId, options);
+  const segmentRows = await db.query(`
+    select grid_location_x::int as x, grid_location_y::int as y, count(*)::int as row_count
+    from dune.landclaim_segments
+    where totem_id = $1::bigint
+    group by grid_location_x, grid_location_y
+    order by grid_location_y, grid_location_x`, [totem.totem_id]);
+  const segments = segmentRows.rows.map((row) => ({
+    x: Number(row.x),
+    y: Number(row.y),
+    rowCount: Number(row.row_count)
+  }));
+  return {
+    baseId: totem.target,
+    totemId: totem.totem_id,
+    map: String(totem.map || ""),
+    partitionId: Number(totem.partition_id || 0),
+    yaw: Number(totem.yaw || 0),
+    verticalLevel: Number(totem.vertical_level || 0),
+    maxVerticalLevel: LAND_CLAIM_MAX_VERTICAL_LEVEL,
+    segments,
+    segmentCount: segments.reduce((total, segment) => total + segment.rowCount, 0),
+    duplicateCoordinates: segments.filter((segment) => segment.rowCount > 1).length
+  };
+}
+
+export async function getBaseLandClaim(db, baseId) {
+  await requireCapability(await supportsLandClaimEditor(db),
+    "Land Claim Editor requires dune.buildings, building_instances, actor_fgl_entities, actors, totems, and landclaim_segments.");
+  return landClaimState(db, baseId);
+}
+
+function normalizeLandClaimAdditions(value) {
+  if (!Array.isArray(value)) throw new Error("Land claim segments must be an array.");
+  if (value.length > LAND_CLAIM_MAX_ADDITIONS) throw new Error(`Add no more than ${LAND_CLAIM_MAX_ADDITIONS} land claim segments at once.`);
+  const unique = new Map();
+  for (const entry of value) {
+    const x = Number(entry?.x);
+    const y = Number(entry?.y);
+    if (!Number.isInteger(x) || !Number.isInteger(y)
+      || Math.abs(x) > LAND_CLAIM_MAX_COORDINATE || Math.abs(y) > LAND_CLAIM_MAX_COORDINATE) {
+      throw new Error(`Land claim coordinates must be whole numbers between -${LAND_CLAIM_MAX_COORDINATE} and ${LAND_CLAIM_MAX_COORDINATE}.`);
+    }
+    if (x === 0 && y === 0) throw new Error("The Sub-Fief already occupies grid coordinate 0, 0.");
+    const key = `${x},${y}`;
+    if (unique.has(key)) throw new Error(`Land claim coordinate ${key} was supplied more than once.`);
+    unique.set(key, { x, y });
+  }
+  return [...unique.values()];
+}
+
+function reachableLandClaimCells(cells) {
+  const reachable = new Set(["0,0"]);
+  const queue = [[0, 0]];
+  while (queue.length) {
+    const [x, y] = queue.shift();
+    for (const [nextX, nextY] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) {
+      const key = `${nextX},${nextY}`;
+      if (cells.has(key) && !reachable.has(key)) {
+        reachable.add(key);
+        queue.push([nextX, nextY]);
+      }
+    }
+  }
+  return reachable;
+}
+
+export async function updateBaseLandClaim(db, baseId, { addSegments = [], verticalLevel } = {}) {
+  await requireCapability(await supportsLandClaimEditor(db),
+    "Land Claim Editor requires dune.buildings, building_instances, actor_fgl_entities, actors, totems, and landclaim_segments.");
+  const target = intParam(baseId, "base id", 1);
+  const additions = normalizeLandClaimAdditions(addSegments);
+  const hasVerticalLevel = verticalLevel !== undefined && verticalLevel !== null;
+  const normalizedVerticalLevel = hasVerticalLevel ? Number(verticalLevel) : null;
+  if (hasVerticalLevel && (!Number.isInteger(normalizedVerticalLevel)
+    || normalizedVerticalLevel < 0 || normalizedVerticalLevel > LAND_CLAIM_MAX_VERTICAL_LEVEL)) {
+    throw new Error(`Vertical land claim level must be between 0 and ${LAND_CLAIM_MAX_VERTICAL_LEVEL}.`);
+  }
+  if (!additions.length && !hasVerticalLevel) throw new Error("No land claim changes were requested.");
+
+  return db.transaction(async (tx) => {
+    const current = await landClaimState(tx, target, { lock: true });
+    if (current.duplicateCoordinates) {
+      throw new Error("This land claim contains duplicate database rows. Repair those duplicates before using the editor.");
+    }
+    if (hasVerticalLevel && normalizedVerticalLevel < current.verticalLevel) {
+      throw new Error("Land Claim Editor is expansion-only and cannot lower the existing vertical level.");
+    }
+    if (!additions.length && (!hasVerticalLevel || normalizedVerticalLevel === current.verticalLevel)) {
+      throw new Error("The requested land claim already matches the database. No changes were made.");
+    }
+    const occupied = new Set(["0,0", ...current.segments.map((segment) => `${segment.x},${segment.y}`)]);
+    for (const segment of additions) {
+      const key = `${segment.x},${segment.y}`;
+      if (occupied.has(key)) throw new Error(`Land claim coordinate ${key} is already occupied.`);
+      occupied.add(key);
+    }
+    const reachable = reachableLandClaimCells(occupied);
+    const disconnected = additions.find((segment) => !reachable.has(`${segment.x},${segment.y}`));
+    if (disconnected) {
+      throw new Error(`Land claim coordinate ${disconnected.x},${disconnected.y} is disconnected. New segments must connect edge-to-edge to the Sub-Fief or its existing claim.`);
+    }
+    if (additions.length) {
+      await tx.query(`
+        insert into dune.landclaim_segments (totem_id, grid_location_x, grid_location_y)
+        select $1::bigint, x, y
+        from unnest($2::bigint[], $3::bigint[]) as requested(x, y)`, [
+        current.totemId,
+        additions.map((segment) => segment.x),
+        additions.map((segment) => segment.y)
+      ]);
+    }
+    if (hasVerticalLevel && normalizedVerticalLevel !== current.verticalLevel) {
+      await tx.query("update dune.totems set landclaim_vertical_level = $2 where id = $1::bigint", [current.totemId, normalizedVerticalLevel]);
+    }
+    const updated = await landClaimState(tx, target);
+    return {
+      ok: true,
+      added: additions.length,
+      verticalChanged: hasVerticalLevel && normalizedVerticalLevel !== current.verticalLevel,
+      ...updated
+    };
+  });
+}
+
 export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true } = {}) {
   const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
   // One round-trip each and none of them depends on another, so probe them
@@ -5396,6 +5580,394 @@ export async function repairFactionReputation(db, id, journeyTagsData = {}) {
       progressionTierBefore: progressionRepair.tierBefore,
       progressionTierAfter: progressionRepair.tierAfter,
       message: `Faction reputation was synchronized.${progressionMessage} The player can log in now.`
+    };
+  });
+}
+
+// Landsraad contracts are recurring journey trees, so a broad "reset all"
+// repair would be destructive: it could erase healthy progress and each tree
+// has its own initial reveal state. Keep repairs as explicit, evidence-backed
+// recipes. New corruption shapes can be added here only after their healthy
+// starting state has been verified against real game data.
+const LANDSRAAD_QUEST_REPAIR_RECIPES = Object.freeze([
+  Object.freeze({
+    id: "syndicate-assassination-completed-available",
+    name: "Assassination",
+    rootId: "DA_LDR_Syndicate_Assassination_1",
+    nodeIds: Object.freeze([
+      "DA_LDR_Syndicate_Assassination_1",
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_1",
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_2",
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_3",
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_4",
+      "DA_LDR_Syndicate_Assassination_1.TravelTo"
+    ]),
+    initiallyRevealedNodeIds: Object.freeze([
+      "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_1",
+      "DA_LDR_Syndicate_Assassination_1.TravelTo"
+    ])
+  })
+]);
+
+function jsonStateIsTrue(value) {
+  return value === true || value === "true";
+}
+
+function landsraadQuestRepairMatches(rows, recipe) {
+  if (rows.length !== recipe.nodeIds.length) return false;
+  const byId = new Map(rows.map((row) => [String(row.story_node_id || ""), row]));
+  if (recipe.nodeIds.some((nodeId) => !byId.has(nodeId))) return false;
+  const root = byId.get(recipe.rootId);
+  const metadata = root?.metadata_state && typeof root.metadata_state === "object" ? root.metadata_state : {};
+  return jsonStateIsTrue(root?.complete_condition_state)
+    && jsonStateIsTrue(root?.reveal_condition_state)
+    && String(metadata.IsAvailable ?? "") === "1"
+    && recipe.nodeIds.every((nodeId) => jsonStateIsTrue(byId.get(nodeId)?.complete_condition_state));
+}
+
+async function requireLandsraadQuestRepairCapability(db) {
+  const hasJourney = await tableExists(db, "journey_story_node");
+  const hasCooldown = await tableExists(db, "journey_story_node_cooldown");
+  const journeyColumns = hasJourney ? await columnsFor(db, "journey_story_node") : new Set();
+  const cooldownColumns = hasCooldown ? await columnsFor(db, "journey_story_node_cooldown") : new Set();
+  const supported = ["character_id", "story_node_id", "complete_condition_state", "reveal_condition_state", "fail_condition_state", "metadata_state", "has_pending_reward"]
+    .every((column) => journeyColumns.has(column))
+    && ["character_id", "story_node_id", "time_to_expire"].every((column) => cooldownColumns.has(column));
+  await requireCapability(supported,
+    "Landsraad quest repair requires dune.journey_story_node and dune.journey_story_node_cooldown.");
+}
+
+async function landsraadQuestRepairRows(db, characterId, { lock = false } = {}) {
+  const nodeIds = LANDSRAAD_QUEST_REPAIR_RECIPES.flatMap((recipe) => recipe.nodeIds);
+  const result = await db.query(`
+    select story_node_id, complete_condition_state, reveal_condition_state,
+           fail_condition_state, metadata_state, has_pending_reward
+    from dune.journey_story_node
+    where character_id = $1 and story_node_id = any($2::text[])
+    ${lock ? "for update" : ""}`, [characterId, nodeIds]);
+  return result.rows || [];
+}
+
+async function landsraadQuestRepairCooldowns(db, characterId, { lock = false } = {}) {
+  const rootIds = LANDSRAAD_QUEST_REPAIR_RECIPES.map((recipe) => recipe.rootId);
+  const result = await db.query(`
+    select story_node_id, time_to_expire
+    from dune.journey_story_node_cooldown
+    where character_id = $1 and story_node_id = any($2::text[])
+    ${lock ? "for update" : ""}`, [characterId, rootIds]);
+  return result.rows || [];
+}
+
+function cooldownIsActive(value, now = Date.now()) {
+  if (value == null || value === "") return false;
+  const expiresAt = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  // An unreadable cooldown is not proof that it expired. Fail closed instead
+  // of turning a legitimate current cooldown into a repeatable contract.
+  return !Number.isFinite(expiresAt) || expiresAt > now;
+}
+
+function matchingLandsraadQuestRepairs(rows, cooldownRows, now = Date.now()) {
+  const cooldownByRoot = new Map(cooldownRows.map((row) => [String(row.story_node_id || ""), row.time_to_expire]));
+  return LANDSRAAD_QUEST_REPAIR_RECIPES
+    .filter((recipe) => landsraadQuestRepairMatches(
+      rows.filter((row) => recipe.nodeIds.includes(String(row.story_node_id || ""))), recipe)
+      && !cooldownIsActive(cooldownByRoot.get(recipe.rootId), now))
+    .map((recipe) => ({ id: recipe.id, name: recipe.name, rootId: recipe.rootId }));
+}
+
+export async function inspectLandsraadQuestRepairs(db, id) {
+  await requireLandsraadQuestRepairCapability(db);
+  const player = await resolvePlayerMutationTarget(db, id);
+  requireOfflinePlayer(player, "Landsraad quest repair");
+  const [rows, cooldowns] = await Promise.all([
+    landsraadQuestRepairRows(db, player.playerStateId),
+    landsraadQuestRepairCooldowns(db, player.playerStateId)
+  ]);
+  const repairs = matchingLandsraadQuestRepairs(rows, cooldowns);
+  return {
+    ok: true,
+    player,
+    repairs,
+    repairCount: repairs.length,
+    message: repairs.length
+      ? `${repairs.length} known Landsraad quest problem${repairs.length === 1 ? " was" : "s were"} detected.`
+      : "No known Landsraad quest problems were found."
+  };
+}
+
+export async function repairLandsraadQuests(db, id) {
+  await requireLandsraadQuestRepairCapability(db);
+  return db.transaction(async (tx) => {
+    const player = await resolvePlayerMutationTarget(tx, id);
+    // Lock the player's authoritative status row and re-check it inside the
+    // same transaction that changes journey data. This closes the gap between
+    // the route's preflight/backup and the actual write if the player begins
+    // logging in while the backup is running.
+    const status = await tx.query(`
+      select online_status::text as online_status
+      from dune.player_state
+      where id = $1
+      for update`, [player.playerStateId]);
+    if (!status.rowCount) throw playerNotFoundError();
+    requireOfflinePlayer({ ...player, onlineStatus: status.rows[0].online_status }, "Landsraad quest repair");
+
+    const rows = await landsraadQuestRepairRows(tx, player.playerStateId, { lock: true });
+    const cooldowns = await landsraadQuestRepairCooldowns(tx, player.playerStateId, { lock: true });
+    const matches = matchingLandsraadQuestRepairs(rows, cooldowns);
+    if (!matches.length) {
+      return { ok: true, player, repairs: [], repairCount: 0, repairedNodes: 0, removedCooldowns: 0,
+        message: "No known Landsraad quest problems were found." };
+    }
+
+    let repairedNodes = 0;
+    let removedCooldowns = 0;
+    const repairs = [];
+    for (const match of matches) {
+      const recipe = LANDSRAAD_QUEST_REPAIR_RECIPES.find((candidate) => candidate.id === match.id);
+      if (!recipe) continue;
+      const updated = await tx.query(`
+        update dune.journey_story_node
+        set complete_condition_state = '{}'::jsonb,
+            reveal_condition_state = case
+              when story_node_id = any($3::text[]) then 'true'::jsonb
+              else '{}'::jsonb
+            end,
+            has_pending_reward = false,
+            fail_condition_state = '{}'::jsonb,
+            metadata_state = case
+              when story_node_id = $2 then metadata_state - 'House'
+              else metadata_state
+            end
+        where character_id = $1 and story_node_id = any($4::text[])`, [
+        player.playerStateId,
+        recipe.rootId,
+        recipe.initiallyRevealedNodeIds,
+        recipe.nodeIds
+      ]);
+      if (Number(updated.rowCount || 0) !== recipe.nodeIds.length) {
+        throw new Error(`${recipe.name} changed while the repair was running. No Landsraad changes were saved.`);
+      }
+      const cooldown = await tx.query(`
+        delete from dune.journey_story_node_cooldown
+        where character_id = $1 and story_node_id = $2`, [player.playerStateId, recipe.rootId]);
+      repairedNodes += Number(updated.rowCount || 0);
+      removedCooldowns += Number(cooldown.rowCount || 0);
+      repairs.push(match);
+    }
+
+    return {
+      ok: true,
+      player,
+      repairs,
+      repairCount: repairs.length,
+      repairedNodes,
+      removedCooldowns,
+      message: `Repaired ${repairs.map((repair) => repair.name).join(", ")} Landsraad quest state. The player can log in now.`
+    };
+  });
+}
+
+async function requireCharacterRecoveryCapability(db) {
+  for (const table of ["encrypted_player_state", "actors", "inventories", "items", "world_partition", "account_removal_log"]) {
+    await requireCapability(await tableExists(db, table), `Deleted-character recovery requires dune.${table}.`);
+  }
+  await requireCapability(
+    await functionExists(db, "dune.decrypt_user_data(bytea)"),
+    "Deleted-character recovery requires dune.decrypt_user_data(bytea)."
+  );
+}
+
+function shapeCharacterRecoveryCandidate(row) {
+  return {
+    characterStateId: String(row.character_state_id),
+    characterName: String(row.character_name || "Unknown Character"),
+    lastAvatarActivity: row.last_avatar_activity || null,
+    lastLoginTime: row.last_login_time || null,
+    deletedAt: row.deleted_at || null,
+    controllerId: String(row.player_controller_id),
+    pawnId: String(row.player_pawn_id),
+    playerStateActorId: String(row.player_state_actor_id),
+    map: String(row.map || ""),
+    partitionId: String(row.partition_id || ""),
+    sietch: String(row.sietch || ""),
+    inventoryCount: Number(row.inventory_count || 0),
+    itemCount: Number(row.item_count || 0),
+    transferCount: Number(row.transfer_count || 0),
+    removalReason: String(row.removal_reason || ""),
+    removalEventTime: row.removal_event_time || null,
+    replacementDetected: row.replacement_detected === true,
+    recoverable: row.recoverable === true
+  };
+}
+
+async function characterRecoveryCandidates(db, accountId, { lock = false } = {}) {
+  const result = await db.query(`
+    select eps.id::text as character_state_id,
+           coalesce(dune.decrypt_user_data(eps.encrypted_character_name), '') as character_name,
+           eps.last_avatar_activity,
+           eps.last_login_time,
+           eps.last_character_state_change as deleted_at,
+           eps.player_controller_id::text,
+           eps.player_pawn_id::text,
+           eps.player_state_id::text as player_state_actor_id,
+           eps.transfer_count,
+           coalesce(pawn.map, '') as map,
+           coalesce(pawn.partition_id, 0)::text as partition_id,
+           coalesce(wp.label, '') as sietch,
+           coalesce(removal.reason, '') as removal_reason,
+           removal.event_time as removal_event_time,
+           (lower(coalesce(removal.reason, '')) = 'new char in fls') as replacement_detected,
+           (select count(*)::int from dune.inventories inv where inv.actor_id = eps.player_pawn_id) as inventory_count,
+           (select count(*)::int
+              from dune.inventories inv
+              join dune.items item on item.inventory_id = inv.id
+             where inv.actor_id = eps.player_pawn_id) as item_count,
+           (controller.id is not null
+             and pawn.id is not null
+             and state_actor.id is not null
+             and wp.partition_id is not null
+             and wp.map = 'Survival_1'
+             and lower(coalesce(removal.reason, '')) = 'new char in fls') as recoverable
+    from dune.encrypted_player_state eps
+    left join dune.actors controller on controller.id = eps.player_controller_id
+    left join dune.actors pawn on pawn.id = eps.player_pawn_id
+    left join dune.actors state_actor on state_actor.id = eps.player_state_id
+    left join dune.world_partition wp on wp.partition_id = pawn.partition_id
+    left join lateral (
+      select log.reason, log.event_time
+      from dune.account_removal_log log
+      where log.account_id = eps.account_id
+        and log.event_time between eps.last_character_state_change - interval '5 seconds'
+                               and eps.last_character_state_change + interval '5 seconds'
+      order by abs(extract(epoch from (log.event_time - eps.last_character_state_change))), log.event_time desc
+      limit 1
+    ) removal on true
+    where eps.account_id = $1::bigint
+      and eps.character_state::text = 'Deleted'
+    order by (lower(coalesce(removal.reason, '')) = 'new char in fls') desc,
+             eps.last_character_state_change desc nulls last, eps.id desc
+    ${lock ? "for update of eps" : ""}`, [accountId]);
+  return result.rows.map(shapeCharacterRecoveryCandidate);
+}
+
+export async function inspectDeletedCharacterRecovery(db, id) {
+  await requireCharacterRecoveryCapability(db);
+  const player = await resolvePlayerMutationTarget(db, id);
+  const activeResult = await db.query(`
+    select eps.id::text as character_state_id,
+           coalesce(dune.decrypt_user_data(eps.encrypted_character_name), '') as character_name,
+           eps.player_pawn_id::text as pawn_id,
+           eps.transfer_count,
+           (select count(*)::int
+              from dune.inventories inv
+              join dune.items item on item.inventory_id = inv.id
+             where inv.actor_id = eps.player_pawn_id) as item_count
+    from dune.encrypted_player_state eps
+    where eps.id = $1::bigint and eps.account_id = $2::bigint
+      and eps.character_state::text = 'Active'`, [player.playerStateId, player.accountId]);
+  if (!activeResult.rowCount) throw playerNotFoundError();
+  const active = activeResult.rows[0];
+  const candidates = await characterRecoveryCandidates(db, player.accountId);
+  const recoverableCandidates = candidates.filter((candidate) => candidate.recoverable);
+  return {
+    ok: true,
+    player,
+    online: playerOnline(player),
+    active: {
+      characterStateId: String(active.character_state_id),
+      characterName: String(active.character_name || "Unknown Character"),
+      pawnId: String(active.pawn_id),
+      itemCount: Number(active.item_count || 0),
+      transferCount: Number(active.transfer_count || 0)
+    },
+    candidates,
+    suggestedCandidateId: recoverableCandidates[0]?.characterStateId || "",
+    canRecover: !playerOnline(player) && recoverableCandidates.length > 0,
+    message: recoverableCandidates.length
+      ? `${recoverableCandidates.length} recoverable deleted character state${recoverableCandidates.length === 1 ? " was" : "s were"} found.`
+      : "No recoverable deleted character states were found."
+  };
+}
+
+export async function recoverDeletedCharacter(db, id, candidateId) {
+  await requireCharacterRecoveryCapability(db);
+  const requestedCandidateId = bigintParam(candidateId, "deleted character state id");
+  return db.transaction(async (tx) => {
+    const player = await resolvePlayerMutationTarget(tx, id);
+    const lockedActive = await tx.query(`
+      select eps.*,
+             dune.decrypt_user_data(eps.encrypted_character_name) as character_name
+      from dune.encrypted_player_state eps
+      where eps.id = $1::bigint and eps.account_id = $2::bigint
+        and eps.character_state::text = 'Active'
+      for update`, [player.playerStateId, player.accountId]);
+    if (!lockedActive.rowCount) throw new Error("The active character changed before recovery began. Reload Player Admin and try again.");
+    const active = lockedActive.rows[0];
+    requireOfflinePlayer({ ...player, onlineStatus: active.online_status }, "Deleted-character recovery");
+
+    const candidates = await characterRecoveryCandidates(tx, player.accountId, { lock: true });
+    const candidate = candidates.find((row) => row.characterStateId === requestedCandidateId);
+    if (!candidate) throw new Error("The selected deleted character state no longer exists. Reload Player Admin and try again.");
+    if (!candidate.recoverable) throw new Error("The selected character cannot be recovered because its replacement event, original actors, or Survival partition could not be verified.");
+
+    const deactivated = await tx.query(`
+      update dune.encrypted_player_state
+         set character_state = 'Deleted',
+             online_status = 'Offline',
+             reconnect_grace_period_end = null,
+             last_character_state_change = now()
+       where id = $1::bigint and account_id = $2::bigint
+         and character_state::text = 'Active' and online_status::text = 'Offline'`, [active.id, player.accountId]);
+    if (deactivated.rowCount !== 1) throw new Error("The player started logging in while recovery was running. No character changes were saved.");
+
+    const restored = await tx.query(`
+      update dune.encrypted_player_state target
+         set encrypted_character_name = current_state.encrypted_character_name,
+             character_state = 'Active',
+             online_status = 'Offline',
+             reconnect_grace_period_end = null,
+             is_coriolis_processed = current_state.is_coriolis_processed,
+             last_login_time = current_state.last_login_time,
+             last_character_state_change = now(),
+             transfer_count = current_state.transfer_count
+        from dune.encrypted_player_state current_state
+       where target.id = $1::bigint and target.account_id = $2::bigint
+         and target.character_state::text = 'Deleted'
+         and current_state.id = $3::bigint and current_state.account_id = target.account_id
+         and current_state.character_state::text = 'Deleted'
+      returning target.id::text as character_state_id,
+                dune.decrypt_user_data(target.encrypted_character_name) as character_name,
+                target.player_controller_id::text,
+                target.player_pawn_id::text,
+                target.player_state_id::text as player_state_actor_id`, [requestedCandidateId, player.accountId, active.id]);
+    if (restored.rowCount !== 1) throw new Error("The selected character changed while recovery was running. No character changes were saved.");
+
+    const verification = await tx.query(`
+      select count(*)::int as active_count,
+             min(id)::text as active_id
+      from dune.encrypted_player_state
+      where account_id = $1::bigint and character_state::text = 'Active'`, [player.accountId]);
+    if (Number(verification.rows[0]?.active_count || 0) !== 1 || String(verification.rows[0]?.active_id || "") !== requestedCandidateId) {
+      throw new Error("Recovery did not produce exactly one active character. No character changes were saved.");
+    }
+
+    const row = restored.rows[0];
+    return {
+      ok: true,
+      accountId: String(player.accountId),
+      activeCharacterStateId: String(row.character_state_id),
+      currentCharacterName: String(row.character_name || active.character_name || "Unknown Character"),
+      recoveredFromName: candidate.characterName,
+      replacedCharacterStateId: String(active.id),
+      controllerId: String(row.player_controller_id),
+      pawnId: String(row.player_pawn_id),
+      playerStateActorId: String(row.player_state_actor_id),
+      itemCount: candidate.itemCount,
+      inventoryCount: candidate.inventoryCount,
+      map: candidate.map,
+      partitionId: candidate.partitionId,
+      sietch: candidate.sietch,
+      message: `${candidate.characterName}'s saved character data was recovered with ${candidate.itemCount} item${candidate.itemCount === 1 ? "" : "s"}. The current Funcom character name remains ${String(row.character_name || active.character_name || "unchanged")}.`
     };
   });
 }

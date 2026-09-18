@@ -628,7 +628,7 @@ psql_admin() {
 backup_database_for_admin_write() {
   local output backup_file
 
-  output="$(runtime/scripts/db.sh backup)"
+  output="$(DB_BACKUP_ORIGIN=admin-tools runtime/scripts/db.sh backup)"
   printf '%s\n' "$output" >&2
   backup_file="$(printf '%s\n' "$output" | awk '/runtime\/backups\/db\/.*\.backup$/ {print $1; exit}')"
   [ -n "$backup_file" ] || backup_file="unknown"

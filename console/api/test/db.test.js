@@ -88,6 +88,8 @@ import {
   grantMaxSpecialization,
   guildMembers,
   guildStorageQuery,
+  inspectDeletedCharacterRecovery,
+  inspectLandsraadQuestRepairs,
   landsraadOverview,
   linkAdditionalAccount,
   listAllPlayers,
@@ -146,12 +148,14 @@ import {
   promoteGuildMember,
   queueGeneratorRefill,
   queueWaterRefill,
+  recoverDeletedCharacter,
   refillBaseGenerators,
   refillBaseWater,
   refuelVehicle,
   removeGuildMember,
   repairFactionReputation,
   repairGear,
+  repairLandsraadQuests,
   repairVehicleDecay,
   resetAllSpecializationKeystones,
   resetJourneyNode,
@@ -1814,6 +1818,65 @@ test("players query uses parameterized search input", async () => {
   assert.equal(result.rows[0].funcom_id, "RedBlink#75570");
   assert.equal(result.rows[0].fls_id, "RedBlink#75570");
   assert.equal(result.rows[0].action_player_id, "RedBlink#75570");
+});
+
+test("players query resolves the game map partition used by configured Sietch names", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.actors", "dune.player_state", "dune.world_partition"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "online_status" }] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 1 }] };
+      return { rows: [{
+        actor_id: 82,
+        map: "HaggaBasin",
+        partition_id: "1",
+        partition_map: "Survival_1",
+        dimension_index: "0",
+        total_count: 1
+      }] };
+    }
+  };
+
+  const result = await listPlayers(db);
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+
+  assert.match(playerQuery.text, /left join dune\.world_partition wp on wp\.partition_id = a\.partition_id/);
+  assert.deepEqual(result.rows[0], {
+    actor_id: 82,
+    map: "HaggaBasin",
+    partition_id: 1,
+    partitionMap: "Survival_1",
+    dimensionIndex: 0
+  });
+});
+
+test("players query keeps its map fallback when world_partition is unavailable", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.actors", "dune.player_state"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) return { rows: [] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 1 }] };
+      return { rows: [{ actor_id: 82, map: "HaggaBasin", partition_id: "1", total_count: 1 }] };
+    }
+  };
+
+  const result = await listPlayers(db);
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+
+  assert.doesNotMatch(playerQuery.text, /join dune\.world_partition/);
+  assert.match(playerQuery.text, /'' as partition_map/);
+  assert.equal(result.rows[0].map, "HaggaBasin");
+  assert.equal(result.rows[0].partitionMap, "");
 });
 
 test("playtime tracker persists active sessions and closes players no longer online", async () => {
@@ -7123,6 +7186,238 @@ test("faction repair refuses neutral players", async () => {
   assert.equal(calls.some((call) => call.text.includes("FactionPlayerComponent,m_FactionDataArray")), false);
 });
 
+function corruptedAssassinationJourneyRows() {
+  const rootId = "DA_LDR_Syndicate_Assassination_1";
+  return [
+    rootId,
+    `${rootId}.DA_LDR_Syndicate_Assassination_1_1`,
+    `${rootId}.DA_LDR_Syndicate_Assassination_1_2`,
+    `${rootId}.DA_LDR_Syndicate_Assassination_1_3`,
+    `${rootId}.DA_LDR_Syndicate_Assassination_1_4`,
+    `${rootId}.TravelTo`
+  ].map((story_node_id) => ({
+    story_node_id,
+    complete_condition_state: true,
+    reveal_condition_state: true,
+    fail_condition_state: {},
+    metadata_state: story_node_id === rootId
+      ? { House: "DA_HouseRichese", RandSeed: 307575399, IsAvailable: 1 }
+      : { RandSeed: 307575399 },
+    has_pending_reward: false
+  }));
+}
+
+test("Landsraad repair inspection detects the verified completed-but-available assassination pattern", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, { journeyIdentityColumn: "character_id", journeyStateRows: corruptedAssassinationJourneyRows() });
+  const result = await inspectLandsraadQuestRepairs(db, 123);
+  assert.equal(result.repairCount, 1);
+  assert.deepEqual(result.repairs.map((repair) => repair.name), ["Assassination"]);
+  assert.equal(calls.some((call) => call.text.includes("update dune.journey_story_node")), false);
+});
+
+test("Landsraad repair reconstructs only the known assassination nodes and removes its cooldown", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    journeyIdentityColumn: "character_id",
+    journeyStateRows: corruptedAssassinationJourneyRows(),
+    journeyUpdateRows: 6,
+    cooldownDeleteRows: 1,
+    cooldownRows: [{
+      story_node_id: "DA_LDR_Syndicate_Assassination_1",
+      time_to_expire: new Date(Date.now() - 60_000)
+    }]
+  });
+  const result = await repairLandsraadQuests(db, 123);
+  assert.equal(result.repairCount, 1);
+  assert.equal(result.repairedNodes, 6);
+  assert.equal(result.removedCooldowns, 1);
+  const update = calls.find((call) => call.text.includes("update dune.journey_story_node"));
+  assert.ok(update);
+  assert.equal(update.values[0], 5);
+  assert.equal(update.values[1], "DA_LDR_Syndicate_Assassination_1");
+  assert.deepEqual(update.values[2], [
+    "DA_LDR_Syndicate_Assassination_1.DA_LDR_Syndicate_Assassination_1_1",
+    "DA_LDR_Syndicate_Assassination_1.TravelTo"
+  ]);
+  assert.equal(update.values[3].length, 6);
+  assert.match(update.text, /metadata_state - 'House'/);
+  const cooldownDelete = calls.find((call) => call.text.includes("delete from dune.journey_story_node_cooldown"));
+  assert.deepEqual(cooldownDelete.values, [5, "DA_LDR_Syndicate_Assassination_1"]);
+});
+
+test("Landsraad repair rechecks the locked player status and refuses a login race", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    journeyIdentityColumn: "character_id",
+    journeyStateRows: corruptedAssassinationJourneyRows(),
+    lockedPlayerStatus: "Online"
+  });
+  await assert.rejects(() => repairLandsraadQuests(db, 123), /require the player to be offline/);
+  assert.equal(calls.some((call) => call.text.includes("update dune.journey_story_node")), false);
+});
+
+test("Landsraad repair leaves healthy quest state unchanged", async () => {
+  const calls = [];
+  const healthyRows = corruptedAssassinationJourneyRows().map((row) => ({
+    ...row,
+    complete_condition_state: {},
+    reveal_condition_state: row.story_node_id.endsWith("_1") || row.story_node_id.endsWith("TravelTo") ? true : {}
+  }));
+  healthyRows[0].metadata_state = { RandSeed: 307575399, IsAvailable: 1 };
+  const db = fakeMutationDb(calls, { journeyIdentityColumn: "character_id", journeyStateRows: healthyRows });
+  const result = await repairLandsraadQuests(db, 123);
+  assert.equal(result.repairCount, 0);
+  assert.equal(calls.some((call) => call.text.includes("update dune.journey_story_node")), false);
+});
+
+test("Landsraad repair does not bypass an active assassination cooldown", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    journeyIdentityColumn: "character_id",
+    journeyStateRows: corruptedAssassinationJourneyRows(),
+    cooldownRows: [{
+      story_node_id: "DA_LDR_Syndicate_Assassination_1",
+      time_to_expire: new Date(Date.now() + 60_000)
+    }]
+  });
+  const result = await repairLandsraadQuests(db, 123);
+  assert.equal(result.repairCount, 0);
+  assert.equal(calls.some((call) => call.text.includes("update dune.journey_story_node")), false);
+  assert.equal(calls.some((call) => call.text.includes("delete from dune.journey_story_node_cooldown")), false);
+});
+
+function fakeCharacterRecoveryDb({ onlineStatus = "Offline" } = {}) {
+  const calls = [];
+  const state = {
+    active: {
+      id: "60", account_id: "1470", encrypted_character_name: "TempDrew", character_name: "TempDrew",
+      online_status: onlineStatus, character_state: "Active", player_controller_id: "4830",
+      player_pawn_id: "4832", player_state_id: "4831", transfer_count: 0,
+      is_coriolis_processed: true, last_login_time: "2026-08-22T22:06:07Z"
+    },
+    deleted: {
+      id: "57", account_id: "1470", character_name: "Drew", character_state: "Deleted",
+      online_status: "Offline", player_controller_id: "3764", player_pawn_id: "3818",
+      player_state_id: "3789", transfer_count: 5
+    }
+  };
+  const candidateRow = () => ({
+    character_state_id: state.deleted.id,
+    character_name: state.deleted.character_name,
+    last_avatar_activity: "2026-08-17T17:45:22Z",
+    last_login_time: "2026-08-22T22:06:06Z",
+    deleted_at: "2026-08-22T22:06:07Z",
+    player_controller_id: state.deleted.player_controller_id,
+    player_pawn_id: state.deleted.player_pawn_id,
+    player_state_actor_id: state.deleted.player_state_id,
+    transfer_count: state.deleted.transfer_count,
+    map: "HaggaBasin",
+    partition_id: "1",
+    sietch: "Abbir",
+    inventory_count: 14,
+    item_count: 50,
+    removal_reason: "new char in fls",
+    removal_event_time: "2026-08-22T22:06:07Z",
+    replacement_detected: true,
+    recoverable: true
+  });
+  const query = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes("to_regclass")) return { rows: [{ exists: true }], rowCount: 1 };
+    if (text.includes("to_regprocedure")) return { rows: [{ exists: true }], rowCount: 1 };
+    if (text.includes("from dune.actors a") && text.includes("left join dune.player_state ps")) {
+      return { rows: [{ actor_id: 4832, account_id: 1470, controller_id: 4830, player_state_id: Number(state.active.id), online_status: state.active.online_status }], rowCount: 1 };
+    }
+    if (text.includes("select eps.*") && text.includes("for update")) {
+      return { rows: [{ ...state.active }], rowCount: 1 };
+    }
+    if (text.includes("left join dune.actors controller") && text.includes("character_state::text = 'Deleted'")) {
+      return { rows: [candidateRow()], rowCount: 1 };
+    }
+    if (text.includes("where eps.id = $1::bigint") && text.includes("character_state::text = 'Active'")) {
+      return { rows: [{ character_state_id: state.active.id, character_name: state.active.character_name, pawn_id: state.active.player_pawn_id, transfer_count: state.active.transfer_count, item_count: 26 }], rowCount: 1 };
+    }
+    if (text.includes("update dune.encrypted_player_state") && text.includes("character_state = 'Deleted'") && !text.includes("update dune.encrypted_player_state target")) {
+      if (state.active.online_status === "Online") return { rows: [], rowCount: 0 };
+      state.active.character_state = "Deleted";
+      return { rows: [], rowCount: 1 };
+    }
+    if (text.includes("update dune.encrypted_player_state target")) {
+      state.deleted.character_state = "Active";
+      state.deleted.character_name = state.active.character_name;
+      state.deleted.transfer_count = state.active.transfer_count;
+      return { rows: [{
+        character_state_id: state.deleted.id,
+        character_name: state.deleted.character_name,
+        player_controller_id: state.deleted.player_controller_id,
+        player_pawn_id: state.deleted.player_pawn_id,
+        player_state_actor_id: state.deleted.player_state_id
+      }], rowCount: 1 };
+    }
+    if (text.includes("min(id)::text as active_id")) {
+      const active = [state.active, state.deleted].filter((row) => row.character_state === "Active");
+      return { rows: [{ active_count: active.length, active_id: active[0]?.id || null }], rowCount: 1 };
+    }
+    throw new Error(`Unexpected character recovery query: ${text}`);
+  };
+  const db = {
+    query,
+    transaction: async (fn) => fn({ query })
+  };
+  return { db, calls, state };
+}
+
+test("deleted-character recovery inspection shows retained data and the safest candidate", async () => {
+  const { db } = fakeCharacterRecoveryDb();
+  const result = await inspectDeletedCharacterRecovery(db, 4832);
+  assert.equal(result.active.characterName, "TempDrew");
+  assert.equal(result.active.itemCount, 26);
+  assert.equal(result.suggestedCandidateId, "57");
+  assert.equal(result.canRecover, true);
+  assert.deepEqual(result.candidates[0], {
+    characterStateId: "57",
+    characterName: "Drew",
+    lastAvatarActivity: "2026-08-17T17:45:22Z",
+    lastLoginTime: "2026-08-22T22:06:06Z",
+    deletedAt: "2026-08-22T22:06:07Z",
+    controllerId: "3764",
+    pawnId: "3818",
+    playerStateActorId: "3789",
+    map: "HaggaBasin",
+    partitionId: "1",
+    sietch: "Abbir",
+    inventoryCount: 14,
+    itemCount: 50,
+    transferCount: 5,
+    removalReason: "new char in fls",
+    removalEventTime: "2026-08-22T22:06:07Z",
+    replacementDetected: true,
+    recoverable: true
+  });
+});
+
+test("deleted-character recovery preserves the current Funcom identity and reactivates the original data", async () => {
+  const { db, state } = fakeCharacterRecoveryDb();
+  const result = await recoverDeletedCharacter(db, 4832, "57");
+  assert.equal(state.active.character_state, "Deleted");
+  assert.equal(state.deleted.character_state, "Active");
+  assert.equal(state.deleted.character_name, "TempDrew");
+  assert.equal(state.deleted.transfer_count, 0);
+  assert.equal(result.pawnId, "3818");
+  assert.equal(result.itemCount, 50);
+  assert.match(result.message, /Drew's saved character data was recovered with 50 items/);
+  assert.match(result.message, /current Funcom character name remains TempDrew/);
+});
+
+test("deleted-character recovery refuses an online login race before changing either state", async () => {
+  const { db, state, calls } = fakeCharacterRecoveryDb({ onlineStatus: "Online" });
+  await assert.rejects(() => recoverDeletedCharacter(db, 4832, "57"), /require the player to be offline/);
+  assert.equal(state.active.character_state, "Active");
+  assert.equal(state.deleted.character_state, "Deleted");
+  assert.equal(calls.some((call) => call.text.includes("update dune.encrypted_player_state")), false);
+});
+
 test("player faction assignment uses the game's faction function with the controller id", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, { playerFactionRows: [] });
@@ -7848,6 +8143,8 @@ function fakeMutationDb(calls, fixtures = {}) {
               ? ["id", "vehicle_id", "template_id", "stats"]
             : table === "journey_story_node"
               ? [fixtures.journeyIdentityColumn || "account_id", "story_node_id", "has_pending_reward", "complete_condition_state", "reveal_condition_state", "fail_condition_state", "metadata_state", "reset_group"]
+              : table === "journey_story_node_cooldown"
+                ? ["character_id", "story_node_id", "time_to_expire"]
               : table === "player_tags"
                 ? [fixtures.journeyIdentityColumn || "account_id", "tag"]
                 : fixtures.itemColumns || ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats", "volume_override"];
@@ -7865,7 +8162,13 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("CraftingRecipesLibraryActorComponent,m_KnownItemRecipes") && text.includes("update dune.actors")) return { rows: [{ ok: true }] };
       if (text.includes("story_node_id not like 'DA_Dunipedia_%'")) return { rows: fixtures.discoveredJourneyRows || [] };
       if (text.includes("story_node_id like 'DA_Dunipedia_%'")) return { rows: fixtures.codexRows || [] };
+      if (text.includes("delete from dune.journey_story_node_cooldown")) return { rows: [], rowCount: fixtures.cooldownDeleteRows ?? 0 };
+      if (text.includes("from dune.journey_story_node_cooldown")) return { rows: fixtures.cooldownRows || [] };
       if (text.includes("from dune.journey_story_node") && (text.includes("where account_id = $1") || text.includes('where "account_id" = $1') || text.includes("where character_id = $1") || text.includes('where "character_id" = $1'))) return { rows: fixtures.journeyStateRows || [] };
+      if (text.includes("from dune.player_state") && text.includes("online_status") && text.includes("for update")) {
+        const rows = [{ online_status: fixtures.lockedPlayerStatus || "Offline" }];
+        return { rows, rowCount: rows.length };
+      }
       if (text.includes("select tag from dune.player_tags")) return { rows: fixtures.playerTagRows || [] };
       if (text.includes("update dune.journey_story_node")) return { rows: [], rowCount: fixtures.journeyUpdateRows ?? 0 };
       if (text.includes("insert into dune.journey_story_node")) return { rows: [{ ok: true }], rowCount: 1 };

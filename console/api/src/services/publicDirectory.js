@@ -429,7 +429,8 @@ export function createPublicDirectoryReporter(config, options = {}) {
       } else {
         lastPlayerPortalRequestSignature = "";
       }
-      if (Array.isArray(playerPortalStatus?.requestedMembershipHashes)) {
+      if (playerPortalStatus?.playerPortalEnabled === true
+        && Array.isArray(playerPortalStatus.requestedMembershipHashes)) {
         const requestedMemberships = playerPortalStatus.requestedMembershipHashes
           .map((value) => String(value || "").toLowerCase())
           .filter((value) => /^[0-9a-f]{64}$/.test(value))
