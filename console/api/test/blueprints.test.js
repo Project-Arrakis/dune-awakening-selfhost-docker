@@ -101,7 +101,8 @@ function fakeBlueprintDb(calls) {
         return { rows: [], rowCount: 1 };
       }
       if (text.includes("insert into dune.building_blueprint_pentashields")) {
-        pentashields.push({ blueprint_id: values[0], placeable_id: values[1], scale: [Number(values[2]), Number(values[3]), Number(values[4])] });
+        const scale = String(values[2]).replace(/^\[[^\]]+\]=/, "").replace(/[{}]/g, "").split(",").map(Number);
+        pentashields.push({ blueprint_id: values[0], placeable_id: values[1], scale, scaleLiteral: values[2] });
         return { rows: [], rowCount: 1 };
       }
       if (text.includes("delete from dune.building_blueprint_pentashields")) {
@@ -312,8 +313,8 @@ test("import blueprint repairs the legacy live-export placeable rotation axis", 
     ]
   });
   assert.deepEqual(placeables.map((row) => row.transform), [
-    "{10,20,30,0,170,0}",
-    "{40,50,60,0,-10,0}"
+    "[0:5]={10,20,30,0,170,0}",
+    "[0:5]={40,50,60,0,-10,0}"
   ]);
 });
 
@@ -326,8 +327,8 @@ test("import blueprint preserves native placeable rotation axes", async () => {
     ]
   });
   assert.deepEqual(placeables.map((row) => row.transform), [
-    "{10,20,30,0,90,0}",
-    "{40,50,60,5,-90,2}"
+    "[0:5]={10,20,30,0,90,0}",
+    "[0:5]={40,50,60,5,-90,2}"
   ]);
 });
 
@@ -336,6 +337,7 @@ test("import blueprint inserts pentashields with scale", async () => {
   await importBlueprint(db, 123, { pentashields: [SAMPLE_PENTASHIELD] });
   assert.equal(pentashields.length, 1);
   assert.deepEqual(pentashields[0].scale, [10, 2, 10]);
+  assert.equal(pentashields[0].scaleLiteral, "[0:2]={10,2,10}");
 });
 
 test("import blueprint shifts zero-based IDs and preserves pentashield references", async () => {
@@ -466,10 +468,10 @@ test("live base export can be imported without losing relative transforms", asyn
   assert.equal(imported.blueprintName, "Round Trip Base");
   assert.equal(instances.length, 1);
   assert.equal(instances[0].instance_id, 7);
-  assert.equal(instances[0].transform, "{125,250,375,0}");
+  assert.equal(instances[0].transform, "[0:3]={125,250,375,0}");
   assert.equal(placeables.length, 1);
   assert.equal(placeables[0].placeable_id, 9);
-  assert.equal(placeables[0].transform, "{-50,100,25,0,0,0}");
+  assert.equal(placeables[0].transform, "[0:5]={-50,100,25,0,0,0}");
 });
 
 test("export blueprint handles empty blueprint", async () => {

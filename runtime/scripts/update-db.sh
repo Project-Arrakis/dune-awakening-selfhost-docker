@@ -290,6 +290,7 @@ finish_database_update() {
   echo "=== Apply post-migration database compatibility patches ==="
   runtime/scripts/patch-coriolis-base-backups.sh
   runtime/scripts/patch-vehicle-recovery-guard.sh
+  runtime/scripts/patch-blueprint-array-bounds.sh
   exit 0
 }
 

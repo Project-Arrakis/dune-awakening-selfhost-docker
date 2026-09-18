@@ -378,8 +378,9 @@ Covers A01-A10 static analysis checks for the blueprint API surface.
 - **Status**: OPEN
 - **Finding**: Game server crashes (P34) when previewing some imported blueprints in-game
 - **Fixed**: `PlayerBaseBackupId` added to stats JSON to match live solido format
+- **Fixed**: Imported transforms and pentashield scales now use the engine's zero-based PostgreSQL array bounds; existing Console imports are normalized after a successful database update
 - **Verification needed**: Test with different blueprints and map types
-- **Root cause candidates**: hologram flag interaction, transform format mismatch, `building_blueprint_map` empty, invalid building types on target map
+- **Remaining root cause candidates**: hologram flag interaction, `building_blueprint_map` empty, invalid building types on target map
 
 ### Volume Validation
 

@@ -91,13 +91,16 @@ async function ensureOfflinePlayer(db, playerPawnId) {
 }
 
 function resolveImportInstance(inst) {
-  const transform = `{${inst.x},${inst.y},${inst.z},${inst.rotation}}`;
+  // Unreal's PostgreSQL data uses zero-based arrays. Plain PostgreSQL array
+  // literals default to a lower bound of 1, which shifts every transform slot
+  // when the game reads transform[0..3]. Keep the engine-native bounds.
+  const transform = `[0:3]={${inst.x},${inst.y},${inst.z},${inst.rotation}}`;
   const stability = inst.provides_stability != null ? inst.provides_stability : isStructuralBuilding(inst.building_type);
   return { transform, stability };
 }
 
 function resolveImportPlaceable(pl) {
-  const transform = `{${pl.x},${pl.y},${pl.z},${pl.rx ?? 0},${pl.ry ?? 0},${pl.rz ?? 0}}`;
+  const transform = `[0:5]={${pl.x},${pl.y},${pl.z},${pl.rx ?? 0},${pl.ry ?? 0},${pl.rz ?? 0}}`;
   return { transform };
 }
 
@@ -191,11 +194,12 @@ async function insertBuildingPentashields(tx, blueprintId, pentashields, placeab
     if (!Array.isArray(s) || s.length < 3) continue;
     const sourcePlaceableId = Number(ps.placeable_id);
     const placeableId = placeableIdMap.get(sourcePlaceableId) ?? (Number.isInteger(sourcePlaceableId) ? sourcePlaceableId : 0);
+    const scale = `[0:2]={${s[0]},${s[1]},${s[2]}}`;
     await tx.query(`
       insert into dune.building_blueprint_pentashields
         (building_blueprint_id, placeable_id, scale)
-      values ($1, $2, ARRAY[$3,$4,$5]::smallint[])`,
-      [blueprintId, placeableId, s[0], s[1], s[2]]
+      values ($1, $2, $3::smallint[])`,
+      [blueprintId, placeableId, scale]
     );
   }
 }
