@@ -29,6 +29,7 @@ from __future__ import annotations
 import io
 import json
 import sys
+import tempfile
 import unittest
 from base64 import b64encode
 from contextlib import redirect_stdout
@@ -129,6 +130,31 @@ class GameFieldOverridePrecedenceTests(ProfilePathTestCase):
         compiled_sibling_partition = usersettings.compiled_usergame_ini(profile, MAP_NAME, OTHER_PARTITION_ID)
         self.assertIn(f"{key}=3.0", compiled_sibling_partition)
         self.assertNotIn(f"{key}=4.0", compiled_sibling_partition)
+
+    def test_materialize_writes_native_building_restriction_setting_after_patch_1_5(self):
+        section, key, _default = usersettings.MAP_FIELDS["building_restriction_limits_enabled"]
+        profile = usersettings.empty_profile()
+        usersettings.profile_set_key(profile, "global", section, key, "False")
+
+        with tempfile.TemporaryDirectory() as directory:
+            saved_dir = Path(directory) / "Saved"
+            custom_path = saved_dir / "Config" / "LinuxServer" / "ServerCustomSettings.ini"
+            custom_path.parent.mkdir(parents=True)
+            custom_path.write_text(
+                f"[{usersettings.SERVER_CUSTOM_SETTINGS_SECTION}]\n"
+                "DifficultyLevel=Medium\n"
+                "GatheringAmount=2.000000\n"
+                "bIsBuildingRestrictionsEnabled=True\n",
+                encoding="utf-8",
+            )
+
+            usersettings.write_server_custom_settings(saved_dir, profile, MAP_NAME, PARTITION_ID)
+            rendered = custom_path.read_text(encoding="utf-8")
+
+        self.assertIn("DifficultyLevel=Custom", rendered)
+        self.assertIn("bIsBuildingRestrictionsEnabled=False", rendered)
+        self.assertIn("GatheringAmount=2.000000", rendered)
+        self.assertNotIn("DifficultyLevel=Medium", rendered)
 
 
 class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):

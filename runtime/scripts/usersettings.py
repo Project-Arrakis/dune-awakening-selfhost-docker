@@ -65,6 +65,7 @@ def apply_host_ownership(path: Path) -> None:
         os.chown(path, *owner)
 
 BUILDING_SETTINGS_SECTION = "/Script/DuneSandbox.BuildingSettings"
+SERVER_CUSTOM_SETTINGS_SECTION = "/Script/DuneSandbox.UserServerCustomSettings"
 CORIOLIS_SUBSYSTEM_SECTION = "/Script/DuneSandbox.CoriolisSubsystem"
 LANDSRAAD_SETTINGS_SECTION = "/Script/DuneSandbox.LandsraadSettings"
 LANDSRAAD_DATA_KEY = "Data"
@@ -848,6 +849,7 @@ def secure_managed_settings_permissions() -> None:
     candidates = [CONFIG_PATH, PROFILE_PATH, SIETCH_CONFIG_PATH]
     candidates.extend(game_root.glob("*/Saved/UserSettings/UserEngine.ini"))
     candidates.extend(game_root.glob("*/Saved/UserSettings/UserGame.ini"))
+    candidates.extend(game_root.glob("*/Saved/Config/LinuxServer/ServerCustomSettings.ini"))
     for path in candidates:
         try:
             if path.is_file():
@@ -2545,6 +2547,23 @@ def write_compiled_usergame(path: Path, profile: dict, map_name: str, partition_
     atomic_write_text(path, compiled_usergame_ini(profile, map_name, partition_id))
 
 
+def write_server_custom_settings(saved_dir: Path, profile: dict, map_name: str, partition_id: str | None = None) -> None:
+    """Materialize settings moved to Funcom's patch-1.5 server file.
+
+    The game no longer honors the legacy BuildingSettings restriction flag
+    from UserGame.ini. Keep its established Console field and scope model, but
+    also write the current native key. Other game-managed settings in this
+    file are preserved verbatim.
+    """
+    target_map = canonical_map(map_name)
+    target_partition = str(partition_id or "")
+    values = profile_partition_values(profile, target_map, target_partition) if target_partition else profile_map_values(profile, target_map)
+    enabled = "True" if truthy(values.get("building_restriction_limits_enabled", "True")) else "False"
+    path = saved_dir / "Config" / "LinuxServer" / "ServerCustomSettings.ini"
+    update_ini_key(path, SERVER_CUSTOM_SETTINGS_SECTION, "DifficultyLevel", "Custom")
+    update_ini_key(path, SERVER_CUSTOM_SETTINGS_SECTION, "bIsBuildingRestrictionsEnabled", enabled)
+
+
 def safe_runtime_dir_name(map_name: str, partition_id: str) -> str:
     raw = f"{map_name}-{partition_id}".lower()
     chars: list[str] = []
@@ -3523,6 +3542,7 @@ def materialize_current_runtime_files() -> int:
         expected_engine_paths.add(engine_path.resolve())
         write_compiled_userengine(engine_path, profile, canonical_map(map_name), partition_id)
         write_compiled_usergame(game_path, profile, canonical_map(map_name), partition_id)
+        write_server_custom_settings(saved_dir, profile, canonical_map(map_name), partition_id)
 
     for engine_path in game_root.glob("*/Saved/UserSettings/UserEngine.ini"):
         if engine_path.resolve() in expected_engine_paths:
@@ -3542,6 +3562,7 @@ def materialize(map_name: str, saved_dir: str, partition_id: str | None = None) 
     game_path = user_settings_dir / "UserGame.ini"
     write_compiled_userengine(engine_path, profile, target_map, str(partition_id) if partition_id else None)
     write_compiled_usergame(game_path, profile, target_map, str(partition_id) if partition_id else None)
+    write_server_custom_settings(Path(saved_dir), profile, target_map, str(partition_id) if partition_id else None)
     return 0
 
 
