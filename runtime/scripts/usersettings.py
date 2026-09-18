@@ -388,9 +388,10 @@ FIELD_LABELS = {
 }
 
 # Maps a field id to the client-side ini filename it also must be applied to
-# (players copy the exported client file into their own Saved/Config/WindowsClient/
-# folder). Both client INI generators use this as an explicit allowlist: server-
-# only and unknown Advanced-editor values must never be offered to players.
+# (players copy Game.ini into Saved/Config/Windows/ and Engine.ini into
+# Saved/Config/WindowsClient/). Both client INI generators use this as an
+# explicit allowlist: server-only and unknown Advanced-editor values must never
+# be offered to players.
 CLIENT_FILE_REQUIRED = {
     "vehicle_max_per_player": "Engine.ini",
     # Funcom's shipped self-host setup template explicitly requires these
@@ -2497,7 +2498,7 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
     return render_ini_sections(section_lines, [
         "; Game.ini for the Dune: Awakening client.",
         f"; Client-required settings generated from Docker UserGame.ini values for {target_label}.",
-        "; Merge these sections into Saved/Config/WindowsClient/Game.ini while the game is closed.",
+        "; Merge these sections into Saved/Config/Windows/Game.ini while the game is closed.",
         "; Only settings changed from the default and known to require client configuration are listed.",
         "; Remove keys from an earlier copy when they are no longer listed here.",
     ])

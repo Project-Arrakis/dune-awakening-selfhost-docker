@@ -21,11 +21,23 @@ run_case() {
   local role_marker="$tmp_dir/$name/role-elevated"
   local external_trigger_state="$tmp_dir/$name/external-trigger-state"
   local external_trigger_marker="$tmp_dir/$name/external-triggers.sql"
+  local postgres_start_log="$tmp_dir/$name/postgres-start.log"
+  local psql_stdin_log="$tmp_dir/$name/psql-stdin.log"
+  local host_repo_root="$tmp_dir/$name/host-repo"
+  local postgres_running="${8:-1}"
+  local existing_trigger_marker="${9:-}"
 
   mkdir -p "$bin_dir"
   printf '%s\n' "$initial_superuser" > "$role_state"
   printf '%s\n' "$initial_external_trigger" > "$external_trigger_state"
   [ "$stale_marker" != "1" ] || : > "$role_marker"
+  [ -z "$existing_trigger_marker" ] || printf '%s\n' "$existing_trigger_marker" > "$external_trigger_marker"
+  cat > "$bin_dir/start-postgres" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' started > "$MOCK_POSTGRES_START_LOG"
+printf '%s\n' 1 > "$MOCK_POSTGRES_RUNNING_STATE"
+EOF
   cat > "$bin_dir/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -52,6 +64,7 @@ fi
 
 if [ "${1:-}" = "exec" ] && [ "${2:-}" = "-i" ]; then
   stdin="$(cat)"
+  printf '%s\n' "$stdin" >> "$MOCK_PSQL_STDIN_LOG"
   if [[ "$stdin" == *"CREATE TRIGGER console_market_history_capture"* ]] \
     && [[ "$stdin" == *"CREATE TRIGGER notify_airdrop"* ]]; then
     printf '%s\n' present > "$MOCK_EXTERNAL_TRIGGER_STATE"
@@ -81,7 +94,11 @@ fi
 
 if [ "${1:-}" = "inspect" ] && [[ "$*" == *"State.Running"* ]]; then
   if [[ "$*" == *"dune-postgres"* ]]; then
-    printf '%s\n' true
+    if [ "$(cat "$MOCK_POSTGRES_RUNNING_STATE")" = "1" ]; then
+      printf '%s\n' true
+    else
+      printf '%s\n' false
+    fi
     exit 0
   fi
   printf '%s\n' false
@@ -95,18 +112,25 @@ fi
 
 exit 0
 EOF
-  chmod +x "$bin_dir/docker"
+  chmod +x "$bin_dir/docker" "$bin_dir/start-postgres"
+  printf '%s\n' "$postgres_running" > "$tmp_dir/$name/postgres-running-state"
 
   set +e
   PATH="$bin_dir:$PATH" \
     MOCK_DOCKER_LOG="$docker_log" \
     MOCK_ROLE_STATE="$role_state" \
     MOCK_EXTERNAL_TRIGGER_STATE="$external_trigger_state" \
+    MOCK_POSTGRES_START_LOG="$postgres_start_log" \
+    MOCK_POSTGRES_RUNNING_STATE="$tmp_dir/$name/postgres-running-state" \
+    MOCK_PSQL_STDIN_LOG="$psql_stdin_log" \
     MOCK_UPDATER_EXIT_CODE="$updater_exit_code" \
     MOCK_UPDATER_LOG="$updater_log" \
+    DUNE_DB_UPDATE_START_POSTGRES_SCRIPT="$bin_dir/start-postgres" \
     DUNE_DB_UPDATE_ROLE_MARKER="$role_marker" \
     DUNE_DB_UPDATE_EXTERNAL_TRIGGER_MARKER="$external_trigger_marker" \
     DUNE_DB_BACKUP_ON_ORPHAN_DETECT=0 \
+    DUNE_CONTAINER_REPO_ROOT="$PWD" \
+    DUNE_HOST_REPO_ROOT="$host_repo_root" \
     runtime/scripts/update-db.sh >"$output" 2>&1
   local actual_script_exit=$?
   set -e
@@ -122,6 +146,7 @@ EOF
   fi
 
   grep -Fq "function_schema.nspname NOT IN ('dune', 'pg_catalog')" "$docker_log"
+  grep -Fq -- "-v $host_repo_root/runtime/scripts/db-update-pg-dump:/tmp/pg17/bin/pg_dump:ro" "$docker_log"
 
   if [ "$updater_exit_code" = "0" ]; then
     grep -q 'exec -i dune-postgres psql .*ON_ERROR_STOP=1 .* -f -' "$docker_log"
@@ -157,6 +182,20 @@ EOF
     exit 1
   fi
 
+  if [ "$postgres_running" = "0" ]; then
+    grep -Fq "Postgres is not running; starting it before the database update." "$output"
+    grep -Fqx started "$postgres_start_log"
+  elif [ -e "$postgres_start_log" ]; then
+    echo "FAIL $name: updater restarted an already-running Postgres container"
+    exit 1
+  fi
+
+  if [ -n "$existing_trigger_marker" ]; then
+    grep -Fq 'WHEN duplicate_object THEN' "$psql_stdin_log"
+    grep -Fq 'WHEN invalid_schema_name OR undefined_function OR undefined_table THEN' "$psql_stdin_log"
+    grep -Fq "$existing_trigger_marker" "$psql_stdin_log"
+  fi
+
   local expected_role_state="$initial_superuser"
   [ "$stale_marker" != "1" ] || expected_role_state=f
   if [ "$(cat "$role_state")" != "$expected_role_state" ]; then
@@ -173,3 +212,6 @@ run_case existing-superuser-unchanged t 0 0
 run_case interrupted-update-recovers-role t 0 0 1
 run_case external-triggers-restored-after-success f 0 0 0 '' present
 run_case external-triggers-restored-after-failure f 128 1 0 'ERROR migration failed' present
+run_case starts-missing-postgres f 0 0 0 '' absent 0
+run_case skips-stale-trigger-with-missing-addon-schema f 0 0 0 '' absent 1 \
+  'CREATE TRIGGER console_market_history_capture AFTER INSERT ON dune.dune_exchange_fulfilled_orders FOR EACH ROW EXECUTE FUNCTION console_market_history.capture_fulfilled_order();'

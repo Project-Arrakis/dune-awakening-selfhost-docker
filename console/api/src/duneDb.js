@@ -742,7 +742,11 @@ async function updateCurrencyBalanceViaGameFunction(db, safeTable, rowRef, value
   const row = current.rows[0];
   if (!row) return { ok: true, updatedRows: 0, schema: "dune", table: "player_virtual_currency_balances" };
   const controllerId = intParam(values.player_controller_id ?? row.player_controller_id, "player controller id", 1);
-  const currencyId = intParam(values.currency_id ?? row.currency_id, "currency id", 0, 32767);
+  const currencyMode = await currencyStorageMode(db);
+  const requestedCurrency = values.currency_id ?? row.currency_id;
+  const currencyId = currencyMode === "enum"
+    ? String(requestedCurrency || "").trim()
+    : intParam(requestedCurrency, "currency id", 0, 32767);
   if (String(controllerId) !== String(row.player_controller_id) || String(currencyId) !== String(row.currency_id)) {
     throw new Error("Currency row editing can change balance only. Edit player_controller_id or currency_id with explicit SQL if needed.");
   }
@@ -750,7 +754,11 @@ async function updateCurrencyBalanceViaGameFunction(db, safeTable, rowRef, value
   const newBalance = BigInt(String(values.balance ?? 0));
   const delta = newBalance - oldBalance;
   if (delta !== 0n) {
-    await db.query("select dune.adjust_player_virtual_currency_balance($1::bigint, $2::smallint, $3::bigint)", [controllerId, currencyId, delta.toString()]);
+    if (currencyMode === "enum") {
+      await db.query("select dune.adjust_player_virtual_currency_balance($1::bigint, $2::dune.virtualwallettype, $3::bigint)", [controllerId, currencyId, delta.toString()]);
+    } else {
+      await db.query("select dune.adjust_player_virtual_currency_balance($1::bigint, $2::smallint, $3::bigint)", [controllerId, currencyId, delta.toString()]);
+    }
   }
   const state = await db.query(`
     select coalesce(online_status::text, 'Offline') as online_status
@@ -970,37 +978,42 @@ async function withKnownLiveRefresh(db, fn, { features = [] } = {}) {
 
 async function supportsSolarisLiveRefresh(db) {
   try {
-    return await tableExists(db, "player_virtual_currency_balances") &&
-      await functionExists(db, "dune.get_solaris_id()") &&
+    const mode = await currencyStorageMode(db);
+    return Boolean(mode) &&
       await functionExists(db, "dune.log_event_solaris(oid,dune.logmessagetype,bigint,bigint,bigint)") &&
-      await functionExists(db, "dune.adjust_player_virtual_currency_balance(bigint,smallint,bigint)");
+      (mode === "enum" || await functionExists(db, "dune.get_solaris_id()"));
   } catch {
     return false;
   }
 }
 
 async function solarisBalanceSnapshot(db) {
+  const mode = await currencyStorageMode(db);
   const result = await db.query(`
     select player_controller_id::text as player_controller_id, balance::text as balance
     from dune.player_virtual_currency_balances
-    where currency_id = dune.get_solaris_id()
+    where currency_id = ${mode === "enum" ? "'Solaris'::dune.virtualwallettype" : "dune.get_solaris_id()"}
     order by player_controller_id`);
   return new Map(result.rows.map((row) => [String(row.player_controller_id), BigInt(row.balance || 0)]));
 }
 
 async function emitChangedSolarisBalances(db, before, after) {
+  const mode = await currencyStorageMode(db);
+  const adjustmentSignature = mode === "enum"
+    ? "dune.adjust_player_virtual_currency_balance(bigint,dune.virtualwallettype,bigint)"
+    : "dune.adjust_player_virtual_currency_balance(bigint,smallint,bigint)";
   for (const [controllerId, balance] of after) {
     const previous = before.get(controllerId);
     if (previous === undefined || previous === balance) continue;
     const delta = balance - previous;
     await db.query(`
       select dune.log_event_solaris(
-        'dune.adjust_player_virtual_currency_balance(bigint,smallint,bigint)'::regprocedure::oid,
+        $4::regprocedure::oid,
         'update_solaris'::dune.logmessagetype,
         $1::bigint,
         $2::bigint,
         $3::bigint
-      )`, [controllerId, balance.toString(), delta.toString()]);
+      )`, [controllerId, balance.toString(), delta.toString(), adjustmentSignature]);
   }
 }
 
@@ -1036,7 +1049,7 @@ async function syncChangedFactionReputation(db, before, after) {
 async function supportsTutorialLiveRefresh(db) {
   try {
     return await tableExists(db, "tutorial_per_player") &&
-      await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)");
+      Boolean(await tutorialEntryStateType(db));
   } catch {
     return false;
   }
@@ -1050,7 +1063,7 @@ async function tutorialSnapshot(db) {
   return new Map(result.rows.map((row) => [`${row.player_id}:${row.tutorial_id}`, {
     playerId: String(row.player_id),
     tutorialId: Number(row.tutorial_id),
-    state: Number(row.tutorial_state || 0)
+    state: tutorialStateToLegacyNumber(row.tutorial_state) ?? 0
   }]));
 }
 
@@ -1058,7 +1071,7 @@ async function syncChangedTutorials(db, before, after) {
   for (const [key, next] of after) {
     const previous = before.get(key);
     if (previous && previous.state === next.state) continue;
-    await db.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, $3::smallint)", [next.playerId, next.tutorialId, next.state]);
+    await writeTutorialEntry(db, next.playerId, next.tutorialId, next.state);
   }
 }
 
@@ -2550,6 +2563,38 @@ function playerJourneyIdentity(player, columnName) {
   return player.accountId;
 }
 
+// A later game build replaced tutorial_per_player.tutorial_state's smallint
+// column with a dune.tutorialstate enum (Active/Revealed/Completed/Canceled/
+// None), and create_or_update_tutorial_entry's third parameter changed to
+// match. Both generations are live across deployments, so every read and
+// write goes through these two helpers instead of assuming one shape.
+const TUTORIAL_STATE_ENUM_LABELS = { 0: "None", 1: "Revealed", 2: "Completed" };
+
+function tutorialStateToLegacyNumber(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return value;
+  const text = String(value);
+  if (/^-?\d+$/.test(text)) return Number(text);
+  if (text === "Completed") return 2;
+  if (text === "Revealed" || text === "Active") return 1;
+  return 0;
+}
+
+async function tutorialEntryStateType(db) {
+  if (await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,dune.tutorialstate)")) return "enum";
+  if (await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)")) return "smallint";
+  return null;
+}
+
+async function writeTutorialEntry(db, playerId, tutorialId, legacyState) {
+  if (await tutorialEntryStateType(db) === "enum") {
+    const label = TUTORIAL_STATE_ENUM_LABELS[legacyState] || "None";
+    await db.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, $3::dune.tutorialstate)", [playerId, tutorialId, label]);
+    return;
+  }
+  await db.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, $3::smallint)", [playerId, tutorialId, legacyState]);
+}
+
 async function playerLastSeenSelect(db) {
   const candidates = [
     ["player_state", "ps", ["last_seen", "last_seen_at", "last_online", "last_online_at", "last_avatar_activity", "last_login", "last_login_at", "last_login_time", "last_activity", "last_activity_at", "updated_at"]],
@@ -2607,7 +2652,11 @@ export async function playerProfile(db, id) {
   row.faction = assignedFaction || "Neutral";
   row.faction_assigned = Boolean(assignedFaction);
   row.guild = guilds.get(controllerId) || guilds.get(actorIdKey) || guilds.get(accountIdKey) || "—";
-  return { capabilities: await playerCapabilities(db), player: row };
+  return {
+    capabilities: await playerCapabilities(db),
+    currencyOptions: await currencyOptions(db),
+    player: row
+  };
 }
 
 // Player-carried inventory containers keyed by dune.inventories.inventory_type.
@@ -2730,6 +2779,34 @@ export async function playerInventoryAll(db, id) {
 export async function playerCurrency(db, id) {
   if (!(await tableExists(db, "player_virtual_currency_balances"))) return unsupported("currency", ["dune.player_virtual_currency_balances"]);
   const actorId = intParam(id, "player id", 1);
+  const mode = await currencyStorageMode(db);
+  if (!mode) return unsupported("currency", ["dune.adjust_player_virtual_currency_balance"]);
+  if (mode === "enum") {
+    const result = await db.query(`
+      select currency_id::text as currency_key, balance
+      from dune.player_virtual_currency_balances
+      where player_controller_id = $1
+         or player_controller_id = (select coalesce(player_controller_id, 0) from dune.player_state where player_pawn_id = $1 limit 1)
+      order by currency_id::text`, [actorId]);
+    const options = await currencyOptions(db);
+    const byKey = new Map(options.map((option) => [option.key, option]));
+    const rows = result.rows.map((row) => {
+      const option = byKey.get(String(row.currency_key));
+      return {
+        currency_id: option?.id ?? String(row.currency_key),
+        balance: row.balance,
+        label: option?.label ?? String(row.currency_key)
+      };
+    });
+    for (const option of options) {
+      if (!rows.some((row) => String(row.currency_id) === String(option.id))) {
+        rows.push({ currency_id: option.id, balance: 0, label: option.label });
+      }
+    }
+    rows.sort((a, b) => Number(a.currency_id) - Number(b.currency_id));
+    return { capabilities: { currency: true }, rows };
+  }
+
   const hasSolarisId = await functionExists(db, "dune.get_solaris_id()");
   const solarisId = hasSolarisId ? Number((await db.query("select dune.get_solaris_id() as id")).rows[0].id) : null;
   const result = await db.query(`
@@ -4028,12 +4105,11 @@ export async function liveMapFlourSandFieldRows(db, map = "") {
 }
 
 // dune.markers is the static-POI atlas (23,413+ entries on a full server --
-// caves, ore veins, scrap wrecks, vendors, hazards, etc). `marker` is a
-// composite type with real named fields (marker_type, x, y, z, payload_type)
-// -- confirmed live, no need for the text-parsing SPLIT_PART approach some
-// third-party docs use. One generic, parameterized query serves every
-// category: add a pattern-table entry for a new category and it works with
-// no new SQL.
+// caves, ore veins, scrap wrecks, vendors, hazards, etc). marker_type is a
+// flat text column and x/y/z live on the `position` composite (type
+// dune.vector) -- confirmed live. One generic, parameterized query serves
+// every category: add a pattern-table entry for a new category and it works
+// with no new SQL.
 // Suffix-only (no leading %) -- a substring match on "%ore%" was sweeping in
 // HarkoRecustomization (an unrelated NPC/customization POI, confirmed live)
 // because "HarkoRecustomization" contains "kore" -> "ore". All real resource
@@ -6250,26 +6326,30 @@ export async function exportRows(db, query) {
 }
 
 export async function addCurrency(db, id, { currencyId = 0, amount }) {
-  await requireCapability(await supportsCurrencyMutation(db), "Currency mutation requires dune.player_virtual_currency_balances plus dune.adjust_player_virtual_currency_balance(bigint,smallint,bigint).");
+  await requireCapability(await supportsCurrencyMutation(db), "Currency mutation requires dune.player_virtual_currency_balances plus the game's currency adjustment function.");
   const delta = intParam(amount, "currency amount", -1000000000000, 1000000000000);
   if (delta === 0) throw new Error("Currency amount cannot be zero");
-  const resolvedCurrencyId = await resolveCurrencyId(db, currencyId);
+  const currency = await resolveCurrency(db, currencyId);
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
-    await tx.query("select dune.adjust_player_virtual_currency_balance($1::bigint, $2::smallint, $3::bigint)", [player.controllerId, resolvedCurrencyId, delta]);
+    if (currency.mode === "enum") {
+      await tx.query("select dune.adjust_player_virtual_currency_balance($1::bigint, $2::dune.virtualwallettype, $3::bigint)", [player.controllerId, currency.dbValue, delta]);
+    } else {
+      await tx.query("select dune.adjust_player_virtual_currency_balance($1::bigint, $2::smallint, $3::bigint)", [player.controllerId, currency.dbValue, delta]);
+    }
     const balance = await tx.query(`
       select currency_id, balance
       from dune.player_virtual_currency_balances
-      where player_controller_id = $1 and currency_id = $2`, [player.controllerId, resolvedCurrencyId]);
+      where player_controller_id = $1 and currency_id = $2`, [player.controllerId, currency.dbValue]);
     return {
       ok: true,
       player,
-      currencyId: resolvedCurrencyId,
+      currencyId: currency.id,
       amount: delta,
       balance: balance.rows[0] || null,
       message: playerOnline(player)
-        ? "Solari Credit was updated in the database. The player may need to relog before the new credit balance appears in-game."
-        : "Solari Credit was updated in the database and will be loaded when the player next joins."
+        ? `${currency.label} was updated in the database. The player may need to relog before the new balance appears in-game.`
+        : `${currency.label} was updated in the database and will be loaded when the player next joins.`
     };
   });
 }
@@ -7514,18 +7594,21 @@ export async function playerJourney(db, id, journeyTagsData = {}) {
   ].sort((a, b) => a.rawName.localeCompare(b.rawName));
   const codexIds = codex.rows.map((row) => row.story_node_id).filter(Boolean);
   const codexRows = codexIds.map((nodeId) => journeyNodeRow(nodeId, "Codex", state, {}, codexIds, journeyAliases));
-  const tutorial = tutorialRows.rows.map((row) => ({
-    id: String(row.id),
-    name: journeyDisplayName(row.name),
-    rawName: String(row.name || ""),
-    category: "Tutorial",
-    depth: 0,
-    parentId: "",
-    status: tutorialStatus(row.tutorial_state),
-    complete: Number(row.tutorial_state) === 2,
-    state: row.tutorial_state === null || row.tutorial_state === undefined ? null : Number(row.tutorial_state),
-    tags: 0
-  }));
+  const tutorial = tutorialRows.rows.map((row) => {
+    const legacyState = tutorialStateToLegacyNumber(row.tutorial_state);
+    return {
+      id: String(row.id),
+      name: journeyDisplayName(row.name),
+      rawName: String(row.name || ""),
+      category: "Tutorial",
+      depth: 0,
+      parentId: "",
+      status: tutorialStatus(legacyState),
+      complete: legacyState === 2,
+      state: legacyState,
+      tags: 0
+    };
+  });
   return { capabilities: { journey: true }, player, rows: { story: storyRows, contract: contractRows, codex: codexRows, tutorial } };
 }
 
@@ -9293,7 +9376,7 @@ export async function completeTutorial(db, id, { tutorialId }) {
     const player = await resolvePlayerMutationTarget(tx, id);
     const known = await tx.query("select exists (select 1 from dune.tutorials where id = $1) as exists", [safeTutorialId]);
     if (!known.rows[0]?.exists) throw new Error(`Tutorial ${safeTutorialId} was not found in the game database.`);
-    await tx.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, 2::smallint)", [player.controllerId, safeTutorialId]);
+    await writeTutorialEntry(tx, player.controllerId, safeTutorialId, 2);
     return { ok: true, player, tutorialId: safeTutorialId, state: 2 };
   });
 }
@@ -14163,7 +14246,7 @@ async function supportsJourneySchema(db, schema) {
 async function supportsTutorials(db) {
   return await tableExists(db, "tutorials") &&
     await tableExists(db, "tutorial_per_player") &&
-    await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)");
+    Boolean(await tutorialEntryStateType(db));
 }
 
 function journeyGroup(nodeId) {
@@ -14436,8 +14519,7 @@ async function materializeResearchCraftingRecipe(db, actorId, recipeId) {
 }
 
 async function supportsCurrencyMutation(db) {
-  return await tableExists(db, "player_virtual_currency_balances") &&
-    await functionExists(db, "dune.adjust_player_virtual_currency_balance(bigint,smallint,bigint)");
+  return Boolean(await currencyStorageMode(db));
 }
 
 async function supportsFactionMutation(db) {
@@ -14643,16 +14725,48 @@ function requireOfflinePlayer(player, actionName) {
   }
 }
 
-async function resolveCurrencyId(db, currencyId) {
+async function currencyStorageMode(db) {
+  if (!(await tableExists(db, "player_virtual_currency_balances"))) return null;
+  if (await functionExists(db, "dune.adjust_player_virtual_currency_balance(bigint,dune.virtualwallettype,bigint)")) return "enum";
+  if (await functionExists(db, "dune.adjust_player_virtual_currency_balance(bigint,smallint,bigint)")) return "smallint";
+  return null;
+}
+
+async function currencyOptions(db) {
+  const mode = await currencyStorageMode(db);
+  if (mode === "enum") {
+    return [
+      { id: 0, key: "Solaris", label: "Solari Credit" },
+      { id: 1, key: "HouseCredit", label: "House Credit" }
+    ];
+  }
+  if (mode === "smallint") {
+    return [
+      { id: 0, key: "Solaris", label: "Solari Credit" },
+      { id: 1, key: "Scrip", label: "Scrip" }
+    ];
+  }
+  return [];
+}
+
+async function resolveCurrency(db, currencyId) {
+  const mode = await currencyStorageMode(db);
+  if (!mode) throw new UnsupportedCapabilityError("The game currency adjustment function is unavailable in this schema.");
   const raw = String(currencyId ?? "0").trim().toLowerCase();
+  if (mode === "enum") {
+    if (!raw || raw === "0" || raw === "solaris") return { id: 0, dbValue: "Solaris", label: "Solari Credit", mode };
+    if (raw === "1" || raw === "housecredit" || raw === "house credit") return { id: 1, dbValue: "HouseCredit", label: "House Credit", mode };
+    throw new Error("Currency id must be 0 (Solaris) or 1 (House Credit).");
+  }
   if (!raw || raw === "0" || raw === "solaris") {
     if (!(await functionExists(db, "dune.get_solaris_id()"))) {
       throw new UnsupportedCapabilityError("Solaris currency requires dune.get_solaris_id() in this schema.");
     }
     const result = await db.query("select dune.get_solaris_id()::int as currency_id");
-    return intParam(result.rows[0]?.currency_id, "currency id", 0, 32767);
+    return { id: 0, dbValue: intParam(result.rows[0]?.currency_id, "currency id", 0, 32767), label: "Solari Credit", mode };
   }
-  return intParam(raw, "currency id", 0, 32767);
+  const numericId = intParam(raw, "currency id", 0, 32767);
+  return { id: numericId, dbValue: numericId, label: numericId === 1 ? "Scrip" : `Currency ${numericId}`, mode };
 }
 
 async function syncFactionComponent(db, actorId) {
