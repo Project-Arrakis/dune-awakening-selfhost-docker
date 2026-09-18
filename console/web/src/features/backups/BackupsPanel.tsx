@@ -38,6 +38,7 @@ function formatResultMessage(value: unknown) {
 
 export function BackupsPanel({ backupRestoreTask, setBackupRestoreTask, onError, confirmAction, chooseBackupIdentity, waitForTask, waitForTaskWithUpdates, withTimeout, toHourMinuteTime, sanitizeTimeInput, isValidHourMinuteTime, commandStatusSummary, taskTechnicalDetails, isTerminalTask }: BackupsPanelProps) {
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const [selectedBackups, setSelectedBackups] = useState<Set<string>>(new Set());
   const [currentBattlegroupId, setCurrentBattlegroupId] = useState("Unknown");
   const [backupsLoading, setBackupsLoading] = useState(true);
   const [autoBackup, setAutoBackup] = useState<{ stdout?: string; stderr?: string; exitCode?: number } | null>(null);
@@ -81,7 +82,10 @@ export function BackupsPanel({ backupRestoreTask, setBackupRestoreTask, onError,
     setBackupsLoading(true);
     backupsRefreshRef.current = (async () => {
       const result = await withTimeout(backupsApi.list(), 60000, "Loading backups timed out.");
-      setRows(result.rows?.length ? result.rows : parseBackupRows(result.stdout || ""));
+      const nextRows = result.rows?.length ? result.rows : parseBackupRows(result.stdout || "");
+      setRows(nextRows);
+      const available = new Set(nextRows.map((row) => String(row.name || row.backupName || "")).filter(Boolean));
+      setSelectedBackups((current) => new Set([...current].filter((name) => available.has(name))));
       setCurrentBattlegroupId(String(result.currentBattlegroupId || "Unknown"));
       try {
         await withTimeout(refreshAutoBackup(), 60000, "Loading automatic backup status timed out.");
@@ -94,10 +98,10 @@ export function BackupsPanel({ backupRestoreTask, setBackupRestoreTask, onError,
     });
     return backupsRefreshRef.current;
   }
-  async function runBackupTask(action: "create" | "delete" | "deleteAll" | "restore" | "auto", taskFactory: () => Promise<{ task: Task }>, successTitle: string, failureTitle: string) {
+  async function runBackupTask(action: "create" | "delete" | "deleteSelected" | "deleteAll" | "restore" | "auto", taskFactory: () => Promise<{ task: Task }>, successTitle: string, failureTitle: string) {
     setBusyAction(action);
     const setter = action === "auto" ? setAutoResult : setBackupResult;
-    setter({ status: "running", title: action === "restore" ? "Restoring Backup..." : action === "delete" || action === "deleteAll" ? "Deleting Backup..." : action === "auto" ? "Saving Automatic Backup Settings..." : "Creating Backup..." });
+    setter({ status: "running", title: action === "restore" ? "Restoring Backup..." : action === "delete" || action === "deleteSelected" || action === "deleteAll" ? "Deleting Backup..." : action === "auto" ? "Saving Automatic Backup Settings..." : "Creating Backup..." });
     let restoreImportCompleted = false;
     try {
       const response = await taskFactory();
@@ -117,7 +121,7 @@ export function BackupsPanel({ backupRestoreTask, setBackupRestoreTask, onError,
       const result = action === "restore" ? backupRestoreTaskResult(final) : summarizeBackupTask(final, successTitle, failureTitle);
       if (action === "restore" && isTerminalTask(final.status)) setBackupRestoreTask(null);
       if (!(action === "restore" && restoreImportCompleted)) {
-        setter((final.status === "succeeded" && (action === "delete" || action === "deleteAll")) ? { ...result, tone: "danger" } : result);
+        setter((final.status === "succeeded" && (action === "delete" || action === "deleteSelected" || action === "deleteAll")) ? { ...result, tone: "danger" } : result);
       }
       if (final.status === "succeeded") await refresh();
       return final;
@@ -218,14 +222,31 @@ export function BackupsPanel({ backupRestoreTask, setBackupRestoreTask, onError,
     const id = window.setTimeout(() => setImportResult(null), 5400);
     return () => window.clearTimeout(id);
   }, [importResult?.status, importResult?.title]);
+  const backupNames = rows.map((row) => String(row.name || row.backupName || "")).filter(Boolean);
+  const allSelected = backupNames.length > 0 && backupNames.every((name) => selectedBackups.has(name));
+  function toggleBackup(name: string, checked: boolean) {
+    setSelectedBackups((current) => {
+      const next = new Set(current);
+      if (checked) next.add(name); else next.delete(name);
+      return next;
+    });
+  }
   return (
     <section className="panel">
-      <div className="panel-title"><h2>Backups</h2><div className="action-row"><button disabled={Boolean(busyAction)} onClick={() => run(refresh)}>Refresh Backups</button><button disabled={Boolean(busyAction)} onClick={() => run(() => runBackupTask("create", backupsApi.create, "Backup Created Successfully", "Backup failed"))}>Create Backup</button><button className="danger" disabled={Boolean(busyAction) || !rows.length} onClick={() => run(async () => {
+      <div className="panel-title"><h2>Backups</h2><div className="action-row"><button disabled={Boolean(busyAction)} onClick={() => run(refresh)}>Refresh Backups</button><button disabled={Boolean(busyAction)} onClick={() => run(() => runBackupTask("create", backupsApi.create, "Backup Created Successfully", "Backup failed"))}>Create Backup</button><button className="danger" disabled={Boolean(busyAction) || !selectedBackups.size} onClick={() => run(async () => {
+        const names = [...selectedBackups];
+        if (!(await confirmAction(`Delete ${names.length} selected backup${names.length === 1 ? "" : "s"}? This cannot be undone.`))) return;
+        const final = await runBackupTask("deleteSelected", () => backupsApi.deleteSelected(names), "Selected Backups Deleted", "Backup Delete Failed");
+        if (final?.status === "succeeded") setSelectedBackups(new Set());
+      })}>Delete Selected ({selectedBackups.size})</button><button className="danger" disabled={Boolean(busyAction) || !rows.length} onClick={() => run(async () => {
         if (!(await confirmAction("Delete all backup files? This cannot be undone."))) return;
         await runBackupTask("deleteAll", backupsApi.deleteAll, "Backup Deleted", "Backup Delete Failed");
       })}>Delete All Backups</button></div></div>
       {backupRestoreTask ? <BackupResultCard result={backupRestoreTaskResult(backupRestoreTask)} /> : backupResult && <BackupResultCard result={backupResult} />}
-      {rows.length ? <DataTable rows={rows} columns={["backupName", "battlegroupId", "created", "size", "type", "source"]} action={(row) => <div className="service-actions">
+      {rows.length ? <DataTable rows={rows} columns={["backupName", "battlegroupId", "created", "size", "type", "source"]} secondaryActionPosition="start" secondaryActionClassName="backup-select-column" secondaryActionLabel={<label className="backup-select-checkbox" title="Select all backups"><input type="checkbox" aria-label="Select all backups" disabled={Boolean(busyAction)} checked={allSelected} onChange={(event) => setSelectedBackups(event.target.checked ? new Set(backupNames) : new Set())} /><span className="sr-only">Select All</span></label>} secondaryAction={(row) => {
+        const name = String(row.name || row.backupName || "");
+        return <label className="backup-select-checkbox"><input type="checkbox" aria-label={`Select backup ${name}`} disabled={Boolean(busyAction)} checked={selectedBackups.has(name)} onChange={(event) => toggleBackup(name, event.target.checked)} onClick={(event) => event.stopPropagation()} /><span className="sr-only">Select</span></label>;
+      }} action={(row) => <div className="service-actions">
         <button className="icon-action restore-action" title="Restore" aria-label="Restore backup" disabled={Boolean(busyAction)} onClick={(event) => { event.stopPropagation(); run(async () => {
           const backup = String(row.backupName || row.name || "Selected backup");
           const backupBattlegroupId = String(row.battlegroupId || "Unknown");
@@ -435,6 +456,7 @@ function friendlyBackupType(name: string, line: string) {
   if (/market[-_ ]?bot/i.test(name) || /market[-_ ]?bot/i.test(line)) return "Market Bot Backup";
   if (/auto|scheduled/i.test(name) || /auto|scheduled/i.test(line)) return "Automatic Backup";
   if (/restore[-_ ]?safety|land[-_ ]?claim[-_ ]?editor/i.test(name) || /restore[-_ ]?safety|land[-_ ]?claim[-_ ]?editor/i.test(line)) return "Restore Safety Backup";
+  if (/vehicle[-_ ]?delete/i.test(name) || /vehicle[-_ ]?delete/i.test(line)) return "Vehicle Delete Safety Backup";
   if (/pre[-_ ]?update/i.test(name) || /pre[-_ ]?update/i.test(line)) return "Pre-update Backup";
   if (/destructive[-_ ]?sql|sql[-_ ]?safety|base[-_ ]?delete|admin[-_ ]?tools|addon-/i.test(name) || /destructive[-_ ]?sql|sql[-_ ]?safety|base[-_ ]?delete|admin[-_ ]?tools|addon-/i.test(line)) return "SQL Safety Backup";
   if (/import/i.test(name) || /import/i.test(line)) return "Imported Backup";

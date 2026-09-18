@@ -7,7 +7,6 @@ vi.mock("../../api/bases", () => ({
   basesApi: {
     permissions: vi.fn(),
     setPermissions: vi.fn(),
-    resetChildAccess: vi.fn(),
     transferToSystemCustodian: vi.fn(),
     permissionCandidates: vi.fn()
   }
@@ -304,6 +303,41 @@ describe("BasePermissionsTab system custodian", () => {
     expect(document.querySelector(".bases-permissions-owner-card")).toContainElement(reason);
     expect(screen.getByRole("button", { name: "Transfer to Custodian" })).toBeDisabled();
   });
+
+  it("removes the custodian from the roster, rather than demoting it, when another player is promoted to Owner", async () => {
+    mockRoster(
+      [entry("900000201", "Server", 1), entry("29", "Yaida", 3)],
+      { available: true, playerId: "900000201", name: "Server" }
+    );
+    renderTab();
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Owner for Yaida" }));
+
+    await waitFor(() => expect(ownerName()).toHaveTextContent("Yaida"));
+    expect(screen.queryByText("Server")).not.toBeInTheDocument();
+    expect(screen.getByText("Shared with · 0")).toBeInTheDocument();
+  });
+
+  it("removes the custodian from the roster, rather than demoting it, when a new player is added directly as Owner", async () => {
+    mockRoster(
+      [entry("900000201", "Server", 1), entry("29", "Yaida", 3)],
+      { available: true, playerId: "900000201", name: "Server" }
+    );
+    vi.mocked(basesApi.permissionCandidates).mockResolvedValue({
+      rows: [{ playerId: "32", name: "Chani" }]
+    } as never);
+    renderTab();
+
+    await screen.findByText("Yaida", { selector: ".bases-permissions-name" });
+    fireEvent.change(screen.getByLabelText("Add as"), { target: { value: "1" } });
+    fireEvent.change(screen.getByPlaceholderText("Search a player to add"), { target: { value: "Chani" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add Chani" }));
+
+    await waitFor(() => expect(ownerName()).toHaveTextContent("Chani"));
+    expect(screen.queryByText("Server")).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Associate for Yaida" })).toBeChecked();
+  });
 });
 
 describe("BasePermissionsTab entry warnings", () => {
@@ -364,34 +398,5 @@ describe("BasePermissionsTab load states", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("Shared with · 2")).toBeInTheDocument();
     expect(basesApi.permissions).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe("BasePermissionsTab child access", () => {
-  it("shows unusual doors and resets only the selected objects after confirmation", async () => {
-    vi.mocked(basesApi.permissions).mockResolvedValue({
-      supported: true,
-      baseId: 1006,
-      actorId: "1004",
-      map: "HaggaBasin",
-      mapNameId: 1,
-      entries: DEFAULT_ROSTER,
-      childAccess: {
-        supported: true,
-        inspected: 12,
-        baselined: 8,
-        anomalies: [{ actorId: "44186", name: "Desert Mechanic Prudence Door", kind: "Door", currentAccess: 5, expectedAccess: 3, basis: "Door Standard", unusual: true }]
-      }
-    } as never);
-    vi.mocked(basesApi.resetChildAccess).mockResolvedValue({ supported: true, result: { ok: true, baseId: 1006, reset: 1, message: "Access reset." } } as never);
-    const props = renderTab();
-
-    expect(await screen.findByText("Desert Mechanic Prudence Door")).toBeInTheDocument();
-    expect(screen.getByText(/Access 5/)).toHaveTextContent("Access 5 → Standard 3");
-    fireEvent.click(screen.getByRole("checkbox"));
-    fireEvent.click(screen.getByRole("button", { name: "Reset Selected" }));
-
-    await waitFor(() => expect(props.confirmAction).toHaveBeenCalled());
-    await waitFor(() => expect(basesApi.resetChildAccess).toHaveBeenCalledWith("1006", ["44186"]));
   });
 });

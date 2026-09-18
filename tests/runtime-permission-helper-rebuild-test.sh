@@ -62,4 +62,14 @@ if grep -q '^build ' "$FAKE_DOCKER_LOG"; then
   exit 1
 fi
 
+python3 - "$repo_root/runtime/scripts/config.sh" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+repair = source.index("runtime/scripts/repair-host-runtime-permissions.sh", source.index("server-settings)"))
+save = source.index('save_server_mode "$new_mode" "$detected_ip"', source.index("server-settings)"))
+assert repair < save, "server settings must repair UserSettings ownership before saving and restarting"
+PY
+
 echo "runtime permission helper rebuild tests passed"

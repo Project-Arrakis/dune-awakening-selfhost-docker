@@ -2,7 +2,7 @@
 
 **Status:** Current | **Last Updated:** August 2026
 
-Complete reference for all HTTP API endpoints in the Dune Docker Console. All endpoints require authentication (session cookie + CSRF token) unless otherwise noted.
+Complete reference for all HTTP API endpoints in the Dune Docker Console. All endpoints require authentication unless otherwise noted — either a browser session (session cookie + CSRF token) or a scoped API key sent as `Authorization: Bearer <key>`. See [api-keys.md](api-keys.md) for how key scopes are granted and what they can never reach.
 
 **Format:** HTTP Method | Route | Description | Parameters
 
@@ -27,6 +27,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 - [Addons](#addons)
 - [Logs & Monitoring](#logs--monitoring)
 - [Settings & Public Directory](#settings--public-directory)
+- [API Keys](#api-keys)
 - [Discord Adapter (Experimental)](#discord-adapter-experimental)
 - [Implementation Details](#implementation-details)
 
@@ -131,6 +132,7 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | GET | `/api/backups/{backup}/download` | Download backup archive | `backup` (string) |
 | DELETE | `/api/backups/{backup}` | Delete backup | `backup` (string) |
 | POST | `/api/backups/delete-all` | Delete all backups | None |
+| POST | `/api/backups/delete-selected` | Delete a chosen subset of backups | `backups` (array of filenames) |
 | POST | `/api/backups/import-external` | Import external backup | multipart form: `backup`, `metadata` |
 | GET | `/api/backups/auto` | Get auto-backup status | None |
 | POST | `/api/backups/auto` | Save auto-backup config | `enabled`, `time`, `retentionDays`, `intervalHours` |
@@ -282,6 +284,10 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 | POST | `/api/bases/{baseId}/system-custodian` | Transfer ownership to the Server or detected GM system custodian while preserving the roster; provisions Server when no custodian exists | `baseId` |
 | PUT | `/api/bases/{baseId}/permissions` | Replace a base's permission roster | `baseId`, `entries[]` (`playerId`, `rank`) |
 | GET | `/api/bases/permission-candidates` | Search players eligible to be added to a roster | `q?`, `limit?` |
+| GET | `/api/bases/{baseId}/child-access` | Every child piece (door, device) on a base plus its own root totem (`is_child=false`), each with its access level — a different 5-tier scale from the roster rank above; Sub-Fief is Associate (3) | `baseId` |
+| POST | `/api/bases/{baseId}/child-access` | Set specific pieces to specific access levels (1-5); queued for the next map restart instead if the base's map is live (`result.queued`). Requires `{ updates: [{ actorId, accessLevel }], confirmation: "SET CHILD ACCESS" }` | `baseId`, `updates[]` |
+| GET | `/api/bases/pending-child-access` | List queued permission changes, grouped by restart target. Each entry carries its own `updates[]` payload | None |
+| DELETE | `/api/bases/{baseId}/queued-child-access` | Discard a base's queued permission changes | `baseId` |
 | DELETE | `/api/bases/{baseId}` | Permanently delete a base and everything on it (queued instead if the map isn't safely writable right now); takes a full-database safety backup first. Requires `{ confirmation: "DELETE BASE" }` | `baseId` |
 | GET | `/api/bases/pending-deletes` | List queued base deletes, grouped by restart target | None |
 | DELETE | `/api/bases/{baseId}/queued-delete` | Cancel a base's queued delete | `baseId` |
@@ -315,6 +321,15 @@ delete route is unavailable when `baseDelete` is false; without `baseDeleteQueue
 a delete against a live map is written straight away rather than queued, matching
 the refill routes' behavior on a schema without `world_partition`. See
 [Base deletion](base-deletion.md).
+
+`GET /api/bases` also reports `capabilities.baseChildAccessQueue` (child access
+plus `dune.world_partition`). Without it a child-access write against a live map
+is applied straight away rather than queued, matching how the refill and delete
+queues degrade on an older schema. Unlike those queues this one is not about an
+autosave race — the write would stick — but a running map never applies an
+access level change, so queuing keeps the console from showing a level the game
+does not enforce. See
+[base-child-permissions.md](base-child-permissions.md).
 
 `PUT` takes the whole roster rather than a delta — the server diffs it against
 current state and applies only the difference. `rank` is `1` Owner, `2` Co-Owner,
@@ -381,24 +396,46 @@ tab can offer a retry only where retrying could actually help.
 |--------|-------|-------------|------------|
 | GET | `/api/vehicles` | List all player vehicles (paginated), each with owner, shared-with roster, lowest-component condition %, fuel %, map/partition, coordinates, and per-component durability | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?` |
 | GET | `/api/players/{playerId}/vehicles` | List the selected player's owned and shared vehicles using the same vehicle details | `playerId` |
-| GET | `/api/vehicles/{vehicleId}/permissions` | Get a vehicle's permission roster (Owner, Co-Owners, Associates) | `vehicleId` |
+| GET | `/api/vehicles/{vehicleId}/permissions` | Get a vehicle's permission roster (Owner, Co-Owners, Associates) plus the detected system custodian | `vehicleId` |
 | PUT | `/api/vehicles/{vehicleId}/permissions` | Replace a vehicle's permission roster | `vehicleId`, `entries[]` (`playerId`, `rank`) |
+| POST | `/api/vehicles/{vehicleId}/system-custodian` | Transfer ownership to the Server or detected GM system custodian while preserving the roster; provisions Server when no custodian exists | `vehicleId` |
 | GET | `/api/vehicles/permission-candidates` | Search players eligible to be added to a vehicle roster | `q?`, `limit?` |
+| GET | `/api/vehicles/{vehicleId}/storage` | Read a vehicle's cargo hold slot by slot (read-only): capacity, per-slot item, quantity, grade, durability and augments | `vehicleId` |
+| DELETE | `/api/vehicles/{vehicleId}/storage/items/{itemId}` | Delete one stack from a vehicle's cargo hold, or part of it with `count`. Requires `{ confirmation: "DELETE ITEM" }` | `vehicleId`, `itemId`, `count?` |
+| DELETE | `/api/vehicles/{vehicleId}/storage/items` | Delete a chosen set of whole stacks (max 200). Requires `{ confirmation: "DELETE ITEMS" }` | `vehicleId`, `itemIds[]` |
+| DELETE | `/api/vehicles/{vehicleId}/storage/all-items` | Empty a vehicle's cargo hold. Requires `{ confirmation: "DELETE ALL ITEMS" }` | `vehicleId` |
+| DELETE | `/api/vehicles/{vehicleId}` | Permanently delete a vehicle and everything on it (queued instead if the map isn't safely writable right now); takes a full-database safety backup first. Requires `{ confirmation: "DELETE VEHICLE" }` | `vehicleId` |
+| GET | `/api/vehicles/pending-deletes` | List queued vehicle deletes, grouped by restart target | None |
+| DELETE | `/api/vehicles/{vehicleId}/queued-delete` | Cancel a vehicle's queued delete | `vehicleId` |
 
-`GET /api/vehicles` and the player-scoped list are read-only; the three
-permission routes above are the only vehicle mutations, and they share their
-implementation with the base permission routes -- see
-[vehicle-permissions.md](vehicle-permissions.md). Unlike bases, there is no
-vehicle transfer/system-custodian route by design.
+`GET /api/vehicles` and the player-scoped list are read-only; the permission
+routes share their implementation with the base permission routes -- see
+[vehicle-permissions.md](vehicle-permissions.md). The system-custodian route
+mirrors the base one exactly, minus the backed-up guard, since a vehicle has
+no picked-up state. The delete route mirrors `DELETE /api/bases/{baseId}` --
+see [vehicle-deletion.md](vehicle-deletion.md). The storage routes read and
+delete the vehicle's single cargo hold -- reached through
+`dune.inventories.actor_id`, not `vehicle_module_id`, which is empty in
+production. Deletion needs no stopped map but refuses while the vehicle is in
+`Travel`/`VehicleBackup`/`VehicleRecovery`, and is gated on `vehicles:delete-item`
+/ `vehicles:bulk-delete-items` rather than `vehicles:mutate` -- see
+[vehicle-storage.md](vehicle-storage.md).
 
 `GET /api/vehicles` reports `capabilities.vehicles`; it is false (with a
 `reason`) when the schema lacks the required tables (`vehicles`, `vehicle_modules`,
 `actors`, `permission_actor`, `permission_actor_rank`, `player_state`,
 `actor_fgl_entities`, `fgl_entities`). It also reports
-`capabilities.vehiclePermissions` (the schema additionally has `dune.map_names`
+`capabilities.vehicleStorage` (the schema additionally has `dune.inventories`
+and `dune.items`, which is what gates the Components tab's View Contents
+button), and `capabilities.vehiclePermissions` (the schema additionally has `dune.map_names`
 and the game's `permission_set_player_rank` / `permission_remove_player_rank`
 procedures) -- the permission routes and the Permissions tab are unavailable
-when it is false. Sortable `sortColumn` values: `id`, `name`,
+when it is false. `capabilities.vehicleDelete` similarly gates the Delete
+Vehicle action (`dune.vehicles`/`vehicle_modules`/`actors` plus
+`permission_actor_destroy`/`delete_actors`), and `capabilities.vehicleDeleteQueue`
+additionally requires `dune.world_partition` -- without it, deletes are
+always immediate rather than queued when the map is live. See
+[vehicle-deletion.md](vehicle-deletion.md). Sortable `sortColumn` values: `id`, `name`,
 `type`, `owner`, `condition_percent`, `fuel_percent`, `map`; `q` matches vehicle
 name, type, owner, map, and exact id. Response fields mirror the paginated-list
 convention (`rows`, `totalCount`, unfiltered `totalVehicles`). Owner resolves from
@@ -809,6 +846,30 @@ Layers legend's default-settings mechanism.
 | POST | `/api/settings/discord-bot/oauth-config` | Configure the hosted-bot connection's own, independent Discord Application (Client ID + Redirect URI) -- deliberately separate from Settings -> Discord OAuth's console-sign-in credentials; neither requires the other. Restart the console for changes to take effect. | `clientId?` (Discord snowflake), `redirectUri?` (URL) |
 | POST | `/api/settings/discord-bot/oauth-secret` | Save the hosted-bot connection's Discord Application client secret. File-only, written to its own secrets file, never echoed back. | `secret` (at least 20 characters) |
 | POST | `/api/settings/discord-bot/choice` | Persist the hosted/self-hosted deployment choice immediately, ahead of role config or enabling the adapter. Does not restart the console -- nothing about the live adapter's runtime behavior depends on this value. | `deploymentChoice` (`"hosted"` or `"self-hosted"`) |
+
+---
+
+## API Keys
+
+Named, revocable bearer credentials for calling this API from outside the browser. Full feature documentation: [api-keys.md](api-keys.md).
+
+| Method | Route | Description | Parameters |
+|--------|-------|-------------|------------|
+| GET | `/api/settings/api-keys` | List API keys, without any secret or hash | None |
+| GET | `/api/settings/api-keys/catalog` | List the namespaces a key can be scoped to, and whether each supports writes | None |
+| POST | `/api/settings/api-keys` | Create a key. Returns the full key once, in `secret` | `name`, `scopes?` (map of namespace to `"read"` \| `"write"`), `expiresAt?` (ISO date or null), `rateLimitPerMinute?` (1-10000, default 60) |
+| PUT | `/api/settings/api-keys/{id}` | Update a key. `scopes` replaces wholesale | `id`, `name?`, `scopes?`, `enabled?`, `expiresAt?`, `rateLimitPerMinute?` |
+| DELETE | `/api/settings/api-keys/{id}` | Revoke a key permanently | `id` |
+
+These five routes map to `settings:read` and `settings:write`, and the `settings` namespace is permanently denied to API keys — so a key can never list, create, or revoke keys, including itself. Key management is a browser-session operation only.
+
+`POST` returns `{ key, secret }`. `secret` is the only time the full key exists outside the server; only its SHA-256 hash is stored, so a lost key must be revoked and replaced rather than recovered.
+
+A key omitting `scopes` is created with no access at all. Unrecognised namespaces, unrecognised levels, and the permanently denied `settings`, `database` and `setup` namespaces are dropped rather than coerced — nothing falls back to `"read"`. A `"write"` level on `updates` or `addons`, whose writes are denied to keys, is stored as `"read"`.
+
+Invalid input to the create and update routes — a blank or over-long name, or an expiry that is not a future date string — returns `400` with the reason.
+
+Requests authenticated by a key return `401` when the credential is invalid, disabled or expired, `403` when the key's scopes do not cover the route's action, and `429` with a `retry-after` header when the key exceeds its per-minute limit. A request carrying no `Authorization` header is unaffected and uses the browser session as before.
 
 ---
 

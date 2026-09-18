@@ -622,6 +622,30 @@ test("a survival restart flushes queued map writes between the stop and start st
   assert.deepEqual(callLog, ["stop-service survival", "flush:restartServiceStop", "restart survival"]);
 });
 
+test("a battlegroup restart stops game maps and flushes queued writes before PostgreSQL is removed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-full-restart-flush-"));
+  const duneScript = join(dir, "dune");
+  const callLogPath = join(dir, "calls.log");
+  writeFileSync(callLogPath, "");
+  writeFileSync(duneScript, `#!/usr/bin/env bash\necho "$*" >> "${callLogPath}"\n`, { mode: 0o700 });
+  chmodSync(duneScript, 0o700);
+
+  const manager = new TaskManager(
+    { duneScript, repoRoot: dir, taskRetention: 20, commandTimeoutMs: 5000 },
+    { onMapDown: async (operation) => { appendFileSync(callLogPath, `flush:${operation}\n`); return { flushed: [] }; } }
+  );
+
+  const created = manager.create("server", "restartAll", {});
+  const task = await waitForTask(manager, created.id);
+  assert.equal(task.status, "succeeded", task.errorMessage);
+  assert.deepEqual(readFileSync(callLogPath, "utf8").trim().split("\n"), [
+    "stop-game-servers-for-db-writes",
+    "flush:stopGameServersForDbWrites",
+    "stop",
+    "start"
+  ]);
+});
+
 test("a Sietch restart flushes queued map writes between the stop and start steps, not after both", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-task-flush-order-sietch-"));
   const duneScript = join(dir, "dune");
@@ -651,7 +675,9 @@ test("map-down refill results distinguish generator, water, and queue-specific f
       onMapDown: async () => ({
         flushed: [
           { ok: true, refillType: "generator" },
-          { ok: true, refillType: "water" }
+          { ok: true, refillType: "water" },
+          { ok: true, refillType: "generator", noLongerApplicable: true },
+          { ok: true, refillType: "water", noLongerApplicable: true }
         ],
         failures: [{ refillType: "water", error: "database unavailable" }]
       })
@@ -665,6 +691,8 @@ test("map-down refill results distinguish generator, water, and queue-specific f
   assert.deepEqual(lines, [
     "Applied 1 queued generator refill.",
     "Applied 1 queued water refill.",
+    "Cleared 1 obsolete generator refill; the base or its generators no longer exist.",
+    "Cleared 1 obsolete water refill; the base or its water storage no longer exists.",
     "Queued water refills were not applied: database unavailable"
   ]);
 });

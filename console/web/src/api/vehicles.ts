@@ -1,4 +1,4 @@
-import { api } from "./client";
+import { api, post } from "./client";
 
 export type VehicleModule = {
   templateId: string;
@@ -9,6 +9,104 @@ export type VehicleModule = {
   maxCondition: number | string | null;
   conditionPercent: number | null;
   maxInferred?: boolean | null;
+  // Server-flagged (isVehicleStorageModule) rather than matched here, so the
+  // template-id pattern lives next to the query that reads the hold.
+  isStorage?: boolean;
+};
+
+// One stack in a vehicle's cargo hold. Same shape as bases.ts's
+// BaseInventorySlot -- deliberately, so the two contents overlays render
+// identically -- plus `image`, which the vehicle route resolves itself
+// because there is no vehicle equivalent of the base inventory rollup the
+// bases tab harvests icons from.
+export type VehicleStorageSlot = {
+  itemId: string;
+  templateId: string;
+  name: string;
+  image: string;
+  positionIndex: number | null;
+  quantity: number;
+  qualityLevel: number;
+  currentDurability: number | null;
+  maxDurability: number | null;
+  augments: { templateId: string; name: string; qualityLevel: number }[];
+};
+
+// Whether the console will let cargo be deleted right now, and why not. The
+// authoritative refusal happens inside the delete transaction; this rides on
+// the read so the overlay can disable and explain before the click.
+//
+// `state` is the blocking dune.actor_state (Travel / VehicleBackup /
+// VehicleRecovery) when there is one. `known: false` means the state could not
+// be verified at all -- which withholds the control rather than assuming the
+// vehicle is idle.
+export type VehicleStorageDeleteSafety = {
+  safe: boolean;
+  known: boolean;
+  state: string;
+  reason: string;
+};
+
+// A vehicle has exactly one cargo hold (dune.inventories.actor_id =
+// vehicle id, inventory_type = 0), so this is flat where BaseContainerSlots
+// carries an inventories[] array.
+export type VehicleStorage = {
+  supported: boolean;
+  found?: boolean;
+  reason?: string;
+  vehicleId: string;
+  inventoryId?: string;
+  maxSlots?: number;
+  usedSlots?: number;
+  maxVolume?: number;
+  currentVolume?: number;
+  // False when at least one item's per-unit volume is unknown, so the
+  // reported total is a lower bound -- rendered with a leading "≥".
+  volumeComplete?: boolean;
+  slots: VehicleStorageSlot[];
+  deleteSafety?: VehicleStorageDeleteSafety;
+};
+
+// What was actually destroyed. The grade and durability fields are declared
+// here deliberately -- bases.ts's bulk equivalent under-declares them even
+// though the server sends them, and that is not worth copying.
+export type VehicleStorageRemovedItem = {
+  itemId: string;
+  templateId: string;
+  count: number;
+  positionIndex: number | null;
+  qualityLevel: number;
+  currentDurability: number | null;
+  maxDurability: number | null;
+};
+
+export type VehicleStorageDeleteResult = {
+  supported: boolean;
+  error?: string;
+  reason?: string;
+  result?: {
+    ok: boolean;
+    vehicleId: string;
+    inventoryId: string;
+    partial: boolean;
+    // `remaining` is what the stack still holds after a partial removal, and 0
+    // for a whole-slot delete.
+    removed: VehicleStorageRemovedItem & { remaining: number };
+    message: string;
+  };
+};
+
+export type VehicleStorageBulkDeleteResult = {
+  supported: boolean;
+  error?: string;
+  reason?: string;
+  result?: {
+    ok: boolean;
+    vehicleId: string;
+    inventoryId: string;
+    removed: VehicleStorageRemovedItem[];
+    message: string;
+  };
 };
 
 export type VehicleSharedEntry = { name: string; rank: number; label: string };
@@ -42,8 +140,28 @@ export type VehiclesListResponse = {
   rows: VehicleRow[];
   totalCount: number;
   totalVehicles: number;
-  capabilities: { vehicles?: boolean; vehiclePermissions?: boolean } & Record<string, unknown>;
+  capabilities: { vehicles?: boolean; vehiclePermissions?: boolean; vehicleDelete?: boolean; vehicleDeleteQueue?: boolean; vehicleStorage?: boolean } & Record<string, unknown>;
   reason?: string;
+};
+
+export type QueuedVehicleDelete = {
+  vehicleId: number;
+  map: string;
+  partitionId: number;
+  queuedAt: string;
+  attempts: number;
+  lastError: string;
+};
+
+// Own type rather than reusing bases.ts's PendingRefills -- that one is keyed
+// on baseId, and per-resource duplication is this codebase's convention (see
+// the vehicle delete queue's own comment in duneDb.js for the same reasoning
+// applied server-side).
+export type PendingVehicleDeletes = {
+  supported: boolean;
+  total: number;
+  pending: QueuedVehicleDelete[];
+  byTarget: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; count: number }[];
 };
 
 // rank 1/2/3 = Owner/Co-Owner/Associate, same semantics as base permissions --
@@ -75,6 +193,13 @@ export type VehiclePermissions = {
   // behaviour that existed before the flag rather than a new lockout.
   claimed?: boolean;
   unclaimedReason?: string;
+  systemCustodian?: {
+    available: boolean;
+    canCreate?: boolean;
+    playerId?: string;
+    name?: string;
+    reason?: string;
+  };
   entries: VehiclePermissionEntry[];
   reason?: string;
 };
@@ -107,6 +232,27 @@ export const vehiclesApi = {
   forPlayer: (playerId: string) => api<VehiclesListResponse>(`/api/players/${encodeURIComponent(playerId)}/vehicles`),
   permissions: (vehicleId: string) =>
     api<VehiclePermissions>(`/api/vehicles/${encodeURIComponent(vehicleId)}/permissions`),
+  // Fetched when the contents overlay opens rather than folded into the list
+  // response -- slots would roughly triple a payload that already loads a
+  // whole page of vehicles. Same reasoning as basesApi.containerSlots.
+  storage: (vehicleId: string) =>
+    api<VehicleStorage>(`/api/vehicles/${encodeURIComponent(vehicleId)}/storage`),
+  // Destroys one stack, or part of one. `count` is OMITTED entirely for a
+  // whole-slot delete rather than sent as null/undefined -- the server treats
+  // an absent count as "the whole slot" and a present one as an exact request
+  // it will refuse to widen.
+  deleteStorageItem: (vehicleId: string, itemId: string, confirmation: string, count?: number) =>
+    api<VehicleStorageDeleteResult>(
+      `/api/vehicles/${encodeURIComponent(vehicleId)}/storage/items/${encodeURIComponent(itemId)}`,
+      { method: "DELETE", body: JSON.stringify(count === undefined ? { confirmation } : { confirmation, count }) }),
+  deleteStorageItems: (vehicleId: string, itemIds: string[], confirmation: string) =>
+    api<VehicleStorageBulkDeleteResult>(
+      `/api/vehicles/${encodeURIComponent(vehicleId)}/storage/items`,
+      { method: "DELETE", body: JSON.stringify({ confirmation, itemIds }) }),
+  deleteAllStorageItems: (vehicleId: string, confirmation: string) =>
+    api<VehicleStorageBulkDeleteResult>(
+      `/api/vehicles/${encodeURIComponent(vehicleId)}/storage/all-items`,
+      { method: "DELETE", body: JSON.stringify({ confirmation }) }),
   // A whole roster, not a delta: the server diffs it against current state and
   // applies the difference through the game's own stored procedures in one
   // transaction. Changes reach a running map immediately -- no restart.
@@ -120,5 +266,32 @@ export const vehiclesApi = {
     search.set("limit", String(limit));
     return api<{ supported: boolean; rows: VehiclePermissionCandidate[]; reason?: string }>(
       `/api/vehicles/permission-candidates?${search.toString()}`);
-  }
+  },
+  transferToSystemCustodian: (vehicleId: string) =>
+    post<{ supported: boolean; result?: SetVehiclePermissionsResult; reason?: string }>(
+      `/api/vehicles/${encodeURIComponent(vehicleId)}/system-custodian`, {}),
+  // Permanently deletes the vehicle and everything on it. Like Delete Base, a
+  // delete for a map that is currently running comes back as `result.queued`:
+  // it is deferred to the next time that map is down, and a full database
+  // backup happens automatically, immediately before the delete actually
+  // runs -- never before, never skipped.
+  deleteVehicle: (vehicleId: string) =>
+    api<{
+      supported: boolean;
+      backupCreated: boolean;
+      result?: {
+        ok: boolean;
+        vehicleId: number;
+        queued?: boolean;
+        map?: string;
+        partitionId?: number;
+        actorId?: string;
+        deletedModuleCount?: number;
+      };
+      reason?: string;
+    }>(`/api/vehicles/${encodeURIComponent(vehicleId)}`, { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE VEHICLE" }) }),
+  cancelQueuedDelete: (vehicleId: string) =>
+    api<{ supported: boolean; result?: { ok: boolean; vehicleId: number; pending: number }; reason?: string }>(
+      `/api/vehicles/${encodeURIComponent(vehicleId)}/queued-delete`, { method: "DELETE" }),
+  pendingDeletes: () => api<PendingVehicleDeletes>("/api/vehicles/pending-deletes")
 };

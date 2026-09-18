@@ -313,6 +313,7 @@ export function loadConfig() {
     discordBotHandoffUrl: (process.env.DISCORD_BOT_HANDOFF_URL || "").replace(/\/+$/, ""),
     generatedDir,
     secretsDir,
+    apiKeysFile: resolve(secretsDir, "api-keys.json"),
     auditLog: resolve(generatedDir, "web-admin-audit.jsonl"),
     // Tier 3 password + mandatory TOTP (RFC docs/rfc-console-auth.md §2.3/§4).
     // Gated OFF by default during incremental rollout: the backend enrollment/

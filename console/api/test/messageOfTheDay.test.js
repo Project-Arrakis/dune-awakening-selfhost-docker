@@ -57,6 +57,7 @@ test("message of the day validates booleans and message text", () => {
 test("message of the day renders the recipient name without changing unknown text", () => {
   assert.equal(renderMessageOfTheDay("Welcome, {playerName}!", "JaneDoe"), "Welcome, JaneDoe!");
   assert.equal(renderMessageOfTheDay("Welcome to {serverName}", "JaneDoe"), "Welcome to {serverName}");
+  assert.equal(renderMessageOfTheDay("", "JaneDoe"), "");
 });
 
 test("message of the day saves and restores persisted settings", () => {

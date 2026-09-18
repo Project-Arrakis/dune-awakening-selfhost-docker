@@ -82,8 +82,17 @@ assert "docker rm -f dune-server-gateway dune-director" in restart
 assert "DUNE_START_KEEP_INFRA=1" in restart
 assert "DUNE_CORIOLIS_GRACE_SECONDS" in (root / "runtime/scripts/coriolis-coordinator.sh").read_text()
 assert "dune-postgres dune-rmq-admin dune-rmq-game dune-text-router" in start
+assert "runtime/scripts/start-coriolis-coordinator.sh" in start
 assert "dune-coriolis-coordinator" in stop
 assert "start-coriolis-coordinator.sh" in self_update
+assert "reconcile_coriolis_coordinator_after_deploy" in self_update
+assert "reconcile_coriolis_coordinator_after_deploy\n  self_update_running restarting 94" in self_update
+assert "--if-stack-running" in self_update
+assert "dune-orchestrator|dune-autoscaler|dune-director" in (root / "runtime/scripts/start-coriolis-coordinator.sh").read_text()
+assert "start-coriolis-coordinator.sh" in (root / "runtime/scripts/console.sh").read_text()
+entrypoint = (root / "console/api/entrypoint.sh").read_text()
+assert "start-coriolis-coordinator.sh --if-stack-running" in entrypoint
+assert '"dune-coriolis-coordinator": "Coriolis Coordinator"' in (root / "console/web/src/components/ReadinessTimeline.tsx").read_text()
 assert "docker rm -f dune-postgres" not in restart
 assert "docker rm -f dune-rmq" not in restart
 assert "docker rm -f dune-text-router" not in restart

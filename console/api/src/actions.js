@@ -112,6 +112,7 @@ export const ROUTE_ACTIONS = {
   "POST /api/backups/restore":                 "backups:restore",
   "POST /api/backups/auto":                    "backups:write-config",
   "POST /api/backups/delete-all":              "backups:delete",
+  "POST /api/backups/delete-selected":         "backups:delete",
   "POST /api/backups/import-external":         "backups:import",
 
   // --- Database ---
@@ -129,7 +130,13 @@ export const ROUTE_ACTIONS = {
   "POST /api/updates/check-game":              "updates:check",
   "POST /api/updates/apply-game":              "updates:apply",
   "POST /api/updates/fix-steamcmd":            "updates:fix",
-  "POST /api/updates/check-stack":             "updates:check",
+  // Its own action, deliberately NOT updates:check. updates:check is in
+  // EXTRA_READ_ACTIONS so a monitoring key can ask "is a game update
+  // available" -- that route is absorbed by updateCheckCache. This one runs
+  // selfUpdateCheck, which has no cache, so every call spawns a real
+  // subprocess. Classifying it as a write keeps it out of reach of a
+  // read-scoped key (and `updates` is write-denied to keys entirely).
+  "POST /api/updates/check-stack":             "updates:self-check",
   "POST /api/updates/apply-stack":             "updates:apply",
   "GET /api/updates/qa/status":                "updates:read",
   "POST /api/updates/qa/login":                "updates:apply",
@@ -151,6 +158,9 @@ export const ROUTE_ACTIONS = {
   "POST /api/settings/iam/policy/test":        "settings:read",
   // --- Auth (2FA), settings-namespaced so `Deny settings:*` keeps them owner-only ---
   "POST /api/auth/2fa/recovery-codes/regenerate": "settings:regenerate-recovery-codes",
+  "GET /api/settings/api-keys":                "settings:read",
+  "GET /api/settings/api-keys/catalog":        "settings:read",
+  "POST /api/settings/api-keys":               "settings:write",
   "POST /api/settings/public-directory":       "settings:write",
   "POST /api/settings/public-directory/claim": "settings:write",
   // --- Discord Bot Adapter Settings ---
@@ -246,6 +256,7 @@ export const ROUTE_ACTIONS = {
   // --- Vehicles ---
   "GET /api/vehicles":                         "vehicles:read",
   "GET /api/vehicles/permission-candidates":   "vehicles:read",
+  "GET /api/vehicles/pending-deletes":         "vehicles:read",
 
   // --- Exchange (Market Board) — read-only board + console-local filter config ---
   "GET /api/exchange/items":                   "exchange:read",
@@ -289,6 +300,7 @@ export const ROUTE_ACTIONS = {
   "GET /api/bases/auto-refill-water":          "bases:read",
   "GET /api/bases/permission-candidates":      "bases:read",
   "GET /api/bases/pending-deletes":            "bases:read",
+  "GET /api/bases/pending-child-access":       "bases:read",
 
   // --- Storage (read) ---
   "GET /api/storage":                          "storage:read",
@@ -468,6 +480,15 @@ export const REGEX_ACTIONS = [
 // has different actions depending on HTTP method.
 
 export const REGEX_ACTIONS_BY_METHOD = {
+  // PUT/DELETE /api/settings/api-keys/{id} -- update and revoke. There is
+  // no "/api/settings/" fallback anywhere in REGEX_ACTIONS, so without
+  // these two lines both routes resolve to null and fail closed for every
+  // tier. Kept as prefix rules rather than regexes because
+  // rbacParity.test.js extracts path.startsWith() dispatches but not
+  // path.match() ones, so this form stays visible to the parity gate.
+  "PUT /api/settings/api-keys/":    "settings:write",
+  "DELETE /api/settings/api-keys/": "settings:write",
+
   "POST /api/players/":    "players:mutate",
   "DELETE /api/players/":  "players:mutate",
   "PATCH /api/players/":   "players:mutate",
@@ -567,7 +588,49 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // combobox despite being out of scope for this feature.
   { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/give-item$/, action: "bases:give-item" },
   { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/give-items$/, action: "bases:give-item" },
-  { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/fill-item$/, action: "bases:fill-item" }
+  { method: "POST", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/fill-item$/, action: "bases:fill-item" },
+  // POST /api/vehicles/{vehicleId}/system-custodian — transfer to the reserved
+  // Server/GM custodian. Unlike bases (which has a blanket "POST /api/bases/"
+  // -> bases:mutate prefix rule that already covers its own system-custodian
+  // route), REGEX_ACTIONS_BY_METHOD has no "POST /api/vehicles/" entry, so
+  // without this line the route would fall through the method-aware tier
+  // entirely and resolve via the method-agnostic REGEX_ACTIONS fallback
+  // ("/api/vehicles/" -> vehicles:read) -- silently authorizing an ownership
+  // transfer under a read-only grant. Named narrowly, rather than adding a
+  // broad "POST /api/vehicles/" prefix rule, so any future POST vehicle route
+  // still fails closed until it is deliberately added here.
+  { method: "POST", pattern: /^\/api\/vehicles\/[^/]+\/system-custodian$/, action: "vehicles:mutate" },
+  // DELETE /api/vehicles/{vehicleId} — the actual, irreversible vehicle
+  // delete. Same reasoning as bases:delete above: every other vehicle
+  // mutation (roster save, custodian transfer, refuel, repair) is
+  // reversible; this is not, so it gets its own action rather than folding
+  // into vehicles:mutate.
+  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+$/, action: "vehicles:delete" },
+  // DELETE /api/vehicles/{vehicleId}/queued-delete — cancelling a queued
+  // delete, which is reversible, so it stays in vehicles:mutate like every
+  // other vehicle mutation. Needs its own explicit pattern for the same
+  // reason the system-custodian POST above does: REGEX_ACTIONS_BY_METHOD has
+  // no "DELETE /api/vehicles/" prefix rule for it to fall through to, so
+  // without this line it would resolve via the method-agnostic
+  // "/api/vehicles/" -> vehicles:read fallback instead.
+  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/queued-delete$/, action: "vehicles:mutate" },
+  // Vehicle cargo deletion. Carved out of vehicles:mutate for the same reason
+  // the base container deletes are carved out of bases:mutate: the vehicle
+  // panel shipped without any way to destroy items, so an operator whose
+  // hand-authored policy grants vehicles:mutate (roster edits, refuel, repair)
+  // cannot have agreed to item destruction -- folding this in would silently
+  // widen every existing narrow policy. Default tiers are unaffected: owner
+  // ("*") and admin ("vehicles:*") still match, moderator/player/observer hold
+  // only vehicles:read.
+  //
+  // The bulk action is "vehicles:bulk-delete-items", NOT "vehicles:delete-items"
+  // (issue #351's lesson, mirrored from bases): policy.js's `-*` wildcard means
+  // a pattern written as "vehicles:delete-item*" to grant single-item delete
+  // would silently also grant bulk. The two names share no prefix a wildcard
+  // can bridge.
+  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/storage\/items\/[^/]+$/, action: "vehicles:delete-item" },
+  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/storage\/items$/, action: "vehicles:bulk-delete-items" },
+  { method: "DELETE", pattern: /^\/api\/vehicles\/[^/]+\/storage\/all-items$/, action: "vehicles:bulk-delete-items" }
 ];
 
 // ---- Action resolution ----
