@@ -101,7 +101,7 @@ export function collectPlayerPortalContext(config, directorySnapshot = {}) {
 const CLIENT_INI_MAX_BYTES = 64 * 1024;
 const CLIENT_INI_FORBIDDEN = /(?:password|secret|token|privatekey|Bgd\.ServerDisplayName|\bPort\s*=|\bIGWPort\s*=)/i;
 const CLIENT_GAME_INI_INSTALL_PATH = "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\Windows";
-const CLIENT_ENGINE_INI_INSTALL_PATH = "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\WindowsClient";
+const CLIENT_ENGINE_INI_INSTALL_PATH = "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\Windows";
 
 function playerSafeClientIni(content) {
   const text = String(content || "").replace(/\r\n?/g, "\n");

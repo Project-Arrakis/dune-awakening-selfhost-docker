@@ -484,6 +484,13 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
 
 
 class ClientGameIniAllowlistTests(ProfilePathTestCase):
+    def test_engine_export_targets_retail_windows_config(self):
+        profile = usersettings.empty_profile()
+        rendered = usersettings.client_engine_ini(profile)
+
+        self.assertIn("Saved/Config/Windows/Engine.ini", rendered)
+        self.assertNotIn("Saved/Config/WindowsClient/Engine.ini", rendered)
+
     def test_exports_only_nondefault_client_required_fields(self):
         profile = usersettings.parse_profile_text(
             "[Global:/Script/DuneSandbox.DuneGameMode]\n"

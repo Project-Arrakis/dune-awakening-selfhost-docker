@@ -5228,13 +5228,21 @@ export async function supportsVehicleDeleteQueue(db, { vehicleDelete } = {}) {
 // refuses to delete through: a vehicle mid-overmap-transit, or stashed
 // pending recovery. Transcribed, not invented -- an admin delete should
 // honor the same exclusions the game's own cleanup already does. Gated on
-// the table existing at all so an older schema without dune.actor_state
-// simply skips the guard instead of breaking.
+// Patch 1.5 folded dune.actor_state into dune.actors.state. Keep the legacy
+// table fallback for installations that have not migrated yet, and skip the
+// guard only when neither schema exposes lifecycle state.
 const VEHICLE_DELETE_BLOCKED_STATES = new Set(["Travel", "VehicleBackup", "VehicleRecovery"]);
 
 async function vehicleBlockedDeleteState(db, actorId) {
-  if (!(await tableExists(db, "actor_state"))) return "";
-  const result = await db.query("select state::text as state from dune.actor_state where actor_id = $1::bigint", [actorId]);
+  const actorColumns = await columnsFor(db, "actors");
+  let result;
+  if (actorColumns.has("state")) {
+    result = await db.query("select state::text as state from dune.actors where id = $1::bigint", [actorId]);
+  } else if (await tableExists(db, "actor_state")) {
+    result = await db.query("select state::text as state from dune.actor_state where actor_id = $1::bigint", [actorId]);
+  } else {
+    return "";
+  }
   const state = String(result.rows[0]?.state || "");
   return VEHICLE_DELETE_BLOCKED_STATES.has(state) ? state : "";
 }
@@ -7813,14 +7821,16 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
     }
   }
 
-  // actor_state is absent from some older schemas, so keep it optional. When
-  // present it is the authoritative explanation for vehicle rows that are not
-  // currently deployed in a world partition (Travel / VehicleBackup /
-  // VehicleRecovery). Without this, the UI used to invent "Partition 0" for
-  // a NULL partition and make Funcom's stored recovery records look spawned.
-  const vehicleLifecycleStateSql = await tableExists(db, "actor_state")
-    ? `coalesce((select ast.state::text from dune.actor_state ast where ast.actor_id=v.id limit 1), 'Default')`
-    : `'Default'::text`;
+  // Patch 1.5 stores lifecycle state directly on actors. Preserve the legacy
+  // actor_state-table adapter so the same Console build remains upgrade-safe.
+  // This state explains undeployed Travel / Backup / Recovery rows without
+  // inventing a partition for them.
+  const actorColumns = await columnsFor(db, "actors");
+  const vehicleLifecycleStateSql = actorColumns.has("state")
+    ? `coalesce(a.state::text, 'Default')`
+    : await tableExists(db, "actor_state")
+      ? `coalesce((select ast.state::text from dune.actor_state ast where ast.actor_id=v.id limit 1), 'Default')`
+      : `'Default'::text`;
 
   const safePageSize = intParam(pageSize, "pageSize", 1, 200);
   const safePage = intParam(page, "page", 0);
