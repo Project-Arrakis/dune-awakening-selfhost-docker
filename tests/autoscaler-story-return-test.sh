@@ -44,6 +44,21 @@ assert 'replay_hagga_travel_handoff "$flow_id" "$destination_name" "$source_serv
 assert "for source_map in SH_Arrakeen" not in scan
 
 assert 'Travel_To_HaggaBasin_*|Travel_To_Hagga_Basin_*' in text
+
+rejected_start = text.index("scan_rejected_story_returns()")
+rejected_end = text.index("scan_idle_servers()", rejected_start)
+rejected = text[rejected_start:rejected_end]
+assert "Teleport not allowed" in rejected
+assert "CB_Story_(?:DestroyedZanovar|OrbitalMonitor)" in rejected
+assert "target_fs.ready = true" in rejected
+assert "target_fs.alive = true" in rejected
+assert "ps.server_id = source_wp.server_id" in rejected
+assert "with moved as (" in rejected
+assert "update dune.encrypted_player_state" in rejected
+assert "delete from dune.travel_return_info" in rejected
+assert '[ "$moved_account_id" = "$account_id" ] || continue' in rejected
+main_loop = text.rindex("while true; do")
+assert text.index("scan_rejected_story_returns", main_loop) < text.index("scan_named_destination_failures", main_loop)
 PY
 
 source_functions="$(python3 - "$script" <<'PY'
@@ -98,5 +113,46 @@ replay_hagga_travel_handoff AABBCCDDEEFF00112233445566778899 Travel_To_HaggaBasi
 test "$(grep -c '^PUBLISHED|story-server-32|' <<<"$replay_output")" -eq 2
 test "$(grep -cF '"MapName":"HaggaBasin"' <<<"$replay_output")" -eq 1
 test "$(grep -cF '"Map":"HaggaBasin"' <<<"$replay_output")" -eq 1
+
+rejected_function="$(python3 - "$script" <<'PY'
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = text.index("scan_rejected_story_returns()")
+end = text.index("scan_idle_servers()", start)
+print(text[start:end])
+PY
+)"
+
+rejected_log="$(mktemp)"
+rejected_sql="$(mktemp)"
+rejected_seen="$(mktemp)"
+trap 'rm -f "$replay_log" "$rejected_log" "$rejected_sql" "$rejected_seen"' EXIT
+cat >"$rejected_log" <<'LOG'
+2026-09-18T10:39:04Z [10:39:04 9 INF Main] Handling LoginRequest request in LoginRequest { RequestID = 0335A8724B8F8F5B0DB6908CCE7CEFCC, Player = Player { Id = 745EF36C1E46811A, TargetDimension = 1 }, IsCancellation = False, PasswordOrToken =  }. Looking for player partition
+2026-09-18T10:39:04Z [10:39:04 9 INF Main] Player 745EF36C1E46811A requested WorldPartition { PartitionId = 31, ServerId = targetServer31, Map = Survival_1, PartitionDefinition = {"box": {}}, DimensionIndex = 1, Blocked = False, Label = Alraab }. Teleport not allowed, returning to WorldPartition { PartitionId = 133, ServerId = sourceServer133, Map = CB_Story_OrbitalMonitor, PartitionDefinition = {"box": {}}, DimensionIndex = 0, Blocked = False, Label = OrbitalMonitor_0 }, setting return dimension to 1.
+LOG
+
+rejected_output="$(REJECTED_LOG="$rejected_log" REJECTED_SQL="$rejected_sql" REJECTED_SEEN="$rejected_seen" bash -c "$rejected_function
+docker() { cat \"\$REJECTED_LOG\"; }
+hub_travel_seen() { grep -qx \"\$1\" \"\$REJECTED_SEEN\"; }
+remember_hub_travel() { printf '%s\\n' \"\$1\" >> \"\$REJECTED_SEEN\"; }
+psql_value() {
+  case \"\$1\" in
+    *'select a.id'*) printf '42\\n' ;;
+    *) printf '%s\\n' \"\$1\" >> \"\$REJECTED_SQL\"; printf '42\\n' ;;
+  esac
+}
+NAMED_DESTINATION_SINCE=10m
+scan_rejected_story_returns
+scan_rejected_story_returns")"
+
+test "$(grep -c '^STORY-RETURN account=42 request=0335A8724B8F8F5B0DB6908CCE7CEFCC ' <<<"$rejected_output")" -eq 1
+grep -Fq "server_id = 'targetServer31'" "$rejected_sql"
+grep -Fq "server_id = 'sourceServer133'" "$rejected_sql"
+grep -Fq 'previous_server_partition_id = 31' "$rejected_sql"
+grep -Fq 'return_dimension_index = 1' "$rejected_sql"
+grep -Fq 'delete from dune.travel_return_info' "$rejected_sql"
 
 echo "autoscaler recovers Hagga Basin returns from every running new-story instance"
