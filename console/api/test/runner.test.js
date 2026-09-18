@@ -207,6 +207,9 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("userSettingsGlobalValues"), ["usersettings", "global-values"]);
   assert.deepEqual(buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), ["usersettings", "map-values", "Survival_1"]);
   assert.deepEqual(buildDuneArgs("userSettingsPartitionValues", { map: "Survival_1", partitionId: 1 }), ["usersettings", "partition-values", "Survival_1", "1"]);
+  assert.deepEqual(buildDuneArgs("userSettingsServerCustomValues", { scope: "serverCustomGlobal", map: "Survival_1" }), ["usersettings", "server-custom-values", "global", "Survival_1", ""]);
+  assert.deepEqual(buildDuneArgs("userSettingsServerCustomValues", { scope: "serverCustomPartition", map: "Survival_1", partitionId: 1 }), ["usersettings", "server-custom-values", "partition", "Survival_1", "1"]);
+  assert.deepEqual(buildDuneArgs("userSettingsSave", { scope: "serverCustomMap", map: "Overmap", values: { gathering_amount: "2.0" } }).slice(0, 5), ["usersettings", "bulk-save", "serverCustomMap", "Overmap", ""]);
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "global" }), ["usersettings", "reset-global-game"]);
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "mapEngine", map: "Survival_1" }), ["usersettings", "reset-map-engine", "Survival_1"]);
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "partitionEngine", map: "Survival_1", partitionId: 3 }), ["usersettings", "reset-partition-engine", "Survival_1", "3"]);
