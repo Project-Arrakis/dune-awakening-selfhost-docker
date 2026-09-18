@@ -52,7 +52,8 @@ assert "Teleport not allowed" in rejected
 assert "CB_Story_(?:DestroyedZanovar|OrbitalMonitor)" in rejected
 assert "target_fs.ready = true" in rejected
 assert "target_fs.alive = true" in rejected
-assert "ps.server_id in ('$source_server', '$target_server')" in rejected
+assert "ServerId = ([A-Za-z0-9_+\\-/]*)" in rejected
+assert "ps.previous_server_partition_id = $source_partition" in rejected
 assert "join dune.world_partition source_wp" not in rejected
 assert "with moved as (" in rejected
 assert "update dune.encrypted_player_state" in rejected
@@ -62,12 +63,14 @@ assert "select player_controller_id\n          from moved" in rejected
 assert "from dune.actors\n          where owner_account_id" not in rejected
 assert "(select count(*) from cleared_return)" in rejected
 assert '[ "$moved_account_id" = "$account_id" ] || continue' in rejected
+assert "remember_story_return_hold" in rejected
 alignment = text[text.index("scan_live_player_partition_alignment()"):text.index("scan_travel_demand()", text.index("scan_live_player_partition_alignment()"))]
 assert "wp.map in ('CB_Story_DestroyedZanovar', 'CB_Story_OrbitalMonitor')" in alignment
 assert "return_wp.partition_id = ps.previous_server_partition_id" in alignment
 assert "coalesce(return_wp.dimension_index, 0) = ps.return_dimension_index" in alignment
 assert "return_fs.ready = true" in alignment and "return_fs.alive = true" in alignment
 main_loop = text.rindex("while true; do")
+assert text.index("maintain_story_return_holds", main_loop) < text.index("scan_rejected_story_returns", main_loop)
 assert text.index("scan_rejected_story_returns", main_loop) < text.index("scan_named_destination_failures", main_loop)
 PY
 
@@ -141,13 +144,14 @@ rejected_seen="$(mktemp)"
 trap 'rm -f "$replay_log" "$rejected_log" "$rejected_sql" "$rejected_seen"' EXIT
 cat >"$rejected_log" <<'LOG'
 2026-09-18T10:39:04Z [10:39:04 9 INF Main] Handling LoginRequest request in LoginRequest { RequestID = 0335A8724B8F8F5B0DB6908CCE7CEFCC, Player = Player { Id = 745EF36C1E46811A, TargetDimension = 1 }, IsCancellation = False, PasswordOrToken =  }. Looking for player partition
-2026-09-18T10:39:04Z [10:39:04 9 INF Main] Player 745EF36C1E46811A requested WorldPartition { PartitionId = 31, ServerId = targetServer31, Map = Survival_1, PartitionDefinition = {"box": {}}, DimensionIndex = 1, Blocked = False, Label = Alraab }. Teleport not allowed, returning to WorldPartition { PartitionId = 133, ServerId = sourceServer133, Map = CB_Story_OrbitalMonitor, PartitionDefinition = {"box": {}}, DimensionIndex = 0, Blocked = False, Label = OrbitalMonitor_0 }, setting return dimension to 1.
+2026-09-18T10:39:04Z [10:39:04 9 INF Main] Player 745EF36C1E46811A requested WorldPartition { PartitionId = 31, ServerId = targetServer31, Map = Survival_1, PartitionDefinition = {"box": {}}, DimensionIndex = 1, Blocked = False, Label = Alraab }. Teleport not allowed, returning to WorldPartition { PartitionId = 133, ServerId = , Map = CB_Story_OrbitalMonitor, PartitionDefinition = {"box": {}}, DimensionIndex = 0, Blocked = False, Label = OrbitalMonitor_0 }, setting return dimension to 1.
 LOG
 
 rejected_output="$(REJECTED_LOG="$rejected_log" REJECTED_SQL="$rejected_sql" REJECTED_SEEN="$rejected_seen" bash -c "$rejected_function
 docker() { cat \"\$REJECTED_LOG\"; }
 hub_travel_seen() { grep -qx \"\$1\" \"\$REJECTED_SEEN\"; }
 remember_hub_travel() { printf '%s\\n' \"\$1\" >> \"\$REJECTED_SEEN\"; }
+remember_story_return_hold() { :; }
 psql_value() {
   printf '%s\\n' \"\$1\" >> \"\$REJECTED_SQL\"
   case \"\$1\" in
@@ -156,14 +160,15 @@ psql_value() {
   esac
 }
 NAMED_DESTINATION_SINCE=10m
+STORY_RETURN_HOLD_SECONDS=300
 scan_rejected_story_returns
 scan_rejected_story_returns")"
 
 test "$(grep -c '^STORY-RETURN account=42 request=0335A8724B8F8F5B0DB6908CCE7CEFCC ' <<<"$rejected_output")" -eq 1
 grep -Fq 'cleared_return_rows=1' <<< "$rejected_output"
 grep -Fq "server_id = 'targetServer31'" "$rejected_sql"
-grep -Fq "ps.server_id in ('sourceServer133', 'targetServer31')" "$rejected_sql"
-grep -Fq "server_id in ('sourceServer133', 'targetServer31')" "$rejected_sql"
+grep -Fq "ps.server_id = 'targetServer31' or ps.previous_server_partition_id = 133" "$rejected_sql"
+grep -Fq "eps.server_id = 'targetServer31' or eps.previous_server_partition_id = 133" "$rejected_sql"
 if grep -Fq 'join dune.world_partition source_wp' "$rejected_sql"; then
   echo "story return recovery must not depend on the transient source partition row" >&2
   exit 1
@@ -195,6 +200,7 @@ for old, new in (
     ("$target_partition", "31"),
     ("$target_dimension", "1"),
     ("$account_id", "42"),
+    ("$encrypted_source_predicate", "eps.server_id = 'source-story' or eps.previous_server_partition_id = 133"),
 ):
     query = query.replace(old, new)
 query = query.replace("select distinct account_id, (select count(*) from cleared_return) from moved;", "select 'moved=' || account_id || '|cleared=' || (select count(*) from cleared_return) from moved;")
@@ -243,5 +249,69 @@ PY
     exit 1
   fi
 fi
+
+hold_functions="$(python3 - "$script" <<'PY'
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = text.index("remember_story_return_hold()")
+end = text.index("deepdesert_travel_seen()", start)
+print(text[start:end])
+PY
+)"
+
+completion_function="$(python3 - "$script" <<'PY'
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = text.index("story_return_completed()")
+end = text.index("maintain_story_return_holds()", start)
+print(text[start:end])
+PY
+)"
+completion_log="$(mktemp)"
+printf '%s\n' 'TravelCompletion { FlsId = 745EF36C1E46811A, MapName = Survival_1, PartitionId = 31, ServerID = targetServer31 }' > "$completion_log"
+COMPLETION_LOG="$completion_log" bash -c "$completion_function
+docker() { cat \"\$COMPLETION_LOG\"; }
+NAMED_DESTINATION_SINCE=10m
+story_return_completed 745EF36C1E46811A 31 targetServer31 Survival_1 1789740700"
+if COMPLETION_LOG="$completion_log" bash -c "$completion_function
+docker() { cat \"\$COMPLETION_LOG\"; }
+NAMED_DESTINATION_SINCE=10m
+story_return_completed 745EF36C1E46811A 99 targetServer31 Survival_1 1789740700"; then
+  echo "story return completion must match the exact target partition" >&2
+  exit 1
+fi
+
+hold_file="$(mktemp)"
+trap 'rm -f "$replay_log" "$rejected_log" "$rejected_sql" "$rejected_seen" "$hold_file" "$completion_log"' EXIT
+printf '42\t745EF36C1E46811A\t31\ttargetServer31\tSurvival_1\t1\t133\tstoryServer133\tCB_Story_OrbitalMonitor\t1789740700\t4102444800\n' > "$hold_file"
+hold_output="$(STORY_RETURN_HOLD_FILE="$hold_file" bash -c "$hold_functions
+story_return_completed() { return 1; }
+psql_value() {
+  case \"\$1\" in
+    *'with eligible as ('*) printf '42|storyServer133|1\\n' ;;
+    *) printf 'storyServer133\\n' ;;
+  esac
+}
+NAMED_DESTINATION_SINCE=10m
+maintain_story_return_holds")"
+grep -Fq 'STORY-RETURN-HOLD account=42 action=reassert' <<< "$hold_output"
+grep -q '^42' "$hold_file"
+
+unrelated_output="$(STORY_RETURN_HOLD_FILE="$hold_file" bash -c "$hold_functions
+story_return_completed() { return 1; }
+psql_value() {
+  case \"\$1\" in
+    *'with eligible as ('*) return 0 ;;
+    *) printf 'unrelatedServer\\n' ;;
+  esac
+}
+NAMED_DESTINATION_SINCE=10m
+maintain_story_return_holds")"
+grep -Fq 'STORY-RETURN-HOLD account=42 action=cancelled reason=unrelated-travel' <<< "$unrelated_output"
+test ! -s "$hold_file"
 
 echo "autoscaler recovers Hagga Basin returns from every running new-story instance"
