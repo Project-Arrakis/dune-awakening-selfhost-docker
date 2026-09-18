@@ -100,7 +100,9 @@ function resolveImportInstance(inst) {
 }
 
 function resolveImportPlaceable(pl) {
-  const transform = `{${pl.x},${pl.y},${pl.z},${pl.rx ?? 0},${pl.ry ?? 0},${pl.rz ?? 0}}`;
+  // Solido JSON uses ordinary 3D axes (rx=pitch, ry=yaw, rz=roll), while
+  // Patch 1.5 persists placeables as X, Y, Z, Yaw, Pitch, Roll.
+  const transform = `{${pl.x},${pl.y},${pl.z},${pl.ry ?? 0},${pl.rx ?? 0},${pl.rz ?? 0}}`;
   return { transform };
 }
 
@@ -385,8 +387,8 @@ export async function exportBlueprint(db, blueprintId) {
       x: t[0] || 0,
       y: t[1] || 0,
       z: t[2] || 0,
-      rx: t[3] || 0,
-      ry: t[4] || 0,
+      rx: t[4] || 0,
+      ry: t[3] || 0,
       rz: t[5] || 0
     };
   });

@@ -15,6 +15,8 @@ test("blueprint array-bound repair is wired after successful database migration"
   assert.match(patchSql, /blueprint[.]player_id IS NOT NULL/);
   assert.match(patchSql, /array_lower\(child[.]transform, 1\) = 0/);
   assert.match(patchSql, /array_lower\(child[.]scale, 1\) = 0/);
+  assert.match(patchSql, /blueprint-placeable-yaw-first-v1/);
+  assert.match(patchSql, /dune_runtime[.]compatibility_migrations/);
 });
 
 test("real PostgreSQL: blueprint repair restores only Console imports and preserves values", async (t) => {
@@ -81,6 +83,17 @@ test("real PostgreSQL: blueprint repair restores only Console imports and preser
       { id: 2, lower_bound: 1, first: 70, last: 120 },
       { id: 3, lower_bound: 0, first: 130, last: 180 },
       { id: 4, lower_bound: 1, first: 190, last: 240 }
+    ]);
+
+    const placeableAxes = await pool.query(`
+      select id, transform::text as transform
+      from dune.building_blueprint_placeables order by id
+    `);
+    assert.deepEqual(placeableAxes.rows, [
+      { id: 1, transform: "{10,20,30,50,40,60}" },
+      { id: 2, transform: "{70,80,90,110,100,120}" },
+      { id: 3, transform: "[0:5]={130,140,150,160,170,180}" },
+      { id: 4, transform: "{190,200,210,220,230,240}" }
     ]);
 
     const shields = await pool.query(`
