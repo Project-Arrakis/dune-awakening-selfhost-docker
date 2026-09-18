@@ -7002,6 +7002,7 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 .link-prompt-card .btn:hover {
   border-color: var(--accent-color, #d4a853);
   color: var(--text-color, #ccc);
+}
 /* --- API Keys (Settings) --------------------------------------------------
    Generic segmented control, same visual spec as .bases-rank-segments. That
    one is left alone deliberately: it is load-bearing for base and vehicle
