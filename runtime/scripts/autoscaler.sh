@@ -2085,6 +2085,8 @@ PY
 scan_rejected_story_returns() {
   local director_log_file rejected_rows
 
+  director_heal_due rejected_story_returns "$NAMED_DESTINATION_SCAN_SECONDS" || return 0
+
   director_log_file="$(mktemp)"
   docker logs --timestamps --since "$NAMED_DESTINATION_SINCE" dune-director > "$director_log_file" 2>&1 || true
   rejected_rows="$(LOG_FILE="$director_log_file" python3 - <<'PY'
