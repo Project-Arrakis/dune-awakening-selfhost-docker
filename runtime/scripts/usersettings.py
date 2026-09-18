@@ -389,8 +389,8 @@ FIELD_LABELS = {
 }
 
 # Maps a field id to the client-side ini filename it also must be applied to
-# (players copy Game.ini into Saved/Config/Windows/ and Engine.ini into
-# Saved/Config/WindowsClient/). Both client INI generators use this as an
+# (players copy Game.ini and Engine.ini into Saved/Config/Windows/). Both
+# client INI generators use this as an
 # explicit allowlist: server-only and unknown Advanced-editor values must never
 # be offered to players.
 CLIENT_FILE_REQUIRED = {
@@ -2533,7 +2533,7 @@ def client_engine_ini(profile: dict, map_name: str = "", partition_id: str | Non
     return render_ini_sections(section_lines, [
         "; Engine.ini for the Dune: Awakening client.",
         f"; Client-required settings generated from Docker UserEngine.ini values for {target_label}.",
-        "; Merge these sections into Saved/Config/WindowsClient/Engine.ini while the game is closed.",
+        "; Merge these sections into Saved/Config/Windows/Engine.ini while the game is closed.",
         "; Only settings changed from the default and known to require client configuration are listed.",
         "; Remove keys from an earlier generated copy when they are no longer listed here.",
     ])

@@ -744,64 +744,6 @@ forget_deepdesert_travel() {
   mv "$tmp" "$DEEPDESERT_TRAVEL_FILE"
 }
 
-prepare_deepdesert_travel_actors() {
-  local player_id="$1" target_partition="$2"
-  local player_sql partition_sql prepared
-
-  [ -n "$player_id" ] || return 0
-  [ -n "$target_partition" ] || return 0
-  printf '%s' "$target_partition" | grep -Eq '^[0-9]+$' || return 0
-
-  player_sql="${player_id//\'/\'\'}"
-  partition_sql="$target_partition"
-
-  prepared="$(psql_value "
-    with matched_player as (
-      select ps.player_pawn_id
-      from dune.player_state ps
-      left join dune.accounts ac on ac.id = ps.account_id
-      left join dune.encrypted_accounts ea on ea.id = ps.account_id
-      where ps.character_state::text = 'Active'
-        and (
-          ac.\"user\" = '${player_sql}'
-          or ac.funcom_id = '${player_sql}'
-          or convert_from(ea.encrypted_funcom_id, 'UTF8') = '${player_sql}'
-          or coalesce(ea.\"user\"::text, '') = '${player_sql}'
-        )
-      order by ps.online_status::text = 'Online' desc, ps.last_login_time desc nulls last
-      limit 1
-    ),
-    linked_vehicle as (
-      select mp.player_pawn_id, op.vehicle_id
-      from matched_player mp
-      join dune.overmap_players op on op.player_id = mp.player_pawn_id
-      join dune.actors vehicle_actor on vehicle_actor.id = op.vehicle_id
-      join dune.vehicles v on v.id = op.vehicle_id
-      where vehicle_actor.map = 'DeepDesert'
-        and vehicle_actor.partition_id = ${partition_sql}
-        and vehicle_actor.transform is not null
-      limit 1
-    ),
-    actor_ids as (
-      select player_pawn_id as actor_id from linked_vehicle
-      union
-      select vehicle_id as actor_id from linked_vehicle
-    ),
-    inserted as (
-      insert into dune.actor_state(actor_id, state)
-      select actor_id, 'Travel'::dune.actorstate
-      from actor_ids
-      on conflict (actor_id) do nothing
-      returning actor_id
-    )
-    select count(*) from inserted;
-  " 2>/dev/null | tr -d '\r[:space:]' || true)"
-
-  if [ -n "$prepared" ] && [ "$prepared" != "0" ]; then
-    echo "DEEPDESERT-ACTORS-PREPARED player=${player_id:0:4}... partition=$target_partition actor_state_rows=$prepared"
-  fi
-}
-
 deepdesert_target_json() {
   local target_partition="${1:-}"
   DUNE_DEEPDESERT_TARGET_PARTITION="$target_partition" python3 - <<'PY'
@@ -1268,12 +1210,6 @@ PY
 import json
 from pathlib import Path
 print(json.dumps(json.loads(Path("/tmp/deepdesert-progress.json").read_text())["grant"], separators=(",", ":"), ensure_ascii=False))
-PY
-)"
-      prepare_deepdesert_travel_actors "$player_id" "$(TARGET_JSON="$target_json" python3 - <<'PY'
-import json
-import os
-print(json.loads(os.environ["TARGET_JSON"])["partition_id"])
 PY
 )"
       publish_rmq_json "heartbeats" "$origin_server_id" "$grant_json" "travel-grant-dd-${flow_id}" || true
