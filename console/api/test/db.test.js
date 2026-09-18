@@ -124,6 +124,7 @@ import {
   playerCheaterTracking,
   playerCraftingRecipes,
   playerCurrency,
+  playerCustomizationGrantState,
   playerFactions,
   playerIntel,
   playerInventory,
@@ -141,6 +142,7 @@ import {
   playerServerMemberships,
   playerSolarisCoinTotal,
   playerSpecs,
+  playerTeleportDestinations,
   playerVitals,
   portalGeneratorFuel,
   portalStorage,
@@ -184,6 +186,7 @@ import {
   tableExists,
   tablePreview,
   teleportOfflinePlayerToCoords,
+  teleportPlayer,
   trackPlayerPlaytime,
   unlinkAdditionalAccount,
   unlockCraftingRecipe,
@@ -2951,6 +2954,49 @@ test("list bases returns rows with piece and placeable counts and a total count"
     // no dune.world_partition -- the guarded branch, not a missing value.
     { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: 8, partitionMap: "", dimensionIndex: 0, x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126, shared_with: [{ name: "Ally Two", rank: 2, label: "Co-Owner" }], generatorDataAvailable: true, generatorCount: 0, fuelCells: 0, generatorRuntimeSeconds: 0, generatorUptimeMultiplier: 1, generatorUptimeEventLabel: "", generatorUptimeEventEndsAt: "", generatorUnstockedCount: 0, generatorAllUnstocked: false, generators: [] }
   ]);
+});
+
+test("list bases scopes player results to owned and shared permission actors", async () => {
+  const calls = [];
+  const scopedTables = new Set([
+    ...BASE_REQUIRED_TABLES,
+    "dune.permission_actor",
+    "dune.permission_actor_rank",
+    "dune.player_state"
+  ]);
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: scopedTables.has(String(values[0] || "")) }] };
+      if (text.includes("ps.player_controller_id") && text.includes("a.class ilike '%PlayerCharacter%'")) {
+        return { rows: [{ actor_id: 42, account_id: 600, controller_id: 777, player_state_id: 800, online_status: "Offline" }] };
+      }
+      if (text.includes("total_bases")) {
+        return { rows: [{ total_bases: "2", total_owned: "1", total_shared: "1", total_pieces: "20", total_placeables: "8" }] };
+      }
+      if (text.includes("from paged p")) {
+        return { rows: [{
+          base_id: "4102", name: "Shared Workshop", base_type: "Sub-Fief", owner_name: "Stilgar",
+          viewer_rank: 3, map: "HaggaBasin", partition_id: "1", x: "10", y: "20", z: "30",
+          total_count: "2", piece_count: "10", placeable_count: "4", shared_with: [{ name: "Chani", rank: 3 }]
+        }] };
+      }
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: false }] };
+      return { rows: [] };
+    }
+  };
+
+  const result = await listBases(db, { playerId: "42", pageSize: 5000, includeGenerators: false });
+
+  assert.equal(result.totalBases, 2);
+  assert.equal(result.totalOwned, 1);
+  assert.equal(result.totalShared, 1);
+  assert.equal(result.rows[0].relationship, "Associate");
+  const paged = calls.find((call) => call.text.includes("from paged p"));
+  const totals = calls.find((call) => call.text.includes("total_bases"));
+  assert.match(paged.text, /viewer_par\.permission_actor_id = a\.id and viewer_par\.player_id = \$1/);
+  assert.deepEqual(paged.values.slice(0, 1), [777]);
+  assert.deepEqual(totals.values, [777]);
 });
 
 test("list bases resolves each base's partition to its map instance", async () => {
@@ -7652,6 +7698,18 @@ test("building unlock state reads owned progression and pending patent tokens wi
   assert.equal(calls.some((call) => /^\s*(update|insert|delete)\b/i.test(call.text)), false);
 });
 
+test("customization grant state reports pending tokens without pretending consumed ownership is available", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    pendingBuildingUnlockRows: [{ template_id: "B1C3_Atre_Maula_Pistol" }]
+  });
+  const result = await playerCustomizationGrantState(db, 123);
+  assert.equal(result.capabilities.customizationOwnership, false);
+  assert.equal(result.capabilities.customizationPending, true);
+  assert.deepEqual(result.pending, ["B1C3_Atre_Maula_Pistol"]);
+  assert.equal(calls.some((call) => /^\s*(update|insert|delete)\b/i.test(call.text)), false);
+});
+
 test("research unlock updates TechKnowledge and materializes verified recipe", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
@@ -8123,6 +8181,31 @@ test("offline teleport moves existing players through the supported function", a
   const moveCall = calls.find((call) => call.text.includes("select dune.admin_move_offline_player_to_partition"));
   assert.equal(result.supported, true);
   assert.deepEqual(moveCall.values, ["FLS_OK", 8, 1.5, 2.5, 3.5]);
+});
+
+test("player live teleport refuses an offline source", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("from dune.actors a") && text.includes("player_state ps")) return { rows: [{ actor_id: 42, account_id: 7, controller_id: 8, player_state_id: 9, online_status: "Offline" }] };
+      if (text.includes("from dune.accounts ac")) return { rows: [{ fls_id: "FLS42", character_name: "Offline Player", map: "HaggaBasin", partition_id: 1 }] };
+      throw new Error(`unexpected query: ${text}`);
+    }
+  };
+  await assert.rejects(() => teleportPlayer(db, 42, { mode: "coordinates", x: 1, y: 2, z: 3 }), /must be online/i);
+});
+
+test("player live teleport builds a command with the actual FLS id", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("from dune.actors a") && text.includes("player_state ps")) return { rows: [{ actor_id: 42, account_id: 7, controller_id: 8, player_state_id: 9, online_status: "Online" }] };
+      if (text.includes("from dune.accounts ac")) return { rows: [{ fls_id: "FLS42", character_name: "Online Player", map: "HaggaBasin", partition_id: 4 }] };
+      throw new Error(`unexpected query: ${text}`);
+    }
+  };
+  const result = await teleportPlayer(db, 42, { mode: "coordinates", x: 11.5, y: -22.5, z: 33.5 });
+  assert.equal(result.playerId, "FLS42");
+  assert.deepEqual([result.x, result.y, result.z, result.yaw], [11.5, -22.5, 33.5, 0]);
+  assert.match(result.message, /will be teleported/i);
 });
 
 function fakeMutationDb(calls, fixtures = {}) {

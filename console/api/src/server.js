@@ -15,7 +15,7 @@ import { createDb, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
-import { buildingUnlockStatus, isBuildingUnlockItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
+import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
@@ -76,6 +76,8 @@ import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLi
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
 import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
 import { validateDiscordRoleIds, readDiscordBotSettingsState, applyDiscordBotEnableRequest, discordAdminRoleIdsChanged, updateDiscordBotRoleIds, regenerateDiscordBotToken, persistHostedBotConnectedGuild, disableDiscordBotAdapter, setDeploymentChoice } from "./integrations/discord/adapterSettings.js";
+import { createScheduledMapMessageScheduler } from "./services/scheduledMapMessages.js";
+import { createQaUpdates } from "./services/qaUpdates.js";
 
 const config = loadConfig();
 // #141: ADMIN_AUTH_DISABLED bypasses both password auth (auth.js requireAuth)
@@ -244,6 +246,7 @@ async function requireFreshTier3Proof(req, res, body, { auditUrl, action, actor 
   return { ok: true, rateKey };
 }
 
+const qaUpdates = createQaUpdates(config);
 const loginRateLimiter = createLoginRateLimiter();
 // Separate bucket for re-proving the Tier 3 credential from an ALREADY
 // AUTHENTICATED session (password rotation, recovery-code regeneration).
@@ -370,6 +373,16 @@ const playerBanEnforcer = createPlayerBanEnforcer({
   duneDb,
   failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
 });
+const scheduledMapMessages = createScheduledMapMessageScheduler(config, {
+  deliver: (schedule) => deliverScheduledMapMessage(schedule),
+  onResult: ({ schedule, manual, ok, skipped, error, result }) => {
+    const target = `${schedule.mapName}.${schedule.dimension}`;
+    const command = manual ? "scheduled-map-chat-now" : "scheduled-map-chat";
+    const outcome = ok ? "published" : skipped ? "skipped" : "failed";
+    audit(config, null, "admin.map-chat-schedule-delivery", { id: schedule.id, target, manual, ok, skipped: Boolean(skipped), recipients: result?.recipients || 0, error: error ? redact(String(error?.message || "Unexpected error.")) : "" });
+    recordAdminHistory(config, { command, target, friendly: schedule.name || "Scheduled Map Message", path: "rmq:chat.map", result: outcome, message: schedule.message });
+  }
+});
 
 process.on("unhandledRejection", (error) => {
   console.error(`Unhandled background rejection: ${redact(error?.message || "Unexpected error.")}`);
@@ -483,6 +496,7 @@ setInterval(() => {
   runBackgroundTick("Message of the Day", messageOfTheDayAutoTick);
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
   runBackgroundTick("Addon scheduled jobs", () => addonJobScheduler.tick());
+  runBackgroundTick("Scheduled map messages", () => scheduledMapMessages.tick());
   runBackgroundTick("Landsraad milestone preset", () => landsraadMilestoneReconciler.tick());
   // Daily, but gated inside the tick like every other long-period job here.
   // Costs one small file read when no base is enrolled, and no database query.
@@ -1089,6 +1103,42 @@ async function handleApi(req, res) {
   if (path === "/api/updates/fix-steamcmd" && req.method === "POST") return task(req, res, "updates", "updateFixSteamcmd", {});
   if (path === "/api/updates/check-stack" && req.method === "POST") return task(req, res, "updates", "selfUpdateCheck", {});
   if (path === "/api/updates/apply-stack" && req.method === "POST") return task(req, res, "updates", "selfUpdateApply", {});
+  if (path === "/api/updates/qa/status") {
+    try { return json(res, 200, await qaUpdates.status(req.authSession.id, { refresh: url.searchParams.get("refresh") === "1" })); }
+    catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "QA authorization could not be checked.") }); }
+  }
+  if (path === "/api/updates/qa/login" && req.method === "POST") {
+    try {
+      const result = await qaUpdates.start(req.authSession.id);
+      audit(config, req, "updates.qa-login-started", { requestId: result.requestId });
+      return json(res, 200, result);
+    } catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "QA authorization could not be started.") }); }
+  }
+  if (path === "/api/updates/qa/logout" && req.method === "POST") {
+    await qaUpdates.logout(req.authSession.id);
+    audit(config, req, "updates.qa-logout");
+    return json(res, 200, { ok: true });
+  }
+  if (path === "/api/updates/qa/build") {
+    try { return json(res, 200, await qaUpdates.build(req.authSession.id)); }
+    catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "The latest QA build could not be checked.") }); }
+  }
+  if (path === "/api/updates/qa/apply" && req.method === "POST") {
+    try {
+      const build = await qaUpdates.build(req.authSession.id);
+      if (!build.ready) return json(res, 409, { error: build.reason || "The latest QA build has not passed all checks." });
+      if (!build.updateAvailable) return json(res, 409, { error: "This Console already has the latest QA build." });
+      audit(config, req, "updates.qa-apply", { commitSha: build.sha });
+      return task(req, res, "updates", "selfUpdateQaApply", { sha: build.sha });
+    } catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "The QA build could not be applied.") }); }
+  }
+  if (path === "/api/updates/qa/reinstall-release" && req.method === "POST") {
+    try {
+      await qaUpdates.requireAuthorized(req.authSession.id);
+      audit(config, req, "updates.qa-reinstall-release");
+      return task(req, res, "updates", "selfUpdateApply", {});
+    } catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "The public release could not be reinstalled.") }); }
+  }
   if (path === "/api/updates/stack-progress") {
     try {
       return json(res, 200, readSelfUpdateStatus(config.repoRoot, url.searchParams.get("runId")));
@@ -1237,6 +1287,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/bases\/[^/]+\/land-claim$/) && req.method === "PUT") return baseUpdateLandClaimRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "GET") return basePermissionsRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "PUT") return baseSetPermissionsRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/child-access\/reset$/) && req.method === "POST") return baseResetChildAccessRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/system-custodian$/) && req.method === "POST") return baseSystemCustodianRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-delete$/) && req.method === "DELETE") return baseCancelQueuedDeleteRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+$/) && req.method === "DELETE") return baseDeleteRoute(req, res, path);
@@ -1261,6 +1312,7 @@ async function handleApi(req, res) {
   if (path === "/api/admin/character-transfer-settings") return characterTransferSettingsRoute(req, res);
   if (path === "/api/admin/message-of-the-day") return messageOfTheDayRoute(req, res);
   if (path === "/api/admin/player-announcements") return playerAnnouncementsRoute(req, res);
+  if (path === "/api/admin/map-chat-schedules") return scheduledMapMessagesRoute(req, res);
   if (path === "/api/admin/landsraad") return landsraadRoute(req, res, "overview");
   if (path === "/api/admin/landsraad/task-goal") return landsraadRoute(req, res, "task-goal");
   if (path === "/api/admin/landsraad/term-task-goals") return landsraadRoute(req, res, "term-task-goals");
@@ -1309,6 +1361,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/give-items$/) && req.method === "POST") return giveItemsRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/give-item-id$/) && req.method === "POST") return giveSingleItemRoute(req, res, path, "adminGiveItemId");
   if (path.match(/^\/api\/players\/[^/]+\/building-unlocks\/grant$/) && req.method === "POST") return buildingUnlockGrantRoute(req, res, path);
+  if (path.match(/^\/api\/players\/[^/]+\/customizations\/grant$/) && req.method === "POST") return customizationGrantRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/add-xp$/) && req.method === "POST") return playerTask(req, res, path, "adminAddXp");
   if (path.match(/^\/api\/players\/[^/]+\/set-skill-points$/) && req.method === "POST") return playerTask(req, res, path, "adminSetSkillPoints");
   if (path.match(/^\/api\/players\/[^/]+\/set-skill-module$/) && req.method === "POST") return playerTask(req, res, path, "adminSetSkillModule");
@@ -1317,7 +1370,8 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/ban$/)) return playerBanRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/repair-login-queue$/) && req.method === "POST") return playerTask(req, res, path, "adminRepairLoginQueue", "REPAIR LOGIN QUEUE");
   if (path === "/api/players/kick-all-online" && req.method === "POST") return confirmedTask(req, res, "admin", "adminKickAllOnline", {}, "KICK ALL ONLINE PLAYERS");
-  if (path.match(/^\/api\/players\/[^/]+\/teleport$/) && req.method === "POST") return playerTask(req, res, path, "adminTeleport");
+  if (path.match(/^\/api\/players\/[^/]+\/teleport-destinations$/) && req.method === "GET") return dbPlayerRoute(res, path, duneDb.playerTeleportDestinations);
+  if (path.match(/^\/api\/players\/[^/]+\/teleport$/) && req.method === "POST") return playerTeleportRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/spawn-vehicle$/) && req.method === "POST") return playerTask(req, res, path, "adminSpawnVehicle");
   if (path.match(/^\/api\/players\/[^/]+\/clean-inventory$/) && req.method === "POST") return playerTask(req, res, path, "adminCleanInventory", "CLEAN INVENTORY");
   if (path.match(/^\/api\/players\/[^/]+\/reset-progression$/) && req.method === "POST") return playerTask(req, res, path, "adminResetProgression", "RESET PROGRESSION");
@@ -1341,7 +1395,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/tutorials\/complete$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.tutorials.complete", "COMPLETE TUTORIAL", (playerId, body) => duneDb.completeTutorial(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/tutorials\/reset$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.tutorials.reset", "RESET TUTORIAL", (playerId, body) => duneDb.resetTutorial(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/repair-gear$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-gear", "REPAIR GEAR", (playerId) => duneDb.repairGear(db, playerId));
-  if (path.match(/^\/api\/players\/[^/]+\/repair-vehicle-decay$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-vehicle-decay", "REPAIR VEHICLE DECAY", (playerId, body) => duneDb.repairVehicleDecay(db, playerId, body));
+  if (path.match(/^\/api\/players\/[^/]+\/repair-vehicle-decay$/) && req.method === "POST") return playerVehicleDecayRepairRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/refuel-vehicle$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.refuel-vehicle", "REFUEL VEHICLE", (playerId, body) => duneDb.refuelVehicle(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/augment-item$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.augment-item", "APPLY AUGMENTS", (playerId, body) => duneDb.augmentInventoryItem(db, playerId, body.itemId, { augments: body.augments, augmentQuality: body.augmentQuality }));
   if (path.match(/^\/api\/players\/[^/]+\/inventory\/[^/]+$/) && req.method === "DELETE") return inventoryDeleteRoute(req, res, path);
@@ -1349,9 +1403,18 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/crafting-recipes$/)) return dbPlayerRoute(res, path, duneDb.playerCraftingRecipes);
   if (path.match(/^\/api\/players\/[^/]+\/research-items$/)) return dbPlayerRoute(res, path, duneDb.playerResearchItems);
   if (path.match(/^\/api\/players\/[^/]+\/building-unlocks$/) && req.method === "GET") return buildingUnlocksRoute(res, path);
+  if (path.match(/^\/api\/players\/[^/]+\/customizations$/) && req.method === "GET") return customizationGrantsRoute(res, path);
   if (path.match(/^\/api\/players\/[^/]+\/journey$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerJourney(database, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/inventory$/)) return dbPlayerRoute(res, path, duneDb.playerInventoryAll);
   if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listVehicles(database, { playerId, pageSize: 200 }));
+  if (path.match(/^\/api\/players\/[^/]+\/bases$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listBases(database, {
+    playerId,
+    q: url.searchParams.get("q") || "",
+    page: 0,
+    pageSize: 5000,
+    sortColumn: url.searchParams.get("sortColumn") || "name",
+    sortDirection: url.searchParams.get("sortDirection") || "asc"
+  }));
   if (path.match(/^\/api\/players\/[^/]+\/currency$/)) return dbPlayerRoute(res, path, duneDb.playerCurrency);
   if (path.match(/^\/api\/players\/[^/]+\/solaris-coin$/)) return dbPlayerRoute(res, path, duneDb.playerSolarisCoinTotal);
   if (path.match(/^\/api\/players\/[^/]+\/factions$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerFactions(database, playerId, journeyTagsData));
@@ -2581,7 +2644,7 @@ function isAdminToolsHistoryLine(line) {
   const parts = String(line || "").split("\t");
   const command = String(parts[1] || "").trim();
   const target = String(parts[2] || "").trim();
-  if (/^web-(broadcast|shutdown-broadcast)$/i.test(command)) return true;
+  if (/^(?:web-(?:broadcast|shutdown-broadcast|map-chat)|scheduled-map-chat(?:-now)?)$/i.test(command)) return true;
   if (/^web-hydrate-all$/i.test(command)) return true;
   if (/^KickPlayer$/i.test(command) && /^(all|\*)$/i.test(target)) return true;
   return false;
@@ -3722,10 +3785,10 @@ async function messageOfTheDayRoute(req, res) {
       const players = await duneDb.listAllPlayers(db, { status: "online" }).catch(() => ({ rows: [] }));
       primedOnlinePlayers = primeMessageOfTheDayOnlineState(config, players.rows || []).delivered;
     }
-    audit(config, req, "admin.message-of-the-day.save", { restoreDefaults: Boolean(body.restoreDefaults), enabled: result.settings.enabled });
+    audit(config, req, "admin.message-of-the-day.save", { restoreDefaults: Boolean(body.restoreDefaults), enabled: result.settings.enabled, deliveryMode: result.settings.deliveryMode });
     recordAdminHistory(config, {
       command: "web-message-of-the-day",
-      target: "login",
+      target: result.settings.deliveryMode,
       friendly: "Message of the Day",
       path: "runtime/generated/message-of-the-day.json",
       result: "saved",
@@ -3738,7 +3801,11 @@ async function messageOfTheDayRoute(req, res) {
       delivery: {
         primedOnlinePlayers,
         note: result.settings.enabled
-          ? "Players who are online while this is saved will receive the message after their next login."
+          ? result.settings.deliveryMode === "daily"
+            ? "Players who are online while this is saved will become eligible again after 24 hours."
+            : result.settings.deliveryMode === "map"
+              ? "Players who are online while this is saved will receive the message after their next map transfer or login."
+            : "Players who are online while this is saved will receive the message after their next login."
           : "Message of the Day delivery is disabled."
       }
     });
@@ -4141,6 +4208,21 @@ async function playerTask(req, res, path, operation, phrase = "") {
   return task(req, res, "admin", operation, { ...body, playerId });
 }
 
+async function playerTeleportRoute(req, res, path) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "players.adminTeleport")) return;
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  try {
+    const payload = await duneDb.teleportPlayer(db, playerId, body);
+    buildDuneArgs("adminTeleport", payload);
+    audit(config, req, "task.adminTeleport", { ...payload, playerId: redact(payload.playerId) });
+    return json(res, 202, { task: tasks.create("admin", "adminTeleport", payload), message: payload.message });
+  } catch (error) {
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
 async function playerIdentityForBan(playerId) {
   const result = await duneDb.listPlayers(db, { q: String(playerId), page: 0, pageSize: 10, includeTotals: false });
   const player = (result.rows || []).find((row) => String(row.actor_id) === String(playerId));
@@ -4368,6 +4450,92 @@ async function playerLandsraadQuestRepairRoute(req, res, path) {
     await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "restore-safety" } });
     const result = await duneDb.repairLandsraadQuests(db, playerId);
     return { ...result, backupCreated: true };
+  }, { playerId });
+}
+
+function vehicleRepairRestartCommands(target) {
+  if (target.partitionMap === "Survival_1") {
+    const payload = { partitionId: target.partitionId };
+    return { stop: ["sietchesRestartStop", payload], start: ["sietchesRestartStart", payload] };
+  }
+  if (target.partitionMap === "Overmap") {
+    const payload = { service: "overmap" };
+    return { stop: ["restartServiceStop", payload], start: ["restartServiceStart", payload] };
+  }
+  const payload = { target: String(target.partitionId) };
+  return { stop: ["mapsDespawn", payload], start: ["mapsSpawn", payload] };
+}
+
+function vehicleRepairTargetLabel(target) {
+  return target.partitionMap || target.actorMap || `Partition ${target.partitionId}`;
+}
+
+async function runVehicleRepairRestartCommand(command) {
+  const [operation, payload] = command;
+  return runDune(config, buildDuneArgs(operation, payload), { timeoutMs: 30 * 60 * 1000 });
+}
+
+async function restartVehicleRepairTargets(targets) {
+  const failures = [];
+  for (const target of [...targets].reverse()) {
+    try {
+      await runVehicleRepairRestartCommand(vehicleRepairRestartCommands(target).start);
+    } catch (error) {
+      failures.push(`${vehicleRepairTargetLabel(target)}: ${redact(error?.message || "restart failed")}`);
+    }
+  }
+  return failures;
+}
+
+async function playerVehicleDecayRepairRoute(req, res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "players.repair-vehicle-decay", "REPAIR VEHICLE DECAY", async (body) => {
+    const inspection = await duneDb.inspectVehicleDecayRepair(db, playerId, body);
+    if (!inspection.eligible) return duneDb.repairVehicleDecay(db, playerId, body);
+    if (!inspection.restartSupported) {
+      throw new Error("Vehicle repair cannot safely verify the affected map servers on this database version.");
+    }
+    const unresolved = inspection.targets.filter((target) => target.partitionId > 0 && !target.partitionMap);
+    if (unresolved.length) {
+      throw new Error(`Vehicle repair cannot safely resolve ${unresolved.map(vehicleRepairTargetLabel).join(", ")} to a managed map server.`);
+    }
+
+    // Vehicles with no partition are stored/unloaded and safe to update. A
+    // connected partition is stopped first so its in-memory vehicle state can
+    // no longer overwrite PostgreSQL; only partitions stopped here are started
+    // again, preserving maps that were already intentionally down.
+    const runningTargets = inspection.targets.filter((target) => target.partitionId > 0 && target.connected);
+    const stoppedTargets = [];
+    let operationError = null;
+    let result = null;
+    try {
+      for (const target of runningTargets) {
+        await runVehicleRepairRestartCommand(vehicleRepairRestartCommands(target).stop);
+        stoppedTargets.push(target);
+      }
+      result = await duneDb.repairVehicleDecay(db, playerId, body);
+    } catch (error) {
+      operationError = error;
+    }
+
+    const restartFailures = await restartVehicleRepairTargets(stoppedTargets);
+    if (operationError) {
+      if (restartFailures.length) {
+        throw new Error(`${operationError.message} Affected map restart also failed: ${restartFailures.join("; ")}`);
+      }
+      throw operationError;
+    }
+    return {
+      ...result,
+      mapServersRestarted: stoppedTargets.length,
+      restartedMaps: stoppedTargets.map(vehicleRepairTargetLabel),
+      restartFailures,
+      message: restartFailures.length
+        ? `Vehicle durability was repaired, but some affected maps did not restart: ${restartFailures.join("; ")}`
+        : stoppedTargets.length
+          ? `Vehicle durability was repaired and ${stoppedTargets.length} affected map server${stoppedTargets.length === 1 ? " was" : "s were"} restarted.`
+          : "Vehicle durability was repaired. All affected maps were already stopped."
+    };
   }, { playerId });
 }
 
@@ -4736,6 +4904,15 @@ async function baseSetPermissionsRoute(req, res, path) {
     const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
     return duneDb.setBasePermissions(db, baseId, body.entries, maxPermissions);
   }, { baseId });
+}
+
+async function baseResetChildAccessRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(baseId) || baseId < 1 || baseId > Number.MAX_SAFE_INTEGER) return json(res, 400, { error: "Invalid base ID" });
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.reset-child-access", "RESET CHILD ACCESS", (body) =>
+    duneDb.resetBaseChildAccess(db, baseId, body.actorIds), { baseId });
 }
 
 async function baseSystemCustodianRoute(req, res, path) {
@@ -5630,6 +5807,77 @@ async function buildingUnlockGrantRoute(req, res, path) {
   }
 }
 
+async function customizationGrantsRoute(res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  try {
+    const state = await duneDb.playerCustomizationGrantState(db, playerId);
+    return json(res, 200, {
+      capabilities: state.capabilities,
+      groups: customizationGrantGroups(config.repoRoot),
+      rows: listCustomizationGrantItems(config.repoRoot).map((item) => ({
+        ...item,
+        status: customizationGrantStatus(item.itemId, state)
+      }))
+    });
+  } catch (error) {
+    return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+async function customizationGrantRoute(req, res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  const body = await readJson(req);
+  if (body.confirmation !== "GRANT CUSTOMIZATIONS") return json(res, 400, { error: "Confirmation phrase mismatch" });
+  if (!applyMutationRateLimit(req, res, "players.customizations.grant")) return;
+
+  try {
+    const catalog = listCustomizationGrantItems(config.repoRoot);
+    const groups = new Set(customizationGrantGroups(config.repoRoot).map((group) => group.id));
+    let selected;
+    if (body.itemId) {
+      const resolved = resolveCatalogItem(config.repoRoot, { itemId: body.itemId });
+      if (!isCustomizationGrantItem(resolved) || !catalog.some((item) => item.itemId === resolved.itemId)) {
+        throw new Error("Select a verified entry from the Customizations catalog.");
+      }
+      selected = catalog.filter((item) => item.itemId === resolved.itemId);
+    } else if (body.groupId === "all") {
+      selected = catalog;
+    } else if (groups.has(String(body.groupId || ""))) {
+      selected = catalog.filter((item) => item.groupId === body.groupId);
+    } else {
+      throw new Error("Select a verified customization group.");
+    }
+    if (selected.length === 0) throw new Error("The selected customization group is empty.");
+
+    const target = await resolvePlayerGrantTarget(playerId);
+    const state = target.actorId
+      ? await duneDb.playerCustomizationGrantState(db, target.actorId)
+      : { capabilities: { customizationPending: false }, pending: [] };
+    const results = [];
+    for (const item of selected) {
+      if (customizationGrantStatus(item.itemId, state) === "Pending") {
+        results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: true, status: "Pending", skipped: true });
+        continue;
+      }
+      try {
+        const result = await grantPlayerItem(playerId, { itemId: item.itemId, quantity: 1 }, target);
+        results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: result.ok, status: result.ok ? (target.online ? "Processing" : "Pending") : "Available", result });
+      } catch (error) {
+        results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: false, status: "Available", error: redact(error?.message || "Unexpected error.") });
+      }
+    }
+    const ok = results.every((result) => result.ok);
+    const granted = results.filter((result) => result.ok && !result.skipped).length;
+    const skipped = results.filter((result) => result.skipped).length;
+    const failed = results.filter((result) => !result.ok).length;
+    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, granted, skipped, failed, ok, results });
+    return json(res, ok ? 200 : 207, { ok, granted, skipped, failed, results });
+  } catch (error) {
+    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, ok: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
+  }
+}
+
 async function grantPlayerItem(playerId, item, target) {
   const resolved = item.itemId ? resolveCatalogItem(config.repoRoot, { itemId: item.itemId }) : resolveCatalogItem(config.repoRoot, item);
   const operation = resolved.itemId ? "adminGiveItemId" : "adminGiveItem";
@@ -5748,27 +5996,94 @@ async function mapChatRoute(req, res) {
   const mapName = body.mapName || body.region || "HaggaBasin";
   const dimension = body.dimension ?? 0;
   try {
-    const recipients = config.mockMode ? [{ queue: "mock-player_queue" }] : await mapChatRecipients(mapName, dimension);
-    if (!recipients.length) throw new Error("No online players are currently subscribed to that map.");
-    const sender = config.mockMode ? { funcomId: "Server#4242", hexFlsId: "5E121CE000000001" } : await ensureCarePackageServerPersona(db);
-    const result = config.mockMode
-      ? { code: 0, stdout: "mock map chat\n", stderr: "", args: [] }
-      : await publishMapChat(config, {
-          mapName,
-          dimension,
-          message,
-          senderFuncomId: sender.funcomId,
-          senderHexFlsId: sender.hexFlsId
-        });
+    const result = await deliverMapChatMessage(mapName, dimension, message);
     const target = `${mapName}.${dimension}`;
-    audit(config, req, "admin.map-chat", { supported: true, target, recipients: recipients.length });
+    audit(config, req, "admin.map-chat", { supported: true, target, recipients: result.recipients });
     recordAdminHistory(config, { command: "web-map-chat", target, friendly: "Map Chat", path: "rmq:chat.map", result: "published", message });
-    return json(res, 200, { supported: true, ok: true, stdout: result.stdout, stderr: result.stderr || "", note: `Map chat message was sent to ${recipients.length} online player${recipients.length === 1 ? "" : "s"}.`, recipients: recipients.length });
+    return json(res, 200, { supported: true, ok: true, stdout: result.stdout, stderr: result.stderr || "", note: `Map chat message was sent to ${result.recipients} online player${result.recipients === 1 ? "" : "s"}.`, recipients: result.recipients });
   } catch (error) {
     const reason = redact(String(error?.message || "Unexpected error.").replaceAll("Care Package message whisper", "Map chat"));
     audit(config, req, "admin.map-chat", { supported: false, error: reason });
     recordAdminHistory(config, { command: "web-map-chat", target: `${mapName}.${dimension}`, friendly: "Map Chat", path: "rmq:chat.map", result: "blocked", message });
     return json(res, 400, { supported: false, error: reason, reason });
+  }
+}
+
+async function deliverMapChatMessage(mapName, dimension, message) {
+  const recipients = config.mockMode ? [{ queue: "mock-player_queue" }] : await mapChatRecipients(mapName, dimension);
+  if (!recipients.length) throw new Error("No online players are currently subscribed to that map.");
+  const sender = config.mockMode ? { funcomId: "Server#4242", hexFlsId: "5E121CE000000001" } : await ensureCarePackageServerPersona(db);
+  const result = config.mockMode
+    ? { code: 0, stdout: "mock map chat\n", stderr: "", args: [] }
+    : await publishMapChat(config, {
+        mapName,
+        dimension,
+        message,
+        senderFuncomId: sender.funcomId,
+        senderHexFlsId: sender.hexFlsId
+      });
+  return { ...result, recipients: recipients.length };
+}
+
+async function deliverScheduledMapMessage(schedule) {
+  if (schedule.mapName !== "AllMaps") return deliverMapChatMessage(schedule.mapName, schedule.dimension, schedule.message);
+  const services = await duneDb.liveMapServices(db);
+  const targets = [];
+  const seen = new Set();
+  for (const row of services.rows || []) {
+    if (!Boolean(row.alive || row.ready) || Number(row.connected_players || 0) < 1) continue;
+    const mapName = mapChatRegionForServerMap(row.map);
+    const dimension = Number(row.dimension_index || 0);
+    const key = `${mapName}|${dimension}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push({ mapName, dimension });
+  }
+  if (!targets.length) throw new Error("No online players are currently subscribed to any map.");
+  let recipients = 0;
+  const output = [];
+  for (const target of targets) {
+    try {
+      const result = await deliverMapChatMessage(target.mapName, target.dimension, schedule.message);
+      recipients += result.recipients;
+      if (result.stdout) output.push(result.stdout);
+    } catch (error) {
+      if (!/No online players/i.test(String(error?.message || ""))) throw error;
+    }
+  }
+  if (!recipients) throw new Error("No online players are currently subscribed to any map.");
+  return { code: 0, stdout: output.join("\n"), stderr: "", recipients };
+}
+
+function mapChatRegionForServerMap(map) {
+  const value = String(map || "").trim();
+  const aliases = { Survival_1: "HaggaBasin", Overmap: "Overland", DeepDesert_1: "DeepDesert", SH_Arrakeen: "Arrakeen", SH_HarkoVillage: "HarkoVillage" };
+  return aliases[value] || value.replace(/^SH_/, "").replace(/^CB_Story_/, "").replace(/^CB_Dungeon_/, "").replace(/^DLC_Story_/, "");
+}
+
+async function scheduledMapMessagesRoute(req, res) {
+  if (req.method === "GET") return json(res, 200, scheduledMapMessages.list());
+  const body = await readJson(req);
+  const action = String(body.action || "save").trim().toLowerCase();
+  try {
+    if (action === "save") {
+      const schedule = scheduledMapMessages.save(body.schedule || body);
+      audit(config, req, "admin.map-chat-schedule-save", { id: schedule.id, enabled: schedule.enabled, mapName: schedule.mapName, dimension: schedule.dimension, frequency: schedule.frequency, time: schedule.time, timezone: schedule.timezone });
+      return json(res, 200, { ok: true, schedule, ...scheduledMapMessages.list() });
+    }
+    if (action === "delete") {
+      const result = scheduledMapMessages.remove(body.id);
+      audit(config, req, "admin.map-chat-schedule-delete", result);
+      return json(res, 200, { ok: true, ...result, ...scheduledMapMessages.list() });
+    }
+    if (action === "run") {
+      const result = await scheduledMapMessages.runNow(body.id);
+      return json(res, 200, { ok: true, result, ...scheduledMapMessages.list() });
+    }
+    throw new Error("Scheduled message action must be save, delete, or run.");
+  } catch (error) {
+    const reason = redact(String(error?.message || "Unexpected error."));
+    return json(res, 400, { error: reason, reason });
   }
 }
 

@@ -314,6 +314,24 @@ export type BasePermissionEntry = {
   canonical: boolean;
 };
 
+export type BaseChildAccessAnomaly = {
+  actorId: string;
+  name: string;
+  kind: "Door" | "Device";
+  currentAccess: number;
+  expectedAccess: number;
+  basis: string;
+  unusual: true;
+};
+
+export type BaseChildAccessAudit = {
+  supported: boolean;
+  inspected: number;
+  baselined: number;
+  anomalies: BaseChildAccessAnomaly[];
+  reason?: string;
+};
+
 export type BasePermissions = {
   supported: boolean;
   baseId: number;
@@ -334,6 +352,7 @@ export type BasePermissions = {
     reason?: string;
   };
   entries: BasePermissionEntry[];
+  childAccess?: BaseChildAccessAudit;
   reason?: string;
 };
 
@@ -378,17 +397,35 @@ export type UpdateBaseLandClaimResult = BaseLandClaim & {
   verticalChanged: boolean;
 };
 
+export type BasesListResponse = {
+  rows: Record<string, unknown>[];
+  totalCount: number;
+  totalBases: number;
+  totalOwned?: number;
+  totalShared?: number;
+  totalPieces: number;
+  totalPlaceables: number;
+  capabilities: Record<string, unknown>;
+  reason?: string;
+};
+
+type BasesListParams = { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc" };
+
+function basesListQuery(params: BasesListParams) {
+  const search = new URLSearchParams();
+  if (params.q) search.set("q", params.q);
+  if (params.page) search.set("page", String(params.page));
+  if (params.pageSize) search.set("pageSize", String(params.pageSize));
+  if (params.sortColumn) search.set("sortColumn", params.sortColumn);
+  if (params.sortDirection) search.set("sortDirection", params.sortDirection);
+  const qs = search.toString();
+  return qs ? `?${qs}` : "";
+}
+
 export const basesApi = {
-  list: (params: { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc" } = {}) => {
-    const search = new URLSearchParams();
-    if (params.q) search.set("q", params.q);
-    if (params.page) search.set("page", String(params.page));
-    if (params.pageSize) search.set("pageSize", String(params.pageSize));
-    if (params.sortColumn) search.set("sortColumn", params.sortColumn);
-    if (params.sortDirection) search.set("sortDirection", params.sortDirection);
-    const qs = search.toString();
-    return api<{ rows: Record<string, unknown>[]; totalCount: number; totalBases: number; totalPieces: number; totalPlaceables: number; capabilities: Record<string, unknown>; reason?: string }>(`/api/bases${qs ? `?${qs}` : ""}`);
-  },
+  list: (params: BasesListParams = {}) => api<BasesListResponse>(`/api/bases${basesListQuery(params)}`),
+  forPlayer: (playerId: string, params: BasesListParams = {}) =>
+    api<BasesListResponse>(`/api/players/${encodeURIComponent(playerId)}/bases${basesListQuery(params)}`),
   // A refill for a map that is currently running comes back as
   // `result.queued`: the write is deferred to the next time that map is down.
   refillGenerators: (baseId: string) =>
@@ -455,6 +492,9 @@ export const basesApi = {
     api<{ supported: boolean; result?: SetBasePermissionsResult; reason?: string }>(
       `/api/bases/${encodeURIComponent(baseId)}/permissions`,
       { method: "PUT", body: JSON.stringify({ entries }) }),
+  resetChildAccess: (baseId: string, actorIds: string[]) =>
+    post<{ supported: boolean; result?: { ok: boolean; baseId: number; reset: number; message: string }; reason?: string }>(
+      `/api/bases/${encodeURIComponent(baseId)}/child-access/reset`, { actorIds, confirmation: "RESET CHILD ACCESS" }),
   transferToSystemCustodian: (baseId: string) =>
     post<{ supported: boolean; result?: SetBasePermissionsResult; reason?: string }>(
       `/api/bases/${encodeURIComponent(baseId)}/system-custodian`, {}),

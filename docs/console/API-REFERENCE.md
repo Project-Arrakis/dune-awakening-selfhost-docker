@@ -112,6 +112,12 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | GET | `/api/updates/stack-progress` | Progress of an in-flight stack update | None |
 | POST | `/api/updates/auto-game` | Save auto-update config | `enabled`, `intervalMinutes`, `applyEnabled`, `notifyEnabled`, `notifyMinutes`, `waitUntilEmpty`, `maxWaitMinutes`, `confirmation` |
 | POST | `/api/updates/repair-runtime` | Repair runtime installation | None |
+| GET | `/api/updates/qa/status` | Check whether this session is authorized for Discord-gated QA pre-release updates | `refresh?` (`"1"` to bypass cache) |
+| POST | `/api/updates/qa/login` | Start Discord OAuth authorization for QA pre-release updates | None |
+| POST | `/api/updates/qa/logout` | Revoke this session's QA authorization | None |
+| GET | `/api/updates/qa/build` | Check the latest QA pre-release build and whether it's ready to apply | None |
+| POST | `/api/updates/qa/apply` | Apply the latest QA pre-release build | None |
+| POST | `/api/updates/qa/reinstall-release` | Reinstall the public release, overwriting a QA pre-release build | None |
 
 ---
 
@@ -703,6 +709,8 @@ Layers legend's default-settings mechanism.
 | POST | `/api/admin/message-of-the-day` | Save/restore MOTD | `settings?` or `restoreDefaults: true` |
 | GET | `/api/admin/player-announcements` | Get announcement settings | None |
 | POST | `/api/admin/player-announcements` | Save/restore announcements | `settings?` or `restoreDefaults: true` |
+| GET | `/api/admin/map-chat-schedules` | List scheduled recurring in-map chat messages | None |
+| POST | `/api/admin/map-chat-schedules` | Save, delete, or immediately run a scheduled map message | `action` (`"save"`, `"delete"`, or `"run"`), plus `schedule` (for `save`) or `id` (for `delete`/`run`) |
 
 ### Landsraad
 

@@ -4150,8 +4150,148 @@ export async function listBasePermissions(db, baseId) {
     claimed,
     unclaimedReason: claimed ? "" : BASE_UNCLAIMED_MESSAGE,
     systemCustodian,
-    entries
+    entries,
+    childAccess: await listBaseChildAccess(db, baseId)
   };
+}
+
+function friendlyChildAccessName(row) {
+  const raw = String(row.actor_name || row.building_type || "Base Object")
+    .replace(/^##/, "")
+    .replace(/_Placeable$/i, "")
+    .replace(/^(?:BP_)?MTX_/i, "")
+    .replace(/^Neut_/i, "")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return raw || "Base Object";
+}
+
+function accessMode(rows) {
+  const counts = new Map();
+  for (const row of rows) {
+    const level = Number(row.access_level);
+    const count = Number(row.row_count || 0);
+    counts.set(level, (counts.get(level) || 0) + count);
+  }
+  const ranked = [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0] - right[0]);
+  const total = ranked.reduce((sum, entry) => sum + entry[1], 0);
+  if (!ranked.length || (ranked[1] && ranked[0][1] === ranked[1][1])) return null;
+  return { level: ranked[0][0], count: ranked[0][1], total };
+}
+
+async function baseChildAccessSupported(db) {
+  for (const table of ["buildings", "building_instances", "placeables", "permission_actor"]) {
+    if (!(await tableExists(db, table))) return false;
+  }
+  return functionExists(db, "dune.permission_set_access_level(bigint,smallint)");
+}
+
+// Child actors normally inherit the base roster but retain their own access
+// level. Ownership transfers must preserve intentional per-object choices, so
+// this is an audit, not part of transferBaseToSystemCustodian. A recommendation
+// is made only from a strong live-server baseline: all doors share the dominant
+// door level, while other devices need at least three peers of the exact same
+// building type and a 75% majority. This catches a lone odd door without
+// guessing at singleton devices or overwriting legitimate customization.
+export async function listBaseChildAccess(db, baseId) {
+  const target = intParam(baseId, "base id", 1);
+  if (!(await baseChildAccessSupported(db))) {
+    return { supported: false, inspected: 0, baselined: 0, anomalies: [], reason: "Child access auditing is unsupported by the detected game database." };
+  }
+  const children = await db.query(`
+    with base_entities as (
+      select distinct bi.owner_entity_id
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      where b.id = $1::bigint and bi.owner_entity_id is not null
+    )
+    select pa.actor_id::text as actor_id, coalesce(pa.actor_name, '') as actor_name,
+           pa.access_level::int as access_level, coalesce(p.building_type, '') as building_type,
+           (coalesce(pa.actor_name, '') ilike '%door%' or coalesce(p.building_type, '') ilike '%door%') as is_door
+    from base_entities be
+    join dune.placeables p on p.owner_entity_id = be.owner_entity_id
+    join dune.permission_actor pa on pa.actor_id = p.id and pa.is_child = true
+    order by pa.actor_id`, [target]);
+  if (!children.rows.length) return { supported: true, inspected: 0, baselined: 0, anomalies: [] };
+
+  const peerStats = await db.query(`
+    select coalesce(p.building_type, '') as building_type,
+           (coalesce(pa.actor_name, '') ilike '%door%' or coalesce(p.building_type, '') ilike '%door%') as is_door,
+           pa.access_level::int as access_level, count(*)::int as row_count
+    from dune.placeables p
+    join dune.permission_actor pa on pa.actor_id = p.id and pa.is_child = true
+    group by coalesce(p.building_type, ''), is_door, pa.access_level`);
+  const doorMode = accessMode(peerStats.rows.filter((row) => row.is_door === true));
+  const byType = new Map();
+  for (const row of peerStats.rows) {
+    const key = String(row.building_type || "");
+    if (!byType.has(key)) byType.set(key, []);
+    byType.get(key).push(row);
+  }
+
+  const rows = children.rows.map((row) => {
+    const currentAccess = Number(row.access_level);
+    let baseline = null;
+    let basis = "";
+    if (row.is_door === true && doorMode && doorMode.total >= 3) {
+      baseline = doorMode.level;
+      basis = "Door Standard";
+    } else {
+      const typeMode = accessMode(byType.get(String(row.building_type || "")) || []);
+      if (typeMode && typeMode.total >= 3 && typeMode.count / typeMode.total >= 0.75) {
+        baseline = typeMode.level;
+        basis = "Device Standard";
+      }
+    }
+    return {
+      actorId: String(row.actor_id),
+      name: friendlyChildAccessName(row),
+      kind: row.is_door === true ? "Door" : "Device",
+      currentAccess,
+      expectedAccess: baseline,
+      basis,
+      unusual: baseline !== null && currentAccess !== baseline
+    };
+  });
+  return {
+    supported: true,
+    inspected: rows.length,
+    baselined: rows.filter((row) => row.expectedAccess !== null).length,
+    anomalies: rows.filter((row) => row.unusual)
+  };
+}
+
+export async function resetBaseChildAccess(db, baseId, actorIds) {
+  const target = intParam(baseId, "base id", 1);
+  if (!Array.isArray(actorIds) || actorIds.length < 1 || actorIds.length > 100) {
+    throw new Error("Choose between 1 and 100 unusual doors or devices to reset.");
+  }
+  const selected = [...new Set(actorIds.map((id) => String(intParam(id, "child actor id", 1))))];
+  await requireCapability(await baseChildAccessSupported(db),
+    "Child access reset requires the game permission_set_access_level function.");
+  return db.transaction(async (tx) => {
+    await tx.query("set local search_path to dune, public");
+    const actor = await basePermissionActor(tx, target);
+    const locked = await tx.query("select id from dune.actors where id = $1::bigint for update", [actor.actorId]);
+    if (!locked.rowCount) throw new Error("That base was not found.");
+    const audit = await listBaseChildAccess(tx, target);
+    const unusual = new Map(audit.anomalies.map((row) => [row.actorId, row]));
+    const chosen = selected.map((id) => unusual.get(id));
+    if (chosen.some((row) => !row)) {
+      throw new Error("One or more selected objects are no longer unusual members of this base. Reload the audit and try again.");
+    }
+    for (const row of chosen) {
+      await tx.query("select dune.permission_set_access_level($1::bigint, $2::smallint)", [row.actorId, row.expectedAccess]);
+    }
+    return {
+      ok: true,
+      baseId: target,
+      reset: chosen.length,
+      objects: chosen.map((row) => ({ actorId: row.actorId, name: row.name, accessLevel: row.expectedAccess })),
+      message: `${chosen.length} unusual child access setting${chosen.length === 1 ? " was" : "s were"} reset and sent to the running map.`
+    };
+  });
 }
 
 // System identities stay out of ordinary player search. Prefer the RedBlink
@@ -4746,8 +4886,9 @@ export async function updateBaseLandClaim(db, baseId, { addSegments = [], vertic
   });
 }
 
-export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true } = {}) {
-  const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
+export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true, playerId = "" } = {}) {
+  const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors",
+    ...(playerId ? ["permission_actor", "permission_actor_rank", "player_state"] : [])];
   // One round-trip each and none of them depends on another, so probe them
   // together rather than five times in series before any real work starts.
   const [required, hasWorldPartition, hasBaseBackups] = await Promise.all([
@@ -4756,8 +4897,9 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
     tableExists(db, "base_backup_linked_actors")
   ]);
   if (required.some((exists) => !exists)) {
-    return { ...unsupported("bases", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0 };
+    return { ...unsupported("bases", requiredTables.map((t) => `dune.${t}`)), totalCount: 0, totalBases: 0, totalOwned: 0, totalShared: 0, totalPieces: 0, totalPlaceables: 0 };
   }
+  const player = playerId ? await resolvePlayerMutationTarget(db, playerId) : null;
   // The base-backup tool ("pick up base") does not move or delete any of a
   // base's rows -- it only deletes permission_actor/permission_actor_rank
   // (unclaiming it) and registers its actor ids in base_backup_linked_actors
@@ -4771,6 +4913,13 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   // (unconfirmed either way). A base satisfying both is unambiguous.
   const backupExclusion = hasBaseBackups
     ? "and not (pa.actor_id is null and exists (select 1 from dune.base_backup_linked_actors bbla where bbla.actor_id = a.id))"
+    : "";
+  // Player -> Bases uses the permission actor as its source of truth. Rank 1
+  // is ownership; every other assigned rank is shared access. Filtering here
+  // keeps the paged rows and aggregate totals on exactly the same scope and
+  // avoids trusting a character name, which is neither stable nor unique.
+  const playerScope = player
+    ? "and exists (select 1 from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = a.id and viewer_par.player_id = $1)"
     : "";
   // What counts as a base, defined once. The paged query (`matched`) and the
   // totals query (`valid_claims`) run in separate round trips but must agree
@@ -4789,6 +4938,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
         left join dune.permission_actor pa on pa.actor_id = a.id
         ${extraJoin}
         where a.transform is not null
+        ${playerScope}
         ${backupExclusion}`;
   // A base's own a.map is the game's map name ("HaggaBasin"), which cannot tell
   // two instances of it apart. world_partition resolves the partition to the
@@ -4801,7 +4951,11 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const partitionJoin = hasWorldPartition
     ? "left join dune.world_partition wp on wp.partition_id = p.partition_id"
     : "";
-  const safePageSize = intParam(pageSize, "pageSize", 1, 200);
+  // The Player -> Bases tab is intentionally unpaginated: one player's
+  // permission roster is small and splitting it into 50-row pages adds more UI
+  // than value. Keep the normal admin list capped at 200, while allowing the
+  // player-scoped endpoint to fetch its complete practical set in one request.
+  const safePageSize = intParam(pageSize, "pageSize", 1, player ? 5000 : 200);
   const safePage = intParam(page, "page", 0);
   const offset = safePage * safePageSize;
   const safeSortColumn = Object.hasOwn(BASE_SORT_COLUMNS, sortColumn) ? sortColumn : "name";
@@ -4814,7 +4968,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   // searching, defer it to the final SELECT so it only runs for the page being displayed.
   const searching = Boolean(q);
   const resolveOwnerBeforePaging = searching || sortSpec.owner;
-  const values = [];
+  const values = player ? [player.controllerId] : [];
   let having = "";
   if (searching) {
     const query = String(q).trim();
@@ -4846,6 +5000,9 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
   const matchedGroupByOwner = resolveOwnerBeforePaging ? "owner.character_name, " : "";
 
   const finalOwnerSelect = resolveOwnerBeforePaging ? "p.owner_name," : "coalesce(owner.character_name, '') as owner_name,";
+  const viewerRankSelect = player
+    ? `(select min(viewer_par.rank)::int from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = p.actor_id and viewer_par.player_id = $1) as viewer_rank,`
+    : "null::int as viewer_rank,";
   const finalOwnerJoin = resolveOwnerBeforePaging ? "" : `
       left join lateral (
         select ps.character_name
@@ -4899,6 +5056,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
              p.name,
              p.base_type,
              ${finalOwnerSelect}
+             ${viewerRankSelect}
              p.map,
              p.partition_id,
              ${partitionSelect}
@@ -4925,12 +5083,15 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
 
     const totalsResult = await db.query(`
       with valid_claims as (
-        select distinct a.id as actor_id
+        select distinct a.id as actor_id,
+               ${player ? `(select min(viewer_par.rank)::int from dune.permission_actor_rank viewer_par where viewer_par.permission_actor_id = a.id and viewer_par.player_id = $1) as viewer_rank` : "null::int as viewer_rank"}
         ${baseCandidateSource()}
       )
       select (select count(*) from valid_claims)::int as total_bases,
+             (select count(*) from valid_claims where viewer_rank = 1)::int as total_owned,
+             (select count(*) from valid_claims where viewer_rank is not null and viewer_rank <> 1)::int as total_shared,
              (select count(*) from dune.building_instances bi join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_pieces,
-             (select count(distinct pl.id) from dune.placeables pl join dune.actor_fgl_entities afe on afe.entity_id = pl.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_placeables`);
+             (select count(distinct pl.id) from dune.placeables pl join dune.actor_fgl_entities afe on afe.entity_id = pl.owner_entity_id join valid_claims vc on vc.actor_id = afe.actor_id)::int as total_placeables`, player ? [player.controllerId] : []);
 
     // Callers that already resolve generator fuel themselves (the Discord
     // player portal) opt out so the CTE does not run twice per request.
@@ -4981,10 +5142,13 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       capabilities: { bases: true, generatorRefill, generatorRefillQueue, basePermissions, waterRefill, waterRefillQueue, baseDelete, baseDeleteQueue },
       totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
       totalBases: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_bases) : 0,
+      totalOwned: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_owned || 0) : 0,
+      totalShared: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_shared || 0) : 0,
       totalPieces: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_pieces) : 0,
       totalPlaceables: totalsResult.rows[0] ? Number(totalsResult.rows[0].total_placeables) : 0,
-      rows: result.rows.map(({ total_count, sort_position, ...row }) => ({
+      rows: result.rows.map(({ total_count, sort_position, viewer_rank, ...row }) => ({
         ...row,
+        ...(player ? { relationship: permissionRankLabel(Number(viewer_rank)) } : {}),
         partition_id: Number(row.partition_id || 0),
         partitionMap: String(row.partition_map || ""),
         dimensionIndex: Number(row.dimension_index || 0),
@@ -5011,7 +5175,7 @@ export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColum
       }))
     };
   } catch (error) {
-    return { capabilities: { bases: false, generatorRefill: false }, rows: [], totalCount: 0, totalBases: 0, totalPieces: 0, totalPlaceables: 0, reason: `Base list query is unsupported by this schema: ${error.message}` };
+    return { capabilities: { bases: false, generatorRefill: false }, rows: [], totalCount: 0, totalBases: 0, totalOwned: 0, totalShared: 0, totalPieces: 0, totalPlaceables: 0, reason: `Base list query is unsupported by this schema: ${error.message}` };
   }
 }
 
@@ -6536,6 +6700,29 @@ export async function playerBuildingUnlockState(db, id) {
     capabilities: { buildingUnlockOwnership: true, buildingUnlockPending: inventorySupported },
     player,
     owned,
+    pending
+  };
+}
+
+export async function playerCustomizationGrantState(db, id) {
+  const player = await resolvePlayerMutationTarget(db, id);
+  const inventoryColumns = await tableExists(db, "inventories") ? await columnsFor(db, "inventories") : new Set();
+  const itemColumns = await tableExists(db, "items") ? await columnsFor(db, "items") : new Set();
+  const pendingSupported = ["id", "actor_id"].every((column) => inventoryColumns.has(column)) &&
+    ["inventory_id", "template_id"].every((column) => itemColumns.has(column));
+  let pending = [];
+  if (pendingSupported) {
+    const result = await db.query(`
+      select distinct i.template_id
+      from dune.inventories inv
+      join dune.items i on i.inventory_id = inv.id
+      where inv.actor_id = $1
+        and i.template_id is not null`, [player.actorId]);
+    pending = result.rows.map((item) => String(item.template_id || "")).filter(Boolean);
+  }
+  return {
+    capabilities: { customizationOwnership: false, customizationPending: pendingSupported },
+    player,
     pending
   };
 }
@@ -12091,11 +12278,106 @@ const VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE = `module_samples as (
   group by template_id
 )`;
 
+function vehicleRepairThreshold(value) {
+  const threshold = Number(value);
+  if (!Number.isFinite(threshold) || threshold < 1 || threshold > 100) throw new Error("Vehicle repair threshold must be between 1 and 100 percent");
+  return { threshold, thresholdRatio: threshold / 100 };
+}
+
+// A vehicle remains live in its map server even after its owner logs out. The
+// game keeps that module state in memory and can overwrite a direct database
+// repair later, so the API must know exactly which running partitions to stop
+// before repairVehicleDecay writes. This preflight deliberately uses the same
+// maxima and eligibility rules as the write query below.
+export async function inspectVehicleDecayRepair(db, id, { thresholdPercent = 50 } = {}) {
+  await requireCapability(await supportsRepairVehicleDecay(db), "Repair vehicle decay requires dune.vehicle_modules.stats, dune.vehicle_modules.vehicle_id, and dune.actors.owner_account_id.");
+  const { threshold, thresholdRatio } = vehicleRepairThreshold(thresholdPercent);
+  const player = await resolvePlayerMutationTarget(db, id);
+  if (String(player.onlineStatus).toLowerCase() === "online") throw new Error("Repair vehicle decay requires the player to be offline so live state cannot overwrite the DB change");
+  const hasPermissionOwnership = await tableExists(db, "permission_actor_rank");
+  const hasWorldPartitions = await tableExists(db, "world_partition");
+  const permissionOwnershipClause = hasPermissionOwnership
+    ? `or exists (
+            select 1 from dune.permission_actor_rank par
+            where par.permission_actor_id = vm.vehicle_id
+              and par.player_id = $2
+              and par.rank = 1
+          )`
+    : "";
+  const ownerValues = hasPermissionOwnership ? [player.accountId, player.controllerId] : [player.accountId];
+  const thresholdParam = ownerValues.length + 1;
+  const result = await db.query(`
+    with ${VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE}, eligible as (
+      select vm.id,
+             vm.vehicle_id,
+             coalesce(a.map, '') as actor_map,
+             coalesce(a.partition_id, 0)::int as partition_id
+      from dune.vehicle_modules vm
+      join dune.actors a on a.id = vm.vehicle_id
+      left join template_maxima tm on tm.template_id = vm.template_id
+      cross join lateral (select vm.stats->'FVehicleModuleDurabilityStats'->1 as durability) d
+      where (
+          a.owner_account_id = $1
+          ${permissionOwnershipClause}
+        )
+        and vm.stats is not null
+        and jsonb_typeof(vm.stats->'FVehicleModuleDurabilityStats') = 'array'
+        and jsonb_array_length(vm.stats->'FVehicleModuleDurabilityStats') >= 2
+        and jsonb_typeof(durability) = 'object'
+        and durability ? 'CurrentDurability'
+        and (durability->>'CurrentDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+        and coalesce(
+              case
+                when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                  then nullif((durability->>'MaxDurability')::numeric, 0)
+              end,
+              tm.max_durability
+            ) > 0
+        and (durability->>'CurrentDurability')::numeric < (coalesce(
+              case
+                when (durability->>'MaxDurability') ~ '^[0-9]+(\\.[0-9]+)?$'
+                  then nullif((durability->>'MaxDurability')::numeric, 0)
+              end,
+              tm.max_durability
+            ) * $${thresholdParam})
+    )
+    select e.partition_id,
+           min(e.actor_map) as actor_map,
+           ${hasWorldPartitions ? "coalesce(wp.map, '')" : "''::text"} as partition_map,
+           ${hasWorldPartitions ? "coalesce(wp.dimension_index, 0)::int" : "0::int"} as dimension_index,
+           ${hasWorldPartitions ? `exists (
+             select 1 from pg_stat_activity sa
+             where sa.application_name = 'DuneSandbox - ' || nullif(wp.server_id, '')
+           )` : "false"} as connected,
+           count(*)::int as modules,
+           count(distinct e.vehicle_id)::int as vehicles
+    from eligible e
+    ${hasWorldPartitions ? "left join dune.world_partition wp on wp.partition_id = e.partition_id" : ""}
+    group by e.partition_id${hasWorldPartitions ? ", wp.map, wp.dimension_index, wp.server_id" : ""}
+    order by e.partition_id`, [...ownerValues, thresholdRatio]);
+  const targets = result.rows.map((row) => ({
+    partitionId: Number(row.partition_id || 0),
+    actorMap: String(row.actor_map || ""),
+    partitionMap: String(row.partition_map || ""),
+    dimensionIndex: Number(row.dimension_index || 0),
+    connected: row.connected === true || row.connected === "t",
+    modules: Number(row.modules || 0),
+    vehicles: Number(row.vehicles || 0)
+  }));
+  return {
+    ok: true,
+    player,
+    thresholdPercent: threshold,
+    eligible: targets.reduce((sum, row) => sum + row.modules, 0),
+    eligibleVehicles: targets.reduce((sum, row) => sum + row.vehicles, 0),
+    targets,
+    restartSupported: hasWorldPartitions
+  };
+}
+
 export async function repairVehicleDecay(db, id, { thresholdPercent = 50 } = {}) {
   await requireCapability(await supportsRepairVehicleDecay(db), "Repair vehicle decay requires dune.vehicle_modules.stats, dune.vehicle_modules.vehicle_id, and dune.actors.owner_account_id.");
-  const threshold = Number(thresholdPercent);
-  if (!Number.isFinite(threshold) || threshold < 1 || threshold > 100) throw new Error("Vehicle repair threshold must be between 1 and 100 percent");
-  const thresholdRatio = threshold / 100;
+  const { threshold, thresholdRatio } = vehicleRepairThreshold(thresholdPercent);
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
     if (String(player.onlineStatus).toLowerCase() === "online") throw new Error("Repair vehicle decay requires the player to be offline so live state cannot overwrite the DB change");

@@ -58,7 +58,7 @@ const simpleOperations = {
   servers: ["servers"],
   mapsList: ["maps", "list"],
   sietchesList: ["sietches", "list"],
-  deepdesertStatus: ["deepdesert", "dual", "status"],
+  deepdesertStatus: ["deepdesert", "layout", "status"],
   players: ["admin", "players", "--show-full-ids"],
   adminHistory: ["admin", "history"],
   adminItemList: ["admin", "item-list"],
@@ -80,6 +80,8 @@ export function buildDuneArgs(operation, payload = {}) {
   if (simpleOperations[operation]) return simpleOperations[operation];
 
   switch (operation) {
+    case "selfUpdateQaApply":
+      return ["self-update", "install-qa", validateCommitSha(payload.sha)];
     case "restartService":
       return ["restart", validateServiceName(payload.service)];
     case "restartServiceStop":
@@ -267,6 +269,12 @@ export function buildDuneArgs(operation, payload = {}) {
     case "sietchesReconcile":
       return ["sietches", "reconcile", validateMapName(payload.map)];
     case "deepdesertAction":
+      if (payload.instances !== undefined) {
+        const instances = validateInteger(payload.instances, 1, 3);
+        const thirdRole = String(payload.thirdRole || "pve").toLowerCase();
+        if (!["pve", "pvp"].includes(thirdRole)) throw new Error("Third Deep Desert role must be pve or pvp");
+        return ["deepdesert", "layout", "set", String(instances), "--third-role", thirdRole, "--yes", "--force"];
+      }
       return ["deepdesert", "dual", validateDeepDesertAction(payload.action), "--yes", ...(payload.action === "disable" ? ["--force"] : [])];
     case "userSettingsEngineValues":
       return ["usersettings", "engine-values"];
@@ -339,6 +347,12 @@ export function buildDuneArgs(operation, payload = {}) {
     default:
       throw new Error(`Unsupported operation: ${operation}`);
   }
+}
+
+function validateCommitSha(value) {
+  const sha = String(value || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("Invalid QA build identifier.");
+  return sha;
 }
 
 function encodeJsonArg(value) {

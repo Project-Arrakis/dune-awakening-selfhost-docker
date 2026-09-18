@@ -25,6 +25,7 @@ import {
   recoverRunningDirectorCapacity,
   readDirectoryInstallationKey,
   readPreviousDirectoryInstallationKey,
+  readPublicModifierMetadata,
   readPublicModifiers,
   readDirectorySettings,
   readGameBuild,
@@ -192,6 +193,65 @@ test("public modifier reporting includes scoped UserEngine overrides", () => {
   }
 });
 
+test("public modifier metadata preserves scope and uses public instance names", () => {
+  const files = fixture();
+  const path = join(files.generatedDir, "gameplay-profile.ini");
+  try {
+    writeFileSync(join(files.generatedDir, "sietch-config.json"), JSON.stringify({
+      maps: {
+        Survival_1: {
+          dimensions: {
+            0: { display_name: "Sietch New", password: "must-not-leak" }
+          }
+        }
+      },
+      partitions: {
+        1: {
+          map: "Survival_1",
+          dimension: 0,
+          display_name: "Sietch New",
+          password: "must-not-leak"
+        },
+        8: {
+          map: "DeepDesert_1",
+          dimension: 0,
+          display_name: "Deep Desert PvE",
+          password: "also-must-not-leak"
+        }
+      }
+    }));
+    writeFileSync(path, [
+      "[Engine:ConsoleVariables]",
+      "Dune.GlobalMiningOutputMultiplier=2.5",
+      "",
+      "[Partition:Survival_1:1:/Script/DuneSandbox.DuneGameMode]",
+      "m_WaterConsumptionRate=0.5",
+      "",
+      "[Partition:Survival_1:2:/Script/DuneSandbox.DuneGameMode]",
+      "m_WaterConsumptionRate=0.75",
+      "",
+      "[PartitionEngine:DeepDesert_1:8:ConsoleVariables]",
+      "sandworm.dune.Enabled=0"
+    ].join("\n"));
+
+    const metadata = readPublicModifierMetadata(path, { repoRoot: files.repoRoot });
+    assert.deepEqual(metadata.modifiers, {
+      "Mining Output": "2.5x",
+      "Water Consumption": "Varies: 0.5x, 0.75x",
+      Sandworms: "Disabled"
+    });
+    assert.deepEqual(metadata.modifierGroups, [
+      { scope: "global", map: "", partitionId: null, dimension: null, label: "Global", modifiers: { "Mining Output": "2.5x" } },
+      { scope: "partition", map: "Survival_1", partitionId: 1, dimension: 0, label: "Sietch New", modifiers: { "Water Consumption": "0.5x" } },
+      { scope: "partition", map: "Survival_1", partitionId: 2, dimension: null, label: "Sietch Partition 2", modifiers: { "Water Consumption": "0.75x" } },
+      { scope: "partition", map: "DeepDesert_1", partitionId: 8, dimension: 0, label: "Deep Desert PvE", modifiers: { Sandworms: "Disabled" } }
+    ]);
+    assert.equal(JSON.stringify(metadata).includes("must-not-leak"), false);
+  } finally {
+    files.cleanup();
+  }
+});
+
 test("heartbeat includes an empty Discord invite so stale directory links are removed", () => {
   const payload = buildHeartbeatPayload(
     { serverId: "server-id", secret: "secret" },
@@ -331,6 +391,7 @@ test("directory snapshot uses compact database aggregates and local metadata", a
       discordInvite: "https://discord.gg/Test_Code",
       publicMetadata: {
         modifiers: {},
+        modifierGroups: [],
         progression: { characters: 0, averageLevel: 0, highestLevel: 0 }
       }
     });
