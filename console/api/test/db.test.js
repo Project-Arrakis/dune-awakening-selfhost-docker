@@ -2345,6 +2345,9 @@ test("vehicle pages and player portal share conservative health calculations", a
   const portalQuery = portalCalls[0];
 
   for (const query of [listQuery, portalQuery]) {
+    assert.match(query.text, /'ornithoptermediumengine_6'::text, 2000::numeric/);
+    assert.match(query.text, /'ornithoptermediumgenerator_6'::text, 2000::numeric/);
+    assert.match(query.text, /coalesce\(known_max, own_max, own_decayed,/);
     assert.match(query.text, /count\(own_current\) over\(partition by template_id\)/);
     assert.match(query.text, /case when current_samples >= 2 then observed_max else null end/);
     assert.match(query.text, /own_current current_durability/);

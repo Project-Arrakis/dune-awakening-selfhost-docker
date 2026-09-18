@@ -883,7 +883,7 @@ export function App() {
       <main className="login-screen">
         <section className="login-panel">
           <h1>Dune Docker Console</h1>
-          <p className="loading-dots">Loading setup</p>
+          <p className="loading-dots">Loading Console</p>
         </section>
       </main>
     );

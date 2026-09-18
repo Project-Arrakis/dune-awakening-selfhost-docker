@@ -228,7 +228,7 @@ async function requireFreshTier3Proof(req, res, body, { auditUrl, action, actor 
   if (!rate.allowed) {
     return deny(429, { error: "Too many attempts. Please wait a few minutes, then try again." }, "rate_limited", { "retry-after": String(rate.retryAfterSeconds) });
   }
-  if (!auth.passwordMatches(body.currentPassword)) {
+  if (!(await auth.passwordMatches(body.currentPassword))) {
     credentialProofRateLimiter.recordFailure(rateKey);
     return deny(400, { error: "Current password is incorrect." }, "bad_password");
   }
@@ -896,7 +896,7 @@ async function handleApi(req, res) {
       return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
     }
     const body = await readJson(req);
-    if (!config.authDisabled && !auth.passwordMatches(body.password)) {
+    if (!config.authDisabled && !(await auth.passwordMatches(body.password))) {
       loginRateLimiter.recordFailure(rateKey);
       return json(res, 401, { error: "Incorrect password. Please try again!" });
     }

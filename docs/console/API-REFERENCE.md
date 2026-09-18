@@ -120,6 +120,11 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 | POST | `/api/updates/qa/apply` | Apply the latest QA pre-release build | None |
 | POST | `/api/updates/qa/reinstall-release` | Reinstall the public release, overwriting a QA pre-release build | None |
 
+Successful game checks are cached for 30 minutes in
+`runtime/generated/game-update-check.json`, including across Console restarts.
+Authenticated browser requests may pass `fresh: true` to force a live Steam
+query; API keys always use the shared cached path.
+
 ---
 
 ## Backups
@@ -442,10 +447,11 @@ always immediate rather than queued when the map is live. See
 name, type, owner, map, and exact id. Response fields mirror the paginated-list
 convention (`rows`, `totalCount`, unfiltered `totalVehicles`). Owner resolves from
 the rank-1 permission holder, falling back to the actor's account owner; the
-`shared_with` roster is the rank 2/3 holders. A component's maximum durability is
-read from its own stats blob (`MaxDurability`, else the decayed cap). If no stored
-maximum exists, it is inferred only when at least two non-null current-durability
-observations exist for the same template; inferred rows set `maxInferred: true`.
+`shared_with` roster is the rank 2/3 holders. A component's maximum durability uses
+a verified game-data override when one is available, then its own stats blob
+(`MaxDurability`, else the decayed cap). If no known or stored maximum exists, it
+is inferred only when at least two non-null current-durability observations exist
+for the same template; inferred rows set `maxInferred: true`.
 Missing current durability remains null and is never treated as 0% or 100%.
 `condition_percent` is the lowest comparable component and
 `condition_estimated` reports whether an inferred maximum contributed. Fuel
