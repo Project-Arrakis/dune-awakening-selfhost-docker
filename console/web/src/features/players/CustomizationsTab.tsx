@@ -90,11 +90,21 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
       });
       const statuses = new Map((response.results || []).map((entry) => [String(entry.itemId || ""), String(entry.status || "Available") as CustomizationRow["status"]]));
       setRows((current) => current.map((row) => statuses.has(row.itemId) ? { ...row, status: statuses.get(row.itemId)! } : row));
-      const parts = [`${response.granted} granted`];
+      const parts: string[] = [];
+      if (response.granted) parts.push(`${response.granted} granted`);
+      if (response.requested) parts.push(`${response.requested} delivery requested`);
       if (response.skipped) parts.push(`${response.skipped} already pending`);
       if (response.failed) parts.push(`${response.failed} failed`);
-      setResult({ key: "customizations", tone: response.failed ? "danger" : "success", text: `${parts.join(" · ")}. ${response.granted ? "Dune will apply the tokens when the character is processed." : "No duplicate tokens were added."}` });
-      onActionLog?.("Grant Customizations", selection.label, String(response.granted), response.failed ? `${response.failed} Failed` : response.skipped ? `${response.skipped} Already Pending` : "Succeeded");
+      if (!parts.length) parts.push("No changes");
+      const detail = response.failed
+        ? "Some requests could not be delivered."
+        : response.requested
+          ? "Dune accepted the request, but cosmetic ownership cannot be verified. The player may need to relog."
+          : response.granted
+            ? "Dune will apply the tokens when the character is processed."
+            : "All selected tokens are already pending. No duplicate tokens were added.";
+      setResult({ key: "customizations", tone: response.failed ? "danger" : "success", text: `${parts.join(" · ")}. ${detail}` });
+      onActionLog?.("Grant Customizations", selection.label, String(response.granted + (response.requested || 0)), response.failed ? `${response.failed} Failed` : response.requested ? `${response.requested} Delivery Requested` : response.skipped ? `${response.skipped} Already Pending` : "Succeeded");
     } catch (grantError) {
       const message = friendlyInlineError(grantError);
       setResult({ key: "customizations", tone: "danger", text: message });
@@ -119,7 +129,7 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
         </div>
         <button disabled={!dbPlayerId || loading || Boolean(busyKey)} onClick={() => void grant({ groupId: "all", label: "all customization sets", count: rows.length })}>Grant All Sets</button>
       </div>
-      <p className="playerAdmin_note">Dune removes cosmetic tokens after applying them, so previously claimed cosmetics cannot be detected here. Tokens still waiting in inventory are shown and skipped automatically.</p>
+      <p className="playerAdmin_note">Dune removes cosmetic tokens after processing them, so the Console cannot verify which cosmetics a player owns. Available means no matching token is currently pending. Tokens still waiting in inventory are shown and skipped automatically.</p>
       <div className="playerAdmin_customizationCards">
         {groups.map((group) => {
           const groupRows = rows.filter((row) => row.groupId === group.id);

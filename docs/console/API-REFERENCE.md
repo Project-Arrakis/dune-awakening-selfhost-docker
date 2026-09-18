@@ -596,6 +596,8 @@ details.
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | GET | `/api/blueprints` | List all blueprints | None |
+| GET | `/api/blueprints/community` | Browse the community Blueprint catalog | `q`, `set`, `sort`, `limit`, `offset` (all optional query params) |
+| GET | `/api/blueprints/community/{id}/preview` | Preview a community blueprint's image | `id` |
 | GET | `/api/blueprints/{blueprintId}/export` | Export single blueprint | `blueprintId` |
 | POST | `/api/blueprints/export` | Bulk export blueprints | `ids[]` (array, max 500) |
 | POST | `/api/blueprints/import` | Import blueprint file | multipart form: `player_id`, `file` |

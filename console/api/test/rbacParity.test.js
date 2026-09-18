@@ -252,6 +252,12 @@ test("parity: DELETE vehicle resolves to vehicles:delete, not the read-only fall
   assert.notEqual(actionForRoute("/api/vehicles/2048", "DELETE"), "vehicles:read");
 });
 
+test("parity: community Blueprint browsing is read-only while installation requires import access", () => {
+  assert.equal(actionForRoute("/api/blueprints/community", "GET"), "blueprints:read");
+  assert.equal(actionForRoute(`/api/blueprints/community/${"1".repeat(8)}-1111-4111-8111-${"1".repeat(12)}/preview`, "GET"), "blueprints:read");
+  assert.equal(actionForRoute(`/api/blueprints/community/${"1".repeat(8)}-1111-4111-8111-${"1".repeat(12)}/install`, "POST"), "blueprints:import");
+});
+
 test("parity: DELETE vehicle queued-delete cancel resolves to vehicles:mutate, not the read-only fallback", () => {
   assert.equal(actionForRoute("/api/vehicles/2048/queued-delete", "DELETE"), "vehicles:mutate");
   assert.notEqual(actionForRoute("/api/vehicles/2048/queued-delete", "DELETE"), "vehicles:read");
