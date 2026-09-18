@@ -130,6 +130,44 @@ test("public modifier reporting ignores retired unsupported modifiers", () => {
   }
 });
 
+test("public modifier reporting converts the augment roll threshold to jackpot chance", () => {
+  const files = fixture();
+  const path = join(files.generatedDir, "gameplay-profile.ini");
+  try {
+    writeFileSync(path, [
+      "[Global:/Script/DuneSandbox.AugmentSettings]",
+      "m_JackpotRollPercentage=0.75",
+      "",
+      "[Partition:Survival_1:1:/Script/DuneSandbox.AugmentSettings]",
+      "m_JackpotRollPercentage=0.50"
+    ].join("\n"));
+    assert.deepEqual(readPublicModifiers(path), {
+      "Augment Jackpot Chance": "Varies: 25%, 50%"
+    });
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("public modifier reporting identifies invalid augment roll thresholds", () => {
+  const files = fixture();
+  const path = join(files.generatedDir, "gameplay-profile.ini");
+  try {
+    writeFileSync(path, [
+      "[Global:/Script/DuneSandbox.AugmentSettings]",
+      "m_JackpotRollPercentage=75",
+      "",
+      "[Partition:Survival_1:1:/Script/DuneSandbox.AugmentSettings]",
+      "m_JackpotRollPercentage=100"
+    ].join("\n"));
+    assert.deepEqual(readPublicModifiers(path), {
+      "Augment Jackpot Chance": "Varies: 75 (invalid; use 0–1), 100 (invalid; use 0–1)"
+    });
+  } finally {
+    files.cleanup();
+  }
+});
+
 test("public modifier reporting includes scoped UserEngine overrides", () => {
   const files = fixture();
   const path = join(files.generatedDir, "gameplay-profile.ini");
@@ -703,6 +741,54 @@ test("reporter uploads only player portal identities requested by the claimed li
     assert.equal(body.snapshots[0].accountHash, requestedHash);
     assert.equal(Object.hasOwn(body.snapshots[0], "platformId"), false);
     assert.equal(Object.hasOwn(body.snapshots[0].data, "exchangeOverview"), false, "server market data must not be duplicated into every private snapshot");
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("reporter answers lightweight player membership probes without enabling the Player Portal", async () => {
+  const files = fixture();
+  const requests = [];
+  const requestedHash = "b".repeat(64);
+  try {
+    const reporter = createPublicDirectoryReporter({
+      repoRoot: files.repoRoot,
+      generatedDir: files.generatedDir,
+      secretsDir: files.secretsDir
+    }, {
+      db: fakeDb(),
+      getBattlegroupRunning: () => true,
+      baseUrl: "https://directory.test/api/v1/servers",
+      collectPlayerServerMemberships: async (_db, hashes) => {
+        assert.deepEqual(hashes, [requestedHash]);
+        return [{ accountHash: requestedHash, found: true, level: 87 }];
+      },
+      collectPlayerPortalSnapshots: async () => {
+        assert.fail("membership discovery must not build a full Player Portal snapshot");
+      },
+      fetchImpl: async (url, options) => {
+        requests.push({ url, options });
+        if (url.endsWith("/heartbeat")) return response({ ok: true, nextHeartbeatSeconds: 60, listingClaimed: false });
+        if (url.endsWith("/claim-status")) return response({
+          ok: true,
+          claimed: false,
+          playerPortalEnabled: false,
+          requestedAccountHashes: [],
+          requestedMembershipHashes: [requestedHash]
+        });
+        return response({ ok: true, stored: 1 });
+      },
+      setTimeoutFn: () => ({ unref() {} }),
+      now: () => Date.parse("2026-08-22T12:00:00Z")
+    });
+
+    await reporter.tick();
+    const upload = requests.find((request) => request.url.endsWith("/player-membership/snapshot"));
+    assert.ok(upload);
+    assert.deepEqual(JSON.parse(upload.options.body), {
+      observedAt: "2026-08-22T12:00:00.000Z",
+      memberships: [{ accountHash: requestedHash, found: true, level: 87 }]
+    });
   } finally {
     files.cleanup();
   }

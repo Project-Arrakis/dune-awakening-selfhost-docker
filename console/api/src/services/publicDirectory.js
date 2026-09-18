@@ -221,7 +221,7 @@ const PUBLIC_MODIFIER_SETTINGS = new Map([
   publicModifier("/Script/DuneSandbox.CharacterRecustomizerSubsystem", "m_CostAmount", "Character Recustomization Cost", "5000", "number"),
   publicModifier("/Script/DuneSandbox.LootSettings", "GlobalLootRightsBehaviour", "Loot Rights", "PerPlayerChestAndNpcDrop", "text"),
   publicModifier("/Script/DuneSandbox.GuildSettings", "m_MaxPendingGuildInvitesAllowed", "Pending Guild Invites", "10", "number"),
-  publicModifier("/Script/DuneSandbox.AugmentSettings", "m_JackpotRollPercentage", "Augment Jackpot Chance", "0.950000", "ratioPercent"),
+  publicModifier("/Script/DuneSandbox.AugmentSettings", "m_JackpotRollPercentage", "Augment Jackpot Chance", "0.950000", "inverseRatioPercent"),
   publicModifier("/Script/DuneSandbox.AugmentSettings", "m_MaxRangedWeaponAugments", "Ranged Weapon Augments", "3", "number"),
   publicModifier("/Script/DuneSandbox.AugmentSettings", "m_MaxMeleeWeaponAugments", "Melee Weapon Augments", "3", "number"),
   publicModifier("/Script/DuneSandbox.AugmentSettings", "m_MaxArmorAugments", "Armor Augments", "2", "number")
@@ -235,6 +235,7 @@ export function createPublicDirectoryReporter(config, options = {}) {
   const getBattlegroupRunning = options.getBattlegroupRunning || isBattlegroupRunning;
   const reconcileProbe = options.reconcileProbe || ((probe) => reconcilePublicProbe(config.repoRoot, probe));
   const collectPlayerPortalSnapshots = options.collectPlayerPortalSnapshots || duneDb.playerPortalSnapshots;
+  const collectPlayerServerMemberships = options.collectPlayerServerMemberships || duneDb.playerServerMemberships;
   const collectPlayerPortalMarketSnapshot = options.collectPlayerPortalMarketSnapshot
     || ((database) => playerPortalMarketSnapshot(config, database));
   const buildPlayerPortalContext = options.collectPlayerPortalContext
@@ -278,6 +279,8 @@ export function createPublicDirectoryReporter(config, options = {}) {
   let state = readStatus(statusPath);
   let lastPlayerPortalUploadAt = 0;
   let lastPlayerPortalRequestSignature = "";
+  let lastMembershipUploadAt = 0;
+  let lastMembershipRequestSignature = "";
 
   function start() {
     if (stopped || timer) return;
@@ -425,6 +428,39 @@ export function createPublicDirectoryReporter(config, options = {}) {
         }
       } else {
         lastPlayerPortalRequestSignature = "";
+      }
+      if (Array.isArray(playerPortalStatus?.requestedMembershipHashes)) {
+        const requestedMemberships = playerPortalStatus.requestedMembershipHashes
+          .map((value) => String(value || "").toLowerCase())
+          .filter((value) => /^[0-9a-f]{64}$/.test(value))
+          .slice(0, 250)
+          .sort();
+        const membershipSignature = requestedMemberships.join(",");
+        if (requestedMemberships.length && (
+          membershipSignature !== lastMembershipRequestSignature
+          || now() - lastMembershipUploadAt >= 60_000
+        )) {
+          try {
+            const memberships = await collectPlayerServerMemberships(getDb(), requestedMemberships);
+            await requestJson(fetchImpl, `${claimBaseUrl}/${encodeURIComponent(identity.serverId)}/player-membership/snapshot`, {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${identity.secret}`,
+                "content-type": "application/json"
+              },
+              body: JSON.stringify({
+                observedAt: new Date(now()).toISOString(),
+                memberships
+              })
+            });
+            lastMembershipUploadAt = now();
+            lastMembershipRequestSignature = membershipSignature;
+          } catch {
+            // Membership discovery is optional and must not interrupt the public heartbeat.
+          }
+        }
+      } else {
+        lastMembershipRequestSignature = "";
       }
       const heartbeatSeconds = clampInteger(
         receipt.nextHeartbeatSeconds,
@@ -872,7 +908,7 @@ function publicModifierValuesEqual(value, defaultValue, format) {
     const right = modifierBoolean(defaultValue);
     return left !== null && right !== null && left === right;
   }
-  if (["multiplier", "number", "ratioPercent", "percent", "duration", "days", "meters"].includes(format)) {
+  if (["multiplier", "number", "ratioPercent", "inverseRatioPercent", "percent", "duration", "days", "meters"].includes(format)) {
     const left = Number(value);
     const right = Number(defaultValue);
     return Number.isFinite(left) && Number.isFinite(right) && left === right;
@@ -891,6 +927,10 @@ function formatPublicModifierValue(value, format) {
   const readable = number.toLocaleString("en-US", { maximumFractionDigits: 2 });
   if (format === "multiplier") return `${readable}x`;
   if (format === "ratioPercent") return `${(number * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%`;
+  if (format === "inverseRatioPercent") {
+    if (number < 0 || number > 1) return `${readable} (invalid; use 0–1)`;
+    return `${((1 - number) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%`;
+  }
   if (format === "percent") return `${readable}%`;
   if (format === "duration") return formatPublicDuration(number);
   if (format === "days") return `${readable} ${number === 1 ? "day" : "days"}`;

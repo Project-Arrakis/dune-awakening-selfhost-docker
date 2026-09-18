@@ -62,7 +62,20 @@ test("usersettings keeps password-bearing files private and metadata secret-free
       assert.deepEqual(fields[scope].filter((field) => legacyGuildFields.includes(field.id)), []);
       assert.equal(fields[scope].filter((field) => field.id === "guild_settings_max_guild_members_allowed").length, 1);
       assert.equal(fields[scope].find((field) => field.id === "guild_settings_max_guild_members_allowed").label, "Max Guild Members Allowed");
+      const jackpot = fields[scope].find((field) => field.id === "augment_jackpot_roll_percentage");
+      assert.equal(jackpot.label, "Augment Jackpot Roll Threshold");
+      assert.equal(jackpot.minimum, 0);
+      assert.equal(jackpot.maximum, 1);
+      assert.match(jackpot.description, /default 0\.95 gives a 5% chance/i);
     }
+
+    const invalidJackpot = runUsersettings(["map-set", "Global", "augment_jackpot_roll_percentage", "75"], env);
+    assert.notEqual(invalidJackpot.status, 0);
+    assert.match(invalidJackpot.stderr, /must be between 0 and 1/i);
+
+    const validJackpot = runUsersettings(["map-set", "Global", "augment_jackpot_roll_percentage", "0.75"], env);
+    assert.equal(validJackpot.status, 0, validJackpot.stderr);
+    assert.match(readFileSync(profile, "utf8"), /m_JackpotRollPercentage=0\.75/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
