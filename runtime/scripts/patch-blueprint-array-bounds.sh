@@ -10,11 +10,11 @@ if [ ! -r "$patch_sql" ]; then
   exit 1
 fi
 if ! docker inspect -f '{{.State.Running}}' dune-postgres 2>/dev/null | grep -qx true; then
-  echo "Cannot normalize blueprint arrays: dune-postgres is not running." >&2
+  echo "Cannot repair Console blueprint arrays: dune-postgres is not running." >&2
   exit 1
 fi
 
-echo "Ensuring imported blueprint arrays use engine-native bounds..."
+echo "Ensuring Console-imported blueprint arrays use the verified format..."
 docker exec -i dune-postgres psql \
   -h 127.0.0.1 \
   -p 5432 \
