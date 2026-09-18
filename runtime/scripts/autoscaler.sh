@@ -193,30 +193,26 @@ publish_rmq_json() {
 
 replay_hagga_travel_handoff() {
   local flow_id="$1"
-  local source_map="$2"
-  local destination_name="$3"
-  local director_log_file origin_id origin_server_id replay_rows
+  local destination_name="$2"
+  local origin_server_id="$3"
+  local director_log_file replay_rows
 
   case "$destination_name" in
     Travel_To_HaggaBasin_*|Travel_To_Hagga_Basin_*) ;;
     *) return 0 ;;
   esac
 
-  origin_id="$(hub_origin_id_for_map "$source_map" 2>/dev/null || true)"
-  [ -n "$origin_id" ] || return 0
-  origin_server_id="$(origin_server_id_for_origin_id "$origin_id" 2>/dev/null || true)"
   [ -n "$origin_server_id" ] || return 0
 
   director_log_file="$(mktemp)"
   docker logs --since "$NAMED_DESTINATION_SINCE" dune-director > "$director_log_file" 2>&1 || true
-  replay_rows="$(FLOW_ID="$flow_id" ORIGIN_ID="$origin_id" LOG_FILE="$director_log_file" python3 - <<'PY'
+  replay_rows="$(FLOW_ID="$flow_id" LOG_FILE="$director_log_file" python3 - <<'PY'
 import base64
 import json
 import os
 import re
 
 flow_id = os.environ.get("FLOW_ID", "")
-origin_id = os.environ.get("ORIGIN_ID", "")
 log_file = os.environ.get("LOG_FILE", "")
 response_re = re.compile(r'Notified player\(s\) of travel response (\S+): (\{.*\})')
 grant_re = re.compile(r'Notified player of travel grant (\S+): (\{.*\})')
@@ -233,8 +229,6 @@ with open(log_file, encoding="utf-8", errors="replace") as f:
         ):
             match = regex.search(line)
             if not match:
-                continue
-            if match.group(1) != origin_id:
                 continue
             try:
                 payload = json.loads(match.group(2))
@@ -686,13 +680,37 @@ remember_demand_event() {
   ) 9>"${DEMAND_EVENT_FILE}.lock"
 }
 
-hub_container_for_map() {
-  case "$1" in
-    SH_Arrakeen) echo "dune-server-sh-arrakeen-3" ;;
-    SH_HarkoVillage) echo "dune-server-sh-harkovillage-4" ;;
-    Story_ProcesVerbal) echo "dune-server-story-procesverbal-9" ;;
-    *) return 1 ;;
-  esac
+named_destination_source_maps() {
+  printf '%s\n' \
+    SH_Arrakeen \
+    SH_HarkoVillage \
+    Story_ProcesVerbal \
+    CB_Story_DestroyedZanovar \
+    CB_Story_OrbitalMonitor
+}
+
+named_destination_source_rows() {
+  local map_list rows map_name partition_id server_id container
+
+  map_list="$(named_destination_source_maps | sed "s/'/''/g; s/.*/'&'/" | paste -sd, -)"
+  rows="$(psql_value "
+    select wp.map || '|' || wp.partition_id || '|' || coalesce(wp.server_id, '')
+    from dune.world_partition wp
+    join dune.farm_state fs on fs.server_id = wp.server_id
+    where wp.map in (${map_list})
+      and coalesce(wp.server_id, '') <> ''
+      and coalesce(fs.alive, false) = true
+    order by wp.map, wp.partition_id;
+  ")"
+
+  while IFS='|' read -r map_name partition_id server_id; do
+    [ -n "${map_name:-}" ] || continue
+    [ -n "${partition_id:-}" ] || continue
+    [ -n "${server_id:-}" ] || continue
+    container="$(dynamic_container_name_for_partition "$partition_id" 2>/dev/null || true)"
+    [ -n "$container" ] || continue
+    printf '%s|%s|%s\n' "$map_name" "$container" "$server_id"
+  done <<< "$rows"
 }
 
 hub_travel_seen() {
@@ -1890,16 +1908,14 @@ ensure_overmap_travel_maps_prewarmed() {
 }
 
 scan_named_destination_failures() {
-  local source_map container log_file handoff_rows running_containers
+  local source_map container source_server_id log_file handoff_rows
 
   director_heal_due named_destination_failures "$NAMED_DESTINATION_SCAN_SECONDS" || return 0
 
-  running_containers="$(docker ps --format '{{.Names}}')"
-
-  for source_map in SH_Arrakeen SH_HarkoVillage Story_ProcesVerbal; do
-    container="$(hub_container_for_map "$source_map" 2>/dev/null || true)"
-    [ -n "$container" ] || continue
-    printf '%s\n' "$running_containers" | grep -qx "$container" || continue
+  while IFS='|' read -r source_map container source_server_id; do
+    [ -n "${source_map:-}" ] || continue
+    [ -n "${container:-}" ] || continue
+    [ -n "${source_server_id:-}" ] || continue
 
     log_file="$(mktemp)"
     docker logs --since "$NAMED_DESTINATION_SINCE" "$container" > "$log_file" 2>&1 || true
@@ -2058,12 +2074,12 @@ PY
       " >/dev/null
 
       timeout 20 runtime/scripts/publish-network-server-state-overrides.sh map "$target_map" >/dev/null 2>&1 || true
-      replay_hagga_travel_handoff "$flow_id" "$source_map" "$destination_name"
+      replay_hagga_travel_handoff "$flow_id" "$destination_name" "$source_server_id"
 
       remember_hub_travel "$flow_id" "$account_id" "$source_map" "$target_map" "$(date +%s)"
       echo "NAMED-TRAVEL account=$account_id flow=$flow_id destination=$destination_name from=$source_map to=$target_map current_map=$current_map server=$target_server_id cleaned_respawns=$target_respawn_map"
     done <<< "$handoff_rows"
-  done
+  done < <(named_destination_source_rows)
 }
 
 scan_idle_servers() {
