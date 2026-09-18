@@ -32,4 +32,3 @@ test("deleted-character recovery backs up and runs only while the affected Sietc
   assert.match(body, /"RECOVER DELETED CHARACTER"/);
   assert.match(body, /if \(recoveryError\) throw recoveryError/);
 });
-
