@@ -3630,7 +3630,8 @@ async function teleportBaseDestination(db, totemId) {
 
 export async function playerTeleportDestinations(db, id) {
   const source = await playerTeleportIdentity(db, id);
-  const [players, bases] = await Promise.all([
+  const sourceOnline = playerOnline(source);
+  const [players, bases, partitionResult] = await Promise.all([
     db.query(`
       select a.id::text as id, coalesce(ps.character_name, 'Unknown') as name,
              coalesce(ps.online_status::text, 'Offline') as online_status,
@@ -3668,15 +3669,59 @@ export async function playerTeleportDestinations(db, id) {
         limit 1
       ) owner on true
       where a.transform is not null and a.partition_id = $2
-      order by is_own desc, lower(coalesce(owner.character_name, '')), lower(${BASE_NAME_SQL}), t.id`, [source.accountId, source.partitionId])
+      order by is_own desc, lower(coalesce(owner.character_name, '')), lower(${BASE_NAME_SQL}), t.id`, [source.accountId, source.partitionId]),
+    liveMapPartitions(db)
   ]);
-  return { players: players.rows, bases: bases.rows };
+  const partitions = [...(partitionResult.rows || [])];
+  if (source.partitionId > 0 && !partitions.some((row) => Number(row.partition_id) === source.partitionId)) {
+    partitions.push({
+      map: source.map,
+      partition_id: source.partitionId,
+      name: "Current Partition",
+      marker_count: 0,
+      alive: null,
+      ready: null
+    });
+  }
+  return {
+    source: {
+      map: source.map,
+      partition_id: source.partitionId,
+      online_status: source.onlineStatus,
+      online: sourceOnline
+    },
+    partitions: partitions.map((row) => ({
+      ...row,
+      current: Number(row.partition_id) === source.partitionId,
+      selectable: sourceOnline
+        ? Number(row.partition_id) === source.partitionId
+        : ["haggabasin", "deepdesert"].includes(String(row.map || "").toLowerCase())
+    })),
+    players: players.rows,
+    bases: bases.rows
+  };
 }
 
-export async function teleportPlayer(db, id, body = {}) {
+export async function teleportPlayer(db, id, body = {}, { allowOfflineCoordinates = false } = {}) {
   const source = await playerTeleportIdentity(db, id);
-  if (!playerOnline(source)) throw new Error("The player must be online to use live teleport.");
   const mode = String(body.mode || "coordinates");
+  if (!playerOnline(source)) {
+    if (mode !== "coordinates" || !allowOfflineCoordinates) {
+      throw new Error("The player must be online to use live teleport.");
+    }
+    const requestedPartition = intParam(body.partitionId, "destination partition id", 1);
+    const allowedPartitions = (await liveMapPartitions(db)).rows || [];
+    if (!allowedPartitions.some((row) => Number(row.partition_id) === requestedPartition)) {
+      throw new Error("Choose a valid Hagga Basin or Deep Desert destination partition.");
+    }
+    const result = await teleportOfflinePlayerToCoords(db, source.flsId, {
+      x: finiteTeleportCoordinate(body.x, "X"),
+      y: finiteTeleportCoordinate(body.y, "Y"),
+      z: finiteTeleportCoordinate(body.z, "Z"),
+      partitionId: requestedPartition
+    });
+    return { path: "offline", ...result };
+  }
   let destination;
   if (mode === "player") {
     destination = await teleportPlayerDestination(db, body.destinationId);
