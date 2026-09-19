@@ -219,6 +219,33 @@ test("player announcements render map names and target the matching map only", a
   assert.equal(janeLeft.skippedNoRecipients, 1);
 });
 
+test("player announcements use the patch 1.5 story map names", async () => {
+  for (const [map, expectedName] of [
+    ["CB_Story_DestroyedZanovar", "Arrakeen Spaceport & Zanovar"],
+    ["CB_Story_OrbitalMonitor", "Sardaukar Orbital Monitor"]
+  ]) {
+    const cfg = config();
+    cfg.mockMode = false;
+    savePlayerAnnouncements(cfg, {
+      joinEnabled: true,
+      joinMessage: "{playerName} entered {mapName}",
+      leaveEnabled: false,
+      leaveMessage: "{playerName} left {mapName}"
+    });
+    const calls = [];
+    const result = await runPlayerAnnouncementScan(cfg, [player("John", "ABCDEF1234567890", { map })], {
+      persona: { funcomId: "Server#4242", hexFlsId: "5E121CE000000001" },
+      publishMapChat: async (_config, fields) => {
+        calls.push(fields);
+        return { stdout: "publish=ok" };
+      }
+    });
+
+    assert.equal(result.sent, 1);
+    assert.equal(calls[0].message, `John entered ${expectedName}`);
+  }
+});
+
 test("player announcements ignore offline rows", async () => {
   const cfg = config();
   savePlayerAnnouncements(cfg, { joinEnabled: true, joinMessage: "{playerName} joined", leaveEnabled: true, leaveMessage: "{playerName} left" });

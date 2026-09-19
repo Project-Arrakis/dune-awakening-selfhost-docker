@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 [ -r runtime/generated/image-tags.env ] && . runtime/generated/image-tags.env
+source runtime/scripts/host-paths.sh
 source runtime/scripts/image-tags.sh
 source runtime/scripts/runtime-env.sh
 WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
@@ -20,7 +21,7 @@ PROJECT_DB_ROLE="dune"
 PROJECT_ROLE_WAS_SUPERUSER=""
 ROLE_ELEVATION_MARKER="${DUNE_DB_UPDATE_ROLE_MARKER:-runtime/generated/db-update-role-elevated}"
 EXTERNAL_TRIGGER_MARKER="${DUNE_DB_UPDATE_EXTERNAL_TRIGGER_MARKER:-runtime/generated/db-update-external-triggers.sql}"
-DB_UPDATE_PG_DUMP_WRAPPER="$(pwd)/runtime/scripts/db-update-pg-dump"
+DB_UPDATE_PG_DUMP_WRAPPER="$(host_path "$PWD/runtime/scripts/db-update-pg-dump")"
 START_POSTGRES_SCRIPT="${DUNE_DB_UPDATE_START_POSTGRES_SCRIPT:-runtime/scripts/start-postgres.sh}"
 
 ensure_postgres_ready() {
@@ -57,6 +58,8 @@ DO \$dune_restore_trigger\$
 BEGIN
   EXECUTE \$dune_trigger_definition\$${trigger_definition}\$dune_trigger_definition\$;
 EXCEPTION
+  WHEN duplicate_object THEN
+    RAISE NOTICE 'Project-owned database trigger already present: %', SQLERRM;
   WHEN invalid_schema_name OR undefined_function OR undefined_table THEN
     RAISE NOTICE 'Skipping stale project-owned database trigger: %', SQLERRM;
 END
@@ -287,6 +290,7 @@ finish_database_update() {
   echo "=== Apply post-migration database compatibility patches ==="
   runtime/scripts/patch-coriolis-base-backups.sh
   runtime/scripts/patch-vehicle-recovery-guard.sh
+  runtime/scripts/patch-blueprint-array-bounds.sh
   exit 0
 }
 

@@ -65,6 +65,7 @@ def apply_host_ownership(path: Path) -> None:
         os.chown(path, *owner)
 
 BUILDING_SETTINGS_SECTION = "/Script/DuneSandbox.BuildingSettings"
+SERVER_CUSTOM_SETTINGS_SECTION = "/Script/DuneSandbox.UserServerCustomSettings"
 CORIOLIS_SUBSYSTEM_SECTION = "/Script/DuneSandbox.CoriolisSubsystem"
 LANDSRAAD_SETTINGS_SECTION = "/Script/DuneSandbox.LandsraadSettings"
 LANDSRAAD_DATA_KEY = "Data"
@@ -174,6 +175,72 @@ RETIRED_USERGAME_FIELDS = {
     # reference inside m_MiningSettings, not a scalar DuneGameMode multiplier.
     "cutteray_hem_multiplier_per_node_tier_table": ("/Script/DuneSandbox.DuneGameMode", "CutterayHemMultiplierPerNodeTierTable", "1.0"),
     "global_damage_to_npcs_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalDamageToNpcsMultiplier", "1.0"),
+    "building_restriction_limits_enabled": (BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "True"),
+    # Patch 1.5 moved this server setting to ServerCustomSettings.ini. Reserve
+    # the former key so saved profiles from older releases cannot leak it back
+    # into the server's UserGame.ini after migration.
+}
+
+# Native Patch 1.5 server controls. These live in a dedicated profile scope so
+# they never appear in the generated server UserGame.ini, while retaining the
+# same Global -> Map -> Partition inheritance used by the existing editor.
+SERVER_CUSTOM_FIELDS = {
+    "pvp_mode": (SERVER_CUSTOM_SETTINGS_SECTION, "PVPMode", "Limited"),
+    "gathering_amount": (SERVER_CUSTOM_SETTINGS_SECTION, "GatheringAmount", "1.000000"),
+    "crafting_cost": (SERVER_CUSTOM_SETTINGS_SECTION, "CraftingCost", "1.000000"),
+    "water_extraction_rate": (SERVER_CUSTOM_SETTINGS_SECTION, "WaterExtractionRate", "1.000000"),
+    "crafting_time_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "CraftingTimeMultiplier", "1.000000"),
+    "building_cost_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "BuildingCostMultiplier", "1.000000"),
+    "resource_respawn_speed": (SERVER_CUSTOM_SETTINGS_SECTION, "ResourceRespawnSpeed", "1.000000"),
+    "loot_respawn_speed": (SERVER_CUSTOM_SETTINGS_SECTION, "LootRespawnSpeed", "1.000000"),
+    "fuel_burn_time_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "FuelBurnTimeMultiplier", "1.000000"),
+    "inventory_volume_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "InventoryVolumeMultiplier", "1.000000"),
+    "player_damage_to_player": (SERVER_CUSTOM_SETTINGS_SECTION, "PlayerDamageToPlayer", "1.000000"),
+    "player_damage_to_npc": (SERVER_CUSTOM_SETTINGS_SECTION, "PlayerDamageToNPC", "1.000000"),
+    "player_damage_to_vehicle": (SERVER_CUSTOM_SETTINGS_SECTION, "PlayerDamageToVehicle", "1.000000"),
+    "player_stamina_drain": (SERVER_CUSTOM_SETTINGS_SECTION, "PlayerStaminaDrain", "1.000000"),
+    "intel_points_gain_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "IntelPointsGainMultiplier", "1.000000"),
+    "npc_health": (SERVER_CUSTOM_SETTINGS_SECTION, "NPCHealth", "1.000000"),
+    "npc_damage_to_player": (SERVER_CUSTOM_SETTINGS_SECTION, "NPCDamageToPlayer", "1.000000"),
+    "npc_damage_to_npc": (SERVER_CUSTOM_SETTINGS_SECTION, "NPCDamageToNPC", "1.000000"),
+    "npc_respawn_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "NPCRespawnMultiplier", "1.000000"),
+    "pvp_damage_structures": (SERVER_CUSTOM_SETTINGS_SECTION, "PVPDamageStructures", "1.000000"),
+    "global_xp_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "GlobalXpMultiplier", "1.000000"),
+    "combat_xp": (SERVER_CUSTOM_SETTINGS_SECTION, "CombatXp", "1.000000"),
+    "gathering_xp": (SERVER_CUSTOM_SETTINGS_SECTION, "GatheringXp", "1.000000"),
+    "mission_xp": (SERVER_CUSTOM_SETTINGS_SECTION, "MissionXp", "1.000000"),
+    "item_durability_drain_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "ItemDurabilityDrainMultiplier", "1.000000"),
+    "enable_item_max_durability_loss": (SERVER_CUSTOM_SETTINGS_SECTION, "bEnableItemMaxDurabilityLoss", "True"),
+    "player_shield_damage_absorption_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "PlayerShieldDamageAbsorptionMultiplier", "1.000000"),
+    "npc_shield_damage_absorption_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "NPCShieldDamageAbsorptionMultiplier", "1.000000"),
+    "heat_buildup_rate": (SERVER_CUSTOM_SETTINGS_SECTION, "HeatBuildupRate", "1.000000"),
+    "cold_buildup_rate": (SERVER_CUSTOM_SETTINGS_SECTION, "ColdBuildupRate", "1.000000"),
+    "thirst_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "ThirstMultiplier", "1.000000"),
+    "drop_equipment_on_death": (SERVER_CUSTOM_SETTINGS_SECTION, "DropEquipmentOnDeath", "Default"),
+    "allow_dynamic_building_damage": (SERVER_CUSTOM_SETTINGS_SECTION, "bAllowDynamicBuildingDamage", "True"),
+    "allow_sandstorms": (SERVER_CUSTOM_SETTINGS_SECTION, "bAllowSandstorms", "True"),
+    "allow_sandworms": (SERVER_CUSTOM_SETTINGS_SECTION, "bAllowSandworms", "True"),
+    "sandworm_consequences": (SERVER_CUSTOM_SETTINGS_SECTION, "SandwormConsequences", "All"),
+    "player_death_loot_rule": (SERVER_CUSTOM_SETTINGS_SECTION, "PlayerDeathLootRule", "DependsOnSecurityZone"),
+    "building_restriction_limits_enabled": (SERVER_CUSTOM_SETTINGS_SECTION, "bIsBuildingRestrictionsEnabled", "True"),
+    "fiefdom_limit": (SERVER_CUSTOM_SETTINGS_SECTION, "FiefdomLimit", "3"),
+    "building_piece_limit_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "BuildingPieceLimitMultiplier", "1.000000"),
+    "building_infinite_stability": (SERVER_CUSTOM_SETTINGS_SECTION, "bBuildingInfiniteStability", "False"),
+    "base_backup_tool_time_restriction": (SERVER_CUSTOM_SETTINGS_SECTION, "BaseBackupToolTimeRestriction", "10.000000"),
+    "landsraad_contribution_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "LandsraadContributionMultiplier", "1.000000"),
+    "landsraad_specialization_xp_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "LandsraadSpecializationXpMultiplier", "1.000000"),
+    "landsraad_faction_standing_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "LandsraadFactionStandingMultiplier", "1.000000"),
+    "landsraad_disable_decree_reroll_limit": (SERVER_CUSTOM_SETTINGS_SECTION, "bLandsraadDisableDecreeRerollLimit", "False"),
+}
+
+SERVER_CUSTOM_FIELD_CATEGORIES = {
+    **{key: "Combat" for key in ("pvp_mode", "player_damage_to_player", "player_damage_to_npc", "player_damage_to_vehicle", "npc_health", "npc_damage_to_player", "npc_damage_to_npc", "npc_respawn_multiplier", "pvp_damage_structures", "player_shield_damage_absorption_multiplier", "npc_shield_damage_absorption_multiplier")},
+    **{key: "Progression" for key in ("global_xp_multiplier", "combat_xp", "gathering_xp", "mission_xp", "intel_points_gain_multiplier")},
+    **{key: "Crafting And Resources" for key in ("gathering_amount", "crafting_cost", "water_extraction_rate", "crafting_time_multiplier", "building_cost_multiplier", "resource_respawn_speed", "loot_respawn_speed", "fuel_burn_time_multiplier", "inventory_volume_multiplier")},
+    **{key: "Survival" for key in ("player_stamina_drain", "heat_buildup_rate", "cold_buildup_rate", "thirst_multiplier", "allow_sandstorms", "allow_sandworms", "sandworm_consequences")},
+    **{key: "Death And Durability" for key in ("item_durability_drain_multiplier", "enable_item_max_durability_loss", "drop_equipment_on_death", "player_death_loot_rule")},
+    **{key: "Building" for key in ("allow_dynamic_building_damage", "building_restriction_limits_enabled", "fiefdom_limit", "building_piece_limit_multiplier", "building_infinite_stability", "base_backup_tool_time_restriction")},
+    **{key: "Landsraad" for key in ("landsraad_contribution_multiplier", "landsraad_specialization_xp_multiplier", "landsraad_faction_standing_multiplier", "landsraad_disable_decree_reroll_limit")},
 }
 
 ENGINE_FIELDS = {
@@ -388,8 +455,8 @@ FIELD_LABELS = {
 }
 
 # Maps a field id to the client-side ini filename it also must be applied to
-# (players copy Game.ini into Saved/Config/Windows/ and Engine.ini into
-# Saved/Config/WindowsClient/). Both client INI generators use this as an
+# (players copy Game.ini and Engine.ini into Saved/Config/Windows/). Both
+# client INI generators use this as an
 # explicit allowlist: server-only and unknown Advanced-editor values must never
 # be offered to players.
 CLIENT_FILE_REQUIRED = {
@@ -477,7 +544,6 @@ MAP_FIELDS = {
     "building_blueprint_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BuildingBlueprintMaxExtensions", "4"),
     "base_backup_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BaseBackupMaxExtensions", "8"),
     "base_backup_tool_time_restriction_seconds": (BUILDING_SETTINGS_SECTION, "m_BaseBackupToolTimeRestrictionInSeconds", "604800"),
-    "building_restriction_limits_enabled": (BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "True"),
     "mitigate_all_sandstorm_damage": (BUILDING_SETTINGS_SECTION, "m_bMitigateAllSandstormDamage", "False"),
     "fallback_default_building_health": (BUILDING_SETTINGS_SECTION, "m_FallbackDefaultBuildingHealth", "5000.000000"),
     "fallback_default_placeable_health": (BUILDING_SETTINGS_SECTION, "m_FallbackDefaultPlaceableHealth", "1000.000000"),
@@ -696,8 +762,12 @@ PROFILE_HEADER_ORDER = {
     "Map": 3,
     "PartitionEngine": 4,
     "Partition": 5,
+    "ServerCustomGlobal": 6,
+    "ServerCustomMap": 7,
+    "ServerCustomPartition": 8,
 }
 ENGINE_PROFILE_SCOPES = {"Engine", "MapEngine", "PartitionEngine"}
+SERVER_CUSTOM_PROFILE_SCOPES = {"ServerCustomGlobal", "ServerCustomMap", "ServerCustomPartition"}
 # The Advanced UserEngine.ini tab displays/accepts UserGame's Global/Map/Partition
 # vocabulary for readability, translated to/from the internal Engine/MapEngine/
 # PartitionEngine tags at the profile_engine_text()/profile_engine_write_encoded()
@@ -848,6 +918,7 @@ def secure_managed_settings_permissions() -> None:
     candidates = [CONFIG_PATH, PROFILE_PATH, SIETCH_CONFIG_PATH]
     candidates.extend(game_root.glob("*/Saved/UserSettings/UserEngine.ini"))
     candidates.extend(game_root.glob("*/Saved/UserSettings/UserGame.ini"))
+    candidates.extend(game_root.glob("*/Saved/Config/LinuxServer/ServerCustomSettings.ini"))
     for path in candidates:
         try:
             if path.is_file():
@@ -1025,6 +1096,12 @@ def sorted_profile_sections(sections: list[dict]) -> list[dict]:
 
 def parse_profile_header(header: str) -> dict:
     parts = header.split(":")
+    if len(parts) >= 2 and parts[0] == "ServerCustomGlobal":
+        return {"scope": "ServerCustomGlobal", "map": "", "partition": "", "ini_section": ":".join(parts[1:])}
+    if len(parts) >= 3 and parts[0] == "ServerCustomMap":
+        return {"scope": "ServerCustomMap", "map": canonical_map(parts[1]), "partition": "", "ini_section": ":".join(parts[2:])}
+    if len(parts) >= 4 and parts[0] == "ServerCustomPartition":
+        return {"scope": "ServerCustomPartition", "map": canonical_map(parts[1]), "partition": parts[2], "ini_section": ":".join(parts[3:])}
     if len(parts) >= 2 and parts[0] == "Global":
         return {"scope": "Global", "map": "", "partition": "", "ini_section": ":".join(parts[1:])}
     if len(parts) >= 3 and parts[0] == "Map":
@@ -1053,6 +1130,12 @@ def profile_header(scope: str, section: str, map_name: str = "", partition_id: s
         return f"Partition:{canonical_map(map_name)}:{partition_id}:{section}"
     if scope == "partition_engine":
         return f"PartitionEngine:{canonical_map(map_name)}:{partition_id}:{section}"
+    if scope == "server_custom_global":
+        return f"ServerCustomGlobal:{section}"
+    if scope == "server_custom_map":
+        return f"ServerCustomMap:{canonical_map(map_name)}:{section}"
+    if scope == "server_custom_partition":
+        return f"ServerCustomPartition:{canonical_map(map_name)}:{partition_id}:{section}"
     raise SystemExit(f"Unknown profile scope: {scope}")
 
 
@@ -1064,15 +1147,18 @@ def find_profile_section(profile: dict, scope: str, section: str, map_name: str 
         "map_engine": "MapEngine",
         "partition": "Partition",
         "partition_engine": "PartitionEngine",
+        "server_custom_global": "ServerCustomGlobal",
+        "server_custom_map": "ServerCustomMap",
+        "server_custom_partition": "ServerCustomPartition",
     }[scope]
     target_map = canonical_map(map_name) if map_name else ""
     target_partition = str(partition_id or "")
     for block in profile.get("sections", []):
         if block.get("scope") != target_scope or block.get("ini_section") != section:
             continue
-        if target_scope in {"Map", "MapEngine"} and block.get("map") != target_map:
+        if target_scope in {"Map", "MapEngine", "ServerCustomMap"} and block.get("map") != target_map:
             continue
-        if target_scope in {"Partition", "PartitionEngine"} and (block.get("map") != target_map or str(block.get("partition", "")) != target_partition):
+        if target_scope in {"Partition", "PartitionEngine", "ServerCustomPartition"} and (block.get("map") != target_map or str(block.get("partition", "")) != target_partition):
             continue
         return block
     if not create:
@@ -1740,6 +1826,16 @@ def validate_profile_port_ranges(profile: dict) -> None:
 
 
 def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str, value: str) -> None:
+    if scope in {"server_custom_global", "server_custom_map", "server_custom_partition"}:
+        if field_id not in SERVER_CUSTOM_FIELDS:
+            raise SystemExit(f"Unknown Server Custom Settings field: {field_id}")
+        target_map = canonical_map(map_name or "Survival_1")
+        target_partition = str(partition_id or "").strip()
+        if scope == "server_custom_partition" and not target_partition:
+            raise SystemExit("Partition Server Custom Settings save requires a partition id.")
+        section, key, _default = SERVER_CUSTOM_FIELDS[field_id]
+        profile_set_key(profile, scope, section, key, value, target_map, target_partition)
+        return
     if field_id in LANDSRAAD_DATA_FIELDS:
         if scope != "global":
             raise SystemExit("Landsraad schedule and contract modifiers must use global scope.")
@@ -2001,6 +2097,70 @@ def merged_partition_values(config: dict, map_name: str, partition_id: str) -> d
     return profile_partition_values(read_profile(), map_name, partition_id)
 
 
+def server_custom_scope_chain(map_name: str, partition_id: str = "") -> list[tuple[str, str, str]]:
+    target_map = canonical_map(map_name or "Survival_1")
+    scopes = [("server_custom_global", "", "")]
+    if target_map:
+        scopes.append(("server_custom_map", target_map, ""))
+    if partition_id:
+        scopes.append(("server_custom_partition", target_map, str(partition_id)))
+    return scopes
+
+
+def server_custom_profile_value(profile: dict, field_id: str, map_name: str, partition_id: str = "") -> tuple[str | None, bool]:
+    section, key, _default = SERVER_CUSTOM_FIELDS[field_id]
+    value = None
+    configured = False
+    for scope, target_map, target_partition in server_custom_scope_chain(map_name, partition_id):
+        found = profile_get_key(profile, scope, section, key, target_map, target_partition)
+        if found is not None:
+            value = found
+            configured = True
+    return value, configured
+
+
+def legacy_building_restriction_value(profile: dict, map_name: str, partition_id: str = "") -> tuple[str | None, bool]:
+    section, key, _default = RETIRED_USERGAME_FIELDS["building_restriction_limits_enabled"]
+    value = None
+    configured = False
+    scopes = [("global", "", ""), ("map", canonical_map(map_name or "Survival_1"), "")]
+    if partition_id:
+        scopes.append(("partition", canonical_map(map_name or "Survival_1"), str(partition_id)))
+    for scope, target_map, target_partition in scopes:
+        found = profile_get_key(profile, scope, section, key, target_map, target_partition)
+        if found is not None:
+            value = found
+            configured = True
+    return value, configured
+
+
+def server_custom_values(profile: dict, map_name: str, partition_id: str = "", include_materialized: bool = True) -> dict[str, str]:
+    target_map = canonical_map(map_name or "Survival_1")
+    values = {field_id: str(spec[2]) for field_id, spec in SERVER_CUSTOM_FIELDS.items()}
+    if include_materialized:
+        path = saved_dir_for(target_map, partition_id or None) / "Config" / "LinuxServer" / "ServerCustomSettings.ini"
+        for field_id, (section, key, _default) in SERVER_CUSTOM_FIELDS.items():
+            current = read_ini_value(path, section, key)
+            if current is not None:
+                values[field_id] = current
+    for field_id in SERVER_CUSTOM_FIELDS:
+        configured_value, configured = server_custom_profile_value(profile, field_id, target_map, partition_id)
+        if configured:
+            values[field_id] = str(configured_value)
+    legacy_value, legacy_configured = legacy_building_restriction_value(profile, target_map, partition_id)
+    _native_value, native_configured = server_custom_profile_value(profile, "building_restriction_limits_enabled", target_map, partition_id)
+    if legacy_configured and not native_configured:
+        values["building_restriction_limits_enabled"] = str(legacy_value)
+    return values
+
+
+def print_server_custom_values(scope: str, map_name: str, partition_id: str = "") -> int:
+    target_map = canonical_map(map_name or "Survival_1")
+    include_materialized = scope != "global"
+    values = server_custom_values(read_profile(), target_map, partition_id if scope == "partition" else "", include_materialized)
+    return print_rows(values, SERVER_CUSTOM_FIELDS)
+
+
 def profile_map_engine_values(profile: dict, map_name: str) -> dict[str, str]:
     target_map = canonical_map(map_name)
     values = profile_engine_values(profile)
@@ -2084,7 +2244,7 @@ def metadata() -> int:
             "default": "" if default is None else str(default),
             "type": FIELD_TYPE_OVERRIDES.get(field_id, infer_field_type(default)),
             "clientFile": CLIENT_FILE_REQUIRED.get(field_id, ""),
-            "category": ENGINE_FIELD_CATEGORIES.get(field_id, ""),
+            "category": SERVER_CUSTOM_FIELD_CATEGORIES.get(field_id, "") if scope == "serverCustom" else ENGINE_FIELD_CATEGORIES.get(field_id, ""),
             "description": FIELD_DESCRIPTIONS.get(field_id, ""),
             "label": FIELD_LABELS.get(field_id, ""),
             "minimum": minimum,
@@ -2119,6 +2279,7 @@ def metadata() -> int:
         "game": [row("game", key, spec) for key, spec in public_game_fields.items()],
         "partition": [row("partition", key, spec) for key, spec in public_partition_fields.items()],
         "partitionEngine": [row("partitionEngine", key, spec) for key, spec in public_partition_engine_fields.items()],
+        "serverCustom": [row("serverCustom", key, spec) for key, spec in SERVER_CUSTOM_FIELDS.items()],
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
@@ -2535,6 +2696,16 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
             continue
         section_lines.setdefault(section, []).append(f"{key}={value}")
 
+    # The server-side control moved to ServerCustomSettings.ini in Patch 1.5,
+    # while clients still consume the matching legacy Game.ini property.
+    custom_values = server_custom_values(profile, target_map or "Survival_1", target_partition, include_materialized=bool(target_map))
+    restriction_value = custom_values["building_restriction_limits_enabled"]
+    restriction_default = SERVER_CUSTOM_FIELDS["building_restriction_limits_enabled"][2]
+    if not field_value_is_default("building_restriction_limits_enabled", restriction_value, restriction_default):
+        section_lines.setdefault(BUILDING_SETTINGS_SECTION, []).append(
+            f"m_bBuildingRestrictionLimitsEnabled={restriction_value}"
+        )
+
     target_label = "global UserGame" if not target_map else target_map if not target_partition else f"{target_map} partition {target_partition}"
     return render_ini_sections(section_lines, [
         "; Game.ini for the Dune: Awakening client.",
@@ -2572,7 +2743,7 @@ def client_engine_ini(profile: dict, map_name: str = "", partition_id: str | Non
     return render_ini_sections(section_lines, [
         "; Engine.ini for the Dune: Awakening client.",
         f"; Client-required settings generated from Docker UserEngine.ini values for {target_label}.",
-        "; Merge these sections into Saved/Config/WindowsClient/Engine.ini while the game is closed.",
+        "; Merge these sections into Saved/Config/Windows/Engine.ini while the game is closed.",
         "; Only settings changed from the default and known to require client configuration are listed.",
         "; Remove keys from an earlier generated copy when they are no longer listed here.",
     ])
@@ -2584,6 +2755,27 @@ def write_compiled_userengine(path: Path, profile: dict, map_name: str = "", par
 
 def write_compiled_usergame(path: Path, profile: dict, map_name: str, partition_id: str | None = None) -> None:
     atomic_write_text(path, compiled_usergame_ini(profile, map_name, partition_id))
+
+
+def write_server_custom_settings(saved_dir: Path, profile: dict, map_name: str, partition_id: str | None = None) -> None:
+    """Materialize managed Patch-1.5 native settings without replacing the file.
+
+    Only fields explicitly managed through the Console are updated in an
+    existing game-created file. This preserves unrelated/manual values. A new
+    file receives Funcom's defaults so a fresh map has a complete valid file.
+    """
+    target_map = canonical_map(map_name)
+    target_partition = str(partition_id or "")
+    path = saved_dir / "Config" / "LinuxServer" / "ServerCustomSettings.ini"
+    new_file = not path.exists()
+    values = server_custom_values(profile, target_map, target_partition, include_materialized=True)
+    update_ini_key(path, SERVER_CUSTOM_SETTINGS_SECTION, "DifficultyLevel", "Custom")
+    for field_id, (section, key, _default) in SERVER_CUSTOM_FIELDS.items():
+        _value, configured = server_custom_profile_value(profile, field_id, target_map, target_partition)
+        if field_id == "building_restriction_limits_enabled" and not configured:
+            _legacy_value, configured = legacy_building_restriction_value(profile, target_map, target_partition)
+        if new_file or configured:
+            update_ini_key(path, section, key, values[field_id])
 
 
 def safe_runtime_dir_name(map_name: str, partition_id: str) -> str:
@@ -2702,6 +2894,12 @@ def bulk_save(scope: str, map_name: str, partition_id: str, encoded_values: str)
             set_profile_field(profile, "global", "", "", field_id, serialized)
         elif scope == "partition":
             set_profile_field(profile, "partition", target_map, target_partition, field_id, serialized)
+        elif scope == "serverCustomGlobal":
+            set_profile_field(profile, "server_custom_global", "", "", field_id, serialized)
+        elif scope == "serverCustomMap":
+            set_profile_field(profile, "server_custom_map", target_map, "", field_id, serialized)
+        elif scope == "serverCustomPartition":
+            set_profile_field(profile, "server_custom_partition", target_map, target_partition, field_id, serialized)
         elif scope == "map":
             set_profile_field(profile, "map", target_map, "", field_id, serialized)
         else:
@@ -2742,7 +2940,7 @@ def profile_game_text() -> str:
             "; Edit this single file for all map and partition UserGame settings.",
             "; Docker applies the correct values to each server when maps start or restart.",
         ],
-        "sections": [block for block in profile.get("sections", []) if block.get("scope") not in ENGINE_PROFILE_SCOPES],
+        "sections": [block for block in profile.get("sections", []) if block.get("scope") not in ENGINE_PROFILE_SCOPES | SERVER_CUSTOM_PROFILE_SCOPES],
     }
     return serialize_profile(game_profile)
 
@@ -3242,12 +3440,13 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         if server_only in client_game:
             raise SystemExit(f"Server-only UserGame value leaked into client Game.ini export: {server_only}")
     profile_set_key(reparsed, "global", BUILDING_SETTINGS_SECTION, "m_MaxNumLandclaimSegments", "20")
-    profile_set_key(reparsed, "global", BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "False")
+    profile_set_key(reparsed, "server_custom_global", SERVER_CUSTOM_SETTINGS_SECTION, "bIsBuildingRestrictionsEnabled", "False")
     matched_building_client_game = client_game_ini(reparsed, "Survival_1", "3")
     if "m_MaxNumLandclaimSegments=20" not in matched_building_client_game:
         raise SystemExit("Client-required landclaim segment limit did not carry into the client Game.ini export.")
     if "m_bBuildingRestrictionLimitsEnabled=False" not in matched_building_client_game:
         raise SystemExit("Client-required building restriction setting did not carry into the client Game.ini export.")
+    profile_remove_key(reparsed, "server_custom_global", SERVER_CUSTOM_SETTINGS_SECTION, "bIsBuildingRestrictionsEnabled")
     profile_set_key(reparsed, "global", "ConsoleVariables", "Bgd.ServerDisplayName", quote_ini_string("Do Not Export"))
     profile_set_key(reparsed, "global", "ConsoleVariables", "Bgd.ServerLoginPassword", quote_ini_string("Do Not Export"))
     bgd_filtered_client_game = client_game_ini(reparsed, "Survival_1", "3")
@@ -3267,13 +3466,13 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Base backup tool time restriction did not carry into the client Game.ini export.")
     if CLIENT_FILE_REQUIRED.get("base_backup_tool_time_restriction_seconds") != "Game.ini":
         raise SystemExit("Base backup tool time restriction is not flagged as requiring a client Game.ini update.")
-    if profile_map_values(reparsed, "Survival_1")["building_restriction_limits_enabled"] != "True":
+    if server_custom_values(reparsed, "Survival_1", include_materialized=False)["building_restriction_limits_enabled"] != "True":
         raise SystemExit("Building restriction limits did not default to enabled when unset.")
-    profile_set_key(reparsed, "global", BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "False")
-    if profile_map_values(reparsed, "Survival_1")["building_restriction_limits_enabled"] != "False":
+    profile_set_key(reparsed, "server_custom_global", SERVER_CUSTOM_SETTINGS_SECTION, "bIsBuildingRestrictionsEnabled", "False")
+    if server_custom_values(reparsed, "Survival_1", include_materialized=False)["building_restriction_limits_enabled"] != "False":
         raise SystemExit("An explicit disabled building restriction limit was overwritten by the default.")
-    if "m_bBuildingRestrictionLimitsEnabled=False" not in compiled_usergame_ini(reparsed, "Survival_1", "3"):
-        raise SystemExit("An explicit disabled building restriction limit did not compile.")
+    if "m_bBuildingRestrictionLimitsEnabled" in compiled_usergame_ini(reparsed, "Survival_1", "3"):
+        raise SystemExit("A native Server Custom setting leaked into server UserGame.ini.")
     set_profile_field(reparsed, "global", "", "", "landsraad_cycle_duration_seconds", "1209600")
     set_profile_field(reparsed, "global", "", "", "landsraad_player_voting_enabled", "False")
     landsraad_data = profile_get_key(reparsed, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY) or ""
@@ -3340,7 +3539,6 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         "max_landclaim_segments": "6",
         "building_blueprint_max_extensions": "4",
         "base_backup_max_extensions": "8",
-        "building_restriction_limits_enabled": "True",
     }
     for field_id, expected in expected_building_defaults.items():
         if building_defaults.get(field_id) != expected:
@@ -3564,6 +3762,7 @@ def materialize_current_runtime_files() -> int:
         expected_engine_paths.add(engine_path.resolve())
         write_compiled_userengine(engine_path, profile, canonical_map(map_name), partition_id)
         write_compiled_usergame(game_path, profile, canonical_map(map_name), partition_id)
+        write_server_custom_settings(saved_dir, profile, canonical_map(map_name), partition_id)
 
     for engine_path in game_root.glob("*/Saved/UserSettings/UserEngine.ini"):
         if engine_path.resolve() in expected_engine_paths:
@@ -3583,6 +3782,7 @@ def materialize(map_name: str, saved_dir: str, partition_id: str | None = None) 
     game_path = user_settings_dir / "UserGame.ini"
     write_compiled_userengine(engine_path, profile, target_map, str(partition_id) if partition_id else None)
     write_compiled_usergame(game_path, profile, target_map, str(partition_id) if partition_id else None)
+    write_server_custom_settings(Path(saved_dir), profile, target_map, str(partition_id) if partition_id else None)
     return 0
 
 
@@ -3985,6 +4185,8 @@ def main(argv: list[str]) -> int:
         return print_usergame_rows(merged_map_values(config, canonical_map(argv[2])), MAP_FIELDS)
     if command == "partition-values" and len(argv) == 4:
         return print_usergame_rows(merged_partition_values(config, canonical_map(argv[2]), argv[3]), PARTITION_FIELDS)
+    if command == "server-custom-values" and len(argv) == 5:
+        return print_server_custom_values(argv[2], argv[3], argv[4])
     if command == "partition-combat-state" and len(argv) == 4:
         return partition_combat_state_command(argv[2], argv[3])
     if command == "partition-combat-states" and len(argv) >= 4:

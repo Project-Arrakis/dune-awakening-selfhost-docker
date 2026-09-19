@@ -4,7 +4,7 @@ import { countIniOverrides } from "./MapsPanel";
 const header = [
   "; Engine.ini for the Dune: Awakening client.",
   "; Client-required settings generated from Docker UserEngine.ini values for global UserEngine.",
-  "; Merge these sections into Saved/Config/WindowsClient/Engine.ini while the game is closed.",
+  "; Merge these sections into Saved/Config/Windows/Engine.ini while the game is closed.",
   "; Only settings changed from the default and known to require client configuration are listed.",
 ].join("\n");
 

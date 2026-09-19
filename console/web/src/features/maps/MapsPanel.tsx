@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, Download, Grid2X2, Info, List, Lock, RotateCcw } from "lucide-react";
-import { mapsApi, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
+import { mapsApi, type ActiveSpicefieldRow, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
 import { runGatedRestart, type RestartGate, type RestartGateChoice } from "../server/restartQueueGuard";
 import { serverApi, type RestartQueueTarget } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
@@ -73,7 +73,6 @@ type MapsTaskSequenceOptions = {
   writtenPartitionIds?: string[];
 };
 type PersistedMapsTask = { taskId?: string; result: HomeTaskResult | null; runningTitle?: string; successTitle?: string; resultScope?: MapsResultScope };
-type SpicefieldDraft = { maxActive: string; maxPrimed: string; spawningActive: boolean; spawnWeight: string };
 export type MapSortColumn = "map" | "status" | "mode" | "memory";
 type MapSortState = { column: MapSortColumn | null; direction: "asc" | "desc" };
 const MAP_SORT_COLUMNS: Array<[MapSortColumn, string]> = [
@@ -111,7 +110,7 @@ type MapsPanelProps = {
   onError: (text: string) => void;
   confirmAction: ConfirmAction;
   restartGate: RestartGate;
-  confirmSettingsRestart: (kind: "UserEngine" | "UserGame", target?: RestartQueueTarget) => Promise<RestartGateChoice>;
+  confirmSettingsRestart: (kind: "UserEngine" | "UserGame" | "ServerSettings", target?: RestartQueueTarget) => Promise<RestartGateChoice>;
   waitForTaskWithUpdates: (task: Task, onUpdate: (task: Task) => void) => Promise<Task>;
   taskTechnicalDetails: (task: Task) => string;
 };
@@ -189,7 +188,7 @@ function mapResultTarget(map: string, partitionId = "") {
 // stay battlegroup-wide (undefined target) rather than being scoped to
 // whatever map happens to be selected in the editor.
 function settingsRestartTarget(scope: string, map?: string, partitionId?: string): RestartQueueTarget | undefined {
-  if (scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global" || scope === "profile") return undefined;
+  if (scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global" || scope === "serverCustomGlobal" || scope === "profile") return undefined;
   if (partitionId) return { partitionId };
   if (map) return { map };
   return undefined;
@@ -421,6 +420,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [engineDraft, setEngineDraft] = useState<Record<string, string>>({});
   const [gameValues, setGameValues] = useState<Record<string, string>>({});
   const [gameDraft, setGameDraft] = useState<Record<string, string>>({});
+  const [serverCustomValues, setServerCustomValues] = useState<Record<string, string>>({});
+  const [serverCustomDraft, setServerCustomDraft] = useState<Record<string, string>>({});
   const [serverRegion, setServerRegion] = useState("");
   const [gameValuesTargetKey, setGameValuesTargetKey] = useState("");
   const [rawEngine, setRawEngine] = useState("");
@@ -462,14 +463,14 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [userGameMapName, setUserGameMapName] = useState("");
   const [userGamePartitionId, setUserGamePartitionId] = useState("");
   const [selectedGameCategory, setSelectedGameCategory] = useState("");
+  const [selectedServerCustomCategory, setSelectedServerCustomCategory] = useState("");
   const [selectedEngineCategory, setSelectedEngineCategory] = useState("");
   const [modifierFilter, setModifierFilter] = useState("");
   const [modifierViewMode, setModifierViewMode] = useState<"grid" | "list">("grid");
-  const [settingsTab, setSettingsTab] = useState<"engine" | "game" | "spicefields" | "choam">("engine");
-  const [spicefieldRows, setSpicefieldRows] = useState<SpicefieldTypeRow[]>([]);
-  const [spicefieldDrafts, setSpicefieldDrafts] = useState<Record<string, SpicefieldDraft>>({});
+  const [settingsTab, setSettingsTab] = useState<"engine" | "game" | "serverCustom" | "spicefields" | "choam">("engine");
+  const [activeSpicefields, setActiveSpicefields] = useState<ActiveSpicefieldRow[]>([]);
+  const [spicefieldsLoaded, setSpicefieldsLoaded] = useState(false);
   const [spicefieldResult, setSpicefieldResult] = useState<HomeTaskResult | null>(null);
-  const [spicefieldSavingId, setSpicefieldSavingId] = useState("");
   const [spicefieldFilter, setSpicefieldFilter] = useState("");
   const [choamOverview, setChoamOverview] = useState<ChoamTerminalOverview | null>(null);
   const [choamSavingKey, setChoamSavingKey] = useState("");
@@ -851,6 +852,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     setRawGame(raw.content || "");
     setRawGameOriginal(raw.content || "");
   }
+  async function loadSelectedServerCustomSettings(mapName: string, partitionId?: string) {
+    const scope = mapName === "__global__" ? "serverCustomGlobal" : partitionId ? "serverCustomPartition" : "serverCustomMap";
+    const values = await mapsApi.userSettingsValues(scope, mapName === "__global__" ? "Survival_1" : mapName, partitionId);
+    const parsed = parseUserSettingsMap(values.stdout || "");
+    setServerCustomValues(parsed);
+    setServerCustomDraft(parsed);
+  }
   // Three draft policies, deliberately distinct:
   //   preserveDrafts      -- background polling; whatever is on screen wins.
   //   writtenPartitionIds -- after a save; only the partitions actually written
@@ -946,15 +954,11 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     setHostMemoryReserveMode(settings.hostMemoryReserveConfigured ? "custom" : "automatic");
     setHostMemoryReserve(String(settings.hostMemoryReserveGiB));
   }
-  async function loadSpicefields(options: { preserveDrafts?: boolean } = {}) {
+  async function loadSpicefields() {
     const result = await mapsApi.spicefields();
-    const rows = result.rows || [];
-    setSpicefieldRows(rows);
-    const drafts = Object.fromEntries(rows.map((row) => [String(row.spicefield_type_id), spicefieldDraftFromRow(row)]));
-    setSpicefieldDrafts((current) => options.preserveDrafts ? { ...drafts, ...current } : drafts);
-    if (result.reason && !rows.length) {
-      setSpicefieldResult({ status: "failed", title: "Spice Fields Unavailable", message: result.reason });
-    }
+    setActiveSpicefields(result.activeFields || []);
+    setSpicefieldsLoaded(true);
+    setSpicefieldResult(result.reason ? { status: "failed", title: "Spice Fields Unavailable", message: result.reason } : null);
   }
   async function loadChoamTerminals() {
     const overview = await mapsApi.choamTerminals();
@@ -1003,34 +1007,6 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       setChoamResult({ status: "failed", title: "CHOAM Terminal Removal Failed", message: error instanceof Error ? error.message : String(error) });
     } finally {
       setChoamSavingKey("");
-    }
-  }
-  async function saveSpicefield(row: SpicefieldTypeRow) {
-    const id = String(row.spicefield_type_id);
-    const draft = spicefieldDrafts[id] || spicefieldDraftFromRow(row);
-    const maxActive = parseWholeNumber(draft.maxActive);
-    const maxPrimed = parseWholeNumber(draft.maxPrimed);
-    const spawnWeight = Number(draft.spawnWeight);
-    if (maxActive === null || maxActive < 0 || maxPrimed === null || maxPrimed < 0 || !Number.isFinite(spawnWeight) || spawnWeight < 0) {
-      setSpicefieldResult({ status: "failed", title: "Spice Field Not Saved", message: "Use non-negative numbers for max active, max primed, and spawn weight." });
-      return;
-    }
-    setSpicefieldSavingId(id);
-    setSpicefieldResult({ status: "running", title: "Saving Spice Field..." });
-    try {
-      const result = await mapsApi.updateSpicefield(id, {
-        max_globally_active: maxActive,
-        max_globally_primed: maxPrimed,
-        is_spawning_active: draft.spawningActive,
-        global_spawn_weight: spawnWeight
-      });
-      setSpicefieldRows((current) => current.map((item) => String(item.spicefield_type_id) === id ? result.row : item));
-      setSpicefieldDrafts((current) => ({ ...current, [id]: spicefieldDraftFromRow(result.row) }));
-      setSpicefieldResult({ status: "succeeded", title: "Spice Field Saved", message: "Live database controls were updated and will be reapplied after battlegroup restarts. Existing active fields may remain until the game updates them." });
-    } catch (error) {
-      setSpicefieldResult({ status: "failed", title: "Spice Field Save Failed", message: error instanceof Error ? error.message : String(error) });
-    } finally {
-      setSpicefieldSavingId("");
     }
   }
   async function toggleMemoryBalancer() {
@@ -1231,9 +1207,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   }, [memorySwapResult]);
   useEffect(() => {
     if (!spicefieldResult || spicefieldResult.status === "running") return;
-    const id = window.setTimeout(() => {
-      setSpicefieldResult(null);
-    }, 5000);
+    const id = window.setTimeout(() => setSpicefieldResult(null), 7000);
     return () => window.clearTimeout(id);
   }, [spicefieldResult]);
   useEffect(() => {
@@ -1258,7 +1232,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   }, []);
   useEffect(() => {
     if (!modifiersOpen || settingsTab !== "spicefields") return undefined;
-    const id = window.setInterval(() => { void loadSpicefields({ preserveDrafts: true }).catch(() => {}); }, 5000);
+    const id = window.setInterval(() => { void loadSpicefields().catch(() => {}); }, 5000);
     return () => window.clearInterval(id);
   }, [modifiersOpen, settingsTab]);
   useEffect(() => {
@@ -1378,7 +1352,12 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const activeGameCategory = gameGroups.some(([category]) => category === selectedGameCategory) ? selectedGameCategory : gameGroups[0]?.[0] || "";
   const activeGameFields = activeGameCategory === "All" ? userGameFields : gameGroups.find(([category]) => category === activeGameCategory)?.[1] || [];
   const filteredGameFields = filterSettingsFields(activeGameFields, modifierFilter);
-  const filteredSpicefieldRows = filterSpicefieldRows(spicefieldRows, spicefieldFilter);
+  const serverCustomFields = schema?.serverCustom || [];
+  const serverCustomGroups = groupSettingsFields(serverCustomFields, true, modifiedSettingsFields(serverCustomFields, serverCustomValues, serverCustomDraft));
+  const activeServerCustomCategory = serverCustomGroups.some(([category]) => category === selectedServerCustomCategory) ? selectedServerCustomCategory : serverCustomGroups[0]?.[0] || "";
+  const activeServerCustomFields = activeServerCustomCategory === "All" ? serverCustomFields : serverCustomGroups.find(([category]) => category === activeServerCustomCategory)?.[1] || [];
+  const filteredServerCustomFields = filterSettingsFields(activeServerCustomFields, modifierFilter);
+  const filteredActiveSpicefields = filterActiveSpicefields(activeSpicefields, spicefieldFilter);
   const engineSchemaFields = isEngineGlobal
     ? schema?.engine || []
     : enginePartitionId
@@ -1391,6 +1370,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const filteredEngineFields = filterSettingsFields(activeEngineFields, modifierFilter);
   const engineDirty = changedKeys(engineValues, engineDraft, engineFields);
   const gameDirty = changedKeys(gameValues, gameDraft, userGameFields);
+  const serverCustomDirty = changedKeys(serverCustomValues, serverCustomDraft, serverCustomFields);
   // The download buttons report how many settings each client ini actually carries.
   // Count the generated file rather than the drafts: downloads reflect saved state
   // and include only non-default values explicitly classified as client-required.
@@ -1416,6 +1396,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const modifierDirtySummary = [
     engineDirty.length ? `${engineDirty.length} UserEngine value${engineDirty.length === 1 ? "" : "s"}` : "",
     gameDirty.length ? `${gameDirty.length} UserGame value${gameDirty.length === 1 ? "" : "s"}` : "",
+    serverCustomDirty.length ? `${serverCustomDirty.length} Custom Settings value${serverCustomDirty.length === 1 ? "" : "s"}` : "",
     rawEngineDirty ? "UserEngine.ini" : "",
     rawGameDirty ? "UserGame.ini" : ""
   ].filter(Boolean).join(", ");
@@ -1487,12 +1468,16 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       setSelectedGameCategory("");
       setGameValues({});
       setGameDraft({});
+      setServerCustomValues({});
+      setServerCustomDraft({});
       return;
     }
     setUserGameMapName(target.map);
     setUserGamePartitionId(target.partitionId);
     setSelectedGameCategory("");
-    void loadSelectedSettings(target.map, target.partitionId || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error)));
+    setSelectedServerCustomCategory("");
+    const loader = settingsTab === "serverCustom" ? loadSelectedServerCustomSettings : loadSelectedSettings;
+    void loader(target.map, target.partitionId || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error)));
   }
   function selectEngineTarget(next: string) {
     const target = userGameTargets.find((item) => item.key === next);
@@ -1881,6 +1866,22 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     await loadSelectedSettings(userGameName, partitionId);
     await refreshDeferredRestartPending();
   }
+  async function saveServerCustom() {
+    if (!userGameName) return;
+    const scope = isUserGameGlobal ? "serverCustomGlobal" : effectiveUserGamePartitionId ? "serverCustomPartition" : "serverCustomMap";
+    const map = isUserGameGlobal ? "Survival_1" : userGameName;
+    const partitionId = isUserGameGlobal ? undefined : effectiveUserGamePartitionId || undefined;
+    const choice = await confirmSettingsRestart("ServerSettings", settingsRestartTarget(scope, map, partitionId));
+    if (choice === "cancel") return;
+    await runTaskAndRefresh(
+      () => mapsApi.saveUserSettings({ scope, map, partitionId, values: valuesForDirtyFields(serverCustomValues, serverCustomDraft, serverCustomFields), immediate: choice === "immediate", deferRestart: choice === "manual" }),
+      `Saving ${isUserGameGlobal ? "Global" : userGameName} Custom Settings`,
+      "Custom Settings Saved",
+      { resultScope: "modifiers", restartAcceptedMessage: "Changes saved successfully. The affected maps are restarting and should be back up soon." }
+    );
+    await loadSelectedServerCustomSettings(userGameName, partitionId);
+    await refreshDeferredRestartPending();
+  }
   async function saveRaw(kind: "engine" | "game") {
     // Raw UserEngine.ini is always the stack-wide profile; raw UserGame.ini
     // here always saves as the global profile too (scope: "global" below),
@@ -2148,7 +2149,9 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
               <div className="panel-title"><h4>Edit {isDeepDesertRow && primaryDeepDesertName ? primaryDeepDesertName : rowName}</h4></div>
               <KeyValueGrid items={[["Status", displayStatus], ["Mode", row.mode], ["Memory", row.memory], ["Dimensions", row.dimensions], ...(isSurvivalRow && primarySurvivalSietch ? [["Password", primarySurvivalSietch.passwordSet ? "Set" : "Not Set"] as [string, unknown]] : [])]} />
               {requiresFreshProcess
-                ? <p className="muted">Smuggler&apos;s Run stays Dynamic so its instance is retired as soon as it becomes empty and the next visit starts with fresh vehicle permissions.</p>
+                ? <p className="muted">{rowName === "CB_Overland_S_06"
+                  ? <>Smuggler&apos;s Run stays Dynamic so its instance is retired as soon as it becomes empty and the next visit starts with fresh vehicle permissions.</>
+                  : <>This story map stays Dynamic so its completed instance is retired and the next visit starts in a fresh server process.</>}</p>
                 : isVehicleDeployMap(rowName) && <p className="muted">Vehicle-deploy Overland maps use Overmap Active instead of Always On by default to avoid vehicle ownership restore races during startup.</p>}
               <div className="action-line">
                 <label className="compact-select">Mode<select value={modeDraft} disabled={String(row.mode) === "Core Map"} onChange={(event) => setModeDraft(event.target.value)}><option value="dynamic">Dynamic</option>{!requiresFreshProcess && <option value="always-on">Always On</option>}{!requiresFreshProcess && <option value="overmap-active">Overmap Active</option>}<option value="disabled">Disabled</option></select></label>
@@ -2312,11 +2315,12 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         <div className="settings-tabs" role="tablist" aria-label="Interactive modifier editor">
           <button className={settingsTab === "engine" ? "active" : ""} role="tab" aria-selected={settingsTab === "engine"} onClick={() => setSettingsTab("engine")}>UserEngine</button>
           <button className={settingsTab === "game" ? "active" : ""} role="tab" aria-selected={settingsTab === "game"} onClick={() => setSettingsTab("game")}>UserGame</button>
-          <button className={settingsTab === "spicefields" ? "active" : ""} role="tab" aria-selected={settingsTab === "spicefields"} onClick={() => { setSettingsTab("spicefields"); void loadSpicefields({ preserveDrafts: true }).catch(() => undefined); }}>Spice Fields</button>
+          <button className={settingsTab === "serverCustom" ? "active" : ""} role="tab" aria-selected={settingsTab === "serverCustom"} onClick={() => { setSettingsTab("serverCustom"); if (userGameName) void loadSelectedServerCustomSettings(userGameName, isUserGameGlobal ? undefined : effectiveUserGamePartitionId || undefined).catch(() => undefined); }}>Custom Settings</button>
+          <button className={settingsTab === "spicefields" ? "active" : ""} role="tab" aria-selected={settingsTab === "spicefields"} onClick={() => { setSettingsTab("spicefields"); void loadSpicefields().catch(() => undefined); }}>Spice Fields</button>
           <button className={settingsTab === "choam" ? "active" : ""} role="tab" aria-selected={settingsTab === "choam"} onClick={() => { setSettingsTab("choam"); void loadChoamTerminals().catch(() => undefined); }}>CHOAM Terminals</button>
         </div>
         {(settingsTab === "engine" || settingsTab === "game") && <div className="settings-download-buttons">
-          <InfoTooltip id="client-ini-download-help" label="About Client Configuration Downloads">Some modifiers must match on the server and each player&apos;s client. Save changes first, then close Dune: Awakening and back up the existing files. Merge the generated Game.ini sections into Saved/Config/Windows/Game.ini and the Engine.ini sections into Saved/Config/WindowsClient/Engine.ini. Only non-default settings known to require client configuration are included.</InfoTooltip>
+          <InfoTooltip id="client-ini-download-help" label="About Client Configuration Downloads">Some modifiers must match on the server and each player&apos;s client. Save changes first, then close Dune: Awakening and back up the existing files. Merge the generated Game.ini and Engine.ini sections into their matching files under Saved/Config/Windows. Only non-default settings known to require client configuration are included.</InfoTooltip>
           <button className="settings-download-button" type="button" title={!isEngineGlobal ? "Download client Engine.ini for the selected UserEngine target" : "Download client Engine.ini for global UserEngine values"} onClick={() => run(downloadClientEngineIni)}><Download size={16} /> Engine.ini{clientIniCounts.engine === null ? "" : ` (${clientIniCounts.engine})`}</button>
           <button className="settings-download-button" type="button" title={userGameName && !isUserGameGlobal ? "Download client Game.ini for the selected UserGame target" : "Download client Game.ini for global UserGame values"} onClick={() => run(downloadClientGameIni)}><Download size={16} /> Game.ini{clientIniCounts.game === null ? "" : ` (${clientIniCounts.game})`}</button>
         </div>}
@@ -2352,20 +2356,22 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
           { fieldId: CORIOLIS_CYCLE_START_DAY_FIELD_ID, enabled: coriolisDay.matchesRegion, available: coriolisDayMatchRegionAvailable, regionLabel: serverRegion, regionValueLabel: coriolisDayRegionValueLabel(coriolisDay.regionValue), onToggle: coriolisDay.setManualOverride }
         ]} />}
         <div className="action-row"><button disabled={!gameDirty.length || !userGameName} onClick={() => run(saveGame)}>Save</button><button disabled={!gameDirty.length} onClick={() => setGameDraft(gameValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !userGameFields.length} title="Set every UserGame setting on this tab back to its default value" onClick={() => run(() => resetAllToDefaults("game"))}>Restore Defaults</button></div>
+      </> : settingsTab === "serverCustom" ? <>
+        <div className="settings-selector-row">
+          <label className="compact-select">Target<select value={userGameTargetKey} onChange={(event) => selectUserGameTarget(event.target.value)}><option value="">Select Map Or Partition</option>{userGameTargets.map((target) => <option key={target.key} value={target.key}>{target.label}</option>)}</select></label>
+          <label className="compact-select">Setting Category<select disabled={!userGameName} value={activeServerCustomCategory} onChange={(event) => setSelectedServerCustomCategory(event.target.value)}>{serverCustomGroups.map(([category, fields]) => <option key={category} value={category}>{category} ({fields.length})</option>)}</select></label>
+          <div className="modifier-search-tools">
+            <input className="modifier-filter-input" disabled={!userGameName} aria-label="Filter Custom Settings" value={modifierFilter} onChange={(event) => setModifierFilter(event.target.value)} placeholder="Filter custom settings" />
+            <div className="catalog-view-toggle" aria-label="Custom Settings view">
+              <button type="button" className={modifierViewMode === "grid" ? "active" : ""} title="Grid view" aria-label="Grid view" aria-pressed={modifierViewMode === "grid"} onClick={() => setModifierViewMode("grid")}><Grid2X2 size={17} /></button>
+              <button type="button" className={modifierViewMode === "list" ? "active" : ""} title="List view" aria-label="List view" aria-pressed={modifierViewMode === "list"} onClick={() => setModifierViewMode("list")}><List size={18} /></button>
+            </div>
+          </div>
+        </div>
+        {userGameName && <><p className="muted">Official Patch 1.5 settings stored in <code>Saved/Config/LinuxServer/ServerCustomSettings.ini</code>. Dune Docker keeps <code>DifficultyLevel=Custom</code> and preserves unmanaged file values.</p><SettingsCardGrid fields={filteredServerCustomFields} values={serverCustomDraft} onChange={(id, value) => setServerCustomDraft({ ...serverCustomDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, serverCustomFields.length, modifierFilter, activeServerCustomCategory)} /></>}
+        <div className="action-row"><button disabled={!serverCustomDirty.length || !userGameName} onClick={() => run(saveServerCustom)}>Save</button><button disabled={!serverCustomDirty.length} onClick={() => setServerCustomDraft(serverCustomValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !serverCustomFields.length} title="Set every Server Setting on this tab back to its default value" onClick={() => setServerCustomDraft(Object.fromEntries(serverCustomFields.map((field) => [field.id, field.default ?? ""]))) }>Restore Defaults</button></div>
       </> : settingsTab === "spicefields" ? <>
-        <SpicefieldsEditor
-          rows={filteredSpicefieldRows}
-          allRows={spicefieldRows}
-          drafts={spicefieldDrafts}
-          filter={spicefieldFilter}
-          savingId={spicefieldSavingId}
-          result={spicefieldResult}
-          onFilterChange={setSpicefieldFilter}
-          onRefresh={() => run(() => loadSpicefields({ preserveDrafts: true }))}
-          onDraftChange={(id, draft) => setSpicefieldDrafts({ ...spicefieldDrafts, [id]: draft })}
-          onDiscard={(row) => setSpicefieldDrafts({ ...spicefieldDrafts, [String(row.spicefield_type_id)]: spicefieldDraftFromRow(row) })}
-          onSave={(row) => run(() => saveSpicefield(row))}
-        />
+        <SpicefieldsEditor rows={filteredActiveSpicefields} allRows={activeSpicefields} loaded={spicefieldsLoaded} filter={spicefieldFilter} result={spicefieldResult} onFilterChange={setSpicefieldFilter} onRefresh={() => run(loadSpicefields)} />
       </> : <>
         <ChoamTerminalsEditor
           overview={choamOverview}
@@ -2386,68 +2392,34 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   </section>;
 }
 
-export function SpicefieldsEditor({
-  rows,
-  allRows,
-  drafts,
-  filter,
-  savingId,
-  result,
-  onFilterChange,
-  onRefresh,
-  onDraftChange,
-  onDiscard,
-  onSave
-}: {
-  rows: SpicefieldTypeRow[];
-  allRows: SpicefieldTypeRow[];
-  drafts: Record<string, SpicefieldDraft>;
+export function SpicefieldsEditor({ rows, allRows, loaded, filter, result, onFilterChange, onRefresh }: {
+  rows: ActiveSpicefieldRow[];
+  allRows: ActiveSpicefieldRow[];
+  loaded: boolean;
   filter: string;
-  savingId: string;
   result: HomeTaskResult | null;
   onFilterChange: (value: string) => void;
   onRefresh: () => void;
-  onDraftChange: (id: string, draft: SpicefieldDraft) => void;
-  onDiscard: (row: SpicefieldTypeRow) => void;
-  onSave: (row: SpicefieldTypeRow) => void;
 }) {
   return <section className="spicefields-editor">
     <div className="settings-selector-row spicefields-toolbar">
-      <label className="wide-field">Filter<input value={filter} onChange={(event) => onFilterChange(event.target.value)} placeholder="Filter by map, type, or dimension" /></label>
+      <label className="wide-field">Filter<input value={filter} onChange={(event) => onFilterChange(event.target.value)} placeholder="Filter by map, size, or dimension" /></label>
       <button className="spicefields-refresh-button" onClick={onRefresh}>Refresh</button>
     </div>
+    <p className="muted">Active Spice Fields reported by the current game database. Patch 1.5 removed the old per-type caps and weights; supported resource rates are available under Custom Settings.</p>
     {result && <div className="maps-result-slot"><HomeTaskResultCard result={result} /></div>}
-    {!allRows.length ? <div className="empty">Spice field controls are unavailable for this database schema.</div> : null}
-    {allRows.length && !rows.length ? <div className="empty">No spice fields match this filter.</div> : null}
+    {!loaded ? <div className="empty">Loading active Spice Fields...</div> : null}
+    {loaded && !allRows.length ? <div className="empty">No Spice Fields are active right now.</div> : null}
+    {allRows.length && !rows.length ? <div className="empty">No Spice Fields match this filter.</div> : null}
     {rows.length ? <div className="settings-list-wrap spicefields-table-wrap"><table className="settings-list-table spicefields-table">
-      <thead><tr>
-        <th scope="col">Map</th>
-        <th scope="col">Type</th>
-        <th scope="col">Dimension</th>
-        <th scope="col">Live</th>
-        <th scope="col">Max Active</th>
-        <th scope="col">Max Primed</th>
-        <th scope="col">Spawning</th>
-        <th scope="col">Weight</th>
-        <th scope="col">Actions</th>
-      </tr></thead>
-      <tbody>{rows.map((row) => {
-        const id = String(row.spicefield_type_id);
-        const draft = drafts[id] || spicefieldDraftFromRow(row);
-        const dirty = spicefieldDraftDirty(row, draft);
-        const saving = savingId === id;
-        return <tr key={id}>
-          <td data-label="Map"><strong>{row.map_name}</strong><small>ID {row.spicefield_type_id}</small></td>
-          <td data-label="Type">{row.field_type}</td>
-          <td data-label="Dimension">{row.dimension_index}</td>
-          <td data-label="Live"><span>{row.current_globally_active ?? 0} active</span><small>{row.current_globally_primed ?? 0} primed</small></td>
-          <td data-label="Max Active"><input aria-label={`${row.map_name} Max Active`} type="number" min="0" step="1" value={draft.maxActive} onChange={(event) => onDraftChange(id, { ...draft, maxActive: event.target.value })} /></td>
-          <td data-label="Max Primed"><input aria-label={`${row.map_name} Max Primed`} type="number" min="0" step="1" value={draft.maxPrimed} onChange={(event) => onDraftChange(id, { ...draft, maxPrimed: event.target.value })} /></td>
-          <td data-label="Spawning"><select aria-label={`${row.map_name} Spawning`} value={draft.spawningActive ? "true" : "false"} onChange={(event) => onDraftChange(id, { ...draft, spawningActive: event.target.value === "true" })}><option value="true">Enabled</option><option value="false">Disabled</option></select></td>
-          <td data-label="Weight"><input aria-label={`${row.map_name} Weight`} type="number" min="0" step="any" value={draft.spawnWeight} onChange={(event) => onDraftChange(id, { ...draft, spawnWeight: event.target.value })} /></td>
-          <td data-label="Actions"><div className="action-row spicefield-row-actions"><button disabled={!dirty || saving} onClick={() => onSave(row)}>{saving ? "Saving..." : "Save"}</button><button disabled={!dirty || saving} onClick={() => onDiscard(row)}>Discard</button></div></td>
-        </tr>;
-      })}</tbody>
+      <thead><tr><th scope="col">Map</th><th scope="col">Size</th><th scope="col">Dimension</th><th scope="col">Spice Remaining</th><th scope="col">Field ID</th></tr></thead>
+      <tbody>{rows.map((row) => <tr key={`${row.map_name}:${row.dimension_index}:${row.field_id}`}>
+        <td data-label="Map"><strong>{friendlyMapName(row.map_name)}</strong><small>{row.map_name}</small></td>
+        <td data-label="Size">{row.field_type}</td>
+        <td data-label="Dimension">{row.dimension_index}</td>
+        <td data-label="Spice Remaining">{row.value_remaining.toLocaleString()}</td>
+        <td data-label="Field ID"><code>{row.field_id}</code></td>
+      </tr>)}</tbody>
     </table></div> : null}
   </section>;
 }
@@ -2733,32 +2705,10 @@ export function modifierEmptyMessage(schemaLoaded: boolean, fieldCount: number, 
   return "Select a modifier category.";
 }
 
-function filterSpicefieldRows(rows: SpicefieldTypeRow[], query: string) {
+function filterActiveSpicefields(rows: ActiveSpicefieldRow[], query: string) {
   const needle = String(query || "").trim().toLowerCase();
   if (!needle) return rows;
-  return rows.filter((row) => `${row.map_name} ${row.field_type} dimension ${row.dimension_index} ${row.spicefield_type_id}`.toLowerCase().includes(needle));
-}
-
-function spicefieldDraftFromRow(row: SpicefieldTypeRow): SpicefieldDraft {
-  return {
-    maxActive: String(row.max_globally_active ?? 0),
-    maxPrimed: String(row.max_globally_primed ?? 0),
-    spawningActive: row.is_spawning_active !== false,
-    spawnWeight: String(row.global_spawn_weight ?? 0)
-  };
-}
-
-function spicefieldDraftDirty(row: SpicefieldTypeRow, draft: SpicefieldDraft) {
-  return String(row.max_globally_active ?? 0) !== String(parseWholeNumber(draft.maxActive) ?? draft.maxActive)
-    || String(row.max_globally_primed ?? 0) !== String(parseWholeNumber(draft.maxPrimed) ?? draft.maxPrimed)
-    || (row.is_spawning_active !== false) !== draft.spawningActive
-    || Number(row.global_spawn_weight ?? 0) !== Number(draft.spawnWeight);
-}
-
-function parseWholeNumber(value: string) {
-  const n = Number(value);
-  if (!Number.isInteger(n)) return null;
-  return n;
+  return rows.filter((row) => `${row.map_name} ${friendlyMapName(row.map_name)} ${row.field_type} dimension ${row.dimension_index} ${row.field_id}`.toLowerCase().includes(needle));
 }
 
 function settingsCategory(value: string) {
@@ -3350,7 +3300,11 @@ function isVehicleDeployMap(value: string) {
 }
 
 function isFreshProcessMap(value: string) {
-  return String(value || "").trim() === "CB_Overland_S_06";
+  return [
+    "CB_Overland_S_06",
+    "CB_Story_DestroyedZanovar",
+    "CB_Story_OrbitalMonitor",
+  ].includes(String(value || "").trim());
 }
 
 function modeInputValue(value: string) {

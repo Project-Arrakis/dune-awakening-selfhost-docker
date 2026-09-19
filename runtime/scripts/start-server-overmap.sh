@@ -145,7 +145,6 @@ commit;
 mkdir -p runtime/game/overmap/Saved
 mkdir -p runtime/game/artifacts
 mkdir -p runtime/container
-python3 runtime/scripts/usersettings.py materialize Overmap "$PWD/runtime/game/overmap/Saved" "$PARTITION_ID"
 prepare_fake_k8s_serviceaccount "$FAKE_K8S_SERVICEACCOUNT_DIR" funcom-seabass-dune-docker
 
 mapfile -t SIETCH_RUNTIME_ARGS < <(runtime/scripts/sietches.sh runtime-args Overmap "$PARTITION_ID" 2>/dev/null || true)
@@ -163,6 +162,8 @@ SIETCH_RUNTIME_ARGS=("${SIETCH_RUNTIME_ARGS_FILTERED[@]}")
 runtime/scripts/network-addresses.sh reconcile >/dev/null 2>&1 || true
 
 docker rm -f dune-server-overmap 2>/dev/null || true
+runtime/scripts/repair-map-settings-permissions.sh overmap
+python3 runtime/scripts/usersettings.py materialize Overmap "$PWD/runtime/game/overmap/Saved" "$PARTITION_ID"
 
 docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
 begin;

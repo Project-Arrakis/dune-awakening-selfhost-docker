@@ -9,9 +9,11 @@ trap 'rm -rf "$tmp_dir"' EXIT
 state_file="$tmp_dir/map-runtime-modes.json"
 cat >"$state_file" <<'JSON'
 {
-  "version": 1,
+  "version": 2,
   "maps": {
     "CB_Overland_S_06": {"mode": "always-on"},
+    "CB_Story_DestroyedZanovar": {"mode": "overmap-active"},
+    "CB_Story_OrbitalMonitor": {"mode": "always-on"},
     "CB_Overland_S_04": {"mode": "always-on"}
   }
 }
@@ -30,8 +32,8 @@ mode="$(DUNE_MAP_MODES_FILE="$state_file" PATH="$tmp_dir/no-docker:$PATH" \
   runtime/scripts/map-modes.sh mode CB_Overland_S_06)"
 [ "$mode" = $'CB_Overland_S_06\tdynamic' ]
 
-# Updating from a release that allowed Smuggler's Run to be Always On must
-# repair the persisted state itself.  Leaving the raw value behind lets any
+# Updating from v1.4.32 must repair persisted Always On / Overmap Active
+# selections for every fresh-process map. Leaving a raw value behind lets an
 # older/direct consumer respawn the map immediately after fresh-process idle
 # handling removes it.
 python3 - "$state_file" <<'PY'
@@ -39,14 +41,16 @@ import json
 import sys
 
 data = json.load(open(sys.argv[1], encoding="utf-8"))
-assert data["version"] == 2
+assert data["version"] == 3
 assert data["maps"]["CB_Overland_S_06"]["mode"] == "dynamic"
+assert data["maps"]["CB_Story_DestroyedZanovar"]["mode"] == "dynamic"
+assert data["maps"]["CB_Story_OrbitalMonitor"]["mode"] == "dynamic"
 assert data["maps"]["CB_Overland_S_04"]["mode"] == "always-on"
 PY
 
 disabled_state_file="$tmp_dir/disabled-map-runtime-modes.json"
 cat >"$disabled_state_file" <<'JSON'
-{"version":1,"maps":{"CB_Overland_S_06":{"mode":"disabled"}}}
+{"version":2,"maps":{"CB_Overland_S_06":{"mode":"disabled"}}}
 JSON
 DUNE_MAP_MODES_FILE="$disabled_state_file" PATH="$tmp_dir/no-docker:$PATH" \
   runtime/scripts/map-modes.sh mode CB_Overland_S_06 >/dev/null
@@ -55,7 +59,7 @@ import json
 import sys
 
 data = json.load(open(sys.argv[1], encoding="utf-8"))
-assert data["version"] == 2
+assert data["version"] == 3
 assert data["maps"]["CB_Overland_S_06"]["mode"] == "disabled"
 PY
 
@@ -67,6 +71,10 @@ fi
 
 DUNE_MAP_MODES_FILE="$state_file" PATH="$tmp_dir/no-docker:$PATH" \
   runtime/scripts/map-modes.sh requires-fresh-process CB_Overland_S_06
+DUNE_MAP_MODES_FILE="$state_file" PATH="$tmp_dir/no-docker:$PATH" \
+  runtime/scripts/map-modes.sh requires-fresh-process CB_Story_DestroyedZanovar
+DUNE_MAP_MODES_FILE="$state_file" PATH="$tmp_dir/no-docker:$PATH" \
+  runtime/scripts/map-modes.sh requires-fresh-process CB_Story_OrbitalMonitor
 
 if DUNE_MAP_MODES_FILE="$state_file" PATH="$tmp_dir/no-docker:$PATH" \
   runtime/scripts/map-modes.sh requires-fresh-process CB_Overland_S_04; then
@@ -86,10 +94,10 @@ grep -q 'DEMAND_INTERVAL="${DUNE_AUTOSCALER_DEMAND_INTERVAL:-2}"' runtime/script
 grep -q '^follow_director_travel_demand &$' runtime/scripts/autoscaler.sh
 grep -q '^follow_fresh_process_lifecycle &$' runtime/scripts/autoscaler.sh
 grep -q 'ClassicalInstancing|Dimension' runtime/scripts/autoscaler.sh
-grep -A16 'match = classical_pattern.search' runtime/scripts/autoscaler.sh \
-  | grep -q 'map_name == "CB_Overland_S_06"'
-grep -q "fresh-process) map_filter=\"and fs.map = 'CB_Overland_S_06'\"" runtime/scripts/autoscaler.sh
-grep -q "standard) map_filter=\"and fs.map <> 'CB_Overland_S_06'\"" runtime/scripts/autoscaler.sh
+grep -A22 'match = classical_pattern.search' runtime/scripts/autoscaler.sh \
+  | grep -q '"CB_Story_OrbitalMonitor"'
+grep -q "fresh-process) map_filter=\"and fs.map in ('CB_Overland_S_06', 'CB_Story_DestroyedZanovar', 'CB_Story_OrbitalMonitor')\"" runtime/scripts/autoscaler.sh
+grep -q "standard) map_filter=\"and fs.map not in ('CB_Overland_S_06', 'CB_Story_DestroyedZanovar', 'CB_Story_OrbitalMonitor')\"" runtime/scripts/autoscaler.sh
 grep -q 'forget_map_demand "$map"' runtime/scripts/autoscaler.sh
 grep -A14 '^reconcile_all()' runtime/scripts/map-modes.sh \
   | grep -q 'effective_mode_for_map'
