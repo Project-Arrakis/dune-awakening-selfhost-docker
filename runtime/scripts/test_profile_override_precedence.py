@@ -183,6 +183,60 @@ class GameFieldOverridePrecedenceTests(ProfilePathTestCase):
         self.assertIn("GatheringAmount=3.000000", rendered)
         self.assertIn("FutureFuncomSetting=keep", rendered)
 
+    def test_server_custom_schema_matches_funcom_1_5_3_1_template(self):
+        official_defaults = {
+            "PVPMode": "Limited",
+            "GatheringAmount": "1.000000",
+            "CraftingCost": "1.000000",
+            "WaterExtractionRate": "1.000000",
+            "CraftingTimeMultiplier": "1.000000",
+            "LootRespawnSpeed": "1.000000",
+            "BuildingCostMultiplier": "1.000000",
+            "ResourceRespawnSpeed": "1.000000",
+            "FuelBurnTimeMultiplier": "1.000000",
+            "InventoryVolumeMultiplier": "1.000000",
+            "PlayerDamageToPlayer": "1.000000",
+            "PlayerDamageToNPC": "1.000000",
+            "PlayerDamageToVehicle": "1.000000",
+            "NPCHealth": "1.000000",
+            "NPCDamageToPlayer": "1.000000",
+            "NPCDamageToNPC": "1.000000",
+            "NPCRespawnMultiplier": "1.000000",
+            "PVPDamageStructures": "1.000000",
+            "GlobalXpMultiplier": "1.000000",
+            "CombatXp": "1.000000",
+            "GatheringXp": "1.000000",
+            "MissionXp": "1.000000",
+            "ItemDurabilityDrainMultiplier": "1.000000",
+            "bEnableItemMaxDurabilityLoss": "True",
+            "PlayerStaminaDrain": "1.000000",
+            "IntelPointsGainMultiplier": "1.000000",
+            "PlayerShieldDamageAbsorptionMultiplier": "1.000000",
+            "NPCShieldDamageAbsorptionMultiplier": "1.000000",
+            "HeatBuildupRate": "1.000000",
+            "ThirstMultiplier": "1.000000",
+            "DropEquipmentOnDeath": "Default",
+            "bAllowDynamicBuildingDamage": "True",
+            "bAllowSandstorms": "True",
+            "bAllowSandworms": "True",
+            "SandwormConsequences": "All",
+            "PlayerDeathLootRule": "DependsOnSecurityZone",
+            "bIsBuildingRestrictionsEnabled": "True",
+            "LandsraadContributionMultiplier": "1.000000",
+            "LandsraadSpecializationXpMultiplier": "1.000000",
+            "LandsraadFactionStandingMultiplier": "1.000000",
+            "bLandsraadDisableDecreeRerollLimit": "False",
+            "FiefdomLimit": "3",
+            "BuildingPieceLimitMultiplier": "1.000000",
+            "bBuildingInfiniteStability": "False",
+            "BaseBackupToolTimeRestriction": "16.000000",
+        }
+        project_defaults = {
+            key: str(default)
+            for _field_id, (_section, key, default) in usersettings.SERVER_CUSTOM_FIELDS.items()
+        }
+        self.assertEqual(project_defaults, official_defaults)
+
 
 class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
     RETIRED_IDS = {

@@ -4675,7 +4675,18 @@ async function playerTeleportRoute(req, res, path) {
   if (!applyMutationRateLimit(req, res, "players.adminTeleport")) return;
   const playerId = decodeURIComponent(path.split("/")[3]);
   try {
-    const payload = await duneDb.teleportPlayer(db, playerId, body);
+    const payload = await duneDb.teleportPlayer(db, playerId, body, { allowOfflineCoordinates: true });
+    if (payload.path === "offline") {
+      audit(config, req, "player.teleport.offline", {
+        playerId: redact(playerId),
+        supported: payload.supported,
+        partitionId: payload.result?.partitionId,
+        x: payload.result?.x,
+        y: payload.result?.y,
+        z: payload.result?.z
+      });
+      return json(res, payload.supported ? 200 : 409, payload);
+    }
     buildDuneArgs("adminTeleport", payload);
     audit(config, req, "task.adminTeleport", { ...payload, playerId: redact(payload.playerId) });
     return json(res, 202, { task: tasks.create("admin", "adminTeleport", payload), message: payload.message });

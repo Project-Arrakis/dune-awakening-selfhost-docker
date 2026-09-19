@@ -60,7 +60,10 @@ assert "CB_Story_(?:DestroyedZanovar|OrbitalMonitor)" in rejected
 assert "completed_story.complete_condition_state = 'true'::jsonb" in rejected
 assert "completed_story.story_node_id = case source_wp.map" in rejected
 assert "ps.online_status = 'Offline'" in rejected
-assert "dune.upgrade_map_name(target_wp.map) = dune.upgrade_map_name(tri.map)" in rejected
+completed_scan = rejected.split('completed_rows="$(psql_value "', 1)[1].split('  ")"', 1)[0]
+assert "left join dune.travel_return_info tri" in completed_scan
+assert "when tri.player_controller_id is null then 'Survival_1'" in completed_scan
+assert "coalesce(target_wp.dimension_index, 0) = coalesce(ps.return_dimension_index, 0)" in completed_scan
 assert "source_fs.ready = true" in rejected
 assert "source_fs.alive = true" in rejected
 assert "target_fs.ready = true" in rejected
@@ -230,6 +233,8 @@ grep -Fq 'pawn.partition_id = 133' "$rejected_sql"
 grep -Fq "dune.is_player_offline('745EF36C1E46811A')" "$rejected_sql"
 grep -Fq 'dune.admin_move_offline_player_to_partition' "$rejected_sql"
 grep -Fq 'dune.player_respawn_locations' "$rejected_sql"
+grep -Fq 'left join dune.travel_return_info tri' "$rejected_sql"
+grep -Fq "when tri.player_controller_id is null then 'Survival_1'" "$rejected_sql"
 grep -Fq 'candidate.candidate_count = 1' "$rejected_sql"
 grep -Fq 'candidate.priority_rank = 1' "$rejected_sql"
 grep -Fq ') fallback on true' "$rejected_sql"
