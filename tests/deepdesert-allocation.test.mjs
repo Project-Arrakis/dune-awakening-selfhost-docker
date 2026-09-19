@@ -15,6 +15,13 @@ function body(file, name) {
 const demand = body('runtime/scripts/autoscaler.sh', 'handle_demand');
 const response = body('runtime/scripts/autoscaler.sh', 'scan_deepdesert_loading_responses');
 const binding = body('runtime/scripts/spawn-server.sh', 'bind_partition_to_live_server');
+const autoscalerSource = readFileSync(new URL('runtime/scripts/autoscaler.sh', root), 'utf8');
+
+test('Deep Desert travel does not use schema fields removed in patch 1.5', () => {
+  assert.doesNotMatch(autoscalerSource, /dune\.actor_state/);
+  assert.doesNotMatch(autoscalerSource, /overmap_players\s+op[\s\S]{0,200}op\.vehicle_id/);
+  assert.doesNotMatch(autoscalerSource, /prepare_deepdesert_travel_actors/);
+});
 
 function fixture(run) {
   const dir = mkdtempSync(join(tmpdir(), 'dune-allocation-test-'));

@@ -806,6 +806,29 @@ test("spicefield controls list live DB rows", async () => {
   assert.ok(calls.some((call) => String(call.text).includes("from dune.spicefield_types")));
 });
 
+test("spicefield status reads active Patch 1.5 resource fields when legacy tuning was removed", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: values[0] === "dune.resourcefield_state" }] };
+      if (text.includes("information_schema.columns")) {
+        return { rows: ["field_id", "map", "dimension_index", "spawn_time", "value_remaining"].map((column_name) => ({ column_name })) };
+      }
+      return { rows: [{ field_id: "91", map_name: "HaggaBasin", dimension_index: 0, spawn_time: 123.5, value_remaining: "5000", field_type: "Small" }] };
+    }
+  };
+  const result = await listSpicefieldTypes(db);
+  assert.equal(result.capabilities.spicefields, true);
+  assert.equal(result.capabilities.spicefieldTuning, false);
+  assert.equal(result.mode, "resourcefields");
+  assert.deepEqual(result.rows, []);
+  assert.deepEqual(result.activeFields, [{ field_id: "91", map_name: "HaggaBasin", dimension_index: 0, spawn_time: 123.5, value_remaining: 5000, field_type: "Small" }]);
+  const query = calls.find((call) => String(call.text).includes("from dune.resourcefield_state"));
+  assert.ok(query);
+  assert.match(query.text, /value_remaining <> 60000/);
+});
+
 test("spicefield controls update only editable tuning columns", async () => {
   const calls = [];
   const db = {
@@ -2104,6 +2127,34 @@ test("listVehicles preserves an undeployed vehicle's null partition and exposes 
   assert.match(mainQuery, /a\.partition_id::int as partition_id/);
   assert.match(mainQuery, /from dune\.actor_state ast/);
   assert.doesNotMatch(mainQuery, /coalesce\(a\.partition_id, 0\)/);
+});
+
+test("listVehicles reads patch 1.5 lifecycle state from dune.actors", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push(text);
+      if (text.includes("information_schema.columns") && values[1] === "actors") {
+        return { rows: [{ column_name: "id" }, { column_name: "state" }] };
+      }
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("total_vehicles")) return { rows: [{ total_vehicles: 1 }] };
+      if (text.includes("module_durability")) return { rows: [{
+        id: "5002", name: "Recovered Buggy", type: "Buggy", owner: "",
+        condition_percent: null, condition_estimated: false,
+        current_fuel: null, max_fuel: null, fuel_percent: null,
+        map: "HaggaBasin", partition_id: null, lifecycle_state: "VehicleRecovery",
+        x: null, y: null, z: null, total_count: 1, modules: [], shared_with: []
+      }] };
+      return { rows: [] };
+    }
+  };
+
+  const result = await listVehicles(db, {});
+  const mainQuery = calls.find((text) => text.includes("module_durability"));
+  assert.equal(result.rows[0].lifecycle_state, "VehicleRecovery");
+  assert.match(mainQuery, /coalesce\(a\.state::text, 'Default'\)/);
+  assert.doesNotMatch(mainQuery, /dune\.actor_state/);
 });
 
 test("listVehicles filters a player's owned and shared vehicles and labels access", async () => {
@@ -9509,6 +9560,7 @@ function fakeVehicleDeleteDb(calls, fixtures = {}) {
     hold = [{ inventory_id: "2001", actor_id: "2008", max_item_count: 20, max_item_volume: 2000 }],
     items = [],
     actorState = null,
+    inlineActorState = false,
     procedures = ["dune.delete_item(bigint)", "dune.delete_inventory_item(bigint,bigint)"],
     itemColumns = ["id", "inventory_id", "stack_size", "position_index", "template_id", "stats", "quality_level"],
     partialResult = undefined,
@@ -9525,11 +9577,15 @@ function fakeVehicleDeleteDb(calls, fixtures = {}) {
         return { rows: [{ exists: procedures.includes(signature) }] };
       }
       if (text.includes("information_schema.columns")) {
+        if (values[1] === "actors") {
+          return { rows: inlineActorState ? [{ column_name: "id" }, { column_name: "state" }] : [{ column_name: "id" }] };
+        }
         return { rows: itemColumns.map((column_name) => ({ column_name })) };
       }
       if (text.includes("set local search_path")) return { rows: [] };
       if (text.includes("with candidates as")) return { rows: hold };
       if (text.includes("from dune.actor_state")) return { rows: actorState ? [{ state: actorState }] : [] };
+      if (text.includes("select state::text as state from dune.actors")) return { rows: actorState ? [{ state: actorState }] : [] };
       if (text.includes("for update of i, inv")) return { rows: items };
       if (text.includes("delete_inventory_item")) return { rows: [{ result: partialResult }] };
       if (text.includes("select stack_size from dune.items")) {
@@ -9636,6 +9692,17 @@ test("deleteVehicleStorageItem refuses every blocked vehicle state", async () =>
       `${state} should refuse`
     );
   }
+});
+
+test("deleteVehicleStorageItem reads patch 1.5 inline actor lifecycle state", async () => {
+  const calls = [];
+  const db = fakeVehicleDeleteDb(calls, { items: [CARGO_ITEM], actorState: "VehicleRecovery", inlineActorState: true });
+  await assert.rejects(
+    () => deleteVehicleStorageItem(db, 2008, "501"),
+    /currently VehicleRecovery and its cargo cannot be changed/
+  );
+  assert.equal(calls.some((call) => call.text.includes("select state::text as state from dune.actors")), true);
+  assert.equal(calls.some((call) => call.text.includes("from dune.actor_state")), false);
 });
 
 test("deleteVehicleStorageItem allows an ordinary vehicle with no actor_state row", async () => {

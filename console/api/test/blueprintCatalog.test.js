@@ -31,15 +31,17 @@ test("community catalog forwards bounded filters and exposes only normalized sum
   assert.equal("owner_discord_id" in result.rows[0], false);
 });
 
-test("community install source accepts only public published Blueprints", async () => {
-  const blueprint = { instances: [{ building_type: "Foundation", x: 0, y: 0, z: 0 }], placeables: [] };
+test("community install source converts Studio projects and accepts only public published Blueprints", async () => {
+  const blueprint = { instances: [{ building_type: "Foundation", x: 0, y: 0, z: 0, rotation: 80 }], placeables: [], designer: { coordinateConvention: "studio-v10" } };
   let requested;
   const allowed = await getCommunityBlueprint(id, {
     baseUrl: "http://localhost/api/v1/blueprints",
     fetchImpl: async (url) => { requested = new URL(url); return jsonResponse({ blueprint: { id, title: "Keep", owner_name: "Chani", visibility: "public", status: "published", blueprint } }); }
   });
   assert.equal(requested.pathname, `/api/v1/blueprints/${id}/console-download`);
-  assert.deepEqual(allowed.blueprint, blueprint);
+  assert.equal(allowed.blueprint.instances[0].rotation, -80);
+  assert.deepEqual(allowed.blueprint.designer, { coordinateConvention: "game-v1", placeableRotationConvention: "native-yaw-y" });
+  assert.equal(blueprint.instances[0].rotation, 80);
 
   for (const visibility of ["private", "unlisted"]) {
     await assert.rejects(() => getCommunityBlueprint(id, {

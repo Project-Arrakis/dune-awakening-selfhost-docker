@@ -134,10 +134,16 @@ export class TaskManager {
     } catch (error) {
       task.status = "failed";
       task.exitCode = Number.isInteger(error.code) ? error.code : null;
-      task.errorMessage = error.message;
+      if (task.operation === "updateCheck") {
+        if (error.stdout) this.append(task, error.stdout, "stdout");
+        if (error.stderr) this.append(task, error.stderr, "stderr");
+        task.errorMessage = updateCheckFailureMessage(error);
+      } else {
+        task.errorMessage = error.message;
+      }
       task.currentStep = "Failed";
       task.finishedAt = new Date().toISOString();
-      this.emit(task, error.message);
+      this.emit(task, task.errorMessage);
     }
   }
 
@@ -284,6 +290,17 @@ export class TaskManager {
     const all = this.list();
     for (const task of all.slice(this.config.taskRetention)) this.tasks.delete(task.id);
   }
+}
+
+function updateCheckFailureMessage(error) {
+  const detail = `${error?.stdout || ""}\n${error?.stderr || ""}`;
+  if (/timed out|timeout/i.test(detail)) {
+    return "Steam did not finish the game update check in time. Try again in a few minutes. No game files were changed.";
+  }
+  if (/content host|could not resolve|no connection|network is unreachable/i.test(detail)) {
+    return "Steam's update service could not be reached. Try again in a few minutes. No game files were changed.";
+  }
+  return "The game update check could not be completed. Try again; if it keeps failing, check the SteamCMD details in the task log. No game files were changed.";
 }
 
 function itemGrantTaskWarning(operation, result) {

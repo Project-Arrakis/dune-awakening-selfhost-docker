@@ -545,15 +545,15 @@ echo "  igw port:   $IGW_PORT"
 echo "  container:  $CONTAINER_NAME"
 echo
 
-runtime/scripts/repair-map-settings-permissions.sh "$safe_name"
 mkdir -p runtime/game/artifacts
 mkdir -p runtime/container
-python3 runtime/scripts/usersettings.py materialize "$MAP_NAME" "$PWD/runtime/game/$safe_name/Saved" "$PARTITION_ID"
 purge_stale_farm_rows_for_map "$MAP_NAME"
 runtime/scripts/network-addresses.sh reconcile >/dev/null 2>&1 || true
 prepare_fake_k8s_serviceaccount "$FAKE_K8S_SERVICEACCOUNT_DIR" "funcom-seabass-$BATTLEGROUP_ID"
 
 docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+runtime/scripts/repair-map-settings-permissions.sh "$safe_name"
+python3 runtime/scripts/usersettings.py materialize "$MAP_NAME" "$PWD/runtime/game/$safe_name/Saved" "$PARTITION_ID"
 ensure_host_latency_tuned
 mapfile -t MEMORY_SWAP_ARGS < <(memory_swap_docker_args "$MEMORY")
 

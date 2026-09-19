@@ -12,10 +12,12 @@ fi
 
 safe_name="$1"
 settings_dir="runtime/game/$safe_name/Saved/UserSettings"
+custom_settings_dir="runtime/game/$safe_name/Saved/Config/LinuxServer"
 
 # This is the normal path. It avoids starting a helper container for every
 # dynamic-map launch when ownership has not drifted.
-if mkdir -p "$settings_dir" 2>/dev/null && [ -w "$settings_dir" ]; then
+if mkdir -p "$settings_dir" "$custom_settings_dir" 2>/dev/null \
+  && [ -w "$settings_dir" ] && [ -w "$custom_settings_dir" ]; then
   exit 0
 fi
 
@@ -57,16 +59,20 @@ docker run --rm \
     esac
     saved="/game/$SAFE_NAME/Saved"
     settings="$saved/UserSettings"
-    mkdir -p "$settings"
-    chown "$TARGET_UID:$TARGET_GID" "/game/$SAFE_NAME" "$saved"
-    chmod u+rwx "/game/$SAFE_NAME" "$saved"
-    find "$settings" -xdev \( ! -uid "$TARGET_UID" -o ! -gid "$TARGET_GID" \) \
-      -exec chown -h "$TARGET_UID:$TARGET_GID" {} +
-    find "$settings" -xdev -type d ! -perm -u+rwx -exec chmod u+rwx {} +
-    find "$settings" -xdev -type f ! -perm -u+rw -exec chmod u+rw {} +
+    custom_settings="$saved/Config/LinuxServer"
+    mkdir -p "$settings" "$custom_settings"
+    chown "$TARGET_UID:$TARGET_GID" "/game/$SAFE_NAME" "$saved" "$saved/Config" "$custom_settings"
+    chmod u+rwx "/game/$SAFE_NAME" "$saved" "$saved/Config" "$custom_settings"
+    for managed_dir in "$settings" "$custom_settings"; do
+      find "$managed_dir" -xdev \( ! -uid "$TARGET_UID" -o ! -gid "$TARGET_GID" \) \
+        -exec chown -h "$TARGET_UID:$TARGET_GID" {} +
+      find "$managed_dir" -xdev -type d ! -perm -u+rwx -exec chmod u+rwx {} +
+      find "$managed_dir" -xdev -type f ! -perm -u+rw -exec chmod u+rw {} +
+    done
   '
 
-if [ ! -d "$settings_dir" ] || [ ! -w "$settings_dir" ]; then
-  echo "Dynamic-map settings directory remains unwritable: $settings_dir" >&2
+if [ ! -d "$settings_dir" ] || [ ! -w "$settings_dir" ] \
+  || [ ! -d "$custom_settings_dir" ] || [ ! -w "$custom_settings_dir" ]; then
+  echo "Dynamic-map settings directories remain unwritable for: $safe_name" >&2
   exit 1
 fi

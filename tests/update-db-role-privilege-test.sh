@@ -23,6 +23,7 @@ run_case() {
   local external_trigger_marker="$tmp_dir/$name/external-triggers.sql"
   local postgres_start_log="$tmp_dir/$name/postgres-start.log"
   local psql_stdin_log="$tmp_dir/$name/psql-stdin.log"
+  local host_repo_root="$tmp_dir/$name/host-repo"
   local postgres_running="${8:-1}"
   local existing_trigger_marker="${9:-}"
 
@@ -128,6 +129,8 @@ EOF
     DUNE_DB_UPDATE_ROLE_MARKER="$role_marker" \
     DUNE_DB_UPDATE_EXTERNAL_TRIGGER_MARKER="$external_trigger_marker" \
     DUNE_DB_BACKUP_ON_ORPHAN_DETECT=0 \
+    DUNE_CONTAINER_REPO_ROOT="$PWD" \
+    DUNE_HOST_REPO_ROOT="$host_repo_root" \
     runtime/scripts/update-db.sh >"$output" 2>&1
   local actual_script_exit=$?
   set -e
@@ -143,6 +146,7 @@ EOF
   fi
 
   grep -Fq "function_schema.nspname NOT IN ('dune', 'pg_catalog')" "$docker_log"
+  grep -Fq -- "-v $host_repo_root/runtime/scripts/db-update-pg-dump:/tmp/pg17/bin/pg_dump:ro" "$docker_log"
 
   if [ "$updater_exit_code" = "0" ]; then
     grep -q 'exec -i dune-postgres psql .*ON_ERROR_STOP=1 .* -f -' "$docker_log"
@@ -187,6 +191,7 @@ EOF
   fi
 
   if [ -n "$existing_trigger_marker" ]; then
+    grep -Fq 'WHEN duplicate_object THEN' "$psql_stdin_log"
     grep -Fq 'WHEN invalid_schema_name OR undefined_function OR undefined_table THEN' "$psql_stdin_log"
     grep -Fq "$existing_trigger_marker" "$psql_stdin_log"
   fi

@@ -91,13 +91,18 @@ async function ensureOfflinePlayer(db, playerPawnId) {
 }
 
 function resolveImportInstance(inst) {
+  // Console imports used ordinary PostgreSQL arrays before v1.4.26 and were
+  // verified in game. Keep that import contract: the game-side copy path is
+  // distinct from native rows and preserves the caller's declared bounds.
   const transform = `{${inst.x},${inst.y},${inst.z},${inst.rotation}}`;
   const stability = inst.provides_stability != null ? inst.provides_stability : isStructuralBuilding(inst.building_type);
   return { transform, stability };
 }
 
 function resolveImportPlaceable(pl) {
-  const transform = `{${pl.x},${pl.y},${pl.z},${pl.rx ?? 0},${pl.ry ?? 0},${pl.rz ?? 0}}`;
+  // Solido JSON uses ordinary 3D axes (rx=pitch, ry=yaw, rz=roll), while
+  // Patch 1.5 persists placeables as X, Y, Z, Yaw, Pitch, Roll.
+  const transform = `{${pl.x},${pl.y},${pl.z},${pl.ry ?? 0},${pl.rx ?? 0},${pl.rz ?? 0}}`;
   return { transform };
 }
 
@@ -382,8 +387,8 @@ export async function exportBlueprint(db, blueprintId) {
       x: t[0] || 0,
       y: t[1] || 0,
       z: t[2] || 0,
-      rx: t[3] || 0,
-      ry: t[4] || 0,
+      rx: t[4] || 0,
+      ry: t[3] || 0,
       rz: t[5] || 0
     };
   });

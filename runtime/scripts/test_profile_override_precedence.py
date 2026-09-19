@@ -29,6 +29,7 @@ from __future__ import annotations
 import io
 import json
 import sys
+import tempfile
 import unittest
 from base64 import b64encode
 from contextlib import redirect_stdout
@@ -129,6 +130,58 @@ class GameFieldOverridePrecedenceTests(ProfilePathTestCase):
         compiled_sibling_partition = usersettings.compiled_usergame_ini(profile, MAP_NAME, OTHER_PARTITION_ID)
         self.assertIn(f"{key}=3.0", compiled_sibling_partition)
         self.assertNotIn(f"{key}=4.0", compiled_sibling_partition)
+
+    def test_materialize_writes_native_building_restriction_setting_after_patch_1_5(self):
+        section, key, _default = usersettings.SERVER_CUSTOM_FIELDS["building_restriction_limits_enabled"]
+        profile = usersettings.empty_profile()
+        usersettings.profile_set_key(profile, "server_custom_global", section, key, "False")
+
+        with tempfile.TemporaryDirectory() as directory:
+            saved_dir = Path(directory) / "Saved"
+            custom_path = saved_dir / "Config" / "LinuxServer" / "ServerCustomSettings.ini"
+            custom_path.parent.mkdir(parents=True)
+            custom_path.write_text(
+                f"[{usersettings.SERVER_CUSTOM_SETTINGS_SECTION}]\n"
+                "DifficultyLevel=Medium\n"
+                "GatheringAmount=2.000000\n"
+                "bIsBuildingRestrictionsEnabled=True\n",
+                encoding="utf-8",
+            )
+
+            usersettings.write_server_custom_settings(saved_dir, profile, MAP_NAME, PARTITION_ID)
+            rendered = custom_path.read_text(encoding="utf-8")
+
+        self.assertIn("DifficultyLevel=Custom", rendered)
+        self.assertIn("bIsBuildingRestrictionsEnabled=False", rendered)
+        self.assertIn("GatheringAmount=2.000000", rendered)
+        self.assertNotIn("DifficultyLevel=Medium", rendered)
+
+    def test_server_custom_settings_are_not_written_to_server_usergame(self):
+        section, key, _default = usersettings.SERVER_CUSTOM_FIELDS["gathering_amount"]
+        profile = usersettings.empty_profile()
+        usersettings.profile_set_key(profile, "server_custom_global", section, key, "2.500000")
+        self.assertNotIn(key, usersettings.compiled_usergame_ini(profile, MAP_NAME, PARTITION_ID))
+
+    def test_server_custom_bulk_save_uses_dedicated_profile_scope(self):
+        self.assertEqual(usersettings.bulk_save("serverCustomPartition", MAP_NAME, PARTITION_ID, _encode_bulk_save_payload({"gathering_amount": "2.500000"})), 0)
+        saved = usersettings.PROFILE_PATH.read_text(encoding="utf-8")
+        self.assertIn(f"[ServerCustomPartition:{MAP_NAME}:{PARTITION_ID}:{usersettings.SERVER_CUSTOM_SETTINGS_SECTION}]", saved)
+        self.assertIn("GatheringAmount=2.500000", saved)
+        self.assertNotIn("GatheringAmount", usersettings.profile_game_text())
+
+    def test_server_custom_materialization_preserves_unmanaged_values(self):
+        profile = usersettings.empty_profile()
+        section, managed_key, _default = usersettings.SERVER_CUSTOM_FIELDS["gathering_amount"]
+        usersettings.profile_set_key(profile, "server_custom_partition", section, managed_key, "3.000000", MAP_NAME, PARTITION_ID)
+        with tempfile.TemporaryDirectory() as directory:
+            saved_dir = Path(directory) / "Saved"
+            custom_path = saved_dir / "Config" / "LinuxServer" / "ServerCustomSettings.ini"
+            custom_path.parent.mkdir(parents=True)
+            custom_path.write_text(f"[{section}]\nGatheringAmount=1.000000\nFutureFuncomSetting=keep\n", encoding="utf-8")
+            usersettings.write_server_custom_settings(saved_dir, profile, MAP_NAME, PARTITION_ID)
+            rendered = custom_path.read_text(encoding="utf-8")
+        self.assertIn("GatheringAmount=3.000000", rendered)
+        self.assertIn("FutureFuncomSetting=keep", rendered)
 
 
 class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
@@ -458,6 +511,13 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
 
 
 class ClientGameIniAllowlistTests(ProfilePathTestCase):
+    def test_engine_export_targets_retail_windows_config(self):
+        profile = usersettings.empty_profile()
+        rendered = usersettings.client_engine_ini(profile)
+
+        self.assertIn("Saved/Config/Windows/Engine.ini", rendered)
+        self.assertNotIn("Saved/Config/WindowsClient/Engine.ini", rendered)
+
     def test_exports_only_nondefault_client_required_fields(self):
         profile = usersettings.parse_profile_text(
             "[Global:/Script/DuneSandbox.DuneGameMode]\n"
@@ -506,7 +566,10 @@ class ClientGameIniAllowlistTests(ProfilePathTestCase):
         for field_id, filename in usersettings.CLIENT_FILE_REQUIRED.items():
             if filename != "Game.ini":
                 continue
-            _section, key, _default = usersettings.MAP_FIELDS[field_id]
+            if field_id == "building_restriction_limits_enabled":
+                key = "m_bBuildingRestrictionLimitsEnabled"
+            else:
+                _section, key, _default = usersettings.MAP_FIELDS[field_id]
             self.assertNotIn(f"{key}=", rendered)
 
 

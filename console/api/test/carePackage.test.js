@@ -77,7 +77,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { clearCarePackageHistory, enableCarePackage, grantEligibleCarePackages, grantCarePackage, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory, validateCarePackageConfig } from "../src/carePackage.js";
+import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory, validateCarePackageConfig } from "../src/carePackage.js";
 
 test("care package starts empty, disabled, and reports manual capability", () => {
   const config = tempConfig();
@@ -835,7 +835,7 @@ test("care package send message fails clearly without recipient identity", async
   }
 });
 
-test("care package send message seeds the synthetic sender persona safely", async () => {
+test("care package message setup avoids an invalid conflict on the current player-state schema", async () => {
   const config = tempConfig();
   try {
     writeCatalog(config);
@@ -846,7 +846,7 @@ test("care package send message seeds the synthetic sender persona safely", asyn
       items: [{ itemName: "Plant Fiber", quantity: 10, durability: 1 }],
       kits: [{ id: "care-package-v1", name: "Care Package", xp: 0, items: [{ itemName: "Plant Fiber", quantity: 10, durability: 1 }], sendMessage: "Welcome" }]
     });
-    const db = fakePersonaDb({ failEncryptedPlayerStateConflict: true });
+    const db = fakePersonaDb();
     const result = await grantCarePackage(config, "12345", {
       confirmation: "GRANT CARE PACKAGE",
       characterName: "Player",
@@ -854,11 +854,25 @@ test("care package send message seeds the synthetic sender persona safely", asyn
       flsId: "ABCDEF1234567890"
     }, { db });
     assert.equal(result.status, "granted");
+    assert.equal(db.queries.some((query) => /insert into dune\."encrypted_player_state".*on conflict/s.test(query.text)), false);
     assert.equal(db.queries.some((query) => /update dune\."encrypted_player_state"/.test(query.text)), true);
     assert.equal(db.queries.some((query) => /insert into dune\."encrypted_player_state".*where not exists/s.test(query.text)), true);
   } finally {
     rmSync(config.repoRoot, { recursive: true, force: true });
   }
+});
+
+test("care package message setup uses atomic conflict handling when account ID is unique", async () => {
+  const db = fakePersonaDb({ uniqueEncryptedPlayerStateAccount: true });
+  await ensureCarePackageServerPersona(db);
+  assert.equal(db.queries.some((query) => /insert into dune\."encrypted_player_state".*on conflict \("account_id"\)/s.test(query.text)), true);
+  assert.equal(db.queries.some((query) => /update dune\."encrypted_player_state"/.test(query.text)), false);
+});
+
+test("care package message setup retries if schema changed after the unique-index check", async () => {
+  const db = fakePersonaDb({ uniqueEncryptedPlayerStateAccount: true, failEncryptedPlayerStateConflict: true });
+  await ensureCarePackageServerPersona(db);
+  assert.equal(db.queries.some((query) => /update dune\."encrypted_player_state"/.test(query.text)), true);
 });
 
 test("care package grant partial failures records partial_failed status and summary", async () => {
@@ -1098,6 +1112,9 @@ function fakePersonaDb(options = {}) {
       }
       if (/information_schema\.tables/.test(text)) {
         return { rows: tableTypes[params[0]] ? [{ table_type: tableTypes[params[0]] }] : [] };
+      }
+      if (/from pg_index i/.test(text)) {
+        return { rows: [{ has_unique_column: options.uniqueEncryptedPlayerStateAccount === true }] };
       }
       if (/from dune\.accounts/.test(text)) {
         return { rows: [{ hex_fls_id: "A5C0DE5E12A00001", funcom_id: "Server#0001" }] };

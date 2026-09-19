@@ -840,14 +840,6 @@ timeout --signal=TERM --kill-after=5s "${STEAM_CHECK_TIMEOUT_SECONDS}s" "$STEAMC
   +quit > "$APPINFO" 2>&1
 steamcmd_rc=$?
 set -e
-if [ "$steamcmd_rc" -ne 0 ]; then
-  if [ "$steamcmd_rc" -eq 124 ] || [ "$steamcmd_rc" -eq 137 ]; then
-    echo "SteamCMD metadata check timed out after ${STEAM_CHECK_TIMEOUT_SECONDS}s."
-  fi
-  echo "SteamCMD could not retrieve the current app information."
-  tail -n 80 "$APPINFO" || true
-  exit 2
-fi
 
 remote_build="$(
   awk '\''
@@ -871,6 +863,21 @@ if [ -z "$remote_build" ]; then
       }
     '\'' "$APPINFO"
   )"
+fi
+
+if [ "$steamcmd_rc" -ne 0 ]; then
+  if { [ "$steamcmd_rc" -eq 124 ] || [ "$steamcmd_rc" -eq 137 ]; } && [ -n "$remote_build" ]; then
+    echo "SteamCMD returned complete build metadata before its shutdown timed out; continuing with that result."
+  elif [ "$steamcmd_rc" -eq 124 ] || [ "$steamcmd_rc" -eq 137 ]; then
+    echo "SteamCMD metadata check timed out after ${STEAM_CHECK_TIMEOUT_SECONDS}s."
+    echo "SteamCMD could not retrieve the current app information."
+    tail -n 80 "$APPINFO" || true
+    exit 2
+  else
+    echo "SteamCMD could not retrieve the current app information."
+    tail -n 80 "$APPINFO" || true
+    exit 2
+  fi
 fi
 
 if [ -z "$remote_build" ]; then

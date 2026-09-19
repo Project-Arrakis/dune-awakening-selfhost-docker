@@ -56,8 +56,8 @@ const FRIENDLY_MAP_NAMES = {
   CB_Overland_S_07: "Overland S-07",
   CB_Overland_S_08: "Overland S-08",
   CB_Story_BanditFortress01: "Bandit Fortress",
-  CB_Story_DestroyedZanovar: "Zanovar",
-  CB_Story_OrbitalMonitor: "Arrakeen Spaceport",
+  CB_Story_DestroyedZanovar: "Arrakeen Spaceport & Zanovar",
+  CB_Story_OrbitalMonitor: "Sardaukar Orbital Monitor",
   CB_Arrakis_Story_Paranoid_PrayerRoom: "Place of Contemplation",
   CB_Arrakis_Story_Glutton_DiningRoom: "The Glutton's Dining Room",
   CB_Arrakis_Generic_Sietch_Room: "Sietch Talab"

@@ -96,6 +96,8 @@ grep -Fq 'DUNE_STEAMCMD_CHECK_MAX_ATTEMPTS:-2' <<<"$check_block"
 grep -Fq 'DUNE_STEAMCMD_CHECK_RETRY_SLEEP:-5' <<<"$check_block"
 grep -Fq 'DUNE_STEAMCMD_CHECK_TIMEOUT_SECONDS:-45' <<<"$check_block"
 grep -Fq 'timeout --signal=TERM --kill-after=5s' <<<"$check_block"
+grep -Fq 'SteamCMD returned complete build metadata before its shutdown timed out; continuing with that result.' <<<"$check_block"
+grep -Fq '{ [ "$steamcmd_rc" -eq 124 ] || [ "$steamcmd_rc" -eq 137 ]; } && [ -n "$remote_build" ]' <<<"$check_block"
 if grep -Fq 'DUNE_STEAMCMD_CONTENT_MAX_ATTEMPTS' <<<"$check_block"; then
   echo "read-only update checks must not inherit the long install retry policy" >&2
   exit 1

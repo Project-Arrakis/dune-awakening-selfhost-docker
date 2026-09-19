@@ -8,7 +8,7 @@ set -a
 set +a
 
 STATE_FILE="${DUNE_MAP_MODES_FILE:-runtime/generated/map-runtime-modes.json}"
-STATE_VERSION=2
+STATE_VERSION=3
 GRACE_SECONDS="${DUNE_AUTOSCALER_DESPAWN_GRACE_SECONDS:-${DUNE_AUTOSCALER_IDLE_SECONDS:-300}}"
 RECONCILE_LOCK_FILE="${DUNE_ALWAYS_ON_RECONCILE_LOCK_FILE:-runtime/generated/map-modes-reconcile.lock}"
 RECONCILE_STATE_FILE="${DUNE_ALWAYS_ON_RECONCILE_STATE_FILE:-runtime/generated/map-modes-reconcile.tsv}"
@@ -94,13 +94,14 @@ protected_map() {
 }
 
 # Funcom resets some short-lived activity maps inside a still-running server
-# process after the last player leaves.  CB_Overland_S_06 (Smuggler's Run)
-# does not reliably reinitialize vehicle permissions on that path.  Funcom's
-# Hyper-V deployment avoids it by deallocating the pod and allocating a fresh
-# one for the next visit, so keep this map demand-driven in Docker as well.
+# process after the last player leaves or completes the activity. Some of
+# those in-process resets leave stale vehicle permissions; the two credits
+# story maps also intentionally crash/reinitialize and can no longer bind their
+# game port. Funcom's Hyper-V deployment deallocates the pod in each case,
+# so keep these maps demand-driven and allocate a fresh process per visit.
 requires_fresh_process() {
   case "$1" in
-    CB_Overland_S_06) return 0 ;;
+    CB_Overland_S_06|CB_Story_DestroyedZanovar|CB_Story_OrbitalMonitor) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -140,13 +141,13 @@ path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="
 PY
   fi
 
-  # v2 retires legacy Always On / Overmap Active selections for maps whose
+  # v3 retires legacy Always On / Overmap Active selections for maps whose
   # lifecycle now requires a fresh process per visit.  Merely masking the old
   # value at read time is insufficient: older reconciliation and publication
   # paths can consume the persisted value directly and create a spawn/despawn
   # loop.  Migrate it once, atomically, while retaining Disabled as an explicit
   # operator choice.
-  if ! grep -Eq '"version"[[:space:]]*:[[:space:]]*2([,[:space:]}]|$)' "$STATE_FILE" 2>/dev/null; then
+  if ! grep -Eq '"version"[[:space:]]*:[[:space:]]*3([,[:space:]}]|$)' "$STATE_FILE" 2>/dev/null; then
     python3 - "$STATE_FILE" "$STATE_VERSION" <<'PY'
 import json
 import os
@@ -171,7 +172,7 @@ if current_version >= target_version:
 
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 maps = data.setdefault("maps", {})
-for map_name in ("CB_Overland_S_06",):
+for map_name in ("CB_Overland_S_06", "CB_Story_DestroyedZanovar", "CB_Story_OrbitalMonitor"):
     config = maps.get(map_name)
     if isinstance(config, dict) and config.get("mode") not in {"dynamic", "disabled"}:
         config["mode"] = "dynamic"
@@ -256,8 +257,8 @@ set_mode() {
   esac
 
   if requires_fresh_process "$canonical" && [ "$mode" != "dynamic" ] && [ "$mode" != "disabled" ]; then
-    echo "$canonical must use Dynamic mode so each empty Smuggler's Run instance is deallocated before its next use." >&2
-    echo "Always On and Overmap Active can reuse Funcom's reset world with stale vehicle permissions." >&2
+    echo "$canonical must use Dynamic mode so each completed or empty instance is deallocated before its next use." >&2
+    echo "Always On and Overmap Active can reuse a Funcom process that is no longer safe to accept players." >&2
     exit 1
   fi
 

@@ -235,7 +235,7 @@ function restartGateChoice(meta: { label: string; enabled: boolean; playersOnlin
 // Queue/Restart Immediately/Cancel choice -- with players-online context --
 // when it's on. `target` scopes the online check to the map/partition this
 // save actually restarts; omit it for a stack-wide (all game services) save.
-async function confirmSettingsRestart(kind: "UserEngine" | "UserGame", target?: RestartQueueTarget): Promise<RestartGateChoice> {
+async function confirmSettingsRestart(kind: "UserEngine" | "UserGame" | "ServerSettings", target?: RestartQueueTarget): Promise<RestartGateChoice> {
   let status: Awaited<ReturnType<typeof serverApi.restartQueue>> | null = null;
   try {
     status = await serverApi.restartQueue(target);
@@ -249,7 +249,7 @@ async function confirmSettingsRestart(kind: "UserEngine" | "UserGame", target?: 
     ? target.map
     : target?.partitionId
       ? `partition ${target.partitionId}`
-      : kind === "UserEngine" ? "UserEngine settings" : "UserGame settings";
+      : kind === "UserEngine" ? "UserEngine settings" : kind === "ServerSettings" ? "Custom settings" : "UserGame settings";
   return restartGateChoice({
     label,
     enabled: status?.settings.enabled ?? false,

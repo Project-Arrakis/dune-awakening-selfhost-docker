@@ -4983,13 +4983,15 @@ async function userSettingsValuesRoute(res, url) {
       ? "userSettingsMapEngineValues"
       : scope === "partitionEngine"
         ? "userSettingsPartitionEngineValues"
+    : scope.startsWith("serverCustom")
+      ? "userSettingsServerCustomValues"
     : scope === "partition"
       ? "userSettingsPartitionValues"
       : scope === "map"
         ? "userSettingsMapValues"
         : "userSettingsGlobalValues";
   try {
-    const result = await runDune(config, buildDuneArgs(operation, { map, partitionId }), { timeoutMs: 8000 });
+    const result = await runDune(config, buildDuneArgs(operation, { scope, map, partitionId }), { timeoutMs: 8000 });
     return json(res, 200, { stdout: result.stdout || "" });
   } catch (error) {
     return json(res, 500, { error: redact(error?.message || "Unexpected error.") });
@@ -5025,7 +5027,7 @@ async function userSettingsRawWriteRoute(req, res) {
 }
 
 function userSettingsTaskPayload(body) {
-  const scope = ["engine", "mapEngine", "partitionEngine", "global", "map", "partition", "profile"].includes(String(body.scope || "")) ? String(body.scope) : "map";
+  const scope = ["engine", "mapEngine", "partitionEngine", "global", "map", "partition", "serverCustomGlobal", "serverCustomMap", "serverCustomPartition", "profile"].includes(String(body.scope || "")) ? String(body.scope) : "map";
   const map = String(body.map || "Survival_1");
   const partitionId = String(body.partitionId || "").trim();
   const values = body.values && typeof body.values === "object" && !Array.isArray(body.values) ? body.values : {};
@@ -5076,6 +5078,7 @@ function readDeferredRestartPending(config) {
 }
 
 function deferredRestartLabel(payload) {
+  if (String(payload.scope).startsWith("serverCustom")) return payload.scope === "serverCustomGlobal" ? "Custom settings" : `Custom settings (${payload.map})`;
   if (payload.scope === "engine" || payload.scope === "mapEngine" || payload.scope === "partitionEngine") return "UserEngine settings";
   if (payload.scope === "global" || payload.scope === "profile") return "UserGame settings";
   return payload.map ? `UserGame settings (${payload.map})` : "UserGame settings";
@@ -5087,7 +5090,7 @@ function deferredRestartLabel(payload) {
 // to restart every game service to actually apply, not just the map that
 // happened to be selected in the editor.
 function restartPayload(scope, map, partitionId) {
-  if (scope === "profile" || scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global") {
+  if (scope === "profile" || scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global" || scope === "serverCustomGlobal") {
     return { restartMode: "stack", restartLabel: "all game services" };
   }
   const normalizedMap = String(map || "").toLowerCase();

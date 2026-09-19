@@ -66,7 +66,7 @@ docker rm -f dune-rmq-game dune-rmq-admin 2>/dev/null || true
 
 echo
 echo "=== Stopping Postgres ==="
-docker rm -f dune-postgres 2>/dev/null || true
+runtime/scripts/stop-postgres-container.sh
 
 echo
 echo "=== Remaining dune containers ==="

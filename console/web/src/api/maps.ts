@@ -3,7 +3,7 @@ import type { Task } from "./setup";
 import type { RestartDispatchResponse } from "./server";
 
 export type UserSettingField = {
-  scope: "engine" | "mapEngine" | "partitionEngine" | "game" | "partition";
+  scope: "engine" | "mapEngine" | "partitionEngine" | "game" | "partition" | "serverCustom";
   id: string;
   section: string | null;
   key: string | null;
@@ -23,6 +23,7 @@ export type UserSettingsSchema = {
   game: UserSettingField[];
   partition: UserSettingField[];
   partitionEngine: UserSettingField[];
+  serverCustom?: UserSettingField[];
 };
 
 export type LiveMapMemoryRow = {
@@ -86,6 +87,15 @@ export type SpicefieldTypeRow = {
   current_globally_primed: number | null;
   is_spawning_active: boolean | null;
   global_spawn_weight: number | null;
+};
+
+export type ActiveSpicefieldRow = {
+  field_id: string;
+  map_name: string;
+  field_type: "Small" | "Medium" | "Large";
+  dimension_index: number;
+  spawn_time: number;
+  value_remaining: number;
 };
 
 export type PartitionCombatState = "PVP" | "PVE" | "CONFLICT" | "UNKNOWN";
@@ -156,7 +166,7 @@ export const mapsApi = {
   memorySwap: () => api<MemorySwapState>("/api/maps/memory/swap"),
   setMemorySwap: (body: { enabled: boolean; perServerGiB?: number; poolGiB?: number; swappiness?: number; confirmation: string }) => post<{ task: Task }>("/api/maps/memory/swap", body),
   setMemory: (body: { map: string; memory: string; confirmation: string }) => post<{ task: Task }>("/api/maps/memory", { ...body, action: "set" }),
-  spicefields: () => api<{ capabilities?: Record<string, boolean>; rows: SpicefieldTypeRow[]; reason?: string }>("/api/maps/spicefields"),
+  spicefields: () => api<{ capabilities?: Record<string, boolean>; mode?: "legacy" | "resourcefields"; rows: SpicefieldTypeRow[]; activeFields?: ActiveSpicefieldRow[]; reason?: string }>("/api/maps/spicefields"),
   updateSpicefield: (typeId: number | string, body: { max_globally_active: number; max_globally_primed: number; is_spawning_active: boolean; global_spawn_weight: number }) =>
     api<{ ok: boolean; updatedRows: number; row: SpicefieldTypeRow }>(`/api/maps/spicefields/${encodeURIComponent(String(typeId))}`, { method: "PATCH", body: JSON.stringify(body) }),
   choamTerminals: () => api<ChoamTerminalOverview>("/api/maps/choam-terminals"),
@@ -172,9 +182,9 @@ export const mapsApi = {
   // resetUserSettings/saveRawUserSettings deferRestart field) -- distinct
   // from userSettingsRestartPending above, which only covers Landsraad fields.
   deferredRestartPending: () => api<{ pending: boolean; since?: string; label?: string }>("/api/maps/user-settings/deferred-pending"),
-  userSettingsValues: (scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition", map?: string, partitionId?: string) => api<{ stdout: string }>(`/api/maps/user-settings/values?scope=${encodeURIComponent(scope)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
+  userSettingsValues: (scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition" | "serverCustomGlobal" | "serverCustomMap" | "serverCustomPartition", map?: string, partitionId?: string) => api<{ stdout: string }>(`/api/maps/user-settings/values?scope=${encodeURIComponent(scope)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
   rawUserSettings: (kind: "engine" | "game" | "profile" | "client-game" | "client-engine", map?: string, partitionId?: string) => api<{ content: string }>(`/api/maps/user-settings/raw?kind=${encodeURIComponent(kind)}${map ? `&map=${encodeURIComponent(map)}` : ""}${partitionId ? `&partitionId=${encodeURIComponent(partitionId)}` : ""}`),
-  saveUserSettings: ({ immediate, ...body }: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; values: Record<string, string>; restart?: boolean; immediate?: boolean; deferRestart?: boolean }) =>
+  saveUserSettings: ({ immediate, ...body }: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition" | "serverCustomGlobal" | "serverCustomMap" | "serverCustomPartition"; map?: string; partitionId?: string; values: Record<string, string>; restart?: boolean; immediate?: boolean; deferRestart?: boolean }) =>
     post<RestartDispatchResponse>(`/api/maps/user-settings/save${immediate ? "?restartQueue=immediate" : ""}`, body),
   resetUserSettings: ({ immediate, ...body }: { scope: "engine" | "mapEngine" | "partitionEngine" | "global" | "map" | "partition"; map?: string; partitionId?: string; confirmation: string; immediate?: boolean; deferRestart?: boolean }) =>
     post<RestartDispatchResponse>(`/api/maps/user-settings/reset${immediate ? "?restartQueue=immediate" : ""}`, body),

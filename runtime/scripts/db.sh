@@ -13,6 +13,21 @@ AUTO_SERVICE_FILE="/etc/systemd/system/dune-awakening-db-backup.service"
 AUTO_TIMER_FILE="/etc/systemd/system/dune-awakening-db-backup.timer"
 PENDING_TRANSFER_FILE="runtime/generated/pending-character-transfers.tsv"
 BATTLEGROUP_RESTORE_FILE="runtime/generated/battlegroup-restore-point.env"
+DB_RESTORE_MAINTENANCE_FILE="${DUNE_DB_RESTORE_MAINTENANCE_FILE:-runtime/generated/db-restore-maintenance}"
+
+begin_db_restore_maintenance() {
+  mkdir -p "$(dirname "$DB_RESTORE_MAINTENANCE_FILE")"
+  printf 'Database restore started at %s by PID %s.\n' "$(date -Is)" "$$" > "$DB_RESTORE_MAINTENANCE_FILE"
+  chmod 600 "$DB_RESTORE_MAINTENANCE_FILE" 2>/dev/null || true
+  trap 'rm -f "$DB_RESTORE_MAINTENANCE_FILE"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+
+end_db_restore_maintenance() {
+  rm -f "$DB_RESTORE_MAINTENANCE_FILE"
+  trap - EXIT INT TERM
+}
 
 usage() {
   cat <<'EOF'
@@ -1935,6 +1950,11 @@ import_db() {
     adopt_backup_battlegroup_id "$backup_file"
   fi
 
+  # The Console remains online when it launches a restore so the browser can
+  # report task progress. Pause its database pool before the current database
+  # is dropped; otherwise a periodic Console/addon migration can recreate an
+  # archived trigger while pg_restore is still replaying the same object.
+  begin_db_restore_maintenance
   stop_db_dependents
   recreate_dune_database
 
@@ -2000,6 +2020,8 @@ import_db() {
       *) echo "Services remain stopped. Start them with: dune start" ;;
     esac
   fi
+
+  end_db_restore_maintenance
 }
 
 adapt_imported_battlegroup() {

@@ -328,6 +328,8 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["usersettings", "global-values"];
     case "userSettingsPartitionValues":
       return ["usersettings", "partition-values", validateMapName(payload.map), validatePartitionId(payload.partitionId)];
+    case "userSettingsServerCustomValues":
+      return ["usersettings", "server-custom-values", payload.scope === "serverCustomGlobal" ? "global" : payload.scope === "serverCustomPartition" ? "partition" : "map", validateMapName(payload.map || "Survival_1"), payload.partitionId ? validatePartitionId(payload.partitionId) : ""];
     case "userSettingsSave":
       return ["usersettings", "bulk-save", validateSettingsScope(payload.scope), validateMapName(payload.map || "Survival_1"), payload.partitionId ? validatePartitionId(payload.partitionId) : "", encodeJsonArg(payload.values || {})];
     case "userSettingsMigrateCoriolisRegionFields":
@@ -393,7 +395,7 @@ function encodeTextArg(value) {
 
 function validateSettingsScope(value) {
   const raw = String(value || "").trim();
-  if (["engine", "mapEngine", "partitionEngine", "global", "map", "partition", "profile"].includes(raw)) return raw;
+  if (["engine", "mapEngine", "partitionEngine", "global", "map", "partition", "serverCustomGlobal", "serverCustomMap", "serverCustomPartition", "profile"].includes(raw)) return raw;
   throw new Error(`Unsupported settings scope: ${raw}`);
 }
 
