@@ -139,6 +139,12 @@ test("healthy home status does not create false warnings", () => {
   assert.equal(summary.fls, "Ready");
 });
 
+test("RabbitMQ status delegated to readiness does not create a false warning", () => {
+  const summary = parseHomeStatus(`=== RabbitMQ game connections ===
+RabbitMQ connection details: Checked by readiness`);
+  assert.equal(summary.rabbitmq, "Ready");
+});
+
 test("home population parser normalizes unknown current population", () => {
   assert.equal(parseHomeStatus("Population: unknown/60").population, "?/60");
   assert.equal(parseHomeStatus("Population: unknown/unknown").population, "");

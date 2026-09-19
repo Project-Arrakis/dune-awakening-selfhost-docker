@@ -73,6 +73,23 @@ beforeEach(() => {
 });
 
 describe("MapsPanel modifier availability", () => {
+  it("keeps credits story maps dynamic and explains their fresh-process lifecycle", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: JSON.stringify({ maps: [{ map: "CB_Story_OrbitalMonitor", status: "Ready", mode: "Dynamic", partitionId: "32" }] }) },
+      services: { stdout: "" },
+      readiness: { stdout: "" }
+    });
+
+    renderMapsPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    expect(screen.getByText(/completed instance is retired/i)).toBeVisible();
+    expect(screen.getByLabelText("Mode")).toHaveValue("dynamic");
+    expect(screen.queryByRole("option", { name: "Always On" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Overmap Active" })).not.toBeInTheDocument();
+  });
+
   it("force despawns the whole map instead of only its first partition", async () => {
     const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
     api.status.mockResolvedValue({
@@ -124,5 +141,33 @@ describe("MapsPanel modifier availability", () => {
     expect(screen.getByRole("tab", { name: "UserEngine" })).toBeVisible();
     expect(screen.getByDisplayValue("2.0")).toBeVisible();
     expect(api.status).toHaveBeenCalledTimes(1);
+  });
+
+  it("edits native ServerCustomSettings values in the dedicated Custom Settings tab", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: JSON.stringify({ maps: [{ map: "Overmap", status: "Ready", mode: "Core Map", partitionId: "2" }] }) },
+      services: { stdout: "" },
+      readiness: { stdout: "" }
+    });
+    api.userSettingsSchema.mockResolvedValue({
+      engine: [], mapEngine: [], partitionEngine: [], game: [], partition: [],
+      serverCustom: [{
+        scope: "serverCustom", id: "gathering_amount", section: "/Script/DuneSandbox.UserServerCustomSettings",
+        key: "GatheringAmount", default: "1.000000", type: "number", clientFile: "", category: "Crafting And Resources", description: ""
+      }]
+    });
+    api.userSettingsValues.mockResolvedValue({ stdout: "gathering_amount\t2.000000\n" });
+
+    renderMapsPanel();
+    const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
+    await waitFor(() => expect(modifiers).toBeEnabled());
+    fireEvent.click(modifiers);
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Settings" }));
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "Overmap::2" } });
+
+    expect(await screen.findByDisplayValue("2.000000")).toBeVisible();
+    expect(api.userSettingsValues).toHaveBeenCalledWith("serverCustomPartition", "Overmap", "2");
+    expect(screen.getByText("ServerCustomSettings.ini", { exact: false })).toBeVisible();
   });
 });

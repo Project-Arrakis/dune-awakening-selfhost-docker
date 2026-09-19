@@ -231,6 +231,30 @@ export function loadConfig() {
     sessionSecret: getOrCreateSecret(resolve(secretsDir, "admin-web-session-secret.txt"), 48),
     adminPassword: process.env.ADMIN_PASSWORD || getOrCreateSecret(adminPasswordFile, 18),
     adminPasswordFile,
+    // Tier 3 password + mandatory TOTP (RFC docs/rfc-console-auth.md §2.3/§4).
+    // Off by default (Requirement 0): with the flag unset, password login is
+    // byte-identical to today (single factor), and the Settings UI doesn't
+    // even offer the feature. When set, TOTP is available but opt-in --
+    // enrollment is owner-initiated via POST /api/auth/2fa/enable (Settings ->
+    // Two-Factor Authentication), never forced on login (issue #665).
+    consoleTotpEnabled: process.env.CONSOLE_TOTP_ENABLED === "1",
+    // Real-client-IP rate-limit key. Empty by default -- every operator who
+    // never sets this sees byte-identical behavior (the raw socket address).
+    // Only exact IPs, not CIDRs.
+    trustedProxyIps: String(process.env.CONSOLE_TRUSTED_PROXY_IPS || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+    secondFactorFile: resolve(generatedDir, "console-second-factor.json"),
+    // #690: the STATIC fallback only. The real, live issuer (SERVER_TITLE
+    // when an operator has set one) is computed per-request in the
+    // /api/auth/2fa/setup route handler (server.js) via
+    // readSetupConfigValues(), which reads .env directly -- baking it in
+    // here via process.env silently never worked, since
+    // docker-compose.web.yml's environment: passthrough doesn't (and
+    // shouldn't) carry every operator-set game-server value.
+    totpIssuer: APP_NAME,
+    enrollmentSessionTtlMs: 10 * 60 * 1000, // §4: short-lived, non-renewable enrollment session
     adminPasswordEnvManaged,
     generatedDir,
     secretsDir,
@@ -251,7 +275,8 @@ export function loadConfig() {
     maxJsonBytes: Number(process.env.ADMIN_MAX_JSON_BYTES || 2 * 1024 * 1024),
     maxUploadBytes: Number(process.env.ADMIN_MAX_UPLOAD_BYTES || 1024 * 1024 * 1024),
     commandTimeoutMs: Number(process.env.ADMIN_COMMAND_TIMEOUT_MS || 120000),
-    updateCheckCacheMs: Number(process.env.ADMIN_UPDATE_CHECK_CACHE_MS || 5 * 60 * 1000),
+    updateCheckCacheMs: Number(process.env.ADMIN_UPDATE_CHECK_CACHE_MS || 30 * 60 * 1000),
+    updateCheckCacheFile: resolve(generatedDir, "game-update-check.json"),
     staticDir: process.env.ADMIN_STATIC_DIR || resolve(repoRoot, "console/web/dist"),
     allowedIps: parseAllowedIps(process.env.ADMIN_ALLOWED_IPS)
   };
@@ -439,6 +464,7 @@ export function publicConfig(config) {
     adminPasswordEnvManaged: config.adminPasswordEnvManaged,
     secureCookies: config.secureCookies,
     allowHostBootstrap: config.allowHostBootstrap,
-    mockMode: config.mockMode
+    mockMode: config.mockMode,
+    consoleTotpEnabled: config.consoleTotpEnabled
   };
 }

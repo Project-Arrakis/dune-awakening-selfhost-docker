@@ -37,7 +37,7 @@ export function ReadinessTimeline({ text, statusText = "" }: { text: string; sta
   </section>;
 }
 
-function buildReadinessGroups(readyText: string, statusText: string) {
+export function buildReadinessGroups(readyText: string, statusText: string) {
   const statusContainers = parseStatusContainers(statusText);
   const readyRows = parseReadyRows(readyText);
   const statusListeners = parseStatusListeners(statusText);
@@ -123,6 +123,9 @@ function parseStatusRabbit(text: string, readyRows: ReturnType<typeof parseReady
   if (!section.length) return readyRows.filter((row) => row.group === "RabbitMQ Game Connections").map(({ group: _group, ...row }) => row);
   if (section.some((line) => /not running|missing|failed/i.test(line))) {
     return [{ name: "RabbitMQ Game", detail: friendlyCheckDetail(friendlyIssue(section[0])), status: "Failed", kind: "fail" }];
+  }
+  if (section.some((line) => /checked by readiness/i.test(line))) {
+    return readyRows.filter((row) => row.group === "RabbitMQ Game Connections").map(({ group: _group, ...row }) => row);
   }
   const readyFailed = readyRows.find((row) => row.group === "RabbitMQ Game Connections" && row.status !== "Ready");
   return section.map((line) => {

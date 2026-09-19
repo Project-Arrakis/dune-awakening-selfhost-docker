@@ -1080,6 +1080,8 @@ async function ensureSyntheticWhisperPersonaPlayerRows(db, persona) {
     if (encryptedPlayerStateColumns.has("home_dimension_index")) playerStateValues.push(["home_dimension_index", 0]);
     await upsertDuneRow(db, "encrypted_player_state", playerStateValues, "account_id", {
       encrypted_character_name: persona.displayName
+    }, {
+      useOnConflict: await hasUniqueDuneColumn(db, "encrypted_player_state", "account_id")
     });
   }
 }
@@ -1141,7 +1143,24 @@ async function tableColumns(db, table) {
   return new Set((result.rows || []).map((row) => row.column_name));
 }
 
-async function upsertDuneRow(db, table, entries, conflictColumn, rawSqlValues = {}) {
+async function hasUniqueDuneColumn(db, table, column) {
+  const result = await db.query(`
+    select exists (
+      select 1
+      from pg_index i
+      join pg_class t on t.oid = i.indrelid
+      join pg_namespace n on n.oid = t.relnamespace
+      join pg_attribute a on a.attrelid = t.oid and a.attname = $2
+      where n.nspname = 'dune'
+        and t.relname = $1
+        and i.indisunique and i.indisvalid and i.indimmediate
+        and i.indpred is null and i.indexprs is null
+        and i.indnkeyatts = 1 and i.indkey[0] = a.attnum
+    ) as has_unique_column`, [table, column]);
+  return result.rows?.[0]?.has_unique_column === true;
+}
+
+async function upsertDuneRow(db, table, entries, conflictColumn, rawSqlValues = {}, { useOnConflict = true } = {}) {
   const columns = entries.map(([name]) => name);
   const values = [];
   const placeholders = entries.map(([name, value]) => {
@@ -1157,15 +1176,9 @@ async function upsertDuneRow(db, table, entries, conflictColumn, rawSqlValues = 
     .map((column) => `${quoteIdentifier(column)} = excluded.${quoteIdentifier(column)}`);
   const tableName = quoteIdentifier(table);
   const conflictName = quoteIdentifier(conflictColumn);
-  try {
-    await db.query(
-      `insert into dune.${tableName} (${columns.map(quoteIdentifier).join(", ")}) values (${placeholders.join(", ")}) on conflict (${conflictName}) do update set ${updates.join(", ")}`,
-      values
-    );
-  } catch (error) {
-    if (!/no unique or exclusion constraint matching the ON CONFLICT specification/i.test(String(error?.message || "Unexpected error."))) throw error;
+  const updateThenInsert = async () => {
     const conflictIndex = columns.indexOf(conflictColumn);
-    if (conflictIndex < 0) throw error;
+    if (conflictIndex < 0) throw new Error(`Missing conflict column for dune.${table}`);
     const assignments = entries
       .map(([name], index) => ({ name, placeholder: placeholders[index] }))
       .filter((entry) => entry.name !== conflictColumn)
@@ -1180,6 +1193,16 @@ async function upsertDuneRow(db, table, entries, conflictColumn, rawSqlValues = 
       `insert into dune.${tableName} (${columns.map(quoteIdentifier).join(", ")}) select ${placeholders.join(", ")} where not exists (select 1 from dune.${tableName} where ${conflictName} = ${placeholders[conflictIndex]})`,
       values
     );
+  };
+  if (!useOnConflict) return updateThenInsert();
+  try {
+    await db.query(
+      `insert into dune.${tableName} (${columns.map(quoteIdentifier).join(", ")}) values (${placeholders.join(", ")}) on conflict (${conflictName}) do update set ${updates.join(", ")}`,
+      values
+    );
+  } catch (error) {
+    if (!/no unique or exclusion constraint matching the ON CONFLICT specification/i.test(String(error?.message || "Unexpected error."))) throw error;
+    await updateThenInsert();
   }
 }
 

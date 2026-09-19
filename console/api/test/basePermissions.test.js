@@ -370,12 +370,28 @@ function childAccessDb() {
   return db;
 }
 
+test("object access labels use the game order without reversing stored values", async () => {
+  const db = childAccessDb();
+  const query = db.query;
+  db.query = async (sql, values) => {
+    if (sql.includes("with base_entities")) return { rows: [1, 2, 3, 4, 5].map(level => ({
+      actor_id: String(100 + level), actor_name: "Door", access_level: level,
+      building_type: "Atre_Garage_Door_Placeable", is_child: true
+    })) };
+    return query(sql, values);
+  };
+  const result = await listBaseChildAccess(db, BASE_ID);
+  assert.deepEqual(result.rows.map(row => [row.currentAccess, row.currentAccessLabel]), [
+    [1, "Owner"], [2, "Co-Owner"], [3, "Associate"], [4, "Guild"], [5, "Public"]
+  ]);
+});
+
 test("listBaseChildAccess lists every child piece plus the base's own root object, flagging which ones match Sub-Fief", async () => {
   const result = await listBaseChildAccess(childAccessDb(), BASE_ID);
   assert.equal(result.inspected, 4);
   assert.deepEqual(result.rows, [
-    { actorId: "44186", name: "DesertMechanic Prudence Door", buildingType: "MTX_Neut_DesertMechanic_Prudence_Door_Placeable", group: "door", currentAccess: 5, currentAccessLabel: "Owner", isSubFief: false },
-    { actorId: "44187", name: "Desert Mechanic Garage Door", buildingType: "Neut_Desert_Mechanic_Garage_Door_Placeable", group: "door", currentAccess: 2, currentAccessLabel: "Guild", isSubFief: false },
+    { actorId: "44186", name: "DesertMechanic Prudence Door", buildingType: "MTX_Neut_DesertMechanic_Prudence_Door_Placeable", group: "door", currentAccess: 5, currentAccessLabel: "Public", isSubFief: false },
+    { actorId: "44187", name: "Desert Mechanic Garage Door", buildingType: "Neut_Desert_Mechanic_Garage_Door_Placeable", group: "door", currentAccess: 2, currentAccessLabel: "Co-Owner", isSubFief: false },
     { actorId: "44188", name: "Desert Mechanic Front Door", buildingType: "Neut_Desert_Mechanic_Front_Door_Placeable", group: "door", currentAccess: 3, currentAccessLabel: "Associate", isSubFief: true },
     // is_child = false: the base's own totem, not a door/device -- grouped
     // as Sub-Fief regardless of its building_type.

@@ -141,6 +141,7 @@ jobs:
           runtime/tests/test-deepdesert-dual-selector-cleanup.sh
           runtime/tests/test-deepdesert-layout-apply-safety.sh
           runtime/tests/test-director-log-id-normalization.sh
+          runtime/tests/test-game-epic-config-permissions.sh
           tests/fls-signals-test.sh
           tests/steamcmd-signals-test.sh
           tests/storage-cleanup-test.sh
@@ -148,10 +149,13 @@ jobs:
           tests/runtime-permission-helper-rebuild-test.sh
           tests/update-systemd-timer-health-test.sh
           tests/memory-status-effective-defaults-test.sh
+          tests/world-partition-reconcile-test.sh
           tests/status-bounded-log-read-test.sh
           tests/always-on-memory-safety-test.sh
           tests/autoscaler-browser-heal-safety-test.sh
           tests/autoscaler-igw-socket-health-test.sh
+          tests/autoscaler-story-return-test.sh
+          tests/postgres-shutdown-test.sh
           tests/coriolis-coordinator-test.sh
           tests/db-backup-validation-test.sh
           tests/battlegroup-identity-test.sh
