@@ -18,6 +18,7 @@ The project is experimental, and Funcom self-hosting behavior may change over ti
 - Control maps, Sietches, Deep Desert layouts, and live map activity
 - Configure memory, autoscaling, and game settings
 - Manage databases, bases, storage, and player blueprints
+- Plan, preview, and share base layouts in 3D with the Base Builder
 - Extend the console with optional Community Addons
 
 See the [Screenshots Gallery](docs/screenshots.md) for a closer look.
@@ -59,6 +60,7 @@ For public/internet hosting, forward these ports:
 | `31982` | TCP | RabbitMQ Game Messaging Endpoint |
 | `31983` | TCP | RabbitMQ Game HTTP Endpoint. This endpoint can enumerate and purge queues, not just view counts -- treat it with the same care as `31982`. |
 | `7777-7810` | UDP | Game Traffic |
+| `32000-32015` | UDP | Optional direct public-directory latency probes; relay remains available when closed |
 
 Keep database and internal admin ports private. Do not expose the Web UI to untrusted users.
 
@@ -82,7 +84,17 @@ On Alpine Linux, the installer uses the distribution's Docker and Docker Compose
 
 Owners can claim their listing directly from the Console Settings page to verify ownership, manage their public profile and Discord invite, and promote their server through the directory. Public listings can be enabled or disabled at any time.
 
+Personalized latency uses UDP `32000-32015` for the fastest direct measurement. Allow this range through both the host firewall and any internet-to-DMZ firewall or NAT forwarding. Servers that do not expose the range remain compatible and automatically use the Dune Docker relay instead.
+
 Local and LAN-only servers are never listed. For transparency, installations contribute only an anonymous server count by default—never server names, addresses, players, or settings—and this can be disabled separately in Settings.
+
+## Base Builder
+
+[Dune Docker Base Builder](https://blueprints.dunedocker.app/) is a browser-based 3D planning and sharing tool for Dune: Awakening bases. It lets you experiment with layouts before committing time and materials in-game, using a searchable catalog of structures and placeables with placement, snapping, rotation, collision, and claim-coverage tools.
+
+Preview designs from different angles, switch between day and night, walk through the finished layout, and capture screenshots. Existing layouts can be imported for planning, while completed designs can be exported for future use.
+
+Signed-in community members can save projects, choose public, unlisted, or private visibility, publish previews, explore shared community designs, and fork a published blueprint as a starting point. The Base Builder is also linked directly from the Console footer.
 
 ## Community Addons
 
@@ -93,8 +105,10 @@ Developers can start with the [Official Addon Template](https://github.com/Red-B
 ## Help and Documentation
 
 - [Official Website](https://dunedocker.app/) — Project information, installation guidance, FAQ, and server directory
+- [Base Builder](https://blueprints.dunedocker.app/) — Plan, preview, save, and share Dune: Awakening base layouts in 3D
+- [Official Documentation](https://docs.dunedocker.app/) — Guides, feature documentation, technical references, and API documentation
 - [Discord Community](https://discord.gg/duneawakeningdocker) — Support, updates, addons, and community discussion
-- [Documentation](docs/README.md) — Technical and feature documentation
+- [Repository Documentation](docs/README.md) — Technical notes and references maintained alongside the source code
 - [Support the Project](https://ko-fi.com/redblink) — Help support development, testing, and infrastructure
 
 ## Contributing

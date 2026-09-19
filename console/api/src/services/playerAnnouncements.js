@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { formatChatBodyMessage, publishMapChat } from "../rmq.js";
-import { ensureCarePackageServerPersona } from "../carePackage.js";
+import { formatChatBodyMessage } from "../rmq.js";
+import { deliverMapChatToRecipients } from "./mapChatDelivery.js";
 
 const OLD_DEFAULT_JOIN_MESSAGE = "{playerName} has entered the sands of Arrakis.";
 const OLD_DEFAULT_LEAVE_MESSAGE = "{playerName} has vanished beyond the dunes.";
@@ -55,7 +55,12 @@ const FRIENDLY_MAP_NAMES = {
   CB_Overland_S_06: "Overland S-06",
   CB_Overland_S_07: "Overland S-07",
   CB_Overland_S_08: "Overland S-08",
-  CB_Story_BanditFortress01: "Bandit Fortress"
+  CB_Story_BanditFortress01: "Bandit Fortress",
+  CB_Story_DestroyedZanovar: "Arrakeen Spaceport & Zanovar",
+  CB_Story_OrbitalMonitor: "Sardaukar Orbital Monitor",
+  CB_Arrakis_Story_Paranoid_PrayerRoom: "Place of Contemplation",
+  CB_Arrakis_Story_Glutton_DiningRoom: "The Glutton's Dining Room",
+  CB_Arrakis_Generic_Sietch_Room: "Sietch Talab"
 };
 
 export function readPlayerAnnouncements(config) {
@@ -118,7 +123,6 @@ export async function runPlayerAnnouncementScan(config, players, context = {}) {
   let skippedNoRecipients = 0;
   const results = [];
   const onlineRecipients = Object.values(currentOnline).filter((player) => player.queue);
-  let persona = null;
   for (const event of events) {
     try {
       const recipients = eventRecipients(event, onlineRecipients);
@@ -131,16 +135,14 @@ export async function runPlayerAnnouncementScan(config, players, context = {}) {
         results.push({ ok: true, mock: true, type: event.type, player: event.player.characterName, recipients: recipients.length });
         sent += recipients.length;
       } else {
-        persona ||= await ensureCarePackageServerPersona(context.db);
-        const result = await publishMapChat(config, {
+        const delivery = await deliverMapChatToRecipients(config, {
           message: event.message,
-          senderFuncomId: persona.funcomId,
-          senderHexFlsId: persona.hexFlsId,
           mapName: event.player.chatMapName,
-          dimension: event.player.dimension
-        });
-        sent += recipients.length;
-        results.push({ ok: true, type: event.type, player: event.player.characterName, recipients: recipients.length, stdout: result.stdout });
+          dimension: event.player.dimension,
+          recipients
+        }, context);
+        sent += delivery.recipients;
+        results.push({ ok: true, type: event.type, player: event.player.characterName, recipients: delivery.recipients, stdout: delivery.stdout });
       }
     } catch (error) {
       failed += 1;

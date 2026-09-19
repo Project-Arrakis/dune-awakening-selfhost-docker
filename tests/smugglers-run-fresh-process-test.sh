@@ -11,7 +11,8 @@ cat >"$state_file" <<'JSON'
 {
   "version": 1,
   "maps": {
-    "CB_Overland_S_06": {"mode": "always-on"}
+    "CB_Overland_S_06": {"mode": "always-on"},
+    "CB_Overland_S_04": {"mode": "always-on"}
   }
 }
 JSON
@@ -28,6 +29,35 @@ chmod +x "$tmp_dir/no-docker/docker"
 mode="$(DUNE_MAP_MODES_FILE="$state_file" PATH="$tmp_dir/no-docker:$PATH" \
   runtime/scripts/map-modes.sh mode CB_Overland_S_06)"
 [ "$mode" = $'CB_Overland_S_06\tdynamic' ]
+
+# Updating from a release that allowed Smuggler's Run to be Always On must
+# repair the persisted state itself.  Leaving the raw value behind lets any
+# older/direct consumer respawn the map immediately after fresh-process idle
+# handling removes it.
+python3 - "$state_file" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["version"] == 2
+assert data["maps"]["CB_Overland_S_06"]["mode"] == "dynamic"
+assert data["maps"]["CB_Overland_S_04"]["mode"] == "always-on"
+PY
+
+disabled_state_file="$tmp_dir/disabled-map-runtime-modes.json"
+cat >"$disabled_state_file" <<'JSON'
+{"version":1,"maps":{"CB_Overland_S_06":{"mode":"disabled"}}}
+JSON
+DUNE_MAP_MODES_FILE="$disabled_state_file" PATH="$tmp_dir/no-docker:$PATH" \
+  runtime/scripts/map-modes.sh mode CB_Overland_S_06 >/dev/null
+python3 - "$disabled_state_file" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["version"] == 2
+assert data["maps"]["CB_Overland_S_06"]["mode"] == "disabled"
+PY
 
 if DUNE_MAP_MODES_FILE="$state_file" PATH="$tmp_dir/no-docker:$PATH" \
   runtime/scripts/map-modes.sh is-always-on CB_Overland_S_06; then
@@ -48,7 +78,7 @@ grep -q 'Fresh-process maps: immediate deallocation once empty' runtime/scripts/
 grep -q "printf '0\\\\n'" runtime/scripts/autoscaler.sh
 grep -q 'idle_seconds="$(idle_seconds_for_map "$map")"' runtime/scripts/autoscaler.sh
 grep -q 'if ! map_requires_fresh_process "$map"; then' runtime/scripts/autoscaler.sh
-grep -q 'runtime/scripts/despawn-server.sh "$map"' runtime/scripts/autoscaler.sh
+grep -q 'runtime/scripts/despawn-server.sh "$partition_id"' runtime/scripts/autoscaler.sh
 grep -q 'const requiresFreshProcess = isFreshProcessMap(rowName);' \
   console/web/src/features/maps/MapsPanel.tsx
 grep -q 'retired as soon as it becomes empty' console/web/src/features/maps/MapsPanel.tsx
@@ -61,6 +91,10 @@ grep -A16 'match = classical_pattern.search' runtime/scripts/autoscaler.sh \
 grep -q "fresh-process) map_filter=\"and fs.map = 'CB_Overland_S_06'\"" runtime/scripts/autoscaler.sh
 grep -q "standard) map_filter=\"and fs.map <> 'CB_Overland_S_06'\"" runtime/scripts/autoscaler.sh
 grep -q 'forget_map_demand "$map"' runtime/scripts/autoscaler.sh
+grep -A14 '^reconcile_all()' runtime/scripts/map-modes.sh \
+  | grep -q 'effective_mode_for_map'
+grep -q 'runtime/scripts/map-modes.sh is-always-on' \
+  runtime/scripts/publish-network-server-state-overrides.sh
 
 main_loop="$(sed -n '/^while true; do$/,/^done$/p' runtime/scripts/autoscaler.sh | tail -n 30)"
 if grep -q 'scan_travel_demand' <<<"$main_loop"; then
@@ -77,7 +111,7 @@ guards = [
     'if [ "$connected_players" != "0" ] || [ "$effective_players" != "0" ]',
     'if map_has_recent_demand "$map"; then',
     'if [ "$age" -ge "$idle_seconds" ]; then',
-    'runtime/scripts/despawn-server.sh "$map"',
+    'runtime/scripts/despawn-server.sh "$partition_id"',
 ]
 positions = [body.index(guard) for guard in guards]
 if positions != sorted(positions):

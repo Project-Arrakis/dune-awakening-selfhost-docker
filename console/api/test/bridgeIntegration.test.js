@@ -109,13 +109,15 @@ test("ops.resources.summary — live DB — returns valid structure", async () =
   assertResourcesSection(result.haggaBasin);
 });
 
-test("ops.resources.summary — live DB — spice only (field_kind_id=1)", async () => {
+test("ops.resources.summary — live DB — supports current resource-field schema", async () => {
   const database = await getDb();
   if (!database) return;
 
   const result = await addonOpsResourcesSummary(database, {});
   // Every reported field count/spice total is real and non-negative --
-  // the underlying query already filters to field_kind_id=1 (spice).
+  // the underlying query already schema-drift-probes for field_kind_id
+  // (see resourcesSectionForDisplayMap's own hasKindColumn comment) so this
+  // passes against both older and refactored resource-field schemas.
   for (const section of [result.deepDesert, result.haggaBasin]) {
     assert.ok(section.summary.totalActiveFields >= 0);
     assert.ok(section.summary.totalRemainingSpice >= 0);

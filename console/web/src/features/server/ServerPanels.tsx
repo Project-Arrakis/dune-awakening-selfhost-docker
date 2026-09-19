@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { Droplet, Fuel, Play, Trash2 } from "lucide-react";
+import { Play, Trash2 } from "lucide-react";
 import { serverApi, type PerformanceSnapshot } from "../../api/server";
+import { ServerHostnameSetting, useServerHostname } from "./ServerHostnameSetting";
 import { runGatedRestart, serviceRestartTarget, type RestartGate } from "./restartQueueGuard";
 import { setupApi, type Task } from "../../api/setup";
 import { PortChecklist } from "../../components/PortChecklist";
@@ -11,7 +12,9 @@ import { KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/com
 import { formatDisplayValue, formatUiSentence, friendlyColumnName, stripAnsi, summarizeCommandText, titleCase } from "../../lib/display";
 import { friendlyServiceName } from "../../lib/serviceDisplay";
 import { conciseTaskError, funcomTokenMismatchDetected } from "../../lib/taskDisplay";
-import { usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
+import { QueueBadges, queueCountsSummary, queueCountsTotal, type QueueCounts } from "../../components/common/QueueBadges";
+import { childAccessPieceCount, usePendingQueues } from "../../lib/usePendingRefills";
+
 export type HomeLoadResult = { statusLoaded: boolean; readinessLoaded: boolean; statusError: string; readinessError: string; statusText: string; readinessText: string };
 export type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 export type RestartLifecycleState = { stopObserved: boolean; startObserved: boolean };
@@ -21,27 +24,28 @@ export type RestartLifecycleState = { stopObserved: boolean; startObserved: bool
 // step opens a window with Postgres reachable and the map server not yet
 // booted, which the background flush uses. Both battlegroup control rows say so.
 function PendingRefillNote() {
-  const { pending } = usePendingRefills();
-  const { pending: pendingWater } = usePendingWaterRefills();
-  const fuelTotal = pending?.total || 0;
-  const waterTotal = pendingWater?.total || 0;
-  const total = fuelTotal + waterTotal;
+  const { fuel, water, deletes, vehicleDeletes, permissions } = usePendingQueues();
+  // Split per resource rather than reporting one number: every queue flushes on
+  // the same restart, but which one is waiting decides whether an operator goes
+  // looking at generators, water containers, a deleted base, or a permission
+  // change. Same badge vocabulary as the Bases panel's queue banner, from the
+  // same component so the two cannot drift.
+  const counts: QueueCounts = {
+    fuel: fuel.pending?.total || 0,
+    water: water.pending?.total || 0,
+    deletes: deletes.pending?.total || 0,
+    vehicleDeletes: vehicleDeletes.pending?.total || 0,
+    permissions: childAccessPieceCount(permissions.pending)
+  };
+  const total = queueCountsTotal(counts);
   if (!total) return null;
-  // Split per resource rather than reporting one number: both queues flush on
-  // the same restart, but which one is waiting decides whether an operator
-  // goes looking at generators or at water containers. Same badge vocabulary
-  // as the Bases panel's queue banner.
+  const summary = queueCountsSummary(counts);
   return <p className="action-help-note pending-refill-note">
-    {fuelTotal > 0 && <span className="bases-queue-badge bases-queue-badge-fuel">
-      <Fuel size={13} aria-hidden="true" />{fuelTotal.toLocaleString()} fuel
-    </span>}
-    {waterTotal > 0 && <> <span className="bases-queue-badge bases-queue-badge-water">
-      <Droplet size={13} aria-hidden="true" />{waterTotal.toLocaleString()} water
-    </span></>}
+    <QueueBadges counts={counts} />
     {/* Explicit space: the badges are inline elements, so without it the
         paragraph's text content reads "1 waterrefills queued" to a screen
         reader and to anyone copying it. The CSS margin is visual only. */}
-    {" "}refill{total === 1 ? "" : "s"} queued across all maps. Restarting the battlegroup applies {total === 1 ? "it" : "them"}; stopping leaves {total === 1 ? "it" : "them"} queued.
+    {" "}{summary.toLowerCase()} queued across all maps. Restarting the battlegroup applies {total === 1 ? "it" : "them"}; stopping leaves {total === 1 ? "it" : "them"} queued.
   </p>;
 }
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) => Promise<boolean>;
@@ -418,13 +422,13 @@ function PerformanceCards({ performance, error }: { performance: PerformanceSnap
       label: "Memory",
       value: performance?.memory.percent == null ? "Unknown" : `${performance.memory.percent.toFixed(1)}%`,
       percent: performance?.memory.percent ?? 0,
-      detail: performance ? `${formatBytes(performance.memory.usedBytes)} / ${formatBytes(performance.memory.totalBytes)}` : "Waiting for sample"
+      detail: performance ? `${formatBytes(performance.memory.usedBytes)} / ${formatBytes(performance.memory.totalBytes)}` : "Waiting for Sample"
     },
     {
       label: "Disk",
       value: performance?.disk.percent == null ? "Unknown" : `${performance.disk.percent.toFixed(1)}%`,
       percent: performance?.disk.percent ?? 0,
-      detail: performance ? `${formatBytes(performance.disk.usedBytes)} / ${formatBytes(performance.disk.totalBytes)}` : "Waiting for sample"
+      detail: performance ? `${formatBytes(performance.disk.usedBytes)} / ${formatBytes(performance.disk.totalBytes)}` : "Waiting for Sample"
     },
     {
       label: "Uptime",
@@ -502,6 +506,7 @@ export function ServerPanel(props: {
   const [restartTime, setRestartTime] = useState("05:00");
   const [scheduleResult, setScheduleResult] = useState<HomeTaskResult | null>(null);
   const [serverTitle, setServerTitle] = useState("");
+  const hostname = useServerHostname();
   const [savedServerTitle, setSavedServerTitle] = useState("");
   const [serverMode, setServerMode] = useState<ServerMode>("public");
   const [savedServerMode, setSavedServerMode] = useState<ServerMode>("public");
@@ -592,7 +597,9 @@ export function ServerPanel(props: {
     }
     const titleChanged = title !== savedServerTitle.trim();
     const modeChanged = serverMode !== savedServerMode;
-    if (!titleChanged && !modeChanged) {
+    const hostnameChanged = hostname.changed;
+    if (!hostname.ready || !hostname.valid) return;
+    if (!titleChanged && !modeChanged && !hostnameChanged) {
       setTitleResult({ status: "succeeded", title: "No Changes to Save" });
       return;
     }
@@ -600,10 +607,15 @@ export function ServerPanel(props: {
       titleChanged ? `title to "${title}"` : "",
       modeChanged ? `mode to ${titleCase(serverMode)}` : ""
     ].filter(Boolean).join(" and ");
-    if (!(await confirmAction(`Change server ${changeList}? This saves the setting and refreshes Director/Gateway only if they are already running.`))) return;
+    if ((titleChanged || modeChanged) && !(await confirmAction(`Change server ${changeList}? This saves the setting and refreshes Director/Gateway only if they are already running.${hostnameChanged ? " The hostname will be saved afterward and requires your next Battlegroup restart." : ""}`))) return;
     setTitleResult({ status: "running", title: "Saving Settings" });
     props.onError("");
     try {
+      if (!titleChanged && !modeChanged) {
+        await hostname.save();
+        setTitleResult({ status: "succeeded", title: "Settings Saved — Battlegroup Restart Required" });
+        return;
+      }
       const final = await waitForTaskSilently((await serverApi.saveConfig({
         ...(titleChanged ? { title } : {}),
         ...(modeChanged ? { mode: serverMode } : {})
@@ -613,9 +625,10 @@ export function ServerPanel(props: {
       if (final.status === "succeeded") {
         if (titleChanged) setSavedServerTitle(title);
         if (modeChanged) setSavedServerMode(serverMode);
+        if (hostnameChanged) await hostname.save();
       }
       setTitleResult(final.status === "succeeded"
-        ? { status: "succeeded", title: "Settings Saved Successfully", details }
+        ? { status: "succeeded", title: hostnameChanged ? "Settings Saved — Battlegroup Restart Required" : "Settings Saved Successfully", details }
         : { status: "failed", title: "Settings Save Failed", details });
     } catch (error) {
       setTitleResult({ status: "failed", title: "Settings Save Failed", details: error instanceof Error ? error.message : String(error) });
@@ -997,7 +1010,8 @@ export function ServerPanel(props: {
             <option value="public">Public</option>
             <option value="local">Local</option>
           </select></label>
-          <button disabled={actionRunning || serviceRestartRunning || titleSaving} onClick={saveServerConfig}>Save Settings</button>
+          <ServerHostnameSetting hostname={hostname} disabled={actionRunning || serviceRestartRunning || titleSaving} />
+          <button disabled={actionRunning || serviceRestartRunning || titleSaving || !hostname.ready || !hostname.valid} onClick={saveServerConfig}>Save Settings</button>
           {titleResult && <span className={`inline-task-result result-${titleResult.status === "succeeded" ? "ok" : titleResult.status === "failed" ? "fail" : "running"}`}>
             <strong className={titleResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(titleResult.title, titleResult.status === "running")}</strong>
           </span>}

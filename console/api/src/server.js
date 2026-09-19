@@ -6,22 +6,31 @@ import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, read
 import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig, publicConfig, parseAllowedIps, resolvePorts } from "./config.js";
 import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders, parseCookies } from "./auth.js";
-import { createLoginRateLimiter, createMutationRateLimiter, resolveClientIp } from "./rateLimit.js";
+import { createLoginRateLimiter, createMutationRateLimiter, resolveClientIp, createApiKeyRateLimiter } from "./rateLimit.js";
+import { createApiKeyStore, GLOBAL_RATE_LIMIT_PER_MINUTE } from "./apiKeys.js";
+import { scopeCatalog } from "./apiKeyScopes.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
-import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, TaskManager, publicTask } from "./tasks.js";
+import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, mapWriteFlushTimeoutMs, TaskManager, publicTask } from "./tasks.js";
 import { preflight } from "./preflight.js";
-import { buildDuneArgs, isDynamicServerService, isReadOnlySql, parseVehicleList, runDockerLogs, runDune, validateServiceName } from "./runner.js";
-import { createDb, quoteIdentifier } from "./db.js";
+import { buildDuneArgs, isDynamicServerService, parseVehicleList, runDockerLogs, runDune, validateServiceName } from "./runner.js";
+// isReadOnlySql comes from db.js, NOT runner.js. runner's copy tests the raw
+// string, so a read-only SELECT behind a leading `-- note` or `/* */` header
+// does not start with a read keyword and classifies as a WRITE -- a 403 for
+// admin on ordinary pasted SQL. db.js strips comments first, substituting a
+// space so it cannot fuse tokens or hide a leading `delete`. Sharing one
+// classifier with duneDb.runSql also keeps the authorization decision and the
+// execution decision from diverging.
+import { createDb, hasExecutableStatement, isReadOnlySql, quoteIdentifier } from "./db.js";
 import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
-import { buildingUnlockStatus, isBuildingUnlockItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
-import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
-import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
+import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
+import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishCarePackageWhisper, publishServerCommand } from "./rmq.js";
+import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, maintainCarePackageHistory, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
 import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
 import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon } from "./addons.js";
-import { hardwareStatusSnapshot, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
+import { createHardwareStatusProvider, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { createSecondFactorStore } from "./auth/secondFactorStore.js";
 import { generateTotpSecret, provisioningUri, provisioningQrDataUri, verifyTotpMatch } from "./auth/totp.js";
@@ -40,22 +49,27 @@ import { buildAutoInviteAuthorizeUrl, createAutoInvitePendingStateStore, autoInv
 import { fetchWithTimeoutAndRetry } from "./services/httpWithRetry.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
-import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions } from "./policy.js";
+import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions } from "./policy.js";
 import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
-import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
+import { customizationGrantOutcome, liveItemGrantOk, liveItemGrantPublished, liveItemGrantWarning, summarizeCustomizationGrantResults } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
 import * as restartQueue from "./services/restartQueue.js";
 import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 import { liveMapSpice } from "./services/liveMapSpice.js";
+import { resolveCoriolisCycle } from "./services/coriolisSeed.js";
 import { liveMapPoi } from "./services/liveMapPoi.js";
 import { resolveSandstormStatus } from "./services/sandstormStatus.js";
+import { deliverMapChatToRecipients } from "./services/mapChatDelivery.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
+import { getCommunityBlueprint, getCommunityBlueprintPreview, listCommunityBlueprints } from "./services/blueprintCatalog.js";
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { grantAddonItem } from "./addonItemGrants.js";
+import { deleteAddonData, listAddonData, readAddonData, writeAddonData } from "./addonDataStore.js";
+import { createAddonDeliveryService, deferAddonDelivery } from "./addonDeliveries.js";
 import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, refreshBuybackLog, readBuybackLog, clearBuybackLog, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
@@ -64,18 +78,24 @@ import { ensureExchangeHistory, listExchangeTransactions } from "./services/exch
 import { listMarketExchanges, marketBotStatus, saveMarketBuybackSchedule, saveMarketSeedSchedule, decodeSeedPlanCsvUpload, exportMarketSeedPlanCsv, importMarketSeedPlanFromCsv, renameMarketSeedPlan, setActiveMarketSeedPlan } from "./services/exchangeMarket.js";
 import { loadMarketSeedPlan } from "./addonSeedJob.js";
 import { readMarketItemOverrides, saveMarketItemOverrides, readUnsafeTemplateIds, listBotItemCatalogPickerItems, getOverrideRow } from "./services/marketItemOverrides.js";
-import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
-import { autoRefillWaterPublicState, createAutoRefillWaterScheduler, setBaseAutoRefillWater } from "./services/autoRefillWater.js";
+import { autoRefillPublicState, clampAutoRefillNextRun, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
+import { autoRefillWaterPublicState, clampAutoRefillWaterNextRun, createAutoRefillWaterScheduler, setBaseAutoRefillWater } from "./services/autoRefillWater.js";
+import { autoRefillSettingsView, saveAutoRefillSettings } from "./services/autoRefillSettings.js";
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
 import { parseEffectiveGuildMemberLimit } from "./services/guildSettings.js";
 import { parseEffectivePermissionLimit } from "./services/permissionSettings.js";
-import { flushBaseRefillQueues } from "./services/baseRefillFlush.js";
+import { createSharedDeleteBackup, flushBaseRefillQueues } from "./services/baseRefillFlush.js";
 import { verifyBaseBackupState } from "./services/baseBackupSafety.js";
+import { createSingleFlight } from "./services/singleFlight.js";
+import { createReadCommandCache } from "./services/readCommandCache.js";
 import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
 import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
 import { validateDiscordRoleIds, readDiscordBotSettingsState, applyDiscordBotEnableRequest, discordAdminRoleIdsChanged, updateDiscordBotRoleIds, regenerateDiscordBotToken, persistHostedBotConnectedGuild, disableDiscordBotAdapter, setDeploymentChoice } from "./integrations/discord/adapterSettings.js";
+import { createScheduledMapMessageScheduler } from "./services/scheduledMapMessages.js";
+import { createQaUpdates } from "./services/qaUpdates.js";
+import { SETUP_CONFIG_KEYS, validHostDatacenterId } from "./services/setupConfig.js";
 
 const config = loadConfig();
 // #141: ADMIN_AUTH_DISABLED bypasses both password auth (auth.js requireAuth)
@@ -101,6 +121,9 @@ if (config.authDisabled) {
     "This is intended for local development only; never set it on an install anyone else can reach."
   );
 }
+const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
+const readCommandCache = createReadCommandCache();
+const CONSOLE_PROCESS_STARTED_AT = Date.now();
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
 try {
   edaRetirement = retireLegacyEdaExchangeBot(config);
@@ -115,7 +138,21 @@ try {
   // bridge available for this process and retry the migration next startup.
   console.warn(`EDA Exchange Bot retirement deferred: ${redact(error?.message || "Unexpected error.")}`);
 }
-loadPolicies(config.repoRoot);
+const policyLoad = loadPolicies(config.repoRoot);
+if (policyLoad.invalid) {
+  console.warn(`IAM policy file at ${policyLoad.path} is not a valid policy store; using built-in defaults.`);
+}
+for (const { tier, pattern, successors } of policyLoad.deprecatedActions || []) {
+  // Still enforced with its original meaning (see REMOVED_ACTION_ALIASES), so
+  // this is a migration notice, not a warning that access changed.
+  console.warn(`IAM policy notice: ${tier} names "${pattern}", which was split into ${successors.join(", ")}. It still applies as before; name the successors to silence this.`);
+}
+for (const { tier, pattern } of policyLoad.unknownActions) {
+  // Loaded anyway (see loadPolicies), but an operator who hand-edited a Deny
+  // into the file needs to know it matches no real action and is withholding
+  // nothing. Silence here is how a policy comes to look safer than it is.
+  console.warn(`IAM policy warning: ${tier} names "${pattern}", which matches no known action and has no effect.`);
+}
 const auth = createAuth(config);
 // One second-factor store instance for the process (the store enforces this;
 // constructing a second one for the same file would defeat serialization).
@@ -191,7 +228,7 @@ async function requireFreshTier3Proof(req, res, body, { auditUrl, action, actor 
   if (!rate.allowed) {
     return deny(429, { error: "Too many attempts. Please wait a few minutes, then try again." }, "rate_limited", { "retry-after": String(rate.retryAfterSeconds) });
   }
-  if (!auth.passwordMatches(body.currentPassword)) {
+  if (!(await auth.passwordMatches(body.currentPassword))) {
     credentialProofRateLimiter.recordFailure(rateKey);
     return deny(400, { error: "Current password is incorrect." }, "bad_password");
   }
@@ -244,6 +281,7 @@ async function requireFreshTier3Proof(req, res, body, { auditUrl, action, actor 
   return { ok: true, rateKey };
 }
 
+const qaUpdates = createQaUpdates(config);
 const loginRateLimiter = createLoginRateLimiter();
 // Separate bucket for re-proving the Tier 3 credential from an ALREADY
 // AUTHENTICATED session (password rotation, recovery-code regeneration).
@@ -264,6 +302,32 @@ const loginRateLimiter = createLoginRateLimiter();
 // two very different exposures should not share one lockout.
 const credentialProofRateLimiter = createLoginRateLimiter();
 const mutationRateLimiter = createMutationRateLimiter();
+const apiKeyRateLimiter = createApiKeyRateLimiter({ globalMaxRequests: GLOBAL_RATE_LIMIT_PER_MINUTE });
+// Failed bearer attempts are bucketed by client address under this cap, on a
+// limiter of their own so pre-auth traffic cannot touch the per-key budget.
+const API_KEY_AUTH_FAILURES_PER_MINUTE = 30;
+const API_KEY_AUTH_THROTTLE_WINDOW_MS = 60 * 1000;
+const apiKeyAuthFailureLimiter = createApiKeyRateLimiter({ globalMaxRequests: API_KEY_AUTH_FAILURES_PER_MINUTE * 200 });
+
+// A capped bucket must not go silent — a sustained attacker would be
+// invisible for as long as they kept trying. remoteIpOf has no
+// X-Forwarded-For, so behind a proxy this is one bucket for everyone.
+const apiKeyAuthThrottleNotices = new Map();
+
+function shouldNoteApiKeyAuthThrottle(failureKey, at = Date.now()) {
+  const last = apiKeyAuthThrottleNotices.get(failureKey);
+  if (last && at - last < API_KEY_AUTH_THROTTLE_WINDOW_MS) return false;
+  // Bounded cleanup: entries are only useful for one window, and the key space
+  // is attacker-controlled, so prune whenever it grows past a sane size.
+  if (apiKeyAuthThrottleNotices.size > 1000) {
+    for (const [key, seen] of apiKeyAuthThrottleNotices) {
+      if (at - seen >= API_KEY_AUTH_THROTTLE_WINDOW_MS) apiKeyAuthThrottleNotices.delete(key);
+    }
+  }
+  apiKeyAuthThrottleNotices.set(failureKey, at);
+  return true;
+}
+const apiKeys = createApiKeyStore({ file: config.apiKeysFile });
 const bridgeRateLimiter = createBridgeRateLimiter();
 const oauthPendingStates = createPendingStateStore();
 const hostedBotPendingRegistrations = createPendingRegistrationStore();
@@ -307,30 +371,77 @@ const resolveOAuthTier = createOAuthTierResolver({
   },
   handoff: handoff.enabled ? handoff : null
 });
+
+async function trustedPartitionsForCompletedStop(operation, payload = {}) {
+  if (operation === "stopGameServersForDbWrites") return "all";
+  if (operation === "sietchesRestartStop") {
+    const partitionId = Number(payload.partitionId);
+    return Number.isInteger(partitionId) && partitionId > 0 ? new Set([partitionId]) : new Set();
+  }
+  if (operation === "restartServiceStop" && ["survival", "survival-1"].includes(String(payload.service || "").toLowerCase())) {
+    const targets = await duneDb.partitionRestartTargets(db);
+    return new Set([...targets.entries()]
+      .filter(([, target]) => target.map === "Survival_1" && target.dimensionIndex === 0)
+      .map(([partitionId]) => partitionId));
+  }
+  return new Set();
+}
+
 // Deferred db read: db is assigned below and is reassignable on reconnect.
 // Both flush paths go through flushQueuedGeneratorRefills/flushQueuedWaterRefills
 // so a write lands in the audit log no matter which one applied it.
 const tasks = new TaskManager(config, {
-  onMapDown: () => flushBaseRefillQueues({
-    flushGenerators: flushQueuedGeneratorRefills,
-    flushWater: flushQueuedWaterRefills,
-    flushDeletes: flushQueuedBaseDeletes
-  })
+  // forceFresh on every leg: the tick's in-flight pass, if there is one, was
+  // started before the map stopped and so observed it as still live. Reusing
+  // that result here would report "nothing to flush" for the one window in
+  // which the queued writes are actually safe to apply.
+  onMapDown: async (operation, payload) => {
+    const trustedDownPartitionIds = await trustedPartitionsForCompletedStop(operation, payload);
+    // Base and vehicle queues are independent, but the same database snapshot
+    // protects both destructive batches in this one write-safe window. Share
+    // the in-flight promise so mixed batches cannot dump the whole database
+    // twice in parallel.
+    const ensureDeleteBackup = createSharedDeleteBackup(config.mockMode ? undefined : () =>
+      runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } }));
+    return flushBaseRefillQueues({
+    // ignoreRetryBackoff: the poller's 60s backoff would otherwise skip an
+    // entry for ~55 of every 60 seconds, so most restarts silently applied
+    // nothing. Only this hook sets it; the poller keeps backing off.
+    flushGenerators: () => flushQueuedGeneratorRefills({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds }),
+    flushWater: () => flushQueuedWaterRefills({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds }),
+    flushDeletes: () => flushQueuedBaseDeletes({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds, onBeforeApply: ensureDeleteBackup }),
+    flushChildAccess: () => flushQueuedBaseChildAccess({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds }),
+    // The task hook runs only after the requested map servers have positively
+    // stopped. At that point an explicit admin delete may safely remove even a
+    // stale Travel/backup/recovery row; the background poller stays
+    // conservative and leaves those states queued while maps may be live.
+    flushVehicleDeletes: () => flushQueuedVehicleDeletes({ forceFresh: true, allowBlockedStates: true, ignoreRetryBackoff: true, trustedDownPartitionIds, onBeforeApply: ensureDeleteBackup })
+    });
+  }
 });
 let db = createDb(config);
+const addonDeliveryService = createAddonDeliveryService(config, {
+  canRun: (addonId, permission) => {
+    try {
+      assertInstalledAddonPermission(config, addonId, permission);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  deliver: (payload, context) => deliverAddonPayload(payload, context)
+});
 const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db });
 let carePackageAutoRunning = false;
 let carePackageAutoLastRun = 0;
 let carePackageAutoNextAllowedRun = 0;
-// The 5s poll and the restart-task onMapDown hook both call
-// flushQueuedGeneratorRefills and can overlap; refillBaseGenerators only locks
-// existing fuel rows, so an empty generator has nothing to serialize two
-// concurrent inserts against without this guard.
-let generatorRefillFlushRunning = false;
-// Same reasoning as generatorRefillFlushRunning, for the water queue.
-let waterRefillFlushRunning = false;
-// Same reasoning as generatorRefillFlushRunning, for the pending-delete queue.
-let baseDeleteFlushRunning = false;
+// The 5s poll and the restart-task onMapDown hook both call every one of the
+// flushes below and can overlap; refillBaseGenerators only locks existing fuel
+// rows, so an empty generator has nothing to serialize two concurrent inserts
+// against without a guard. Each flush is therefore wrapped in createSingleFlight
+// rather than a boolean: a boolean serializes correctly but makes the hook's
+// call a no-op whenever the tick is mid-pass, which is precisely when the hook
+// matters -- see services/singleFlight.js.
 let messageOfTheDayAutoRunning = false;
 let messageOfTheDayAutoLastRun = 0;
 let messageOfTheDayAutoNextAllowedRun = 0;
@@ -369,6 +480,16 @@ const playerBanEnforcer = createPlayerBanEnforcer({
   getDb: () => db,
   duneDb,
   failureBackoffMs: BACKGROUND_SCAN_FAILURE_BACKOFF_MS
+});
+const scheduledMapMessages = createScheduledMapMessageScheduler(config, {
+  deliver: (schedule) => deliverScheduledMapMessage(schedule),
+  onResult: ({ schedule, manual, ok, skipped, error, result }) => {
+    const target = `${schedule.mapName}.${schedule.dimension}`;
+    const command = manual ? "scheduled-map-chat-now" : "scheduled-map-chat";
+    const outcome = ok ? "published" : skipped ? "skipped" : "failed";
+    audit(config, null, "admin.map-chat-schedule-delivery", { id: schedule.id, target, manual, ok, skipped: Boolean(skipped), recipients: result?.recipients || 0, error: error ? redact(String(error?.message || "Unexpected error.")) : "" });
+    recordAdminHistory(config, { command, target, friendly: schedule.name || "Scheduled Map Message", path: "rmq:chat.map", result: outcome, message: schedule.message });
+  }
 });
 
 process.on("unhandledRejection", (error) => {
@@ -465,6 +586,9 @@ createServer(async (req, res) => {
   ensureExchangeHistory(db).catch((error) => {
     console.warn(`Market transaction recorder initialization failed: ${redact(error?.message || "Unexpected error.")}`);
   });
+  migrateCoriolisRegionFields().catch((error) => {
+    console.warn(`Coriolis cycle start region migration deferred: ${redact(error?.message || "Unexpected error.")}`);
+  });
   runBackgroundTick("Player playtime tracker", () => duneDb.trackPlayerPlaytime(db));
 });
 
@@ -483,6 +607,8 @@ setInterval(() => {
   runBackgroundTick("Message of the Day", messageOfTheDayAutoTick);
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
   runBackgroundTick("Addon scheduled jobs", () => addonJobScheduler.tick());
+  runBackgroundTick("Addon queued deliveries", () => addonDeliveryService.tick());
+  runBackgroundTick("Scheduled map messages", () => scheduledMapMessages.tick());
   runBackgroundTick("Landsraad milestone preset", () => landsraadMilestoneReconciler.tick());
   // Daily, but gated inside the tick like every other long-period job here.
   // Costs one small file read when no base is enrolled, and no database query.
@@ -524,61 +650,83 @@ setInterval(() => {
   if (duneDb.listQueuedBaseDeletes(config.repoRoot).length) {
     runBackgroundTick("Base delete flush", () => flushQueuedBaseDeletes());
   }
+  // Size check, not a full parse: this queue carries a payload and can sit
+  // waiting for days -- see hasQueuedBaseChildAccess.
+  if (duneDb.hasQueuedBaseChildAccess(config.repoRoot)) {
+    runBackgroundTick("Base permission flush", () => flushQueuedBaseChildAccess());
+  }
+  if (duneDb.listQueuedVehicleDeletes(config.repoRoot).length) {
+    runBackgroundTick("Vehicle delete flush", () => flushQueuedVehicleDeletes());
+  }
 }, Number.isFinite(generatorRefillFlushIntervalMs) && generatorRefillFlushIntervalMs > 0 ? generatorRefillFlushIntervalMs : 5000).unref?.();
 
 // Every queued-refill write goes through here so it is audited whichever path
 // triggered it: the tick above, or the restart task runner's onMapDown hook.
 // These are real writes to player property, so an unaudited one is not acceptable.
-async function flushQueuedGeneratorRefills() {
-  if (generatorRefillFlushRunning) return { flushed: [] };
-  generatorRefillFlushRunning = true;
-  try {
-    const result = await duneDb.flushGeneratorRefills(db, config.repoRoot);
-    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-refill", entry);
-    return result;
-  } finally {
-    generatorRefillFlushRunning = false;
-  }
-}
+const flushQueuedGeneratorRefills = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) => {
+  const result = await duneDb.flushGeneratorRefills(db, config.repoRoot, { ignoreRetryBackoff, trustedDownPartitionIds });
+  for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-refill", entry);
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
 
 // Same reasoning as flushQueuedGeneratorRefills, for the water queue.
-async function flushQueuedWaterRefills() {
-  if (waterRefillFlushRunning) return { flushed: [] };
-  waterRefillFlushRunning = true;
-  try {
-    const result = await duneDb.flushWaterRefills(db, config.repoRoot);
-    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-water-refill", entry);
-    return result;
-  } finally {
-    waterRefillFlushRunning = false;
-  }
-}
+const flushQueuedWaterRefills = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) => {
+  const result = await duneDb.flushWaterRefills(db, config.repoRoot, { ignoreRetryBackoff, trustedDownPartitionIds });
+  for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-water-refill", entry);
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
+
+// Same reasoning as flushQueuedGeneratorRefills, for the base permission
+// queue. These change who can open a player's doors, so an unaudited apply is
+// not acceptable either.
+const flushQueuedBaseChildAccess = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) => {
+  const result = await duneDb.flushBaseChildAccess(db, config.repoRoot, { ignoreRetryBackoff, trustedDownPartitionIds });
+  for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-child-access", entry);
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
 
 // Same guard reasoning as flushQueuedGeneratorRefills. The one full-database
 // safety backup for this pass happens inside flushBaseDeletes's onBeforeApply
 // hook -- lazily, at most once, immediately before the first entry that is
 // actually about to be deleted, not merely because the queue is non-empty.
-async function flushQueuedBaseDeletes() {
-  if (baseDeleteFlushRunning) return { flushed: [] };
-  baseDeleteFlushRunning = true;
-  try {
-    const result = await duneDb.flushBaseDeletes(db, config.repoRoot, {
-      // Matches databaseQuery's explicit mock-mode guard: this runs as a
-      // background tick, not through directDbMutation, so it is not skipped
-      // for free the way a request-time delete's backup call is.
-      onBeforeApply: config.mockMode
-        ? undefined
-        : () => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } })
-    });
-    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-delete", entry);
-    if (result.backupFailed) {
-      audit(config, null, "bases.flush-queued-delete-backup-failed", { error: result.error, pending: result.pending });
-    }
-    return result;
-  } finally {
-    baseDeleteFlushRunning = false;
+const flushQueuedBaseDeletes = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds, onBeforeApply } = {}) => {
+  const result = await duneDb.flushBaseDeletes(db, config.repoRoot, {
+    ignoreRetryBackoff,
+    trustedDownPartitionIds,
+    // Matches databaseQuery's explicit mock-mode guard: this runs as a
+    // background tick, not through directDbMutation, so it is not skipped
+    // for free the way a request-time delete's backup call is.
+    onBeforeApply: config.mockMode
+      ? undefined
+      : onBeforeApply || (() => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } }))
+  });
+  for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-delete", entry);
+  if (result.backupFailed) {
+    audit(config, null, "bases.flush-queued-delete-backup-failed", { error: result.error, pending: result.pending });
   }
-}
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
+
+// Same guard reasoning as flushQueuedBaseDeletes, for the vehicle queue.
+// allowBlockedStates reaches the pass through createSingleFlight, which hands
+// each call's options to the run function. Only the map-down hook sets it, and
+// that hook always sets forceFresh too, so it never rides along on a reused
+// in-flight result that was started without it.
+const flushQueuedVehicleDeletes = createSingleFlight(async ({ allowBlockedStates = false, ignoreRetryBackoff = false, trustedDownPartitionIds, onBeforeApply } = {}) => {
+  const result = await duneDb.flushVehicleDeletes(db, config.repoRoot, {
+    allowBlockedStates,
+    ignoreRetryBackoff,
+    trustedDownPartitionIds,
+    onBeforeApply: config.mockMode
+      ? undefined
+      : onBeforeApply || (() => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "vehicle-delete" } }))
+  });
+  for (const entry of result.flushed || []) audit(config, null, "vehicles.flush-queued-delete", entry);
+  if (result.backupFailed) {
+    audit(config, null, "vehicles.flush-queued-delete-backup-failed", { error: result.error, pending: result.pending });
+  }
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
 
 function runBackgroundTick(label, fn) {
   Promise.resolve()
@@ -697,6 +845,30 @@ function dockerPsNames() {
   });
 }
 
+// Second authorization gate, for a route whose action depends on the request
+// BODY. actionForRoute runs in handleApi's gate with no body in hand, so a
+// route spanning two blast radii (POST /api/database/query: SELECT vs DROP)
+// resolves to the safer one there; the handler calls this afterwards with the
+// narrower action. Re-runs BOTH gate checks -- policy engine, then the key's
+// scope map. Additive only: it can narrow access, never widen it.
+//
+// Returns true when the principal may proceed. On false the 403 is ALREADY
+// written and the caller must return immediately -- in particular before the
+// rate-limit tick and the pre-write backup, side effects an unauthorized
+// caller must not be able to trigger.
+function requireAction(req, res, action) {
+  const session = req.authSession;
+  if (!session || !evaluate(session, action)) {
+    json(res, 403, { error: "Your account does not have permission to access this resource." });
+    return false;
+  }
+  if (req.authApiKey && !apiKeys.allows(req.authApiKey, action)) {
+    json(res, 403, { error: "This API key is not permitted to use this endpoint." });
+    return false;
+  }
+  return true;
+}
+
 async function handleApi(req, res) {
   const url = new URL(req.url, "http://localhost");
   const path = url.pathname;
@@ -724,7 +896,7 @@ async function handleApi(req, res) {
       return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
     }
     const body = await readJson(req);
-    if (!config.authDisabled && !auth.passwordMatches(body.password)) {
+    if (!config.authDisabled && !(await auth.passwordMatches(body.password))) {
       loginRateLimiter.recordFailure(rateKey);
       return json(res, 401, { error: "Incorrect password. Please try again!" });
     }
@@ -1012,13 +1184,64 @@ async function handleApi(req, res) {
     return handleDiscordAdapterRoute({ req, res, path, config, readJson, json, db });
   }
 
-  const session = auth.requireAuth(req, res);
+  // Runs BEFORE requireAuth: that couples session lookup with a CSRF check,
+  // and CSRF does not apply to bearer auth. Returns null when there is no
+  // bearer header so cookie requests fall through untouched; an invalid one
+  // returns 401 rather than falling through, which would let a stale key ride
+  // a logged-in session.
+  const bearer = apiKeys.authenticate(req);
+  if (bearer?.error) {
+    // Rate-limited and audited by client address, mirroring /api/auth/login.
+    // Brute-forcing a 256-bit secret is infeasible, but a failed credential
+    // used to produce no signal at all -- nothing to alert on, nothing to see
+    // afterwards. The limiter is keyed by address because a refused request
+    // has no key id to attribute it to.
+    // Its OWN limiter, not the per-key one: failures come from unauthenticated
+    // clients, so counting them in the shared bucket let anyone with a bogus
+    // header drain the ceiling and 429 every legitimate key -- reintroducing
+    // the starvation the global-ceiling fix closed, from in front of the door.
+    const failureKey = `apikey-auth:${remoteIpOf(req) || "unknown"}`;
+    const failureRate = apiKeyAuthFailureLimiter.record(failureKey, API_KEY_AUTH_FAILURES_PER_MINUTE);
+    if (!failureRate.allowed) {
+      // audit() is a synchronous mkdirSync + appendFileSync carrying req.url, so a
+      // row per attempt is an unbounded write for anyone who can reach the port.
+      if (shouldNoteApiKeyAuthThrottle(failureKey)) {
+        audit(config, req, "auth.api-key-failed", { reason: bearer.error, throttled: true, afterFailures: API_KEY_AUTH_FAILURES_PER_MINUTE });
+      }
+      return json(res, 429, { error: "Too many failed API key attempts. Try again shortly." }, { "retry-after": String(failureRate.retryAfterSeconds) });
+    }
+    audit(config, req, "auth.api-key-failed", { reason: bearer.error });
+    return json(res, bearer.status, { error: bearer.error });
+  }
+  if (bearer) {
+    const rate = apiKeyRateLimiter.record(bearer.key.id, bearer.key.rateLimitPerMinute);
+    if (!rate.allowed) {
+      return json(res, 429, { error: "This API key has exceeded its request limit. Try again shortly." }, { "retry-after": String(rate.retryAfterSeconds) });
+    }
+  }
+
+  const session = bearer?.session || auth.requireAuth(req, res);
   if (!session) return;
   req.authSession = session;
+  // Stashed for requireAction(), the second gate a body-dependent route runs
+  // once it knows its narrower action. It carries the authenticated record
+  // itself rather than an id to look up again, so the second check cannot
+  // resolve to a different (or newly revoked) key than the first one did.
+  req.authApiKey = bearer?.key || null;
 
   const action = actionForRoute(path, req.method);
   if (!action || !evaluate(session, action)) {
     return json(res, 403, { error: "Your account does not have permission to access this resource." });
+  }
+  // The key's own scope grid, applied on top of the policy engine. This is the
+  // check that actually constrains a key (see the tier comment in apiKeys.js).
+  // settings:* and database:* are denied inside allows(), so a key can never
+  // reach the routes below that mint, list or revoke keys.
+  if (bearer) {
+    if (!apiKeys.allows(bearer.key, action)) {
+      return json(res, 403, { error: "This API key is not permitted to use this endpoint." });
+    }
+    apiKeys.recordUse(bearer.key.id, remoteIpOf(req));
   }
 
   if (path === "/api/setup/state") return json(res, 200, await setupState());
@@ -1083,15 +1306,66 @@ async function handleApi(req, res) {
 
   if (path === "/api/updates/check-game" && req.method === "POST") {
     const body = await readJson(req);
-    return task(req, res, "updates", "updateCheck", { fresh: body.fresh === true });
+    // `fresh` bypasses the dedupe cache and spawns a real subprocess every
+    // call. updates:check is reachable at READ level, so an API key could hold
+    // it -- keys are pinned to the cached path, leaving the forced refresh to
+    // the browser session that is actually sitting in front of the console.
+    const fresh = body.fresh === true && !req.authSession?.apiKeyId;
+    return task(req, res, "updates", "updateCheck", { fresh });
   }
   if (path === "/api/updates/apply-game" && req.method === "POST") return task(req, res, "updates", "updateApply", {});
   if (path === "/api/updates/fix-steamcmd" && req.method === "POST") return task(req, res, "updates", "updateFixSteamcmd", {});
   if (path === "/api/updates/check-stack" && req.method === "POST") return task(req, res, "updates", "selfUpdateCheck", {});
   if (path === "/api/updates/apply-stack" && req.method === "POST") return task(req, res, "updates", "selfUpdateApply", {});
+  if (path === "/api/updates/qa/status") {
+    try { return json(res, 200, await qaUpdates.status(req.authSession.id, { refresh: url.searchParams.get("refresh") === "1" })); }
+    catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "QA authorization could not be checked.") }); }
+  }
+  if (path === "/api/updates/qa/login" && req.method === "POST") {
+    try {
+      const result = await qaUpdates.start(req.authSession.id);
+      audit(config, req, "updates.qa-login-started", { requestId: result.requestId });
+      return json(res, 200, result);
+    } catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "QA authorization could not be started.") }); }
+  }
+  if (path === "/api/updates/qa/logout" && req.method === "POST") {
+    await qaUpdates.logout(req.authSession.id);
+    audit(config, req, "updates.qa-logout");
+    return json(res, 200, { ok: true });
+  }
+  if (path === "/api/updates/qa/build") {
+    try { return json(res, 200, await qaUpdates.build(req.authSession.id)); }
+    catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "The latest QA build could not be checked.") }); }
+  }
+  if (path === "/api/updates/qa/apply" && req.method === "POST") {
+    try {
+      const build = await qaUpdates.build(req.authSession.id);
+      if (!build.ready) return json(res, 409, { error: build.reason || "The latest QA build has not passed all checks." });
+      if (!build.updateAvailable) return json(res, 409, { error: "This Console already has the latest QA build." });
+      audit(config, req, "updates.qa-apply", { commitSha: build.sha });
+      return task(req, res, "updates", "selfUpdateQaApply", { sha: build.sha });
+    } catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "The QA build could not be applied.") }); }
+  }
+  if (path === "/api/updates/qa/reinstall-release" && req.method === "POST") {
+    try {
+      await qaUpdates.requireAuthorized(req.authSession.id);
+      audit(config, req, "updates.qa-reinstall-release");
+      return task(req, res, "updates", "selfUpdateApply", {});
+    } catch (error) { return json(res, error?.statusCode || 502, { error: redact(error?.message || "The public release could not be reinstalled.") }); }
+  }
   if (path === "/api/updates/stack-progress") {
     try {
-      return json(res, 200, readSelfUpdateStatus(config.repoRoot, url.searchParams.get("runId")));
+      const taskStartedAt = url.searchParams.get("startedAt");
+      const progress = readSelfUpdateStatus(config.repoRoot, url.searchParams.get("runId"), {
+        taskStartedAt,
+        consoleStartedAt: CONSOLE_PROCESS_STARTED_AT
+      });
+      const taskStartedAtMs = Date.parse(String(taskStartedAt || progress.startedAt || ""));
+      return json(res, 200, {
+        ...progress,
+        consoleStartedAt: new Date(CONSOLE_PROCESS_STARTED_AT).toISOString(),
+        consoleReplaced: Number.isFinite(taskStartedAtMs) && CONSOLE_PROCESS_STARTED_AT > taskStartedAtMs + 1000
+      });
     } catch (error) {
       return json(res, error?.code === "INVALID_RUN_ID" ? 400 : 500, { error: redact(error?.message || "Could not read console update status.") });
     }
@@ -1106,6 +1380,10 @@ async function handleApi(req, res) {
   if (path === "/api/backups/auto") return backupAutoStatusRoute(res);
   if (path === "/api/backups/create" && req.method === "POST") return task(req, res, "backup", "backupCreate", {});
   if (path === "/api/backups/delete-all" && req.method === "POST") return task(req, res, "backup", "backupDeleteAll", {});
+  if (path === "/api/backups/delete-selected" && req.method === "POST") {
+    const body = await readJson(req);
+    return task(req, res, "backup", "backupDeleteSelected", { backups: body.backups });
+  }
   if (path === "/api/backups/restore" && req.method === "POST") {
     const body = await readJson(req);
     return task(req, res, "backup", "backupRestore", { backup: body.backup, identityMode: body.identityMode });
@@ -1146,10 +1424,20 @@ async function handleApi(req, res) {
   if (path === "/api/auth/2fa/recovery-codes/regenerate" && req.method === "POST") return recoveryCodesRegenerateRoute(req, res);
   if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
   if (path === "/api/settings/iam/policies" && req.method === "GET") {
+    // The catalog rides along because policies are hand-authored JSON with no
+    // editor UI: without it the only way to learn the vocabulary is to read
+    // actions.js, which is how misspelled actions get written in the first place.
+    // actions/actionMap/namespaces all still ride along too -- the IAM Policy
+    // Editor UI (actionMap for namespace lookups, namespaces for the grouped
+    // display) depends on them; allKnownActions() replaces the old
+    // Object.keys(ROUTE_ACTIONS)-only list with the complete action set
+    // (ROUTE_ACTIONS + REGEX_ACTIONS + REGEX_ACTIONS_BY_METHOD), which this
+    // commit introduces specifically to stop the catalog silently omitting
+    // regex-only actions.
     const policies = getAllPolicies();
     return json(res, 200, {
       policies,
-      actions: Object.keys(ROUTE_ACTIONS).sort(),
+      actions: [...allKnownActions()].sort(),
       actionMap: ROUTE_ACTIONS,
       namespaces: NAMESPACES
     });
@@ -1161,12 +1449,29 @@ async function handleApi(req, res) {
     audit(config, req, "iam.policy-set", { tiers: Object.keys(body) });
     return json(res, 200, result);
   }
+  if (path === "/api/settings/api-keys/catalog" && req.method === "GET") {
+    return json(res, 200, { namespaces: scopeCatalog() });
+  }
+  if (path === "/api/settings/api-keys" && req.method === "GET") {
+    return json(res, 200, { keys: apiKeys.list() });
+  }
+  if (path === "/api/settings/api-keys" && req.method === "POST") return apiKeyCreateRoute(req, res);
+  if (path.startsWith("/api/settings/api-keys/")) return apiKeyItemRoute(req, res, path);
   if (path === "/api/settings/iam/policy/test" && req.method === "POST") {
     const body = await readJson(req);
     const testAction = String(body?.action || "").trim();
     const testTier = String(body?.tier || "").trim();
     if (!testAction || !testTier) return json(res, 400, { error: "Both action and tier are required." });
-    return json(res, 200, { action: testAction, tier: testTier, allowed: evaluate({ tier: testTier }, testAction) });
+    // `known` separates "denied" from "not a thing". A misspelled action
+    // returns allowed:false, which reads as "my Deny works" -- the most
+    // misleading answer this endpoint can give, since a misspelled Deny is
+    // exactly what an operator comes here to check.
+    return json(res, 200, {
+      action: testAction,
+      tier: testTier,
+      allowed: evaluate({ tier: testTier }, testAction),
+      known: allKnownActions().has(testAction)
+    });
   }
 
   if (path === "/api/players") return dbJson(res, async () => {
@@ -1212,9 +1517,12 @@ async function handleApi(req, res) {
   }));
   if (path === "/api/bases/pending-refills") return pendingGeneratorRefillsRoute(res);
   if (path === "/api/bases/auto-refill") return basesAutoRefillStateRoute(res);
+  if (path === "/api/bases/auto-refill/settings" && req.method === "GET") return basesAutoRefillSettingsRoute(res);
+  if (path === "/api/bases/auto-refill/settings" && req.method === "POST") return basesAutoRefillSettingsSaveRoute(req, res);
   if (path === "/api/bases/pending-water-refills") return pendingWaterRefillsRoute(res);
   if (path === "/api/bases/auto-refill-water") return basesAutoRefillWaterStateRoute(res);
   if (path === "/api/bases/pending-deletes") return pendingBaseDeletesRoute(res);
+  if (path === "/api/bases/pending-child-access") return pendingChildAccessRoute(res);
   if (path.match(/^\/api\/bases\/[^/]+\/export$/) && req.method === "GET") return baseBlueprintDownloadRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-generators$/) && req.method === "POST") return baseRefillGeneratorsRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-refill$/) && req.method === "DELETE") return baseCancelQueuedRefillRoute(req, res, path);
@@ -1237,6 +1545,9 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/bases\/[^/]+\/land-claim$/) && req.method === "PUT") return baseUpdateLandClaimRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "GET") return basePermissionsRoute(res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/permissions$/) && req.method === "PUT") return baseSetPermissionsRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/child-access$/) && req.method === "GET") return baseChildAccessRoute(res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/child-access$/) && req.method === "POST") return baseSetChildAccessRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/queued-child-access$/) && req.method === "DELETE") return baseCancelQueuedChildAccessRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/system-custodian$/) && req.method === "POST") return baseSystemCustodianRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-delete$/) && req.method === "DELETE") return baseCancelQueuedDeleteRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+$/) && req.method === "DELETE") return baseDeleteRoute(req, res, path);
@@ -1247,9 +1558,17 @@ async function handleApi(req, res) {
     sortColumn: url.searchParams.get("sortColumn") || "name",
     sortDirection: url.searchParams.get("sortDirection") || "asc"
   }));
+  if (path === "/api/vehicles/pending-deletes") return pendingVehicleDeletesRoute(res);
   if (path === "/api/vehicles/permission-candidates") return vehiclePermissionCandidatesRoute(res, url);
   if (path.match(/^\/api\/vehicles\/[^/]+\/permissions$/) && req.method === "GET") return vehiclePermissionsRoute(res, path);
   if (path.match(/^\/api\/vehicles\/[^/]+\/permissions$/) && req.method === "PUT") return vehicleSetPermissionsRoute(req, res, path);
+  if (path.match(/^\/api\/vehicles\/[^/]+\/system-custodian$/) && req.method === "POST") return vehicleSystemCustodianRoute(req, res, path);
+  if (path.match(/^\/api\/vehicles\/[^/]+\/storage$/) && req.method === "GET") return vehicleStorageRoute(res, path);
+  if (path.match(/^\/api\/vehicles\/[^/]+\/storage\/items\/[^/]+$/) && req.method === "DELETE") return vehicleStorageItemDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/vehicles\/[^/]+\/storage\/items$/) && req.method === "DELETE") return vehicleStorageItemsDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/vehicles\/[^/]+\/storage\/all-items$/) && req.method === "DELETE") return vehicleStorageAllItemsDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/vehicles\/[^/]+\/queued-delete$/) && req.method === "DELETE") return vehicleCancelQueuedDeleteRoute(req, res, path);
+  if (path.match(/^\/api\/vehicles\/[^/]+$/) && req.method === "DELETE") return vehicleDeleteRoute(req, res, path);
   if (path === "/api/admin/items/catalog") return json(res, 200, { rows: listCatalogItems(config.repoRoot, { q: url.searchParams.get("q") || "", limit: url.searchParams.get("limit") || 500 }) });
   if (path === "/api/admin/items/search") return commandJson(res, "adminItemSearch", { q: url.searchParams.get("q") || "" });
   if (path === "/api/admin/items") return commandJson(res, url.searchParams.get("category") ? "adminItemListCategory" : "adminItemList", { category: url.searchParams.get("category") || "" });
@@ -1261,6 +1580,7 @@ async function handleApi(req, res) {
   if (path === "/api/admin/character-transfer-settings") return characterTransferSettingsRoute(req, res);
   if (path === "/api/admin/message-of-the-day") return messageOfTheDayRoute(req, res);
   if (path === "/api/admin/player-announcements") return playerAnnouncementsRoute(req, res);
+  if (path === "/api/admin/map-chat-schedules") return scheduledMapMessagesRoute(req, res);
   if (path === "/api/admin/landsraad") return landsraadRoute(req, res, "overview");
   if (path === "/api/admin/landsraad/task-goal") return landsraadRoute(req, res, "task-goal");
   if (path === "/api/admin/landsraad/term-task-goals") return landsraadRoute(req, res, "term-task-goals");
@@ -1309,6 +1629,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/give-items$/) && req.method === "POST") return giveItemsRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/give-item-id$/) && req.method === "POST") return giveSingleItemRoute(req, res, path, "adminGiveItemId");
   if (path.match(/^\/api\/players\/[^/]+\/building-unlocks\/grant$/) && req.method === "POST") return buildingUnlockGrantRoute(req, res, path);
+  if (path.match(/^\/api\/players\/[^/]+\/customizations\/grant$/) && req.method === "POST") return customizationGrantRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/add-xp$/) && req.method === "POST") return playerTask(req, res, path, "adminAddXp");
   if (path.match(/^\/api\/players\/[^/]+\/set-skill-points$/) && req.method === "POST") return playerTask(req, res, path, "adminSetSkillPoints");
   if (path.match(/^\/api\/players\/[^/]+\/set-skill-module$/) && req.method === "POST") return playerTask(req, res, path, "adminSetSkillModule");
@@ -1317,7 +1638,8 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/ban$/)) return playerBanRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/repair-login-queue$/) && req.method === "POST") return playerTask(req, res, path, "adminRepairLoginQueue", "REPAIR LOGIN QUEUE");
   if (path === "/api/players/kick-all-online" && req.method === "POST") return confirmedTask(req, res, "admin", "adminKickAllOnline", {}, "KICK ALL ONLINE PLAYERS");
-  if (path.match(/^\/api\/players\/[^/]+\/teleport$/) && req.method === "POST") return playerTask(req, res, path, "adminTeleport");
+  if (path.match(/^\/api\/players\/[^/]+\/teleport-destinations$/) && req.method === "GET") return dbPlayerRoute(res, path, duneDb.playerTeleportDestinations);
+  if (path.match(/^\/api\/players\/[^/]+\/teleport$/) && req.method === "POST") return playerTeleportRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/spawn-vehicle$/) && req.method === "POST") return playerTask(req, res, path, "adminSpawnVehicle");
   if (path.match(/^\/api\/players\/[^/]+\/clean-inventory$/) && req.method === "POST") return playerTask(req, res, path, "adminCleanInventory", "CLEAN INVENTORY");
   if (path.match(/^\/api\/players\/[^/]+\/reset-progression$/) && req.method === "POST") return playerTask(req, res, path, "adminResetProgression", "RESET PROGRESSION");
@@ -1341,17 +1663,33 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/players\/[^/]+\/tutorials\/complete$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.tutorials.complete", "COMPLETE TUTORIAL", (playerId, body) => duneDb.completeTutorial(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/tutorials\/reset$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.tutorials.reset", "RESET TUTORIAL", (playerId, body) => duneDb.resetTutorial(db, playerId, body));
   if (path.match(/^\/api\/players\/[^/]+\/repair-gear$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-gear", "REPAIR GEAR", (playerId) => duneDb.repairGear(db, playerId));
-  if (path.match(/^\/api\/players\/[^/]+\/repair-vehicle-decay$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.repair-vehicle-decay", "REPAIR VEHICLE DECAY", (playerId, body) => duneDb.repairVehicleDecay(db, playerId, body));
-  if (path.match(/^\/api\/players\/[^/]+\/refuel-vehicle$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.refuel-vehicle", "REFUEL VEHICLE", (playerId, body) => duneDb.refuelVehicle(db, playerId, body));
+  if (path.match(/^\/api\/players\/[^/]+\/repair-vehicle-decay$/) && req.method === "POST") return playerVehicleDecayRepairRoute(req, res, path);
+  if (path.match(/^\/api\/players\/[^/]+\/refuel-vehicle$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.refuel-vehicle", "REFUEL VEHICLE", (playerId, body) => {
+    // The target vehicle id lives in the body, not the path, so it is not
+    // known until after directDbMutation's readJson -- unlike the routes
+    // below whose id comes from the URL, this can't pre-check into a 409
+    // before the phrase/rate-limit gate. Surfaces as an ordinary 400 instead.
+    if (vehicleDeletePending(Number(body?.vehicleId))) throw new Error(VEHICLE_DELETE_PENDING_MESSAGE);
+    return duneDb.refuelVehicle(db, playerId, body);
+  });
   if (path.match(/^\/api\/players\/[^/]+\/augment-item$/) && req.method === "POST") return playerDbMutation(req, res, path, "players.augment-item", "APPLY AUGMENTS", (playerId, body) => duneDb.augmentInventoryItem(db, playerId, body.itemId, { augments: body.augments, augmentQuality: body.augmentQuality }));
   if (path.match(/^\/api\/players\/[^/]+\/inventory\/[^/]+$/) && req.method === "DELETE") return inventoryDeleteRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/inventory\/[^/]+$/) && req.method === "PATCH") return inventoryUpdateRoute(req, res, path);
   if (path.match(/^\/api\/players\/[^/]+\/crafting-recipes$/)) return dbPlayerRoute(res, path, duneDb.playerCraftingRecipes);
   if (path.match(/^\/api\/players\/[^/]+\/research-items$/)) return dbPlayerRoute(res, path, duneDb.playerResearchItems);
   if (path.match(/^\/api\/players\/[^/]+\/building-unlocks$/) && req.method === "GET") return buildingUnlocksRoute(res, path);
+  if (path.match(/^\/api\/players\/[^/]+\/customizations$/) && req.method === "GET") return customizationGrantsRoute(res, path);
   if (path.match(/^\/api\/players\/[^/]+\/journey$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerJourney(database, playerId, journeyTagsData));
   if (path.match(/^\/api\/players\/[^/]+\/inventory$/)) return dbPlayerRoute(res, path, duneDb.playerInventoryAll);
   if (path.match(/^\/api\/players\/[^/]+\/vehicles$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listVehicles(database, { playerId, pageSize: 200 }));
+  if (path.match(/^\/api\/players\/[^/]+\/bases$/) && req.method === "GET") return dbPlayerRoute(res, path, (database, playerId) => duneDb.listBases(database, {
+    playerId,
+    q: url.searchParams.get("q") || "",
+    page: 0,
+    pageSize: 5000,
+    sortColumn: url.searchParams.get("sortColumn") || "name",
+    sortDirection: url.searchParams.get("sortDirection") || "asc"
+  }));
   if (path.match(/^\/api\/players\/[^/]+\/currency$/)) return dbPlayerRoute(res, path, duneDb.playerCurrency);
   if (path.match(/^\/api\/players\/[^/]+\/solaris-coin$/)) return dbPlayerRoute(res, path, duneDb.playerSolarisCoinTotal);
   if (path.match(/^\/api\/players\/[^/]+\/factions$/)) return dbPlayerRoute(res, path, (database, playerId) => duneDb.playerFactions(database, playerId, journeyTagsData));
@@ -1373,6 +1711,9 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/storage\/[^/]+\/remove-items$/) && req.method === "POST") return storageRemoveItemsRoute(req, res, path);
   if (path.match(/^\/api\/storage\/[^/]+\/export$/)) return exportJson(res, `storage-${decodeURIComponent(path.split("/")[3])}.json`, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path === "/api/blueprints" && req.method === "GET") return dbJson(res, () => listBlueprints(db));
+  if (path === "/api/blueprints/community" && req.method === "GET") return communityBlueprintListRoute(res, url);
+  if (path.match(/^\/api\/blueprints\/community\/[^/]+\/preview$/) && req.method === "GET") return communityBlueprintPreviewRoute(res, path);
+  if (path.match(/^\/api\/blueprints\/community\/[^/]+\/install$/) && req.method === "POST") return communityBlueprintInstallRoute(req, res, path);
   if (path === "/api/blueprints/export" && req.method === "POST") return blueprintBulkExportRoute(req, res);
   if (path.match(/^\/api\/blueprints\/([^/]+)\/export$/) && req.method === "GET") return blueprintExportRoute(req, res, path);
   if (path === "/api/blueprints/import" && req.method === "POST") return blueprintImportRoute(req, res);
@@ -2189,6 +2530,14 @@ async function handleApi(req, res) {
 }
 
 async function addonBridgeRoute(req, res, path) {
+  // The bridge authorizes against the installed addon's manifest, not the
+  // caller, so a key could install an addon declaring `database: write` and
+  // reach arbitrary SQL. `addons` is write-denied in apiKeyScopes.js; this is
+  // the second lock, so relaxing that cannot silently reopen the path.
+  if (req.authSession?.apiKeyId) {
+    audit(config, req, "addons.bridge", { ok: false, reason: "api-key principal" });
+    return json(res, 403, { error: "API keys cannot use the addon bridge. Use a browser session." });
+  }
   const id = decodeURIComponent(path.split("/").at(-2));
   if (id === EDA_EXCHANGE_BOT_ADDON_ID && edaRetirement.retired) {
     audit(config, req, "addons.bridge", { id, ok: false, reason: "Addon retired; use native Market Bot" });
@@ -2207,6 +2556,64 @@ async function addonBridgeRoute(req, res, path) {
     const addon = assertInstalledAddonPermission(config, id, "players:read");
     const result = await duneDb.addonLeadershipPlayers(db);
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "players.summary.list") {
+    const addon = assertInstalledAddonPermission(config, id, "players:read");
+    const result = await duneDb.addonLeadershipPlayers(db);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "players.identity.list") {
+    const addon = assertInstalledAddonPermission(config, id, "players:read");
+    const result = await duneDb.addonPlayerIdentities(db);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "players.progression.get") {
+    const addon = assertInstalledAddonPermission(config, id, "players:read");
+    const playerId = String(body.playerId || "").trim();
+    if (!playerId) return json(res, 400, { error: "playerId is required." });
+    const result = await duneDb.addonPlayerProgression(db, playerId, journeyTagsData);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, playerId, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "addon.storage.get" || action === "addon.storage.list" || action === "addon.storage.put" || action === "addon.storage.delete") {
+    const addon = assertInstalledAddonPermission(config, id, "files:addon-data");
+    const writeAction = action === "addon.storage.put" || action === "addon.storage.delete";
+    if (writeAction && !applyMutationRateLimit(req, res, `addon:${id}:${action}`)) return;
+    const result = action === "addon.storage.get"
+      ? readAddonData(config, addon.id, body.key)
+      : action === "addon.storage.list"
+        ? listAddonData(config, addon.id, body)
+        : action === "addon.storage.put"
+          ? await writeAddonData(config, addon.id, body)
+          : await deleteAddonData(config, addon.id, body);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, key: String(body.key || ""), ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "rewards.deliver" || action === "rewards.status" || action === "rewards.list") {
+    const addon = assertInstalledAddonPermission(config, id, "rewards:grant");
+    if (action === "rewards.deliver" && !applyMutationRateLimit(req, res, `addon:${id}:rewards.deliver`)) return;
+    let result = action === "rewards.deliver"
+      ? await addonDeliveryService.request(addon.id, body, { permission: addon.permission })
+      : action === "rewards.status"
+        ? addonDeliveryService.get(addon.id, body.requestId)
+        : addonDeliveryService.list(addon.id, body, { kind: "reward" });
+    if (action === "rewards.status" && result?.delivery?.type === "message") result = null;
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, requestId: String(body.requestId || ""), status: result?.status || "", ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "players.message.send" || action === "players.message.status" || action === "players.message.list") {
+    const addon = assertInstalledAddonPermission(config, id, "players:message");
+    if (action === "players.message.send" && !applyMutationRateLimit(req, res, `addon:${id}:players.message.send`)) return;
+    let result = action === "players.message.send"
+      ? await addonDeliveryService.request(addon.id, body, { permission: addon.permission, kind: "message" })
+      : action === "players.message.status"
+        ? addonDeliveryService.get(addon.id, body.requestId)
+        : addonDeliveryService.list(addon.id, body, { kind: "message" });
+    if (action === "players.message.status" && result?.delivery?.type !== "message") result = null;
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, requestId: String(body.requestId || ""), status: result?.status || "", ok: true });
     return json(res, 200, { ok: true, result });
   }
   if (action === "ops.health.summary" || action === "ops.health.players" || action === "ops.health.farms" || action === "ops.health.summary.v2") {
@@ -2295,7 +2702,7 @@ async function addonBridgeRoute(req, res, path) {
   }
   if (action === "server.hardware.status") {
     const addon = assertInstalledAddonPermission(config, id, "server:status");
-    const result = await hardwareStatusSnapshot();
+    const result = await hardwareStatus();
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, sensorCount: result.temperatures.length, ok: true });
     return json(res, 200, { ok: true, result });
   }
@@ -2325,6 +2732,11 @@ async function addonBridgeRoute(req, res, path) {
   if (action.startsWith("scheduler.")) return addonSchedulerBridgeAction(req, res, id, action, body);
   if (action === "database.query" || action === "database.execute") {
     const query = String(body.query || "");
+    // Same guard as databaseQuery: empty or comments-only input classifies as
+    // a write and reaches the backup spawn below.
+    if (!hasExecutableStatement(query)) {
+      return json(res, 400, { error: "No SQL statement to run." });
+    }
     const readOnly = isReadOnlySql(query);
     const requiredPermission = readOnly ? "database:read" : "database:write";
     if (action === "database.query" && !readOnly) return json(res, 400, { error: "database.query accepts read-only SQL only. Use database.execute with database:write permission for write SQL." });
@@ -2333,7 +2745,7 @@ async function addonBridgeRoute(req, res, path) {
     if (!readOnly && !config.mockMode) {
       await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: `addon-${addon.id}` } });
     }
-    const result = await duneDb.runSql(db, query, !readOnly);
+    const result = await duneDb.runSql(db, query, !readOnly, { enforceReadOnly: true });
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, readOnly, rowCount: result.rowCount, command: result.command, ok: true });
     return json(res, 200, { ok: true, result });
   }
@@ -2480,10 +2892,20 @@ async function liveMapMarkersRoute(res, url) {
     const activeMap = configPayload.map.actorMap || configPayload.map.key;
     const partitionId = url.searchParams.get("partitionId") || "";
     const includeStatic = url.searchParams.get("static") !== "0";
-    const [markers, partitions, spice, poi, sandstorm] = await Promise.all([
+    // Fetched ahead of the Promise.all because the cycle resolver needs the
+    // partition ids: without a partitionId they are the only way to reach a
+    // container that logs the layout.
+    const partitions = await duneDb.liveMapPartitions(db).catch(() => ({ rows: [] }));
+    // Resolved once and handed to liveMapSpice: left to fetch its own, the two
+    // would race the 30s cache (no in-flight dedupe) and shell out twice.
+    const cycle = await resolveCoriolisCycle({
+      map: activeMap,
+      partitionId,
+      deepDesertPartitionIds: (partitions.rows || []).filter((row) => String(row.map) === "DeepDesert").map((row) => row.partition_id)
+    }).catch(() => ({ seed: null, nextCycleAt: null, layout: null }));
+    const [markers, spice, poi, sandstorm] = await Promise.all([
       duneDb.liveMapMarkers(db, activeMap),
-      duneDb.liveMapPartitions(db).catch(() => ({ rows: [] })),
-      liveMapSpice(db, config, activeMap, { partitionId, includeStaticPool: includeStatic }).catch(() => ({ capabilities: { ...(includeStatic ? { spice: false } : {}), spice_active: false, flour_sand: false }, rows: [] })),
+      liveMapSpice(db, config, activeMap, { partitionId, includeStaticPool: includeStatic, resolveCycle: async () => cycle }).catch(() => ({ capabilities: { ...(includeStatic ? { spice: false } : {}), spice_active: false, flour_sand: false }, rows: [] })),
       includeStatic ? liveMapPoi(db, activeMap).catch(() => ({ capabilities: {}, rows: [] })) : Promise.resolve({ capabilities: {}, rows: [] }),
       // Unlike the Coriolis seed/cycle (farm-wide, any container answers the
       // same value), a sandstorm's active status is genuinely per-partition
@@ -2496,6 +2918,8 @@ async function liveMapMarkersRoute(res, url) {
       ...markers,
       ...configPayload,
       capabilities: { ...markers.capabilities, ...spice.capabilities, ...poi.capabilities },
+      knownSubtypes: poi.knownSubtypes || {},
+      subtypeLabels: poi.subtypeLabels || {},
       overlays: { ...markers.overlays, spice: spice.reason || "" },
       rows: [...markers.rows, ...spice.rows, ...poi.rows],
       // Every server container reports the identical farm-wide seed and
@@ -2503,8 +2927,17 @@ async function liveMapMarkersRoute(res, url) {
       // selected partitionId's own container first (more likely to actually
       // be running than a fixed default) before falling back to the
       // overmap/survival-1 default.
-      coriolisSeed: spice.currentSeed || "",
-      coriolisNextCycleAt: spice.nextCycleAt || "",
+      // From the cycle this route resolved, not from spice. liveMapSpice is
+      // handed that same cycle, so the values are identical when it succeeds --
+      // but its catch path returns no seed at all, which used to serve an empty
+      // seed beside a perfectly good coriolisLayout.
+      coriolisSeed: cycle.seed || "",
+      coriolisNextCycleAt: cycle.nextCycleAt || "",
+      coriolisSeedStaleSince: cycle.staleSince || "",
+      // Which cartography layout is live, for the terrain renderer. Null when it
+      // cannot be read or the cycle has expired; the client then draws the flat
+      // image rather than guessing. ?? not ||: layout 0 is valid.
+      coriolisLayout: cycle.layout ?? null,
       // Sandstorm status is a heuristic (no storm-end log line exists on
       // either map, see sandstormStatus.js) -- "active" means a start line
       // was seen within the last ACTIVE_WINDOW_MS, not a confirmed ongoing
@@ -2532,13 +2965,20 @@ async function liveMapTeleportPlayerRoute(req, res) {
   }
   if (body.online === true) {
     try {
-      buildDuneArgs("adminTeleport", payload);
+      const resolved = await duneDb.teleportPlayer(db, playerId, { mode: "coordinates", ...payload });
+      const runtime = await duneDb.liveMapPartitionRuntimeState(db, resolved.partitionId);
+      if (runtime.known && (!runtime.exists || !runtime.ready)) {
+        return json(res, 409, { error: "The destination partition is offline. Start it through normal in-game travel before teleporting a player there." });
+      }
+      const taskPayload = { ...payload, playerId: resolved.playerId, partitionId: resolved.partitionId };
+      buildDuneArgs("adminTeleport", taskPayload);
+      if (!applyMutationRateLimit(req, res, "live-map.teleport.live")) return;
+      audit(config, req, "live-map.teleport.live", { playerId: resolved.playerId, x: payload.x, y: payload.y, z: payload.z, partitionId: resolved.partitionId });
+      return json(res, 202, { path: "live", task: tasks.create("admin", "adminTeleport", taskPayload) });
     } catch (error) {
-      return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
+      const failure = apiErrorPayload(error, 400);
+      return json(res, failure.status, failure.body);
     }
-    if (!applyMutationRateLimit(req, res, "live-map.teleport.live")) return;
-    audit(config, req, "live-map.teleport.live", { playerId, x: payload.x, y: payload.y, z: payload.z, partitionId: payload.partitionId });
-    return json(res, 202, { path: "live", task: tasks.create("admin", "adminTeleport", payload) });
   }
   try {
     if (!applyMutationRateLimit(req, res, "live-map.teleport.offline")) return;
@@ -2555,7 +2995,7 @@ async function liveMapTeleportPlayerRoute(req, res) {
 async function commandJson(res, operation, payload = {}) {
   if (config.mockMode) return json(res, 200, mockCommand(operation));
   const args = buildDuneArgs(operation, payload);
-  const result = await runDune(config, args);
+  const result = await readCommandCache.run(JSON.stringify(args), () => runDune(config, args));
   return json(res, 200, { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code });
 }
 
@@ -2581,7 +3021,7 @@ function isAdminToolsHistoryLine(line) {
   const parts = String(line || "").split("\t");
   const command = String(parts[1] || "").trim();
   const target = String(parts[2] || "").trim();
-  if (/^web-(broadcast|shutdown-broadcast)$/i.test(command)) return true;
+  if (/^(?:web-(?:broadcast|shutdown-broadcast|map-chat)|scheduled-map-chat(?:-now)?)$/i.test(command)) return true;
   if (/^web-hydrate-all$/i.test(command)) return true;
   if (/^KickPlayer$/i.test(command) && /^(all|\*)$/i.test(target)) return true;
   return false;
@@ -2977,7 +3417,7 @@ async function marketItemsSaveRoute(req, res) {
 async function safeCommand(operation, payload = {}) {
   try {
     const args = buildDuneArgs(operation, payload);
-    const result = await runDune(config, args);
+    const result = await readCommandCache.run(JSON.stringify(args), () => runDune(config, args));
     return { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code };
   } catch (error) {
     return { operation, stdout: redact(error.stdout || ""), stderr: redact(error.stderr || error?.message || "Unexpected error."), exitCode: error.code || 1 };
@@ -2987,13 +3427,35 @@ async function safeCommand(operation, payload = {}) {
 async function databaseQuery(req, res) {
   const body = await readJson(req);
   const query = String(body.query || "");
+  // BEFORE the classification below: isReadOnlySql answers "does this start
+  // with a read keyword", so "" answers no and classifies as a WRITE, taking a
+  // full pre-write backup before runSql rejects it. Empty input submitted in a
+  // loop therefore ran pg_dump at the mutation limiter's ceiling.
+  if (!hasExecutableStatement(query)) {
+    return json(res, 400, { error: "Enter a SQL query to run." });
+  }
+  // Classified ONCE, and every decision below reads this one value. Calling
+  // isReadOnlySql again per decision would let the authorization answer and the
+  // execution answer disagree about the same string.
   const readOnly = isReadOnlySql(query);
+  // The route resolved to database:query, which is read-shaped and granted as
+  // such. Write SQL down this same route is a different privilege and needs
+  // database:execute on top. First, so an unauthorized write never reaches the
+  // rate-limit tick or the backup spawn below.
+  if (!readOnly && !requireAction(req, res, "database:execute")) return;
   if (!readOnly && !applyMutationRateLimit(req, res, "database.query.write")) return;
   if (!config.mockMode && !readOnly) {
     await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "destructive-sql" } });
   }
   audit(config, req, "database.query", { readOnly, destructive: !readOnly });
-  return dbJson(res, () => duneDb.runSql(db, query, true));
+  // !readOnly rather than the unconditional `true` this used to pass, so a
+  // request authorized as read-only is also EXECUTED with writes refused.
+  // runSql re-classifies with the same db.js function used above, so the two
+  // decisions cannot disagree.
+  //
+  // enforceReadOnly is the actual guarantee: the read path runs inside a READ
+  // ONLY transaction, so Postgres refuses a write the classifier got wrong.
+  return dbJson(res, () => duneDb.runSql(db, query, !readOnly, { enforceReadOnly: true }));
 }
 
 async function databaseExport(req, res) {
@@ -3068,9 +3530,15 @@ async function adminPasswordRoute(req, res) {
     return json(res, status, payload);
   };
   const body = await readJson(req);
-  // readJson returns raw JSON.parse output, so a literal `null` body used to
-  // throw a TypeError and surface as a 500 with an internal JS message (#527).
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
+  // readJsonBody now normalizes a literal `null` body to {} (upstream sync
+  // #964, resolved a TypeError-to-500 bug affecting every readJson caller,
+  // see httpSafety.js) -- so a null/missing body can no longer be told apart
+  // from a real object by `!body` alone. The empty-object check below
+  // restores that distinction: an empty body still gets classified as
+  // malformed_body rather than falling through to a misleading bad_password
+  // audit reason, which the credential-stuffing audit trail this route was
+  // hardened for (#547) depends on.
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length === 0) {
     return deny(400, { error: "Request body must be a JSON object." }, "malformed_body");
   }
   if (config.authDisabled) {
@@ -3148,7 +3616,9 @@ async function recoveryCodesRegenerateRoute(req, res) {
   }
 
   const body = await readJson(req);
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
+  // See adminPasswordRoute's matching check above for why Object.keys(...)
+  // === 0 is needed too, now that readJsonBody normalizes a null body to {}.
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length === 0) {
     return deny(400, { error: "Request body must be a JSON object." }, { reason: "malformed_body" });
   }
 
@@ -3186,6 +3656,58 @@ async function recoveryCodesRegenerateRoute(req, res) {
     }
     throw err;
   }
+}
+
+async function apiKeyCreateRoute(req, res) {
+  const body = await readJson(req);
+  const created = await apiKeys.create({
+    name: body.name,
+    scopes: body.scopes,
+    expiresAt: body.expiresAt,
+    rateLimitPerMinute: body.rateLimitPerMinute
+  });
+  audit(config, req, "settings.api-key-create", { id: created.key.id, name: created.key.name, scopes: created.key.scopes });
+  // `secret` is the only time the full key leaves the server. It is not
+  // stored -- only its hash is -- so this response cannot be reproduced.
+  return json(res, 200, { key: created.key, secret: created.secret });
+}
+
+async function apiKeyItemRoute(req, res, path) {
+  // decodeURIComponent throws URIError on a malformed escape (%ZZ), which
+  // surfaced as a 500 from an authenticated admin route rather than the 404
+  // this path already intends for an unknown id.
+  let id;
+  try {
+    id = decodeURIComponent(path.slice("/api/settings/api-keys/".length));
+  } catch {
+    return json(res, 404, { error: "That API key no longer exists." });
+  }
+  if (!id || id.includes("/")) return json(res, 404, { error: "That API key no longer exists." });
+
+  if (req.method === "PUT") {
+    const body = await readJson(req);
+    const patch = {};
+    for (const field of ["name", "scopes", "enabled", "expiresAt", "rateLimitPerMinute"]) {
+      if (body[field] !== undefined) patch[field] = body[field];
+    }
+    const updated = await apiKeys.update(id, patch);
+    if (!updated) return json(res, 404, { error: "That API key no longer exists." });
+    audit(config, req, "settings.api-key-update", { id: updated.id, name: updated.name, scopes: updated.scopes, enabled: updated.enabled });
+    return json(res, 200, { key: updated });
+  }
+
+  if (req.method === "DELETE") {
+    const revoked = await apiKeys.revoke(id);
+    if (!revoked) return json(res, 404, { error: "That API key no longer exists." });
+    audit(config, req, "settings.api-key-revoke", { id: revoked.id, name: revoked.name });
+    return json(res, 200, { ok: true });
+  }
+
+  // No 405 branch: only PUT and DELETE resolve to an action for this prefix
+  // (actions.js), so every other method returns null from actionForRoute and is
+  // refused with 403 by the gate before reaching here. A 405 would be dead code
+  // documenting a contract the dispatcher does not actually implement.
+  return json(res, 404, { error: "That API key no longer exists." });
 }
 
 async function webPortRoute(req, res) {
@@ -3722,10 +4244,10 @@ async function messageOfTheDayRoute(req, res) {
       const players = await duneDb.listAllPlayers(db, { status: "online" }).catch(() => ({ rows: [] }));
       primedOnlinePlayers = primeMessageOfTheDayOnlineState(config, players.rows || []).delivered;
     }
-    audit(config, req, "admin.message-of-the-day.save", { restoreDefaults: Boolean(body.restoreDefaults), enabled: result.settings.enabled });
+    audit(config, req, "admin.message-of-the-day.save", { restoreDefaults: Boolean(body.restoreDefaults), enabled: result.settings.enabled, deliveryMode: result.settings.deliveryMode });
     recordAdminHistory(config, {
       command: "web-message-of-the-day",
-      target: "login",
+      target: result.settings.deliveryMode,
       friendly: "Message of the Day",
       path: "runtime/generated/message-of-the-day.json",
       result: "saved",
@@ -3738,7 +4260,11 @@ async function messageOfTheDayRoute(req, res) {
       delivery: {
         primedOnlinePlayers,
         note: result.settings.enabled
-          ? "Players who are online while this is saved will receive the message after their next login."
+          ? result.settings.deliveryMode === "daily"
+            ? "Players who are online while this is saved will become eligible again after 24 hours."
+            : result.settings.deliveryMode === "map"
+              ? "Players who are online while this is saved will receive the message after their next map transfer or login."
+            : "Players who are online while this is saved will receive the message after their next login."
           : "Message of the Day delivery is disabled."
       }
     });
@@ -3933,13 +4459,15 @@ async function userSettingsValuesRoute(res, url) {
       ? "userSettingsMapEngineValues"
       : scope === "partitionEngine"
         ? "userSettingsPartitionEngineValues"
+    : scope.startsWith("serverCustom")
+      ? "userSettingsServerCustomValues"
     : scope === "partition"
       ? "userSettingsPartitionValues"
       : scope === "map"
         ? "userSettingsMapValues"
         : "userSettingsGlobalValues";
   try {
-    const result = await runDune(config, buildDuneArgs(operation, { map, partitionId }), { timeoutMs: 8000 });
+    const result = await runDune(config, buildDuneArgs(operation, { scope, map, partitionId }), { timeoutMs: 8000 });
     return json(res, 200, { stdout: result.stdout || "" });
   } catch (error) {
     return json(res, 500, { error: redact(error?.message || "Unexpected error.") });
@@ -3975,7 +4503,7 @@ async function userSettingsRawWriteRoute(req, res) {
 }
 
 function userSettingsTaskPayload(body) {
-  const scope = ["engine", "mapEngine", "partitionEngine", "global", "map", "partition", "profile"].includes(String(body.scope || "")) ? String(body.scope) : "map";
+  const scope = ["engine", "mapEngine", "partitionEngine", "global", "map", "partition", "serverCustomGlobal", "serverCustomMap", "serverCustomPartition", "profile"].includes(String(body.scope || "")) ? String(body.scope) : "map";
   const map = String(body.map || "Survival_1");
   const partitionId = String(body.partitionId || "").trim();
   const values = body.values && typeof body.values === "object" && !Array.isArray(body.values) ? body.values : {};
@@ -4026,6 +4554,7 @@ function readDeferredRestartPending(config) {
 }
 
 function deferredRestartLabel(payload) {
+  if (String(payload.scope).startsWith("serverCustom")) return payload.scope === "serverCustomGlobal" ? "Custom settings" : `Custom settings (${payload.map})`;
   if (payload.scope === "engine" || payload.scope === "mapEngine" || payload.scope === "partitionEngine") return "UserEngine settings";
   if (payload.scope === "global" || payload.scope === "profile") return "UserGame settings";
   return payload.map ? `UserGame settings (${payload.map})` : "UserGame settings";
@@ -4037,7 +4566,7 @@ function deferredRestartLabel(payload) {
 // to restart every game service to actually apply, not just the map that
 // happened to be selected in the editor.
 function restartPayload(scope, map, partitionId) {
-  if (scope === "profile" || scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global") {
+  if (scope === "profile" || scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global" || scope === "serverCustomGlobal") {
     return { restartMode: "stack", restartLabel: "all game services" };
   }
   const normalizedMap = String(map || "").toLowerCase();
@@ -4139,6 +4668,21 @@ async function playerTask(req, res, path, operation, phrase = "") {
     }
   }
   return task(req, res, "admin", operation, { ...body, playerId });
+}
+
+async function playerTeleportRoute(req, res, path) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "players.adminTeleport")) return;
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  try {
+    const payload = await duneDb.teleportPlayer(db, playerId, body);
+    buildDuneArgs("adminTeleport", payload);
+    audit(config, req, "task.adminTeleport", { ...payload, playerId: redact(payload.playerId) });
+    return json(res, 202, { task: tasks.create("admin", "adminTeleport", payload), message: payload.message });
+  } catch (error) {
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
 }
 
 async function playerIdentityForBan(playerId) {
@@ -4339,10 +4883,77 @@ async function resolvePlayerGrantTarget(playerId) {
   await duneDb.resolvePlayerTarget(db, actorId);
   return {
     actionId: String(player.action_player_id || player.funcom_id || player.fls_id || ""),
+    funcomId: String(player.funcom_id || player.action_player_id || player.fls_id || ""),
+    flsId: String(player.fls_id || player.action_player_id || ""),
     actorId,
     characterName: player.character_name || "",
     online: playerIsOnlineForLiveAction(player)
   };
+}
+
+async function deliverAddonPayload(payload, { addonId, requestId } = {}) {
+  const target = await resolvePlayerGrantTarget(payload.playerId);
+  if (payload.type === "item") {
+    if (!target.online) deferAddonDelivery("Player is offline; the item reward will be delivered after they connect.");
+    const result = await grantPlayerItem(payload.playerId, {
+      itemId: payload.itemId,
+      quantity: payload.amount,
+      quality: payload.quality
+    }, target);
+    if (!result.ok) throw new Error(result.warning || "The game did not verify the item reward.");
+    return { ok: true, type: payload.type, itemId: payload.itemId, amount: payload.amount, quality: payload.quality };
+  }
+  if (payload.type === "xp") {
+    if (!target.online) deferAddonDelivery("Player is offline; the XP reward will be delivered after they connect.");
+    if (!config.mockMode) await runDune(config, buildDuneArgs("adminAddXp", { playerId: target.actionId || payload.playerId, amount: payload.amount }));
+    return { ok: true, type: payload.type, amount: payload.amount };
+  }
+  if (payload.type === "currency") {
+    const result = config.mockMode
+      ? { amount: payload.amount, currencyId: payload.currencyId }
+      : await duneDb.addCurrency(db, target.actorId, { currencyId: payload.currencyId, amount: payload.amount });
+    return { ok: true, type: payload.type, amount: Number(result.amount ?? payload.amount), currencyId: Number(result.currencyId ?? payload.currencyId) };
+  }
+  if (payload.type === "intel") {
+    if (target.online) deferAddonDelivery("Player is online; the Intel reward will be delivered safely after they disconnect.");
+    const result = config.mockMode
+      ? { amount: payload.amount, newValue: payload.amount }
+      : await duneDb.addIntel(db, target.actorId, { amount: payload.amount });
+    return { ok: true, type: payload.type, amount: Number(result.amount ?? payload.amount), newValue: Number(result.newValue ?? payload.amount), capped: Boolean(result.capped) };
+  }
+  if (payload.type === "building-unlock") {
+    const resolved = resolveCatalogItem(config.repoRoot, { itemId: payload.itemId });
+    if (!isBuildingUnlockItem(resolved)) throw new Error("The requested reward is not a verified Building Sets unlock.");
+    if (target.actorId) {
+      const state = await duneDb.playerBuildingUnlockState(db, target.actorId);
+      if (!state.capabilities?.buildingUnlockOwnership) throw new Error("This game database cannot verify building-set ownership.");
+      const status = buildingUnlockStatus(resolved.itemId, { ...state, supported: true });
+      if (status === "Owned" || status === "Pending") return { ok: true, type: payload.type, itemId: resolved.itemId, status, alreadyGranted: true };
+    }
+    const result = await grantPlayerItem(payload.playerId, { itemId: resolved.itemId, quantity: 1 }, target);
+    if (!result.ok) throw new Error(result.warning || "The game did not verify the building unlock reward.");
+    return { ok: true, type: payload.type, itemId: resolved.itemId, status: target.online ? "Processing" : "Pending" };
+  }
+  if (payload.type === "message") {
+    if (!target.online) deferAddonDelivery("Player is offline; the message will be delivered after they connect.");
+    const persona = config.mockMode
+      ? { funcomId: "Server#4242", hexFlsId: "5E121CE000000001" }
+      : await ensureCarePackageServerPersona(db);
+    if (!target.flsId) throw new Error("The online player has no stable message queue identity.");
+    if (!config.mockMode) {
+      await publishCarePackageWhisper(config, {
+        recipientFuncomId: target.funcomId,
+        recipientCharacterName: target.characterName,
+        recipientQueue: `${target.flsId}_queue`,
+        senderFuncomId: persona.funcomId,
+        senderHexFlsId: persona.hexFlsId,
+        message: payload.message,
+        messageId: `addon-${addonId}-${requestId}`.slice(0, 120)
+      });
+    }
+    return { ok: true, type: payload.type, delivered: true };
+  }
+  throw new Error("Unsupported addon delivery type.");
 }
 
 function queryParams(url, names) {
@@ -4368,6 +4979,92 @@ async function playerLandsraadQuestRepairRoute(req, res, path) {
     await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "restore-safety" } });
     const result = await duneDb.repairLandsraadQuests(db, playerId);
     return { ...result, backupCreated: true };
+  }, { playerId });
+}
+
+function vehicleRepairRestartCommands(target) {
+  if (target.partitionMap === "Survival_1") {
+    const payload = { partitionId: target.partitionId };
+    return { stop: ["sietchesRestartStop", payload], start: ["sietchesRestartStart", payload] };
+  }
+  if (target.partitionMap === "Overmap") {
+    const payload = { service: "overmap" };
+    return { stop: ["restartServiceStop", payload], start: ["restartServiceStart", payload] };
+  }
+  const payload = { target: String(target.partitionId) };
+  return { stop: ["mapsDespawn", payload], start: ["mapsSpawn", payload] };
+}
+
+function vehicleRepairTargetLabel(target) {
+  return target.partitionMap || target.actorMap || `Partition ${target.partitionId}`;
+}
+
+async function runVehicleRepairRestartCommand(command) {
+  const [operation, payload] = command;
+  return runDune(config, buildDuneArgs(operation, payload), { timeoutMs: 30 * 60 * 1000 });
+}
+
+async function restartVehicleRepairTargets(targets) {
+  const failures = [];
+  for (const target of [...targets].reverse()) {
+    try {
+      await runVehicleRepairRestartCommand(vehicleRepairRestartCommands(target).start);
+    } catch (error) {
+      failures.push(`${vehicleRepairTargetLabel(target)}: ${redact(error?.message || "restart failed")}`);
+    }
+  }
+  return failures;
+}
+
+async function playerVehicleDecayRepairRoute(req, res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  return directDbMutation(req, res, "players.repair-vehicle-decay", "REPAIR VEHICLE DECAY", async (body) => {
+    const inspection = await duneDb.inspectVehicleDecayRepair(db, playerId, body);
+    if (!inspection.eligible) return duneDb.repairVehicleDecay(db, playerId, body);
+    if (!inspection.restartSupported) {
+      throw new Error("Vehicle repair cannot safely verify the affected map servers on this database version.");
+    }
+    const unresolved = inspection.targets.filter((target) => target.partitionId > 0 && !target.partitionMap);
+    if (unresolved.length) {
+      throw new Error(`Vehicle repair cannot safely resolve ${unresolved.map(vehicleRepairTargetLabel).join(", ")} to a managed map server.`);
+    }
+
+    // Vehicles with no partition are stored/unloaded and safe to update. A
+    // connected partition is stopped first so its in-memory vehicle state can
+    // no longer overwrite PostgreSQL; only partitions stopped here are started
+    // again, preserving maps that were already intentionally down.
+    const runningTargets = inspection.targets.filter((target) => target.partitionId > 0 && target.connected);
+    const stoppedTargets = [];
+    let operationError = null;
+    let result = null;
+    try {
+      for (const target of runningTargets) {
+        await runVehicleRepairRestartCommand(vehicleRepairRestartCommands(target).stop);
+        stoppedTargets.push(target);
+      }
+      result = await duneDb.repairVehicleDecay(db, playerId, body);
+    } catch (error) {
+      operationError = error;
+    }
+
+    const restartFailures = await restartVehicleRepairTargets(stoppedTargets);
+    if (operationError) {
+      if (restartFailures.length) {
+        throw new Error(`${operationError.message} Affected map restart also failed: ${restartFailures.join("; ")}`);
+      }
+      throw operationError;
+    }
+    return {
+      ...result,
+      mapServersRestarted: stoppedTargets.length,
+      restartedMaps: stoppedTargets.map(vehicleRepairTargetLabel),
+      restartFailures,
+      message: restartFailures.length
+        ? `Vehicle durability was repaired, but some affected maps did not restart: ${restartFailures.join("; ")}`
+        : stoppedTargets.length
+          ? `Vehicle durability was repaired and ${stoppedTargets.length} affected map server${stoppedTargets.length === 1 ? " was" : "s were"} restarted.`
+          : "Vehicle durability was repaired. All affected maps were already stopped."
+    };
   }, { playerId });
 }
 
@@ -4553,9 +5250,15 @@ const BASE_BACKED_UP_MESSAGE = "This base was picked up into a backup and is no 
 // Refilling fuel/water moments before deleting the base is pointless and
 // pollutes the audit log with writes about to be destroyed anyway. Best
 // effort: a base with nothing queued throws, which is fine to swallow here.
+// Every queue keyed on this base, so a delete does not leave writes aimed at
+// rows that are about to disappear. Child access belongs here too: without it
+// a queued permission change outlives its base and retries until it exhausts
+// its attempts, and the route's baseDeletePending guard can be sidestepped by
+// queueing the permission change first and the delete second.
 function cancelPendingRefillsForBase(baseId) {
   try { duneDb.cancelQueuedGeneratorRefill(config.repoRoot, baseId); } catch {}
   try { duneDb.cancelQueuedWaterRefill(config.repoRoot, baseId); } catch {}
+  try { duneDb.cancelQueuedBaseChildAccess(config.repoRoot, baseId); } catch {}
 }
 
 async function baseDeleteRoute(req, res, path) {
@@ -4594,6 +5297,10 @@ async function baseDeleteRoute(req, res, path) {
       // never called and nothing is touched.
       await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } });
       const result = await duneDb.deleteBaseCompletely(db, baseId);
+      // The queued path cancels these before queueing; the immediate path has
+      // to do it after the rows are gone, or a queue entry outlives its base
+      // and retries against ids that no longer resolve.
+      cancelPendingRefillsForBase(baseId);
       return { ...result, backupCreated: true };
     } finally {
       if (!queued) {
@@ -4738,6 +5445,78 @@ async function baseSetPermissionsRoute(req, res, path) {
   }, { baseId });
 }
 
+async function baseChildAccessRoute(res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(baseId) || baseId < 1 || baseId > Number.MAX_SAFE_INTEGER) return json(res, 400, { error: "Invalid base ID" });
+  try {
+    return json(res, 200, { supported: true, ...(await duneDb.listBaseChildAccess(db, baseId)) });
+  } catch (error) {
+    return json(res, 500, { supported: false, rows: [], error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+// Queued instead of written immediately when the base's map is currently
+// live. Unlike the refill queues this is not about an autosave race -- the
+// write would stick -- but a running map never picks up an access_level
+// change, so an immediate write leaves the console showing a level the game
+// does not enforce until the next restart. Deferring to the map-down window
+// keeps the two in agreement. See docs/console/base-child-permissions.md.
+async function baseSetChildAccessRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(baseId) || baseId < 1 || baseId > Number.MAX_SAFE_INTEGER) return json(res, 400, { error: "Invalid base ID" });
+  if (baseDeletePending(baseId)) return json(res, 409, { error: BASE_DELETE_PENDING_MESSAGE });
+  if (await baseBackedUp(baseId)) return json(res, 409, { error: BASE_BACKED_UP_MESSAGE });
+  return directDbMutation(req, res, "bases.set-child-access", "SET CHILD ACCESS", async (body) => {
+    const target = await duneDb.baseRefillTarget(db, baseId);
+    if (target.queueSupported && !target.writeSafeNow) {
+      const entry = duneDb.queueBaseChildAccess(config.repoRoot, {
+        baseId,
+        map: target.map,
+        partitionId: target.partitionId,
+        updates: body.updates
+      });
+      return { ok: true, queued: true, ...entry };
+    }
+    return duneDb.setBaseChildAccessLevels(db, baseId, body.updates);
+  }, { baseId });
+}
+
+async function baseCancelQueuedChildAccessRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(baseId) || baseId < 1 || baseId > Number.MAX_SAFE_INTEGER) return json(res, 400, { error: "Invalid base ID" });
+  return directDbMutation(req, res, "bases.cancel-queued-child-access", null,
+    () => duneDb.cancelQueuedBaseChildAccess(config.repoRoot, baseId), { baseId });
+}
+
+// Mirrors pendingWaterRefillsRoute.
+async function pendingChildAccessRoute(res) {
+  const pending = duneDb.listQueuedBaseChildAccess(config.repoRoot);
+  const targets = pending.length
+    ? await duneDb.partitionRestartTargets(db).catch(() => new Map())
+    : new Map();
+  const byTarget = new Map();
+  for (const entry of pending) {
+    const map = entry.map || "Unknown";
+    const key = `${map}|${entry.partitionId}`;
+    const target = targets.get(entry.partitionId);
+    const group = byTarget.get(key) || {
+      map,
+      partitionId: entry.partitionId,
+      partitionMap: target?.map || "",
+      dimensionIndex: target?.dimensionIndex ?? 0,
+      count: 0
+    };
+    group.count += 1;
+    byTarget.set(key, group);
+  }
+  return json(res, 200, {
+    supported: true,
+    total: pending.length,
+    pending,
+    byTarget: [...byTarget.values()].sort((a, b) => a.map.localeCompare(b.map) || a.partitionId - b.partitionId)
+  });
+}
+
 async function baseSystemCustodianRoute(req, res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
@@ -4746,17 +5525,25 @@ async function baseSystemCustodianRoute(req, res, path) {
   return directDbMutation(req, res, "bases.transfer-system-custodian", null, async () => {
     const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
     const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
-    const custodian = await duneDb.basePermissionSystemCustodian(db);
+    const custodian = await duneDb.permissionSystemCustodian(db);
     if (custodian.canCreate) await ensureCarePackageServerPersona(db);
-    return duneDb.transferBaseToSystemCustodian(db, baseId, maxPermissions);
+    const transferred = await duneDb.transferBaseToSystemCustodian(db, baseId, maxPermissions);
+    // A queued permission change carries no ownership snapshot, so one queued
+    // against the previous owner would otherwise apply to the base after it
+    // changed hands. Discard it rather than replay an authorization decision
+    // that was made about a different owner.
+    try { duneDb.cancelQueuedBaseChildAccess(config.repoRoot, baseId); } catch {}
+    return transferred;
   }, { baseId });
 }
 
 // Vehicles are their own permission actor (dune.vehicles.id = dune.actors.id),
-// so there is no base-delete-pending/backed-up equivalent to check here -- a
-// vehicle has no "queued delete" or "picked up" state these routes need to
-// guard against. The id guard matches intParam's contract (see baseWaterRoute/
-// baseInventoryRoute), so a genuine failure in the catch is honestly ours.
+// so there is no base-backed-up equivalent to check here -- a vehicle has no
+// "picked up" state these routes need to guard against. (It does now have a
+// delete-pending state -- see vehicleDeletePending -- checked by the mutation
+// routes below, not this read-only one.) The id guard matches intParam's
+// contract (see baseWaterRoute/baseInventoryRoute), so a genuine failure in
+// the catch is honestly ours.
 async function vehiclePermissionsRoute(res, path) {
   const vehicleId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) {
@@ -4767,6 +5554,92 @@ async function vehiclePermissionsRoute(res, path) {
   } catch (error) {
     return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
   }
+}
+
+// One vehicle's cargo hold, read-only -- so no directDbMutation wrapper and
+// no confirmation phrase, same as baseContainerSlotsRoute. Same id guard as
+// vehiclePermissionsRoute above, for the same reason. A schema without the
+// inventory tables comes back as a 200 carrying supported:false rather than
+// an error status, so the overlay's Retry always means something real.
+// repoRoot is passed through only to resolve each item's catalog icon.
+async function vehicleStorageRoute(res, path) {
+  const vehicleId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid vehicle ID" });
+  }
+  try {
+    // deleteSafety rides along the same way baseContainerSlotsRoute carries
+    // its own: it is what lets the overlay disable and explain its delete
+    // controls before the operator clicks. The authoritative refusal still
+    // happens atomically inside the delete transaction.
+    const storage = await duneDb.vehicleStorage(db, vehicleId, { repoRoot: config.repoRoot });
+    return json(res, 200, {
+      ...storage,
+      deleteSafety: await duneDb.vehicleStorageDeleteSafety(db, vehicleId)
+    });
+  } catch (error) {
+    return json(res, 500, { supported: false, error: redact(error?.message || "Unexpected error."), reason: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Vehicle cargo deletion.
+//
+// Unlike the base container delete family there is no route-level safety
+// pre-check here. The base version's baseContainerDeleteSafety(baseId) call
+// is documented dead code on those routes -- the group always defaults to
+// "storage", so the branch can never fire, and the real check happens
+// atomically downstream. This mirrors the working half of that design without
+// the wart: duneDb.resolveVehicleCargoHold takes the lock and refuses a
+// blocked vehicle inside the transaction, and vehicleStorageDeleteSafety is
+// carried on the READ so the UI can gate ahead of the click.
+//
+// No safety backup either, unlike vehicleDeleteRoute: these are item rows, not
+// a whole vehicle.
+// ---------------------------------------------------------------------------
+
+// Matches bigintParam's contract rather than Number()'ing: an item id past
+// Number.MAX_SAFE_INTEGER silently rounds, and a destructive request that
+// retargets a different row is the worst failure mode available here.
+function validVehicleStorageItemId(itemId) {
+  return /^[1-9][0-9]*$/.test(itemId) && BigInt(itemId) <= 9223372036854775807n;
+}
+
+function parseVehicleStoragePath(path) {
+  const vehicleId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) return null;
+  return vehicleId;
+}
+
+async function vehicleStorageItemDeleteRoute(req, res, path) {
+  const vehicleId = parseVehicleStoragePath(path);
+  const itemId = decodeURIComponent(path.split("/")[6]);
+  if (vehicleId === null || !validVehicleStorageItemId(itemId)) {
+    return json(res, 400, { error: "Invalid vehicle or item ID" });
+  }
+  if (vehicleDeletePending(vehicleId)) return json(res, 409, { error: VEHICLE_DELETE_PENDING_MESSAGE });
+  return directDbMutation(req, res, "vehicles.storage-item-delete", "DELETE ITEM", async (body) => {
+    const count = body?.count === undefined || body?.count === null ? null : Number(body.count);
+    return duneDb.deleteVehicleStorageItem(db, vehicleId, itemId, { count });
+  }, { vehicleId, itemId });
+}
+
+async function vehicleStorageItemsDeleteRoute(req, res, path) {
+  const vehicleId = parseVehicleStoragePath(path);
+  if (vehicleId === null) return json(res, 400, { error: "Invalid vehicle ID" });
+  if (vehicleDeletePending(vehicleId)) return json(res, 409, { error: VEHICLE_DELETE_PENDING_MESSAGE });
+  return directDbMutation(req, res, "vehicles.storage-items-delete", "DELETE ITEMS", async (body) => {
+    return duneDb.deleteMultipleVehicleStorageItems(db, vehicleId, body?.itemIds);
+  }, { vehicleId });
+}
+
+async function vehicleStorageAllItemsDeleteRoute(req, res, path) {
+  const vehicleId = parseVehicleStoragePath(path);
+  if (vehicleId === null) return json(res, 400, { error: "Invalid vehicle ID" });
+  if (vehicleDeletePending(vehicleId)) return json(res, 409, { error: VEHICLE_DELETE_PENDING_MESSAGE });
+  return directDbMutation(req, res, "vehicles.storage-all-items-delete", "DELETE ALL ITEMS", async () => {
+    return duneDb.deleteAllVehicleStorageItems(db, vehicleId);
+  }, { vehicleId });
 }
 
 async function vehiclePermissionCandidatesRoute(res, url) {
@@ -4790,11 +5663,116 @@ async function vehicleSetPermissionsRoute(req, res, path) {
   if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) {
     return json(res, 400, { error: "Invalid vehicle ID" });
   }
+  if (vehicleDeletePending(vehicleId)) return json(res, 409, { error: VEHICLE_DELETE_PENDING_MESSAGE });
   return directDbMutation(req, res, "vehicles.set-permissions", null, async (body) => {
     const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
     const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
     return duneDb.setVehiclePermissions(db, vehicleId, body.entries, maxPermissions);
   }, { vehicleId });
+}
+
+// No backed-up guard (a vehicle has no such state), but it does check
+// delete-pending now -- transferring ownership on a vehicle about to be
+// destroyed is exactly the kind of write the pending-delete freeze exists to
+// avoid racing.
+async function vehicleSystemCustodianRoute(req, res, path) {
+  const vehicleId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid vehicle ID" });
+  }
+  if (vehicleDeletePending(vehicleId)) return json(res, 409, { error: VEHICLE_DELETE_PENDING_MESSAGE });
+  return directDbMutation(req, res, "vehicles.transfer-system-custodian", null, async () => {
+    const settings = await runDune(config, buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), { timeoutMs: 8000 });
+    const maxPermissions = parseEffectivePermissionLimit(settings.stdout);
+    const custodian = await duneDb.permissionSystemCustodian(db);
+    if (custodian.canCreate) await ensureCarePackageServerPersona(db);
+    return duneDb.transferVehicleToSystemCustodian(db, vehicleId, maxPermissions);
+  }, { vehicleId });
+}
+
+// Mirrors baseDeletePending: a vehicle with a delete queued is frozen from
+// every other write, for the same reason -- the hazard the queue exists to
+// avoid (a live server overwriting the write before the flush) applies just
+// as much to a permission edit or refuel racing that same delete.
+function vehicleDeletePending(vehicleId) {
+  return duneDb.listQueuedVehicleDeletes(config.repoRoot).some((entry) => entry.vehicleId === vehicleId);
+}
+
+const VEHICLE_DELETE_PENDING_MESSAGE = "This vehicle has a pending delete queued and cannot be modified. Cancel the delete first.";
+
+// Mirrors baseDeleteRoute. No baseBackedUp equivalent to check -- a vehicle
+// has no "picked up" state.
+async function vehicleDeleteRoute(req, res, path) {
+  const vehicleId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid vehicle ID" });
+  }
+  return directDbMutation(req, res, "vehicles.delete", "DELETE VEHICLE", async () => {
+    // Reserve the lock synchronously, before the first await -- same
+    // race-closing reasoning as baseDeleteRoute's placeholder queue entry.
+    duneDb.queueVehicleDelete(config.repoRoot, { vehicleId, map: "", partitionId: 0 });
+    let queued = false;
+    try {
+      const target = await duneDb.vehicleWriteTarget(db, vehicleId);
+      if (target.queueSupported && !target.writeSafeNow) {
+        const entry = duneDb.queueVehicleDelete(config.repoRoot, {
+          vehicleId,
+          map: target.map,
+          partitionId: target.partitionId
+        });
+        queued = true;
+        return { ok: true, queued: true, ...entry };
+      }
+      // Mandatory safety backup before any delete SQL runs, exactly like
+      // baseDeleteRoute. If this throws, deleteVehicleCompletely is never
+      // called and nothing is touched.
+      await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "vehicle-delete" } });
+      const result = await duneDb.deleteVehicleCompletely(db, vehicleId);
+      return { ...result, backupCreated: true };
+    } finally {
+      if (!queued) {
+        try { duneDb.cancelQueuedVehicleDelete(config.repoRoot, vehicleId); } catch {}
+      }
+    }
+  }, { vehicleId });
+}
+
+async function vehicleCancelQueuedDeleteRoute(req, res, path) {
+  const vehicleId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(vehicleId) || vehicleId < 1 || vehicleId > Number.MAX_SAFE_INTEGER) {
+    return json(res, 400, { error: "Invalid vehicle ID" });
+  }
+  return directDbMutation(req, res, "vehicles.cancel-queued-delete", null,
+    () => duneDb.cancelQueuedVehicleDelete(config.repoRoot, vehicleId), { vehicleId });
+}
+
+// Mirrors pendingBaseDeletesRoute.
+async function pendingVehicleDeletesRoute(res) {
+  const pending = duneDb.listQueuedVehicleDeletes(config.repoRoot);
+  const targets = pending.length
+    ? await duneDb.partitionRestartTargets(db).catch(() => new Map())
+    : new Map();
+  const byTarget = new Map();
+  for (const entry of pending) {
+    const map = entry.map || "Unknown";
+    const key = `${map}|${entry.partitionId}`;
+    const target = targets.get(entry.partitionId);
+    const group = byTarget.get(key) || {
+      map,
+      partitionId: entry.partitionId,
+      partitionMap: target?.map || "",
+      dimensionIndex: target?.dimensionIndex ?? 0,
+      count: 0
+    };
+    group.count += 1;
+    byTarget.set(key, group);
+  }
+  return json(res, 200, {
+    supported: true,
+    total: pending.length,
+    pending,
+    byTarget: [...byTarget.values()].sort((a, b) => a.map.localeCompare(b.map) || a.partitionId - b.partitionId)
+  });
 }
 
 async function baseCancelQueuedRefillRoute(req, res, path) {
@@ -4850,6 +5828,36 @@ async function pendingGeneratorRefillsRoute(res) {
 async function basesAutoRefillStateRoute(res) {
   const supported = await duneDb.supportsGeneratorRefillQueue(db).catch(() => false);
   return json(res, 200, { supported, ...autoRefillPublicState(config.repoRoot) });
+}
+
+// Tuning shared by both auto-refill scanners. Answers with the database down,
+// like basesAutoRefillStateRoute above: this is a file, not a query.
+async function basesAutoRefillSettingsRoute(res) {
+  return json(res, 200, autoRefillSettingsView(config.repoRoot));
+}
+
+// Console-owned configuration, so it follows the settings routes (plain handler
+// plus an explicit audit) rather than directDbMutation's confirmation machinery.
+// Unlike the per-base toggles below it IS rate limited, matching
+// exchangeConfigSaveRoute: this retunes every enrolled base at once.
+async function basesAutoRefillSettingsSaveRoute(req, res) {
+  // Before readJson, so a client spamming this never gets its body parsed.
+  if (!applyMutationRateLimit(req, res, "bases.auto-refill-settings")) return;
+  const body = await readJson(req);
+  try {
+    const saved = saveAutoRefillSettings(config.repoRoot, body);
+    // A shortened interval must pull the armed scan in, or the change looks
+    // like it did nothing until the old interval elapses. Both no-op otherwise.
+    const nextRunAt = clampAutoRefillNextRun(config.repoRoot);
+    const waterNextRunAt = clampAutoRefillWaterNextRun(config.repoRoot);
+    audit(config, req, "bases.auto-refill-settings", { ...saved, nextRunAt, waterNextRunAt });
+    return json(res, 200, { ok: true, ...autoRefillSettingsView(config.repoRoot), nextRunAt, waterNextRunAt });
+  } catch (error) {
+    return json(res, error?.statusCode === 400 ? 400 : 500, {
+      ok: false,
+      error: redact(error?.message || "Unexpected error.")
+    });
+  }
 }
 
 // Console-owned configuration rather than a database mutation, so this follows
@@ -5474,6 +6482,58 @@ async function blueprintImportRoute(req, res) {
   }
 }
 
+async function communityBlueprintListRoute(res, url) {
+  try {
+    const result = await listCommunityBlueprints({
+      q: url.searchParams.get("q") || "",
+      set: url.searchParams.get("set") || "",
+      sort: url.searchParams.get("sort") || "newest",
+      limit: url.searchParams.get("limit") || 20,
+      offset: url.searchParams.get("offset") || 0
+    });
+    return json(res, 200, result);
+  } catch (error) {
+    return json(res, Number(error?.statusCode) || 502, { error: redact(error?.message || "The Blueprint catalog could not be reached.") });
+  }
+}
+
+async function communityBlueprintPreviewRoute(res, path) {
+  const id = decodeURIComponent(path.split("/")[4] || "");
+  try {
+    const preview = await getCommunityBlueprintPreview(id);
+    res.writeHead(200, withSecurityHeaders({
+      "cache-control": "private, max-age=300",
+      "content-length": String(preview.bytes.length),
+      "content-type": preview.contentType,
+      "x-content-type-options": "nosniff"
+    }));
+    return res.end(preview.bytes);
+  } catch (error) {
+    return json(res, Number(error?.statusCode) || 502, { error: redact(error?.message || "The Blueprint preview could not be loaded.") });
+  }
+}
+
+async function communityBlueprintInstallRoute(req, res, path) {
+  const id = decodeURIComponent(path.split("/")[4] || "");
+  try {
+    const body = await readJson(req);
+    const playerPawnId = Number(body.playerId);
+    if (!Number.isSafeInteger(playerPawnId) || playerPawnId < 1) return json(res, 400, { error: "Invalid player ID." });
+    const source = await getCommunityBlueprint(id);
+    const result = await importBlueprint(db, playerPawnId, source.blueprint, `${source.summary?.title || "Community Blueprint"}.json`);
+    audit(config, req, "blueprints.community-install", {
+      communityBlueprintId: id,
+      communityBlueprintVersion: source.summary?.version || null,
+      playerPawnId,
+      result
+    });
+    return json(res, 200, { ...result, source: source.summary });
+  } catch (error) {
+    if (error?.unsupported) return json(res, 501, { supported: false, error: redact(error?.message || "Blueprint import is unavailable.") });
+    return json(res, Number(error?.statusCode) || 500, { error: redact(error?.message || "The community Blueprint could not be installed.") });
+  }
+}
+
 function sanitizeFilename(s, fallback = "export") {
   return String(s).replace(/[\x00-\x1f\x7f<>:"/\\|?*]/g, "_").trim() || fallback;
 }
@@ -5630,6 +6690,85 @@ async function buildingUnlockGrantRoute(req, res, path) {
   }
 }
 
+async function customizationGrantsRoute(res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  try {
+    const state = await duneDb.playerCustomizationGrantState(db, playerId);
+    return json(res, 200, {
+      capabilities: state.capabilities,
+      groups: customizationGrantGroups(config.repoRoot),
+      rows: listCustomizationGrantItems(config.repoRoot).map((item) => ({
+        ...item,
+        status: customizationGrantStatus(item.itemId, state)
+      }))
+    });
+  } catch (error) {
+    return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+async function customizationGrantRoute(req, res, path) {
+  const playerId = decodeURIComponent(path.split("/")[3]);
+  const body = await readJson(req);
+  if (body.confirmation !== "GRANT CUSTOMIZATIONS") return json(res, 400, { error: "Confirmation phrase mismatch" });
+  if (!applyMutationRateLimit(req, res, "players.customizations.grant")) return;
+
+  try {
+    const catalog = listCustomizationGrantItems(config.repoRoot);
+    const groups = new Set(customizationGrantGroups(config.repoRoot).map((group) => group.id));
+    let selected;
+    if (body.itemId) {
+      const resolved = resolveCatalogItem(config.repoRoot, { itemId: body.itemId });
+      if (!isCustomizationGrantItem(resolved) || !catalog.some((item) => item.itemId === resolved.itemId)) {
+        throw new Error("Select a verified entry from the Customizations catalog.");
+      }
+      selected = catalog.filter((item) => item.itemId === resolved.itemId);
+    } else if (body.groupId === "all") {
+      selected = catalog;
+    } else if (groups.has(String(body.groupId || ""))) {
+      selected = catalog.filter((item) => item.groupId === body.groupId);
+    } else {
+      throw new Error("Select a verified customization group.");
+    }
+    if (selected.length === 0) throw new Error("The selected customization group is empty.");
+
+    const target = await resolvePlayerGrantTarget(playerId);
+    const state = target.actorId
+      ? await duneDb.playerCustomizationGrantState(db, target.actorId)
+      : { capabilities: { customizationPending: false }, pending: [] };
+    const results = [];
+    for (const item of selected) {
+      if (customizationGrantStatus(item.itemId, state) === "Pending") {
+        results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: true, status: "Pending", skipped: true });
+        continue;
+      }
+      try {
+        const result = await grantPlayerItem(playerId, { itemId: item.itemId, quantity: 1 }, target);
+        const outcome = customizationGrantOutcome(result);
+        results.push({
+          itemId: item.itemId,
+          name: item.name,
+          groupId: item.groupId,
+          ...outcome,
+          status: outcome.ok ? (target.online ? "Processing" : "Pending") : "Available",
+          warning: outcome.deliveryRequested
+            ? "Dune accepted the delivery request, but cosmetic ownership cannot be verified because customization tokens may be consumed immediately."
+            : result.warning,
+          result
+        });
+      } catch (error) {
+        results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: false, status: "Available", error: redact(error?.message || "Unexpected error.") });
+      }
+    }
+    const { ok, granted, requested, skipped, failed } = summarizeCustomizationGrantResults(results);
+    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, granted, requested, skipped, failed, ok, results });
+    return json(res, ok ? 200 : 207, { ok, granted, requested, skipped, failed, results });
+  } catch (error) {
+    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, ok: false, error: redact(error?.message || "Unexpected error.") });
+    return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
+  }
+}
+
 async function grantPlayerItem(playerId, item, target) {
   const resolved = item.itemId ? resolveCatalogItem(config.repoRoot, { itemId: item.itemId }) : resolveCatalogItem(config.repoRoot, item);
   const operation = resolved.itemId ? "adminGiveItemId" : "adminGiveItem";
@@ -5687,6 +6826,7 @@ async function grantPlayerItem(playerId, item, target) {
   const warning = liveItemGrantWarning(result);
   return {
     ok: liveItemGrantOk(result),
+    published: liveItemGrantPublished(result),
     operation,
     item: payload,
     stdout: result.stdout,
@@ -5748,27 +6888,83 @@ async function mapChatRoute(req, res) {
   const mapName = body.mapName || body.region || "HaggaBasin";
   const dimension = body.dimension ?? 0;
   try {
-    const recipients = config.mockMode ? [{ queue: "mock-player_queue" }] : await mapChatRecipients(mapName, dimension);
-    if (!recipients.length) throw new Error("No online players are currently subscribed to that map.");
-    const sender = config.mockMode ? { funcomId: "Server#4242", hexFlsId: "5E121CE000000001" } : await ensureCarePackageServerPersona(db);
-    const result = config.mockMode
-      ? { code: 0, stdout: "mock map chat\n", stderr: "", args: [] }
-      : await publishMapChat(config, {
-          mapName,
-          dimension,
-          message,
-          senderFuncomId: sender.funcomId,
-          senderHexFlsId: sender.hexFlsId
-        });
+    const result = await deliverMapChatMessage(mapName, dimension, message);
     const target = `${mapName}.${dimension}`;
-    audit(config, req, "admin.map-chat", { supported: true, target, recipients: recipients.length });
+    audit(config, req, "admin.map-chat", { supported: true, target, recipients: result.recipients });
     recordAdminHistory(config, { command: "web-map-chat", target, friendly: "Map Chat", path: "rmq:chat.map", result: "published", message });
-    return json(res, 200, { supported: true, ok: true, stdout: result.stdout, stderr: result.stderr || "", note: `Map chat message was sent to ${recipients.length} online player${recipients.length === 1 ? "" : "s"}.`, recipients: recipients.length });
+    return json(res, 200, { supported: true, ok: true, stdout: result.stdout, stderr: result.stderr || "", note: `Map chat message was sent to ${result.recipients} online player${result.recipients === 1 ? "" : "s"}.`, recipients: result.recipients });
   } catch (error) {
     const reason = redact(String(error?.message || "Unexpected error.").replaceAll("Care Package message whisper", "Map chat"));
     audit(config, req, "admin.map-chat", { supported: false, error: reason });
     recordAdminHistory(config, { command: "web-map-chat", target: `${mapName}.${dimension}`, friendly: "Map Chat", path: "rmq:chat.map", result: "blocked", message });
     return json(res, 400, { supported: false, error: reason, reason });
+  }
+}
+
+async function deliverMapChatMessage(mapName, dimension, message) {
+  const recipients = config.mockMode ? [{ queue: "mock-player_queue" }] : await mapChatRecipients(mapName, dimension);
+  return deliverMapChatToRecipients(config, { mapName, dimension, message, recipients }, { db, mockMode: config.mockMode });
+}
+
+async function deliverScheduledMapMessage(schedule) {
+  if (schedule.mapName !== "AllMaps") return deliverMapChatMessage(schedule.mapName, schedule.dimension, schedule.message);
+  const services = await duneDb.liveMapServices(db);
+  const targets = [];
+  const seen = new Set();
+  for (const row of services.rows || []) {
+    if (!Boolean(row.alive || row.ready) || Number(row.connected_players || 0) < 1) continue;
+    const mapName = mapChatRegionForServerMap(row.map);
+    const dimension = Number(row.dimension_index || 0);
+    const key = `${mapName}|${dimension}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push({ mapName, dimension });
+  }
+  if (!targets.length) throw new Error("No online players are currently subscribed to any map.");
+  let recipients = 0;
+  const output = [];
+  for (const target of targets) {
+    try {
+      const result = await deliverMapChatMessage(target.mapName, target.dimension, schedule.message);
+      recipients += result.recipients;
+      if (result.stdout) output.push(result.stdout);
+    } catch (error) {
+      if (!/No online players/i.test(String(error?.message || ""))) throw error;
+    }
+  }
+  if (!recipients) throw new Error("No online players are currently subscribed to any map.");
+  return { code: 0, stdout: output.join("\n"), stderr: "", recipients };
+}
+
+function mapChatRegionForServerMap(map) {
+  const value = String(map || "").trim();
+  const aliases = { Survival_1: "HaggaBasin", Overmap: "Overland", DeepDesert_1: "DeepDesert", SH_Arrakeen: "Arrakeen", SH_HarkoVillage: "HarkoVillage" };
+  return aliases[value] || value.replace(/^SH_/, "").replace(/^CB_Story_/, "").replace(/^CB_Dungeon_/, "").replace(/^DLC_Story_/, "");
+}
+
+async function scheduledMapMessagesRoute(req, res) {
+  if (req.method === "GET") return json(res, 200, scheduledMapMessages.list());
+  const body = await readJson(req);
+  const action = String(body.action || "save").trim().toLowerCase();
+  try {
+    if (action === "save") {
+      const schedule = scheduledMapMessages.save(body.schedule || body);
+      audit(config, req, "admin.map-chat-schedule-save", { id: schedule.id, enabled: schedule.enabled, mapName: schedule.mapName, dimension: schedule.dimension, frequency: schedule.frequency, time: schedule.time, timezone: schedule.timezone });
+      return json(res, 200, { ok: true, schedule, ...scheduledMapMessages.list() });
+    }
+    if (action === "delete") {
+      const result = scheduledMapMessages.remove(body.id);
+      audit(config, req, "admin.map-chat-schedule-delete", result);
+      return json(res, 200, { ok: true, ...result, ...scheduledMapMessages.list() });
+    }
+    if (action === "run") {
+      const result = await scheduledMapMessages.runNow(body.id);
+      return json(res, 200, { ok: true, result, ...scheduledMapMessages.list() });
+    }
+    throw new Error("Scheduled message action must be save, delete, or run.");
+  } catch (error) {
+    const reason = redact(String(error?.message || "Unexpected error."));
+    return json(res, 400, { error: reason, reason });
   }
 }
 
@@ -5958,7 +7154,7 @@ function publicDirectorySettings() {
 }
 
 function readSetupConfigValues() {
-  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID",
+  const allowed = [...SETUP_CONFIG_KEYS,
     "DISCORD_HOME_GUILD_ID", "DISCORD_OAUTH_CLIENT_ID", "DISCORD_OAUTH_REDIRECT_URI", "DISCORD_OAUTH_ALLOW_OWNER_BOOTSTRAP", "DISCORD_OAUTH_OWNER_ALLOWLIST"];
   const values = {};
   for (const file of [resolve(config.repoRoot, ".env"), resolve(config.generatedDir, "battlegroup.env")]) {
@@ -5973,6 +7169,33 @@ function readSetupConfigValues() {
     values._discordOAuthSecretSaved = "1";
   }
   return values;
+}
+
+// One-time, idempotent migration: for each of coriolis_cycle_start_hour and
+// _day, if this deployment's SERVER_REGION has a known regional value and the
+// field has never been explicitly saved, write it once. Deliberately
+// server-side and global-scope-only, not driven by the Maps UI -- an earlier
+// version fired this from a frontend effect keyed off "field still at its
+// schema default", which could not tell "never saved" from "explicitly saved
+// to the default" (looped forever on a Europe deployment, whose region hour
+// equals the default -- coriolis_cycle_start_day's default equals the
+// region value for 3 of 5 regions, so this class of bug is not a one-region
+// edge case here) and pinned whichever scope an admin happened to have open
+// (breaking Global -> Map -> Partition inheritance). Idempotency here is by
+// ini-key presence per field (checked in Python), never by value, so it is
+// safe to call on every startup. Both fields are migrated in one Python
+// invocation/profile write -- see migrate_coriolis_region_fields -- so a
+// startup that needs to migrate both can't leave one written and the other
+// not. Mirrors the fire-and-forget migration pattern already used for
+// initializeDiscordAdapterSchema/ensureExchangeHistory below.
+async function migrateCoriolisRegionFields() {
+  const region = readSetupConfigValues().SERVER_REGION || "";
+  if (!region) return;
+  const result = await runDune(config, buildDuneArgs("userSettingsMigrateCoriolisRegionFields", { region }), { timeoutMs: 8000 });
+  const [status, detail] = String(result.stdout || "").trim().split(":");
+  if (status !== "migrated") return;
+  audit(config, null, "maps.user-settings.auto-migrate", { scope: "global", fields: detail, region });
+  markDeferredRestartPending(config, "Coriolis cycle start settings (region default)");
 }
 
 function readEnvFileValue(key) {
@@ -6069,6 +7292,7 @@ async function carePackageAutoTick() {
   if (Date.now() < carePackageAutoNextAllowedRun) return;
   let kit;
   try {
+    await maintainCarePackageHistory(config);
     kit = carePackageConfig(config);
   } catch (error) {
     console.error(`Care Package auto-grant config read failed: ${redact(error?.message || "Unexpected error.")}`);
@@ -6173,9 +7397,12 @@ async function playerAnnouncementsAutoTick() {
 
 async function writeConfig(req, res) {
   const body = await readJson(req);
-  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID"];
+  const allowed = SETUP_CONFIG_KEYS;
+  if (body.HOST_DATACENTER_ID !== undefined && !validHostDatacenterId(body.HOST_DATACENTER_ID)) {
+    return json(res, 400, { error: "Datacenter ID must be a valid hostname or short ID using only letters, numbers, dots, and hyphens." });
+  }
   for (const key of allowed) {
-    if (body[key] !== undefined) updateEnvFileValue(key, String(body[key]));
+    if (body[key] !== undefined) updateEnvFileValue(key, key === "HOST_DATACENTER_ID" ? String(body[key]).trim() : String(body[key]));
   }
   audit(config, req, "setup.write-config", { keys: Object.keys(body).filter((key) => allowed.includes(key)) });
   return json(res, 200, { ok: true });
@@ -6356,6 +7583,14 @@ function readDiscordAdapterTokenForHostedBot(config) {
 
 function mockCommand(operation) {
   return { operation, stdout: `Mock ${operation} output\n`, stderr: "", exitCode: 0 };
+}
+
+// Best-effort client address, IPv4-mapped IPv6 unwrapped. No X-Forwarded-For
+// handling, matching every other limiter here -- behind a reverse proxy this
+// records the proxy, not the caller. Per-key limits are unaffected: they key
+// on the key id, not on this.
+function remoteIpOf(req) {
+  return (req?.socket?.remoteAddress || "").replace(/^::ffff:/, "") || null;
 }
 
 function loginRateLimitKey(req) {

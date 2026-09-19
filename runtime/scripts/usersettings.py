@@ -65,6 +65,7 @@ def apply_host_ownership(path: Path) -> None:
         os.chown(path, *owner)
 
 BUILDING_SETTINGS_SECTION = "/Script/DuneSandbox.BuildingSettings"
+SERVER_CUSTOM_SETTINGS_SECTION = "/Script/DuneSandbox.UserServerCustomSettings"
 CORIOLIS_SUBSYSTEM_SECTION = "/Script/DuneSandbox.CoriolisSubsystem"
 LANDSRAAD_SETTINGS_SECTION = "/Script/DuneSandbox.LandsraadSettings"
 LANDSRAAD_DATA_KEY = "Data"
@@ -144,12 +145,12 @@ FIELD_TYPE_OVERRIDES = {
 }
 
 # Bounds for the Coriolis cycle fields shipped in Funcom's UserGame.ini
-# template. Day is a UTC weekday (1=Sunday through 7=Saturday), not a calendar
-# day. The server validates these values for Web UI, API, and CLI callers.
+# template. These five fields form a UTC calendar date and time. The server
+# validates them for Web UI, API, and CLI callers.
 CORIOLIS_CYCLE_START_BOUNDS = {
     "coriolis_cycle_start_year": (1, 9999),
     "coriolis_cycle_start_month": (1, 12),
-    "coriolis_cycle_start_day": (1, 7),
+    "coriolis_cycle_start_day": (1, 31),
     "coriolis_cycle_start_hour": (0, 23),
     "coriolis_cycle_start_minute": (0, 59),
 }
@@ -174,6 +175,72 @@ RETIRED_USERGAME_FIELDS = {
     # reference inside m_MiningSettings, not a scalar DuneGameMode multiplier.
     "cutteray_hem_multiplier_per_node_tier_table": ("/Script/DuneSandbox.DuneGameMode", "CutterayHemMultiplierPerNodeTierTable", "1.0"),
     "global_damage_to_npcs_multiplier": ("/Script/DuneSandbox.DuneGameMode", "m_GlobalDamageToNpcsMultiplier", "1.0"),
+    "building_restriction_limits_enabled": (BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "True"),
+    # Patch 1.5 moved this server setting to ServerCustomSettings.ini. Reserve
+    # the former key so saved profiles from older releases cannot leak it back
+    # into the server's UserGame.ini after migration.
+}
+
+# Native Patch 1.5 server controls. These live in a dedicated profile scope so
+# they never appear in the generated server UserGame.ini, while retaining the
+# same Global -> Map -> Partition inheritance used by the existing editor.
+SERVER_CUSTOM_FIELDS = {
+    "pvp_mode": (SERVER_CUSTOM_SETTINGS_SECTION, "PVPMode", "Limited"),
+    "gathering_amount": (SERVER_CUSTOM_SETTINGS_SECTION, "GatheringAmount", "1.000000"),
+    "crafting_cost": (SERVER_CUSTOM_SETTINGS_SECTION, "CraftingCost", "1.000000"),
+    "water_extraction_rate": (SERVER_CUSTOM_SETTINGS_SECTION, "WaterExtractionRate", "1.000000"),
+    "crafting_time_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "CraftingTimeMultiplier", "1.000000"),
+    "building_cost_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "BuildingCostMultiplier", "1.000000"),
+    "resource_respawn_speed": (SERVER_CUSTOM_SETTINGS_SECTION, "ResourceRespawnSpeed", "1.000000"),
+    "loot_respawn_speed": (SERVER_CUSTOM_SETTINGS_SECTION, "LootRespawnSpeed", "1.000000"),
+    "fuel_burn_time_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "FuelBurnTimeMultiplier", "1.000000"),
+    "inventory_volume_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "InventoryVolumeMultiplier", "1.000000"),
+    "player_damage_to_player": (SERVER_CUSTOM_SETTINGS_SECTION, "PlayerDamageToPlayer", "1.000000"),
+    "player_damage_to_npc": (SERVER_CUSTOM_SETTINGS_SECTION, "PlayerDamageToNPC", "1.000000"),
+    "player_damage_to_vehicle": (SERVER_CUSTOM_SETTINGS_SECTION, "PlayerDamageToVehicle", "1.000000"),
+    "player_stamina_drain": (SERVER_CUSTOM_SETTINGS_SECTION, "PlayerStaminaDrain", "1.000000"),
+    "intel_points_gain_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "IntelPointsGainMultiplier", "1.000000"),
+    "npc_health": (SERVER_CUSTOM_SETTINGS_SECTION, "NPCHealth", "1.000000"),
+    "npc_damage_to_player": (SERVER_CUSTOM_SETTINGS_SECTION, "NPCDamageToPlayer", "1.000000"),
+    "npc_damage_to_npc": (SERVER_CUSTOM_SETTINGS_SECTION, "NPCDamageToNPC", "1.000000"),
+    "npc_respawn_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "NPCRespawnMultiplier", "1.000000"),
+    "pvp_damage_structures": (SERVER_CUSTOM_SETTINGS_SECTION, "PVPDamageStructures", "1.000000"),
+    "global_xp_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "GlobalXpMultiplier", "1.000000"),
+    "combat_xp": (SERVER_CUSTOM_SETTINGS_SECTION, "CombatXp", "1.000000"),
+    "gathering_xp": (SERVER_CUSTOM_SETTINGS_SECTION, "GatheringXp", "1.000000"),
+    "mission_xp": (SERVER_CUSTOM_SETTINGS_SECTION, "MissionXp", "1.000000"),
+    "item_durability_drain_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "ItemDurabilityDrainMultiplier", "1.000000"),
+    "enable_item_max_durability_loss": (SERVER_CUSTOM_SETTINGS_SECTION, "bEnableItemMaxDurabilityLoss", "True"),
+    "player_shield_damage_absorption_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "PlayerShieldDamageAbsorptionMultiplier", "1.000000"),
+    "npc_shield_damage_absorption_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "NPCShieldDamageAbsorptionMultiplier", "1.000000"),
+    "heat_buildup_rate": (SERVER_CUSTOM_SETTINGS_SECTION, "HeatBuildupRate", "1.000000"),
+    "cold_buildup_rate": (SERVER_CUSTOM_SETTINGS_SECTION, "ColdBuildupRate", "1.000000"),
+    "thirst_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "ThirstMultiplier", "1.000000"),
+    "drop_equipment_on_death": (SERVER_CUSTOM_SETTINGS_SECTION, "DropEquipmentOnDeath", "Default"),
+    "allow_dynamic_building_damage": (SERVER_CUSTOM_SETTINGS_SECTION, "bAllowDynamicBuildingDamage", "True"),
+    "allow_sandstorms": (SERVER_CUSTOM_SETTINGS_SECTION, "bAllowSandstorms", "True"),
+    "allow_sandworms": (SERVER_CUSTOM_SETTINGS_SECTION, "bAllowSandworms", "True"),
+    "sandworm_consequences": (SERVER_CUSTOM_SETTINGS_SECTION, "SandwormConsequences", "All"),
+    "player_death_loot_rule": (SERVER_CUSTOM_SETTINGS_SECTION, "PlayerDeathLootRule", "DependsOnSecurityZone"),
+    "building_restriction_limits_enabled": (SERVER_CUSTOM_SETTINGS_SECTION, "bIsBuildingRestrictionsEnabled", "True"),
+    "fiefdom_limit": (SERVER_CUSTOM_SETTINGS_SECTION, "FiefdomLimit", "3"),
+    "building_piece_limit_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "BuildingPieceLimitMultiplier", "1.000000"),
+    "building_infinite_stability": (SERVER_CUSTOM_SETTINGS_SECTION, "bBuildingInfiniteStability", "False"),
+    "base_backup_tool_time_restriction": (SERVER_CUSTOM_SETTINGS_SECTION, "BaseBackupToolTimeRestriction", "10.000000"),
+    "landsraad_contribution_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "LandsraadContributionMultiplier", "1.000000"),
+    "landsraad_specialization_xp_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "LandsraadSpecializationXpMultiplier", "1.000000"),
+    "landsraad_faction_standing_multiplier": (SERVER_CUSTOM_SETTINGS_SECTION, "LandsraadFactionStandingMultiplier", "1.000000"),
+    "landsraad_disable_decree_reroll_limit": (SERVER_CUSTOM_SETTINGS_SECTION, "bLandsraadDisableDecreeRerollLimit", "False"),
+}
+
+SERVER_CUSTOM_FIELD_CATEGORIES = {
+    **{key: "Combat" for key in ("pvp_mode", "player_damage_to_player", "player_damage_to_npc", "player_damage_to_vehicle", "npc_health", "npc_damage_to_player", "npc_damage_to_npc", "npc_respawn_multiplier", "pvp_damage_structures", "player_shield_damage_absorption_multiplier", "npc_shield_damage_absorption_multiplier")},
+    **{key: "Progression" for key in ("global_xp_multiplier", "combat_xp", "gathering_xp", "mission_xp", "intel_points_gain_multiplier")},
+    **{key: "Crafting And Resources" for key in ("gathering_amount", "crafting_cost", "water_extraction_rate", "crafting_time_multiplier", "building_cost_multiplier", "resource_respawn_speed", "loot_respawn_speed", "fuel_burn_time_multiplier", "inventory_volume_multiplier")},
+    **{key: "Survival" for key in ("player_stamina_drain", "heat_buildup_rate", "cold_buildup_rate", "thirst_multiplier", "allow_sandstorms", "allow_sandworms", "sandworm_consequences")},
+    **{key: "Death And Durability" for key in ("item_durability_drain_multiplier", "enable_item_max_durability_loss", "drop_equipment_on_death", "player_death_loot_rule")},
+    **{key: "Building" for key in ("allow_dynamic_building_damage", "building_restriction_limits_enabled", "fiefdom_limit", "building_piece_limit_multiplier", "building_infinite_stability", "base_backup_tool_time_restriction")},
+    **{key: "Landsraad" for key in ("landsraad_contribution_multiplier", "landsraad_specialization_xp_multiplier", "landsraad_faction_standing_multiplier", "landsraad_disable_decree_reroll_limit")},
 }
 
 ENGINE_FIELDS = {
@@ -353,7 +420,7 @@ FIELD_DESCRIPTIONS = {
     "deathstill_conversion_time_override": "Overrides how long it takes to process a body in a Deathstill. Value is the length of the cycle in seconds.",
     "double_difficulty_loot_enabled": "Gives double loot when the encounter difficulty is above 0. Field-confirmed with dungeon loot.",
     "regenerate_per_player_loot_enabled": "Whether per-player loot is regenerated each time a player interacts with a loot container. Field-confirmed. Enabling this can make a single container farmable indefinitely.",
-    "restart_server_on_coriolis_cycle_end": "Requests that Funcom restart the current map server process when its own Coriolis cycle ends. Docker restarts an exited map container automatically. This does not queue a Console battlegroup restart or send restart warnings.",
+    "restart_server_on_coriolis_cycle_end": "Requests Funcom's farm-level restart when the Coriolis cycle ends. Dune Docker coordinates one clean restart of Director, Gateway, and every world map so all processes load the same new cycle seed, while PostgreSQL, RabbitMQ, TextRouter, the Console, and orchestration remain online.",
     "augment_jackpot_roll_percentage": "Roll threshold from 0 to 1; lower values increase the jackpot chance. The default 0.95 gives a 5% chance. This can be overridden per map or Sietch, and the public server page shows Varies when those scopes differ.",
     "max_landclaim_segments": "Maximum number of land-claim segments (flags) a player may own.",
     "building_blueprint_max_extensions": "Maximum number of times a blueprinted building can be extended.",
@@ -364,20 +431,22 @@ FIELD_DESCRIPTIONS = {
     "coriolis_auto_spawn_enabled": "Whether Coriolis storms spawn automatically on their normal cycle.",
     "coriolis_cycle_start_year": "Base year shipped in the Coriolis configuration. Normally leave this unchanged when matching a regional schedule.",
     "coriolis_cycle_start_month": "Base month (1-12) shipped in the Coriolis configuration. Normally leave this unchanged when matching a regional schedule.",
-    "coriolis_cycle_start_day": "UTC weekday: 1=Sunday through 7=Saturday. Europe, North America, and South America use Tuesday (3); Asia and Oceania use Monday (2). The region/farm selection does not automatically rewrite it.",
-    "coriolis_cycle_start_hour": "UTC hour (0-23). Regional master schedules: Europe 05, North America 11, South America 08, Asia 09, and Oceania 19.",
+    "coriolis_cycle_start_day": "UTC calendar day of the month (1-31). Regional master schedule anchor dates: Europe, North America, and South America use day 3; Asia and Oceania use day 2.",
+    "coriolis_cycle_start_hour": "UTC hour (0-23). Regional master schedules: Europe 05, North America 10, South America 08, Asia 09, and Oceania 19.",
     "coriolis_cycle_start_minute": "UTC minute (0-59) for the Coriolis cycle start.",
     "coriolis_cycle_start_seed_index": "Funcom's seed index for the base Coriolis cycle. Leave at 0 unless intentionally coordinating a different cycle seed.",
 }
 
 FIELD_LABELS = {
-    "restart_server_on_coriolis_cycle_end": "Restart Map Process At Coriolis Cycle End",
+    "restart_server_on_coriolis_cycle_end": "Restart Game Farm At Coriolis Cycle End",
     "coriolis_cycle_start_year": "Cycle Start Year",
     "coriolis_cycle_start_month": "Cycle Start Month",
     "coriolis_cycle_start_day": "Cycle Start Day",
     "coriolis_cycle_start_hour": "Cycle Start Hour",
     "coriolis_cycle_start_minute": "Cycle Start Minute",
     "coriolis_cycle_start_seed_index": "Cycle Start Seed Index",
+    "coriolis_cycle_duration_days": "Cycle Duration Days",
+    "coriolis_db_wipe_enabled": "Db Wipe Enabled",
     "guild_settings_creation_cost": "Guild Creation Cost",
     "guild_settings_max_guilds_allowed": "Max Guilds Allowed",
     "guild_settings_max_guild_members_allowed": "Max Guild Members Allowed",
@@ -386,9 +455,10 @@ FIELD_LABELS = {
 }
 
 # Maps a field id to the client-side ini filename it also must be applied to
-# (players copy the exported client file into their own Saved/Config/WindowsClient/
-# folder). Both client INI generators use this as an explicit allowlist: server-
-# only and unknown Advanced-editor values must never be offered to players.
+# (players copy Game.ini and Engine.ini into Saved/Config/Windows/). Both
+# client INI generators use this as an
+# explicit allowlist: server-only and unknown Advanced-editor values must never
+# be offered to players.
 CLIENT_FILE_REQUIRED = {
     "vehicle_max_per_player": "Engine.ini",
     # Funcom's shipped self-host setup template explicitly requires these
@@ -405,6 +475,8 @@ CLIENT_FILE_REQUIRED = {
     "players_drop_loot_on_defeat": "Game.ini",
     "players_drop_loot_on_death": "Game.ini",
     "base_backup_tool_time_restriction_seconds": "Game.ini",
+    "player_inventory_starting_size": "Game.ini",
+    "player_inventory_starting_volume_capacity": "Game.ini",
 }
 
 MAP_FIELDS = {
@@ -472,7 +544,6 @@ MAP_FIELDS = {
     "building_blueprint_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BuildingBlueprintMaxExtensions", "4"),
     "base_backup_max_extensions": (BUILDING_SETTINGS_SECTION, "m_BaseBackupMaxExtensions", "8"),
     "base_backup_tool_time_restriction_seconds": (BUILDING_SETTINGS_SECTION, "m_BaseBackupToolTimeRestrictionInSeconds", "604800"),
-    "building_restriction_limits_enabled": (BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "True"),
     "mitigate_all_sandstorm_damage": (BUILDING_SETTINGS_SECTION, "m_bMitigateAllSandstormDamage", "False"),
     "fallback_default_building_health": (BUILDING_SETTINGS_SECTION, "m_FallbackDefaultBuildingHealth", "5000.000000"),
     "fallback_default_placeable_health": (BUILDING_SETTINGS_SECTION, "m_FallbackDefaultPlaceableHealth", "1000.000000"),
@@ -691,8 +762,12 @@ PROFILE_HEADER_ORDER = {
     "Map": 3,
     "PartitionEngine": 4,
     "Partition": 5,
+    "ServerCustomGlobal": 6,
+    "ServerCustomMap": 7,
+    "ServerCustomPartition": 8,
 }
 ENGINE_PROFILE_SCOPES = {"Engine", "MapEngine", "PartitionEngine"}
+SERVER_CUSTOM_PROFILE_SCOPES = {"ServerCustomGlobal", "ServerCustomMap", "ServerCustomPartition"}
 # The Advanced UserEngine.ini tab displays/accepts UserGame's Global/Map/Partition
 # vocabulary for readability, translated to/from the internal Engine/MapEngine/
 # PartitionEngine tags at the profile_engine_text()/profile_engine_write_encoded()
@@ -705,11 +780,82 @@ ENGINE_HEADER_INTERNAL_NAMES = {v: k for k, v in ENGINE_HEADER_DISPLAY_NAMES.ite
 _ENGINE_DISPLAY_HEADER_RE = re.compile(
     r"^\[(" + "|".join(re.escape(name) for name in ENGINE_HEADER_DISPLAY_NAMES.values()) + r"):(.*)\]$"
 )
-LEGACY_GUILD_FIELD_ALIASES = {
+# Legacy DuneGameMode keys that a newer, canonical field also writes to a
+# different section under the same effective setting. Showing both in the
+# structured editor gives admins two controls for one effective setting and
+# makes the legacy value silently win in some cases, so metadata() hides the
+# legacy id and mirror_legacy_profile_field()/sync_legacy_values() keep the
+# legacy ini key and any already-saved legacy value in sync with the canonical
+# one instead.
+LEGACY_FIELD_ALIASES = {
     "guild_creation_cost": "guild_settings_creation_cost",
     "max_guilds_allowed": "guild_settings_max_guilds_allowed",
     "max_guild_members_allowed": "guild_settings_max_guild_members_allowed",
+    "cycle_duration_in_days": "coriolis_cycle_duration_days",
+    "db_wipe_enabled": "coriolis_db_wipe_enabled",
 }
+
+# UTC regional master schedules for coriolis_cycle_start_hour and
+# coriolis_cycle_start_day. These are the authoritative copies --
+# console/web/src/features/maps/MapsPanel.tsx keeps its own copies in sync
+# (checked by test_coriolis_region_hours_match_field_description and
+# test_coriolis_region_days_match_field_description in
+# test_profile_override_precedence.py) because the console frontend renders
+# each Match Region toggle's inference without a round trip, but the only
+# scope-mutating write happens here, from migrate_coriolis_region_fields.
+CORIOLIS_REGION_HOURS = {
+    "Europe": 5,
+    "North America": 10,
+    "South America": 8,
+    "Asia": 9,
+    "Oceania": 19,
+}
+CORIOLIS_REGION_DAYS = {
+    "Europe": 3,
+    "North America": 3,
+    "South America": 3,
+    "Asia": 2,
+    "Oceania": 2,
+}
+# Every region key must resolve on both tables, or a region migrates one
+# field but not the other with no way for an admin to tell that happened --
+# migrate_coriolis_region_fields relies on this to treat "unmapped" as a
+# single yes/no question asked once, not per field.
+assert set(CORIOLIS_REGION_HOURS) == set(CORIOLIS_REGION_DAYS)
+CORIOLIS_REGION_MIGRATION_FIELDS = (
+    ("coriolis_cycle_start_hour", CORIOLIS_REGION_HOURS),
+    ("coriolis_cycle_start_day", CORIOLIS_REGION_DAYS),
+)
+
+
+def migrate_coriolis_region_fields(region: str) -> str:
+    """One-time, idempotent global-scope migration: for each of
+    coriolis_cycle_start_hour/_day, if this deployment's region has a known
+    regional value and the field has never been explicitly saved (the ini key
+    is absent, not merely equal to the schema default -- those are different
+    questions, see sync_legacy_values for the same distinction made the wrong
+    way once already), write the region's value once. Both fields are read
+    and written in a single profile pass so a startup that needs to migrate
+    both never leaves one written and the other not from a race or a crash
+    between two separate read-modify-write cycles. Safe to call on every
+    startup: idempotent by key presence per field, so it can never loop or
+    re-fire once a key exists, regardless of what value it holds.
+    """
+    if region not in CORIOLIS_REGION_HOURS:
+        return "skip:unmapped-region"
+    profile = read_profile()
+    migrated = []
+    for field_id, region_table in CORIOLIS_REGION_MIGRATION_FIELDS:
+        section, ini_key, _ = MAP_FIELDS[field_id]
+        if profile_get_key(profile, "global", section, ini_key) is not None:
+            continue
+        regional_value = region_table[region]
+        set_profile_field(profile, "global", "", "", field_id, str(regional_value))
+        migrated.append(f"{field_id}={regional_value}")
+    if not migrated:
+        return "skip:already-present"
+    write_profile(profile)
+    return "migrated:" + ",".join(migrated)
 
 
 def field_spec(field_id: str):
@@ -772,6 +918,7 @@ def secure_managed_settings_permissions() -> None:
     candidates = [CONFIG_PATH, PROFILE_PATH, SIETCH_CONFIG_PATH]
     candidates.extend(game_root.glob("*/Saved/UserSettings/UserEngine.ini"))
     candidates.extend(game_root.glob("*/Saved/UserSettings/UserGame.ini"))
+    candidates.extend(game_root.glob("*/Saved/Config/LinuxServer/ServerCustomSettings.ini"))
     for path in candidates:
         try:
             if path.is_file():
@@ -916,6 +1063,12 @@ def sorted_profile_sections(sections: list[dict]) -> list[dict]:
 
 def parse_profile_header(header: str) -> dict:
     parts = header.split(":")
+    if len(parts) >= 2 and parts[0] == "ServerCustomGlobal":
+        return {"scope": "ServerCustomGlobal", "map": "", "partition": "", "ini_section": ":".join(parts[1:])}
+    if len(parts) >= 3 and parts[0] == "ServerCustomMap":
+        return {"scope": "ServerCustomMap", "map": canonical_map(parts[1]), "partition": "", "ini_section": ":".join(parts[2:])}
+    if len(parts) >= 4 and parts[0] == "ServerCustomPartition":
+        return {"scope": "ServerCustomPartition", "map": canonical_map(parts[1]), "partition": parts[2], "ini_section": ":".join(parts[3:])}
     if len(parts) >= 2 and parts[0] == "Global":
         return {"scope": "Global", "map": "", "partition": "", "ini_section": ":".join(parts[1:])}
     if len(parts) >= 3 and parts[0] == "Map":
@@ -944,6 +1097,12 @@ def profile_header(scope: str, section: str, map_name: str = "", partition_id: s
         return f"Partition:{canonical_map(map_name)}:{partition_id}:{section}"
     if scope == "partition_engine":
         return f"PartitionEngine:{canonical_map(map_name)}:{partition_id}:{section}"
+    if scope == "server_custom_global":
+        return f"ServerCustomGlobal:{section}"
+    if scope == "server_custom_map":
+        return f"ServerCustomMap:{canonical_map(map_name)}:{section}"
+    if scope == "server_custom_partition":
+        return f"ServerCustomPartition:{canonical_map(map_name)}:{partition_id}:{section}"
     raise SystemExit(f"Unknown profile scope: {scope}")
 
 
@@ -955,15 +1114,18 @@ def find_profile_section(profile: dict, scope: str, section: str, map_name: str 
         "map_engine": "MapEngine",
         "partition": "Partition",
         "partition_engine": "PartitionEngine",
+        "server_custom_global": "ServerCustomGlobal",
+        "server_custom_map": "ServerCustomMap",
+        "server_custom_partition": "ServerCustomPartition",
     }[scope]
     target_map = canonical_map(map_name) if map_name else ""
     target_partition = str(partition_id or "")
     for block in profile.get("sections", []):
         if block.get("scope") != target_scope or block.get("ini_section") != section:
             continue
-        if target_scope in {"Map", "MapEngine"} and block.get("map") != target_map:
+        if target_scope in {"Map", "MapEngine", "ServerCustomMap"} and block.get("map") != target_map:
             continue
-        if target_scope in {"Partition", "PartitionEngine"} and (block.get("map") != target_map or str(block.get("partition", "")) != target_partition):
+        if target_scope in {"Partition", "PartitionEngine", "ServerCustomPartition"} and (block.get("map") != target_map or str(block.get("partition", "")) != target_partition):
             continue
         return block
     if not create:
@@ -1255,8 +1417,8 @@ def append_safe_staking_extension_arrays(section_lines: dict[str, list[str]], va
         entries.extend(f".{key}={value}" for _ in range(STAKING_EXTENSION_ARRAY_LENGTH))
 
 
-def mirror_legacy_guild_profile_field(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str, value: str) -> None:
-    canonical_field = LEGACY_GUILD_FIELD_ALIASES.get(field_id)
+def mirror_legacy_profile_field(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str, value: str) -> None:
+    canonical_field = LEGACY_FIELD_ALIASES.get(field_id)
     if not canonical_field:
         return
     spec = MAP_FIELDS.get(canonical_field)
@@ -1270,17 +1432,82 @@ def mirror_legacy_guild_profile_field(profile: dict, scope: str, map_name: str, 
         profile_set_key(profile, "partition", spec[0], spec[1], value, canonical_map(map_name or "Survival_1"), str(partition_id or ""))
 
 
-def sync_legacy_guild_values(values: dict[str, str]) -> dict[str, str]:
-    for legacy_field, canonical_field in LEGACY_GUILD_FIELD_ALIASES.items():
+def _legacy_alias_scopes(scope: str, map_name: str = "", partition_id: str = "") -> list[tuple[str, str, str]]:
+    """Scope chain to probe for LEGACY_FIELD_ALIASES presence, ordered least to most
+    specific -- mirrors exactly what profile_global_values/profile_map_values/
+    profile_partition_values merge for these fields (all of which live in MAP_FIELDS,
+    never PARTITION_FIELDS, so global/map/partition is the complete chain)."""
+    scopes = [("global", "", "")]
+    if scope in ("map", "partition"):
+        scopes.append(("map", map_name, ""))
+    if scope == "partition":
+        scopes.append(("partition", map_name, partition_id))
+    return scopes
+
+
+def _field_explicitly_present(profile: dict, field_id: str, scopes: list[tuple[str, str, str]]) -> bool:
+    section, ini_key, _ = MAP_FIELDS[field_id]
+    if not section or not ini_key:
+        return False
+    return any(profile_get_key(profile, s, section, ini_key, m, p) is not None for s, m, p in scopes)
+
+
+def _effective_field_value(profile: dict, field_id: str, scopes: list[tuple[str, str, str]]) -> str:
+    section, ini_key, default = MAP_FIELDS[field_id]
+    value = str(default)
+    for s, m, p in scopes:
+        found = profile_get_key(profile, s, section, ini_key, m, p)
+        if found is not None:
+            value = found
+    return value
+
+
+def sync_legacy_values(profile: dict, values: dict[str, str], scope: str, map_name: str = "", partition_id: str = "") -> dict[str, str]:
+    """Resolve each LEGACY_FIELD_ALIASES pair by presence, not by comparing values to
+    their schema defaults. A value-comparison approach cannot distinguish "never saved"
+    from "explicitly saved to a value that happens to equal the default", which let a
+    stale legacy value silently outrank an admin's deliberate canonical save whenever
+    that save happened to be the default (see legacy_alias_conflict_warnings for the
+    admin-visible counterpart on the structured save path)."""
+    scopes = _legacy_alias_scopes(scope, map_name, partition_id)
+    for legacy_field, canonical_field in LEGACY_FIELD_ALIASES.items():
         legacy_default = str(MAP_FIELDS[legacy_field][2])
         canonical_default = str(MAP_FIELDS[canonical_field][2])
-        legacy_value = str(values.get(legacy_field, legacy_default))
-        canonical_value = str(values.get(canonical_field, canonical_default))
-        if legacy_value != legacy_default and canonical_value == canonical_default:
-            values[canonical_field] = legacy_value
-        elif canonical_value != canonical_default and legacy_value == legacy_default:
-            values[legacy_field] = canonical_value
+        if _field_explicitly_present(profile, canonical_field, scopes):
+            # Canonical wins whenever it has been explicitly saved, regardless of value.
+            values[legacy_field] = values.get(canonical_field, canonical_default)
+        elif _field_explicitly_present(profile, legacy_field, scopes):
+            values[canonical_field] = values.get(legacy_field, legacy_default)
+        # Neither present: both fields stay at their already-seeded defaults.
     return values
+
+
+def legacy_alias_conflict_warnings(profile: dict, scope: str, map_name: str = "", partition_id: str = "") -> list[str]:
+    """Structured-save-path counterpart to _advanced_editor_legacy_field_warnings (the
+    raw/Advanced editor's version of this same check): both the legacy and canonical id
+    for one effective setting have been explicitly saved with different values.
+    sync_legacy_values() resolves that silently in canonical's favor -- this is what lets
+    an admin actually see it happened, the same way the raw editor already can."""
+    if scope not in ("global", "map", "partition"):
+        return []
+    scopes = _legacy_alias_scopes(scope, map_name, partition_id)
+    warnings = []
+    for legacy_field, canonical_field in LEGACY_FIELD_ALIASES.items():
+        if not (_field_explicitly_present(profile, legacy_field, scopes) and _field_explicitly_present(profile, canonical_field, scopes)):
+            continue
+        legacy_value = _effective_field_value(profile, legacy_field, scopes)
+        canonical_value = _effective_field_value(profile, canonical_field, scopes)
+        if legacy_value == canonical_value:
+            continue
+        legacy_section, legacy_key, _legacy_default = MAP_FIELDS[legacy_field]
+        canonical_section, canonical_key, _canonical_default = MAP_FIELDS[canonical_field]
+        # Both fields share the same ini key name (that's the whole reason they're aliased),
+        # so the section is what actually tells an admin which block to go edit.
+        warnings.append(
+            f"legacy field [{legacy_section}] {legacy_key}={legacy_value} conflicts with the "
+            f"canonical field [{canonical_section}] {canonical_key}={canonical_value} -- the canonical value is used."
+        )
+    return warnings
 
 
 def seed_profile_from_legacy_config() -> dict:
@@ -1558,6 +1785,16 @@ def validate_profile_port_ranges(profile: dict) -> None:
 
 
 def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str, value: str) -> None:
+    if scope in {"server_custom_global", "server_custom_map", "server_custom_partition"}:
+        if field_id not in SERVER_CUSTOM_FIELDS:
+            raise SystemExit(f"Unknown Server Custom Settings field: {field_id}")
+        target_map = canonical_map(map_name or "Survival_1")
+        target_partition = str(partition_id or "").strip()
+        if scope == "server_custom_partition" and not target_partition:
+            raise SystemExit("Partition Server Custom Settings save requires a partition id.")
+        section, key, _default = SERVER_CUSTOM_FIELDS[field_id]
+        profile_set_key(profile, scope, section, key, value, target_map, target_partition)
+        return
     if field_id in LANDSRAAD_DATA_FIELDS:
         if scope != "global":
             raise SystemExit("Landsraad schedule and contract modifiers must use global scope.")
@@ -1660,7 +1897,7 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         spec = MAP_FIELDS[field_id]
         if spec[0] and spec[1]:
             profile_set_key(profile, "global", spec[0], spec[1], value)
-            mirror_legacy_guild_profile_field(profile, "global", "", "", field_id, value)
+            mirror_legacy_profile_field(profile, "global", "", "", field_id, value)
         return
 
     if scope == "map":
@@ -1669,7 +1906,7 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         spec = MAP_FIELDS[field_id]
         if spec[0] and spec[1]:
             profile_set_key(profile, "map", spec[0], spec[1], value, map_name=map_name)
-            mirror_legacy_guild_profile_field(profile, "map", map_name, "", field_id, value)
+            mirror_legacy_profile_field(profile, "map", map_name, "", field_id, value)
         return
 
     if scope == "partition":
@@ -1692,7 +1929,7 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         spec = MAP_FIELDS.get(field_id)
         if spec and spec[0] and spec[1]:
             profile_set_key(profile, "partition", spec[0], spec[1], value, target_map, target_partition)
-            mirror_legacy_guild_profile_field(profile, "partition", target_map, target_partition, field_id, value)
+            mirror_legacy_profile_field(profile, "partition", target_map, target_partition, field_id, value)
         return
 
     raise SystemExit("Unknown settings scope.")
@@ -1727,7 +1964,7 @@ def profile_map_values(profile: dict, map_name: str) -> dict[str, str]:
             values[key] = map_value
     global_data = profile_get_key(profile, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY)
     values.update(landsraad_virtual_values(global_data or LANDSRAAD_DATA_TEMPLATE))
-    return sync_legacy_guild_values(values)
+    return sync_legacy_values(profile, values, "map", target_map)
 
 
 def profile_global_values(profile: dict) -> dict[str, str]:
@@ -1741,7 +1978,7 @@ def profile_global_values(profile: dict) -> dict[str, str]:
             values[key] = global_value
     global_data = profile_get_key(profile, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY)
     values.update(landsraad_virtual_values(global_data or LANDSRAAD_DATA_TEMPLATE))
-    return sync_legacy_guild_values(values)
+    return sync_legacy_values(profile, values, "global")
 
 
 def profile_partition_array_selector_active(profile: dict, section: str, key: str, target_map: str, target_partition: str) -> bool:
@@ -1795,7 +2032,7 @@ def profile_partition_values(profile: dict, map_name: str, partition_id: str) ->
     values["partition_selector_mode_active"] = "True" if profile_partition_selector_mode_active(
         profile, target_map, target_partition
     ) else "False"
-    return sync_legacy_guild_values(values)
+    return sync_legacy_values(profile, values, "partition", target_map, target_partition)
 
 
 def profile_section_lines(profile: dict, scope: str, section: str, map_name: str = "", partition_id: str = "") -> list[str]:
@@ -1817,6 +2054,70 @@ def merged_global_values(config: dict) -> dict[str, str]:
 
 def merged_partition_values(config: dict, map_name: str, partition_id: str) -> dict[str, str]:
     return profile_partition_values(read_profile(), map_name, partition_id)
+
+
+def server_custom_scope_chain(map_name: str, partition_id: str = "") -> list[tuple[str, str, str]]:
+    target_map = canonical_map(map_name or "Survival_1")
+    scopes = [("server_custom_global", "", "")]
+    if target_map:
+        scopes.append(("server_custom_map", target_map, ""))
+    if partition_id:
+        scopes.append(("server_custom_partition", target_map, str(partition_id)))
+    return scopes
+
+
+def server_custom_profile_value(profile: dict, field_id: str, map_name: str, partition_id: str = "") -> tuple[str | None, bool]:
+    section, key, _default = SERVER_CUSTOM_FIELDS[field_id]
+    value = None
+    configured = False
+    for scope, target_map, target_partition in server_custom_scope_chain(map_name, partition_id):
+        found = profile_get_key(profile, scope, section, key, target_map, target_partition)
+        if found is not None:
+            value = found
+            configured = True
+    return value, configured
+
+
+def legacy_building_restriction_value(profile: dict, map_name: str, partition_id: str = "") -> tuple[str | None, bool]:
+    section, key, _default = RETIRED_USERGAME_FIELDS["building_restriction_limits_enabled"]
+    value = None
+    configured = False
+    scopes = [("global", "", ""), ("map", canonical_map(map_name or "Survival_1"), "")]
+    if partition_id:
+        scopes.append(("partition", canonical_map(map_name or "Survival_1"), str(partition_id)))
+    for scope, target_map, target_partition in scopes:
+        found = profile_get_key(profile, scope, section, key, target_map, target_partition)
+        if found is not None:
+            value = found
+            configured = True
+    return value, configured
+
+
+def server_custom_values(profile: dict, map_name: str, partition_id: str = "", include_materialized: bool = True) -> dict[str, str]:
+    target_map = canonical_map(map_name or "Survival_1")
+    values = {field_id: str(spec[2]) for field_id, spec in SERVER_CUSTOM_FIELDS.items()}
+    if include_materialized:
+        path = saved_dir_for(target_map, partition_id or None) / "Config" / "LinuxServer" / "ServerCustomSettings.ini"
+        for field_id, (section, key, _default) in SERVER_CUSTOM_FIELDS.items():
+            current = read_ini_value(path, section, key)
+            if current is not None:
+                values[field_id] = current
+    for field_id in SERVER_CUSTOM_FIELDS:
+        configured_value, configured = server_custom_profile_value(profile, field_id, target_map, partition_id)
+        if configured:
+            values[field_id] = str(configured_value)
+    legacy_value, legacy_configured = legacy_building_restriction_value(profile, target_map, partition_id)
+    _native_value, native_configured = server_custom_profile_value(profile, "building_restriction_limits_enabled", target_map, partition_id)
+    if legacy_configured and not native_configured:
+        values["building_restriction_limits_enabled"] = str(legacy_value)
+    return values
+
+
+def print_server_custom_values(scope: str, map_name: str, partition_id: str = "") -> int:
+    target_map = canonical_map(map_name or "Survival_1")
+    include_materialized = scope != "global"
+    values = server_custom_values(read_profile(), target_map, partition_id if scope == "partition" else "", include_materialized)
+    return print_rows(values, SERVER_CUSTOM_FIELDS)
 
 
 def profile_map_engine_values(profile: dict, map_name: str) -> dict[str, str]:
@@ -1902,7 +2203,7 @@ def metadata() -> int:
             "default": "" if default is None else str(default),
             "type": FIELD_TYPE_OVERRIDES.get(field_id, infer_field_type(default)),
             "clientFile": CLIENT_FILE_REQUIRED.get(field_id, ""),
-            "category": ENGINE_FIELD_CATEGORIES.get(field_id, ""),
+            "category": SERVER_CUSTOM_FIELD_CATEGORIES.get(field_id, "") if scope == "serverCustom" else ENGINE_FIELD_CATEGORIES.get(field_id, ""),
             "description": FIELD_DESCRIPTIONS.get(field_id, ""),
             "label": FIELD_LABELS.get(field_id, ""),
             "minimum": minimum,
@@ -1920,17 +2221,16 @@ def metadata() -> int:
         key: spec for key, spec in PARTITION_ENGINE_FIELDS.items()
         if key != "server_login_password"
     }
-    # Keep legacy DuneGameMode guild keys readable and compilable for existing
-    # profiles, but expose only their canonical GuildSettings counterparts in
-    # the structured editor. Showing both gives admins two controls for one
-    # effective setting and makes the legacy value silently win in some cases.
+    # Keep legacy DuneGameMode keys readable and compilable for existing
+    # profiles, but expose only their canonical counterparts (GuildSettings,
+    # CoriolisSubsystem) in the structured editor. See LEGACY_FIELD_ALIASES.
     public_game_fields = {
         key: spec for key, spec in MAP_FIELDS.items()
-        if key not in LEGACY_GUILD_FIELD_ALIASES
+        if key not in LEGACY_FIELD_ALIASES
     }
     public_partition_fields = {
         key: spec for key, spec in PARTITION_FIELDS.items()
-        if key not in LEGACY_GUILD_FIELD_ALIASES
+        if key not in LEGACY_FIELD_ALIASES
     }
     payload = {
         "engine": [row("engine", key, spec) for key, spec in public_engine_fields.items()],
@@ -1938,6 +2238,7 @@ def metadata() -> int:
         "game": [row("game", key, spec) for key, spec in public_game_fields.items()],
         "partition": [row("partition", key, spec) for key, spec in public_partition_fields.items()],
         "partitionEngine": [row("partitionEngine", key, spec) for key, spec in public_partition_engine_fields.items()],
+        "serverCustom": [row("serverCustom", key, spec) for key, spec in SERVER_CUSTOM_FIELDS.items()],
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
@@ -2280,8 +2581,17 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
         if field_id in STAKING_EXTENSION_FIELDS:
             continue
         value = values.get(field_id, default)
-        # Same rule as UserEngine: defaults are left out so the game uses its own.
-        if not field_value_is_default(field_id, str(value), default):
+        # Same rule as UserEngine: defaults are normally left out so the game uses
+        # its own. Mixed PvP/PvE layouts are the exception: once partition selector
+        # arrays are present, False is an active instruction rather than an omitted
+        # default. Emit it explicitly into every partition's materialized INI so
+        # Overmap/Kanly and the game servers advertise the same mixed-mode state.
+        selector_mode_requires_explicit_force_flag = (
+            field_id == "force_pvp_all_partitions"
+            and target_partition
+            and profile_partition_selector_mode_active(profile, target_map, target_partition)
+        )
+        if selector_mode_requires_explicit_force_flag or not field_value_is_default(field_id, str(value), default):
             section_lines.setdefault(section, []).append(f"{key}={value}")
         if section == "/Script/DuneSandbox.PvpPveSettings" and key == "m_bShouldForceEnablePvpOnAllPartitions" and target_partition:
             if truthy(values.get("partition_pvp_enabled", "False")):
@@ -2345,11 +2655,21 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
             continue
         section_lines.setdefault(section, []).append(f"{key}={value}")
 
+    # The server-side control moved to ServerCustomSettings.ini in Patch 1.5,
+    # while clients still consume the matching legacy Game.ini property.
+    custom_values = server_custom_values(profile, target_map or "Survival_1", target_partition, include_materialized=bool(target_map))
+    restriction_value = custom_values["building_restriction_limits_enabled"]
+    restriction_default = SERVER_CUSTOM_FIELDS["building_restriction_limits_enabled"][2]
+    if not field_value_is_default("building_restriction_limits_enabled", restriction_value, restriction_default):
+        section_lines.setdefault(BUILDING_SETTINGS_SECTION, []).append(
+            f"m_bBuildingRestrictionLimitsEnabled={restriction_value}"
+        )
+
     target_label = "global UserGame" if not target_map else target_map if not target_partition else f"{target_map} partition {target_partition}"
     return render_ini_sections(section_lines, [
         "; Game.ini for the Dune: Awakening client.",
         f"; Client-required settings generated from Docker UserGame.ini values for {target_label}.",
-        "; Merge these sections into Saved/Config/WindowsClient/Game.ini while the game is closed.",
+        "; Merge these sections into Saved/Config/Windows/Game.ini while the game is closed.",
         "; Only settings changed from the default and known to require client configuration are listed.",
         "; Remove keys from an earlier copy when they are no longer listed here.",
     ])
@@ -2382,7 +2702,7 @@ def client_engine_ini(profile: dict, map_name: str = "", partition_id: str | Non
     return render_ini_sections(section_lines, [
         "; Engine.ini for the Dune: Awakening client.",
         f"; Client-required settings generated from Docker UserEngine.ini values for {target_label}.",
-        "; Merge these sections into Saved/Config/WindowsClient/Engine.ini while the game is closed.",
+        "; Merge these sections into Saved/Config/Windows/Engine.ini while the game is closed.",
         "; Only settings changed from the default and known to require client configuration are listed.",
         "; Remove keys from an earlier generated copy when they are no longer listed here.",
     ])
@@ -2394,6 +2714,27 @@ def write_compiled_userengine(path: Path, profile: dict, map_name: str = "", par
 
 def write_compiled_usergame(path: Path, profile: dict, map_name: str, partition_id: str | None = None) -> None:
     atomic_write_text(path, compiled_usergame_ini(profile, map_name, partition_id))
+
+
+def write_server_custom_settings(saved_dir: Path, profile: dict, map_name: str, partition_id: str | None = None) -> None:
+    """Materialize managed Patch-1.5 native settings without replacing the file.
+
+    Only fields explicitly managed through the Console are updated in an
+    existing game-created file. This preserves unrelated/manual values. A new
+    file receives Funcom's defaults so a fresh map has a complete valid file.
+    """
+    target_map = canonical_map(map_name)
+    target_partition = str(partition_id or "")
+    path = saved_dir / "Config" / "LinuxServer" / "ServerCustomSettings.ini"
+    new_file = not path.exists()
+    values = server_custom_values(profile, target_map, target_partition, include_materialized=True)
+    update_ini_key(path, SERVER_CUSTOM_SETTINGS_SECTION, "DifficultyLevel", "Custom")
+    for field_id, (section, key, _default) in SERVER_CUSTOM_FIELDS.items():
+        _value, configured = server_custom_profile_value(profile, field_id, target_map, target_partition)
+        if field_id == "building_restriction_limits_enabled" and not configured:
+            _legacy_value, configured = legacy_building_restriction_value(profile, target_map, target_partition)
+        if new_file or configured:
+            update_ini_key(path, section, key, values[field_id])
 
 
 def safe_runtime_dir_name(map_name: str, partition_id: str) -> str:
@@ -2512,6 +2853,12 @@ def bulk_save(scope: str, map_name: str, partition_id: str, encoded_values: str)
             set_profile_field(profile, "global", "", "", field_id, serialized)
         elif scope == "partition":
             set_profile_field(profile, "partition", target_map, target_partition, field_id, serialized)
+        elif scope == "serverCustomGlobal":
+            set_profile_field(profile, "server_custom_global", "", "", field_id, serialized)
+        elif scope == "serverCustomMap":
+            set_profile_field(profile, "server_custom_map", target_map, "", field_id, serialized)
+        elif scope == "serverCustomPartition":
+            set_profile_field(profile, "server_custom_partition", target_map, target_partition, field_id, serialized)
         elif scope == "map":
             set_profile_field(profile, "map", target_map, "", field_id, serialized)
         else:
@@ -2519,6 +2866,8 @@ def bulk_save(scope: str, map_name: str, partition_id: str, encoded_values: str)
     if scope == "engine":
         validate_profile_port_ranges(profile)
     write_profile(profile)
+    for message in legacy_alias_conflict_warnings(profile, scope, target_map, target_partition):
+        print(f"USERSETTINGS_WARNING: {message}")
     if landsraad_changed:
         atomic_write_text(LANDSRAAD_RESTART_MARKER_PATH, "Landsraad UserGame settings changed.\n", 0o664)
     return 0
@@ -2550,7 +2899,7 @@ def profile_game_text() -> str:
             "; Edit this single file for all map and partition UserGame settings.",
             "; Docker applies the correct values to each server when maps start or restart.",
         ],
-        "sections": [block for block in profile.get("sections", []) if block.get("scope") not in ENGINE_PROFILE_SCOPES],
+        "sections": [block for block in profile.get("sections", []) if block.get("scope") not in ENGINE_PROFILE_SCOPES | SERVER_CUSTOM_PROFILE_SCOPES],
     }
     return serialize_profile(game_profile)
 
@@ -2809,8 +3158,8 @@ def _advanced_editor_find_scoped_key_value(sections: list[dict], reference_block
     return None
 
 
-def _advanced_editor_legacy_guild_warnings(sections: list[dict]) -> list[str]:
-    """Flag the case sync_legacy_guild_values() (~1024) resolves silently: a non-default
+def _advanced_editor_legacy_field_warnings(sections: list[dict]) -> list[str]:
+    """Flag the case sync_legacy_values() (~1024) resolves silently: a non-default
     legacy field overriding a canonical field explicitly set to its own default. The
     canonical field's explicit line is then also dropped by the known-key filter in
     append_profile_unknown_lines(), so without this warning the admin has no way to know
@@ -2819,7 +3168,7 @@ def _advanced_editor_legacy_guild_warnings(sections: list[dict]) -> list[str]:
     for block in sections:
         section = str(block.get("ini_section", ""))
         where = _advanced_editor_block_label(block)
-        for legacy_field, canonical_field in LEGACY_GUILD_FIELD_ALIASES.items():
+        for legacy_field, canonical_field in LEGACY_FIELD_ALIASES.items():
             legacy_spec = MAP_FIELDS[legacy_field]
             canonical_spec = MAP_FIELDS[canonical_field]
             if section != legacy_spec[0]:
@@ -2829,9 +3178,13 @@ def _advanced_editor_legacy_guild_warnings(sections: list[dict]) -> list[str]:
                 continue
             canonical_value = _advanced_editor_find_scoped_key_value(sections, block, canonical_spec[0], canonical_spec[1])
             if canonical_value is not None and canonical_value == str(canonical_spec[2]):
+                # Both fields share the same ini key name (that's the whole reason they're
+                # aliased) -- name the section too, or an admin has no way to tell which
+                # block to go edit.
                 warnings.append(
-                    f"{where}: legacy field {legacy_spec[1]}={legacy_value} overrides the explicit default "
-                    f"you set on {canonical_spec[1]}={canonical_value} -- the canonical value was dropped."
+                    f"{where}: legacy field [{legacy_spec[0]}] {legacy_spec[1]}={legacy_value} overrides "
+                    f"the explicit default you set on [{canonical_spec[0]}] {canonical_spec[1]}={canonical_value} "
+                    f"-- the canonical value was dropped."
                 )
     return warnings
 
@@ -2864,7 +3217,7 @@ def profile_game_write_encoded(encoded_content: str) -> int:
     warnings = (
         _advanced_editor_duplicate_key_warnings(incoming.get("sections", []))
         + _advanced_editor_pvp_pve_warnings(incoming.get("sections", []))
-        + _advanced_editor_legacy_guild_warnings(incoming.get("sections", []))
+        + _advanced_editor_legacy_field_warnings(incoming.get("sections", []))
     )
     profile = read_profile()
     replace_profile_game_sections(profile, incoming)
@@ -3000,10 +3353,20 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Partition PvP array line was not compiled.")
     if "+m_PvpEnabledPartitions=7" not in compiled_game or "+m_PveEnabledPartitions=9" not in compiled_game:
         raise SystemExit("Global-scoped Advanced editor PvP/PvE array lines were not compiled.")
+    if "m_bShouldForceEnablePvpOnAllPartitions=False" not in compiled_game:
+        raise SystemExit("Partition selector mode did not materialize its explicit force-PvP-all=False guard.")
     if compiled_game.count("+m_PvpEnabledPartitions=3") != 1:
         raise SystemExit("Global and partition-toggle PvP array lines for the same value were not deduplicated.")
-    if "[/Script/DuneSandbox.GuildSettings]" not in compiled_game or "m_MaxGuildMembersAllowed=5" not in compiled_game:
-        raise SystemExit("Legacy guild member limit was not mirrored to GuildSettings.")
+    # The seed profile above has BOTH a legacy DuneGameMode value (5) and an explicit
+    # canonical GuildSettings value (32) at global scope. Presence, not a value-vs-default
+    # comparison, must pick the winner (see sync_legacy_values) -- canonical wins, and
+    # since 32 is also both fields' shared schema default, neither section emits the key.
+    if "m_MaxGuildMembersAllowed=5" in compiled_game:
+        raise SystemExit("A stale legacy guild member limit leaked into the compiled UserGame.ini over an explicit canonical value.")
+    if profile_map_values(reparsed, "Survival_1")["guild_settings_max_guild_members_allowed"] != "32":
+        raise SystemExit("An explicit canonical guild member limit did not win over a conflicting legacy value.")
+    if not any("m_MaxGuildMembersAllowed=5" in w and "m_MaxGuildMembersAllowed=32" in w for w in legacy_alias_conflict_warnings(reparsed, "global")):
+        raise SystemExit("A conflicting legacy/canonical guild member limit did not raise a warning.")
     if "UnknownGlobal=abc" not in compiled_game or "CustomPartitionKey=True" not in compiled_game:
         raise SystemExit("Compiled UserGame dropped unknown profile lines.")
     if "m_GlobalXPMultiplier=" in compiled_game:
@@ -3036,12 +3399,13 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         if server_only in client_game:
             raise SystemExit(f"Server-only UserGame value leaked into client Game.ini export: {server_only}")
     profile_set_key(reparsed, "global", BUILDING_SETTINGS_SECTION, "m_MaxNumLandclaimSegments", "20")
-    profile_set_key(reparsed, "global", BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "False")
+    profile_set_key(reparsed, "server_custom_global", SERVER_CUSTOM_SETTINGS_SECTION, "bIsBuildingRestrictionsEnabled", "False")
     matched_building_client_game = client_game_ini(reparsed, "Survival_1", "3")
     if "m_MaxNumLandclaimSegments=20" not in matched_building_client_game:
         raise SystemExit("Client-required landclaim segment limit did not carry into the client Game.ini export.")
     if "m_bBuildingRestrictionLimitsEnabled=False" not in matched_building_client_game:
         raise SystemExit("Client-required building restriction setting did not carry into the client Game.ini export.")
+    profile_remove_key(reparsed, "server_custom_global", SERVER_CUSTOM_SETTINGS_SECTION, "bIsBuildingRestrictionsEnabled")
     profile_set_key(reparsed, "global", "ConsoleVariables", "Bgd.ServerDisplayName", quote_ini_string("Do Not Export"))
     profile_set_key(reparsed, "global", "ConsoleVariables", "Bgd.ServerLoginPassword", quote_ini_string("Do Not Export"))
     bgd_filtered_client_game = client_game_ini(reparsed, "Survival_1", "3")
@@ -3061,13 +3425,13 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         raise SystemExit("Base backup tool time restriction did not carry into the client Game.ini export.")
     if CLIENT_FILE_REQUIRED.get("base_backup_tool_time_restriction_seconds") != "Game.ini":
         raise SystemExit("Base backup tool time restriction is not flagged as requiring a client Game.ini update.")
-    if profile_map_values(reparsed, "Survival_1")["building_restriction_limits_enabled"] != "True":
+    if server_custom_values(reparsed, "Survival_1", include_materialized=False)["building_restriction_limits_enabled"] != "True":
         raise SystemExit("Building restriction limits did not default to enabled when unset.")
-    profile_set_key(reparsed, "global", BUILDING_SETTINGS_SECTION, "m_bBuildingRestrictionLimitsEnabled", "False")
-    if profile_map_values(reparsed, "Survival_1")["building_restriction_limits_enabled"] != "False":
+    profile_set_key(reparsed, "server_custom_global", SERVER_CUSTOM_SETTINGS_SECTION, "bIsBuildingRestrictionsEnabled", "False")
+    if server_custom_values(reparsed, "Survival_1", include_materialized=False)["building_restriction_limits_enabled"] != "False":
         raise SystemExit("An explicit disabled building restriction limit was overwritten by the default.")
-    if "m_bBuildingRestrictionLimitsEnabled=False" not in compiled_usergame_ini(reparsed, "Survival_1", "3"):
-        raise SystemExit("An explicit disabled building restriction limit did not compile.")
+    if "m_bBuildingRestrictionLimitsEnabled" in compiled_usergame_ini(reparsed, "Survival_1", "3"):
+        raise SystemExit("A native Server Custom setting leaked into server UserGame.ini.")
     set_profile_field(reparsed, "global", "", "", "landsraad_cycle_duration_seconds", "1209600")
     set_profile_field(reparsed, "global", "", "", "landsraad_player_voting_enabled", "False")
     landsraad_data = profile_get_key(reparsed, "global", LANDSRAAD_SETTINGS_SECTION, LANDSRAAD_DATA_KEY) or ""
@@ -3134,7 +3498,6 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         "max_landclaim_segments": "6",
         "building_blueprint_max_extensions": "4",
         "base_backup_max_extensions": "8",
-        "building_restriction_limits_enabled": "True",
     }
     for field_id, expected in expected_building_defaults.items():
         if building_defaults.get(field_id) != expected:
@@ -3199,7 +3562,7 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
     if not any("m_MaxGuildsAllowed was set 2 times" in w and "(1)" in w and "(2)" in w for w in dup_warnings):
         raise SystemExit("Duplicate-key Advanced Editor warning did not fire correctly.")
 
-    legacy_warnings = _advanced_editor_legacy_guild_warnings(reparsed.get("sections", []))
+    legacy_warnings = _advanced_editor_legacy_field_warnings(reparsed.get("sections", []))
     if not any("m_MaxGuildMembersAllowed=5 overrides" in w for w in legacy_warnings):
         raise SystemExit("Legacy guild-alias override warning did not fire.")
 
@@ -3212,7 +3575,7 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
         "[Global:/Script/DuneSandbox.DuneGameMode]\nm_MaxGuildMembersAllowed=5\n"
         "[Global:/Script/DuneSandbox.GuildSettings]\nm_MaxGuildMembersAllowed=99\nm_MaxGuildMembersAllowed=32\n"
     ).get("sections", [])
-    last_wins_warnings = _advanced_editor_legacy_guild_warnings(last_wins_sections)
+    last_wins_warnings = _advanced_editor_legacy_field_warnings(last_wins_sections)
     if not any("m_MaxGuildMembersAllowed=5 overrides" in w and "m_MaxGuildMembersAllowed=32" in w for w in last_wins_warnings):
         raise SystemExit("Legacy guild-alias warning used the first assignment of a duplicated canonical key instead of the last-wins effective value.")
 
@@ -3358,6 +3721,7 @@ def materialize_current_runtime_files() -> int:
         expected_engine_paths.add(engine_path.resolve())
         write_compiled_userengine(engine_path, profile, canonical_map(map_name), partition_id)
         write_compiled_usergame(game_path, profile, canonical_map(map_name), partition_id)
+        write_server_custom_settings(saved_dir, profile, canonical_map(map_name), partition_id)
 
     for engine_path in game_root.glob("*/Saved/UserSettings/UserEngine.ini"):
         if engine_path.resolve() in expected_engine_paths:
@@ -3377,6 +3741,7 @@ def materialize(map_name: str, saved_dir: str, partition_id: str | None = None) 
     game_path = user_settings_dir / "UserGame.ini"
     write_compiled_userengine(engine_path, profile, target_map, str(partition_id) if partition_id else None)
     write_compiled_usergame(game_path, profile, target_map, str(partition_id) if partition_id else None)
+    write_server_custom_settings(Path(saved_dir), profile, target_map, str(partition_id) if partition_id else None)
     return 0
 
 
@@ -3779,6 +4144,8 @@ def main(argv: list[str]) -> int:
         return print_usergame_rows(merged_map_values(config, canonical_map(argv[2])), MAP_FIELDS)
     if command == "partition-values" and len(argv) == 4:
         return print_usergame_rows(merged_partition_values(config, canonical_map(argv[2]), argv[3]), PARTITION_FIELDS)
+    if command == "server-custom-values" and len(argv) == 5:
+        return print_server_custom_values(argv[2], argv[3], argv[4])
     if command == "partition-combat-state" and len(argv) == 4:
         return partition_combat_state_command(argv[2], argv[3])
     if command == "partition-combat-states" and len(argv) >= 4:
@@ -3833,6 +4200,9 @@ def main(argv: list[str]) -> int:
         return raw_write_encoded("game", argv[4], argv[2], argv[3])
     if command == "bulk-save" and len(argv) == 6:
         return bulk_save(argv[2], argv[3], argv[4], argv[5])
+    if command == "migrate-coriolis-region-fields" and len(argv) == 3:
+        print(migrate_coriolis_region_fields(argv[2]))
+        return 0
     if command == "materialize-current":
         return materialize_current_runtime_files()
     if command == "materialize" and len(argv) == 4:

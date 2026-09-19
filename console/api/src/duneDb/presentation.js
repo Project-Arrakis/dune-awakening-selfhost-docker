@@ -50,7 +50,7 @@ const RESEARCH_DISPLAY_ALIASES = new Map([
 
 export function xpToLevel(xp) {
   if (xp <= 0) return 0;
-  let lo = 1;
+  let lo = 0;
   let hi = CUMULATIVE_XP_BY_LEVEL.length - 1;
   while (lo < hi) {
     const mid = Math.floor((lo + hi + 1) / 2);

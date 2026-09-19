@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, DatabaseBackup, RefreshCw } from "lucide-react";
+import { AlertTriangle, ArrowUp, DatabaseBackup, RefreshCw } from "lucide-react";
 import { basesApi, type BaseLandClaim } from "../../api/bases";
 
 type Props = {
@@ -44,6 +44,14 @@ function reachableKeys(cells: Set<string>) {
 
 function formatYaw(value: number) {
   return `${Math.round(value * 10) / 10}°`;
+}
+
+function rotateToWorld({ x, y }: Coordinate, yaw: number): Coordinate {
+  const radians = yaw * Math.PI / 180;
+  return {
+    x: x * Math.cos(radians) - y * Math.sin(radians),
+    y: x * Math.sin(radians) + y * Math.cos(radians)
+  };
 }
 
 export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: Props) {
@@ -105,14 +113,15 @@ export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: P
   }, [occupied]);
   const plotted = useMemo(() => [...new Set([...occupied, ...frontier])].map(parseKey), [occupied, frontier]);
   const bounds = useMemo(() => {
-    const xs = plotted.map((cell) => cell.x);
-    const ys = plotted.map((cell) => cell.y);
+    const worldCells = plotted.map((cell) => rotateToWorld(cell, claim?.yaw || 0));
+    const xs = worldCells.map((cell) => cell.x);
+    const ys = worldCells.map((cell) => cell.y);
     const minX = Math.min(...xs) - 0.7;
     const maxX = Math.max(...xs) + 0.7;
     const minY = Math.min(...ys) - 0.7;
     const maxY = Math.max(...ys) + 0.7;
     return { minX, minY, width: Math.max(2, maxX - minX), height: Math.max(2, maxY - minY) };
-  }, [plotted]);
+  }, [claim?.yaw, plotted]);
 
   function toggleCell(key: string) {
     if (!claim || saving || loading) return;
@@ -188,34 +197,40 @@ export function BaseLandClaimTab({ baseId, baseName, confirmAction, onError }: P
         <section className="land-claim-grid-card" aria-label="Horizontal land claim grid">
           <div className="land-claim-section-heading"><div><h3>Horizontal Claim</h3><p>Click a dotted cell to add it. New cells must remain connected edge-to-edge.</p></div><button className="secondary-action" onClick={() => void load()} disabled={saving || loading} aria-label={loading ? "Reloading land claim" : "Reload"}><RefreshCw size={15} className={loading ? "land-claim-reload-icon" : undefined} />Reload</button></div>
           <div className="land-claim-grid-wrap">
+            <div className="land-claim-north-indicator" role="img" aria-label="World North, fixed at the top">
+              <span className="land-claim-north-arrow" aria-hidden="true"><ArrowUp size={22} strokeWidth={2.5} /></span>
+              <span>North</span>
+            </div>
             <svg className="land-claim-grid" viewBox={`${bounds.minX} ${bounds.minY} ${bounds.width} ${bounds.height}`} role="img" aria-label={`Land claim grid with ${claim.segmentCount} existing and ${selected.size} selected segments`}>
-              {plotted.map(({ x, y }) => {
-                const key = keyOf(x, y);
-                const origin = key === "0,0";
-                const isSelected = selected.has(key);
-                const isExisting = existing.has(key) && !origin;
-                const available = frontier.has(key);
-                return <g key={key}>
-                  <rect
-                    x={x - 0.44}
-                    y={y - 0.44}
-                    width="0.88"
-                    height="0.88"
-                    rx="0.08"
-                    className={`land-claim-cell${origin ? " origin" : isSelected ? " selected" : isExisting ? " existing" : " available"}`}
-                    role={available || isSelected ? "button" : undefined}
-                    tabIndex={available || isSelected ? 0 : undefined}
-                    aria-label={origin ? "Sub-Fief origin" : isSelected ? `Remove selected segment ${x}, ${y}` : isExisting ? `Existing segment ${x}, ${y}` : `Add segment ${x}, ${y}`}
-                    onClick={() => (available || isSelected) && toggleCell(key)}
-                    onKeyDown={(event) => { if ((available || isSelected) && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); toggleCell(key); } }}
-                  />
-                  {(origin || isSelected) && <text x={x} y={y + 0.09} className="land-claim-cell-label" aria-hidden="true">{origin ? "T" : "+"}</text>}
-                </g>;
-              })}
+              <g className="land-claim-world-grid" transform={`rotate(${claim.yaw} 0 0)`} data-testid="land-claim-world-grid">
+                {plotted.map(({ x, y }) => {
+                  const key = keyOf(x, y);
+                  const origin = key === "0,0";
+                  const isSelected = selected.has(key);
+                  const isExisting = existing.has(key) && !origin;
+                  const available = frontier.has(key);
+                  return <g key={key}>
+                    <rect
+                      x={x - 0.44}
+                      y={y - 0.44}
+                      width="0.88"
+                      height="0.88"
+                      rx="0.08"
+                      className={`land-claim-cell${origin ? " origin" : isSelected ? " selected" : isExisting ? " existing" : " available"}`}
+                      role={available || isSelected ? "button" : undefined}
+                      tabIndex={available || isSelected ? 0 : undefined}
+                      aria-label={origin ? "Sub-Fief origin" : isSelected ? `Remove selected segment ${x}, ${y}` : isExisting ? `Existing segment ${x}, ${y}` : `Add segment ${x}, ${y}`}
+                      onClick={() => (available || isSelected) && toggleCell(key)}
+                      onKeyDown={(event) => { if ((available || isSelected) && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); toggleCell(key); } }}
+                    />
+                    {(origin || isSelected) && <text x={x} y={y + 0.09} transform={`rotate(${-claim.yaw} ${x} ${y})`} className="land-claim-cell-label" aria-hidden="true">{origin ? "T" : "+"}</text>}
+                  </g>;
+                })}
+              </g>
             </svg>
           </div>
           <div className="land-claim-legend"><span><i className="origin" />Sub-Fief</span><span><i className="existing" />Existing</span><span><i className="selected" />New</span><span><i className="available" />Available</span></div>
-          <p className="land-claim-axis-note">Database grid view: +X moves right and +Y moves down. The original yaw shows how this local grid is rotated in the world.</p>
+          <p className="land-claim-axis-note">World-oriented view: North stays at the top. The claim grid is rotated using the Sub-Fief&apos;s original yaw, while saved coordinates remain unchanged.</p>
         </section>
 
         <aside className="land-claim-controls">

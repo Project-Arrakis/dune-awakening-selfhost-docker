@@ -189,7 +189,7 @@ export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, cl
     return () => window.removeEventListener("message", onMessage);
   }, [openAddon]);
 
-  const rows: AddonTableRow[] = addons.map((addon) => {
+  const rows: AddonTableRow[] = addons.filter((addon) => addon.lifecycle !== "removed").map((addon) => {
     const installedAddon = installedById.get(addon.id);
     return { ...addon, status: installedAddon ? installedAddon.status || "Installed" : "Available", installedOnly: false };
   });
@@ -210,7 +210,8 @@ export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, cl
       provenance: addon.provenance || {},
       status: addon.status || "Installed",
       installedOnly: true
-    })));
+    }))
+    .filter((addon) => addon.lifecycle !== "removed"));
   const lifecycleSummary = addonLifecycleSummary(rows);
 
   if (selectedAddonId) {
@@ -305,7 +306,7 @@ function AddonsTable({ rows, loading, installedById, pinnedAddons, installingId,
       </td>
       <td data-label="Author" className="addon-author-cell">{row.author}</td>
       <td data-label="Version"><AddonVersionCell catalogVersion={row.version} installedAddon={installedAddon} updateAvailable={updateAvailable} /></td>
-      <td data-label="Permissions"><PermissionList permissions={updateAvailable ? row.permissions || [] : installedAddon?.permissions || row.permissions || []} approvedPermissions={installedAddon?.approvedPermissions || []} /></td>
+      <td data-label="Permissions" className="addon-permissions-cell"><PermissionList permissions={updateAvailable ? row.permissions || [] : installedAddon?.permissions || row.permissions || []} approvedPermissions={installedAddon?.approvedPermissions || []} /></td>
       <td data-label="Status">
         {installedAddon ? <div className="addon-status-cell"><label className={`switch-checkbox addon-status-toggle ${installedAddon.enabled ? "enabled" : "disabled"}`}><input type="checkbox" disabled={busy || installedAddon.lifecycle === "blocked"} checked={installedAddon.enabled} onChange={(event) => void setAddonEnabled(installedAddon, event.target.checked)} /><span className="switch-label">{busy ? "Working" : installedAddon.enabled ? "Enabled" : "Disabled"}</span><strong className="switch-state">{installedAddon.enabled ? "ON" : "OFF"}</strong></label></div> : <div className="addon-status-cell"><StatusPill value="Available" /></div>}
       </td>

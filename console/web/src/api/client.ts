@@ -56,7 +56,7 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
     }
   }
   const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
-  if (isSessionAuthFailure(response.status, String(record.error || ""))) {
+  if (isSessionAuthFailure(response.status, String(record.error || ""), path)) {
     if (response.status === 403 && !csrfRetried && await refreshCsrfToken()) {
       return apiRequest<T>(path, options, true);
     }
@@ -73,7 +73,10 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
 // message to actually say so, matching the real text requireAuth() and
 // requireEnrollmentSession() send (the latter two phrases cover a missing or
 // out-of-scope enrollment session on the Tier 3 setup screen).
-function isSessionAuthFailure(status: number, message: string) {
+function isSessionAuthFailure(status: number, message: string, path = "") {
+  // A rejected login is not an expired session. Preserve the API's specific
+  // error so the sign-in form reports an incorrect password accurately.
+  if (path === "/api/auth/login") return false;
   return (status === 401 || status === 403) && /authentication required|csrf token|session expired|login session|sign in to begin|finish setting up/i.test(message);
 }
 
@@ -84,9 +87,9 @@ function announceSessionExpired() {
 
 // Bypasses the ordinary api() helper's caching (implicit `default` fetch
 // mode) on purpose: callers of this specific function need to know the
-// console's *actual current* running version -- used both by the console
+// console's *actual current* running build -- used both by the console
 // update flow's own reload-readiness check and by useStaleBuildWatcher to
-// detect a version change on an idle tab -- so a cached response would
+// detect a build change on an idle tab -- so a cached response would
 // defeat the point.
 export async function fetchConsoleAuthState() {
   const response = await fetch("/api/auth/state", {
@@ -95,7 +98,7 @@ export async function fetchConsoleAuthState() {
     headers: { accept: "application/json" }
   });
   if (!response.ok) throw new Error(`Console state check failed: ${response.status}`);
-  return await response.json() as { config?: { version?: string } };
+  return await response.json() as { config?: { version?: string; buildId?: string } };
 }
 
 async function refreshCsrfToken() {

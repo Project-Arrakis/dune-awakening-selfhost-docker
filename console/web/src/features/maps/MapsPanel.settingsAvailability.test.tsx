@@ -42,8 +42,19 @@ vi.mock("../../api/setup", () => ({
 
 vi.mock("../../lib/usePendingRefills", () => ({
   usePendingRefills: () => ({ pending: null, refresh: () => {} }),
+  usePendingQueues: () => ({
+    fuel: { pending: null, refresh: () => {} },
+    water: { pending: null, refresh: () => {} },
+    deletes: { pending: null, refresh: () => {} },
+    vehicleDeletes: { pending: null, refresh: () => {} },
+    permissions: { pending: null, refresh: () => {} }
+  }),
   pendingRefillCountForMap: () => 0,
-  pendingRefillCountForPartition: () => 0
+  pendingRefillCountForPartition: () => 0,
+  vehicleDeleteCountForMap: () => 0,
+  vehicleDeleteCountForPartition: () => 0,
+  childAccessPieceCountForMap: () => 0,
+  childAccessPieceCountForPartition: () => 0
 }));
 
 function renderMapsPanel() {
@@ -62,6 +73,22 @@ beforeEach(() => {
 });
 
 describe("MapsPanel modifier availability", () => {
+  it("force despawns the whole map instead of only its first partition", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: JSON.stringify({ maps: [{ map: "CB_Overland_S_08", status: "Ready", mode: "Dynamic", partitionId: "29" }] }) },
+      services: { stdout: "" },
+      readiness: { stdout: "" }
+    });
+    api.despawn.mockResolvedValue({ task: { id: "task-1", status: "succeeded" } });
+
+    renderMapsPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Force Despawn" }));
+
+    await waitFor(() => expect(api.despawn).toHaveBeenCalledWith("CB_Overland_S_08", "DESPAWN MAP"));
+  });
+
   it("opens settings while the live map-status request is still pending", async () => {
     const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
     api.status.mockImplementation(() => new Promise(() => {}));
@@ -97,5 +124,33 @@ describe("MapsPanel modifier availability", () => {
     expect(screen.getByRole("tab", { name: "UserEngine" })).toBeVisible();
     expect(screen.getByDisplayValue("2.0")).toBeVisible();
     expect(api.status).toHaveBeenCalledTimes(1);
+  });
+
+  it("edits native ServerCustomSettings values in the dedicated Custom Settings tab", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: JSON.stringify({ maps: [{ map: "Overmap", status: "Ready", mode: "Core Map", partitionId: "2" }] }) },
+      services: { stdout: "" },
+      readiness: { stdout: "" }
+    });
+    api.userSettingsSchema.mockResolvedValue({
+      engine: [], mapEngine: [], partitionEngine: [], game: [], partition: [],
+      serverCustom: [{
+        scope: "serverCustom", id: "gathering_amount", section: "/Script/DuneSandbox.UserServerCustomSettings",
+        key: "GatheringAmount", default: "1.000000", type: "number", clientFile: "", category: "Crafting And Resources", description: ""
+      }]
+    });
+    api.userSettingsValues.mockResolvedValue({ stdout: "gathering_amount\t2.000000\n" });
+
+    renderMapsPanel();
+    const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
+    await waitFor(() => expect(modifiers).toBeEnabled());
+    fireEvent.click(modifiers);
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Settings" }));
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "Overmap::2" } });
+
+    expect(await screen.findByDisplayValue("2.000000")).toBeVisible();
+    expect(api.userSettingsValues).toHaveBeenCalledWith("serverCustomPartition", "Overmap", "2");
+    expect(screen.getByText("ServerCustomSettings.ini", { exact: false })).toBeVisible();
   });
 });

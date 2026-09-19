@@ -1075,16 +1075,17 @@ player_rows() {
   require_postgres_running
   docker exec "$POSTGRES_CONTAINER" psql -U postgres -d dune -At -F '|' -c "
     select
-      convert_from(e.encrypted_funcom_id, 'UTF8') as fls_id,
+      coalesce(nullif(a."user", ''), nullif(e."user", '')) as fls_id,
       coalesce(ps.character_name, '') as character_name,
       coalesce(ps.online_status::text, 'Unknown') as online_status,
       coalesce(fs.map, '') as map,
       coalesce(wp.partition_id::text, '') as partition_id
     from dune.encrypted_accounts e
+    left join dune.accounts a on a.id = e.id
     left join dune.player_state ps on ps.account_id = e.id
     left join dune.farm_state fs on fs.server_id = ps.server_id
     left join dune.world_partition wp on wp.server_id = ps.server_id
-    where convert_from(e.encrypted_funcom_id, 'UTF8') <> ''
+    where coalesce(nullif(a."user", ''), nullif(e."user", '')) <> ''
       $([ "$online_only" = "1" ] && printf "and coalesce(ps.online_status::text, 'Offline') <> 'Offline'")
     order by ps.online_status desc nulls last, ps.character_name nulls last, fls_id;
   " 2>/dev/null
@@ -1745,7 +1746,7 @@ publish_player_command() {
 
   inner_json="$(build_passthrough_json "$command_id" "PlayerId=$resolved_player=string" "$@")"
   case "$command_id" in
-    AwardXP|SkillsSetUnspentSkillPoints|SkillsSetModuleLevel|UpdateAllWaterFillables|SpawnVehicleAt) require_online=1 ;;
+    AwardXP|SkillsSetUnspentSkillPoints|SkillsSetModuleLevel|UpdateAllWaterFillables|SpawnVehicleAt|TeleportTo) require_online=1 ;;
   esac
 
   if [ "${DUNE_ADMIN_DRY_RUN:-0}" = "1" ]; then

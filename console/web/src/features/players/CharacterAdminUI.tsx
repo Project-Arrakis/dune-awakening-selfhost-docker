@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Brain, Building2, Car, ChevronDown, ChevronUp, Hammer, Map as MapIcon, Microscope, ScrollText, ShieldCheck, Star, UserRound } from "lucide-react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { Brain, Building2, Car, ChevronDown, ChevronUp, Hammer, House, Map as MapIcon, Microscope, Palette, ScrollText, ShieldCheck, Star, UserRound } from "lucide-react";
 import { adminApi } from "../../api/admin";
 import { playersApi, type CharacterRecoveryInspection } from "../../api/players";
 import type { Task } from "../../api/setup";
@@ -20,14 +20,48 @@ import { journeyActionsAvailable } from "./journeySafety";
 import { adminTaskFailureDetail, friendlyCraftingSource, friendlyInlineError, friendlyVehicleName, friendlyVehicleTemplateName, parseSkillModuleRows, parseVehicleCatalog, playerAdmin_bulkItemFailure, playerAdmin_friendlyFailure, playerAdmin_taskFailureMessage, playerAssignedFaction, splitInventoryByGroup, titleCaseWords, vehicleSpawnDistanceLabel, vehicleSpawnOffsetUnits } from "./playerAdminUtils";
 import { BlueprintsPanel } from "../blueprints/BlueprintsPanel";
 import { BuildingUnlocksTab } from "./BuildingUnlocksTab";
+import { CustomizationsTab } from "./CustomizationsTab";
+import { PlayerTeleportControls } from "./PlayerTeleportControls";
+import type { RestartGate } from "../server/restartQueueGuard";
+
+const PlayerBasesPanel = lazy(() => import("../bases/BasesPanel").then((module) => ({ default: module.BasesPanel })));
 
 type CraftingRecipeRow = { recipeId: string; displayName: string; category: string; source: string; qualityLevel: number; unlocked: boolean };
-type ResearchItemRow = { itemKey: string; displayName: string; category: string; productGroup: string; type: string; unlockedState: string; unlocked: boolean; isNew: boolean; recipeId: string; recipeUnlocked: boolean; researchPurchased: boolean; actionable: boolean; needsRecipeRepair: boolean };
+type ResearchItemRow = { itemKey: string; displayName: string; category: string; productGroup: string; type: string; unlockedState: string; unlocked: boolean; isNew: boolean; recipeId: string; recipeUnlocked: boolean; unlockKind: string; unlockId: string; unlockMaterialized: boolean; researchPurchased: boolean; actionable: boolean; needsUnlockRepair: boolean };
 type SkillModuleCatalogRow = { skillModule: string; category: string; id: string; maxLevel: number };
 type LearnedSkillModuleRow = { module_id?: unknown; moduleId?: unknown; id?: unknown; level?: unknown; rank?: unknown; skill_points_spent?: unknown; skillPointsSpent?: unknown };
 type SkillCard = { name: string; type: string; rank: string };
+export const PLAYER_ADMIN_SKILL_TREES: Record<string, { tree: string; cards: SkillCard[] }[]> = {
+  Trooper: [
+    { tree: "Gunnery", cards: [{ name: "Energy Capsule", type: "Ability", rank: "1" }, { name: "Heavy Weapon Damage", type: "Passive", rank: "3" }, { name: "Gunsmith", type: "Passive", rank: "3" }, { name: "Heavy Weapon Agility", type: "Technique", rank: "3" }, { name: "Scattergun Damage", type: "Passive", rank: "3" }, { name: "Field Maintenance", type: "Passive", rank: "3" }, { name: "Disruptor Damage", type: "Passive", rank: "3" }, { name: "Center of Mass", type: "Technique", rank: "3" }, { name: "Ranged Damage", type: "Passive", rank: "3" }] },
+    { tree: "Suspensor Training", cards: [{ name: "Suspensor Blast", type: "Ability", rank: "1" }, { name: "Death from Above", type: "Technique", rank: "3" }, { name: "Collapse Grenade", type: "Ability", rank: "1" }, { name: "Suspensor Efficiency", type: "Passive", rank: "3" }, { name: "Suspensor Dash", type: "Technique", rank: "1" }, { name: "Gravity Field", type: "Ability", rank: "1" }, { name: "Anti-gravity Field", type: "Ability", rank: "1" }] },
+    { tree: "Tactical Tech", cards: [{ name: "Reflexive Reload", type: "Passive", rank: "1" }, { name: "Assault Seeker", type: "Ability", rank: "3" }, { name: "Attractor Field", type: "Ability", rank: "1" }, { name: "Explosive Grenade", type: "Ability", rank: "3" }, { name: "Battle Hardened", type: "Technique", rank: "3" }, { name: "Shigawire Claw", type: "Ability", rank: "3" }] }
+  ],
+  Mentat: [
+    { tree: "Mental Calculus", cards: [{ name: "Shield Overcharge", type: "Passive", rank: "1" }, { name: "Exploit Weakness", type: "Technique", rank: "1" }, { name: "Rifle Damage", type: "Passive", rank: "3" }, { name: "Tailoring", type: "Passive", rank: "3" }, { name: "Marksman", type: "Technique", rank: "3" }, { name: "Pistol Damage", type: "Passive", rank: "3" }, { name: "Garment Keeper", type: "Passive", rank: "3" }, { name: "Ranged Damage", type: "Passive", rank: "3" }, { name: "The Sentinel", type: "Ability", rank: "3" }] },
+    { tree: "Assassination", cards: [{ name: "Hunter-Seeker", type: "Ability", rank: "1" }, { name: "Poison Tooth", type: "Technique", rank: "3" }, { name: "Stunner", type: "Ability", rank: "3" }, { name: "Assassin's Shot", type: "Passive", rank: "3" }, { name: "Poison Mine", type: "Ability", rank: "3" }, { name: "Headshot Damage", type: "Passive", rank: "3" }, { name: "Poison Capsule", type: "Ability", rank: "3" }] },
+    { tree: "Tactician", cards: [{ name: "Source of Power", type: "Ability", rank: "1" }, { name: "Anti-gravity Mine", type: "Ability", rank: "1" }, { name: "Iron Will", type: "Technique", rank: "1" }, { name: "Gravity Mine", type: "Ability", rank: "1" }, { name: "Solido Decoy", type: "Ability", rank: "1" }, { name: "Shield Wall", type: "Ability", rank: "3" }] }
+  ],
+  Planetologist: [
+    { tree: "Scientist", cards: [{ name: "Conservation of Energy", type: "Technique", rank: "3" }, { name: "Compaction", type: "Passive", rank: "3" }, { name: "Overcharge", type: "Passive", rank: "3" }, { name: "Deep Analysis", type: "Passive", rank: "3" }, { name: "Dew Gathering", type: "Passive", rank: "3" }, { name: "Rerouting", type: "Passive", rank: "3" }, { name: "Cutteray Mining", type: "Passive", rank: "3" }] },
+    { tree: "Explorer", cards: [{ name: "Spice Surveyor", type: "Passive", rank: "1" }, { name: "Scanner Mastery", type: "Passive", rank: "3" }, { name: "Stillsuit Seals", type: "Passive", rank: "3" }, { name: "Cartographer", type: "Passive", rank: "1" }, { name: "Mountaineer", type: "Passive", rank: "3" }, { name: "Suspensor Pad", type: "Ability", rank: "1" }] },
+    { tree: "Mechanic", cards: [{ name: "Heat Management", type: "Passive", rank: "1" }, { name: "Fuel Efficient Pilot", type: "Passive", rank: "3" }, { name: "Sandcrawler Yield", type: "Passive", rank: "3" }, { name: "Vehicle Scanning", type: "Passive", rank: "3" }, { name: "Fuel Efficient Driver", type: "Passive", rank: "3" }, { name: "Vehicle Mining", type: "Passive", rank: "3" }, { name: "Vehicle Repair", type: "Passive", rank: "3" }] }
+  ],
+  "Bene Gesserit": [
+    { tree: "Weirding Way", cards: [{ name: "Bindu Dodge", type: "Passive", rank: "1" }, { name: "Prana-Bindu Strikes", type: "Ability", rank: "1" }, { name: "Weirding Step", type: "Ability", rank: "3" }, { name: "Short Blade Damage", type: "Passive", rank: "3" }, { name: "Manipulate Instability", type: "Technique", rank: "3" }, { name: "Blade Damage", type: "Passive", rank: "3" }, { name: "Bindu Sprint", type: "Ability", rank: "3" }] },
+    { tree: "The Voice", cards: [{ name: "Screech", type: "Passive", rank: "1" }, { name: "Rapid Register", type: "Technique", rank: "1" }, { name: "Stop", type: "Ability", rank: "3" }, { name: "Ignore", type: "Ability", rank: "1" }, { name: "Voice Training", type: "Passive", rank: "3" }, { name: "Compel", type: "Ability", rank: "3" }] },
+    { tree: "Body Control", cards: [{ name: "Litany Against Fear", type: "Ability", rank: "3" }, { name: "Prana-Bindu Stability", type: "Technique", rank: "3" }, { name: "Metabolize Poison", type: "Technique", rank: "1" }, { name: "Vitality", type: "Passive", rank: "3" }, { name: "Self-Healing", type: "Passive", rank: "3" }, { name: "Poison Tolerance", type: "Passive", rank: "3" }, { name: "Trauma Recovery", type: "Technique", rank: "3" }, { name: "Sun Tolerance", type: "Passive", rank: "3" }, { name: "Recovery", type: "Passive", rank: "3" }] }
+  ],
+  Swordmaster: [
+    { tree: "The Blade", cards: [{ name: "Precise Parry", type: "Passive", rank: "3" }, { name: "Eye of the Storm", type: "Ability", rank: "3" }, { name: "Foil", type: "Ability", rank: "1" }, { name: "Long Blade Damage", type: "Passive", rank: "3" }, { name: "Dance of Blades", type: "Technique", rank: "3" }, { name: "Retaliate", type: "Ability", rank: "1" }, { name: "Blade Damage", type: "Passive", rank: "3" }] },
+    { tree: "The Will", cards: [{ name: "Thrive on Danger", type: "Technique", rank: "1" }, { name: "Solid Stance", type: "Passive", rank: "3" }, { name: "Confidence", type: "Passive", rank: "3" }, { name: "Bleed Tolerance", type: "Passive", rank: "3" }, { name: "Reckless Lunge", type: "Technique", rank: "3" }, { name: "Deflection", type: "Ability", rank: "3" }] },
+    { tree: "The Way", cards: [{ name: "Prescient Strike", type: "Passive", rank: "1" }, { name: "General Conditioning", type: "Passive", rank: "3" }, { name: "Desert Conditioning", type: "Passive", rank: "3" }, { name: "Crippling Strike", type: "Ability", rank: "3" }, { name: "Disciplined Breathing", type: "Technique", rank: "3" }, { name: "Inspiration", type: "Ability", rank: "3" }, { name: "Field Medicine", type: "Passive", rank: "3" }, { name: "Optimized Hydration", type: "Passive", rank: "3" }, { name: "Knee Charge", type: "Ability", rank: "3" }] }
+  ]
+};
+
 type StarterSkillPreset = { label: string; modules: { id: string; level: number }[] };
 type JourneyRow = { id: string; name: string; rawName: string; category: string; depth: number; parentId: string; dependency?: string; status: string; complete: boolean; revealed?: boolean; pendingReward?: boolean; tags?: number; state?: number | null };
+type CurrencyOption = { id: number; label: string };
 
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
 
@@ -57,16 +91,18 @@ function playerAdmin_effectiveGrade(value: unknown, item?: { itemId?: string; id
   return Math.max(catalogItemMinimumGrade(item), normalizeItemGrade(value));
 }
 
-export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId, playerName, onError, onRefresh, onClose, confirmAction, waitForTask, formatMutationResult }: { detail: Record<string, unknown> | null; fallback: Record<string, unknown>; dbPlayerId: string; actionPlayerId: string; playerName: string; onError: (text: string) => void; onRefresh: () => void; onClose: () => void; confirmAction: ConfirmAction; waitForTask: (task: Task) => Promise<Task>; formatMutationResult: (result: unknown) => string }) {
+export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId, playerName, onError, onRefresh, onClose, confirmAction, waitForTask, formatMutationResult, restartGate }: { detail: Record<string, unknown> | null; fallback: Record<string, unknown>; dbPlayerId: string; actionPlayerId: string; playerName: string; onError: (text: string) => void; onRefresh: () => void; onClose: () => void; confirmAction: ConfirmAction; waitForTask: (task: Task) => Promise<Task>; formatMutationResult: (result: unknown) => string; restartGate: RestartGate }) {
   const playerAdmin_tabs = [
     { label: "Character", icon: UserRound },
     { label: "Crafting", icon: Hammer },
     { label: "Research", icon: Microscope },
     { label: "Building Sets", icon: Building2 },
+    { label: "Customizations", icon: Palette },
     { label: "Skills", icon: Brain },
     { label: "Specialization", icon: Star },
     { label: "Journey", icon: MapIcon },
     { label: "Blueprints", icon: ScrollText },
+    { label: "Bases", icon: House },
     { label: "Vehicles", icon: Car },
     { label: "Admin", icon: ShieldCheck }
   ];
@@ -82,7 +118,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const [playerAdmin_researchFilter, playerAdmin_setResearchFilter] = useState("");
   const [playerAdmin_skillSchool, playerAdmin_setSkillSchool] = useState("Trooper");
   const [playerAdmin_xpAmount, playerAdmin_setXpAmount] = useState("1000");
-  const [playerAdmin_currencyType, playerAdmin_setCurrencyType] = useState("Solari Credit");
+  const [playerAdmin_currencyType, playerAdmin_setCurrencyType] = useState("0");
   const [playerAdmin_currencyAmount, playerAdmin_setCurrencyAmount] = useState("100");
   const [playerAdmin_intelAmount, playerAdmin_setIntelAmount] = useState("100");
   const [playerAdmin_factionAmount, playerAdmin_setFactionAmount] = useState("100");
@@ -122,7 +158,6 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   const [playerAdmin_journeyError, playerAdmin_setJourneyError] = useState("");
   const [playerAdmin_journeyFilter, playerAdmin_setJourneyFilter] = useState("");
   const [playerAdmin_expandedJourney, playerAdmin_setExpandedJourney] = useState<Record<string, boolean>>({});
-  const [playerAdmin_coords, playerAdmin_setCoords] = useState({ x: "", y: "", z: "", yaw: "0" });
   const [playerAdmin_vehicleId, playerAdmin_setVehicleId] = useState("");
   const [playerAdmin_vehicleTemplate, playerAdmin_setVehicleTemplate] = useState("");
   const [playerAdmin_vehicleCatalog, playerAdmin_setVehicleCatalog] = useState<Record<string, string[]>>({});
@@ -143,6 +178,10 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   }, [playerAdmin_itemName, playerAdmin_itemId, playerAdmin_selectedItem?.category, playerAdmin_selectedItem?.source, playerAdmin_augmentCatalog]);
   const playerAdmin_profile = (detail?.player && typeof detail.player === "object" ? detail.player : fallback) as Record<string, unknown>;
   const playerAdmin_capabilities = (detail?.capabilities && typeof detail.capabilities === "object" ? detail.capabilities : {}) as Record<string, unknown>;
+  const playerAdmin_currencyOptions = (Array.isArray(detail?.currencyOptions) && detail.currencyOptions.length
+    ? detail.currencyOptions
+    : [{ id: 0, label: "Solari Credit" }, { id: 1, label: "Scrip" }]) as CurrencyOption[];
+  const playerAdmin_selectedCurrency = playerAdmin_currencyOptions.find((option) => String(option.id) === playerAdmin_currencyType) || playerAdmin_currencyOptions[0];
   const playerAdmin_faction = playerAssignedFaction(playerAdmin_profile.faction, playerAdmin_profile.faction_assigned);
   const playerAdmin_craftingCategories = ["Essentials", "Water Discipline", "Combat", "Construction", "Exploration", "Vehicles"];
   const playerAdmin_isOnline = String(firstDefined(playerAdmin_profile.actual_online_status, playerAdmin_profile.online_status, fallback.actual_online_status, fallback.online_status) || "").toLowerCase() === "online";
@@ -352,6 +391,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
         const result = await playersApi.giveItems(grantTargetId, items.map((item) => ({ itemName: item.itemName, itemId: item.itemId, quantity: item.quantity, quality: itemGrade(item), durability: grantItemDurability(), augments: item.augments || [], augmentQuality: item.augments?.length ? playerAdmin_augmentGrade(item.augmentQuality) : undefined })));
         if (!result.ok) throw new Error(playerAdmin_bulkItemFailure(result.results));
         await playerAdmin_loadInventoryRows();
+        return result;
       },
       successText,
       { actionType: actionLabel, target: playerName, amount: String(items.length) },
@@ -427,9 +467,12 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
         isNew: Boolean(row.isNew),
         recipeId: String(row.recipeId || ""),
         recipeUnlocked: Boolean(row.recipeUnlocked),
+        unlockKind: String(row.unlockKind || "recipe"),
+        unlockId: String(row.unlockId || row.recipeId || ""),
+        unlockMaterialized: Boolean(row.unlockMaterialized ?? row.recipeUnlocked),
         researchPurchased: Boolean(row.researchPurchased),
         actionable: Boolean(row.actionable),
-        needsRecipeRepair: Boolean(row.needsRecipeRepair)
+        needsUnlockRepair: Boolean(row.needsUnlockRepair ?? row.needsRecipeRepair)
       })).filter((row) => row.itemKey));
     } catch (error) {
       playerAdmin_setResearchRows([]);
@@ -446,10 +489,16 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       const response = await playersApi.unlockResearchItem(dbPlayerId, { itemKey: row.itemKey, confirmation: "UNLOCK RESEARCH ITEM" });
       const alreadyUnlocked = Boolean(response.result?.alreadyUnlocked);
       const repairedRecipe = Boolean(response.result?.repairedRecipe);
-      playerAdmin_addLog("Unlock Research", row.itemKey, "1", repairedRecipe ? "Recipe Repaired" : alreadyUnlocked ? "Already Unlocked" : "Succeeded");
+      const repairedUnlock = Boolean(response.result?.repairedUnlock);
+      const buildingUnlock = String(response.result?.unlockKind || row.unlockKind) === "building";
+      playerAdmin_addLog("Unlock Research", row.itemKey, "1", repairedUnlock ? (buildingUnlock ? "Building Unlock Repaired" : "Recipe Repaired") : alreadyUnlocked ? "Already Unlocked" : "Succeeded");
       await playerAdmin_loadResearchItems();
       await playerAdmin_loadCraftingRecipes();
-      playerAdmin_showResult(key, repairedRecipe ? "Build recipe repaired. Player will see it on next login." : alreadyUnlocked ? "Already researched and buildable." : "Researched and build recipe unlocked. Player will see it on next login.", "success");
+      playerAdmin_showResult(key, repairedUnlock || repairedRecipe
+        ? `${buildingUnlock ? "Building unlock" : "Build recipe"} repaired. Player will see it on next login.`
+        : alreadyUnlocked
+          ? "Already researched and buildable."
+          : `Researched and ${buildingUnlock ? "building" : "build recipe"} unlocked. Player will see it on next login.`, "success");
     } catch (error) {
       const message = friendlyInlineError(error);
       playerAdmin_showResult(key, message, "danger");
@@ -629,6 +678,11 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   async function playerAdmin_completeJourney(row: JourneyRow) {
     const key = `journey:${row.category}:${row.id}`;
     onError("");
+    if (!(await confirmAction(`Mark "${row.name}" complete for ${playerName}? The player must be fully offline; the change takes effect on the next login.`, {
+      title: "Complete Journey Node",
+      confirmLabel: "Complete",
+      details: [{ label: "Player", value: playerName, tone: "accent" }, { label: "Node", value: row.name }]
+    }))) return;
     playerAdmin_showResult(key, `Completing ${row.name} for ${playerName}`, "neutral", true);
     try {
       const response = row.category === "Tutorial"
@@ -647,6 +701,12 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
   async function playerAdmin_resetJourney(row: JourneyRow) {
     const key = `journey:${row.category}:${row.id}`;
     onError("");
+    if (!(await confirmAction(`Reset "${row.name}" for ${playerName}? The player must be fully offline. Rewards already granted are kept, and a consumed Contract item cannot be recreated.`, {
+      title: "Reset Journey Node",
+      confirmLabel: "Reset",
+      danger: true,
+      details: [{ label: "Player", value: playerName, tone: "accent" }, { label: "Node", value: row.name, tone: "danger" }]
+    }))) return;
     playerAdmin_showResult(key, `Resetting ${row.name} for ${playerName}`, "neutral", true);
     try {
       const response = row.category === "Tutorial"
@@ -661,16 +721,6 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       playerAdmin_showResult(key, message, "danger");
       playerAdmin_addLog(`Reset ${row.category}`, row.rawName || row.id, "1", `Failed: ${message}`);
     }
-  }
-  async function playerAdmin_useCurrentPosition() {
-    const data = await playersApi.position(dbPlayerId);
-    const position = (data.position || data) as Record<string, unknown>;
-    const x = firstDefined(position.x, position.X, position.location_x, position.pos_x);
-    const y = firstDefined(position.y, position.Y, position.location_y, position.pos_y);
-    const z = firstDefined(position.z, position.Z, position.location_z, position.pos_z);
-    const yaw = firstDefined(position.yaw, position.Yaw, position.rotation_yaw, position.rot_yaw, 0);
-    if (x === undefined || y === undefined || z === undefined) throw new Error("Current position is not available from the detected player position schema.");
-    playerAdmin_setCoords({ x: String(x), y: String(y), z: String(z), yaw: String(yaw ?? 0) });
   }
   async function playerAdmin_loadVehicles() {
     try {
@@ -990,7 +1040,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       secondaryActionLabel="Result"
       secondaryActionClassName="playerAdmin_schematicResultCell"
       actionClassName="playerAdmin_schematicActionCell"
-      action={(row) => <button className="playerAdmin_stateActionButton" title={!row.actionable && !row.unlocked ? "Group markers cannot be safely unlocked as one recipe. Unlock the individual Recipe or Building entries." : undefined} disabled={!dbPlayerId || !Boolean(row.actionable) || Boolean(row.unlocked) || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockResearchItem(row as unknown as ResearchItemRow)}>{playerAdmin_busyActionKey === `research:${row.itemKey}` ? (row.needsRecipeRepair ? "Repairing..." : "Researching...") : row.unlocked ? "Researched" : !row.actionable ? "Group Entry" : row.needsRecipeRepair ? "Repair Unlock" : "Research"}</button>}
+      action={(row) => <button className="playerAdmin_stateActionButton" title={!row.actionable && !row.unlocked ? "Group markers cannot be safely unlocked as one entry. Unlock the individual Recipe or Building entries." : undefined} disabled={!dbPlayerId || !Boolean(row.actionable) || Boolean(row.unlocked) || Boolean(playerAdmin_busyActionKey)} onClick={() => playerAdmin_unlockResearchItem(row as unknown as ResearchItemRow)}>{playerAdmin_busyActionKey === `research:${row.itemKey}` ? (row.needsUnlockRepair ? "Repairing..." : "Researching...") : row.unlocked ? "Researched" : !row.actionable ? "Group Entry" : row.needsUnlockRepair ? "Repair Unlock" : "Research"}</button>}
     />
   );
   const playerAdmin_journeySortStory = useSortState();
@@ -1080,33 +1130,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
     Augmentations: ["Garment Augmentations", "Melee Weapon Augmentations", "Ranged Weapon Augmentations", "Generic Augmentations"],
     Uniques: ["Copper Products", "Iron Products", "Steel Products", "Aluminum Products", "Duraluminum Products", "Plastanium Products"]
   };
-  const playerAdmin_skillTrees: Record<string, { tree: string; cards: { name: string; type: string; rank: string }[] }[]> = {
-    Trooper: [
-      { tree: "Gunnery", cards: [{ name: "Energy Capsule", type: "Ability", rank: "1" }, { name: "Heavy Weapon Damage", type: "Passive", rank: "3" }, { name: "Gunsmith", type: "Passive", rank: "3" }, { name: "Heavy Weapon Agility", type: "Technique", rank: "3" }, { name: "Scattergun Damage", type: "Passive", rank: "3" }, { name: "Field Maintenance", type: "Passive", rank: "3" }, { name: "Disruptor Damage", type: "Passive", rank: "3" }, { name: "Center of Mass", type: "Technique", rank: "3" }, { name: "Ranged Damage", type: "Passive", rank: "3" }] },
-      { tree: "Suspensor Training", cards: [{ name: "Suspensor Blast", type: "Ability", rank: "1" }, { name: "Death from Above", type: "Technique", rank: "3" }, { name: "Collapse Grenade", type: "Ability", rank: "1" }, { name: "Suspensor Efficiency", type: "Passive", rank: "3" }, { name: "Suspensor Dash", type: "Technique", rank: "1" }, { name: "Gravity Field", type: "Ability", rank: "1" }, { name: "Anti-gravity Field", type: "Ability", rank: "1" }] },
-      { tree: "Tactical Tech", cards: [{ name: "Reflexive Reload", type: "Passive", rank: "1" }, { name: "Assault Seeker", type: "Ability", rank: "3" }, { name: "Attractor Field", type: "Ability", rank: "1" }, { name: "Explosive Grenade", type: "Ability", rank: "3" }, { name: "Battle Hardened", type: "Technique", rank: "3" }, { name: "Shigawire Claw", type: "Ability", rank: "3" }] }
-    ],
-    Mentat: [
-      { tree: "Mental Calculus", cards: [{ name: "Shield Overcharge", type: "Passive", rank: "1" }, { name: "Exploit Weakness", type: "Technique", rank: "1" }, { name: "Rifle Damage", type: "Passive", rank: "3" }, { name: "Tailoring", type: "Passive", rank: "3" }, { name: "Marksman", type: "Technique", rank: "3" }, { name: "Pistol Damage", type: "Passive", rank: "3" }, { name: "Garment Keeper", type: "Passive", rank: "3" }, { name: "Ranged Damage", type: "Passive", rank: "3" }, { name: "The Sentinel", type: "Ability", rank: "3" }] },
-      { tree: "Assassination", cards: [{ name: "Hunter-Seeker", type: "Ability", rank: "1" }, { name: "Poison Tooth", type: "Technique", rank: "3" }, { name: "Stunner", type: "Ability", rank: "1" }, { name: "Assassin's Shot", type: "Passive", rank: "3" }, { name: "Poison Mine", type: "Ability", rank: "3" }, { name: "Headshot Damage", type: "Passive", rank: "3" }, { name: "Poison Capsule", type: "Ability", rank: "3" }] },
-      { tree: "Tactician", cards: [{ name: "Source of Power", type: "Ability", rank: "1" }, { name: "Anti-gravity Mine", type: "Ability", rank: "1" }, { name: "Iron Will", type: "Technique", rank: "1" }, { name: "Gravity Mine", type: "Ability", rank: "1" }, { name: "Solido Decoy", type: "Ability", rank: "1" }, { name: "Shield Wall", type: "Ability", rank: "3" }] }
-    ],
-    Planetologist: [
-      { tree: "Scientist", cards: [{ name: "Conservation of Energy", type: "Technique", rank: "3" }, { name: "Compaction", type: "Passive", rank: "3" }, { name: "Overcharge", type: "Passive", rank: "3" }, { name: "Deep Analysis", type: "Passive", rank: "3" }, { name: "Dew Gathering", type: "Passive", rank: "3" }, { name: "Rerouting", type: "Passive", rank: "3" }, { name: "Cutteray Mining", type: "Passive", rank: "3" }] },
-      { tree: "Explorer", cards: [{ name: "Spice Surveyor", type: "Passive", rank: "1" }, { name: "Scanner Mastery", type: "Passive", rank: "3" }, { name: "Stillsuit Seals", type: "Passive", rank: "3" }, { name: "Cartographer", type: "Passive", rank: "1" }, { name: "Mountaineer", type: "Passive", rank: "3" }, { name: "Suspensor Pad", type: "Ability", rank: "1" }] },
-      { tree: "Mechanic", cards: [{ name: "Heat Management", type: "Passive", rank: "1" }, { name: "Fuel Efficient Pilot", type: "Passive", rank: "3" }, { name: "Sandcrawler Yield", type: "Passive", rank: "3" }, { name: "Vehicle Scanning", type: "Passive", rank: "3" }, { name: "Fuel Efficient Driver", type: "Passive", rank: "3" }, { name: "Vehicle Mining", type: "Passive", rank: "3" }, { name: "Vehicle Repair", type: "Passive", rank: "3" }] }
-    ],
-    "Bene Gesserit": [
-      { tree: "Weirding Way", cards: [{ name: "Bindu Dodge", type: "Passive", rank: "1" }, { name: "Prana-Bindu Strikes", type: "Ability", rank: "1" }, { name: "Weirding Step", type: "Ability", rank: "1" }, { name: "Short Blade Damage", type: "Passive", rank: "3" }, { name: "Manipulate Instability", type: "Technique", rank: "3" }, { name: "Blade Damage", type: "Passive", rank: "3" }, { name: "Bindu Sprint", type: "Ability", rank: "3" }] },
-      { tree: "The Voice", cards: [{ name: "Screech", type: "Passive", rank: "1" }, { name: "Rapid Register", type: "Technique", rank: "1" }, { name: "Stop", type: "Ability", rank: "1" }, { name: "Ignore", type: "Ability", rank: "1" }, { name: "Voice Training", type: "Passive", rank: "3" }, { name: "Compel", type: "Ability", rank: "1" }] },
-      { tree: "Body Control", cards: [{ name: "Litany Against Fear", type: "Ability", rank: "3" }, { name: "Prana-Bindu Stability", type: "Technique", rank: "3" }, { name: "Metabolize Poison", type: "Technique", rank: "1" }, { name: "Vitality", type: "Passive", rank: "3" }, { name: "Self-Healing", type: "Passive", rank: "3" }, { name: "Poison Tolerance", type: "Passive", rank: "3" }, { name: "Trauma Recovery", type: "Technique", rank: "3" }, { name: "Sun Tolerance", type: "Passive", rank: "3" }, { name: "Recovery", type: "Passive", rank: "3" }] }
-    ],
-    Swordmaster: [
-      { tree: "The Blade", cards: [{ name: "Precise Parry", type: "Passive", rank: "3" }, { name: "Eye of the Storm", type: "Ability", rank: "3" }, { name: "Foil", type: "Ability", rank: "1" }, { name: "Long Blade Damage", type: "Passive", rank: "3" }, { name: "Dance of Blades", type: "Technique", rank: "3" }, { name: "Retaliate", type: "Ability", rank: "1" }, { name: "Blade Damage", type: "Passive", rank: "3" }] },
-      { tree: "The Will", cards: [{ name: "Thrive on Danger", type: "Technique", rank: "1" }, { name: "Solid Stance", type: "Passive", rank: "3" }, { name: "Confidence", type: "Passive", rank: "3" }, { name: "Bleed Tolerance", type: "Passive", rank: "3" }, { name: "Reckless Lunge", type: "Technique", rank: "3" }, { name: "Deflection", type: "Ability", rank: "1" }] },
-      { tree: "The Way", cards: [{ name: "Prescient Strike", type: "Passive", rank: "1" }, { name: "General Conditioning", type: "Passive", rank: "3" }, { name: "Desert Conditioning", type: "Passive", rank: "3" }, { name: "Crippling Strike", type: "Ability", rank: "1" }, { name: "Disciplined Breathing", type: "Technique", rank: "3" }, { name: "Inspiration", type: "Ability", rank: "3" }, { name: "Field Medicine", type: "Passive", rank: "3" }, { name: "Optimized Hydration", type: "Passive", rank: "3" }, { name: "Knee Charge", type: "Ability", rank: "3" }] }
-    ]
-  };
+  const playerAdmin_skillTrees = PLAYER_ADMIN_SKILL_TREES;
 
   function playerAdmin_openSkillTreeToggles(school: string) {
     const trees = playerAdmin_skillTrees[school] || [];
@@ -1138,7 +1162,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
               </div>
           </div>
           {playerAdmin_actionRow("xp", "Give XP", <input type="number" min="1" value={playerAdmin_xpAmount} onChange={(event) => playerAdmin_setXpAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("xp", `Giving ${Number(playerAdmin_xpAmount) || 0} XP to ${playerName}`, () => playerAdmin_runTask(() => playersApi.addXp(actionPlayerId, Number(playerAdmin_xpAmount) || 0)), `${playerName} received ${Number(playerAdmin_xpAmount) || 0} XP.`, { actionType: "Give XP", target: playerName, amount: String(Number(playerAdmin_xpAmount) || 0) }), !playerAdmin_canRunLiveAction, "The player must be online.")}
-          {playerAdmin_actionRow("currency", "Give Currency", <><select value={playerAdmin_currencyType} onChange={(event) => playerAdmin_setCurrencyType(event.target.value)}><option>Solari Credit</option><option>Scrip</option></select><input type="number" min="1" value={playerAdmin_currencyAmount} onChange={(event) => playerAdmin_setCurrencyAmount(event.target.value)} /></>, "Give", () => playerAdmin_runAction("currency", `Giving ${Number(playerAdmin_currencyAmount) || 0} ${playerAdmin_currencyType} to ${playerName}`, () => playerAdmin_withSummaryRefresh(() => playersApi.addCurrency(dbPlayerId, { currencyId: playerAdmin_currencyType === "Scrip" ? 1 : 0, amount: Number(playerAdmin_currencyAmount) || 0, confirmation: "ADD CURRENCY" })), `${playerName}'s ${playerAdmin_currencyType} was updated. Relog required.`, { actionType: `Give ${playerAdmin_currencyType}`, target: playerName, amount: String(Number(playerAdmin_currencyAmount) || 0) }), !dbPlayerId, "A relog is required to see the change.")}
+          {playerAdmin_actionRow("currency", "Give Currency", <><select value={playerAdmin_currencyType} onChange={(event) => playerAdmin_setCurrencyType(event.target.value)}>{playerAdmin_currencyOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select><input type="number" min="1" value={playerAdmin_currencyAmount} onChange={(event) => playerAdmin_setCurrencyAmount(event.target.value)} /></>, "Give", () => playerAdmin_runAction("currency", `Giving ${Number(playerAdmin_currencyAmount) || 0} ${playerAdmin_selectedCurrency.label} to ${playerName}`, () => playerAdmin_withSummaryRefresh(() => playersApi.addCurrency(dbPlayerId, { currencyId: playerAdmin_selectedCurrency.id, amount: Number(playerAdmin_currencyAmount) || 0, confirmation: "ADD CURRENCY" })), `${playerName}'s ${playerAdmin_selectedCurrency.label} was updated. Relog required.`, { actionType: `Give ${playerAdmin_selectedCurrency.label}`, target: playerName, amount: String(Number(playerAdmin_currencyAmount) || 0) }), !dbPlayerId, "A relog is required to see the change.")}
           {playerAdmin_actionRow("intel", <span className="playerAdmin_labelWithInfo"><span>Give Intel</span><InfoTooltip id="give-intel-help" label="About Give Intel">Adds available Intel while the player is offline and never exceeds the game&apos;s spendable cap. It does not purchase or unlock Research entries. The player should join after the grant before spending it.</InfoTooltip></span>, <input type="number" min="1" value={playerAdmin_intelAmount} onChange={(event) => playerAdmin_setIntelAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("intel", `Giving ${Number(playerAdmin_intelAmount) || 0} Intel to ${playerName}`, () => playerAdmin_withSummaryRefresh(() => playersApi.addIntel(dbPlayerId, { amount: Number(playerAdmin_intelAmount) || 0, confirmation: "ADD INTEL" })), `${playerName}'s Intel was updated and will load on next join.`, { actionType: "Give Intel", target: playerName, amount: String(Number(playerAdmin_intelAmount) || 0) }), !dbPlayerId || playerAdmin_isOnline, "The player must be offline for this database edit.")}
           {playerAdmin_faction && playerAdmin_actionRow("faction", <span className="playerAdmin_labelWithInfo"><span>Give Faction Reputation</span><InfoTooltip id="faction-reputation-help" label="About Faction Reputation">Faction Reputation affects rank, but Ranks 1–5 also require faction story progression. The player must be offline so the reputation used by vendors can be updated safely.</InfoTooltip></span>, <input type="number" min="1" max="12474" value={playerAdmin_factionAmount} onChange={(event) => playerAdmin_setFactionAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("faction", `Giving ${Number(playerAdmin_factionAmount) || 0} ${playerAdmin_faction.name} reputation to ${playerName}`, () => playerAdmin_withSummaryRefresh(() => playersApi.addFactionReputation(dbPlayerId, { factionId: playerAdmin_faction.id, amount: Number(playerAdmin_factionAmount) || 0, confirmation: "ADD FACTION REPUTATION" })), `${playerName}'s faction reputation and vendor access were synchronized. Estimated rank may be limited by unfinished faction story progression.`, { actionType: "Give Faction Reputation", target: playerAdmin_faction.name, amount: String(Number(playerAdmin_factionAmount) || 0) }), !dbPlayerId || playerAdmin_isOnline, "The player must be offline for this database edit.")}
         </div>)}
@@ -1210,6 +1234,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
         </div>
       )}
       {playerAdmin_activeTab === "Building Sets" && <BuildingUnlocksTab dbPlayerId={dbPlayerId} playerName={playerName} confirmAction={confirmAction} onActionLog={playerAdmin_addLog} />}
+      {playerAdmin_activeTab === "Customizations" && <CustomizationsTab dbPlayerId={dbPlayerId} playerName={playerName} confirmAction={confirmAction} onActionLog={playerAdmin_addLog} />}
       {playerAdmin_activeTab === "Skills" && (
         <div className="playerAdmin_content">
           <section className="playerAdmin_box">
@@ -1261,7 +1286,8 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       )}
       {playerAdmin_activeTab === "Journey" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Journey Browser</h4><div className="playerAdmin_boxHeaderLine playerAdmin_filterHeaderLine"><p>Journey changes require the player to be fully offline and take effect on the next login. Reset keeps rewards already granted and cannot recreate a consumed Contract item.</p><div className="playerAdmin_filterToolsRow"><input className="playerAdmin_filterTextInput" value={playerAdmin_journeyFilter} onChange={(event) => playerAdmin_setJourneyFilter(event.target.value)} placeholder="Filter by name, ID, status, or dependency" aria-label="Filter Journey Browser" />{playerAdmin_journeyFilter && <button type="button" onClick={() => playerAdmin_setJourneyFilter("")}>Clear</button>}<span className="playerAdmin_note">{playerAdmin_journeyFilterTerms.length ? `${playerAdmin_filteredJourneyEntryCount} of ${playerAdmin_journeyEntryCount}` : playerAdmin_journeyEntryCount} Journey Entr{(playerAdmin_journeyFilterTerms.length ? playerAdmin_filteredJourneyEntryCount : playerAdmin_journeyEntryCount) === 1 ? "y" : "ies"} Detected</span></div></div>{playerAdmin_journeyError && <p className="playerAdmin_note danger">{playerAdmin_journeyError}</p>}{playerAdmin_toggleBox("journey_story", `Story (${playerAdmin_filteredJourneyRows.story.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.story.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.story, playerAdmin_journeyFilterTerms.length ? "No story entries match this filter." : "No story entries were found.", playerAdmin_journeySortStory, playerAdmin_journeyResizeStory))}{playerAdmin_toggleBox("journey_contract", `Contracts (${playerAdmin_filteredJourneyRows.contract.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.contract.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.contract, playerAdmin_journeyFilterTerms.length ? "No contract entries match this filter." : "No contract entries were found.", playerAdmin_journeySortContract, playerAdmin_journeyResizeContract))}{playerAdmin_toggleBox("journey_codex", `Codex (${playerAdmin_filteredJourneyRows.codex.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.codex.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.codex, playerAdmin_journeyFilterTerms.length ? "No codex entries match this filter." : "No codex entries were found.", playerAdmin_journeySortCodex, playerAdmin_journeyResizeCodex))}{playerAdmin_toggleBox("journey_tutorial", `Tutorial (${playerAdmin_filteredJourneyRows.tutorial.length}${playerAdmin_journeyFilterTerms.length ? `/${playerAdmin_journeyRows.tutorial.length}` : ""})`, playerAdmin_journeyTable(playerAdmin_filteredJourneyRows.tutorial, playerAdmin_journeyFilterTerms.length ? "No tutorial entries match this filter." : "No tutorial entries were found.", playerAdmin_journeySortTutorial, playerAdmin_journeyResizeTutorial))}</section></div>}
       {playerAdmin_activeTab === "Blueprints" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Blueprints</h4><BlueprintsPanel dbPlayerId={dbPlayerId} playerName={playerName} onError={onError} confirmAction={confirmAction} /></section></div>}
-      {playerAdmin_activeTab === "Vehicles" && <PlayerVehiclesTab playerId={dbPlayerId} playerName={playerName} />}
+      {playerAdmin_activeTab === "Bases" && <div className="playerAdmin_content"><Suspense fallback={<section className="playerAdmin_box"><div className="loading-panel"><span className="spinner" aria-hidden="true" /><strong className="loading-dots">Loading Bases</strong></div></section>}><PlayerBasesPanel key={dbPlayerId} playerId={dbPlayerId} playerName={playerName} embedded onError={onError} confirmAction={confirmAction} restartGate={restartGate} formatMutationResult={formatMutationResult} /></Suspense></div>}
+      {playerAdmin_activeTab === "Vehicles" && <PlayerVehiclesTab playerId={dbPlayerId} playerName={playerName} confirmAction={confirmAction} />}
       {playerAdmin_activeTab === "Admin" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Player Admin Actions</h4><p>Use this area for player maintenance and high-impact admin actions. Some actions require the player to be online, while database repairs require the player to be offline.</p><PlayerFactionAssignment playerId={dbPlayerId} playerName={playerName} currentFaction={String(playerAdmin_profile.faction || "Neutral")} guild={playerAdmin_profile.guild} supported={playerAdmin_capabilities.assignFaction === true} confirmAction={confirmAction} onRefresh={() => { onRefresh(); playerAdmin_setSummaryRefreshKey((current) => current + 1); }} onActionLog={(actionType, target, amount, notes) => playerAdmin_addLog(actionType, target, amount, notes)} /><div className="playerAdmin_section playerAdmin_repairSection"><h5>Repair</h5><div className="playerAdmin_repairRow playerAdmin_characterRecoveryRow"><span className="playerAdmin_repairLabel"><span>Recover Deleted Character</span><em>{playerAdmin_isOnline ? "The player must be offline." : playerAdmin_characterRecoveryLoading ? "Checking deleted character history..." : playerAdmin_characterRecoveryError || (playerAdmin_characterRecovery?.candidates.some((candidate) => candidate.recoverable) ? "Restores the selected character's saved data while preserving the current Funcom identity. A safety backup and Sietch restart are included." : "No recoverable deleted character was detected.")}</em></span><span className="playerAdmin_characterRecoveryControls">{playerAdmin_characterRecovery?.candidates.some((candidate) => candidate.recoverable) && <select aria-label="Deleted character to recover" value={playerAdmin_recoveryCandidateId} onChange={(event) => playerAdmin_setRecoveryCandidateId(event.target.value)}>{playerAdmin_characterRecovery.candidates.filter((candidate) => candidate.recoverable).map((candidate) => <option key={candidate.characterStateId} value={candidate.characterStateId}>{candidate.characterName} · {candidate.itemCount} Items · {candidate.deletedAt ? new Date(candidate.deletedAt).toLocaleString() : "Unknown Date"}</option>)}</select>}<button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_characterRecoveryLoading || !playerAdmin_recoveryCandidateId || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_recoverDeletedCharacter()}>Recover Character</button></span><InlineActionResult result={playerAdmin_actionResult} resultKey="recoverDeletedCharacter" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Faction</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Restores earned story progression and synchronizes reputation. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_repairFactionReputation()}>Repair Faction</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairFactionReputation" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Landsraad Quests</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Repairs recognized stuck Landsraad quest states. A safety backup is created when needed."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_repairLandsraadQuests()}>Repair Quests</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairLandsraadQuests" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span>Repair Gear</span><em>{playerAdmin_isOnline ? "The player must be offline." : "Equipped and carried gear durability. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Repair gear for ${playerName}? The player must be offline and should relog after this.`))) return;
         void playerAdmin_runAction("repairGear", `Repairing ${playerName}'s gear`, async () => {
@@ -1275,16 +1301,19 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
               : `No gear needed repair (${scanned} item${scanned === 1 ? "" : "s"} scanned).`
           };
         }, `${playerName}'s gear was repaired. Relog required.`, { actionType: "Repair Gear", target: playerName, amount: "1" });
-      }}>Repair Gear</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairGear" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span className="playerAdmin_labelWithInfo"><span>Repair Vehicle Durability</span><InfoTooltip id="repair-vehicle-durability-help" label="About Repair Vehicle Durability">Repairs owned vehicle modules whose current durability is below the selected percentage of a trustworthy stored or inferred maximum. Modules without usable current durability or a trustworthy maximum are skipped. The player must be offline and should relog afterward.</InfoTooltip></span><label className="playerAdmin_vehicleDecayField"><span>Repair Below</span><input value={playerAdmin_vehicleDecayThreshold} onChange={(event) => playerAdmin_setVehicleDecayThreshold(event.target.value)} inputMode="numeric" aria-label="Vehicle durability repair threshold percent" /><span>%</span></label><em>{playerAdmin_isOnline ? "The player must be offline." : "Repairs eligible owned vehicle modules below this percentage. Relog required."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
+      }}>Repair Gear</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairGear" /></div><div className="playerAdmin_repairRow"><span className="playerAdmin_repairLabel"><span className="playerAdmin_labelWithInfo"><span>Repair Vehicle Durability</span><InfoTooltip id="repair-vehicle-durability-help" label="About Repair Vehicle Durability">Repairs owned vehicle modules whose current durability is below the selected percentage of a trustworthy stored or inferred maximum. Modules without usable current durability or a trustworthy maximum are skipped. Affected running map servers restart so their in-memory vehicle state cannot overwrite the repair.</InfoTooltip></span><label className="playerAdmin_vehicleDecayField"><span>Repair Below</span><input value={playerAdmin_vehicleDecayThreshold} onChange={(event) => playerAdmin_setVehicleDecayThreshold(event.target.value)} inputMode="numeric" aria-label="Vehicle durability repair threshold percent" /><span>%</span></label><em>{playerAdmin_isOnline ? "The player must be offline." : "Repairs eligible modules and restarts only their affected running maps."}</em></span><button disabled={!dbPlayerId || playerAdmin_isOnline || playerAdmin_actionResult?.pending} onClick={async () => {
         const threshold = Number(playerAdmin_vehicleDecayThreshold);
         if (!Number.isFinite(threshold) || threshold < 1 || threshold > 100) {
           playerAdmin_showResult("repairVehicleDecay", "Use a threshold from 1 to 100.", "danger");
           return;
         }
-        if (!(await confirmAction(`Repair owned vehicle modules below ${threshold}% durability for ${playerName}? Modules without a trustworthy stored maximum will be skipped.`, {
+        if (!(await confirmAction(`Repair owned vehicle modules below ${threshold}% durability for ${playerName}? Affected running map servers will restart briefly so the game cannot overwrite the repair. Players on those maps will be disconnected. Modules without a trustworthy stored maximum will be skipped.`, {
           title: "Repair Vehicle Durability",
           confirmLabel: "Repair Vehicles",
-          details: [{ label: "Threshold", value: `${threshold}%`, tone: "accent" }]
+          details: [
+            { label: "Threshold", value: `${threshold}%`, tone: "accent" },
+            { label: "Map Servers", value: "Restart affected maps", tone: "danger" }
+          ]
         }))) return;
         void playerAdmin_runAction("repairVehicleDecay", `Repairing ${playerName}'s vehicle decay`, async () => {
           const response = await playersApi.repairVehicleDecay(dbPlayerId, { thresholdPercent: threshold, confirmation: "REPAIR VEHICLE DECAY" });
@@ -1296,15 +1325,17 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
           const missingMaximum = Number(result.missingMaximum || 0);
           const missingCurrent = Number(result.missingCurrent || 0);
           const repairedVehicles = Number(result.repairedVehicles || 0);
+          const mapServersRestarted = Number(result.mapServersRestarted || 0);
+          const restartFailures = Array.isArray(result.restartFailures) ? result.restartFailures.map(String) : [];
           const skippedMaximumNote = missingMaximum > 0 ? ` ${missingMaximum} module${missingMaximum === 1 ? " was" : "s were"} skipped because no trustworthy maximum durability was available.` : "";
           const skippedCurrentNote = missingCurrent > 0 ? ` ${missingCurrent} module${missingCurrent === 1 ? " was" : "s were"} skipped because no usable current durability was stored.` : "";
           const skippedNote = `${skippedMaximumNote}${skippedCurrentNote}`;
           return {
             message: repaired > 0
-              ? `Repaired ${repaired} vehicle module${repaired === 1 ? "" : "s"} across ${repairedVehicles} vehicle${repairedVehicles === 1 ? "" : "s"}. Relog required.${skippedNote}`
+              ? `Repaired ${repaired} vehicle module${repaired === 1 ? "" : "s"} across ${repairedVehicles} vehicle${repairedVehicles === 1 ? "" : "s"}.${mapServersRestarted ? ` Restarted ${mapServersRestarted} affected map server${mapServersRestarted === 1 ? "" : "s"}.` : " All affected maps were already stopped."}${restartFailures.length ? ` Restart failed: ${restartFailures.join("; ")}.` : ""}${skippedNote}`
               : `No comparable vehicle modules were below the ${threshold}% durability threshold (${scanned} module${scanned === 1 ? "" : "s"} across ${vehicles} vehicle${vehicles === 1 ? "" : "s"} scanned; ${comparable} had usable current durability and a trustworthy maximum).${skippedNote}`
           };
-        }, `${playerName}'s vehicle decay was repaired. Relog required.`, { actionType: "Repair Vehicle Decay", target: playerName, amount: `${threshold}%` });
+        }, `${playerName}'s vehicle durability was repaired.`, { actionType: "Repair Vehicle Decay", target: playerName, amount: `${threshold}%` });
       }}>Repair Vehicles</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairVehicleDecay" /></div></div><div className="playerAdmin_section playerAdmin_dangerSection"><h5>Danger Zone</h5><div className="playerAdmin_buttonRow"><button className="danger" disabled={!actionPlayerId || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Repair ${playerName}'s login queue? Use this only when the player is stuck on connection errors and is not actually in-game.`, {
           title: "Repair Login Queue",
@@ -1346,10 +1377,7 @@ export function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId,
       }}>Wipe Inventory</button><button className="danger" disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
         if (!(await confirmAction(`Reset ${playerName}'s progression?`))) return;
         void playerAdmin_runAction("adminReset", `Resetting ${playerName}'s progression`, () => playerAdmin_runTask(() => playersApi.resetProgression(actionPlayerId, "RESET PROGRESSION")), `${playerName}'s progression was reset.`, { actionType: "Reset Progression", target: playerName, amount: "1" }, "danger");
-      }}>Reset Progression</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairLoginQueue" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminKick" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminBan" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminUnban" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminWipe" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminReset" /></div></div></section><section className="playerAdmin_box"><h4>Movement / Vehicles</h4><p>The player must be online.</p><div className="playerAdmin_actionRow playerAdmin_coordinatesRow"><span>Coordinates</span><input value={playerAdmin_coords.x} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, x: event.target.value })} placeholder="X" /><input value={playerAdmin_coords.y} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, y: event.target.value })} placeholder="Y" /><input value={playerAdmin_coords.z} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, z: event.target.value })} placeholder="Z" /><input value={playerAdmin_coords.yaw} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, yaw: event.target.value })} placeholder="Yaw" /><button disabled={!dbPlayerId || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_runAction("adminPosition", `Loading ${playerName}'s position`, playerAdmin_useCurrentPosition, "Position loaded. Edit X/Y/Z before teleporting if needed.", { actionType: "Load Position", target: playerName, amount: "1" })}>Use Current Position</button><button disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
-        if (!(await confirmAction(`Teleport ${playerName} to X=${playerAdmin_coords.x} Y=${playerAdmin_coords.y} Z=${playerAdmin_coords.z}?`))) return;
-        void playerAdmin_runAction("adminTeleport", `Teleporting ${playerName}`, () => playerAdmin_runTask(() => playersApi.teleport(actionPlayerId, { x: Number(playerAdmin_coords.x), y: Number(playerAdmin_coords.y), z: Number(playerAdmin_coords.z), yaw: Number(playerAdmin_coords.yaw) })), `${playerName} was teleported.`, { actionType: "Teleport", target: playerName, amount: "1" });
-      }}>Teleport</button><InlineActionResult result={playerAdmin_actionResult} resultKey="adminPosition" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminTeleport" /></div><div className="playerAdmin_actionRow playerAdmin_spawnVehicleRow"><span>Spawn Vehicle</span><select value={playerAdmin_vehicleId} onChange={(event) => { const nextVehicle = event.target.value; playerAdmin_setVehicleId(nextVehicle); playerAdmin_setVehicleTemplate([...(playerAdmin_vehicleCatalog[nextVehicle] || [])].sort((a, b) => friendlyVehicleTemplateName(a).localeCompare(friendlyVehicleTemplateName(b)))[0] || ""); }}>{playerAdmin_vehicleIds.length === 0 && <option value="">Manual Vehicle ID</option>}{playerAdmin_vehicleIds.map((id) => <option key={id} value={id}>{friendlyVehicleName(id)}</option>)}</select><select value={playerAdmin_vehicleTemplate} onChange={(event) => playerAdmin_setVehicleTemplate(event.target.value)}>{playerAdmin_selectedTemplates.length === 0 && <option value="">Manual Template</option>}{playerAdmin_selectedTemplates.map((template) => <option key={template} value={template}>{friendlyVehicleTemplateName(template)}</option>)}</select><button disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
+      }}>Reset Progression</button><InlineActionResult result={playerAdmin_actionResult} resultKey="repairLoginQueue" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminKick" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminBan" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminUnban" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminWipe" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminReset" /></div></div></section><section className="playerAdmin_box"><h4>Movement / Vehicles</h4><PlayerTeleportControls playerId={dbPlayerId} playerName={playerName} isOnline={playerAdmin_isOnline} confirmAction={confirmAction} onRefresh={onRefresh} onActionLog={playerAdmin_addLog} /><div className="playerAdmin_actionRow playerAdmin_spawnVehicleRow"><span>Spawn Vehicle</span><select value={playerAdmin_vehicleId} onChange={(event) => { const nextVehicle = event.target.value; playerAdmin_setVehicleId(nextVehicle); playerAdmin_setVehicleTemplate([...(playerAdmin_vehicleCatalog[nextVehicle] || [])].sort((a, b) => friendlyVehicleTemplateName(a).localeCompare(friendlyVehicleTemplateName(b)))[0] || ""); }}>{playerAdmin_vehicleIds.length === 0 && <option value="">Manual Vehicle ID</option>}{playerAdmin_vehicleIds.map((id) => <option key={id} value={id}>{friendlyVehicleName(id)}</option>)}</select><select value={playerAdmin_vehicleTemplate} onChange={(event) => playerAdmin_setVehicleTemplate(event.target.value)}>{playerAdmin_selectedTemplates.length === 0 && <option value="">Manual Template</option>}{playerAdmin_selectedTemplates.map((template) => <option key={template} value={template}>{friendlyVehicleTemplateName(template)}</option>)}</select><button disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={async () => {
         const knownTemplates = Object.values(playerAdmin_vehicleCatalog).flat();
         if (knownTemplates.includes(playerAdmin_vehicleId) && !playerAdmin_vehicleCatalog[playerAdmin_vehicleId]) {
           playerAdmin_showResult("adminVehicle", `${playerAdmin_vehicleId} is a vehicle template, not a vehicle ID.`, "danger");

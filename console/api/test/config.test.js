@@ -3,7 +3,23 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, publicConfig, resolvePorts } from "../src/config.js";
+import { loadConfig, publicConfig, readConsoleBuildId, resolvePorts } from "../src/config.js";
+
+test("frontend build ID changes when the built entry file changes", () => {
+  const staticDir = mkdtempSync(join(tmpdir(), "arrakis-build-id-"));
+  try {
+    writeFileSync(join(staticDir, "index.html"), '<script src="/assets/index-build-a.js"></script>');
+    const first = readConsoleBuildId(staticDir, "v1.0.0");
+    writeFileSync(join(staticDir, "index.html"), '<script src="/assets/index-build-b.js"></script>');
+    const second = readConsoleBuildId(staticDir, "v1.0.0");
+
+    assert.notEqual(first, second);
+    assert.match(first, /^[a-f0-9]{16}$/);
+    assert.match(second, /^[a-f0-9]{16}$/);
+  } finally {
+    rmSync(staticDir, { recursive: true, force: true });
+  }
+});
 
 test("web config exposes safe deployment flags and JSON body limit", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-"));

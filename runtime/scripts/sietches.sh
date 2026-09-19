@@ -375,7 +375,7 @@ Usage:
   dune sietches show <map-name>
   dune sietches dimensions <map-name> [--active-only] [--numbered|--labels|--ids|--partition-at=N]
   dune sietches set-max <map-name> <count>
-  dune sietches set-active <map-name> <count>
+  dune sietches set-active <map-name> <count> [--defer-start]
   dune sietches set-display <partition-id> <display-name>
   dune sietches set-password <partition-id> [password]
   dune sietches set-settings <partition-id> <display-name> <password>
@@ -996,27 +996,21 @@ normalize_deepdesert_labels() {
     return 0
   fi
 
-  local dim0_id dim1_id
-  dim0_id="$(psql_value "
+  local partition_id states_json resolved label values_sql=""
+  local -a partition_ids=()
+  mapfile -t partition_ids < <(psql_value "
     select partition_id from dune.world_partition
-    where map = 'DeepDesert_1' and dimension_index = 0
-    order by partition_id limit 1;
-  " | tr -d '[:space:]')"
-  dim1_id="$(psql_value "
-    select partition_id from dune.world_partition
-    where map = 'DeepDesert_1' and dimension_index = 1
-    order by partition_id limit 1;
-  " | tr -d '[:space:]')"
-  [ -n "$dim0_id" ] && [ -n "$dim1_id" ] || return 0
+    where map = 'DeepDesert_1'
+    order by dimension_index, partition_id;
+  " | grep -E '^[0-9]+$' || true)
+  [ "${#partition_ids[@]}" -ge 2 ] || return 0
 
-  # Resolve each dimension's label from its actual configured UserGame.ini
+  # Resolve every dimension's label from its actual configured UserGame.ini
   # combat state -- never from dimension_index position, which is positional
   # metadata only and does not determine which dimension is PvP vs PvE.
-  local states_json
-  states_json="$(python3 runtime/scripts/usersettings.py partition-combat-states DeepDesert_1 "$dim0_id" "$dim1_id" 2>/dev/null || true)"
+  states_json="$(python3 runtime/scripts/usersettings.py partition-combat-states DeepDesert_1 "${partition_ids[@]}" 2>/dev/null || true)"
   [ -n "$states_json" ] || return 0
 
-  local resolved dim0_label dim1_label
   resolved="$(printf '%s' "$states_json" | python3 -c '
 import json, sys
 
@@ -1028,35 +1022,46 @@ states = {
 }
 
 # The canonical short labels are globally unique in world_partition. Only
-# swap them when both requested partitions resolved and form the expected
-# one-PvP/one-PvE pair. UNKNOWN/CONFLICT or duplicate modes must leave the
-# existing labels untouched instead of producing temporary or duplicate
-# labels.
+# change them when every requested partition has a resolved PvP/PvE role.
+# Number repeated roles in dimension order so triple layouts remain unique:
+# PvE / PvP 1 / PvP 2 or PvE 1 / PvP / PvE 2.
 if set(states) != set(expected):
+    raise SystemExit(1)
+if any(states[partition_id] not in {"PVP", "PVE"} for partition_id in expected):
     raise SystemExit(1)
 if {states[partition_id] for partition_id in expected} != {"PVP", "PVE"}:
     raise SystemExit(1)
 
-label = {"PVP": "PvP", "PVE": "PvE"}
-print("|".join(label[states[partition_id]] for partition_id in expected))
-' "$dim0_id" "$dim1_id" 2>/dev/null || true)"
-  IFS='|' read -r dim0_label dim1_label <<< "$resolved"
-  [ -n "$dim0_label" ] && [ -n "$dim1_label" ] || return 0
+counts = {role: sum(states[item] == role for item in expected) for role in ("PVP", "PVE")}
+seen = {"PVP": 0, "PVE": 0}
+base = {"PVP": "PvP", "PVE": "PvE"}
+for partition_id in expected:
+    role = states[partition_id]
+    seen[role] += 1
+    suffix = f" {seen[role]}" if counts[role] > 1 else ""
+    print(f"{partition_id}|{base[role]}{suffix}")
+' "${partition_ids[@]}" 2>/dev/null || true)"
+  [ -n "$resolved" ] || return 0
 
-  # Labels are globally unique. Swap both rows atomically through temporary
-  # partition-specific labels so a failure cannot strand either row with an
-  # internal DualDeepDesert_* label.
+  while IFS='|' read -r partition_id label; do
+    [[ "$partition_id" =~ ^[0-9]+$ ]] || return 1
+    [[ "$label" =~ ^Pv[EP](\ [0-9]+)?$ ]] || return 1
+    [ -n "$values_sql" ] && values_sql+=","
+    values_sql+="($partition_id,'$label')"
+  done <<< "$resolved"
+  [ -n "$values_sql" ] || return 0
+
+  # Labels are globally unique. Move all managed rows through temporary
+  # partition-specific labels and assign the resolved values in one transaction.
   docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
 begin;
 update dune.world_partition
 set label = 'DualDeepDesert_' || partition_id::text
-where partition_id in ($dim0_id, $dim1_id);
-update dune.world_partition
-set label = case partition_id
-  when $dim0_id then '$dim0_label'
-  when $dim1_id then '$dim1_label'
-end
-where partition_id in ($dim0_id, $dim1_id);
+where partition_id in ($(IFS=,; echo "${partition_ids[*]}"));
+update dune.world_partition wp
+set label = labels.label
+from (values $values_sql) as labels(partition_id, label)
+where wp.partition_id = labels.partition_id;
 commit;
 " >/dev/null
 }
@@ -2141,17 +2146,25 @@ case "$cmd" in
     echo "Max dimensions for $2 set to $count."
     ;;
   set-active)
-    [ "$#" -eq 3 ] || { usage; exit 2; }
+    [ "$#" -eq 3 ] || { [ "$#" -eq 4 ] && [ "$4" = "--defer-start" ]; } || { usage; exit 2; }
     count="$(sanitize_positive_integer_arg "$3")"
     validate_positive_integer "$count" || { echo "Active dimensions must be a positive integer."; exit 1; }
     set_map_value "$2" active_dimensions "$count"
     if docker_postgres_running; then
-      reconcile_map_dimensions "$2"
+      if [ "${4:-}" = "--defer-start" ]; then
+        ensure_map_partitions "$2" "$count"
+      else
+        reconcile_map_dimensions "$2"
+      fi
       set_map_value "$2" active_dimensions "$count"
     else
       echo "dune-postgres is not running; saved active dimensions and will apply them on next start/reconcile."
     fi
-    echo "Active dimensions for $2 set to $count."
+    if [ "${4:-}" = "--defer-start" ]; then
+      echo "Active dimensions for $2 set to $count; server startup deferred."
+    else
+      echo "Active dimensions for $2 set to $count."
+    fi
     ;;
   set-display)
     [ "$#" -ge 3 ] || { usage; exit 2; }

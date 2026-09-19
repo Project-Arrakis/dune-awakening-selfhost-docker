@@ -209,7 +209,13 @@ server_state_maps() {
 
 configured_always_on_maps() {
   [ -s "$MAP_MODES_FILE" ] || return 0
-  python3 - "$MAP_MODES_FILE" <<'PY'
+  local map_name
+  while IFS= read -r map_name; do
+    [ -n "$map_name" ] || continue
+    if DUNE_MAP_MODES_FILE="$MAP_MODES_FILE" runtime/scripts/map-modes.sh is-always-on "$map_name" >/dev/null 2>&1; then
+      printf '%s\n' "$map_name"
+    fi
+  done < <(python3 - "$MAP_MODES_FILE" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -223,6 +229,7 @@ for map_name, config in sorted(data.get("maps", {}).items()):
     if isinstance(config, dict) and config.get("mode") == "always-on":
         print(map_name)
 PY
+  )
 }
 
 priority_maps() {

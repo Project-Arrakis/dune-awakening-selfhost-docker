@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../../api/setup";
-import { isDetachedStackUpdateTask, summarizeStackUpdateProgress } from "./UpdatesPanel";
+import { gameUpdateTerminalStatus, isDetachedStackUpdateTask, isUpdatedConsoleReady, summarizeStackUpdateProgress } from "./UpdatesPanel";
 
 function detachedTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -52,5 +52,46 @@ describe("detached console update progress", () => {
     });
     expect(summary.title).toBe("Console Update Failed");
     expect(summary.message).toBe("Console build timed out.");
+  });
+
+  it("clears a stale completed task after the replacement Console answers", () => {
+    expect(isUpdatedConsoleReady({
+      runId: "123e4567-e89b-42d3-a456-426614174000",
+      state: "succeeded",
+      stage: "complete",
+      percent: 100,
+      message: "Update complete.",
+      consoleReplaced: true
+    }, "v1.3.97", "v1.3.98")).toBe(true);
+  });
+
+  it("keeps waiting when the old Console still answers with the wrong version", () => {
+    expect(isUpdatedConsoleReady({
+      runId: "123e4567-e89b-42d3-a456-426614174000",
+      state: "succeeded",
+      stage: "complete",
+      percent: 100,
+      message: "Update complete.",
+      consoleReplaced: false
+    }, "v1.3.97", "v1.3.98")).toBe(false);
+  });
+});
+
+describe("game update terminal status", () => {
+  it("replaces a stale Updating badge with the task failure", () => {
+    const task = detachedTask({
+      operation: "updateApply",
+      status: "failed",
+      currentStep: "Failed",
+      progressMessage: "Database update exited with status 1.",
+      errorMessage: "Database update exited with status 1."
+    });
+
+    expect(gameUpdateTerminalStatus(task, { status: "Updating", current: "24653560", latest: "25351779" })).toEqual({
+      status: "Update Failed",
+      current: "24653560",
+      latest: "25351779",
+      reason: "Database update exited with status 1."
+    });
   });
 });

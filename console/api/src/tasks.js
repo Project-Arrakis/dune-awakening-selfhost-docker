@@ -4,6 +4,11 @@ import { statSync } from "node:fs";
 import { runDune, buildDuneArgs, validateServiceName } from "./runner.js";
 import { liveItemGrantWarning } from "./grantResults.js";
 import { createUpdateCheckCache } from "./services/updateCheckCache.js";
+import { initializeSelfUpdateStatus } from "./services/selfUpdateStatus.js";
+import { summarizeMapWriteFlush } from "./services/mapWriteSummary.js";
+import { withTimeout } from "./services/withTimeout.js";
+import { clampInt } from "./jsonStore.js";
+import { redactDbError } from "./db.js";
 
 // Operations that leave a map down with the database still reachable, so
 // anything queued for that map can be applied before it comes back up. "stop"
@@ -12,7 +17,15 @@ import { createUpdateCheckCache } from "./services/updateCheckCache.js";
 // sietchesRestartStop (not their Start halves) cover survival/Sietch
 // restarts -- see taskOperations, which splits those into separate stop and
 // start operations so the flush lands between them instead of after both.
-const MAP_DOWN_OPERATIONS = new Set(["mapsDespawn", "restartService", "restartServiceStop", "sietchesRestartStop"]);
+const MAP_DOWN_OPERATIONS = new Set(["mapsDespawn", "restartService", "restartServiceStop", "sietchesRestartStop", "stopGameServersForDbWrites"]);
+
+// Generous by default: a flush pass can include a full-database safety backup
+// before the first delete it applies. Still far below the 30-minute task
+// timeout a restart operation gets, so this fires first and lets the restart
+// report the reason and carry on.
+export function mapWriteFlushTimeoutMs() {
+  return clampInt(process.env.ADMIN_MAP_WRITE_FLUSH_TIMEOUT_MS, 300000, 1000, 1800000);
+}
 
 export class TaskManager {
   constructor(config, options = {}) {
@@ -116,7 +129,7 @@ export class TaskManager {
         const grantWarning = itemGrantTaskWarning(operation, result);
         if (grantWarning) throw Object.assign(new Error(grantWarning), { code: 1, stdout: result.stdout, stderr: result.stderr });
         lastCode = result.code;
-        if (MAP_DOWN_OPERATIONS.has(operation)) await this.flushPendingMapWrites(task, operation);
+        if (MAP_DOWN_OPERATIONS.has(operation)) await this.flushPendingMapWrites(task, operation, payload);
       }
       if (["updateApply", "updateFixSteamcmd"].includes(task.operation)) {
         this.updateCheckCache.invalidate();
@@ -172,6 +185,7 @@ export class TaskManager {
 
     task.currentStep = "Starting update helper";
     this.emit(task, "Starting detached update helper");
+    initializeSelfUpdateStatus(this.config.repoRoot, task.id);
     await cleanupStaleSelfUpdateHelpers(this.config.repoRoot, this.runDockerCommand);
     const result = await this.runDockerCommand(buildSelfUpdateHelperDockerArgs({
       helperName,
@@ -241,26 +255,46 @@ export class TaskManager {
   // immediately by mapsSpawn -- so flush here rather than hope a tick lands in
   // between. Never fails the restart: an unreachable database just means the
   // entries stay queued for the next window.
-  async flushPendingMapWrites(task, operation) {
+  // Never allowed to hang: this runs between a restart's stop and start halves,
+  // so an await that never settles leaves the battlegroup down indefinitely.
+  // A flush that overruns is reported and abandoned; its entries stay queued
+  // and apply on a later pass, which is strictly better than a restart that
+  // never finishes. See services/withTimeout.js.
+  async flushPendingMapWrites(task, operation, payload = {}) {
     if (!this.onMapDown) return;
     try {
-      const result = await this.onMapDown(operation);
-      const applied = (result?.flushed || []).filter((entry) => entry.ok);
-      const generators = applied.filter((entry) => entry.refillType !== "water").length;
-      const water = applied.filter((entry) => entry.refillType === "water").length;
-      if (generators) this.append(task, `Applied ${generators} queued generator refill${generators === 1 ? "" : "s"}.`, "stdout");
-      if (water) this.append(task, `Applied ${water} queued water refill${water === 1 ? "" : "s"}.`, "stdout");
-      for (const failure of result?.failures || []) {
-        const label = failure.refillType === "water" ? "water refills" : "generator refills";
-        this.append(task, `Queued ${label} were not applied: ${failure.error || "unknown error"}`, "stderr");
+      const timeoutMs = mapWriteFlushTimeoutMs();
+      const result = await withTimeout(
+        Promise.resolve().then(() => this.onMapDown(operation, payload)),
+        timeoutMs,
+        `Queued map writes did not finish within ${Math.round(timeoutMs / 1000)}s; continuing the restart. They stay queued and apply on a later pass.`);
+      // Failures are prefixed so they survive onto task.warnings. Without that
+      // they would reach the task log only, and a restart's log sits behind a
+      // disclosure the operator has to think to open -- too easy to miss for a
+      // delete that silently did not happen.
+      for (const line of summarizeMapWriteFlush(result)) {
+        if (line.stream === "stderr") this.appendQueuedWriteWarning(task, line.text);
+        else this.append(task, line.text, line.stream);
       }
     } catch (error) {
-      this.append(task, `Queued generator refills were not applied: ${error?.message || "Unexpected error."}`, "stderr");
+      // redactDbError, not the raw message: this line is lifted onto
+      // task.warnings and rendered in the browser.
+      this.appendQueuedWriteWarning(task, `Queued map writes were not applied: ${redactDbError(error)}`);
     }
   }
 
-  append(task, text, stream) {
-    const lines = String(text).split(/\r?\n/).filter(Boolean).map((line) => ({ timestamp: new Date().toISOString(), stream, line }));
+  // Only the console's own code may raise a queued-write warning. Subprocess
+  // output reaches append() verbatim (see the onLine hook above), so without
+  // this a spawned script could print the marker and forge an operator-facing
+  // warning. USERSETTINGS_WARNING is deliberately not stripped: usersettings.py
+  // is the shipped script that raises it, and that is its documented path.
+  appendQueuedWriteWarning(task, text) {
+    this.append(task, QUEUED_WRITE_WARNING_PREFIX + stripQueuedWriteWarningPrefix(String(text)), "stderr", { internal: true });
+  }
+
+  append(task, text, stream, { internal = false } = {}) {
+    const lines = String(text).split(/\r?\n/).filter(Boolean)
+      .map((line) => ({ timestamp: new Date().toISOString(), stream, line: internal ? line : stripQueuedWriteWarningPrefix(line) }));
     task.logLines.push(...lines);
     if (task.logLines.length > 1000) task.logLines.splice(0, task.logLines.length - 1000);
     for (const row of lines) this.emit(task, row.line);
@@ -336,13 +370,14 @@ export function buildSelfUpdateHelperDockerArgs({
       "-e", `DOCKER_SOCKET_GID=${dockerSocketGid}`,
       ...extraEnv.flatMap((value) => ["-e", value]),
       "-w", "/repo",
+      "--entrypoint", "/bin/sh",
       helperImage,
-      "sh", "-lc", command
+      "-lc", command
     ];
 }
 
 function isSelfUpdateApplyOperation(operation) {
-  return operation === "selfUpdateApply";
+  return operation === "selfUpdateApply" || operation === "selfUpdateQaApply";
 }
 
 function isDiscordAdapterApplyOperation(operation) {
@@ -408,14 +443,14 @@ function shellQuote(value) {
 }
 
 export function taskTimeoutMs(config, operation) {
-  if (["start", "stop", "restartAll", "restartService", "restartServiceStop", "restartServiceStart", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "mapsRespawn", "sietchesSetActive", "sietchesRestart", "sietchesRestartStop", "sietchesRestartStart", "sietchesReconcile"].includes(operation)) {
+  if (["start", "stop", "restartAll", "stopGameServersForDbWrites", "restartService", "restartServiceStop", "restartServiceStart", "serverTitle", "serverConfig", "init", "updateApply", "updateFixSteamcmd", "selfUpdateApply", "backupRestore", "storageCleanupImages", "storageCleanupBuildCache", "userSettingsSaveAndRestart", "userSettingsResetAndRestart", "userSettingsRawAndRestart", "mapsApplySettings", "mapsRespawn", "sietchesSetActive", "sietchesRestart", "sietchesRestartStop", "sietchesRestartStart", "sietchesReconcile", "deepdesertAction"].includes(operation)) {
     return Math.max(config.commandTimeoutMs, 30 * 60 * 1000);
   }
   return config.commandTimeoutMs;
 }
 
 export function taskOperations(operation, payload = {}) {
-  if (operation === "restartAll") return ["stop", "start"];
+  if (operation === "restartAll") return ["stopGameServersForDbWrites", "stop", "start"];
   if (operation === "restartService") return restartServiceOperations(payload);
   // Every Sietch partition is a Survival_1 sub-partition, so this always
   // splits -- the shell layer resolves primary vs. secondary internally.
@@ -475,15 +510,37 @@ function restartServiceOperations(payload = {}) {
 }
 
 const USERSETTINGS_WARNING_PREFIX = "USERSETTINGS_WARNING: ";
+// Queued base/vehicle writes that did not apply during a restart's map-down
+// window. Same in-log prefix convention as the usersettings warning above: the
+// prefixed line stays in the task log, and taskWarnings lifts its text onto the
+// task so a panel can show it without the caller parsing log lines.
+const QUEUED_WRITE_WARNING_PREFIX = "QUEUED_WRITE_WARNING: ";
+const WARNING_PREFIXES = [USERSETTINGS_WARNING_PREFIX, QUEUED_WRITE_WARNING_PREFIX];
+
+function stripQueuedWriteWarningPrefix(line) {
+  return line.startsWith(QUEUED_WRITE_WARNING_PREFIX) ? line.slice(QUEUED_WRITE_WARNING_PREFIX.length) : line;
+}
 
 // usersettings.py prints one of these lines per Advanced Editor content warning (duplicate
 // keys, PvP/PvE selector overlaps with a toggle, legacy guild-alias overrides) instead of
 // silently dropping the content -- surfaced here as a distinct field so callers can show it
 // without parsing logLines themselves, while logLines keeps the raw line for diagnostics.
+// The prefixes are an internal marker so taskWarnings can lift a line onto the
+// task; they are not for operators. The log is now a disclosure anyone can
+// open, and the de-prefixed text already renders above it, so shipping the
+// sentinel would just be leaked plumbing shown twice.
+function withoutWarningPrefix(entry) {
+  const prefix = WARNING_PREFIXES.find((candidate) => entry.line.startsWith(candidate));
+  return prefix ? { ...entry, line: entry.line.slice(prefix.length) } : entry;
+}
+
 export function taskWarnings(task) {
   return task.logLines
-    .filter((entry) => entry.line.startsWith(USERSETTINGS_WARNING_PREFIX))
-    .map((entry) => entry.line.slice(USERSETTINGS_WARNING_PREFIX.length));
+    .map((entry) => {
+      const prefix = WARNING_PREFIXES.find((candidate) => entry.line.startsWith(candidate));
+      return prefix ? entry.line.slice(prefix.length) : "";
+    })
+    .filter((text) => text !== "");
 }
 
 export function publicTask(task) {
@@ -494,7 +551,7 @@ export function publicTask(task) {
     status: task.status,
     currentStep: task.currentStep,
     progressMessage: task.progressMessage,
-    logLines: task.logLines,
+    logLines: task.logLines.map(withoutWarningPrefix),
     warnings: taskWarnings(task),
     startedAt: task.startedAt,
     finishedAt: task.finishedAt,

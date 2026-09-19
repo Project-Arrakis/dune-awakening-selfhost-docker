@@ -42,7 +42,14 @@
     # because an unrelated part of it was edited. Added here (checked
     # 2026-09-06) so the next PR touching this doc doesn't hit the same
     # false positive.
-    "local-dev-bot-api"
+    "local-dev-bot-api",
+    # docs/console/api-keys.md's curl example (`Authorization: Bearer
+    # dak_7f3c1a9b_...`) -- a synthetic example matching the real
+    # `dak_<id>_<secret>` API-key format (upstream sync issue #964,
+    # batch 5, cherry-picked from upstream commit 5355a2aa), not a real
+    # credential. Added here (checked 2026-09-18) so the next PR
+    # touching this doc doesn't hit the same false positive.
+    "xK2p9vRmQ4tLbN8wZfH3jY6cD1sA5eU7gT0nB"
   ]
 
 # NOTE: tests/db-system-backup-test.sh's synthetic secret fixtures

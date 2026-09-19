@@ -8,6 +8,7 @@ import { invalidateInstanceNames } from "../maps/instanceNames";
 vi.mock("../../api/bases", () => ({
   basesApi: {
     list: vi.fn(),
+    forPlayer: vi.fn(),
     refillGenerators: vi.fn(),
     cancelQueuedRefill: vi.fn(),
     pendingRefills: vi.fn(),
@@ -15,6 +16,8 @@ vi.mock("../../api/bases", () => ({
     cancelQueuedDelete: vi.fn(),
     pendingDeletes: vi.fn(),
     autoRefill: vi.fn(),
+    autoRefillSettings: vi.fn(),
+    saveAutoRefillSettings: vi.fn(),
     setAutoRefill: vi.fn(),
     landClaim: vi.fn(),
     updateLandClaim: vi.fn(),
@@ -22,6 +25,10 @@ vi.mock("../../api/bases", () => ({
     setPermissions: vi.fn(),
     transferToSystemCustodian: vi.fn(),
     permissionCandidates: vi.fn(),
+    childAccess: vi.fn(),
+    setChildAccess: vi.fn(),
+    pendingChildAccess: vi.fn(),
+    cancelQueuedChildAccess: vi.fn(),
     water: vi.fn(),
     refillWater: vi.fn(),
     cancelQueuedWaterRefill: vi.fn(),
@@ -91,6 +98,42 @@ beforeEach(() => {
   // respawn the CLI. That cache outlives a single test, so a case asserting a
   // cold lookup would otherwise read the previous case's resolved names.
   invalidateInstanceNames();
+});
+
+describe("BasesPanel player scope", () => {
+  it("loads only the selected player's owned and shared bases", async () => {
+    vi.mocked(basesApi.forPlayer).mockResolvedValue({
+      capabilities: { bases: true },
+      totalCount: 2,
+      totalBases: 2,
+      totalOwned: 1,
+      totalShared: 1,
+      totalPieces: 20,
+      totalPlaceables: 8,
+      rows: [
+        { ...commonRow, base_id: "4101", name: "Owned Home", relationship: "Owner", generatorDataAvailable: false, generatorCount: 0 },
+        { ...commonRow, base_id: "4102", name: "Shared Workshop", owner_name: "Stilgar", relationship: "Associate", generatorDataAvailable: false, generatorCount: 0 }
+      ]
+    });
+
+    renderPanel({ playerId: "42", playerName: "Chani", embedded: true });
+
+    await waitFor(() => expect(basesApi.forPlayer).toHaveBeenCalledWith("42", expect.objectContaining({ page: 0, pageSize: 5000 })));
+    expect(basesApi.list).not.toHaveBeenCalled();
+    expect(await screen.findByText("Owned Home")).toBeInTheDocument();
+    expect(screen.getByText("Shared Workshop")).toBeInTheDocument();
+    const summary = screen.getByLabelText("Player base totals");
+    expect(summary).toHaveTextContent("2 Total");
+    expect(summary).toHaveTextContent("1 Owned");
+    expect(summary).toHaveTextContent("1 Shared");
+    expect(summary).toHaveTextContent("20 Building Pieces");
+    expect(summary).toHaveTextContent("8 Placeables");
+    expect(screen.getByText(/Bases owned by or shared with Chani/)).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Rows" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "First" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Page 1 of/)).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Search ID, name, type, or owner")).not.toBeInTheDocument();
+  });
 });
 
 describe("BasesPanel focused navigation", () => {
@@ -559,6 +602,36 @@ describe("BasesPanel base deletion", () => {
     await waitFor(() => expect(basesApi.cancelQueuedDelete).toHaveBeenCalledWith("2105"));
     expect(await screen.findByText('Queued delete for "Sietch Cancel Delete" was canceled.')).toBeInTheDocument();
   });
+
+  // A queued permission change is invisible from the list otherwise: unlike
+  // refills and deletes it has no always-present button to swap out, so the
+  // badge is the only signal a queue exists before opening the row.
+  it("shows the queued-permission pill counting pieces, and discards through basesApi.cancelQueuedChildAccess", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse(
+      { bases: true, baseChildAccess: true, baseChildAccessQueue: true },
+      { ...deletableBase, base_id: "2106", name: "Sietch Pending Permissions" }
+    ));
+    vi.mocked(basesApi.pendingChildAccess).mockResolvedValue({
+      supported: true,
+      total: 1,
+      pending: [{
+        baseId: 2106, map: "DeepDesert", partitionId: 59, queuedAt: new Date().toISOString(), attempts: 0, lastError: "",
+        updates: [{ actorId: "44186", accessLevel: 3 }, { actorId: "44187", accessLevel: 5 }]
+      }],
+      byTarget: [{ map: "DeepDesert", partitionId: 59, partitionMap: "Deep_Desert", dimensionIndex: 0, count: 1 }]
+    });
+    vi.mocked(basesApi.cancelQueuedChildAccess).mockResolvedValue({ supported: true, result: { ok: true, baseId: 2106, pending: 0 } });
+
+    const props = renderPanel();
+    await screen.findByText("Sietch Pending Permissions");
+
+    // Two pieces on one base reads as 2, not 1 -- a restart applies two writes.
+    expect(await screen.findByText(/2 permissions/)).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Discard Queued Permission Changes" }));
+    await waitFor(() => expect(basesApi.cancelQueuedChildAccess).toHaveBeenCalledWith("2106"));
+    expect(props.confirmAction).toHaveBeenCalled();
+  });
 });
 
 describe("BasesPanel auto-refill", () => {
@@ -611,9 +684,44 @@ describe("BasesPanel auto-refill", () => {
     };
   }
 
+  function autoRefillSettingsState() {
+    const keys = ["thresholdPercent", "intervalHours", "waterThresholdPercent", "waterIntervalHours"] as const;
+    const byKey = <T,>(value: T) => Object.fromEntries(keys.map((key) => [key, value])) as Record<typeof keys[number], T>;
+    return {
+      settings: { thresholdPercent: 50, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
+      sources: byKey("default" as const),
+      defaults: { thresholdPercent: 50, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
+      limits: byKey({ min: 1, max: 168 }),
+      envNames: byKey("ADMIN_AUTO_REFILL_THRESHOLD_PERCENT")
+    };
+  }
+
   beforeEach(() => {
     vi.mocked(basesApi.pendingRefills).mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] });
     vi.mocked(basesApi.autoRefill).mockResolvedValue(autoRefillState());
+    vi.mocked(basesApi.autoRefillSettings).mockResolvedValue(autoRefillSettingsState());
+  });
+
+  it("puts the settings gear left of Refresh and opens the overlay", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(queueCapableList({ base_id: "3002", name: "Sietch Enroll" }));
+    renderPanel();
+    const gear = await screen.findByRole("button", { name: "Auto-refill settings" });
+    expect(gear.nextElementSibling?.textContent).toBe("Refresh");
+
+    fireEvent.click(gear);
+    expect(await screen.findByText("Auto-refill settings", { selector: "h3" })).toBeInTheDocument();
+  });
+
+  // Without the refill queue there is no scanner to tune, so the gear goes --
+  // matching how the per-base toggles hide entirely in the same situation.
+  it("hides the settings gear when the database has no refill queue", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      ...queueCapableList({ base_id: "3002", name: "Sietch NoQueue" }),
+      capabilities: { bases: true, generatorRefill: true }
+    });
+    renderPanel();
+    await screen.findByText("Sietch NoQueue");
+    expect(screen.queryByRole("button", { name: "Auto-refill settings" })).not.toBeInTheDocument();
   });
 
   async function expandRow(name: string) {
@@ -934,12 +1042,35 @@ describe("BasesPanel permissions editing", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
     const powerTab = screen.getByRole("tab", { name: "Power" });
     expect(powerTab).toBeInTheDocument();
-    // Details live outside the table so its sticky header ends with the final
-    // base row instead of following the page through a tall editor tab.
-    expect(powerTab.closest("table")).toBeNull();
+    // Details render directly under the clicked row (DataTable's default
+    // "inline" placement), not in a separate panel after the whole table.
+    expect(powerTab.closest("table")).not.toBeNull();
     expect(screen.getByRole("tab", { name: "Water" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Inventory" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Sub-Fief Permissions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Base Permissions" })).not.toBeInTheDocument();
+  });
+
+  it("shows the Base Permissions tab only when the schema supports child access auditing", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true, basePermissions: false, baseChildAccess: true },
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 4,
+      rows: [permissionRow]
+    } as never);
+    vi.mocked(basesApi.childAccess).mockResolvedValue({
+      supported: true,
+      inspected: 1,
+      rows: [{ actorId: "14274", name: "Generator", buildingType: "Generator_Placeable", currentAccess: 2, currentAccessLabel: "Guild", isSubFief: false }]
+    } as never);
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch One" }));
+    expect(screen.queryByRole("tab", { name: "Sub-Fief Permissions" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("tab", { name: "Base Permissions" }));
+    expect(await screen.findByText("Generator", { selector: "strong" })).toBeInTheDocument();
   });
 
   // Inventory sits between Water and Permissions, and is ungated the way Water

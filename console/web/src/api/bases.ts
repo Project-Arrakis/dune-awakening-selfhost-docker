@@ -28,6 +28,16 @@ export type PendingRefills = {
   byTarget: { map: string; partitionId: number; partitionMap: string; dimensionIndex: number; count: number }[];
 };
 
+// Unlike QueuedRefill, a queued permission change carries a payload: which
+// pieces go to which level once the map is next down.
+export type QueuedChildAccess = QueuedRefill & {
+  updates: { actorId: string; accessLevel: BaseAccessLevel }[];
+};
+
+export type PendingChildAccess = Omit<PendingRefills, "pending"> & {
+  pending: QueuedChildAccess[];
+};
+
 export type AutoRefillBase = {
   baseId: number;
   enabledAt: string;
@@ -52,6 +62,31 @@ export type AutoRefillState = {
   total: number;
   bases: AutoRefillBase[];
 };
+
+// The four tunables shared by both auto-refill scanners. Layered console file
+// > env var > hardcoded default, which is why the payload carries more than
+// the values: `sources` says which layer won, and `defaults` is what Reset
+// restores (the env value where one is set, not the hardcoded fallback).
+export type AutoRefillSettingKey =
+  | "thresholdPercent"
+  | "intervalHours"
+  | "waterThresholdPercent"
+  | "waterIntervalHours";
+
+export type AutoRefillSettingSource = "console" | "env" | "default";
+
+export type AutoRefillSettings = {
+  settings: Record<AutoRefillSettingKey, number>;
+  sources: Record<AutoRefillSettingKey, AutoRefillSettingSource>;
+  defaults: Record<AutoRefillSettingKey, number>;
+  limits: Record<AutoRefillSettingKey, { min: number; max: number }>;
+  envNames: Record<AutoRefillSettingKey, string>;
+};
+
+// null resets a key to the env/default layer; an omitted key is left alone.
+// Sending the number instead of null on a reset would persist the current env
+// value and permanently shadow the env var.
+export type AutoRefillSettingsPatch = Partial<Record<AutoRefillSettingKey, number | null>>;
 
 // Water refill has no fuelName/capped/skipped concepts: it's a plain
 // jsonb_set straight to capacity, not a stack of discrete inventory items.
@@ -314,6 +349,35 @@ export type BasePermissionEntry = {
   canonical: boolean;
 };
 
+// permission_actor.access_level: a separate 5-tier scale from
+// BasePermissionRank (1-3). 3/Associate is "Sub-Fief" -- it matches the base's
+// own roster-wide default; every other value was deliberately set wider
+// (Public, Guild) or narrower (Co-Owner, Owner) than that.
+export type BaseAccessLevel = 1 | 2 | 3 | 4 | 5;
+
+// Matches childAccessGroupFor's categories in duneDb.js -- its own map, not
+// BASE_INVENTORY_TYPES: most child pieces (doors, generators, turbines, the
+// totem) carry no inventory at all, so this tab's grouping is broader than
+// the Inventory tab's (which only covers actual dune.inventories rows).
+export type BaseChildAccessGroup = "subfief" | "storage" | "refining" | "crafting" | "generators" | "water" | "pentashield" | "door" | "other";
+
+export type BaseChildAccessRow = {
+  actorId: string;
+  name: string;
+  buildingType: string;
+  group: BaseChildAccessGroup;
+  currentAccess: BaseAccessLevel;
+  currentAccessLabel: string;
+  isSubFief: boolean;
+};
+
+export type BaseChildAccessAudit = {
+  supported: boolean;
+  inspected: number;
+  rows: BaseChildAccessRow[];
+  reason?: string;
+};
+
 export type BasePermissions = {
   supported: boolean;
   baseId: number;
@@ -378,17 +442,35 @@ export type UpdateBaseLandClaimResult = BaseLandClaim & {
   verticalChanged: boolean;
 };
 
+export type BasesListResponse = {
+  rows: Record<string, unknown>[];
+  totalCount: number;
+  totalBases: number;
+  totalOwned?: number;
+  totalShared?: number;
+  totalPieces: number;
+  totalPlaceables: number;
+  capabilities: Record<string, unknown>;
+  reason?: string;
+};
+
+type BasesListParams = { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc" };
+
+function basesListQuery(params: BasesListParams) {
+  const search = new URLSearchParams();
+  if (params.q) search.set("q", params.q);
+  if (params.page) search.set("page", String(params.page));
+  if (params.pageSize) search.set("pageSize", String(params.pageSize));
+  if (params.sortColumn) search.set("sortColumn", params.sortColumn);
+  if (params.sortDirection) search.set("sortDirection", params.sortDirection);
+  const qs = search.toString();
+  return qs ? `?${qs}` : "";
+}
+
 export const basesApi = {
-  list: (params: { q?: string; page?: number; pageSize?: number; sortColumn?: string; sortDirection?: "asc" | "desc" } = {}) => {
-    const search = new URLSearchParams();
-    if (params.q) search.set("q", params.q);
-    if (params.page) search.set("page", String(params.page));
-    if (params.pageSize) search.set("pageSize", String(params.pageSize));
-    if (params.sortColumn) search.set("sortColumn", params.sortColumn);
-    if (params.sortDirection) search.set("sortDirection", params.sortDirection);
-    const qs = search.toString();
-    return api<{ rows: Record<string, unknown>[]; totalCount: number; totalBases: number; totalPieces: number; totalPlaceables: number; capabilities: Record<string, unknown>; reason?: string }>(`/api/bases${qs ? `?${qs}` : ""}`);
-  },
+  list: (params: BasesListParams = {}) => api<BasesListResponse>(`/api/bases${basesListQuery(params)}`),
+  forPlayer: (playerId: string, params: BasesListParams = {}) =>
+    api<BasesListResponse>(`/api/players/${encodeURIComponent(playerId)}/bases${basesListQuery(params)}`),
   // A refill for a map that is currently running comes back as
   // `result.queued`: the write is deferred to the next time that map is down.
   refillGenerators: (baseId: string) =>
@@ -440,6 +522,10 @@ export const basesApi = {
   setAutoRefill: (baseId: string, enabled: boolean) =>
     post<{ ok: boolean; baseId: number; enabled: boolean; total: number }>(
       `/api/bases/${encodeURIComponent(baseId)}/auto-refill`, { enabled }),
+  autoRefillSettings: () => api<AutoRefillSettings>("/api/bases/auto-refill/settings"),
+  saveAutoRefillSettings: (patch: AutoRefillSettingsPatch) =>
+    post<AutoRefillSettings & { ok: boolean; nextRunAt: string; waterNextRunAt: string }>(
+      "/api/bases/auto-refill/settings", patch),
   permissions: (baseId: string) =>
     api<BasePermissions>(`/api/bases/${encodeURIComponent(baseId)}/permissions`),
   landClaim: (baseId: string) =>
@@ -455,6 +541,17 @@ export const basesApi = {
     api<{ supported: boolean; result?: SetBasePermissionsResult; reason?: string }>(
       `/api/bases/${encodeURIComponent(baseId)}/permissions`,
       { method: "PUT", body: JSON.stringify({ entries }) }),
+  childAccess: (baseId: string) =>
+    api<BaseChildAccessAudit>(`/api/bases/${encodeURIComponent(baseId)}/child-access`),
+  // result.queued is true when the base's map was live and the change was
+  // recorded for the next restart instead of written now.
+  setChildAccess: (baseId: string, updates: { actorId: string; accessLevel: BaseAccessLevel }[]) =>
+    post<{ supported: boolean; result?: { ok: boolean; baseId: number; updated?: number; queued?: boolean; message?: string }; reason?: string }>(
+      `/api/bases/${encodeURIComponent(baseId)}/child-access`, { updates, confirmation: "SET CHILD ACCESS" }),
+  pendingChildAccess: () => api<PendingChildAccess>("/api/bases/pending-child-access"),
+  cancelQueuedChildAccess: (baseId: string) =>
+    api<{ supported: boolean; result?: { ok: boolean; baseId: number; pending: number }; reason?: string }>(
+      `/api/bases/${encodeURIComponent(baseId)}/queued-child-access`, { method: "DELETE" }),
   transferToSystemCustodian: (baseId: string) =>
     post<{ supported: boolean; result?: SetBasePermissionsResult; reason?: string }>(
       `/api/bases/${encodeURIComponent(baseId)}/system-custodian`, {}),

@@ -18,6 +18,13 @@
      differently-tinted surfaces these sit on. 8.40:1, still brighter than
      the labels beneath it so title > subtitle > label survives. */
   --text-subtle: #bebcb6;
+  /* The same neutral one step further down: --text blended ~58% toward the
+     card background rather than 75%. Supporting micro-copy sat at --muted
+     (#ad9f89), which is the same warm family as the field labels above it at
+     only a few points of saturation apart, so the two ran together. A dimmer
+     NEUTRAL separates by hue instead of fighting for lightness. 5.6:1 -- still
+     AA for the 11px it is used at. */
+  --text-faint: #979692;
   --title: #ffd08a;
   --accent: #c68b4a;
   --accent-strong: #d49a5c;
@@ -195,7 +202,12 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
 .confirm-modal p { margin: 0; color: #e9dcc8; line-height: 1.45; overflow-wrap: anywhere; }
 .confirm-modal-details { display: grid; gap: 8px; margin: 0; }
 .confirm-modal-details div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; align-items: center; }
-.confirm-modal-details dt { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+/* min-width/overflow-wrap: the label column is a fixed 92px so labels line up
+   across rows (each row is its own grid, so the track cannot size to content).
+   Without these a long label -- a base piece name like
+   BloodWaterExtractionAdvanced -- overflows its track and collides with the
+   value beside it instead of wrapping inside it. */
+.confirm-modal-details dt { color: var(--muted); font-size: 12px; text-transform: uppercase; min-width: 0; overflow-wrap: anywhere; }
 .confirm-modal-details dd { margin: 0; overflow-wrap: anywhere; font-weight: 800; }
 .confirm-modal-details dd.accent { color: var(--title); }
 .confirm-modal-details dd.success { color: var(--success-text); }
@@ -295,8 +307,24 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
   padding: 10px 12px;
 }
 .sidebar-nav-count { width: 24px; height: 24px; padding: 0; border: 1px solid #4d4032; border-radius: 4px; background: #171a1d; color: #ffd08a; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; text-align: center; flex: 0 0 24px; }
-.sidebar-nav-count-online { border-color: #3d8b62; background: rgba(24, 101, 84, .28); color: #8fffd2; box-shadow: 0 0 0 1px rgba(143, 255, 210, .08); }
-.sidebar-nav-update-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 1px solid #57a978; border-radius: 4px; background: #347c58; color: #f1fff7; box-shadow: 0 0 10px rgba(61, 139, 98, .28); flex: 0 0 24px; }
+.sidebar-nav-count-online { border-color: #3d8b62; border-radius: 50%; background: rgba(24, 101, 84, .28); color: #8fffd2; box-shadow: 0 0 0 1px rgba(143, 255, 210, .08); }
+.sidebar-nav-update-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(255, 208, 138, .58);
+  border-radius: 50%;
+  background: rgba(198, 139, 74, .12);
+  color: var(--title);
+  flex: 0 0 24px;
+}
+.sidebar-nav button:hover .sidebar-nav-update-icon,
+.sidebar-nav button.active .sidebar-nav-update-icon {
+  border-color: rgba(255, 208, 138, .82);
+  background: rgba(198, 139, 74, .2);
+}
 .sidebar-addon-children { display: grid; gap: 6px; padding-left: 16px; }
 .sidebar-addon-children button {
   min-height: 34px;
@@ -587,6 +615,22 @@ main { padding: 22px; min-width: 0; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .wide { grid-column: 1 / -1; }
 .panel-title, .action-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.updates-page-title { margin-bottom: 16px; }
+.qa-login-actions, .qa-authenticated, .qa-version-value { display: inline-flex; align-items: center; gap: 8px; }
+.qa-authenticated { color: #f0c760; font-weight: 700; }
+.qa-auth-role { padding: 3px 7px; border: 1px solid rgba(240, 199, 96, .42); border-radius: 999px; background: rgba(240, 199, 96, .08); color: #ffe095; font-size: 11px; font-weight: 600; line-height: 1; }
+.qa-login-actions button { display: inline-flex; align-items: center; gap: 7px; }
+.qa-login-button { min-height: 30px; padding: 5px 9px; gap: 6px; border-color: rgba(240, 199, 96, .58); color: #ffe095; font-size: 12px; line-height: 1.2; }
+.qa-version-value { justify-content: center; }
+.qa-release-reinstall { width: 30px; min-width: 30px; height: 30px; padding: 0; justify-content: center; border-color: rgba(240, 199, 96, .48); color: #f0c760; }
+.qa-build-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px; margin: 0; border: 1px solid rgba(240, 199, 96, .22); border-radius: 8px; background: rgba(240, 199, 96, .055); }
+.qa-build-row > div { display: grid; gap: 3px; min-width: 0; }
+.qa-build-row span, .qa-build-row small { color: var(--muted); overflow-wrap: anywhere; }
+.qa-build-row a { flex: 0 0 auto; color: #f0c760; font-weight: 400; }
+.qa-build-row a:hover { color: #ffe095; }
+.qa-login-error { margin: -6px 0 16px; }
+.qa-login-feedback { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin: -6px 0 16px; flex-wrap: wrap; }
+.qa-login-feedback .qa-login-error { margin: 0; }
 .action-row { justify-content: flex-start; margin: 12px 0; }
 .compact-action-row { margin: 8px 0 0; }
 .compact-action-row button { padding: 7px 10px; }
@@ -690,12 +734,12 @@ main { padding: 22px; min-width: 0; }
 .addon-result-panel { margin-top: 12px; animation: addonNoticeFade 5s ease forwards; }
 .addons-empty-state { margin-top: 8px; padding-top: 6px; }
 .addons-table { width: 100%; min-width: 0; table-layout: fixed; }
-.addons-table col.addon-col-identity { width: 25%; }
-.addons-table col.addon-col-author { width: 15%; }
-.addons-table col.addon-col-version { width: 11%; }
-.addons-table col.addon-col-permissions { width: 12%; }
-.addons-table col.addon-col-status { width: 12%; }
-.addons-table col.addon-col-actions { width: 19%; }
+.addons-table col.addon-col-identity { width: 24%; }
+.addons-table col.addon-col-author { width: 14%; }
+.addons-table col.addon-col-version { width: 10%; }
+.addons-table col.addon-col-permissions { width: 15%; }
+.addons-table col.addon-col-status { width: 13%; }
+.addons-table col.addon-col-actions { width: 18%; }
 .addons-table col.addon-col-submenu { width: 6%; }
 .addons-table th, .addons-table td { padding: 11px 10px; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; font-size: 14px; line-height: 1.35; vertical-align: middle; }
 .addons-table th:nth-child(2), .addons-table td:nth-child(2) { white-space: nowrap; overflow-wrap: normal; }
@@ -723,8 +767,9 @@ main { padding: 22px; min-width: 0; }
 .addon-pin-column { text-align: center; }
 .addon-source-link { display: block; color: var(--accent); font-weight: 800; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .addon-source-link:hover { color: #f1c96f; text-decoration: underline; }
-.addon-permissions-list { display: grid; justify-items: center; gap: 7px; max-width: none; }
-.addon-permission-chip { border: 1px solid #3a3127; border-radius: 999px; color: #cbbda8; background: rgba(255,255,255,.03); padding: 3px 8px; font-size: 13px; white-space: nowrap; text-transform: capitalize; }
+.addon-permissions-cell { min-width: 0; overflow: hidden !important; }
+.addon-permissions-list { display: grid; justify-items: center; gap: 7px; width: 100%; max-width: 100%; min-width: 0; }
+.addon-permission-chip { display: block; width: fit-content; max-width: 100%; border: 1px solid #3a3127; border-radius: 999px; color: #cbbda8; background: rgba(255,255,255,.03); padding: 3px 8px; font-size: 13px; line-height: 1.3; white-space: normal; overflow-wrap: anywhere; text-align: center; text-transform: capitalize; }
 .addon-permission-chip.approved { border-color: rgba(61,139,98,.55); color: var(--success-text); background: rgba(61,139,98,.14); }
 .addon-pin-toggle { min-width: 0; min-height: 0; justify-content: center; border-color: transparent; background: transparent; padding: 0; color: inherit; }
 .addon-pin-toggle.enabled, .addon-pin-toggle.disabled, .addon-pin-toggle:hover { border-color: transparent; background: transparent; box-shadow: none; }
@@ -772,6 +817,10 @@ main { padding: 22px; min-width: 0; }
 .restart-service-line { align-items: flex-end; margin: 12px 0; }
 .restart-service-line label { align-self: end; }
 .title-action-line { align-items: flex-end; }
+.server-hostname-field { display: grid; gap: 8px; flex: 0 1 300px; min-width: 180px; max-width: 100%; }
+.server-hostname-label { display: flex; align-items: center; gap: 6px; }
+.title-action-line .server-hostname-label label { flex: none; }
+.server-hostname-field input { width: 100%; min-width: 0; }
 .title-action-line label { flex: 0 1 360px; max-width: 420px; }
 .title-action-line label.compact-select { flex: 0 0 180px; max-width: 180px; }
 .funcom-token-action-line { align-items: center; }
@@ -1007,6 +1056,7 @@ main { padding: 22px; min-width: 0; }
 .maps-result-slot .home-task-result { margin-top: 0; }
 .home-task-result.result-ok, .home-task-result.result-fail { animation: homeResultFadeOut .4s ease 10s forwards; }
 .game-update-progress, .stack-update-progress { margin-top: 12px; display: grid; gap: 10px; }
+.stack-update-refresh-line { align-items: center; }
 .game-update-progress.result-ok, .game-update-progress.result-fail, .stack-update-progress.result-ok, .stack-update-progress.result-fail { animation: homeResultFadeOut .4s ease 10s forwards; }
 .progress-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; }
 .progress-track { height: 10px; overflow: hidden; border-radius: 999px; background: #0c0e10; border: 1px solid #302b25; }
@@ -1021,10 +1071,9 @@ main { padding: 22px; min-width: 0; }
   to { opacity: 0; transform: translateY(-4px); }
 }
 @keyframes loadingDots {
-  0% { content: ""; }
-  25% { content: "."; }
-  50% { content: ".."; }
-  75%, 100% { content: "..."; }
+  0%, 32% { content: "."; }
+  33%, 65% { content: ".."; }
+  66%, 100% { content: "..."; }
 }
 @keyframes sandField {
   from { transform: translate3d(0, 0, 0); opacity: .95; }
@@ -1398,6 +1447,35 @@ main { padding: 22px; min-width: 0; }
 }
 .concise-output { max-height: 180px; }
 .technical-details, .task-technical-details { display: none; margin-top: 12px; min-width: 0; max-width: 100%; }
+/* A restart that succeeded can still carry queued writes that did not apply.
+   Warm amber, not danger red: the task itself did not fail, and colouring it
+   as a failure next to a green "succeeded" badge reads as a contradiction. */
+.task-warnings {
+  margin-top: 10px;
+  padding: 10px 12px;
+  /* var(--warning) is 4.63:1 on the panel; the previous #6b5b39 was 2.69:1,
+     under WCAG 1.4.11's 3:1 for a non-text boundary that is the only thing
+     marking this block, since it has no background of its own. */
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  display: grid;
+  gap: 6px;
+}
+/* overflow-wrap: a warning is a raw error message and can carry a long
+   unbreakable identifier; without this it overflows the bordered box and is
+   clipped rather than scrolled, losing the text an operator needs. */
+.task-warnings p { margin: 0; color: #ffd08a; display: flex; gap: 6px; overflow-wrap: anywhere; min-width: 0; }
+/* Pin the triangle to the first line: these warnings are long enough to wrap,
+   and a centred icon on a two-line paragraph drifts to the middle. Same
+   treatment as the land-claim warning rule further down. */
+.task-warnings p svg { flex: 0 0 auto; margin-top: 3px; }
+/* .badge is an inline span with no display of its own, so a bare SVG child
+   would sit on the text baseline. Deliberately a sibling class rather than a
+   change to .badge-warn, which text-only badges elsewhere still rely on. */
+.task-warning-count { display: inline-flex; align-items: center; gap: 5px; }
+/* .action-row children get min-width: 0 (:6296), so without this the icon is a
+   shrinkable flex item and collapses to zero width before the numeral wraps. */
+.task-warning-count svg { flex: 0 0 auto; }
 .task-technical-details { display: block; }
 body.debug .technical-details { display: block; }
 .update-log-details { margin-top: 6px; }
@@ -1410,6 +1488,10 @@ body.debug .technical-details { display: block; }
 .advanced-debug { opacity: .85; }
 .log-box.large { min-height: 480px; }
 .logs-action-row { width: 100%; }
+.logs-timezone-toggle { min-height: 40px; padding-block: 5px; }
+.logs-timezone-toggle .switch-label { display: grid; gap: 1px; line-height: 1.1; }
+.logs-timezone-toggle .switch-label small { max-width: 180px; overflow: hidden; color: #a9977d; font-size: .69rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.logs-timezone-toggle.enabled .switch-label small { color: #9fc9ad; }
 .logs-clear-button { margin-left: auto; }
 .command-preview { color: #ffd08a; }
 .empty { color: #d9c8aa; }
@@ -1439,6 +1521,7 @@ body.debug .technical-details { display: block; }
 .danger-note, .error, .error-banner { color: var(--danger-text); overflow-wrap: anywhere; }
 .success-note { color: #9be6bd; }
 .error-banner { background: #351b1b; border: 1px solid var(--danger-strong); padding: 12px; border-radius: 6px; margin-bottom: 14px; }
+.drawer { border: 1px solid #302b25; border-radius: 8px; padding: 12px; color: #d9c8aa; background: rgba(13, 15, 17, .48); }
 .inline-filter-label { display: inline-flex; align-items: center; gap: 8px; color: var(--muted-warm); font-weight: 400; }
 .inline-filter-label select { color: #fff7e6; font-weight: 400; min-width: 150px; }
 .players-filter-row { align-items: center; }
@@ -1471,10 +1554,17 @@ body.debug .technical-details { display: block; }
 .playerAdmin_summaryActions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-top: 1px solid rgba(214, 185, 140, .14); padding-top: 12px; }
 .playerAdmin_summaryActions button { width: auto; }
 .playerAdmin_summaryActions .playerAdmin_actionNote { flex: 1 0 100%; padding-left: 0; }
-.playerAdmin_tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 8px; width: 100%; }
+.playerAdmin_tabs { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; width: 100%; }
 .playerAdmin_tabs button { width: 100%; min-width: 0; min-height: 54px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 6px; border-color: #3b3329; background: #171a1d; color: #e9dcc8; font-size: 14px; font-weight: 700; white-space: nowrap; padding: 8px 10px; }
 .playerAdmin_tabs button svg { flex: 0 0 auto; }
 .playerAdmin_tabs button.active { border-color: #c68b4a; background: rgba(198, 139, 74, .16); color: #ffd08a; }
+@media (max-width: 900px) {
+  .playerAdmin_tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .playerAdmin_tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .playerAdmin_tabs button { white-space: normal; }
+}
 .playerAdmin_content { display: grid; gap: 12px; }
 .playerAdmin_box, .playerAdmin_toggle { border: 1px solid #302b25; background: #14171a; border-radius: 8px; padding: 14px; display: grid; gap: 12px; }
 .playerAdmin_box h4, .playerAdmin_section h5 { margin: 0; color: #ffd08a; font-size: 16px; line-height: 1.25; }
@@ -1530,7 +1620,7 @@ body.debug .technical-details { display: block; }
 .playerAdmin_repairLabel > span:first-child { white-space: nowrap; }
 .playerAdmin_repairLabel em { color: #cbbd9f; font-size: 12px; font-style: italic; font-weight: 500; line-height: 1.25; }
 .playerAdmin_repairRow .inline-action-result-wrap { align-self: center; min-width: 0; }
-.playerAdmin_characterRecoveryRow { grid-template-columns: minmax(280px, 400px) minmax(330px, 1fr) minmax(0, 1fr); }
+.playerAdmin_characterRecoveryRow { grid-template-columns: minmax(190px, 220px) minmax(500px, 1fr) minmax(0, 1fr); }
 .playerAdmin_characterRecoveryControls { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .playerAdmin_characterRecoveryControls select { flex: 1 1 auto; width: 100%; min-width: 0; color: #f1e4cf; }
 .playerAdmin_characterRecoveryControls button { flex: 0 0 auto; white-space: nowrap; }
@@ -1578,6 +1668,22 @@ body.debug .technical-details { display: block; }
 .playerAdmin_buildingUnlockTable th[data-column="status"],
 .playerAdmin_buildingUnlockTable td[data-column="status"] { width: 14%; min-width: 150px; overflow: visible; text-overflow: clip; }
 .playerAdmin_buildingUnlockTable td[data-column="status"] .badge { display: inline-flex; align-items: center; justify-content: center; max-width: 100%; box-sizing: border-box; }
+.playerAdmin_customizationHeader { align-items: center; justify-content: space-between; gap: 16px; }
+.playerAdmin_customizationHeader h4 { margin-bottom: 4px; }
+.playerAdmin_customizationHeader p { margin: 0; }
+.playerAdmin_customizationHeader > button { flex: 0 0 auto; }
+.playerAdmin_customizationCards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 12px 0 4px; }
+.playerAdmin_customizationCard { display: flex; align-items: stretch; gap: 8px; min-width: 0; padding: 10px; border: 1px solid #3b342a; border-radius: 8px; background: #151719; }
+.playerAdmin_customizationCard.active { border-color: #c68b4a; box-shadow: inset 0 0 0 1px rgba(198, 139, 74, .2); }
+.playerAdmin_customizationCardSelect { flex: 1 1 auto; min-width: 0; min-height: 44px; display: grid; align-content: center; justify-items: start; gap: 3px; padding: 5px 7px; border: 0; background: transparent; box-shadow: none; text-align: left; }
+.playerAdmin_customizationCardSelect:hover:not(:disabled) { border: 0; background: rgba(255, 208, 138, .06); box-shadow: none; }
+.playerAdmin_customizationCardSelect strong { color: #ffd08a; font-size: 15px; }
+.playerAdmin_customizationCardSelect span { max-width: 100%; color: #b9ad98; font-size: 12px; white-space: normal; }
+.playerAdmin_customizationCard > button:last-child { flex: 0 0 auto; align-self: center; min-height: 36px; padding: 7px 10px; }
+.playerAdmin_customizationTable th[data-column="group"],
+.playerAdmin_customizationTable td[data-column="group"] { width: 12%; }
+.playerAdmin_customizationTable th[data-column="status"],
+.playerAdmin_customizationTable td[data-column="status"] { width: 13%; min-width: 135px; overflow: visible; text-overflow: clip; }
 .playerAdmin_craftingTable th:nth-child(3), .playerAdmin_craftingTable td:nth-child(3) { width: 15%; }
 .playerAdmin_craftingTable th:nth-child(4), .playerAdmin_craftingTable td:nth-child(4) { width: 9%; }
 .playerAdmin_researchTable th:nth-child(3), .playerAdmin_researchTable td:nth-child(3) { width: 10%; }
@@ -1604,6 +1710,16 @@ body.debug .technical-details { display: block; }
 .playerAdmin_resultCell .inline-action-result { line-height: 1.35; }
 .playerAdmin_logSection { display: grid; gap: 10px; }
 .playerAdmin_coordinatesRow input { width: 118px; max-width: 118px; }
+.playerAdmin_teleportPanel { display: grid; gap: 8px; margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid rgba(214, 185, 140, .14); }
+.playerAdmin_teleportModeRow { align-items: center; flex-wrap: nowrap; }
+.playerAdmin_teleportModeRow > span { min-width: 88px; color: #e9dcc8; font-weight: 700; }
+.playerAdmin_teleportModeRow > select { width: min(460px, 100%); max-width: 460px; }
+.playerAdmin_teleportModeRow > select:first-of-type { width: 230px; max-width: 230px; flex: 0 0 230px; }
+.playerAdmin_teleportModeRow > .playerAdmin_destinationBaseSelect { width: min(620px, 100%); max-width: 620px; }
+.playerAdmin_coordinateInputs { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.playerAdmin_coordinateInputs input { width: 112px; max-width: 112px; }
+.playerAdmin_teleportPanel .action-help-note { margin: 0; }
+.playerAdmin_teleportPanel .action-help-note.warning { color: #ffc77c; }
 .playerAdmin_itemNumberField { display: grid; gap: 5px; width: auto; min-width: 0; color: #ceb894; font-size: 15px; line-height: 1.35; }
 .playerAdmin_itemNumberField input { width: 100%; }
 .playerAdmin_itemNumberField .augment-dropdown { width: min(360px, 72vw); }
@@ -1751,6 +1867,48 @@ body.debug .technical-details { display: block; }
 .blueprints-table th:last-child, .blueprints-table td:last-child { width: 154px; text-align: center; overflow: visible; }
 .blueprint-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-strong); font-weight: 700; }
 .blueprint-actions-column .icon-toggle-group { justify-content: center; }
+.blueprint-view-tabs { display: flex; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid rgba(214, 185, 140, .14); }
+.blueprint-view-tabs button { width: auto; min-height: 40px; display: inline-flex; align-items: center; gap: 7px; background: #171a1d; color: var(--muted-warm); }
+.blueprint-view-tabs button.active { border-color: var(--accent); background: rgba(198, 139, 74, .16); color: #ffd08a; }
+.community-blueprint-browser { display: grid; gap: 14px; min-width: 0; }
+.community-blueprint-intro { display: flex; align-items: start; justify-content: space-between; gap: 18px; padding: 14px; border: 1px solid #302b25; border-radius: 8px; background: linear-gradient(135deg, rgba(198, 139, 74, .1), rgba(16, 19, 22, .72)); }
+.community-blueprint-intro h5 { margin: 0 0 5px; color: #ffd08a; font-size: 17px; }
+.community-blueprint-intro p { margin: 0; color: var(--muted-warm); line-height: 1.45; }
+.community-blueprint-intro a, .community-blueprint-details a { display: inline-flex; align-items: center; gap: 6px; color: #ffd08a; font-weight: 700; white-space: nowrap; }
+.community-blueprint-filters { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(150px, .45fr) minmax(160px, .45fr) auto; align-items: end; gap: 10px; }
+.community-blueprint-filters label { display: grid; gap: 5px; min-width: 0; color: var(--muted-warm); font-size: 13px; }
+.community-blueprint-filters input, .community-blueprint-filters select { width: 100%; min-height: 40px; }
+.community-blueprint-filters > button { width: auto; min-height: 40px; }
+.community-blueprint-search { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 40px; padding-left: 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: #17191b; }
+.community-blueprint-search:focus-within { border-color: var(--accent); }
+.community-blueprint-search input { min-width: 0; padding-left: 0; border: 0; background: transparent; outline: 0; }
+.community-blueprint-table-wrap { max-width: 100%; overflow: auto; border: 1px solid #302b25; border-radius: 8px; background: #101316; }
+.community-blueprint-table { width: 100%; min-width: 1060px; border-collapse: collapse; table-layout: fixed; }
+.community-blueprint-table th, .community-blueprint-table td { padding: 10px; border-bottom: 1px solid #302b25; text-align: left; vertical-align: middle; }
+.community-blueprint-table th { position: sticky; top: 0; z-index: 1; background: #171a1d; color: #ffd08a; font-size: 12px; }
+.community-blueprint-table th:nth-child(1) { width: 150px; }.community-blueprint-table th:nth-child(2) { width: 190px; }.community-blueprint-table th:nth-child(3) { width: 130px; }.community-blueprint-table th:nth-child(4) { width: 125px; }.community-blueprint-table th:nth-child(5) { width: 110px; }.community-blueprint-table th:nth-child(6) { width: 90px; }.community-blueprint-table th:nth-child(7) { width: 250px; }
+.community-blueprint-table td > strong, .community-blueprint-table td > small { display: block; }
+.community-blueprint-table td > strong { color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; }
+.community-blueprint-table td > small { margin-top: 4px; color: var(--muted); }
+.community-blueprint-thumbnail { width: 128px; aspect-ratio: 16 / 9; display: grid; place-items: center; overflow: hidden; border: 1px solid #3a342c; border-radius: 6px; background: #171a1d; color: var(--muted); font-size: 11px; }
+.community-blueprint-thumbnail img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.community-blueprint-actions { display: flex; align-items: center; gap: 7px; }
+.community-blueprint-actions button { width: auto; min-height: 36px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.community-blueprint-actions button[aria-expanded="true"] svg { transform: rotate(180deg); }
+.community-blueprint-detail-row td { padding: 0; background: #15181a; }
+.community-blueprint-details { display: grid; grid-template-columns: minmax(260px, 38%) 1fr; gap: 18px; padding: 16px; }
+.community-blueprint-details > div:first-child { min-height: 170px; aspect-ratio: 16 / 9; display: grid; place-items: center; overflow: hidden; border: 1px solid #3a342c; border-radius: 7px; background: #24201b; }
+.community-blueprint-details img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.community-blueprint-details section { align-content: start; display: grid; gap: 9px; }
+.community-blueprint-details h5, .community-blueprint-details p { margin: 0; }
+.community-blueprint-details h5 { color: #ffd08a; font-size: 18px; }
+.community-blueprint-details p { color: #d6c7ae; line-height: 1.5; white-space: normal; }
+.community-blueprint-no-preview { color: var(--muted); }
+.community-blueprint-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.community-blueprint-tags span { padding: 4px 7px; border: 1px solid #4a4033; border-radius: 999px; background: rgba(198, 139, 74, .08); color: #e6c99d; font-size: 11px; }
+.community-blueprint-empty { height: 120px; color: var(--muted-warm); text-align: center !important; }
+.community-blueprint-pagination { margin: 0; align-items: center; color: var(--muted-warm); }
+.community-blueprint-pagination .action-help-note { margin: 0; }
 .guild-add-member-search-row { align-items: center; }
 .guild-add-member-search-row input { flex: 1 1 auto; min-width: 0; }
 .guild-add-member-results { display: grid; gap: 6px; max-height: 220px; overflow-y: auto; }
@@ -1783,9 +1941,17 @@ body.debug .technical-details { display: block; }
    178px box at the old 190px width with 12px of cell padding -- exactly
    the gap this measured and fixed live: the pills had no flex-shrink:0,
    so the overflow silently squashed their icons instead of clipping.
-   230px leaves real margin above the 194px+12px=206px worst case, not
-   another zero-margin fit. */
-.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 230px; }
+
+   The queued-permission pill added a FIFTH item, and unlike the other four
+   it has no always-present button -- it appears only while a permission
+   change is queued, on top of whatever else is. Re-measured worst case
+   (fuel pill + water pill + Download + delete pill + permission pill):
+   246px of content against the 218px box 230px gave, which clipped the
+   last pill's cancel button out of reach (td { overflow: hidden } and
+   every item is flex-shrink:0, so it truncates rather than squashing).
+   280px restores real margin above 246px+12px=258px. Anything that adds a
+   sixth item to this column must re-measure rather than assume. */
+.bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 280px; }
 .bases-table td { max-width: none; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 .bases-name, .bases-ellipsis-cell { display: block; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 
@@ -1925,6 +2091,10 @@ body.debug .technical-details { display: block; }
    destructive rather than additive, and the row/banner treatment should read
    as a warning, not just another pending write. */
 .bases-queue-badge-delete { background: rgba(167, 73, 73, .18); color: var(--danger-text); }
+/* Violet rather than another warm step: fuel already owns the amber end and
+   delete the red, so a fourth warm badge would blend into both in this
+   amber-toned console instead of reading as its own category. */
+.bases-queue-badge-permission { background: rgba(139, 124, 196, .20); color: #b9aee6; }
 .bases-queued-refill {
   display: inline-flex;
   align-items: center;
@@ -1966,6 +2136,29 @@ body.debug .technical-details { display: block; }
   flex-shrink: 0;
 }
 .bases-queued-delete .bases-queued-delete-cancel {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  min-width: 0;
+}
+/* Mirrors .bases-queued-delete, violet to match .bases-queue-badge-permission. */
+.bases-queued-permission {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  background: rgba(139, 124, 196, .18);
+  color: #b9aee6;
+  white-space: nowrap;
+  /* See .bases-queued-refill's comment. */
+  flex-shrink: 0;
+}
+.bases-queued-permission .bases-queued-permission-cancel {
   width: 20px;
   height: 20px;
   flex: 0 0 20px;
@@ -2045,11 +2238,74 @@ body.debug .technical-details { display: block; }
   line-height: 1.4;
   color: var(--danger-text);
 }
+/* Square icon button in the Bases panel title. 43px is the measured height of
+   the Refresh button beside it (global button rule: 10px padding + 16px line
+   box + 1px border, doubled) -- anything less sits visibly inset in the
+   centre-aligned .action-row. Not a reuse of .exchange-config-button, which is
+   the same size for a different reason and lives in the exchange section. */
+.bases-settings-button { width: 43px; height: 43px; min-width: 0; padding: 0; display: inline-grid; place-items: center; }
+.auto-refill-settings-modal { width: min(500px, calc(100vw - 32px)); }
+/* .primary has no global styling inside a modal -- .exchange-config-modal
+   scopes its own. Same treatment here rather than leaving Save unstyled. */
+.auto-refill-settings-modal .confirm-modal-actions .primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a130a;
+}
+.auto-refill-settings-modal .confirm-modal-actions .primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+.auto-refill-settings-group { display: grid; gap: 9px; }
+.auto-refill-settings-group-divided { border-top: 1px solid var(--border); padding-top: 13px; }
+.auto-refill-settings-group-title {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.auto-refill-settings-field-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 10px; }
+.auto-refill-settings-field { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.auto-refill-settings-field > span:first-child { flex: 1; }
+.auto-refill-settings-field input { width: 74px; text-align: right; }
+.auto-refill-settings-unit { width: 14px; color: var(--muted); }
+.auto-refill-settings-reset { padding: 6px 10px; font-size: 12px; min-width: 0; }
+/* Errors and hints span both columns so they sit under the field, not beside
+   the Reset button. */
+/* `.confirm-modal p` (0,1,1) sets its own colour, so the .danger-note and
+   .muted class rules (both 0,1,0) lose inside this modal and the validation
+   error renders in ordinary body text. Re-assert here, where the selector
+   outranks it -- and use the re-assertion to separate four tiers.
+   The title, section headings and muted copy were previously three steps of
+   the same warm amber, which reads as one blurred block however good the
+   contrast ratio is. So each tier differs from its neighbour in hue OR
+   treatment, not only in lightness:
+     title      h1-h5 -> --title  #ffd08a  amber, 18px      (unchanged)
+     subtitle   --text-subtle     #bebcb6  NEUTRAL grey     (breaks the family)
+     category   --accent          #c68b4a  amber, UPPERCASE + tracked
+     label      --text            #f3efe7  near-white body
+     footnote   --text-faint      #979692  NEUTRAL, dimmest, 11px            */
+.auto-refill-settings-modal .danger-note { color: var(--danger-text); }
+/* Direct children only: the lede and the "Loading..." line. The note is also a
+   direct child and also carries .muted, so it has to win on the same class
+   count -- hence `p.` on the two rules below and their order after this one. */
+.auto-refill-settings-modal > p.muted { color: var(--text-subtle); }
+.auto-refill-settings-modal p.auto-refill-settings-hint,
+.auto-refill-settings-modal p.auto-refill-settings-note { color: var(--text-faint); }
+.auto-refill-settings-field-row .danger-note,
+.auto-refill-settings-hint { grid-column: 1 / -1; margin: 0; font-size: 11px; line-height: 1.4; }
+.auto-refill-settings-note { margin: 0; font-size: 11px; line-height: 1.5; border-top: 1px solid var(--border); padding-top: 12px; }
 @media (max-width: 760px) {
   .blueprint-file-field { flex-basis: 100%; max-width: none; }
   .blueprint-list-toolbar, .blueprint-list-toolbar .service-actions { align-items: stretch; }
   .blueprint-list-toolbar .service-actions { width: 100%; margin-left: 0; justify-content: flex-start; }
   .blueprints-table { min-width: 720px; }
+  .blueprint-view-tabs, .community-blueprint-intro, .community-blueprint-pagination { align-items: stretch; flex-direction: column; }
+  .blueprint-view-tabs button { justify-content: center; flex: 1 1 0; }
+  .community-blueprint-intro a { white-space: normal; }
+  .community-blueprint-filters { grid-template-columns: 1fr 1fr; }
+  .community-blueprint-filters label:first-child { grid-column: 1 / -1; }
+  .community-blueprint-filters > button { width: 100%; }
+  .community-blueprint-details { grid-template-columns: 1fr; }
+  .community-blueprint-pagination .database-pagination-controls { justify-content: flex-start; }
   .bases-pagination-footer { align-items: stretch; }
   .bases-pagination-footer .database-pagination-controls { justify-content: flex-start; }
 }
@@ -2133,6 +2389,31 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
   place-items: center;
   cursor: pointer;
 }
+.vehicles-table th.vehicles-actions-column, .vehicles-table td.vehicles-actions-column { width: 60px; }
+/* Mirrors .bases-queued-delete/.bases-queued-delete-cancel exactly -- same
+   danger-toned pill, same reasoning (flex-shrink: 0 so the actions column
+   squashes the row before it squashes this pill's icon). */
+.vehicles-queued-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  background: rgba(167, 73, 73, .16);
+  color: var(--danger-text);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.vehicles-queued-delete .vehicles-queued-delete-cancel {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  min-width: 0;
+}
 .vehicles-expand-chevron { opacity: 0.6; vertical-align: middle; }
 .vehicles-name-cell { display: flex; flex-direction: column; gap: 2px; white-space: normal; }
 .vehicles-name { color: #fff1d4; font-weight: 500; }
@@ -2157,6 +2438,10 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .vehicles-shared-list em { color: #ad9f89; font-style: normal; }
 .vehicles-expanded { display: flex; flex-direction: column; gap: 9px; }
 .vehicles-expanded-header { margin: 0; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: #ad9f89; }
+/* The component count and, when a storage module is fitted, the View
+   Contents button share this row. baseline rather than center so the button
+   does not drag the uppercase count off the line it sets. */
+.vehicles-expanded-header-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .vehicles-component-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
 .vehicles-component-card { background: #171a1d; border: 1px solid #302b25; border-radius: 8px; padding: 10px 11px; display: flex; flex-direction: column; gap: 6px; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .vehicles-component-name { color: #fff1d4; font-size: 13px; display: flex; flex-direction: column; gap: 1px; }
@@ -2166,9 +2451,13 @@ tr.clickable:hover { background: rgba(198, 139, 74, .12); }
 .vehicles-pagination-footer { margin-top: 12px; }
 .player-vehicles-panel .panel-title > div { display: grid; gap: 4px; }
 .player-vehicles-panel .panel-title p { margin: 0; }
+.player-bases-panel { min-width: 0; }
+.player-bases-panel .panel-title > div { display: grid; gap: 4px; min-width: 0; }
+.player-bases-panel .panel-title p { margin: 0; }
 .player-vehicles-summary { display: flex; flex-wrap: wrap; gap: 8px; }
 .player-vehicles-summary span { min-width: 92px; padding: 8px 11px; border: 1px solid #302b25; border-radius: 6px; background: #171a1d; color: #ad9f89; }
 .player-vehicles-summary strong { margin-right: 4px; color: #fff1d4; font-variant-numeric: tabular-nums; }
+.player-bases-summary span:nth-last-child(-n + 2) { min-width: 148px; }
 .vehicles-access { display: inline-flex; align-items: center; min-height: 24px; padding: 3px 8px; border: 1px solid #4d4031; border-radius: 999px; background: rgba(198, 139, 74, .12); color: #e9dcc8; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .vehicles-access.owner { border-color: rgba(155, 230, 189, .35); background: rgba(76, 175, 124, .12); color: #9be6bd; }
 .vehicles-access.co-owner { border-color: rgba(255, 208, 138, .42); color: #ffd08a; }
@@ -2241,7 +2530,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .exchange-transaction-summary strong { color: #fff1d4; font-size: 18px; font-variant-numeric: tabular-nums; }
 .action-row.exchange-transaction-filters > select { flex: 0 1 180px; width: auto; min-width: 150px; height: 43px; }
 .exchange-transaction-filters .exchange-id-filter { flex: 0 1 150px; min-width: 120px; }
-.exchange-transaction-table { min-width: 980px; }
+.exchange-transaction-table { width: 100%; min-width: 980px; }
 .exchange-transaction-table th { white-space: nowrap; }
 .exchange-transaction-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .exchange-transaction-party-name { color: #f3efe7; }
@@ -2313,6 +2602,9 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bot-item-picker-row em { font-style: normal; font-size: 11px; color: var(--muted); }
 .bot-item-picker-row button { width: auto; min-width: 64px; }
 @media (max-width: 720px) {
+  .updates-page-title { align-items: center; flex-direction: row; }
+  .updates-page-title .qa-login-actions { width: auto; }
+  .qa-build-row { align-items: flex-start; flex-direction: column; }
   .bot-items-unsaved-bar { align-items: stretch; flex-direction: column; }
   .bot-items-unsaved-bar .database-pagination-controls { justify-content: stretch; }
   .bot-items-unsaved-bar .database-pagination-controls button { flex: 1 1 0; }
@@ -2514,6 +2806,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-view-controls { width: 50%; min-width: 600px; display: grid; grid-template-columns: minmax(260px, 1fr) minmax(280px, 1fr); gap: 14px; }
 .live-map-view-field, .live-map-view-summary { min-width: 0; display: grid; align-content: start; gap: 7px; }
 .live-map-view-summary { padding-top: 12px; border-top: 1px solid rgba(214, 185, 140, .13); }
+.live-map-partition-offline-note { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 6px 10px; margin-top: 3px; padding: 10px 12px; border: 1px solid rgba(198, 139, 74, .38); border-radius: 8px; background: rgba(88, 57, 24, .18); color: var(--muted-warm); font-size: 12px; line-height: 1.45; }
+.live-map-partition-offline-note strong { color: #e9bd78; white-space: nowrap; }
 .live-map-view-label { color: #ceb894; font-size: 13px; font-weight: 700; line-height: 1.2; }
 .live-map-partition-field select { width: 100%; min-width: 0; }
 .live-map-layout {
@@ -2529,8 +2823,6 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-main { min-width: 0; display: grid; gap: 10px; }
 .live-map-map-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .live-map-map-buttons button { width: 100%; white-space: normal; min-height: 40px; }
-.live-map-coordinates-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.live-map-coordinates-clear { width: auto; min-height: 30px; padding: 5px 11px; font-size: 12px; }
 .live-map-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .live-map-toolbar button { width: auto; }
 .live-map-toolbar label { display: flex; align-items: center; gap: 8px; width: auto; color: #ceb894; }
@@ -2680,6 +2972,18 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   flex: 0 0 24px;
 }
 .live-map-legend-dot-spacer { flex: 0 0 auto; width: 28px; height: 24px; }
+.live-map-sector-grid-layer { border-bottom: 1px solid rgba(198, 139, 74, .2); margin-bottom: 4px; padding-bottom: 8px; }
+.live-map-sector-grid-swatch {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  border: 1px solid rgba(198, 139, 74, .75);
+  border-radius: 4px;
+  background:
+    linear-gradient(to right, transparent 47%, rgba(198, 139, 74, .75) 47%, rgba(198, 139, 74, .75) 53%, transparent 53%),
+    linear-gradient(to bottom, transparent 47%, rgba(198, 139, 74, .75) 47%, rgba(198, 139, 74, .75) 53%, transparent 53%);
+  flex: 0 0 24px;
+}
 .live-map-frame {
   position: relative;
   /* Both maps are square (4096x4096) -- keeping the box itself square
@@ -2706,9 +3010,45 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-frame.dragging { cursor: grabbing; user-select: none; }
 .live-map-frame.dragging-player { cursor: grabbing; user-select: none; }
 .live-map-canvas { position: relative; background: #101316; }
-.live-map-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; user-select: none; pointer-events: none; }
+.live-map-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; user-select: none; pointer-events: none; z-index: 0; }
+/* The terrain canvas covers the frame's viewport, not the scaled map: at
+   maximum zoom the map is 16384px, beyond MAX_TEXTURE_SIZE on many GPUs. It is
+   translated to follow the scrollport on every scroll, so it stays put while
+   the markers above it move with the content. */
+.live-map-terrain {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  display: block;
+  pointer-events: none;
+  will-change: transform;
+}
 .live-map-placeholder { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(circle at center, #251d14, #07090b 72%); color: #ffd08a; border: 1px dashed #514232; }
-.live-map-marker-layer { position: absolute; inset: 0; }
+/* Sits between the map and the markers. Drawn in map-pixel space via viewBox,
+   so one stroke-width follows the zoom instead of needing per-frame maths. */
+.live-map-sector-grid { position: absolute; top: 0; left: 0; z-index: 1; pointer-events: none; overflow: visible; }
+/* non-scaling-stroke means these widths are screen pixels, not viewBox units,
+   so the grid stays the same weight at every zoom rather than thickening as you
+   zoom in. Kept hairline-thin and dark: it is a reference overlay, and terrain
+   detail has to stay readable through it. */
+.live-map-sector-grid .lines line { stroke: rgba(16, 11, 4, .8); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.live-map-sector-grid .lines line.edge { stroke: rgba(16, 11, 4, .95); stroke-width: 2; }
+/* font-size is set inline as viewBox units divided by zoom, so the label stays
+   a constant size on screen. Sizing it in viewBox units alone would scale it
+   with the map -- at maximum zoom a cell label would render ~368px tall. */
+.live-map-sector-grid .labels text {
+  fill: rgba(28, 21, 12, .78);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-weight: 600;
+  text-anchor: middle;
+  dominant-baseline: central;
+  paint-order: stroke;
+  stroke: rgba(255, 246, 230, .5);
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+.live-map-marker-layer { position: absolute; inset: 0; z-index: 2; }
 .live-map-marker {
   position: absolute;
   width: 12px;
@@ -2752,8 +3092,26 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-marker.marker-storage:hover { width: 26px; height: 26px; }
 .live-map-marker.marker-spice, .live-map-marker.marker-spice_active { width: 48px; height: 48px; }
 .live-map-marker.marker-spice:hover, .live-map-marker.marker-spice_active:hover { width: 60px; height: 60px; }
-.live-map-marker.marker-spice { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; opacity: .55; }
-.live-map-marker.marker-spice_active { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; filter: drop-shadow(0 0 5px rgba(232, 135, 30, .85)); }
+.live-map-marker.marker-spice { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; }
+.live-map-marker.marker-spice_active { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; filter: drop-shadow(0 0 7px rgba(232, 135, 30, .95)); }
+.live-map-marker.marker-spice::after, .live-map-marker.marker-spice_active::after {
+  position: absolute;
+  top: -8px;
+  right: -12px;
+  z-index: 2;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid #090b0d;
+  border-radius: 999px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .7);
+  color: #fff;
+  font: 800 9px/14px "IBM Plex Mono", ui-monospace, monospace;
+  text-align: center;
+  pointer-events: none;
+}
+.live-map-marker.marker-spice::after { content: "?"; background: #59636d; }
+.live-map-marker.marker-spice_active::after { content: "LIVE"; background: #b85d0b; }
 /* Active/pool spice markers are sized by tier (subtype) -- the base
    marker-spice/marker-spice_active rules above are the Large tier's size;
    these modifiers step Medium/Small down so a whole bloom's yield reads at
@@ -2813,8 +3171,12 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-marker.subtype-mediumornithopter, .live-map-legend-dot.subtype-mediumornithopter { background: url("/images/maps/ornithoptervehicle.webp") center / contain no-repeat; }
 .live-map-marker.subtype-transportornithopter, .live-map-legend-dot.subtype-transportornithopter { background: url("/images/maps/ornithoptervehicle.webp") center / contain no-repeat; }
 .live-map-marker.subtype-containervehicle, .live-map-legend-dot.subtype-containervehicle { background: url("/images/maps/cargocontainervehicle.webp") center / contain no-repeat; }
-.live-map-legend-dot.marker-spice { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; opacity: .55; }
-.live-map-legend-dot.marker-spice_active { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; filter: drop-shadow(0 0 3px rgba(232, 135, 30, .75)); }
+.live-map-legend-dot.marker-spice, .live-map-legend-dot.marker-spice_active { position: relative; border: none; border-radius: 0; background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; }
+.live-map-legend-dot.marker-spice { box-shadow: none; }
+.live-map-legend-dot.marker-spice_active { box-shadow: none; filter: drop-shadow(0 0 4px rgba(232, 135, 30, .9)); }
+.live-map-legend-dot.marker-spice::after, .live-map-legend-dot.marker-spice_active::after { position: absolute; right: -9px; top: -7px; min-width: 13px; height: 12px; padding: 0 2px; border: 1px solid #090b0d; border-radius: 999px; color: #fff; font: 800 7px/10px "IBM Plex Mono", ui-monospace, monospace; text-align: center; }
+.live-map-legend-dot.marker-spice::after { content: "?"; background: #59636d; }
+.live-map-legend-dot.marker-spice_active::after { content: "LIVE"; background: #b85d0b; }
 .live-map-legend-dot.marker-ore { color: #9ca3af; background: #9ca3af; }
 .live-map-legend-dot.marker-scrap { color: #b45309; background: #b45309; }
 .live-map-legend-dot.marker-poi { color: #60a5fa; background: #60a5fa; }
@@ -2918,7 +3280,15 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-layer-group { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
 .live-map-layer-expand { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 20px; height: 20px; padding: 0; margin: 0; line-height: 1; background: transparent; border: 1px solid #514232; border-radius: 4px; color: #d9c8aa; font-size: 13px; cursor: pointer; }
 .live-map-layer-expand-spacer { flex: 0 0 auto; width: 22px; height: 20px; }
-.live-map-layer-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-map-layer-label {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
 .live-map-layer-expand:hover { border-color: #c68b4a; color: #ffd08a; }
 .live-map-layer-sublist { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin-left: 22px; padding-left: 8px; border-left: 1px solid #302b25; }
 /* width:100% (from .checkbox-row.live-map-layer) is computed against the
@@ -2955,6 +3325,9 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-target:after { content: ""; position: absolute; background: #ff9d8f; }
 .live-map-target:before { left: 50%; top: -7px; width: 2px; height: 32px; transform: translateX(-50%); }
 .live-map-target:after { top: 50%; left: -7px; height: 2px; width: 32px; transform: translateY(-50%); }
+/* The crosshair itself stays click-through so it never eats a double-click, but
+   the overlay hanging off it has to take pointer events for its own buttons. */
+.live-map-target > .live-map-marker-overlay { pointer-events: auto; }
 /* Anchored to the marker div itself (position:absolute against its
    position:relative-via-.live-map-marker ancestor -- see .live-map-marker's
    own rule), so it pans/zooms with the map for free instead of needing its
@@ -2984,21 +3357,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   padding: 10px 12px;
   border: 1px solid #4d4032;
   border-radius: 8px;
-  /* .6 alpha + blur, not a thinner wash on its own -- a plain 50% background
-     with no blur washed out illegibly over light map terrain (confirmed via
-     mockup review). The blur keeps the panel see-through while text stays
-     crisp regardless of what's under it. */
-  background: rgba(15, 17, 20, .6);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
-  /* Some anchor variants below cancel the base transform (translateX(-50%)
-     only makes sense for the centered case) -- transform was doubling as
-     this element's GPU layer-promotion trigger, so anchored overlays lost
-     it and rendered the backdrop-filter unblurred despite computed style
-     still reporting blur(10px) (a real, DOM-invisible browser compositing
-     quirk, not a CSS mistake). will-change promotes a layer independent of
-     which anchor variant is active, so every overlay blurs the same way. */
-  will-change: backdrop-filter;
+  background: #0f1114;
   box-shadow: 0 10px 28px rgba(0, 0, 0, .45);
   color: #d9c8aa;
   text-align: left;
@@ -3033,7 +3392,12 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-marker-overlay-action { flex: 1 1 0; min-width: 0; padding: 6px 10px; font-size: 12px; }
 .live-map-marker-overlay-teleport { display: grid; gap: 6px; margin-bottom: 8px; }
 .live-map-marker-overlay-teleport select { width: 100%; padding: 6px 8px; font-size: 12px; }
-.live-map-stats { grid-template-columns: repeat(5, minmax(88px, 1fr)); gap: 7px; }
+/* auto-fit, not a fixed count: the strip's items are conditional (Coriolis
+   seed, terrain layout and countdown each appear only sometimes), so a hardcoded
+   column count wraps the moment the item count exceeds it and leaves most of a
+   second row empty. Letting the track count follow the item count keeps them on
+   one row and stretched to fill, which is how the strip already looked. */
+.live-map-stats { grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); gap: 7px; }
 .live-map-stats .key-value-item { min-height: 56px; padding: 10px 11px; align-content: center; }
 .menu-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 12px 0 18px; }
 .menu-card { justify-content: center; min-height: 48px; white-space: normal; }
@@ -3204,9 +3568,6 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bases-table-wrap .bases-table tbody > tr:last-child > td { border-bottom: 0; }
 .bases-table-wrap .bases-table tbody > tr:last-child > td:first-child { border-bottom-left-radius: 7px; }
 .bases-table-wrap .bases-table tbody > tr:last-child > td:last-child { border-bottom-right-radius: 7px; }
-.table-wrap.bases-table-wrap.has-expanded-row-after-table { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-.bases-table-wrap.has-expanded-row-after-table .bases-table tbody > tr:last-child > td:first-child { border-bottom-left-radius: 0; }
-.bases-table-wrap.has-expanded-row-after-table .bases-table tbody > tr:last-child > td:last-child { border-bottom-right-radius: 0; }
 
 /* Below this width the twelve columns have nowhere to go. The table has no
    intrinsic minimum, so instead of overflowing it crushes -- cells collapse to
@@ -3220,7 +3581,23 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 @media (max-width: 1100px) {
   .table-wrap.bases-table-wrap { overflow: auto; }
   .bases-table { min-width: 860px; }
-  .bases-table-wrap + .expanded-row-outside > .expanded-row-cell > * { max-width: calc(100vw - 76px); }
+  /* Below this the table stops shrinking and scrolls at a fixed 860px, so the
+     actions column's 280px is 280px the data columns don't get -- and they are
+     the ones actually starved here (Base Name, Owner and Shared With wrap to
+     two or three lines while the buttons sit comfortably). Reclaim it by
+     stacking the controls two-up instead of in one row: an explicit 2-column
+     grid rather than flex-wrap, so the result is a predictable 2x2 for the
+     usual four controls rather than whatever the available width happens to
+     allow. A fifth control (every queue pending at once) wraps to a third row
+     rather than clipping. Above this breakpoint the column stays 280px and
+     the row stays 4x1 -- see the width comment on .bases-actions-column. */
+  .bases-table th.bases-actions-column, .bases-table td.bases-actions-column { width: 116px; }
+  .bases-table td.bases-actions-column .icon-toggle-group {
+    display: inline-grid;
+    grid-template-columns: repeat(2, auto);
+    justify-content: center;
+    gap: 6px;
+  }
 }
 /* The shared `th` rule is already position:sticky, but an overflow:auto ancestor
    confines a sticky element to that ancestor's scrollport -- so with the height
@@ -3251,6 +3628,36 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
    that is this table's own direct header cell. */
 .table-wrap.bases-table-wrap { margin-top: 0; }
 .bases-table-wrap .bases-table > thead > tr > th { top: 67px; z-index: 3; }
+/* The expanded base's own row stacks sticky beneath the header (z-index 4/3
+   above) so it stays visible while scrolling a tall tab's content -- the
+   same reason the search row and header are sticky. Applied to the `<tr>`
+   itself, not its `<td>`s: verified live that `position: sticky` on a
+   `tbody` row's own cells does not hold once scrolled past (the browser lets
+   go once each individual cell's own tiny box has scrolled by), while the
+   same declaration on the row element does. `> tbody > tr.row-expanded`, not
+   a bare descendant, for the same reason as the header's `> thead > tr > th`
+   above -- it must not match a nested table's row inside the expanded
+   content itself. Each cell still needs its own opaque background since
+   `<tr>` background does not reliably paint through `border-collapse:
+   separate` cells.
+   top is 67px (header's own offset) plus the header row's own rendered
+   height -- without adding it, both stick to the same 67px offset and the
+   header (its higher z-index) paints over and completely hides this row.
+   That height is measured into --bases-header-height rather than hardcoded:
+   the table is table-layout:fixed with percentage columns and
+   `th { white-space: normal }`, so headers wrap to two or three lines as the
+   viewport narrows and the fixed-width actions column squeezes the rest. The
+   51px fallback is the single-line height measured live (50.59375px, rounded
+   up) for the pre-measurement paint and for jsdom, where ResizeObserver does
+   not exist. */
+.bases-table-wrap .bases-table > tbody > tr.row-expanded {
+  position: sticky;
+  top: calc(67px + var(--bases-header-height, 51px));
+  z-index: 2;
+}
+.bases-table-wrap .bases-table > tbody > tr.row-expanded > td {
+  background: var(--panel);
+}
 /* Below 900px the sidebar stops being a column and becomes a sticky header at
    top:0 with z-index:100, so a search bar pinned to the same edge sits behind
    it. Offsetting by the sidebar's height would break the moment the hamburger
@@ -3266,6 +3673,20 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   border-bottom: 1px solid var(--border-strong);
   margin-bottom: 14px;
   padding-top: 8px;
+}
+/* Its own <tr> (via DataTable's renderExpandedSticky), sticky directly
+   beneath the expanded row above at 67px (header) + that row's real
+   measured height -- same reasoning as `tr.row-expanded` above: sticky on
+   an element nested inside a <td> does not reliably hold once scrolled
+   past, only on the <tr> itself. `--bases-expanded-row-height` falls back
+   to 0px -- sticking right under the header -- for the instant before the
+   ResizeObserver's first measurement lands. The cell's own background
+   comes from the existing generic `.expanded-row-cell` rule below, which
+   is already opaque. */
+.bases-table-wrap .bases-table > tbody > tr.expanded-row-sticky {
+  position: sticky;
+  top: calc(67px + var(--bases-header-height, 51px) + var(--bases-expanded-row-height, 0px));
+  z-index: 1;
 }
 .bases-expanded-tab {
   width: auto;
@@ -4395,10 +4816,131 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .bases-permissions-actions > .muted:empty { display: none; }
 .bases-permissions-actions button { width: auto; }
 
+.bases-child-access-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+.bases-child-access-head > div:first-child { display: grid; gap: 3px; min-width: 0; }
+.bases-child-access-head p { margin: 0; font-size: 12px; }
+/* Its own full-width row below the head, not squeezed into a space-between
+   split against the "Pieces · N" title -- four controls plus that title
+   competing for one row's width was what forced a premature wrap. */
+.bases-child-access-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.bases-child-access-actions button { width: auto; white-space: nowrap; }
+/* Label text beside its select, not stacked above it (the global `label`
+   rule is `display: grid`, text row then control row) -- same fix as
+   .bases-permissions-search-row .compact-select, and for the same reason:
+   stacked labels are taller than the plain buttons alongside them, so
+   `align-items: center` centers those buttons on the *label's* full height
+   and they render visibly higher than the select boxes' own midline. */
+.bases-child-access-actions .compact-select {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.bases-child-access-list { display: grid; gap: 6px; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; }
+.bases-child-access-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+/* Every piece on the base is listed now, not just the ones that deviate --
+   the warning treatment stays reserved for the ones that actually do. */
+.bases-child-access-row.unusual {
+  border-color: var(--warning);
+  background: rgba(169, 121, 50, .07);
+}
+.bases-child-access-row input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--accent-strong); }
+.bases-child-access-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bases-child-access-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-strong); font-size: 13px; }
+/* Marks the level this piece becomes at the map's next restart, next to the
+   level the game enforces now. Violet, matching the Bases list's queued
+   permission badge, so the same pending state reads the same on both
+   surfaces -- and stays distinct from the amber "not Sub-Fief" highlight. */
+.bases-child-access-queued {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(139, 124, 196, .18);
+  color: #b9aee6;
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.bases-child-access-clean { margin: 0; color: var(--success-text); font-size: 12px; }
+
+/* Segmented access-level control -- same visual spec as .bases-rank-segments
+   (RankSegments), under its own class names: this is a different 5-tier scale
+   (permission_actor.access_level), not the 3-tier roster rank. */
+.bases-access-segments {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  height: 34px;
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: #151719;
+  overflow: hidden;
+}
+.bases-access-segment {
+  position: relative;
+  display: flex;
+  gap: 0;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 8px;
+  border-left: 1px solid var(--border);
+  color: var(--muted-warm);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.bases-access-segment:first-child { border-left: 0; }
+.bases-access-segment input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+}
+.bases-access-segment:hover { background: rgba(198, 139, 74, .12); color: var(--text-strong); }
+.bases-access-segment:has(input:checked) { background: #9b5f2a; color: var(--text-strong); }
+.bases-access-segment:has(input:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
+.bases-access-segments:has(input:disabled) { opacity: .45; }
+.bases-access-segment:has(input:disabled) { cursor: not-allowed; }
+
 /* Below this the row's three columns cannot hold a name, three segments and a
-   trash button side by side -- inside the expanded cell the available width is
-   calc(100vw - 76px), which is ~300px on a phone. Stack the control under the
-   name and let it span the full row. */
+   trash button side by side, so stack the control under the name and let it
+   span the full row.
+
+   Note the breakpoint is on VIEWPORT width, not the width this row actually
+   gets. Since the expanded content moved inline (into a `<td>` of a table that
+   is min-width:860px below 1100px), the cell no longer narrows with the
+   viewport the way it did when it rendered outside the table wrapper -- the
+   table scrolls horizontally instead. So on a phone this rule fires against a
+   row that is ~860px wide, not the ~300px the old outside-the-table layout
+   gave it. It still stacks correctly; it is simply no longer the width
+   pressure that motivates it. Anything added here must be measured, not
+   inferred from the viewport. */
 @media (max-width: 560px) {
   .bases-permissions-row {
     grid-template-columns: minmax(0, 1fr) 38px;
@@ -4422,6 +4964,17 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
     gap: 12px;
   }
   .bases-permissions-intro > .action-help-note { max-width: none; }
+  .bases-child-access-head { align-items: stretch; flex-direction: column; }
+  /* Five segments need more width than the name column leaves on a phone --
+     stack the control under the checkbox/name row instead of squeezing it. */
+  .bases-child-access-row {
+    grid-template-columns: 20px minmax(0, 1fr);
+    grid-template-areas: "check name" "segments segments";
+    row-gap: 8px;
+  }
+  .bases-child-access-row input[type="checkbox"] { grid-area: check; }
+  .bases-child-access-name { grid-area: name; }
+  .bases-access-segments { grid-area: segments; }
 }
 @media (max-width: 900px) {
   .bases-permissions-toolbar {
@@ -4475,8 +5028,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   border-bottom: 1px solid var(--border);
 }
 
-/* Owner card. Read-only for vehicles -- no transfer action -- so this is
-   plain identity display, not the interactive hero card bases use. */
+/* Owner card, shared markup/behavior with bases (see OwnerHeroCard in
+   rosterEditor.tsx) -- includes the transfer-to-custodian button. */
 .vehicles-permissions-owner-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -4518,6 +5071,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   line-height: 1.2;
 }
 .vehicles-permissions-owner-none { color: var(--danger-text); font-style: italic; font-weight: 400; }
+.vehicles-permissions-owner-card > button { width: auto; flex: 0 0 auto; }
+.vehicles-permissions-owner-note { grid-column: 1 / -1; margin: 0; font-size: 12px; }
 
 .vehicles-permissions-section-head {
   display: flex;
@@ -4705,6 +5260,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
     grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
   }
+  .vehicles-permissions-owner-card > button { width: 100%; }
 }
 @media (max-width: 700px) {
   .vehicles-permissions-intro {
@@ -4746,15 +5302,6 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   vertical-align: middle;
 }
 .bases-table td.expanded-row-cell {
-  text-align: left;
-}
-.bases-table-wrap + .expanded-row-outside {
-  border: 1px solid var(--border);
-  border-top: 0;
-  border-radius: 0 0 8px 8px;
-  background: #101316;
-}
-.bases-table-wrap + .expanded-row-outside > .expanded-row-cell {
   text-align: left;
 }
 /* A plain full-width column, not a grid: the auto-refill row and the reserve
@@ -4851,6 +5398,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .land-claim-section-heading button { width: auto; flex: 0 0 auto; }
 .land-claim-reload-icon { animation: spin 1s linear infinite; }
 .land-claim-grid-wrap {
+  position: relative;
   min-height: 300px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, .07);
@@ -4860,6 +5408,39 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
     linear-gradient(rgba(255, 255, 255, .025) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, .025) 1px, transparent 1px);
   background-size: 18px 18px;
+}
+.land-claim-north-indicator {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  min-width: 52px;
+  padding: 7px 6px 6px;
+  border: 1px solid rgba(227, 173, 66, .48);
+  border-radius: 8px;
+  background: rgba(17, 15, 12, .88);
+  color: var(--muted-warm);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  line-height: 1;
+  text-transform: uppercase;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .24);
+}
+.land-claim-north-arrow {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(227, 173, 66, .34);
+  border-radius: 50%;
+  background: rgba(227, 173, 66, .09);
+  color: #f0bd55;
+  transform-origin: center;
 }
 .land-claim-grid { display: block; width: 100%; height: clamp(300px, 42vw, 500px); }
 .land-claim-cell {
@@ -5529,8 +6110,52 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .admin-tools-panel .broadcast-line { display: grid; grid-template-columns: minmax(260px, 560px); align-items: end; }
 .live-tool-section-title { margin: 0 0 2px; color: #ffd08a; font-size: 1rem; font-weight: 700; }
 .admin-tools-panel .motd-line { grid-template-columns: minmax(0, 1fr); }
-.admin-tools-panel .map-chat-line { margin-top: 0; }
+.admin-tools-panel .map-chat-line { width: 100%; margin-top: 0; grid-template-columns: minmax(0, 1fr); }
+.map-chat-line > * { min-width: 0; }
+.map-message-tabs { width: min(360px, 100%); margin: 2px 0 4px; }
+.map-message-send-now { display: grid; gap: 12px; }
+.map-message-schedules { display: grid; gap: 12px; width: 100%; max-width: none; }
+.map-message-schedule-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 10px; border-bottom: 1px solid rgba(214, 185, 140, .12); }
+.map-message-schedule-heading > div, .map-message-schedule-editor-title { display: grid; gap: 3px; }
+.map-message-schedule-heading strong, .map-message-schedule-editor-title strong { color: var(--title); }
+.map-message-schedule-heading span, .map-message-schedule-editor-title span { color: var(--muted-warm); font-size: 13px; }
+.map-message-schedule-heading button { width: auto; flex: 0 0 auto; }
+.map-message-schedule-editor { display: grid; gap: 14px; padding: 14px; border: 1px solid rgba(214, 185, 140, .28); border-radius: 8px; background: rgba(0, 0, 0, .16); }
+.map-message-schedule-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: end; }
+.map-message-schedule-fields label { min-width: 0; }
+.map-message-schedule-fields input, .map-message-schedule-fields select { width: 100%; min-width: 0; max-width: 100%; }
+.map-message-schedule-body { width: 100%; }
+.map-message-schedule-body textarea { min-height: 104px; }
+.map-message-schedule-body > .muted { justify-self: end; font-size: 12px; }
+.map-message-weekdays { min-width: 0; margin: 0; padding: 10px 12px 12px; border: 1px solid rgba(214, 185, 140, .16); border-radius: 7px; }
+.map-message-weekdays legend { padding: 0 5px; color: var(--muted-warm); font-size: 13px; }
+.map-message-weekdays > div { display: grid; grid-template-columns: repeat(7, minmax(52px, 1fr)); gap: 7px; }
+.map-message-weekdays button { min-width: 0; padding: 8px 7px; }
+.map-message-schedule-editor-actions, .map-message-schedule-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.map-message-schedule-editor-actions .switch-checkbox { margin-right: auto; }
+.map-message-schedule-empty { display: grid; place-items: center; gap: 4px; min-height: 112px; padding: 18px; border: 1px dashed rgba(214, 185, 140, .22); border-radius: 8px; color: var(--muted-warm); text-align: center; }
+.map-message-schedule-empty strong { color: #e9dcc8; }
+.map-message-schedule-list { display: grid; gap: 10px; }
+.map-message-schedule-card { display: grid; gap: 10px; padding: 13px 14px; border: 1px solid #302b25; border-left: 3px solid #62513d; border-radius: 8px; background: #121518; }
+.map-message-schedule-card.enabled { border-left-color: var(--success); }
+.map-message-schedule-card > p { margin: 0; color: #e4d7c0; line-height: 1.45; overflow-wrap: anywhere; }
+.map-message-schedule-summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.map-message-schedule-summary > div { display: grid; gap: 3px; min-width: 0; }
+.map-message-schedule-summary strong { color: var(--title); overflow-wrap: anywhere; }
+.map-message-schedule-summary span:not(.badge) { color: var(--muted-warm); font-size: 12px; }
+.map-message-schedule-summary .badge { flex: 0 0 auto; }
+.map-message-schedule-summary .badge.success { color: var(--success-text); border-color: var(--success); }
+.map-message-schedule-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.map-message-schedule-meta > span { display: grid; gap: 3px; padding: 8px 10px; border: 1px solid rgba(214, 185, 140, .1); border-radius: 6px; background: rgba(255, 255, 255, .025); }
+.map-message-schedule-meta small { color: var(--muted-warm); }
+.map-message-schedule-meta strong { color: #eee0c7; font-size: 13px; overflow-wrap: anywhere; }
+.map-message-schedule-meta .schedule-status-sent { color: var(--success-text); }
+.map-message-schedule-meta .schedule-status-failed, .map-message-schedule-meta .schedule-status-missed { color: var(--danger-text); }
+.map-message-schedule-error { color: var(--danger-text); font-size: 12px; overflow-wrap: anywhere; }
+.map-message-schedule-actions { padding-top: 2px; }
+.map-message-schedule-actions button { width: auto; }
 .admin-tools-panel .motd-line .muted { margin: 0; }
+.motd-delivery-field { width: min(260px, 100%); }
 .admin-tools-panel .player-announcements-line .panel-title { margin: 0 0 2px; }
 .admin-tools-panel .broadcast-title { width: min(360px, 100%); min-width: 0; flex: 0 1 360px; }
 .admin-tools-panel .broadcast-message { width: min(560px, 100%); min-width: 0; flex: 0 1 560px; }
@@ -5666,6 +6291,11 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .backup-table-actions { text-align: center; }
 .backup-table-actions .service-actions { justify-content: center; }
 .backup-table th, .backup-table td { vertical-align: middle; }
+.backup-select-column { width: 44px; min-width: 44px; text-align: center; }
+.backup-select-checkbox { display: inline-flex; align-items: center; justify-content: center; margin: 0; cursor: pointer; }
+.backup-select-checkbox input { width: 17px; height: 17px; min-height: 0; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.backup-select-checkbox input:disabled { cursor: not-allowed; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .backup-auto-controls { column-gap: 10px; row-gap: 10px; align-items: end; }
 .backup-auto-controls .checkbox-row { flex: 0 0 auto; min-height: 40px; align-items: center; }
 .backup-auto-controls .compact-select { flex: 0 1 210px; }
@@ -5710,6 +6340,53 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .settings-field-description svg { flex-shrink: 0; margin-top: 1px; color: var(--accent); }
 .settings-field-description-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .settings-field input, .settings-field select, .settings-field textarea, .raw-editor-card textarea { width: 100%; }
+.settings-field input:disabled, .settings-field select:disabled, .settings-list-table input:disabled, .settings-list-table select:disabled { opacity: .6; cursor: not-allowed; }
+
+/* Same visual spec as .bases-rank-segments / .vehicles-rank-segments, under
+   its own settings-scoped class names per this repo's CSS scoping convention. */
+.settings-match-region { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.settings-match-region-label { font-size: 12px; font-weight: 700; color: #a99577; white-space: nowrap; }
+.settings-match-region-segments {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  height: 28px;
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: #151719;
+  overflow: hidden;
+}
+.settings-match-region-segment {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  min-height: 28px;
+  padding: 0 10px;
+  border-left: 1px solid var(--border);
+  color: var(--muted-warm);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.settings-match-region-segment:first-child { border-left: 0; }
+.settings-match-region-segments .settings-match-region-segment input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.settings-match-region-segment:hover { background: rgba(198, 139, 74, .12); color: var(--text-strong); }
+.settings-match-region-segment:has(input:checked) { background: #9b5f2a; color: var(--text-strong); }
+.settings-match-region-segment:has(input:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
+.settings-match-region-segments:has(input:disabled) { opacity: .45; }
+.settings-match-region-segment:has(input:disabled) { cursor: not-allowed; }
 .character-transfer-grid { display: grid; gap: 8px; max-width: 820px; }
 .character-transfer-row {
   display: grid;
@@ -5748,6 +6425,7 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .settings-list-description-row td { padding-top: 0; }
 .settings-list-table input, .settings-list-table select, .settings-list-table textarea { width: 100%; margin-top: -10px; }
 .settings-list-table tr.settings-list-badge-row + tr input, .settings-list-table tr.settings-list-badge-row + tr select, .settings-list-table tr.settings-list-badge-row + tr textarea { margin-top: 0; }
+.settings-list-table .settings-match-region + input, .settings-list-table .settings-match-region + select, .settings-list-table .settings-match-region + textarea { margin-top: 0; }
 .spicefields-table { min-width: 980px; }
 .spicefields-table th:nth-child(n), .spicefields-table td:nth-child(n) { width: auto; }
 .spicefields-table th:nth-child(1), .spicefields-table td:nth-child(1) { width: 18%; }
@@ -5788,13 +6466,22 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .advanced-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; }
 .raw-editor-card { border: 1px solid rgba(214, 185, 140, .16); background: rgba(0,0,0,.14); border-radius: 8px; padding: 12px; display: grid; gap: 10px; }
 .raw-editor-card textarea { min-height: 260px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: .86rem; }
-.deep-desert-dual-section { width: 50%; min-width: min(100%, 520px); box-sizing: border-box; }
-.deep-desert-dual-line { align-items: center; gap: 5px; width: 100%; }
-.deep-desert-dual-label { min-height: 38px; display: inline-flex; align-items: center; color: #ffd08a; font-weight: 800; }
-.deep-desert-dual-line .deep-desert-dual-toggle { flex: 0 0 auto; min-width: 0; min-height: 0; justify-content: center; border-color: transparent; background: transparent; padding: 0; color: inherit; }
-.deep-desert-dual-toggle.enabled, .deep-desert-dual-toggle.disabled, .deep-desert-dual-toggle:hover { border-color: transparent; background: transparent; box-shadow: none; }
-.deep-desert-dual-toggle .switch-state { min-width: 58px; padding: 9px 13px; font-size: 13px; font-weight: 900; }
-.deep-desert-dual-line .inline-task-result { margin-left: 0; flex: 0 1 auto; min-width: 0; max-width: 320px; }
+.deep-desert-layout-section { width: 100%; box-sizing: border-box; display: grid; gap: 14px; padding: 16px; border: 1px solid rgba(214, 185, 140, .2); border-radius: 10px; background: rgba(0, 0, 0, .13); }
+.deep-desert-layout-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.deep-desert-layout-heading strong { color: #ffd08a; font-size: 1rem; }
+.deep-desert-layout-heading p, .deep-desert-layout-note { margin: 4px 0 0; color: #b9a98f; font-size: .87rem; line-height: 1.45; }
+.deep-desert-layout-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.deep-desert-layout-options { display: inline-grid; grid-template-columns: repeat(3, minmax(92px, 1fr)); gap: 4px; padding: 4px; border: 1px solid rgba(214, 185, 140, .2); border-radius: 9px; background: rgba(0, 0, 0, .2); }
+.deep-desert-layout-options button { min-height: 48px; display: grid; grid-template-columns: auto 1fr; align-items: center; justify-content: center; gap: 7px; padding: 7px 12px; border-color: transparent; background: transparent; box-shadow: none; color: #b9a98f; }
+.deep-desert-layout-options button strong { color: #ead8b8; font-size: 1rem; }
+.deep-desert-layout-options button.active { border-color: rgba(230, 177, 83, .62); background: linear-gradient(180deg, rgba(230, 177, 83, .2), rgba(120, 76, 21, .16)); color: #ffe1a6; box-shadow: inset 0 0 0 1px rgba(255, 216, 139, .08); }
+.deep-desert-layout-options button.active strong { color: #ffd77f; }
+.deep-desert-third-role { min-height: 48px; display: flex; align-items: center; gap: 9px; padding: 4px 4px 4px 12px; border: 1px solid rgba(214, 185, 140, .2); border-radius: 9px; background: rgba(0, 0, 0, .2); }
+.deep-desert-third-role > span { color: #cbbb9f; font-size: .84rem; font-weight: 800; white-space: nowrap; }
+.deep-desert-third-role > div { display: grid; grid-template-columns: repeat(2, minmax(58px, 1fr)); gap: 4px; }
+.deep-desert-third-role button { min-height: 38px; padding: 7px 12px; border-color: transparent; background: transparent; box-shadow: none; color: #b9a98f; }
+.deep-desert-third-role button.active { border-color: rgba(230, 177, 83, .62); background: linear-gradient(180deg, rgba(230, 177, 83, .2), rgba(120, 76, 21, .16)); color: #ffd77f; }
+.deep-desert-layout-controls .inline-task-result { align-self: center; flex: 1 1 280px; min-width: 0; max-width: 520px; }
 .hidden-file-input { display: none; }
 @media (max-width: 1320px) {
   .landsraad-persistent-heading, .landsraad-persistent-actions { align-items: flex-start; flex-direction: column; }
@@ -5820,6 +6507,9 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
   .playerAdmin_repairRow button { justify-self: start; }
   .playerAdmin_repairRow .inline-action-result-wrap { width: 100%; min-height: 24px; }
   .playerAdmin_factionControls { flex-wrap: wrap; }
+  .playerAdmin_teleportModeRow, .playerAdmin_coordinateInputs { width: 100%; align-items: stretch; flex-wrap: wrap; }
+  .playerAdmin_teleportModeRow > span, .playerAdmin_teleportModeRow > select, .playerAdmin_teleportModeRow > select:first-of-type { width: 100%; max-width: none; flex: 1 1 100%; }
+  .playerAdmin_coordinateInputs input { flex: 1 1 92px; width: auto; max-width: none; }
 }
 
 /* Responsive application foundations ------------------------------------- */
@@ -6021,10 +6711,17 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .live-map-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .live-map-frame { width: 100%; min-width: 0; height: clamp(420px, 62dvh, 700px); min-height: 0; }
   .map-message-schedule-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .deep-desert-dual-section { width: 100%; }
+  .deep-desert-layout-section { width: 100%; }
 }
 
 @media (max-width: 760px) {
+  .deep-desert-layout-heading { align-items: flex-start; }
+  .deep-desert-layout-controls { align-items: stretch; }
+  .deep-desert-layout-options { width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .deep-desert-layout-options button { min-width: 0; grid-template-columns: 1fr; gap: 1px; padding-inline: 6px; }
+  .deep-desert-third-role { width: 100%; box-sizing: border-box; justify-content: space-between; }
+  .deep-desert-layout-controls .inline-task-result { align-self: stretch; }
+  .deep-desert-layout-controls > button:not(.deep-desert-layout-options button) { width: 100%; }
   .app-shell > main { padding: clamp(10px, 3vw, 18px); }
   .sidebar-nav.mobile-open { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .topbar { gap: 12px; margin-bottom: 14px; padding-bottom: 12px; }
@@ -6033,6 +6730,12 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .community-button { width: 100%; min-height: 44px; }
   .panel, .drawer, .action-section { padding: clamp(11px, 3vw, 16px); }
   .panel-title, .action-row, .action-line { align-items: stretch; }
+  /* stretch makes the StatusBadge grow to the Dismiss button and keep its text
+     on the first line, while this badge stays 25px and centres in the row --
+     measured 9px lower than its neighbour. Scoped here because the row is
+     align-items: center above this breakpoint, where the default already
+     agrees and flex-start would introduce the same 9px in the other direction. */
+  .task-warning-count { align-self: flex-start; }
   .panel-title > .action-row,
   .panel-title > .service-actions,
   .panel-title > .addons-title-actions,
@@ -6115,9 +6818,63 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .package-auto-rule { grid-template-columns: 1fr auto; }
   .package-auto-rule > :nth-child(2) { grid-column: 1 / -1; grid-row: 1; }
   .playerAdmin_header { grid-template-columns: 1fr; }
+  .playerAdmin_customizationCards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .playerAdmin_summaryActions { align-items: stretch; }
-  .playerAdmin_filterToolsRow { justify-content: flex-start; width: 100%; flex-basis: 100%; }
-  .playerAdmin_filterTextInput { flex: 1 1 220px; min-width: 0; }
+  .playerAdmin_filterActionLine { align-items: stretch; }
+  .playerAdmin_filterToolsRow,
+  .playerAdmin_filterActionsRight {
+    width: 100%;
+    max-width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+  .playerAdmin_filterToolsRow { flex-basis: 100%; }
+  .playerAdmin_filterTextInput {
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+  }
+  .playerAdmin_filterToolsRow .playerAdmin_note {
+    min-width: 0;
+    min-height: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .playerAdmin_filterActionsRight select {
+    flex: 1 1 180px;
+    width: auto;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .playerAdmin_iconRail::before {
+    top: 48px;
+    transform: none;
+  }
+  .playerAdmin_iconRailItems {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    overflow: visible;
+  }
+  .playerAdmin_iconRailItems::before { display: none; }
+  .playerAdmin_iconRailIconGroup {
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+  .playerAdmin_iconRailLabel {
+    justify-self: center;
+    max-width: 100%;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
+  }
   .live-map-toolbar label { width: 100%; justify-content: space-between; }
   .live-map-toolbar input[type="range"].live-map-zoom-range { flex: 1 1 auto; width: auto; min-width: 120px; }
   .live-map-frame { width: 100%; min-width: 0; height: clamp(360px, 58dvh, 600px); }
@@ -6127,6 +6884,9 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 }
 
 @media (max-width: 560px) {
+  .playerAdmin_customizationHeader { align-items: stretch; flex-direction: column; }
+  .playerAdmin_customizationHeader > button { width: 100%; }
+  .playerAdmin_customizationCards { grid-template-columns: 1fr; }
   .sidebar-brand { grid-template-columns: minmax(0, 1fr) auto; }
   .stack-version-button { grid-column: 1; grid-row: 2; justify-self: start; max-width: 160px; margin-top: 6px; }
   .sidebar-menu-toggle { grid-column: 2; grid-row: 1 / span 2; }
@@ -6213,6 +6973,11 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   input[type="checkbox"], input[type="radio"] { min-height: 22px; min-width: 22px; }
   .col-resize-handle { display: none; }
   .memory-info-button, .addon-description-toggle { min-width: 44px; min-height: 44px; }
+  /* .settings-match-region-segment is a <label>, not one of the tags the generic
+     button/input/select rule above targets, so its 28px segments are otherwise
+     untouched by this media query. */
+  .settings-match-region-segments { height: 44px; }
+  .settings-match-region-segment { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -6548,4 +7313,276 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 .link-prompt-card .btn:hover {
   border-color: var(--accent-color, #d4a853);
   color: var(--text-color, #ccc);
+}
+/* --- API Keys (Settings) --------------------------------------------------
+   Generic segmented control, same visual spec as .bases-rank-segments. That
+   one is left alone deliberately: it is load-bearing for base and vehicle
+   permissions, so this repeats the rules rather than refactoring both. */
+.segmented-control {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  height: 38px;
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: #151719;
+  overflow: hidden;
+}
+.segmented-control-segment {
+  position: relative;
+  /* Overrides the global `label { display: grid; gap: 6px }`. */
+  display: flex;
+  gap: 0;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 10px;
+  border-left: 1px solid var(--border);
+  color: var(--muted-warm);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.segmented-control-segment:first-child { border-left: 0; }
+.segmented-control-segment input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+}
+.segmented-control-segment:hover { background: rgba(198, 139, 74, .12); color: var(--text-strong); }
+.segmented-control-segment:has(input:checked) { background: #9b5f2a; color: var(--text-strong); }
+/* Negative offset because .segmented-control clips with overflow: hidden --
+   an outset ring would be cut off on the end segments. */
+.segmented-control-segment:has(input:focus-visible) { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
+.segmented-control:has(input:disabled) { opacity: .45; }
+.segmented-control-segment:has(input:disabled) { cursor: not-allowed; }
+
+.api-keys-section { display: grid; gap: 12px; }
+.api-keys-section > .muted { margin: 0; }
+.api-keys-section code { color: var(--muted-warm); }
+
+.api-key-form { display: grid; gap: 12px; border-top: 1px solid var(--border); padding-top: 12px; }
+.api-key-form-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+/* A native date input renders 1px taller than a text or number input here, so
+   the three fields need an explicit height to sit on one line. */
+.api-key-form-grid input { height: 44px; }
+
+.api-key-scope-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.api-key-scope-header .muted { margin: 0; }
+
+/* Capped so the 18-row grid cannot push the create button off screen. The cap
+   is a round number, not a multiple of the row height, so the last visible row
+   is clipped mid-row -- that is the scroll affordance. */
+.api-key-scope-grid {
+  /* Floor for one segment, in rem so it tracks the user's root font size.
+     The column can grow past it (see .api-key-scope-segments); this only stops
+     the control collapsing to its text width at the default 11px label. */
+  --api-key-segment-w: 5.75rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 0;
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: var(--panel-muted);
+}
+/* The control column is a fixed width and the segments a fixed size, so every
+   row's None and Read segments line up vertically. Sizing the control to its
+   contents instead would put the two-segment `logs` row's segments underneath
+   a different pair of labels on the rows above it. */
+/* The COLUMNS live on the grid, not on each row, and the rows are
+   display: contents so their cells become items of it. Per-row grids sized
+   their own tracks, so the only way to line rows up was a fixed width -- which
+   in turn capped the control and clipped "Read+write" once a browser
+   minimum-font-size setting pushed the label past it. One shared track set
+   gives alignment and growth at the same time: max-content is measured across
+   every row, so the widest label sets the column and every row follows. */
+.api-key-scope-row {
+  display: contents;
+}
+/* The row generates no box, so the separator and padding move to its cells. */
+.api-key-scope-row > * {
+  align-self: center;
+  padding: 4px 0;
+  border-bottom: 1px solid #241f1a;
+}
+.api-key-scope-row:last-child > * { border-bottom: 0; }
+/* min-width: 0 is what lets the 1fr track actually shrink -- a grid item's
+   default min-width is auto, so without it the name column refuses to go below
+   its content width and the row grows an inner scrollbar. The ellipsis then
+   truncates the namespace instead of letting it run underneath the fixed 248px
+   control track. */
+.api-key-scope-name {
+  /* Block, not flex: text-overflow: ellipsis has no effect on a flex
+     container, so the namespace was hard-clipped mid-glyph instead of
+     ellipsed. The flex/gap here existed only for a high-risk warning badge on
+     write grants, deleted once `setup` became fully denied to keys and
+     `updates`/`addons` became write-denied -- leaving nothing for it to mark. */
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted-warm);
+  font-size: 13px;
+}
+/* Every namespace is listed, granted or not; the granted ones are what should
+   stand out when scanning a long grid. */
+.api-key-scope-row.granted .api-key-scope-name { color: var(--text-strong); }
+.api-key-scope-segments {
+  height: 30px;
+  /* Overrides .segmented-control's minmax(0, 1fr). A fixed per-segment width
+     -- not 1fr, which would divide by segment count -- is what keeps None and
+     Read at the same x on a two-segment row (logs, updates, addons) as on a
+     three-segment one. */
+  /* A floor, not a fixed width: the label can now grow past it instead of
+     being clipped, and because every row's segments carry the same text the
+     computed widths stay identical, so None and Read still share an x. */
+  grid-auto-columns: minmax(var(--api-key-segment-w), max-content);
+  justify-self: start;
+}
+.api-key-scope-segments .segmented-control-segment { min-height: 30px; padding: 0 6px; font-size: 11px; }
+/* The Custom action checklist. The row is display: contents, so this fieldset
+   is a direct item of .api-key-scope-grid and must be told to span BOTH
+   columns -- left to itself it would drop into the name column and squeeze
+   against the 1fr track.
+
+   Spanning both columns is what the checklist needs (12 actions across three
+   auto-fill tracks rather than one long single-column list), but it also means
+   the band starts at the same x as the namespace names above and below it, so
+   the first column stops reading as "namespace" for one row. The left rule and
+   indent are what re-subordinate it: it reads as a detail panel hanging off the
+   row that opened it, not as another cell in the name column. Same idiom as
+   .dirty-note and .database-tunnel-security-note (both 3px var(--accent)),
+   without their tinted background -- this is structure, not a warning.
+
+   --accent, not --border-strong: the rule has to be SEEN to do the grouping,
+   and --border-strong is 1.86:1 against --panel-muted, under the 3:1 WCAG
+   1.4.11 asks of a boundary that carries meaning. --accent is 6.38:1.
+   --border (1.33:1) and #62513d (2.45:1) fail the same way. */
+.api-key-scope-actions {
+  grid-column: 1 / -1;
+  border: 0;
+  border-left: 3px solid var(--accent);
+  border-bottom: 1px solid #241f1a;
+  margin: 0;
+  padding: 2px 0 8px 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  column-gap: 16px;
+  row-gap: 4px;
+}
+.api-key-scope-row:last-child > .api-key-scope-actions { border-bottom: 0; }
+/* A row that owns a checklist must not be separated from it. .api-key-scope-row
+   is display: contents, so the separator lives on each CELL -- which drew a
+   full-width rule between the namespace and its own action list, grouping the
+   list with the row beneath instead. Only the fieldset closes the group. */
+.api-key-scope-row:has(> .api-key-scope-actions) > .api-key-scope-name,
+.api-key-scope-row:has(> .api-key-scope-actions) > .api-key-scope-segments {
+  border-bottom: 0;
+}
+/* Spans the grid rather than sitting in the first cell: a legend is not a grid
+   item by default in every engine, so it is placed explicitly. */
+.api-key-scope-actions legend {
+  grid-column: 1 / -1;
+  float: left;
+  width: 100%;
+  padding: 0 0 4px;
+  font-size: 12px;
+}
+.api-key-scope-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted-warm);
+  cursor: pointer;
+}
+/* accent-color is set per component in this stylesheet -- there is no global
+   checkbox rule -- so without this the ticks render in the browser default
+   blue/purple, which reads as foreign in an amber console. Matches the
+   blueprint row-select checkboxes. */
+/* An explicit size is REQUIRED, not cosmetic: the global
+   `input, select, textarea { width: 100% }` near the top of this file applies
+   to checkboxes too, and with flex: none the box cannot shrink -- it takes the
+   whole flex line and squeezes the action name to 0px, so every label in the
+   checklist renders blank. Every other checkbox rule here sets a size for the
+   same reason (.blueprint-row-select, .bases-child-access-row, .checkbox-line).
+   min-height: 0 overrides the 44px touch minimum from the pointer:coarse block. */
+.api-key-scope-action input {
+  width: 16px;
+  height: 16px;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent);
+}
+.api-key-scope-action code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+/* Ticked actions read as the granted ones, matching how .granted lifts a
+   namespace name out of the muted default. */
+.api-key-scope-action:has(input:checked) { color: var(--text-strong); }
+
+/* Declared AFTER the unconditional .api-key-scope-row / .api-key-scope-segments
+   rules above: same specificity, so source order decides. Placed before them it
+   was dead CSS and the row never stacked its control. */
+/* Stacked layout drops the shared-track grid entirely and gives each row its
+   own box again. The parent grid exists only to align columns ACROSS rows, and
+   once every cell is full width there is nothing left to align -- while
+   keeping it produced 4px name tracks that the 21px name overflowed straight
+   into the control beneath it. */
+@media (max-width: 560px) {
+  .api-key-scope-grid { display: block; }
+  .api-key-scope-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+    padding: 8px 0;
+    border-bottom: 1px solid #241f1a;
+  }
+  .api-key-scope-row > * { padding: 0; border-bottom: 0; }
+  .api-key-scope-row:last-child { border-bottom: 0; }
+  .api-key-scope-segments { justify-self: stretch; grid-auto-columns: minmax(0, 1fr); }
+  /* The rule above zeroes padding on every cell, the fieldset included, which
+     stripped the checklist of the indent and gutter that make it read as a
+     group -- at the width where the rows have already lost their columns and
+     the grouping is carrying all of the structure. Same specificity as that
+     rule, so this has to come after it. Only padding is restored: that rule
+     resets border-BOTTOM, so the left rule is still inherited from the
+     unconditional declaration above. */
+  .api-key-scope-actions { padding: 2px 0 4px 12px; }
+}
+
+.api-key-reveal {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  padding: 12px;
+  background: var(--panel-muted);
+}
+.api-key-reveal-warning { display: flex; align-items: center; gap: 8px; color: #ffd9a8; font-size: 13px; }
+.api-key-reveal-row { display: flex; gap: 8px; align-items: center; }
+.api-key-reveal-row input {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
 }

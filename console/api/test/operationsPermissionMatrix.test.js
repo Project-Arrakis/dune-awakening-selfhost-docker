@@ -70,6 +70,7 @@ function waitForTask(manager, id) {
 // Critical operations (1-10)
 test("01 Critical: self-update preserves host identity and Docker access", () => {
   assert.deepEqual(buildDuneArgs("selfUpdateApply"), ["self-update", "install", "latest"]);
+  assert.deepEqual(buildDuneArgs("selfUpdateQaApply", { sha: "b".repeat(40) }), ["self-update", "install-qa", "b".repeat(40)]);
   const script = source("runtime/scripts/self-update.sh");
   assert.match(script, /--user "\$\{DUNE_HOST_UID:-0\}:\$\{DUNE_HOST_GID:-0\}"/);
   assert.match(script, /--group-add "\$\{DOCKER_SOCKET_GID:-0\}"/);
@@ -326,10 +327,11 @@ test("43b Dynamic map spawn repairs drifted settings ownership before materializ
 
   assert.ok(spawn.includes(repairCall), "dynamic map spawn must repair its settings directory");
   assert.ok(spawn.indexOf(repairCall) < spawn.indexOf(materializeCall), "repair must precede INI materialization");
-  assert.match(repair, /mkdir -p "\$settings_dir".*\[ -w "\$settings_dir" \]/s);
+  assert.match(repair, /mkdir -p "\$settings_dir" "\$custom_settings_dir".*\[ -w "\$settings_dir" \].*\[ -w "\$custom_settings_dir" \]/s);
   assert.match(repair, /Refusing to repair settings ownership while the map is running/);
   assert.match(repair, /-v "\$host_game_root:\/game"/);
-  assert.match(repair, /find "\$settings" -xdev/);
+  assert.match(repair, /for managed_dir in "\$settings" "\$custom_settings"/);
+  assert.match(repair, /find "\$managed_dir" -xdev/);
   assert.doesNotMatch(repair, /find \/game -xdev/);
 });
 

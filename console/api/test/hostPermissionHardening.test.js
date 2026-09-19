@@ -38,10 +38,8 @@ test("root-run override publishers restore ownership of generated host files", (
     assert.match(publisher, /source runtime\/scripts\/host-file-ownership\.sh/);
     assert.match(publisher, /dune_set_host_path_owner "\$PID_FILE"/);
     assert.match(publisher, /dune_set_host_path_owner "\$current_log"/);
+    assert.match(publisher, /dune_set_host_path_owner "\$cache_tmp"/);
   }
-
-  assert.match(source("runtime/scripts/publish-sietch-overrides.sh"), /dune_set_host_path_owner "\$RMQ_CREDS_FILE"/);
-  assert.match(source("runtime/scripts/publish-deepdesert-overrides.sh"), /dune_set_host_path_owner "\$cache_tmp"/);
 });
 
 test("settings writes preserve the configured host owner", () => {

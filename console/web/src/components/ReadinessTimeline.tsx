@@ -18,6 +18,7 @@ const CONTAINER_LABELS: Record<string, string> = {
   "dune-server-gateway": "Gateway",
   "dune-server-survival-1": "Survival 1",
   "dune-server-overmap": "Overmap",
+  "dune-coriolis-coordinator": "Coriolis Coordinator",
   "dune-orchestrator": "Orchestrator"
 };
 
@@ -36,7 +37,7 @@ export function ReadinessTimeline({ text, statusText = "" }: { text: string; sta
   </section>;
 }
 
-function buildReadinessGroups(readyText: string, statusText: string) {
+export function buildReadinessGroups(readyText: string, statusText: string) {
   const statusContainers = parseStatusContainers(statusText);
   const readyRows = parseReadyRows(readyText);
   const statusListeners = parseStatusListeners(statusText);
@@ -123,6 +124,9 @@ function parseStatusRabbit(text: string, readyRows: ReturnType<typeof parseReady
   if (section.some((line) => /not running|missing|failed/i.test(line))) {
     return [{ name: "RabbitMQ Game", detail: friendlyCheckDetail(friendlyIssue(section[0])), status: "Failed", kind: "fail" }];
   }
+  if (section.some((line) => /checked by readiness/i.test(line))) {
+    return readyRows.filter((row) => row.group === "RabbitMQ Game Connections").map(({ group: _group, ...row }) => row);
+  }
   const readyFailed = readyRows.find((row) => row.group === "RabbitMQ Game Connections" && row.status !== "Ready");
   return section.map((line) => {
     const [name, value = ""] = line.split(":").map((part) => part.trim());
@@ -155,6 +159,7 @@ function friendlyReadyName(raw: string) {
     .replace(/dune-server-gateway/gi, "Gateway")
     .replace(/dune-server-survival-1/gi, "Survival 1")
     .replace(/dune-server-overmap/gi, "Overmap")
+    .replace(/dune-coriolis-coordinator/gi, "Coriolis Coordinator")
     .replace(/_/g, " ")
     .replace(/\s+/g, " ")
     .trim();

@@ -8,6 +8,7 @@ set -a
 set +a
 
 STATE_FILE="${DUNE_MAP_MODES_FILE:-runtime/generated/map-runtime-modes.json}"
+STATE_VERSION=2
 GRACE_SECONDS="${DUNE_AUTOSCALER_DESPAWN_GRACE_SECONDS:-${DUNE_AUTOSCALER_IDLE_SECONDS:-300}}"
 RECONCILE_LOCK_FILE="${DUNE_ALWAYS_ON_RECONCILE_LOCK_FILE:-runtime/generated/map-modes-reconcile.lock}"
 RECONCILE_STATE_FILE="${DUNE_ALWAYS_ON_RECONCILE_STATE_FILE:-runtime/generated/map-modes-reconcile.tsv}"
@@ -122,7 +123,7 @@ canonical_map() {
 ensure_state_file() {
   mkdir -p "$(dirname "$STATE_FILE")"
   if [ ! -s "$STATE_FILE" ]; then
-    python3 - "$STATE_FILE" <<'PY'
+    python3 - "$STATE_FILE" "$STATE_VERSION" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
@@ -130,12 +131,56 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 payload = {
-    "version": 1,
+    "version": int(sys.argv[2]),
     "updated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     "maps": {},
 }
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  fi
+
+  # v2 retires legacy Always On / Overmap Active selections for maps whose
+  # lifecycle now requires a fresh process per visit.  Merely masking the old
+  # value at read time is insufficient: older reconciliation and publication
+  # paths can consume the persisted value directly and create a spawn/despawn
+  # loop.  Migrate it once, atomically, while retaining Disabled as an explicit
+  # operator choice.
+  if ! grep -Eq '"version"[[:space:]]*:[[:space:]]*2([,[:space:]}]|$)' "$STATE_FILE" 2>/dev/null; then
+    python3 - "$STATE_FILE" "$STATE_VERSION" <<'PY'
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+path = Path(sys.argv[1])
+target_version = int(sys.argv[2])
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+if not isinstance(data, dict):
+    raise SystemExit(0)
+try:
+    current_version = int(data.get("version", 0) or 0)
+except (TypeError, ValueError):
+    current_version = 0
+if current_version >= target_version:
+    raise SystemExit(0)
+
+now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+maps = data.setdefault("maps", {})
+for map_name in ("CB_Overland_S_06",):
+    config = maps.get(map_name)
+    if isinstance(config, dict) and config.get("mode") not in {"dynamic", "disabled"}:
+        config["mode"] = "dynamic"
+        config["last_mode_change_at"] = now
+data["version"] = target_version
+data["updated_at"] = now
+tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+tmp.replace(path)
 PY
   fi
 }
@@ -217,7 +262,7 @@ set_mode() {
   fi
 
   ensure_state_file
-  python3 - "$STATE_FILE" "$canonical" "$mode" <<'PY'
+  python3 - "$STATE_FILE" "$canonical" "$mode" "$STATE_VERSION" <<'PY'
 import json
 import os
 import sys
@@ -227,11 +272,12 @@ from pathlib import Path
 path = Path(sys.argv[1])
 target = sys.argv[2]
 mode = sys.argv[3]
+state_version = int(sys.argv[4])
 try:
     data = json.loads(path.read_text(encoding="utf-8"))
 except Exception:
     data = {}
-data["version"] = 1
+data["version"] = state_version
 data.setdefault("maps", {})
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 data["updated_at"] = now
@@ -648,6 +694,10 @@ reconcile_all() {
   while read -r map; do
     [ -n "$map" ] || continue
     protected_map "$map" && continue
+    # The persisted candidate list can contain a mode retired by a newer
+    # lifecycle policy.  Never reconcile it unless the effective policy still
+    # agrees that it is Always On.
+    [ "$(effective_mode_for_map "$map")" = "always-on" ] || continue
     maps+=("$map")
   done < <(python3 - "$STATE_FILE" "$STARTUP_PRIORITY" <<'PY'
 import json

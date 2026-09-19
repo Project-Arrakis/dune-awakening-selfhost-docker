@@ -13,6 +13,21 @@ AUTO_SERVICE_FILE="/etc/systemd/system/dune-awakening-db-backup.service"
 AUTO_TIMER_FILE="/etc/systemd/system/dune-awakening-db-backup.timer"
 PENDING_TRANSFER_FILE="runtime/generated/pending-character-transfers.tsv"
 BATTLEGROUP_RESTORE_FILE="runtime/generated/battlegroup-restore-point.env"
+DB_RESTORE_MAINTENANCE_FILE="${DUNE_DB_RESTORE_MAINTENANCE_FILE:-runtime/generated/db-restore-maintenance}"
+
+begin_db_restore_maintenance() {
+  mkdir -p "$(dirname "$DB_RESTORE_MAINTENANCE_FILE")"
+  printf 'Database restore started at %s by PID %s.\n' "$(date -Is)" "$$" > "$DB_RESTORE_MAINTENANCE_FILE"
+  chmod 600 "$DB_RESTORE_MAINTENANCE_FILE" 2>/dev/null || true
+  trap 'rm -f "$DB_RESTORE_MAINTENANCE_FILE"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+
+end_db_restore_maintenance() {
+  rm -f "$DB_RESTORE_MAINTENANCE_FILE"
+  trap - EXIT INT TERM
+}
 
 usage() {
   cat <<'EOF'
@@ -38,7 +53,7 @@ Usage:
   dune db transfer pending
   dune db transfer apply-pending
   dune db transfer clear-pending
-  dune db delete <backup-file-or-name>
+  dune db delete <backup-file-or-name> [more-backups...]
   dune db delete --all
   dune db auto enable <HH:MM> [retention-days] [interval-hours]
   dune db auto disable
@@ -633,7 +648,7 @@ backup_db() {
   # authoritative but not visible without opening it), e.g.
   # kovalt-sietch-market-bot-buyback-20260819-020000.backup
   case "${DB_BACKUP_ORIGIN:-manual}" in
-    market-bot-*)
+    market-bot-*|vehicle-delete)
       artifact_id="$server_slug-$(printf '%s' "${DB_BACKUP_ORIGIN}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')"
       ;;
   esac
@@ -696,6 +711,18 @@ backup_db() {
     echo "Backup was not created because its file permissions could not be secured." >&2
     return 1
   fi
+  # System timers run as root, but the Console runs as the installation owner.
+  # Keep the dump private while making it readable by that same owner.
+  if [ "$(id -u)" = "0" ]; then
+    source runtime/scripts/host-file-ownership.sh
+    local backup_owner
+    backup_owner="$(dune_resolve_host_owner)"
+    if ! chown -h "$backup_owner" "$out_dir" "$staged_backup_file" "$staged_sidecar_file"; then
+      command rm -f -- "$staged_backup_file" "$staged_sidecar_file"
+      echo "Backup was not created because its ownership could not be assigned to the installation owner." >&2
+      return 1
+    fi
+  fi
   if ! mv -f -- "$staged_backup_file" "$backup_file"; then
     command rm -f -- "$staged_backup_file" "$staged_sidecar_file"
     echo "Backup was not created because the validated archive could not be published." >&2
@@ -725,6 +752,12 @@ backup_db() {
   case "${DB_BACKUP_ORIGIN:-manual}" in
     market-bot-*)
       prune_market_bot_backups "$out_dir"
+      ;;
+    vehicle-delete)
+      prune_vehicle_delete_backups "$out_dir"
+      ;;
+    base-delete)
+      prune_base_delete_backups "$out_dir"
       ;;
   esac
 }
@@ -1145,30 +1178,35 @@ delete_backup() {
   local target="${1:-}"
   local name
   local file
+  local answer
+  local -a names=()
 
   if [ "$target" = "--all" ]; then
     delete_all_backups
     return
   fi
 
-  name="$(resolve_backup_name "$target" "$BACKUP_DIR_DEFAULT")" || exit 1
-  file="$(backup_path_for_name "$name" "$BACKUP_DIR_DEFAULT")"
-
-  if [ ! -f "$file" ]; then
-    echo "Backup file does not exist: $file"
-    exit 1
-  fi
+  [ "$#" -gt 0 ] || { echo "Missing backup name." >&2; exit 2; }
+  for target in "$@"; do
+    name="$(resolve_backup_name "$target" "$BACKUP_DIR_DEFAULT")" || exit 1
+    file="$(backup_path_for_name "$name" "$BACKUP_DIR_DEFAULT")"
+    [ -f "$file" ] || { echo "Backup file does not exist: $file"; exit 1; }
+    if [[ " ${names[*]} " != *" $name "* ]]; then names+=("$name"); fi
+  done
 
   if [ "${DUNE_DB_ASSUME_YES:-0}" != "1" ]; then
-    read -r -p "Delete backup '$name'? [y/N]: " answer
+    read -r -p "Delete ${#names[@]} selected backup(s)? [y/N]: " answer
     case "$answer" in
       y|Y|yes|YES) ;;
       *) echo "Delete cancelled."; exit 1 ;;
     esac
   fi
 
-  delete_backup_files_for_name "$name" "$BACKUP_DIR_DEFAULT"
-  echo "Deleted backup: $name"
+  for name in "${names[@]}"; do
+    delete_backup_files_for_name "$name" "$BACKUP_DIR_DEFAULT"
+    echo "Deleted backup: $name"
+  done
+  echo "Deleted ${#names[@]} selected database backup(s)."
 }
 
 delete_all_backups() {
@@ -1214,6 +1252,8 @@ delete_all_backups() {
 # market-bot-unseed), not the filename, so unlabeled backups written by older
 # releases are cleaned up too.
 MARKET_BOT_BACKUP_KEEP="${DUNE_MARKET_BOT_BACKUP_KEEP:-5}"
+VEHICLE_DELETE_BACKUP_KEEP="${DUNE_VEHICLE_DELETE_BACKUP_KEEP:-10}"
+BASE_DELETE_BACKUP_KEEP="${DUNE_BASE_DELETE_BACKUP_KEEP:-10}"
 
 backup_origin_value() {
   local backup_file="$1"
@@ -1229,6 +1269,88 @@ backup_is_market_bot() {
     market-bot-*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+backup_is_vehicle_delete() {
+  case "$(backup_origin_value "$1" | tr '[:upper:]' '[:lower:]' | tr '_' '-')" in
+    vehicle-delete) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+backup_is_base_delete() {
+  case "$(backup_origin_value "$1" | tr '[:upper:]' '[:lower:]' | tr '_' '-')" in
+    base-delete) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prune_vehicle_delete_backups() {
+  local backup_dir="${1:-$BACKUP_DIR_DEFAULT}"
+  local keep="${2:-$VEHICLE_DELETE_BACKUP_KEEP}"
+  local removed=0
+  local index=0
+  local name
+
+  validate_positive_integer "$keep" || return 0
+  [ -d "$backup_dir" ] || return 0
+
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    index=$((index + 1))
+    [ "$index" -gt "$keep" ] || continue
+    if delete_backup_files_for_name "$name" "$backup_dir" >/dev/null; then
+      removed=$((removed + 1))
+    fi
+  done < <(
+    iter_valid_backup_names "$backup_dir" \
+      | while IFS= read -r candidate; do
+          [ -n "$candidate" ] || continue
+          backup_is_vehicle_delete "$(backup_path_for_name "$candidate" "$backup_dir")" || continue
+          printf '%s\t%s\n' "$(backup_timestamp_from_name "$candidate")" "$candidate"
+        done \
+      | sort -r \
+      | cut -f2-
+  )
+
+  if [ "$removed" -gt 0 ]; then
+    echo "Pruned $removed Vehicle Delete backup(s); the newest $keep are kept."
+  fi
+}
+
+# The base-delete twin. A queued base delete takes one of these before every
+# apply attempt, and a base that cannot be deleted (picked up into a backup,
+# say) retries until the 7-day age limit -- so without a count cap this origin
+# alone can mint hundreds of full-database dumps for a single queued request.
+prune_base_delete_backups() {
+  local backup_dir="${1:-$BACKUP_DIR_DEFAULT}"
+  local keep="${2:-$BASE_DELETE_BACKUP_KEEP}"
+  local removed=0
+  local index=0
+  local name
+
+  validate_positive_integer "$keep" || return 0
+  [ -d "$backup_dir" ] || return 0
+
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    index=$((index + 1))
+    [ "$index" -gt "$keep" ] || continue
+    if delete_backup_files_for_name "$name" "$backup_dir" >/dev/null; then
+      removed=$((removed + 1))
+    fi
+  done < <(
+    iter_valid_backup_names "$backup_dir"       | while IFS= read -r candidate; do
+          [ -n "$candidate" ] || continue
+          backup_is_base_delete "$(backup_path_for_name "$candidate" "$backup_dir")" || continue
+          printf '%s	%s
+' "$(backup_timestamp_from_name "$candidate")" "$candidate"
+        done       | sort -r       | cut -f2-
+  )
+
+  if [ "$removed" -gt 0 ]; then
+    echo "Pruned $removed Base Delete backup(s); the newest $keep are kept."
+  fi
 }
 
 # Keep only the newest $keep Market Bot backups (by the timestamp embedded in
@@ -1828,6 +1950,11 @@ import_db() {
     adopt_backup_battlegroup_id "$backup_file"
   fi
 
+  # The Console remains online when it launches a restore so the browser can
+  # report task progress. Pause its database pool before the current database
+  # is dropped; otherwise a periodic Console/addon migration can recreate an
+  # archived trigger while pg_restore is still replaying the same object.
+  begin_db_restore_maintenance
   stop_db_dependents
   recreate_dune_database
 
@@ -1893,6 +2020,8 @@ import_db() {
       *) echo "Services remain stopped. Start them with: dune start" ;;
     esac
   fi
+
+  end_db_restore_maintenance
 }
 
 adapt_imported_battlegroup() {
@@ -2667,7 +2796,8 @@ case "$cmd" in
     transfer_command "$@"
     ;;
   delete)
-    delete_backup "${2:-}"
+    shift || true
+    delete_backup "$@"
     ;;
   auto)
     handle_auto_backup "${2:-status}" "${3:-}" "${4:-}" "${5:-}"

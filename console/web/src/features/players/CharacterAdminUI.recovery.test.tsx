@@ -78,6 +78,7 @@ describe("CharacterAdminUI deleted-character recovery", () => {
       confirmAction={confirmAction}
       waitForTask={vi.fn()}
       formatMutationResult={(result) => String((result as { message?: string })?.message || "Action completed.")}
+      restartGate={vi.fn().mockResolvedValue("immediate")}
     />);
 
     fireEvent.click(screen.getByRole("button", { name: "Admin" }));

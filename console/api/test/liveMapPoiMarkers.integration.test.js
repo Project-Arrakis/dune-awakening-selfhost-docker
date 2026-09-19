@@ -20,9 +20,9 @@ const SCHEMA = `
   create table dune.markers (
     marker_hash_id integer primary key,
     dimension_index integer not null,
-    marker_type text,
-    position dune.vector,
-    payload_type text,
+    marker_type text not null,
+    position dune.vector not null,
+    payload_type text not null,
     area_id smallint,
     area_radius real,
     long_range boolean,

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, statSync, chownSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
 
 export const APP_NAME = "Dune Docker Console";
@@ -313,6 +313,7 @@ export function loadConfig() {
     discordBotHandoffUrl: (process.env.DISCORD_BOT_HANDOFF_URL || "").replace(/\/+$/, ""),
     generatedDir,
     secretsDir,
+    apiKeysFile: resolve(secretsDir, "api-keys.json"),
     auditLog: resolve(generatedDir, "web-admin-audit.jsonl"),
     // Tier 3 password + mandatory TOTP (RFC docs/rfc-console-auth.md §2.3/§4).
     // Gated OFF by default during incremental rollout: the backend enrollment/
@@ -351,7 +352,8 @@ export function loadConfig() {
     maxJsonBytes: Number(process.env.ADMIN_MAX_JSON_BYTES || 2 * 1024 * 1024),
     maxUploadBytes: Number(process.env.ADMIN_MAX_UPLOAD_BYTES || 1024 * 1024 * 1024),
     commandTimeoutMs: Number(process.env.ADMIN_COMMAND_TIMEOUT_MS || 120000),
-    updateCheckCacheMs: Number(process.env.ADMIN_UPDATE_CHECK_CACHE_MS || 5 * 60 * 1000),
+    updateCheckCacheMs: Number(process.env.ADMIN_UPDATE_CHECK_CACHE_MS || 30 * 60 * 1000),
+    updateCheckCacheFile: resolve(generatedDir, "game-update-check.json"),
     staticDir: process.env.ADMIN_STATIC_DIR || resolve(repoRoot, "console/web/dist"),
     allowedIps: parseAllowedIps(process.env.ADMIN_ALLOWED_IPS)
   };
@@ -399,6 +401,7 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/message-of-the-day-state.json"),
     resolve(repoRoot, "runtime/generated/player-announcements.json"),
     resolve(repoRoot, "runtime/generated/player-announcements-state.json"),
+    resolve(repoRoot, "runtime/generated/scheduled-map-messages.json"),
     resolve(repoRoot, "runtime/generated/player-bans.json"),
     resolve(repoRoot, "runtime/generated/public-directory-status.json"),
     resolve(repoRoot, "runtime/generated/restart-queue.json"),
@@ -411,6 +414,8 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/update-auto.env"),
     resolve(repoRoot, "runtime/generated/usersettings.json"),
     resolve(repoRoot, "runtime/generated/auto-refill-bases.json"),
+    resolve(repoRoot, "runtime/generated/auto-refill-water-bases.json"),
+    resolve(repoRoot, "runtime/generated/auto-refill-settings.json"),
     resolve(repoRoot, "runtime/generated/pending-generator-refills.json"),
     resolve(repoRoot, "runtime/generated/gameplay-profile.ini"),
     resolve(repoRoot, "runtime/generated/care-package.json"),
@@ -460,6 +465,19 @@ function readConsoleVersion(repoRoot) {
     return readFileSync(resolve(repoRoot, "VERSION"), "utf8").trim() || "dev";
   } catch {
     return "dev";
+  }
+}
+
+export function readConsoleBuildId(staticDir, fallback = "dev") {
+  try {
+    // Vite's index references every entry asset by its content-hashed
+    // filename, so its digest changes whenever the browser-facing build
+    // changes. Reading it live also detects an in-place rebuild without
+    // requiring VERSION to be bumped or the API process to restart.
+    const index = readFileSync(resolve(staticDir, "index.html"));
+    return createHash("sha256").update(index).digest("hex").slice(0, 16);
+  } catch {
+    return fallback;
   }
 }
 
@@ -523,6 +541,7 @@ export function publicConfig(config) {
   return {
     appName: config.appName,
     version: config.version,
+    buildId: readConsoleBuildId(config.staticDir, config.version),
     repoRoot: config.repoRoot,
     host: config.host,
     port: config.port,

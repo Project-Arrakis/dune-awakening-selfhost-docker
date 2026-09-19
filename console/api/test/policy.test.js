@@ -121,11 +121,98 @@ test("the container item delete route resolves to bases:delete-item without shad
   assert.equal(actionForRoute("/api/bases/5/containers/9", "GET"), "bases:read");
 });
 
+// Same argument as the container routes above: rbacParity only proves an
+// action exists, not that it is the right one. Without the explicit
+// ROUTE_ACTIONS entry this POST falls through the "POST /api/bases/" prefix
+// rule to bases:mutate, which would silently let every per-base-refill grant
+// retune the global automation policy.
+test("the auto-refill settings routes resolve to their own actions without shadowing their neighbours", () => {
+  assert.equal(actionForRoute("/api/bases/auto-refill/settings", "POST"), "bases:write-config");
+  assert.equal(actionForRoute("/api/bases/auto-refill/settings", "GET"), "bases:read");
+  // The per-base enrollment toggle keeps the shared mutate bucket, and the
+  // enrollment read keeps bases:read -- the new paths sit beside them.
+  assert.equal(actionForRoute("/api/bases/5/auto-refill", "POST"), "bases:mutate");
+  assert.equal(actionForRoute("/api/bases/5/auto-refill-water", "POST"), "bases:mutate");
+  assert.equal(actionForRoute("/api/bases/auto-refill", "GET"), "bases:read");
+  assert.equal(actionForRoute("/api/bases/auto-refill-water", "GET"), "bases:read");
+});
+
+test("bases:write-config is not carried by a bases:mutate grant", () => {
+  const policies = {
+    moderator: { version: 1, tier: "moderator", statements: [{ Effect: "Allow", Action: ["bases:read", "bases:mutate"] }] }
+  };
+  // A hand-authored policy that predates the settings surface must not gain it.
+  assert.equal(evaluate({ tier: "moderator" }, "bases:mutate", policies), true);
+  assert.equal(evaluate({ tier: "moderator" }, "bases:write-config", policies), false);
+  // The shipped tiers grant bases:*, so default access is unchanged.
+  assert.equal(evaluate({ tier: "admin" }, "bases:write-config"), true);
+  assert.equal(evaluate({ tier: "owner" }, "bases:write-config"), true);
+});
+
 test("vehicle permission routes resolve to their own read/mutate actions", () => {
   assert.equal(actionForRoute("/api/vehicles/5/permissions", "GET"), "vehicles:read");
   assert.equal(actionForRoute("/api/vehicles/5/permissions", "PUT"), "vehicles:mutate");
   assert.equal(actionForRoute("/api/vehicles/permission-candidates", "GET"), "vehicles:read");
   assert.equal(actionForRoute("/api/vehicles", "GET"), "vehicles:read");
+  // Reading a vehicle's cargo hold stays an ordinary vehicle read -- it
+  // resolves through the method-agnostic "/api/vehicles/" prefix rule rather
+  // than an entry of its own, which is exactly why it is pinned here.
+  assert.equal(actionForRoute("/api/vehicles/5/storage", "GET"), "vehicles:read");
+});
+
+test("vehicle cargo deletion resolves to its own actions, not vehicles:mutate", () => {
+  assert.equal(actionForRoute("/api/vehicles/5/storage/items/77", "DELETE"), "vehicles:delete-item");
+  assert.equal(actionForRoute("/api/vehicles/5/storage/items", "DELETE"), "vehicles:bulk-delete-items");
+  assert.equal(actionForRoute("/api/vehicles/5/storage/all-items", "DELETE"), "vehicles:bulk-delete-items");
+  // Reading the hold is unaffected by its new destructive siblings.
+  assert.equal(actionForRoute("/api/vehicles/5/storage", "GET"), "vehicles:read");
+  // And whole-vehicle delete still resolves to its own action.
+  assert.equal(actionForRoute("/api/vehicles/5", "DELETE"), "vehicles:delete");
+});
+
+test("vehicles:delete-item can be withheld independently of vehicles:mutate", () => {
+  const policies = {
+    moderator: {
+      version: 1,
+      tier: "moderator",
+      statements: [{ Effect: "Allow", Action: ["vehicles:read", "vehicles:mutate"] }]
+    }
+  };
+  // An operator who granted vehicles:mutate for roster edits and refuels never
+  // consented to destroying cargo.
+  assert.equal(evaluate({ tier: "moderator" }, "vehicles:mutate", policies), true);
+  assert.equal(evaluate({ tier: "moderator" }, "vehicles:delete-item", policies), false);
+  assert.equal(evaluate({ tier: "moderator" }, "vehicles:bulk-delete-items", policies), false);
+});
+
+test("granting single-item cargo delete carries neither bulk delete nor whole-vehicle delete", () => {
+  const policies = {
+    moderator: {
+      version: 1,
+      tier: "moderator",
+      statements: [{ Effect: "Allow", Action: ["vehicles:read", "vehicles:delete-item"] }]
+    }
+  };
+  assert.equal(evaluate({ tier: "moderator" }, "vehicles:delete-item", policies), true);
+  assert.equal(evaluate({ tier: "moderator" }, "vehicles:bulk-delete-items", policies), false);
+  // The dangerous direction: item deletion must never imply destroying the
+  // whole vehicle.
+  assert.equal(evaluate({ tier: "moderator" }, "vehicles:delete", policies), false);
+});
+
+test("the vehicle cargo actions share no prefix a -* wildcard could bridge", () => {
+  // Issue #351's lesson, mirrored: "vehicles:delete-item*" written to grant
+  // single-item delete must not silently grant bulk as well.
+  assert.equal(matchAction("vehicles:delete-item*", "vehicles:delete-item"), true);
+  assert.equal(matchAction("vehicles:delete-item*", "vehicles:bulk-delete-items"), false);
+  assert.equal(matchAction("vehicles:delete-*", "vehicles:delete-item"), true);
+  assert.equal(matchAction("vehicles:delete-*", "vehicles:bulk-delete-items"), false);
+  // Neither cargo action implies whole-vehicle delete, in either direction.
+  assert.equal(matchAction("vehicles:delete-item", "vehicles:delete"), false);
+  assert.equal(matchAction("vehicles:delete", "vehicles:delete-item"), false);
+  // The admin namespace grant still covers all three, as it must.
+  assert.equal(matchAction("vehicles:*", "vehicles:delete-item"), true);
+  assert.equal(matchAction("vehicles:*", "vehicles:bulk-delete-items"), true);
 });
 
 test("a vehicles:read-only policy denies vehicles:mutate", () => {

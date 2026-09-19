@@ -83,6 +83,15 @@ detect_github_fetch_remote() {
   local repo="$1"
   local remote_name remote_repo
 
+  # Release updates for the public project must not inherit an installation's
+  # credential-bearing, SSH-only, or otherwise locally rewritten remote. The
+  # detached Console helper has no interactive terminal and users do not need
+  # a GitHub account to download a public release.
+  if [ "$repo" = "$DEFAULT_SELF_UPDATE_REPO" ]; then
+    printf '%s\n' "https://github.com/${repo}.git"
+    return 0
+  fi
+
   if command -v git >/dev/null 2>&1; then
     for remote_name in upstream origin; do
       remote_repo="$(github_repo_from_git_remote "$remote_name" 2>/dev/null || true)"
@@ -99,6 +108,7 @@ detect_github_fetch_remote() {
 GITHUB_REPO="$(detect_github_repo)"
 GITHUB_FETCH_REMOTE="$(detect_github_fetch_remote "$GITHUB_REPO")"
 GITHUB_API_BASE="${DUNE_SELF_UPDATE_API_BASE:-https://api.github.com}"
+GITHUB_WEB_BASE="${DUNE_SELF_UPDATE_WEB_BASE:-https://github.com}"
 GITHUB_TOKEN="${DUNE_SELF_UPDATE_TOKEN:-}"
 LATEST_TAG_CACHE_FILE="runtime/generated/self-update-latest-tag.txt"
 API_LAST_STATUS=""
@@ -163,6 +173,16 @@ self_update_finish_success() {
   SELF_UPDATE_STATUS_FINALIZED=1
 }
 
+self_update_finish_failure() {
+  local stage="$1"
+  local percent="$2"
+  local message="$3"
+  local now
+  now="$(date -Is)"
+  self_update_write_status failed "$stage" "$percent" "$message" "$now"
+  SELF_UPDATE_STATUS_FINALIZED=1
+}
+
 self_update_on_exit() {
   local rc=$?
   trap - EXIT
@@ -222,13 +242,110 @@ detect_host_repo_root() {
 HOST_ROOT_DIR="$(detect_host_repo_root)"
 export DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR"
 
-api_curl_common_args() {
+github_curl_headers() {
   printf '%s\n' \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28"
   if [ -n "$GITHUB_TOKEN" ]; then
     printf '%s\n' -H "Authorization: Bearer $GITHUB_TOKEN"
   fi
+}
+
+api_curl_common_args() {
+  printf '%s\n' \
+    --connect-timeout 15 \
+    --max-time 60 \
+    --retry 2 \
+    --retry-delay 2 \
+    --retry-all-errors
+  github_curl_headers
+}
+
+self_update_download_timeout_seconds() {
+  local value="${DUNE_SELF_UPDATE_DOWNLOAD_TIMEOUT_SECONDS:-7200}"
+  if [[ "$value" =~ ^[0-9]+$ ]] && [ "$value" -ge 2 ] && [ "$value" -le 14400 ]; then
+    printf '%s\n' "$value"
+  else
+    printf '%s\n' 7200
+  fi
+}
+
+self_update_progress_interval_seconds() {
+  local value="${DUNE_SELF_UPDATE_PROGRESS_INTERVAL_SECONDS:-5}"
+  if [[ "$value" =~ ^[0-9]+$ ]] && [ "$value" -ge 1 ] && [ "$value" -le 30 ]; then
+    printf '%s\n' "$value"
+  else
+    printf '%s\n' 5
+  fi
+}
+
+download_archive_with_progress() {
+  local url="$1"
+  local out="$2"
+  local label="$3"
+  local timeout_seconds interval_seconds error_file curl_pid curl_rc bytes megabytes ticks=0
+  local -a curl_args
+
+  timeout_seconds="$(self_update_download_timeout_seconds)"
+  interval_seconds="$(self_update_progress_interval_seconds)"
+  error_file="$(mktemp)"
+  mapfile -t curl_args < <(github_curl_headers)
+
+  self_update_running downloading 20 "$label (starting download)."
+  set +e
+  timeout --signal=TERM --kill-after=10 "${timeout_seconds}s" \
+    curl -fsSL \
+      "${curl_args[@]}" \
+      --connect-timeout 15 \
+      --retry 3 \
+      --retry-delay 3 \
+      --retry-all-errors \
+      --speed-limit 1024 \
+      --speed-time 120 \
+      -L "$url" -o "$out" 2>"$error_file" &
+  curl_pid=$!
+  set -e
+
+  while kill -0 "$curl_pid" 2>/dev/null; do
+    sleep 1
+    kill -0 "$curl_pid" 2>/dev/null || break
+    ticks=$((ticks + 1))
+    [ "$ticks" -ge "$interval_seconds" ] || continue
+    ticks=0
+    bytes="$(stat -c '%s' "$out" 2>/dev/null || printf '0')"
+    [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+    megabytes=$((bytes / 1048576))
+    self_update_running downloading 20 "$label (${megabytes} MB received)."
+  done
+
+  set +e
+  wait "$curl_pid"
+  curl_rc=$?
+  set -e
+  if [ "$curl_rc" -ne 0 ]; then
+    if [ "$curl_rc" -eq 124 ]; then
+      self_update_finish_failure downloading 20 "$label timed out after ${timeout_seconds} seconds. Check the server's connection to GitHub, then retry."
+      echo "$label timed out after ${timeout_seconds} seconds." >&2
+    elif [ -s "$error_file" ]; then
+      self_update_finish_failure downloading 20 "$label failed after retrying. Check the server's connection to GitHub, then retry."
+      cat "$error_file" >&2
+    else
+      self_update_finish_failure downloading 20 "$label failed after retrying. Check the server's connection to GitHub, then retry."
+    fi
+    rm -f "$error_file"
+    return "$curl_rc"
+  fi
+
+  rm -f "$error_file"
+  bytes="$(stat -c '%s' "$out" 2>/dev/null || printf '0')"
+  [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+  if [ "$bytes" -le 0 ]; then
+    self_update_finish_failure downloading 20 "$label completed without an archive. Retry the update."
+    echo "Release download completed without an archive." >&2
+    return 22
+  fi
+  megabytes=$((bytes / 1048576))
+  self_update_running downloading 35 "$label (${megabytes} MB received; validating archive)."
 }
 
 api_get() {
@@ -336,6 +453,24 @@ for release in data:
 raise SystemExit(1)'
 }
 
+latest_release_tag_from_web_redirect() {
+  local effective_url prefix tag
+
+  effective_url="$(
+    curl -fsSL \
+      --connect-timeout 10 \
+      --max-time 20 \
+      -o /dev/null \
+      -w '%{url_effective}' \
+      "${GITHUB_WEB_BASE}/${GITHUB_REPO}/releases/latest"
+  )" || return 1
+  prefix="${GITHUB_WEB_BASE}/${GITHUB_REPO}/releases/tag/"
+  [[ "$effective_url" == "$prefix"* ]] || return 1
+  tag="${effective_url#"$prefix"}"
+  [[ "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || return 1
+  printf '%s' "$tag"
+}
+
 cache_latest_release_tag() {
   local tag="$1"
   (
@@ -361,7 +496,13 @@ latest_release_tag() {
     fi
   fi
 
-  latest_release_tag_from_releases_list
+  tag="$(latest_release_tag_from_releases_list 2>/dev/null || true)"
+  if [ -n "$tag" ]; then
+    printf '%s' "$tag"
+    return 0
+  fi
+
+  latest_release_tag_from_web_redirect
 }
 
 list_release_rows() {
@@ -522,18 +663,7 @@ download_release_archive() {
     exit 2
   fi
 
-  if [ -n "$GITHUB_TOKEN" ]; then
-    curl -fsSL \
-      -H "Accept: application/vnd.github+json" \
-      -H "Authorization: Bearer $GITHUB_TOKEN" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      -L "$tarball_url" -o "$out"
-  else
-    curl -fsSL \
-      -H "Accept: application/vnd.github+json" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      -L "$tarball_url" -o "$out"
-  fi
+  download_archive_with_progress "$tarball_url" "$out" "Downloading console release $tag"
 }
 
 backup_current_stack() {
@@ -652,6 +782,7 @@ backup_local_state() {
     runtime/generated/message-of-the-day-state.json \
     runtime/generated/player-announcements.json \
     runtime/generated/player-announcements-state.json \
+    runtime/generated/scheduled-map-messages.json \
     runtime/generated/public-directory-status.json \
     runtime/generated/public-probe.env \
     runtime/generated/restart-schedule.env \
@@ -665,6 +796,8 @@ backup_local_state() {
     runtime/generated/gameplay-profile.ini \
     runtime/generated/care-package.json \
     runtime/generated/care-package-grants.jsonl \
+    runtime/generated/care-package-grant-receipts.json \
+    runtime/generated/care-package-first-online-claims.json \
     runtime/generated/care-package-pending-returns.json \
     runtime/addons/state.json \
     runtime/secrets/funcom-token.txt \
@@ -676,7 +809,54 @@ backup_local_state() {
   done
 
   if [ -s "$manifest" ]; then
-    tar -czf "$backup_dir/local-state.tgz" -T "$manifest"
+    # Writers stay online. Archive private, bounded copies instead of live files.
+    python3 - "$backup_dir" "$manifest" <<'PY'
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+
+backup = Path(sys.argv[1]).resolve()
+paths = Path(sys.argv[2]).read_text().splitlines()
+with tempfile.TemporaryDirectory(prefix=".local-state-", dir=backup) as staging:
+    for name in paths:
+        target = Path(staging) / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(name, "rb") as source, open(target, "xb") as output:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                raise RuntimeError(f"Local state is not a regular file: {name}")
+            os.fchmod(output.fileno(), stat.S_IMODE(info.st_mode))
+            remaining = info.st_size
+            while remaining:
+                chunk = source.read(min(remaining, 1024 * 1024))
+                if not chunk:
+                    raise RuntimeError(f"Local state truncated during snapshot: {name}")
+                output.write(chunk)
+                remaining -= len(chunk)
+        # An append may have been in progress: preserve only complete audit rows.
+        if name.endswith(".jsonl"):
+            with open(target, "r+b") as snapshot:
+                end = snapshot.seek(0, os.SEEK_END)
+                while end:
+                    start = max(0, end - 65536)
+                    snapshot.seek(start)
+                    chunk = snapshot.read(end - start)
+                    newline = chunk.rfind(b"\n")
+                    if newline >= 0:
+                        end = start + newline + 1
+                        break
+                    end = start
+                snapshot.truncate(end)
+    archive = backup / ".local-state.tgz.tmp"
+    try:
+        subprocess.run(["tar", "-czf", str(archive), "-C", staging, "--", *paths], check=True, umask=0o077)
+        os.replace(archive, backup / "local-state.tgz")
+    finally:
+        archive.unlink(missing_ok=True)
+PY
   else
     rm -f "$manifest"
   fi
@@ -792,6 +972,7 @@ restore_local_state_after_install() {
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/message-of-the-day-state.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/player-announcements.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/player-announcements-state.json
+  restore_local_state_file_if_needed "$backup_dir" runtime/generated/scheduled-map-messages.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/public-directory-status.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/public-probe.env
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/restart-schedule.env
@@ -805,6 +986,8 @@ restore_local_state_after_install() {
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/gameplay-profile.ini
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/care-package.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/care-package-grants.jsonl
+  restore_local_state_file_if_needed "$backup_dir" runtime/generated/care-package-grant-receipts.json
+  restore_local_state_file_if_needed "$backup_dir" runtime/generated/care-package-first-online-claims.json
   restore_local_state_file_if_needed "$backup_dir" runtime/generated/care-package-pending-returns.json
   restore_local_state_file_if_needed "$backup_dir" runtime/addons/state.json
   restore_local_state_file_if_needed "$backup_dir" runtime/secrets/funcom-token.txt
@@ -847,10 +1030,80 @@ verify_installed_version() {
 
   echo
   echo "Installed stack version: $new_version"
+  rm -f runtime/generated/qa-update-channel.env
   echo "Previous stack files backup:"
   echo "  $backup_dir/project-files.tgz"
   echo
   echo "Dune Docker Console files were updated."
+}
+
+validate_commit_sha() {
+  [[ "$1" =~ ^[0-9a-fA-F]{40}$ ]]
+}
+
+download_commit_archive() {
+  local sha="$1"
+  local out="$2"
+
+  self_update_running downloading 20 "Downloading QA build ${sha:0:8}."
+  download_archive_with_progress \
+    "${GITHUB_API_BASE}/repos/${GITHUB_REPO}/tarball/${sha}" \
+    "$out" \
+    "Downloading QA build ${sha:0:8}"
+}
+
+install_qa_commit() {
+  local sha="$1"
+  local tmpdir archive src backup_dir
+
+  validate_commit_sha "$sha" || {
+    echo "Invalid QA build identifier."
+    exit 2
+  }
+  sha="${sha,,}"
+  check_dirty_git_tree
+
+  tmpdir="$(mktemp -d)"
+  archive="$tmpdir/qa.tar.gz"
+  download_commit_archive "$sha" "$archive"
+  tar -xzf "$archive" -C "$tmpdir"
+  src="$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+  if [ -z "$src" ] || [ ! -d "$src" ] || [ ! -f "$src/runtime/scripts/self-update.sh" ] || [ ! -f "$src/docker-compose.web.yml" ]; then
+    echo "The downloaded QA build is incomplete."
+    rm -rf "$tmpdir"
+    exit 2
+  fi
+
+  backup_dir="runtime/backups/self-update/$(date +%Y%m%d-%H%M%S)-qa-${sha:0:12}"
+  echo "Backing up current stack files to:"
+  echo "  $backup_dir"
+  backup_current_stack "$backup_dir"
+
+  echo "Installing QA build into:"
+  echo "  $ROOT_DIR"
+  self_update_running installing 62 "Installing QA build ${sha:0:8}."
+  remove_backed_up_project_files "$backup_dir"
+  (
+    cd "$src"
+    tar --exclude='.git' -cf - .
+  ) | (
+    cd "$ROOT_DIR"
+    tar -xf -
+  )
+  restore_local_state_after_install "$backup_dir"
+  mkdir -p runtime/generated
+  {
+    echo "channel=qa"
+    echo "commit_sha=$sha"
+    echo "installed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > runtime/generated/qa-update-channel.env
+  rm -rf "$tmpdir"
+
+  echo
+  echo "Installed QA build: ${sha:0:8}"
+  echo "Previous stack files backup:"
+  echo "  $backup_dir/project-files.tgz"
+  self_update_running installed 75 "QA build files were installed and verified."
 }
 
 web_console_service_name() {
@@ -977,6 +1230,7 @@ restore_local_state_ownership() {
     runtime/generated/message-of-the-day-state.json \
     runtime/generated/player-announcements.json \
     runtime/generated/player-announcements-state.json \
+    runtime/generated/scheduled-map-messages.json \
     runtime/generated/public-directory-status.json \
     runtime/generated/public-probe.env \
     runtime/generated/restart-schedule.env \
@@ -990,6 +1244,8 @@ restore_local_state_ownership() {
     runtime/generated/gameplay-profile.ini \
     runtime/generated/care-package.json \
     runtime/generated/care-package-grants.jsonl \
+    runtime/generated/care-package-grant-receipts.json \
+    runtime/generated/care-package-first-online-claims.json \
     runtime/generated/care-package-pending-returns.json \
     runtime/addons \
     runtime/addons/downloads \
@@ -1071,9 +1327,23 @@ rebuild_web_console_now() {
     fi
     return "$build_rc"
   fi
+  # Reconcile supporting services before publishing the replacement Console.
+  # Otherwise the new UI can become reachable first, capture a transient
+  # Missing/Failed snapshot, and retain it until the next manual refresh.
+  reconcile_coriolis_coordinator_after_deploy
   self_update_running restarting 94 "Restarting the updated web console."
   docker rm -f "$service" >/dev/null 2>&1 || true
   COMPOSE_PROJECT_NAME="$web_compose_project" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d --force-recreate "$service"
+}
+
+reconcile_coriolis_coordinator_after_deploy() {
+  [ -x runtime/scripts/start-coriolis-coordinator.sh ] || return 0
+
+  # The shared launcher knows whether the Battlegroup is active. This keeps a
+  # Console-only update from reviving an intentionally stopped deployment.
+  runtime/scripts/start-coriolis-coordinator.sh --replace-if-stack-running || {
+    echo "Warning: the Coriolis Coordinator could not be started after the Console deployment." >&2
+  }
 }
 
 # recreate_discord_adapter_env: recreates the web console container with its
@@ -1274,7 +1544,7 @@ install_cli_command_after_update() {
 
 install_release_tag_with_git() {
   local tag="$1"
-  local backup_dir target remote
+  local backup_dir target remote timeout_seconds fetch_rc
 
   validate_release_tag_for_git "$tag" || {
     echo "Invalid release tag for Git checkout: $tag"
@@ -1285,9 +1555,23 @@ install_release_tag_with_git() {
   echo "Updating stack Git checkout from:"
   echo "  $remote"
   echo "Fetching release tag: $tag"
-  git fetch --force --tags "$remote"
-  git fetch --force "$remote" "refs/tags/${tag}:refs/tags/${tag}" >/dev/null 2>&1 || true
-
+  timeout_seconds="$(self_update_download_timeout_seconds)"
+  self_update_running downloading 20 "Fetching console release $tag."
+  set +e
+  timeout --signal=TERM --kill-after=10 "${timeout_seconds}s" \
+    env GIT_TERMINAL_PROMPT=0 git fetch --force --tags "$remote"
+  fetch_rc=$?
+  set -e
+  if [ "$fetch_rc" -ne 0 ]; then
+    if [ "$fetch_rc" -eq 124 ]; then
+      self_update_finish_failure downloading 20 "Fetching console release $tag timed out after ${timeout_seconds} seconds. Check the server's connection to GitHub, then retry."
+      echo "Git release download timed out after ${timeout_seconds} seconds." >&2
+    else
+      self_update_finish_failure downloading 20 "Fetching console release $tag failed. Check the server's connection to GitHub, then retry."
+      echo "Git release download failed." >&2
+    fi
+    return "$fetch_rc"
+  fi
   target="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null || true)"
   if [ -z "$target" ]; then
     echo "Could not resolve release tag in Git after fetch: $tag"
@@ -1472,11 +1756,26 @@ case "$cmd" in
     self_update_finish_success
     ;;
 
+  install-qa)
+    acquire_self_update_lock
+    dune_persist_compose_project_name "$ROOT_DIR" "$DUNE_COMPOSE_PROJECT_NAME"
+    validate_commit_sha "$tag" || {
+      echo "A full 40-character QA commit SHA is required."
+      exit 2
+    }
+    ensure_self_update_preflight
+    install_qa_commit "$tag"
+    install_cli_command_after_update
+    rebuild_web_console_after_update
+    self_update_finish_success
+    ;;
+
   *)
     echo "Usage:"
     echo "  runtime/scripts/self-update.sh check"
     echo "  runtime/scripts/self-update.sh list"
     echo "  runtime/scripts/self-update.sh install [latest|<tag>]"
+    echo "  runtime/scripts/self-update.sh install-qa <commit-sha>"
     exit 2
     ;;
 esac

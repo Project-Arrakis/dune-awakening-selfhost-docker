@@ -1,5 +1,5 @@
 import { Fragment, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Archive, Bug, Building2, Car, CircleArrowUp, CircleHelp, Database, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
+import { Archive, Bug, Building2, Car, CircleArrowUp, CircleHelp, Database, Download, ExternalLink, FileText, Gift, Heart, Home, Landmark, Map as MapIcon, Menu, MessageCircle, PackagePlus, RefreshCw, Server, Settings, Shield, Sparkles, Store, Users, X } from "lucide-react";
 import { api, AUTH_SESSION_EXPIRED_EVENT, AUTH_SESSION_EXPIRED_MESSAGE, loginRequest, post, setCsrfToken } from "./api/client";
 import { TotpSetupScreen } from "./features/auth/TotpSetupScreen";
 import { setServerPorts, setAdminPort, type ServerPorts } from "./api/serverPorts";
@@ -294,7 +294,7 @@ function restartGateChoice(meta: { label: string; enabled: boolean; playersOnlin
 // Queue/Restart Immediately/Cancel choice -- with players-online context --
 // when it's on. `target` scopes the online check to the map/partition this
 // save actually restarts; omit it for a stack-wide (all game services) save.
-async function confirmSettingsRestart(kind: "UserEngine" | "UserGame", target?: RestartQueueTarget): Promise<RestartGateChoice> {
+async function confirmSettingsRestart(kind: "UserEngine" | "UserGame" | "ServerSettings", target?: RestartQueueTarget): Promise<RestartGateChoice> {
   let status: Awaited<ReturnType<typeof serverApi.restartQueue>> | null = null;
   try {
     status = await serverApi.restartQueue(target);
@@ -308,7 +308,7 @@ async function confirmSettingsRestart(kind: "UserEngine" | "UserGame", target?: 
     ? target.map
     : target?.partitionId
       ? `partition ${target.partitionId}`
-      : kind === "UserEngine" ? "UserEngine settings" : "UserGame settings";
+      : kind === "UserEngine" ? "UserEngine settings" : kind === "ServerSettings" ? "Custom settings" : "UserGame settings";
   return restartGateChoice({
     label,
     enabled: status?.settings.enabled ?? false,
@@ -368,6 +368,8 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode; requ
 
 const COMMUNITY_CONTRIBUTORS_URL = "https://github.com/Red-Blink/dune-awakening-selfhost-docker/graphs/contributors";
 const DUNE_DOCKER_WEBSITE_URL = "https://dunedocker.app/";
+const DUNE_DOCKER_DOCS_URL = "https://docs.dunedocker.app/";
+const DUNE_DOCKER_BASE_BUILDER_URL = "https://blueprints.dunedocker.app/";
 
 function publicServerListingUrl(serverId: string) {
   return `${DUNE_DOCKER_WEBSITE_URL}server.html?id=${encodeURIComponent(serverId)}`;
@@ -382,7 +384,7 @@ export function SidebarNavIndicators({ item, onlinePlayerCount, addonUpdatesAvai
     return <span className="sidebar-nav-indicators"><span className="sidebar-nav-count sidebar-nav-count-online" title={label} aria-label={label}>{visibleOnlinePlayerCount}</span></span>;
   }
   if (item === "Addons" && addonUpdatesAvailable) {
-    return <span className="sidebar-nav-indicators"><span className="sidebar-nav-update-icon" title="Addon update available" aria-label="Addon update available"><CircleArrowUp size={14} aria-hidden="true" /></span></span>;
+    return <span className="sidebar-nav-indicators"><span className="sidebar-nav-update-icon" title="Addon Update Available" aria-label="Addon Update Available"><Download size={14} strokeWidth={2.4} aria-hidden="true" /></span></span>;
   }
   return null;
 }
@@ -409,10 +411,13 @@ function AppFooter() {
           <a href={COMMUNITY_CONTRIBUTORS_URL} target="_blank" rel="noreferrer">Community Contributors</a>
         </span>
       </div>
-      <a className="app-footer-directory" href={DUNE_DOCKER_WEBSITE_URL} target="_blank" rel="noreferrer">
-        <span>DuneDocker.app · Public Server Directory</span>
-        <ExternalLink size={14} aria-hidden="true" />
-      </a>
+      <div className="app-footer-directory">
+        <a href={DUNE_DOCKER_WEBSITE_URL} target="_blank" rel="noreferrer">Public Server Directory</a>
+        <span aria-hidden="true">·</span>
+        <a href={DUNE_DOCKER_BASE_BUILDER_URL} target="_blank" rel="noreferrer">Base Builder</a>
+        <span aria-hidden="true">·</span>
+        <a href={DUNE_DOCKER_DOCS_URL} target="_blank" rel="noreferrer">Documentation</a>
+      </div>
     </footer>
   );
 }
@@ -878,7 +883,7 @@ export function App() {
       <main className="login-screen">
         <section className="login-panel">
           <h1>Dune Docker Console</h1>
-          <p className="loading-dots">Loading setup</p>
+          <p className="loading-dots">Loading Console</p>
         </section>
       </main>
     );
@@ -1020,7 +1025,7 @@ export function App() {
           setRedeploySetupOpen(true);
         }} />}
         {!redeploySetupOpen && tab === "Services" && <LazyTabBoundary label="Loading Services"><ServicesPanel services={services} setServices={setServices} setTask={setTask} openLogs={(service) => { setRedeploySetupOpen(false); setSelectedLogService(service); setTab("Logs"); }} onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} /></LazyTabBoundary>}
-        {!redeploySetupOpen && tab === "Players" && <LazyTabBoundary label="Loading Players"><PlayersPanel onError={setError} renderCharacterAdmin={(props) => <LazyTabBoundary label="Loading Player Details"><CharacterAdminUI {...props} onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} formatMutationResult={formatMutationResult} /></LazyTabBoundary>} /></LazyTabBoundary>}
+        {!redeploySetupOpen && tab === "Players" && <LazyTabBoundary label="Loading Players"><PlayersPanel onError={setError} renderCharacterAdmin={(props) => <LazyTabBoundary label="Loading Player Details"><CharacterAdminUI {...props} onError={setError} confirmAction={confirmDialog} waitForTask={waitForTaskSilently} formatMutationResult={formatMutationResult} restartGate={restartGateChoice} /></LazyTabBoundary>} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Guilds" && <LazyTabBoundary label="Loading Guilds"><GuildsPanel onError={setError} confirmAction={confirmDialog} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Bases" && <LazyTabBoundary label="Loading Bases"><BasesPanel onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} formatMutationResult={formatMutationResult} focusRequest={baseFocusRequest} /></LazyTabBoundary>}
         {!redeploySetupOpen && tab === "Vehicles" && <LazyTabBoundary label="Loading Vehicles"><VehiclesPanel onError={setError} confirmAction={confirmDialog} formatMutationResult={formatMutationResult} focusRequest={vehicleFocusRequest} /></LazyTabBoundary>}
@@ -1063,6 +1068,7 @@ export function App() {
         {!redeploySetupOpen && tab === "Settings" && <LazyTabBoundary label="Loading Settings"><SettingsPanel
           onPasswordChanged={logoutAfterPasswordChange}
           publicListingUrl={publicDirectoryStatus?.serverId ? publicServerListingUrl(publicDirectoryStatus.serverId) : undefined}
+          confirmAction={confirmDialog}
         /></LazyTabBoundary>}
         {!redeploySetupOpen && tab !== "Maps" && <TaskProgress task={task} onDismiss={() => setTask(null)} />}
         <AppFooter />
