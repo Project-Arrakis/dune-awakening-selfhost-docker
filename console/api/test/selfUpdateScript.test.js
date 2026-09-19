@@ -25,7 +25,7 @@ test("local-state backup snapshots active audit files and keeps archive failures
   const root = mkdtempSync(join(tmpdir(), "arrakis-state-snapshot-"));
   try {
     const source = readFileSync(join(repoRoot, "runtime/scripts/self-update.sh"), "utf8");
-    const fn = source.slice(source.indexOf("backup_local_state() {"), source.indexOf("\nrestore_local_state_file_if_needed()"));
+    const fn = source.slice(source.indexOf("local_state_paths() {"), source.indexOf("\nrestore_local_state_file_if_needed()"));
     const generated = join(root, "runtime/generated"), bin = join(root, "bin"), backup = join(root, "backup");
     mkdirSync(generated, { recursive: true }); mkdirSync(bin); mkdirSync(backup);
     const audit = join(generated, "care-package-grants.jsonl");
@@ -61,9 +61,37 @@ sleep .05
     assert.deepEqual(readFileSync(archive), original, "failed archive cannot replace the last good backup");
     assert.equal(readdirSync(backup).some(name=>name.startsWith(".local-state")), false);
     mkdirSync(join(generated, "usersettings.json"));
-    assert.notEqual(run().status, 0, "unreadable state must fail the backup");
+    const unreadable = run();
+    assert.equal(unreadable.status, 13, "unreadable state must fail the backup");
+    assert.match(unreadable.stderr, /cannot preserve local state file runtime\/generated\/usersettings\.json/i);
+    assert.match(unreadable.stderr, /bash runtime\/scripts\/repair-host-runtime-permissions\.sh/);
+    assert.doesNotMatch(unreadable.stderr, /Traceback|PermissionError/);
     assert.deepEqual(readFileSync(archive), original);
     assert.equal(readdirSync(backup).some(name=>name.startsWith(".local-state")), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("self-update preflight explains how to repair unreadable local state", () => {
+  const root = mkdtempSync(join(tmpdir(), "arrakis-state-permissions-"));
+  try {
+    const source = readFileSync(join(repoRoot, "runtime/scripts/self-update.sh"), "utf8");
+    const functions = source.slice(
+      source.indexOf("local_state_paths() {"),
+      source.indexOf("\nensure_self_update_preflight()")
+    );
+    const blocked = join(root, "runtime/generated/director-capacity.ini");
+    mkdirSync(blocked, { recursive: true });
+    const result = spawnSync("bash", ["-c", `${functions}\nensure_local_state_readable`], {
+      cwd: root,
+      encoding: "utf8"
+    });
+
+    assert.equal(result.status, 13);
+    assert.match(result.stdout, /local state file is not readable by the current user/i);
+    assert.match(result.stdout, /runtime\/generated\/director-capacity\.ini/);
+    assert.match(result.stdout, /bash runtime\/scripts\/repair-host-runtime-permissions\.sh/);
+    assert.match(result.stdout, /No release files were replaced\./);
+    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /Traceback|PermissionError/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

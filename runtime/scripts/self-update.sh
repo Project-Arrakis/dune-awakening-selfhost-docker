@@ -638,8 +638,78 @@ ensure_docker_access_for_console_rebuild() {
   exit 13
 }
 
+local_state_paths() {
+  cat <<'EOF'
+.env
+runtime/generated/battlegroup.env
+runtime/generated/db-backup.env
+runtime/generated/director-character-transfer.ini
+runtime/generated/director-capacity.ini
+runtime/generated/director-deepdesert-dual.ini
+runtime/generated/ip-change-restart.env
+runtime/generated/landsraad-milestones.json
+runtime/generated/map-runtime-modes.json
+runtime/generated/memory-balancer.json
+runtime/generated/message-of-the-day.json
+runtime/generated/message-of-the-day-state.json
+runtime/generated/player-announcements.json
+runtime/generated/player-announcements-state.json
+runtime/generated/scheduled-map-messages.json
+runtime/generated/public-directory-status.json
+runtime/generated/public-probe.env
+runtime/generated/restart-schedule.env
+runtime/generated/shutdown-protection.env
+runtime/generated/sietch-config.json
+runtime/generated/spicefield-overrides.json
+runtime/generated/update-auto.env
+runtime/generated/usersettings.json
+runtime/generated/auto-refill-bases.json
+runtime/generated/pending-generator-refills.json
+runtime/generated/gameplay-profile.ini
+runtime/generated/care-package.json
+runtime/generated/care-package-grants.jsonl
+runtime/generated/care-package-grant-receipts.json
+runtime/generated/care-package-first-online-claims.json
+runtime/generated/care-package-pending-returns.json
+runtime/addons/state.json
+runtime/secrets/funcom-token.txt
+runtime/secrets/public-directory.json
+EOF
+}
+
+print_local_state_not_readable() {
+  local path="$1"
+
+  echo "Self-update cannot continue because a local state file is not readable by the current user."
+  echo "Blocked path:"
+  echo "  $path"
+  if command -v stat >/dev/null 2>&1; then
+    echo "Current ownership and mode:"
+    stat -c '  %U:%G %a %n' -- "$path" 2>/dev/null || true
+  fi
+  echo
+  echo "This usually happens when an earlier install or server command created runtime files as root."
+  echo "Run the supported permission repair, then retry the update:"
+  echo "  bash runtime/scripts/repair-host-runtime-permissions.sh"
+  echo
+  echo "No release files were replaced."
+}
+
+ensure_local_state_readable() {
+  local path
+
+  while IFS= read -r path; do
+    [ -e "$path" ] || continue
+    if [ ! -f "$path" ] || [ ! -r "$path" ]; then
+      print_local_state_not_readable "$path"
+      exit 13
+    fi
+  done < <(local_state_paths)
+}
+
 ensure_self_update_preflight() {
   ensure_self_update_writable
+  ensure_local_state_readable
   ensure_docker_access_for_console_rebuild
 }
 
@@ -757,47 +827,13 @@ remove_backed_up_project_files() {
 backup_local_state() {
   local backup_dir="$1"
   local manifest="$backup_dir/local-state-files.txt"
+  local path
 
   : > "$manifest"
-  for path in \
-    .env \
-    runtime/generated/battlegroup.env \
-    runtime/generated/db-backup.env \
-    runtime/generated/director-character-transfer.ini \
-    runtime/generated/director-capacity.ini \
-    runtime/generated/director-deepdesert-dual.ini \
-    runtime/generated/ip-change-restart.env \
-    runtime/generated/landsraad-milestones.json \
-    runtime/generated/map-runtime-modes.json \
-    runtime/generated/memory-balancer.json \
-    runtime/generated/message-of-the-day.json \
-    runtime/generated/message-of-the-day-state.json \
-    runtime/generated/player-announcements.json \
-    runtime/generated/player-announcements-state.json \
-    runtime/generated/scheduled-map-messages.json \
-    runtime/generated/public-directory-status.json \
-    runtime/generated/public-probe.env \
-    runtime/generated/restart-schedule.env \
-    runtime/generated/shutdown-protection.env \
-    runtime/generated/sietch-config.json \
-    runtime/generated/spicefield-overrides.json \
-    runtime/generated/update-auto.env \
-    runtime/generated/usersettings.json \
-    runtime/generated/auto-refill-bases.json \
-    runtime/generated/pending-generator-refills.json \
-    runtime/generated/gameplay-profile.ini \
-    runtime/generated/care-package.json \
-    runtime/generated/care-package-grants.jsonl \
-    runtime/generated/care-package-grant-receipts.json \
-    runtime/generated/care-package-first-online-claims.json \
-    runtime/generated/care-package-pending-returns.json \
-    runtime/addons/state.json \
-    runtime/secrets/funcom-token.txt \
-    runtime/secrets/public-directory.json
-  do
+  while IFS= read -r path; do
     [ -e "$path" ] || continue
     printf '%s\n' "$path" >> "$manifest"
-  done
+  done < <(local_state_paths)
 
   if [ -s "$manifest" ]; then
     # Writers stay online. Archive private, bounded copies instead of live files.
@@ -815,7 +851,14 @@ with tempfile.TemporaryDirectory(prefix=".local-state-", dir=backup) as staging:
     for name in paths:
         target = Path(staging) / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        with open(name, "rb") as source, open(target, "xb") as output:
+        try:
+            source = open(name, "rb")
+        except OSError as error:
+            detail = error.strerror or error.__class__.__name__
+            print(f"Self-update cannot preserve local state file {name}: {detail}.", file=sys.stderr)
+            print("Run: bash runtime/scripts/repair-host-runtime-permissions.sh", file=sys.stderr)
+            raise SystemExit(13)
+        with source, open(target, "xb") as output:
             info = os.fstat(source.fileno())
             if not stat.S_ISREG(info.st_mode):
                 raise RuntimeError(f"Local state is not a regular file: {name}")
