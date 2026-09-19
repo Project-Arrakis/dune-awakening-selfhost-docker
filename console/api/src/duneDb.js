@@ -298,21 +298,52 @@ export async function updateTableRow(db, schema, table, rowId, values = {}) {
 }
 
 export async function listSpicefieldTypes(db) {
-  if (!(await tableExists(db, "spicefield_types"))) return unsupported("spicefields", ["dune.spicefield_types"]);
+  if (await tableExists(db, "spicefield_types")) {
+    const result = await db.query(`
+      select spicefield_type_id,
+             map_name,
+             field_type,
+             dimension_index,
+             max_globally_active,
+             max_globally_primed,
+             current_globally_active,
+             current_globally_primed,
+             is_spawning_active,
+             global_spawn_weight
+      from dune.spicefield_types
+      order by map_name, dimension_index, field_type, spicefield_type_id`);
+    return { capabilities: { spicefields: true, spicefieldTuning: true }, mode: "legacy", rows: result.rows, activeFields: [] };
+  }
+  if (!(await tableExists(db, "resourcefield_state"))) {
+    return unsupported("spicefields", ["dune.resourcefield_state"]);
+  }
+  const columns = await columnsFor(db, "resourcefield_state");
+  const spiceFilter = columns.has("field_kind_id") ? "field_kind_id = 1" : "value_remaining <> 60000";
   const result = await db.query(`
-    select spicefield_type_id,
-           map_name,
-           field_type,
+    select field_id::text as field_id,
+           map as map_name,
            dimension_index,
-           max_globally_active,
-           max_globally_primed,
-           current_globally_active,
-           current_globally_primed,
-           is_spawning_active,
-           global_spawn_weight
-    from dune.spicefield_types
-    order by map_name, dimension_index, field_type, spicefield_type_id`);
-  return { capabilities: { spicefields: true }, rows: result.rows };
+           spawn_time,
+           value_remaining,
+           case
+             when value_remaining > 150000 then 'Large'
+             when value_remaining > 5000 then 'Medium'
+             else 'Small'
+           end as field_type
+      from dune.resourcefield_state
+     where ${spiceFilter}
+     order by map, dimension_index, field_id`);
+  return {
+    capabilities: { spicefields: true, spicefieldTuning: false },
+    mode: "resourcefields",
+    rows: [],
+    activeFields: result.rows.map((row) => ({
+      ...row,
+      dimension_index: Number(row.dimension_index),
+      spawn_time: Number(row.spawn_time),
+      value_remaining: Number(row.value_remaining)
+    }))
+  };
 }
 
 export async function updateSpicefieldType(db, typeId, values = {}) {
