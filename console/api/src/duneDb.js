@@ -297,21 +297,52 @@ export async function updateTableRow(db, schema, table, rowId, values = {}) {
 }
 
 export async function listSpicefieldTypes(db) {
-  if (!(await tableExists(db, "spicefield_types"))) return unsupported("spicefields", ["dune.spicefield_types"]);
+  if (await tableExists(db, "spicefield_types")) {
+    const result = await db.query(`
+      select spicefield_type_id,
+             map_name,
+             field_type,
+             dimension_index,
+             max_globally_active,
+             max_globally_primed,
+             current_globally_active,
+             current_globally_primed,
+             is_spawning_active,
+             global_spawn_weight
+      from dune.spicefield_types
+      order by map_name, dimension_index, field_type, spicefield_type_id`);
+    return { capabilities: { spicefields: true, spicefieldTuning: true }, mode: "legacy", rows: result.rows, activeFields: [] };
+  }
+  if (!(await tableExists(db, "resourcefield_state"))) {
+    return unsupported("spicefields", ["dune.resourcefield_state"]);
+  }
+  const columns = await columnsFor(db, "resourcefield_state");
+  const spiceFilter = columns.has("field_kind_id") ? "field_kind_id = 1" : "value_remaining <> 60000";
   const result = await db.query(`
-    select spicefield_type_id,
-           map_name,
-           field_type,
+    select field_id::text as field_id,
+           map as map_name,
            dimension_index,
-           max_globally_active,
-           max_globally_primed,
-           current_globally_active,
-           current_globally_primed,
-           is_spawning_active,
-           global_spawn_weight
-    from dune.spicefield_types
-    order by map_name, dimension_index, field_type, spicefield_type_id`);
-  return { capabilities: { spicefields: true }, rows: result.rows };
+           spawn_time,
+           value_remaining,
+           case
+             when value_remaining > 150000 then 'Large'
+             when value_remaining > 5000 then 'Medium'
+             else 'Small'
+           end as field_type
+      from dune.resourcefield_state
+     where ${spiceFilter}
+     order by map, dimension_index, field_id`);
+  return {
+    capabilities: { spicefields: true, spicefieldTuning: false },
+    mode: "resourcefields",
+    rows: [],
+    activeFields: result.rows.map((row) => ({
+      ...row,
+      dimension_index: Number(row.dimension_index),
+      spawn_time: Number(row.spawn_time),
+      value_remaining: Number(row.value_remaining)
+    }))
+  };
 }
 
 export async function updateSpicefieldType(db, typeId, values = {}) {
@@ -3105,6 +3136,49 @@ export async function playerSpecs(db, id) {
   };
 }
 
+// runtime/data/admin-skill-modules.json is the single source of truth for a
+// module's rank count and its point ladder. Cached: the catalog only changes on
+// deploy, and playerSkillModules() runs once per player per portal snapshot.
+let skillModuleCatalogCache = null;
+function skillModuleCatalog() {
+  if (skillModuleCatalogCache) return skillModuleCatalogCache;
+  // Mirrors loadConfig()'s repoRoot resolution; playerSpecs() is reached through a
+  // generic (db, id) route dispatcher and has no config to thread through.
+  const repoRoot = resolve(process.env.DUNE_DOCKER_DIR || process.env.RUNTIME_DIR || process.cwd());
+  try {
+    const rows = JSON.parse(readFileSync(resolve(repoRoot, "runtime/data/admin-skill-modules.json"), "utf8"));
+    skillModuleCatalogCache = new Map(rows.map((row) => [String(row.id), row]));
+  } catch (error) {
+    // Degrading silently would look identical to a correct read while every rank
+    // fell back to the raw point cost -- the exact bug the ladder exists to fix.
+    console.warn(`admin-skill-modules.json could not be loaded from ${repoRoot} -- skill ranks fall back to a clamp for this process: ${error?.message || "unknown error"}`);
+    skillModuleCatalogCache = new Map();
+  }
+  return skillModuleCatalogCache;
+}
+
+// `SkillPointsSpent` in ModuleData is the CUMULATIVE point cost, not the rank --
+// a rank-2 Attribute stores 4, a rank-3 one stores 8. pointLadder holds the
+// cumulative cost after buying each rank, so the rank is that array's index.
+export function rankFromSkillPoints(points, { pointLadder, maxLevel } = {}) {
+  const spent = Number(points) || 0;
+  const cap = Math.max(0, Number(maxLevel) || 0);
+  if (spent <= 0) return 0;
+  const ladder = Array.isArray(pointLadder) ? pointLadder : null;
+  // No ladder: we cannot invert a cost we do not have. Clamp against maxLevel when
+  // we at least know that, and otherwise claim only what spending implies -- one
+  // rank. Returning `spent` here would report a 9-point skill as rank 9.
+  // Reachable for Skills.Attribute.Explorer6, which the game ships but the catalog
+  // deliberately omits (see console/api/test/skillPointRank.test.js for why), and for
+  // any module a future game update adds before the catalog is refreshed.
+  if (!ladder || !ladder.length) return cap ? Math.min(spent, cap) : 1;
+  let rank = 0;
+  for (let index = 0; index < ladder.length; index += 1) {
+    if (spent >= Number(ladder[index])) rank = index + 1;
+  }
+  return rank;
+}
+
 async function playerSkillModules(db, player) {
   if (!(await tableExists(db, "actor_fgl_entities")) || !(await tableExists(db, "fgl_entities"))) return [];
   const result = await db.query(`
@@ -3122,11 +3196,19 @@ async function playerSkillModules(db, player) {
       and afe.actor_id = $1
       and module.key like '(TagName="Skills.%")'
     order by module_id`, [player.actorId]);
+  const catalog = skillModuleCatalog();
   return result.rows
-    .map((row) => ({
-      module_id: String(row.module_id || ""),
-      skill_points_spent: Number(row.skill_points_spent || 0)
-    }))
+    .map((row) => {
+      const moduleId = String(row.module_id || "");
+      const points = Number(row.skill_points_spent || 0);
+      const known = catalog.get(moduleId) || {};
+      return {
+        module_id: moduleId,
+        skill_points_spent: points,
+        level: rankFromSkillPoints(points, known),
+        max_level: Number(known.maxLevel || 0)
+      };
+    })
     .filter((row) => row.module_id && row.skill_points_spent > 0);
 }
 
@@ -5208,13 +5290,21 @@ export async function supportsVehicleDeleteQueue(db, { vehicleDelete } = {}) {
 // refuses to delete through: a vehicle mid-overmap-transit, or stashed
 // pending recovery. Transcribed, not invented -- an admin delete should
 // honor the same exclusions the game's own cleanup already does. Gated on
-// the table existing at all so an older schema without dune.actor_state
-// simply skips the guard instead of breaking.
+// Patch 1.5 folded dune.actor_state into dune.actors.state. Keep the legacy
+// table fallback for installations that have not migrated yet, and skip the
+// guard only when neither schema exposes lifecycle state.
 const VEHICLE_DELETE_BLOCKED_STATES = new Set(["Travel", "VehicleBackup", "VehicleRecovery"]);
 
 async function vehicleBlockedDeleteState(db, actorId) {
-  if (!(await tableExists(db, "actor_state"))) return "";
-  const result = await db.query("select state::text as state from dune.actor_state where actor_id = $1::bigint", [actorId]);
+  const actorColumns = await columnsFor(db, "actors");
+  let result;
+  if (actorColumns.has("state")) {
+    result = await db.query("select state::text as state from dune.actors where id = $1::bigint", [actorId]);
+  } else if (await tableExists(db, "actor_state")) {
+    result = await db.query("select state::text as state from dune.actor_state where actor_id = $1::bigint", [actorId]);
+  } else {
+    return "";
+  }
   const state = String(result.rows[0]?.state || "");
   return VEHICLE_DELETE_BLOCKED_STATES.has(state) ? state : "";
 }
@@ -7648,7 +7738,8 @@ function portalSkillRow(skill, catalog) {
     name: String(known.name || parts.at(-1) || "Unknown Skill").replace(/^XX_/, ""),
     specialization: portalSkillSpecialization(known.category),
     type: portalSkillType(parts[1]),
-    rank: Number(skill?.skill_points_spent || skill?.rank || 0),
+    // skill_points_spent is a point cost, not a rank -- prefer the resolved level.
+    rank: Number(skill?.level ?? skill?.rank ?? 0),
     maxRank: Number(known.maxLevel || 0)
   };
 }
@@ -7792,14 +7883,16 @@ export async function listVehicles(db, { q = "", page = 0, pageSize = 50, sortCo
     }
   }
 
-  // actor_state is absent from some older schemas, so keep it optional. When
-  // present it is the authoritative explanation for vehicle rows that are not
-  // currently deployed in a world partition (Travel / VehicleBackup /
-  // VehicleRecovery). Without this, the UI used to invent "Partition 0" for
-  // a NULL partition and make Funcom's stored recovery records look spawned.
-  const vehicleLifecycleStateSql = await tableExists(db, "actor_state")
-    ? `coalesce((select ast.state::text from dune.actor_state ast where ast.actor_id=v.id limit 1), 'Default')`
-    : `'Default'::text`;
+  // Patch 1.5 stores lifecycle state directly on actors. Preserve the legacy
+  // actor_state-table adapter so the same Console build remains upgrade-safe.
+  // This state explains undeployed Travel / Backup / Recovery rows without
+  // inventing a partition for them.
+  const actorColumns = await columnsFor(db, "actors");
+  const vehicleLifecycleStateSql = actorColumns.has("state")
+    ? `coalesce(a.state::text, 'Default')`
+    : await tableExists(db, "actor_state")
+      ? `coalesce((select ast.state::text from dune.actor_state ast where ast.actor_id=v.id limit 1), 'Default')`
+      : `'Default'::text`;
 
   const safePageSize = intParam(pageSize, "pageSize", 1, 200);
   const safePage = intParam(page, "page", 0);

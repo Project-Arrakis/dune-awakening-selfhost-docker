@@ -160,7 +160,7 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 | GET | `/api/players/{playerId}/solaris-coin` | Get Solaris Coin total | `playerId` |
 | GET | `/api/players/{playerId}/factions` | Get faction reputation | `playerId` |
 | GET | `/api/players/{playerId}/intel` | Get intel data | `playerId` |
-| GET | `/api/players/{playerId}/specs` | Get skill specializations | `playerId` |
+| GET | `/api/players/{playerId}/specs` | Get skill specializations. Each `skillModules` row carries the raw `skill_points_spent` (the game stores a cumulative point *cost*, not a rank) plus `max_level` from the catalog and the `level` resolved against that module's `pointLadder` in `runtime/data/admin-skill-modules.json` — read `level` for the rank | `playerId` |
 | GET | `/api/players/{playerId}/position` | Get player position on map | `playerId` |
 | GET | `/api/players/{playerId}/progression` | Get level and progression | `playerId` |
 | GET | `/api/players/{playerId}/vitals` | Get health/hydration/addiction | `playerId` |

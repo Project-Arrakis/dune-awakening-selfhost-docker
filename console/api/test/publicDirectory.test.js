@@ -60,16 +60,16 @@ test("player portal client configuration uses generated allowlisted INIs and rej
   };
   const result = await collectPlayerPortalClientConfiguration({ repoRoot: "/repo" }, runner);
   assert.equal(result.available, true);
-  assert.match(result.installPath, /WindowsClient$/);
+  assert.match(result.installPath, /Windows$/);
   assert.match(result.gameInstallPath, /Windows$/);
-  assert.match(result.engineInstallPath, /WindowsClient$/);
+  assert.match(result.engineInstallPath, /Windows$/);
   assert.match(result.gameIni, /m_WaterConsumptionRate=2/);
   assert.equal(calls.length, 2);
 
   const unsafe = await collectPlayerPortalClientConfiguration({}, async () => ({ stdout: "ServerPassword=hunter2\n" }));
   assert.equal(unsafe.available, false);
   assert.match(unsafe.gameInstallPath, /Windows$/);
-  assert.match(unsafe.engineInstallPath, /WindowsClient$/);
+  assert.match(unsafe.engineInstallPath, /Windows$/);
   assert.equal(unsafe.gameIni, "");
 });
 
