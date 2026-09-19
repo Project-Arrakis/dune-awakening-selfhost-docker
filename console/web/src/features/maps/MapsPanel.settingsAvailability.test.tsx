@@ -73,6 +73,23 @@ beforeEach(() => {
 });
 
 describe("MapsPanel modifier availability", () => {
+  it("keeps credits story maps dynamic and explains their fresh-process lifecycle", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: JSON.stringify({ maps: [{ map: "CB_Story_OrbitalMonitor", status: "Ready", mode: "Dynamic", partitionId: "32" }] }) },
+      services: { stdout: "" },
+      readiness: { stdout: "" }
+    });
+
+    renderMapsPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    expect(screen.getByText(/completed instance is retired/i)).toBeVisible();
+    expect(screen.getByLabelText("Mode")).toHaveValue("dynamic");
+    expect(screen.queryByRole("option", { name: "Always On" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Overmap Active" })).not.toBeInTheDocument();
+  });
+
   it("force despawns the whole map instead of only its first partition", async () => {
     const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
     api.status.mockResolvedValue({

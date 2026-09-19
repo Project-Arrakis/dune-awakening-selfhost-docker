@@ -57,13 +57,29 @@ rejected_end = text.index("scan_idle_servers()", rejected_start)
 rejected = text[rejected_start:rejected_end]
 assert "Teleport not allowed" in rejected
 assert "CB_Story_(?:DestroyedZanovar|OrbitalMonitor)" in rejected
+assert "completed_story.complete_condition_state = 'true'::jsonb" in rejected
+assert "completed_story.story_node_id = case source_wp.map" in rejected
+assert "ps.online_status = 'Offline'" in rejected
+assert "dune.upgrade_map_name(target_wp.map) = dune.upgrade_map_name(tri.map)" in rejected
+assert "source_fs.ready = true" in rejected
+assert "source_fs.alive = true" in rejected
 assert "target_fs.ready = true" in rejected
 assert "target_fs.alive = true" in rejected
 assert "ServerId = ([A-Za-z0-9_+\\-/]*)" in rejected
 assert "ps.previous_server_partition_id = $source_partition" in rejected
-assert "join dune.world_partition source_wp" not in rejected
 assert "join dune.actors pawn on pawn.id = ps.player_pawn_id" in rejected
-assert "join dune.travel_return_info tri on tri.player_controller_id = ps.player_controller_id" in rejected
+assert "left join dune.travel_return_info tri on tri.player_controller_id = ps.player_controller_id" in rejected
+assert "dune.player_respawn_locations" in rejected
+assert r"prl.\"group\" in ('BaseTotem', 'Vehicle')" in rejected
+assert "candidate.candidate_count = 1" in rejected
+assert "candidate.priority_rank = 1" in rejected
+assert ") fallback on true" in rejected
+assert "coalesce(array_agg(vehicle.id), array[]::bigint[])" in rejected
+assert "when cardinality(stranded.stranded_vehicle_ids) > 0" in rejected
+assert "fallback.location is not null" in rejected
+assert "dune.store_recovered_vehicles_wiped_before_spawn" in rejected
+assert "'RecoveredFromLostState'::dune.recoveredvehiclereason" in rejected
+assert "false" in rejected
 assert "pawn.partition_id = $source_partition" in rejected
 assert "dune.is_player_offline('$funcom_id')" in rejected
 assert "dune.admin_move_offline_player_to_partition" in rejected
@@ -74,6 +90,12 @@ alignment = text[text.index("scan_live_player_partition_alignment()"):text.index
 assert "join dune.actors pawn" in alignment
 assert "pawn.partition_id = wp.partition_id" in alignment
 assert "wp.map not in ('CB_Story_DestroyedZanovar', 'CB_Story_OrbitalMonitor')" in alignment
+demand = text[text.index("scan_travel_demand()"):text.index("follow_director_travel_demand()")]
+assert "story_return_refusal_pattern" in demand
+assert "rejected_story_demands" in demand
+assert "rejected_story_demands[map_name] -= 1" in demand
+fast_follow = text[text.index("follow_director_travel_demand()"):text.index("scan_igwo_unavailable_maps()")]
+assert fast_follow.index("scan_rejected_story_returns") < fast_follow.index("scan_travel_demand")
 main_loop = text.rindex("while true; do")
 assert text.index("scan_rejected_story_returns", main_loop) < text.index("scan_named_destination_failures", main_loop)
 PY
@@ -184,8 +206,9 @@ remember_hub_travel() { printf '%s\\n' \"\$1\" >> \"\$REJECTED_SEEN\"; }
 psql_value() {
   printf '%s\\n' \"\$1\" >> \"\$REJECTED_SQL\"
   case \"\$1\" in
+    *"'COMPLETED-'"*) printf 'COMPLETED-42-133|745EF36C1E46811A|31|targetServer31|Survival_1|1|133|storyServer133|CB_Story_OrbitalMonitor|0\\n' ;;
     *'select a.id'*) printf '42\\n' ;;
-    *'admin_move_offline_player_to_partition'*) printf 'SET\\n42\\n' ;;
+    *'admin_move_offline_player_to_partition'*) printf 'SET\\n42|owned-respawn|1\\n' ;;
   esac
 }
 NAMED_DESTINATION_SINCE=10m
@@ -193,20 +216,59 @@ scan_rejected_story_returns
 scan_rejected_story_returns")"
 
 test "$(grep -c '^STORY-RETURN account=42 request=0335A8724B8F8F5B0DB6908CCE7CEFCC ' <<<"$rejected_output")" -eq 1
+test "$(grep -c '^STORY-RETURN account=42 request=COMPLETED-42-133 ' <<<"$rejected_output")" -eq 1
 grep -Fq 'action=moved-pawn' <<< "$rejected_output"
+grep -Fq 'location=owned-respawn' <<< "$rejected_output"
+grep -Fq 'recovered_vehicles=1' <<< "$rejected_output"
 grep -Fq "server_id = 'targetServer31'" "$rejected_sql"
 grep -Fq "ps.server_id = 'targetServer31' or ps.previous_server_partition_id = 133" "$rejected_sql"
-if grep -Fq 'join dune.world_partition source_wp' "$rejected_sql"; then
-  echo "story return recovery must not depend on the transient source partition row" >&2
-  exit 1
-fi
 grep -Fq 'pawn.partition_id = 133' "$rejected_sql"
 grep -Fq "dune.is_player_offline('745EF36C1E46811A')" "$rejected_sql"
 grep -Fq 'dune.admin_move_offline_player_to_partition' "$rejected_sql"
+grep -Fq 'dune.player_respawn_locations' "$rejected_sql"
+grep -Fq 'candidate.candidate_count = 1' "$rejected_sql"
+grep -Fq 'candidate.priority_rank = 1' "$rejected_sql"
+grep -Fq ') fallback on true' "$rejected_sql"
+grep -Fq 'coalesce(array_agg(vehicle.id), array[]::bigint[])' "$rejected_sql"
+grep -Fq 'when cardinality(stranded.stranded_vehicle_ids) > 0' "$rejected_sql"
+grep -Fq 'dune.store_recovered_vehicles_wiped_before_spawn' "$rejected_sql"
+if grep -Fq "eligible.recovery_source = 'owned-respawn'" "$rejected_sql"; then
+  echo "all stranded story vehicles must be sent to Vehicle Recovery" >&2
+  exit 1
+fi
 if grep -Fq 'delete from dune.travel_return_info' "$rejected_sql"; then
   echo "story return recovery must preserve the game-owned return record" >&2
   exit 1
 fi
+
+# A rejected credits return produces a generic story-map demand immediately
+# after the refusal. Suppress exactly that synthetic demand while preserving a
+# later legitimate inbound request for the same map.
+demand_function="$(python3 - "$script" <<'PY'
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = text.index("scan_travel_demand()")
+end = text.index("follow_director_travel_demand()", start)
+print(text[start:end])
+PY
+)"
+demand_log="$(mktemp)"
+trap 'rm -f "$hub_file" "$hub_file.lock" "$replay_log" "$rejected_log" "$rejected_sql" "$rejected_seen" "$demand_log"' EXIT
+cat >"$demand_log" <<'LOG'
+2026-09-19T12:33:58Z Player A requested WorldPartition { PartitionId = 1, ServerId = hagga, Map = Survival_1, DimensionIndex = 0 }. Teleport not allowed, returning to WorldPartition { PartitionId = 32, ServerId = , Map = CB_Story_OrbitalMonitor, DimensionIndex = 0 }, setting return dimension to 0.
+2026-09-19T12:33:58Z Received travel request for 1 player(s) to CB_Story_OrbitalMonitor (instancingMode=ClassicalInstancing)
+2026-09-19T12:40:00Z Received travel request for 1 player(s) to CB_Story_OrbitalMonitor (instancingMode=ClassicalInstancing)
+2026-09-19T12:40:01Z Received travel request for 1 player(s) to CB_Story_DestroyedZanovar (instancingMode=ClassicalInstancing)
+LOG
+demand_output="$(DEMAND_LOG="$demand_log" bash -c "$demand_function
+docker() { cat \"\$DEMAND_LOG\"; }
+handle_demand() { printf 'HANDLE|%s|%s|%s|%s\\n' \"\$1\" \"\$2\" \"\$4\" \"\$5\"; }
+SINCE=10m
+scan_travel_demand")"
+test "$(grep -c '^HANDLE|CB_Story_OrbitalMonitor|1|request|ClassicalInstancing$' <<<"$demand_output")" -eq 1
+test "$(grep -c '^HANDLE|CB_Story_DestroyedZanovar|1|request|ClassicalInstancing$' <<<"$demand_output")" -eq 1
 
 # Exercise live alignment against production-shaped pawn ownership. Story
 # players are never aligned over their saved return destination, and metadata
