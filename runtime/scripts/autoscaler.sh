@@ -2193,10 +2193,15 @@ PY
        when 'CB_Story_OrbitalMonitor' then 'DA_MQ_TheGreatConventionPt3.FourtyFears'
      end
      and completed_story.complete_condition_state = 'true'::jsonb
-    join dune.travel_return_info tri
+    left join dune.travel_return_info tri
       on tri.player_controller_id = ps.player_controller_id
     join dune.world_partition target_wp
-      on dune.upgrade_map_name(target_wp.map) = dune.upgrade_map_name(tri.map)
+      on dune.upgrade_map_name(target_wp.map) = dune.upgrade_map_name(
+        case
+          when tri.player_controller_id is null then 'Survival_1'
+          else tri.map
+        end
+      )
      and coalesce(target_wp.dimension_index, 0) = coalesce(ps.return_dimension_index, 0)
      and coalesce(target_wp.server_id, '') <> ''
     join dune.farm_state target_fs

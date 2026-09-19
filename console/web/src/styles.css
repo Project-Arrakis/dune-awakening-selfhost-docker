@@ -1717,6 +1717,7 @@ body.debug .technical-details { display: block; }
 .playerAdmin_teleportModeRow > select:first-of-type { width: 230px; max-width: 230px; flex: 0 0 230px; }
 .playerAdmin_teleportModeRow > .playerAdmin_destinationBaseSelect { width: min(620px, 100%); max-width: 620px; }
 .playerAdmin_coordinateInputs { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.playerAdmin_coordinateInputs .playerAdmin_coordinatePartitionSelect { width: min(360px, 100%); max-width: 360px; }
 .playerAdmin_coordinateInputs input { width: 112px; max-width: 112px; }
 .playerAdmin_teleportPanel .action-help-note { margin: 0; }
 .playerAdmin_teleportPanel .action-help-note.warning { color: #ffc77c; }
@@ -6509,6 +6510,7 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
   .playerAdmin_factionControls { flex-wrap: wrap; }
   .playerAdmin_teleportModeRow, .playerAdmin_coordinateInputs { width: 100%; align-items: stretch; flex-wrap: wrap; }
   .playerAdmin_teleportModeRow > span, .playerAdmin_teleportModeRow > select, .playerAdmin_teleportModeRow > select:first-of-type { width: 100%; max-width: none; flex: 1 1 100%; }
+  .playerAdmin_coordinateInputs .playerAdmin_coordinatePartitionSelect { width: 100%; max-width: none; flex: 1 1 100%; }
   .playerAdmin_coordinateInputs input { flex: 1 1 92px; width: auto; max-width: none; }
 }
 

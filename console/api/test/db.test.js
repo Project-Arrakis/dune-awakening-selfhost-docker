@@ -8550,6 +8550,50 @@ test("offline teleport moves existing players through the supported function", a
   assert.deepEqual(moveCall.values, ["FLS_OK", 8, 1.5, 2.5, 3.5]);
 });
 
+test("player teleport destinations offer safe world partitions for offline story recovery", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("where a.id = $1") && text.includes("a.class ilike")) {
+        return { rows: [{ actor_id: 42, account_id: 7, controller_id: 8, player_state_id: 9, online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.accounts ac") && text.includes("coalesce(ac.\"user\"")) {
+        return { rows: [{ fls_id: "FLS42", character_name: "Offline Player", map: "OrbitalMonitor", partition_id: 32 }] };
+      }
+      if (text.includes("where a.id <> $1")) return { rows: [] };
+      if (text.includes("from dune.totems t")) return { rows: [] };
+      if (text.includes("from dune.world_partition wp") && text.includes("marker_count")) {
+        return { rows: [
+          { map: "HaggaBasin", partition_id: 1, name: "Abbir", marker_count: 0, alive: true, ready: true },
+          { map: "DeepDesert", partition_id: 8, name: "Deep Desert", marker_count: 0, alive: false, ready: false }
+        ] };
+      }
+      throw new Error(`unexpected query: ${text} ${JSON.stringify(values)}`);
+    }
+  };
+
+  const result = await playerTeleportDestinations(db, 42);
+
+  assert.deepEqual(result.source, {
+    map: "OrbitalMonitor",
+    partition_id: 32,
+    online_status: "Offline",
+    online: false
+  });
+  assert.equal(result.partitions.find((row) => row.partition_id === 1)?.selectable, true);
+  assert.equal(result.partitions.find((row) => row.partition_id === 8)?.selectable, true);
+  assert.deepEqual(result.partitions.find((row) => row.partition_id === 32), {
+    map: "OrbitalMonitor",
+    partition_id: 32,
+    name: "Current Partition",
+    marker_count: 0,
+    alive: null,
+    ready: null,
+    current: true,
+    selectable: false
+  });
+});
+
 test("player live teleport refuses an offline source", async () => {
   const db = {
     query: async (text) => {
@@ -8559,6 +8603,62 @@ test("player live teleport refuses an offline source", async () => {
     }
   };
   await assert.rejects(() => teleportPlayer(db, 42, { mode: "coordinates", x: 1, y: 2, z: 3 }), /must be online/i);
+});
+
+test("player admin coordinate teleport moves an offline player to a selected safe partition", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("where a.id = $1") && text.includes("a.class ilike")) {
+        return { rows: [{ actor_id: 42, account_id: 7, controller_id: 8, player_state_id: 9, online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.accounts ac") && text.includes("coalesce(ac.\"user\"")) {
+        return { rows: [{ fls_id: "FLS42", character_name: "Offline Player", map: "OrbitalMonitor", partition_id: 32 }] };
+      }
+      if (text.includes("from dune.world_partition wp") && text.includes("marker_count")) {
+        return { rows: [{ map: "HaggaBasin", partition_id: 1, name: "Abbir", marker_count: 0, alive: true, ready: true }] };
+      }
+      if (text.includes("select exists") && text.includes("from dune.accounts ac")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regprocedure")) return { rows: [{ proc: "dune.admin_move_offline_player_to_partition(text,bigint,dune.vector)" }] };
+      if (text.includes("admin_move_offline_player_to_partition")) return { rows: [{ ok: true }] };
+      throw new Error(`unexpected query: ${text}`);
+    }
+  };
+
+  const result = await teleportPlayer(
+    db,
+    42,
+    { mode: "coordinates", x: 11.5, y: -22.5, z: 33.5, partitionId: 1 },
+    { allowOfflineCoordinates: true }
+  );
+
+  assert.equal(result.path, "offline");
+  assert.equal(result.supported, true);
+  const moveCall = calls.find((call) => call.text.includes("select dune.admin_move_offline_player_to_partition"));
+  assert.deepEqual(moveCall.values, ["FLS42", 1, 11.5, -22.5, 33.5]);
+});
+
+test("player admin offline coordinate teleport rejects partitions outside the safe map selector", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("where a.id = $1") && text.includes("a.class ilike")) {
+        return { rows: [{ actor_id: 42, account_id: 7, controller_id: 8, player_state_id: 9, online_status: "Offline" }] };
+      }
+      if (text.includes("from dune.accounts ac") && text.includes("coalesce(ac.\"user\"")) {
+        return { rows: [{ fls_id: "FLS42", character_name: "Offline Player", map: "OrbitalMonitor", partition_id: 32 }] };
+      }
+      if (text.includes("from dune.world_partition wp") && text.includes("marker_count")) return { rows: [] };
+      throw new Error(`unexpected query: ${text}`);
+    }
+  };
+
+  await assert.rejects(
+    () => teleportPlayer(db, 42, { mode: "coordinates", x: 1, y: 2, z: 3, partitionId: 999 }, { allowOfflineCoordinates: true }),
+    /valid Hagga Basin or Deep Desert destination partition/i
+  );
 });
 
 test("player live teleport builds a command with the actual FLS id", async () => {
