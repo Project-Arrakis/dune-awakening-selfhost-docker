@@ -100,6 +100,8 @@ export function collectPlayerPortalContext(config, directorySnapshot = {}) {
 
 const CLIENT_INI_MAX_BYTES = 64 * 1024;
 const CLIENT_INI_FORBIDDEN = /(?:password|secret|token|privatekey|Bgd\.ServerDisplayName|\bPort\s*=|\bIGWPort\s*=)/i;
+const CLIENT_GAME_INI_INSTALL_PATH = "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\Windows";
+const CLIENT_ENGINE_INI_INSTALL_PATH = "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\Windows";
 
 function playerSafeClientIni(content) {
   const text = String(content || "").replace(/\r\n?/g, "\n");
@@ -118,7 +120,12 @@ export async function collectPlayerPortalClientConfiguration(config, runDuneImpl
     return {
       available: true,
       generatedAt: new Date().toISOString(),
-      installPath: "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\WindowsClient",
+      // Retain installPath for older directory clients. New clients use the
+      // file-specific paths because Funcom loads these INIs from different
+      // configuration folders.
+      installPath: CLIENT_ENGINE_INI_INSTALL_PATH,
+      gameInstallPath: CLIENT_GAME_INI_INSTALL_PATH,
+      engineInstallPath: CLIENT_ENGINE_INI_INSTALL_PATH,
       gameIni: playerSafeClientIni(game.stdout),
       engineIni: playerSafeClientIni(engine.stdout)
     };
@@ -126,7 +133,9 @@ export async function collectPlayerPortalClientConfiguration(config, runDuneImpl
     return {
       available: false,
       generatedAt: "",
-      installPath: "%USERPROFILE%\\AppData\\Local\\DuneSandbox\\Saved\\Config\\WindowsClient",
+      installPath: CLIENT_ENGINE_INI_INSTALL_PATH,
+      gameInstallPath: CLIENT_GAME_INI_INSTALL_PATH,
+      engineInstallPath: CLIENT_ENGINE_INI_INSTALL_PATH,
       gameIni: "",
       engineIni: ""
     };
@@ -245,11 +254,18 @@ const PLAYER_PORTAL_MAP_MARKER_TYPES = new Set([
 // contains public world resources/POIs, map geometry, and partitions; it can
 // never carry another player's location, base, vehicle, storage, or identity.
 export async function playerPortalMapSnapshot(config, db, options = {}) {
+  const allowedTypes = new Set(
+    Array.isArray(options.allowedTypes)
+      ? options.allowedTypes.filter((type) => PLAYER_PORTAL_MAP_MARKER_TYPES.has(type))
+      : PLAYER_PORTAL_MAP_MARKER_TYPES
+  );
   const fetchPoi = options.fetchPoi || ((database, map) => liveMapPoi(database, map));
   const fetchSpice = options.fetchSpice || ((database, map) => liveMapSpice(database, config, map));
   const fetchPartitions = options.fetchPartitions || duneDb.liveMapPartitions;
   const mapPayload = duneDb.liveMapConfigPayload();
   const capabilities = {};
+  const knownSubtypes = {};
+  const subtypeLabels = {};
   const rows = [];
   const cycles = {};
 
@@ -260,7 +276,17 @@ export async function playerPortalMapSnapshot(config, db, options = {}) {
       fetchPoi(db, actorMap).catch(() => ({ capabilities: {}, rows: [] })),
       fetchSpice(db, actorMap).catch(() => ({ capabilities: {}, rows: [] }))
     ]);
-    Object.assign(capabilities, poi.capabilities || {}, spice.capabilities || {});
+    for (const [type, available] of Object.entries({ ...(poi.capabilities || {}), ...(spice.capabilities || {}) })) {
+      if (allowedTypes.has(type)) capabilities[type] = available;
+    }
+    for (const [type, values] of Object.entries(poi.knownSubtypes || {})) {
+      if (!allowedTypes.has(type)) continue;
+      knownSubtypes[type] = [...new Set([...(knownSubtypes[type] || []), ...(Array.isArray(values) ? values : [])])];
+    }
+    for (const [type, values] of Object.entries(poi.subtypeLabels || {})) {
+      if (!allowedTypes.has(type)) continue;
+      subtypeLabels[type] = { ...(subtypeLabels[type] || {}), ...(values && typeof values === "object" ? values : {}) };
+    }
     cycles[String(mapConfig.key)] = {
       coriolisSeed: String(spice.currentSeed || ""),
       coriolisNextCycleAt: String(spice.nextCycleAt || "")
@@ -269,7 +295,7 @@ export async function playerPortalMapSnapshot(config, db, options = {}) {
       const type = String(marker?.type || "");
       const x = Number(marker?.x);
       const y = Number(marker?.y);
-      if (!PLAYER_PORTAL_MAP_MARKER_TYPES.has(type) || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (!allowedTypes.has(type) || !Number.isFinite(x) || !Number.isFinite(y)) continue;
       const row = {
         id: String(marker.id || ""),
         type,
@@ -281,6 +307,7 @@ export async function playerPortalMapSnapshot(config, db, options = {}) {
       };
       if (marker.subtype) row.subtype = String(marker.subtype);
       if (marker.confidence) row.confidence = String(marker.confidence);
+      if (Object.hasOwn(marker, "sector")) row.sector = marker.sector == null ? null : String(marker.sector);
       if (marker.partition_id != null && Number.isInteger(Number(marker.partition_id))) {
         row.partitionId = Number(marker.partition_id);
       }
@@ -296,6 +323,8 @@ export async function playerPortalMapSnapshot(config, db, options = {}) {
     maps: mapPayload.maps || {},
     defaultMap: mapPayload.defaultMap || "HaggaBasin",
     capabilities,
+    knownSubtypes,
+    subtypeLabels,
     cycles,
     partitions: (partitionResult.rows || []).map((partition) => {
       const map = String(partition.map || "");
@@ -328,7 +357,7 @@ export function createPublicDirectoryReporter(config, options = {}) {
   const collectPlayerPortalMarketSnapshot = options.collectPlayerPortalMarketSnapshot
     || ((database) => playerPortalMarketSnapshot(config, database));
   const collectPlayerPortalMapSnapshot = options.collectPlayerPortalMapSnapshot
-    || ((database) => playerPortalMapSnapshot(config, database));
+    || ((database, mapOptions) => playerPortalMapSnapshot(config, database, mapOptions));
   const buildPlayerPortalContext = options.collectPlayerPortalContext
     || (async (directorySnapshot) => {
       const context = collectPlayerPortalContext(config, directorySnapshot);
@@ -470,9 +499,13 @@ export function createPublicDirectoryReporter(config, options = {}) {
             }
             const observedAt = new Date(now()).toISOString();
             const portalContext = await buildPlayerPortalContext(snapshot);
-            if (now() - lastPlayerPortalMapUploadAt >= 60_000) {
+            if (playerPortalStatus.playerPortalMapEnabled !== false && now() - lastPlayerPortalMapUploadAt >= 60_000) {
               try {
-                const mapSnapshot = await collectPlayerPortalMapSnapshot(getDb());
+                const mapSnapshot = await collectPlayerPortalMapSnapshot(getDb(), {
+                  allowedTypes: Array.isArray(playerPortalStatus.playerPortalMapLayers)
+                    ? playerPortalStatus.playerPortalMapLayers
+                    : undefined
+                });
                 const result = await requestJson(fetchImpl, `${claimBaseUrl}/${encodeURIComponent(identity.serverId)}/player-portal/map-snapshot`, {
                   method: "POST",
                   headers: {

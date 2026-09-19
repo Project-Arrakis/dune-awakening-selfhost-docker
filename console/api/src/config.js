@@ -251,7 +251,8 @@ export function loadConfig() {
     maxJsonBytes: Number(process.env.ADMIN_MAX_JSON_BYTES || 2 * 1024 * 1024),
     maxUploadBytes: Number(process.env.ADMIN_MAX_UPLOAD_BYTES || 1024 * 1024 * 1024),
     commandTimeoutMs: Number(process.env.ADMIN_COMMAND_TIMEOUT_MS || 120000),
-    updateCheckCacheMs: Number(process.env.ADMIN_UPDATE_CHECK_CACHE_MS || 5 * 60 * 1000),
+    updateCheckCacheMs: Number(process.env.ADMIN_UPDATE_CHECK_CACHE_MS || 30 * 60 * 1000),
+    updateCheckCacheFile: resolve(generatedDir, "game-update-check.json"),
     staticDir: process.env.ADMIN_STATIC_DIR || resolve(repoRoot, "console/web/dist"),
     allowedIps: parseAllowedIps(process.env.ADMIN_ALLOWED_IPS)
   };
@@ -312,6 +313,8 @@ function repairRootOwnedHostState(repoRoot) {
     resolve(repoRoot, "runtime/generated/update-auto.env"),
     resolve(repoRoot, "runtime/generated/usersettings.json"),
     resolve(repoRoot, "runtime/generated/auto-refill-bases.json"),
+    resolve(repoRoot, "runtime/generated/auto-refill-water-bases.json"),
+    resolve(repoRoot, "runtime/generated/auto-refill-settings.json"),
     resolve(repoRoot, "runtime/generated/pending-generator-refills.json"),
     resolve(repoRoot, "runtime/generated/gameplay-profile.ini"),
     resolve(repoRoot, "runtime/generated/care-package.json"),

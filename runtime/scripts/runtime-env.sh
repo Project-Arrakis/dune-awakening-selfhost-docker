@@ -10,9 +10,9 @@ source runtime/scripts/host-file-ownership.sh
 # shellcheck source=runtime/scripts/lib/secrets.sh
 source runtime/scripts/lib/secrets.sh
 
+# shellcheck disable=SC1091
+source runtime/scripts/compose-project.sh
 if [ -z "${DUNE_COMPOSE_PROJECT_NAME:-}" ]; then
-  # shellcheck disable=SC1091
-  source runtime/scripts/compose-project.sh
   DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
   export DUNE_COMPOSE_PROJECT_NAME
 fi
@@ -193,6 +193,31 @@ first_known_value() {
   return 1
 }
 
+host_datacenter_id_is_valid() {
+  local value="${1:-}"
+
+  [ "${#value}" -ge 1 ] && [ "${#value}" -le 253 ] \
+    && printf '%s' "$value" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$'
+}
+
+resolve_host_datacenter_id() {
+  local value
+
+  value="$(first_known_value \
+    "$(config_value .env HOST_DATACENTER_ID 2>/dev/null || true)" \
+    "${HOST_DATACENTER_ID:-}" \
+    "$(config_value .env SERVER_PROVIDER 2>/dev/null || true)" \
+    "${SERVER_PROVIDER:-}" \
+    "dune-docker")"
+
+  if ! host_datacenter_id_is_valid "$value"; then
+    printf '%s\n' "Invalid HOST_DATACENTER_ID=$value; use a hostname or short ID containing only letters, numbers, dots, and hyphens." >&2
+    return 1
+  fi
+
+  printf '%s' "$value"
+}
+
 resolve_server_title() {
   first_known_value     "$(config_value .env SERVER_TITLE 2>/dev/null || true)"     "${SERVER_TITLE:-}"     "$(container_env_value_any_state dune-director BATTLEGROUP_TITLE 2>/dev/null || true)"     "$(container_env_value_any_state dune-server-gateway gateway_display_name 2>/dev/null || true)"     "My Dune Server"
 }
@@ -273,7 +298,7 @@ detect_docker_desktop_host_bind_ip() {
   command -v docker >/dev/null 2>&1 || return 1
   docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop' || return 1
 
-  container="$(docker ps --filter name='^/dune-orchestrator$' --format '{{.Names}}' 2>/dev/null | head -n1 || true)"
+  container="$(dune_compose_running_service_container "$DUNE_COMPOSE_PROJECT_NAME" orchestrator 2>/dev/null || true)"
   if [ -n "$container" ]; then
     ip="$(docker exec "$container" sh -c "ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(\$i==\"src\"){print \$(i+1); exit}}'" 2>/dev/null | tr -d '[:space:]' || true)"
     if is_ipv4 "$ip"; then

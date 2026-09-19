@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { isAbsolute, relative, sep } from "node:path";
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 
@@ -7,16 +8,28 @@ export async function collectContainerHealth(options = {}) {
   if (!projectName) return { containers: [], error: "The Dune Compose project name is not configured." };
 
   const run = options.run || execFileText;
-  const filter = `label=com.docker.compose.project=${projectName}`;
+  const hostRoot = String(options.hostRoot ?? process.env.DUNE_HOST_REPO_ROOT ?? "").trim();
   try {
-    const statusOutput = await run("docker", ["ps", "--filter", filter, "--format", "{{json .}}"]);
-    const containerIds = parseJsonLines(statusOutput)
-      .map((row) => String(row.ID || "").trim())
-      .filter(Boolean);
-    if (containerIds.length === 0) return { containers: [] };
+    const rows = parseJsonLines(await run("docker", ["ps", "--all", "--no-trunc", "--format", "{{json .}}"]));
+    if (!rows.length) return { containers: [] };
+    // Inspect only ownership metadata, never Config.Env (which holds secrets).
+    const ownership = parseJsonLines(await run("docker", ["inspect", "--format",
+      '{"id":{{json .Id}},"labels":{{json .Config.Labels}},"mounts":{{json .Mounts}}}', ...rows.map(row => row.ID)]));
+    const owned = new Set(ownership.filter(row => {
+      if (row.labels?.["com.docker.compose.project"] === projectName) return true;
+      return (row.mounts || []).some(mount => {
+        if (mount.Type === "volume") return ["dune-server", "dune-steam", "dune-cache", "dune-generated", "dune-work"].some(name => mount.Name === `${projectName}_${name}`);
+        if (mount.Type !== "bind" || !isAbsolute(hostRoot) || hostRoot === sep || !isAbsolute(mount.Source || "")) return false;
+        const child = relative(hostRoot, mount.Source);
+        return child === "" || (child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child));
+      });
+    }).map(row => row.id));
+    const selected = rows.filter(row => owned.has(row.ID));
+    const statusOutput = selected.map(row => JSON.stringify(row)).join("\n");
+    const containerIds = selected.filter(row => row.State === "running").map(row => row.ID);
+    if (!containerIds.length) return { containers: mergeContainerHealth("", statusOutput) };
 
-    // `docker stats` has no --filter option. Resolve the Compose project's
-    // containers first, then pass only those explicit IDs so addons cannot
+    // Resolve installation ownership first, then pass only running IDs so addons cannot
     // obtain telemetry for unrelated host containers.
     const statsOutput = await run("docker", ["stats", "--no-stream", "--format", "{{json .}}", ...containerIds]);
     return { containers: mergeContainerHealth(statsOutput, statusOutput) };
@@ -26,19 +39,20 @@ export async function collectContainerHealth(options = {}) {
 }
 
 export function mergeContainerHealth(statsOutput, statusOutput = "") {
-  const statuses = new Map(parseJsonLines(statusOutput).map((row) => [containerName(row), String(row.Status || "unknown")]));
-  return parseJsonLines(statsOutput)
-    .map((row) => {
-      const name = containerName(row);
-      const [memory = "0B", memoryLimit = ""] = String(row.MemUsage || "").split("/").map((value) => value.trim());
+  const stats = new Map(parseJsonLines(statsOutput).map(row => [containerName(row), row]));
+  return parseJsonLines(statusOutput)
+    .map((status) => {
+      const name = containerName(status);
+      const row = status.State && status.State !== "running" ? {} : stats.get(name) || {};
+      const [memory = "N/A", memoryLimit = "N/A"] = row.MemUsage ? String(row.MemUsage).split("/").map(value => value.trim()) : [];
       return {
         name,
-        cpu: String(row.CPUPerc || "0%"),
+        cpu: String(row.CPUPerc || "N/A"),
         memory,
         memoryLimit,
-        networkIO: String(row.NetIO || "0B / 0B"),
-        blockIO: String(row.BlockIO || "0B / 0B"),
-        status: statuses.get(name) || "unknown"
+        networkIO: String(row.NetIO || "N/A"),
+        blockIO: String(row.BlockIO || "N/A"),
+        status: String(status.Status || "Unknown")
       };
     })
     .filter((row) => row.name)

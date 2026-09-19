@@ -99,6 +99,22 @@ describe("VehiclesPanel", () => {
     expect(location).toHaveAttribute("title", "HaggaBasin · Partition 1");
   });
 
+  it("labels a recovered vehicle as stored instead of inventing Partition 0", async () => {
+    vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({
+      rows: [{
+        ...listResponse().rows[0],
+        owner: "",
+        condition_percent: null,
+        partition_id: null,
+        lifecycle_state: "VehicleRecovery"
+      }]
+    }));
+    renderPanel();
+
+    expect(await screen.findByText("Hagga Basin · Stored for Recovery")).toBeInTheDocument();
+    expect(screen.queryByText(/Partition 0/)).toBeNull();
+  });
+
   it("shows the server-provided sub-region on the Location column", async () => {
     vi.mocked(vehiclesApi.list).mockResolvedValue(listResponse({
       rows: [{ ...listResponse().rows[0], map: "HaggaBasin", region: "Hagga Rift" }]

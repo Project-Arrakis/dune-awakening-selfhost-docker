@@ -26,11 +26,14 @@ const redeploySteps: { id: StepId; label: string }[] = [
   { id: "finish", label: "Finish" }
 ];
 const regions = ["Europe", "North America", "South America", "Asia", "Oceania", "Africa"];
-type SetupConfig = { SERVER_TITLE: string; SERVER_REGION: string; SERVER_IP: string; SERVER_IP_MODE: string; SERVER_PROVIDER: string; STEAM_APP_ID: string };
+type SetupConfig = { SERVER_TITLE: string; SERVER_REGION: string; SERVER_IP: string; SERVER_IP_MODE: string; HOST_DATACENTER_ID: string; STEAM_APP_ID: string };
 const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
 const completionRedirectSeconds = 10;
 const deploymentSuccessHoldMs = 3000;
-const defaultSetupConfig: SetupConfig = { SERVER_TITLE: "My Dune Server", SERVER_REGION: "Europe", SERVER_IP: "auto", SERVER_IP_MODE: "public", SERVER_PROVIDER: "dune-docker", STEAM_APP_ID: "4754530" };
+const defaultSetupConfig: SetupConfig = { SERVER_TITLE: "My Dune Server", SERVER_REGION: "Europe", SERVER_IP: "auto", SERVER_IP_MODE: "public", HOST_DATACENTER_ID: "dune-docker", STEAM_APP_ID: "4754530" };
+const datacenterIdPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+export const DATACENTER_ID_GUIDANCE = "Recommended for server-browser ping: enter a hostname whose IPv4 A record points directly to the Server IP. Enter only the hostname—without https://, a port, or a path. Short IDs remain supported, but may not give Funcom a resolvable ping target. A Battlegroup restart applies this change; Funcom may still display ping intermittently.";
+export const DIRECT_LISTING_PING_GUIDANCE = "To let DuneDocker.app measure your server directly, allow or forward UDP 32000–32015 to this Docker host through the host firewall and any internet-to-DMZ firewall or router. This is optional: if the range is closed, the public listing automatically uses the ping relay instead.";
 
 export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy", onSetupComplete }: { initialStep?: number; jumpNonce?: number; mode?: "first-run" | "redeploy"; onSetupComplete?: () => void }) {
   const steps = mode === "first-run" ? firstRunSteps : redeploySteps;
@@ -136,7 +139,8 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
   }
 
   const hasToken = Boolean(token.trim() || existingToken);
-  const configReady = Boolean(config.SERVER_TITLE.trim() && config.SERVER_REGION && config.SERVER_IP.trim() && config.SERVER_IP_MODE && config.SERVER_PROVIDER.trim() && config.STEAM_APP_ID.trim());
+  const datacenterIdValid = validDatacenterId(config.HOST_DATACENTER_ID);
+  const configReady = Boolean(config.SERVER_TITLE.trim() && config.SERVER_REGION && config.SERVER_IP.trim() && config.SERVER_IP_MODE && datacenterIdValid && config.STEAM_APP_ID.trim());
   const checksReady = checks.length > 0 && checks.every((check) => check.status !== "fail");
   const deploymentSucceeded = task?.status === "succeeded";
   const deploymentRunning = Boolean(task && !terminalStatuses.has(task.status));
@@ -203,9 +207,11 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
             <label>Region<select value={config.SERVER_REGION} onChange={(event) => setConfig({ ...config, SERVER_REGION: event.target.value })}>{regions.map((region) => <option key={region} value={region}>{region}</option>)}</select></label>
             <label>Install mode<select value={config.SERVER_IP_MODE} onChange={(event) => setConfig({ ...config, SERVER_IP_MODE: event.target.value })}><option value="public">Public</option><option value="local">Local</option></select></label>
             <label>Server IP<input value={config.SERVER_IP} onChange={(event) => setConfig({ ...config, SERVER_IP: event.target.value })} /></label>
-            <label>Provider<input value={config.SERVER_PROVIDER} onChange={(event) => setConfig({ ...config, SERVER_PROVIDER: event.target.value })} /></label>
+            <label>Server Hostname (Datacenter ID)<input placeholder="game.example.com" value={config.HOST_DATACENTER_ID} onChange={(event) => setConfig({ ...config, HOST_DATACENTER_ID: event.target.value })} /></label>
             <label>Steam app ID<input value={config.STEAM_APP_ID} onChange={(event) => setConfig({ ...config, STEAM_APP_ID: event.target.value })} /></label>
           </div>
+          <p className="muted">{DATACENTER_ID_GUIDANCE}</p>
+          {!datacenterIdValid && <p className="danger-note">Enter a valid hostname or short ID using only letters, numbers, dots, and hyphens.</p>}
         </>}
         {activeStep === "token" && <>
           <h2>Funcom Token</h2>
@@ -236,6 +242,10 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
               <p>Game UDP ports start at {wizardPorts.clientBase} and increase as maps are started. Overmap commonly uses {wizardPorts.clientBase} and Survival_1 commonly uses {wizardPorts.clientBaseSecondary}. The {wizardPorts.clientBase}-{wizardPorts.clientBase + 33} range covers normal map growth.</p>
             </section>
             <section className="action-section">
+              <h4>Optional Direct Listing Ping</h4>
+              <p>{DIRECT_LISTING_PING_GUIDANCE}</p>
+            </section>
+            <section className="action-section">
               <h4>Internal Map Traffic</h4>
               <p>IGW/S2S UDP ports start at {wizardPorts.igwBase} for map-to-map traffic inside the console. Do not forward these publicly for a normal single-host Docker setup.</p>
             </section>
@@ -255,7 +265,7 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
                 ["Region", config.SERVER_REGION],
                 ["Mode", titleCase(config.SERVER_IP_MODE)],
                 ["Server IP", config.SERVER_IP],
-                ["Provider", config.SERVER_PROVIDER],
+                ["Server Hostname (Datacenter ID)", config.HOST_DATACENTER_ID],
                 ["Steam App ID", config.STEAM_APP_ID]
               ]} />
             </section>
@@ -265,6 +275,7 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
                 ["Public Game UDP", `${wizardPorts.clientBase}-${wizardPorts.clientBase + 33}/udp`],
                 ["Public RabbitMQ Game", `${wizardPorts.rmqGame}/tcp`],
                 ["Public RabbitMQ Game HTTP", `${wizardPorts.rmqGameHttp}/tcp`],
+                ["Optional Direct Listing Ping", "32000–32015/udp"],
                 ["Admin Panel", `${adminPort}/tcp private only`],
                 ["Internal Services", "Do not expose publicly"]
               ]} />
@@ -322,13 +333,20 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, mode = "redeploy",
   );
 }
 
-function configFromSetupState(values: Record<string, unknown> | undefined): SetupConfig {
+export function configFromSetupState(values: Record<string, unknown> | undefined): SetupConfig {
   const next = { ...defaultSetupConfig };
   for (const key of Object.keys(next) as Array<keyof SetupConfig>) {
     const value = values?.[key];
     if (value !== undefined && String(value).trim()) next[key] = String(value);
   }
+  if (values?.HOST_DATACENTER_ID === undefined && String(values?.SERVER_PROVIDER || "").trim()) {
+    next.HOST_DATACENTER_ID = String(values?.SERVER_PROVIDER);
+  }
   return next;
+}
+
+export function validDatacenterId(value: string) {
+  return value.length <= 253 && datacenterIdPattern.test(value);
 }
 
 function ReviewGrid({ items }: { items: [string, string][] }) {

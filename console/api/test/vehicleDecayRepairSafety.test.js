@@ -43,7 +43,7 @@ test("vehicle durability repair stops live maps before writing and restarts them
 test("vehicle repair preflight uses the same durability eligibility rules as the repair", () => {
   const inspect = functionBody(dbSource, "inspectVehicleDecayRepair");
   const repair = functionBody(dbSource, "repairVehicleDecay");
-  for (const marker of ["VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE", "CurrentDurability", "MaxDurability", "tm.max_durability", "permission_actor_rank"]) {
+  for (const marker of ["VEHICLE_REPAIR_TEMPLATE_MAXIMA_CTE", "VEHICLE_REPAIR_EFFECTIVE_MAX_SQL", "CurrentDurability", "tm.known_max_durability", "permission_actor_rank"]) {
     assert.match(inspect, new RegExp(marker.replaceAll(".", "\\.")));
     assert.match(repair, new RegExp(marker.replaceAll(".", "\\.")));
   }

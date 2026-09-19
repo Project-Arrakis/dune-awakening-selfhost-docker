@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { verifyPassword } from "./passwordHash.js";
 
 const sessions = new Map();
 
@@ -60,10 +61,12 @@ export function createAuth(config) {
     return session;
   }
 
-  function passwordMatches(value) {
-    const left = Buffer.from(String(value || ""));
-    const right = Buffer.from(config.adminPassword);
-    return left.length === right.length && timingSafeEqual(left, right);
+  async function passwordMatches(value) {
+    // ADMIN_PASSWORD is an operator-supplied literal. Password files may be
+    // either the legacy plaintext format or the scrypt format written by a
+    // newer Console build, so file-backed credentials must understand both.
+    if (config.adminPasswordEnvManaged) return constantTimeStringEqual(value, config.adminPassword);
+    return verifyPassword(value, config.adminPassword);
   }
 
   function requireAuth(req, res) {

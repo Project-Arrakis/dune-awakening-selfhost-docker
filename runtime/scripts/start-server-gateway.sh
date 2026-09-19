@@ -39,6 +39,7 @@ FLS_APIKEY="$(tr -d '\r\n' < "$FLS_APIKEY_FILE")"
 SERVER_TITLE="$(resolve_server_title)"
 SERVER_REGION="$(resolve_server_region)"
 SERVER_IP="$(resolve_server_ip)"
+HOST_DATACENTER_ID_VALUE="$(resolve_host_datacenter_id)"
 BATTLEGROUP_ID="$(resolve_battlegroup_id)"
 DUNE_DB_PASSWORD="${DUNE_DB_PASSWORD:-dune}"
 RMQ_GAME_PORT="$(resolve_rmq_game_port)"
@@ -63,7 +64,7 @@ docker run -d \
   -e "RMQ_HTTP_TOKEN_AUTH_SECRET=$RMQ_HTTP_TOKEN_AUTH_SECRET" \
   -e "fls-apikey=$FLS_APIKEY" \
   -e "gateway_farm_api_key=$FLS_APIKEY" \
-  -e "HOST_DATACENTER_ID=${SERVER_PROVIDER:-dune-docker}" \
+  -e "HOST_DATACENTER_ID=$HOST_DATACENTER_ID_VALUE" \
   -e "HOST_DATACENTER_IP_ADDRESS=$SERVER_IP" \
   -e "BATTLEGROUP=$BATTLEGROUP_ID" \
   -e "BATTLEGROUP_DISPLAY_NAME=$BATTLEGROUP_ID" \

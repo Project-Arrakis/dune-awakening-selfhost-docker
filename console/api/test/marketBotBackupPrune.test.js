@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -58,6 +58,7 @@ function makeFixture() {
   mkdirSync(join(fixture, "runtime/backups/db"), { recursive: true });
   cpSync(resolve(repoRoot, "runtime/scripts/db.sh"), join(scripts, "db.sh"));
   cpSync(resolve(repoRoot, "runtime/scripts/env-file.sh"), join(scripts, "env-file.sh"));
+  cpSync(resolve(repoRoot, "runtime/scripts/host-file-ownership.sh"), join(scripts, "host-file-ownership.sh"));
   writeFileSync(join(fixture, ".env"), "SERVER_TITLE=Kovalt Test Server\n");
   writeFileSync(join(bin, "docker"), DOCKER_STUB);
   chmodSync(join(bin, "docker"), 0o755);
@@ -82,6 +83,41 @@ function runDb(fixture, bin, args, env = {}) {
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ...env }
   });
 }
+
+test("root scheduled backups remain private and can be read by the Console user", { skip: process.getuid?.() !== 0 }, () => {
+  const { fixture, bin, backupDir } = makeFixture();
+  try {
+    chmodSync(fixture, 0o755);
+    const result = runDb(fixture, bin, ["backup"], {
+      DUNE_HOST_UID: "12345", DUNE_HOST_GID: "12345", DB_BACKUP_ORIGIN: "automatic"
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const files = backupNames(backupDir);
+    assert.equal(files.length, 1);
+    const archive = join(backupDir, files[0]);
+    for (const path of [backupDir, archive, `${archive}.yaml`]) {
+      assert.equal(statSync(path).uid, 12345);
+      assert.equal(statSync(path).gid, 12345);
+    }
+    assert.equal(statSync(archive).mode & 0o777, 0o600);
+    const read = spawnSync(process.execPath, ["-e", 'require("fs").readFileSync(process.argv[1]); require("fs").readFileSync(process.argv[1]+".yaml")', archive], { uid: 12345, gid: 12345, encoding: "utf8" });
+    assert.equal(read.status, 0, read.stderr);
+    const stranger = spawnSync(process.execPath, ["-e", 'require("fs").readFileSync(process.argv[1])', archive], { uid: 12346, gid: 12346, encoding: "utf8" });
+    assert.notEqual(stranger.status, 0);
+    assert.match(stranger.stderr, /EACCES/);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test("backup ownership failure leaves no published or partial files", { skip: process.getuid?.() !== 0 }, () => {
+  const { fixture, bin, backupDir } = makeFixture();
+  try {
+    writeFileSync(join(bin, "chown"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const result = runDb(fixture, bin, ["backup"], { DUNE_HOST_UID: "12345", DUNE_HOST_GID: "12345" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /ownership could not be assigned/);
+    assert.deepEqual(readdirSync(backupDir), []);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
 
 test("market bot backups carry their origin in the filename and prune to the newest five", () => {
   const { fixture, bin, backupDir } = makeFixture();
@@ -245,4 +281,34 @@ test("the documented retention override is forwarded into the console container"
   assert.match(envExample, /^DUNE_MARKET_BOT_BACKUP_KEEP=5$/m);
   assert.match(compose, /^\s+DUNE_VEHICLE_DELETE_BACKUP_KEEP:\s+"\$\{DUNE_VEHICLE_DELETE_BACKUP_KEEP:-10\}"$/m);
   assert.match(envExample, /^DUNE_VEHICLE_DELETE_BACKUP_KEEP=10$/m);
+});
+
+// A queued base delete takes a safety backup before every apply attempt, and a
+// base that cannot be deleted retries until the age limit -- so this origin
+// needs the same count cap the vehicle-delete twin has.
+test("base delete backups are pruned without touching other safety backups", () => {
+  const { fixture, bin, backupDir } = makeFixture();
+  try {
+    seedBackup(backupDir, "dune-db-all_maps-20260801-000001.backup", "base-delete");
+    seedBackup(backupDir, "dune-db-all_maps-20260802-000001.backup", "base-delete");
+    seedBackup(backupDir, "dune-db-all_maps-20260803-000001.backup", "base_delete");
+    seedBackup(backupDir, "dune-db-all_maps-20200103-000001.backup", "vehicle-delete");
+    seedBackup(backupDir, "dune-db-all_maps-20200102-000001.backup", "restore-safety");
+    seedBackup(backupDir, "dune-db-all_maps-20200101-000001.backup", "manual");
+
+    const result = runDb(fixture, bin, ["backup"], { DB_BACKUP_ORIGIN: "base-delete", DUNE_BASE_DELETE_BACKUP_KEEP: "3" });
+    assert.equal(result.status, 0, `backup must succeed (stderr: ${result.stderr})`);
+
+    const names = backupNames(backupDir);
+    assert.ok(!names.includes("dune-db-all_maps-20260801-000001.backup"), "oldest base delete backup is pruned");
+    assert.ok(names.includes("dune-db-all_maps-20260802-000001.backup"));
+    // The underscore spelling counts as the same origin, matching the twin.
+    assert.ok(names.includes("dune-db-all_maps-20260803-000001.backup"));
+    assert.ok(names.includes("dune-db-all_maps-20200101-000001.backup"), "manual backup is untouched");
+    assert.ok(names.includes("dune-db-all_maps-20200102-000001.backup"), "other safety backups are untouched");
+    assert.ok(names.includes("dune-db-all_maps-20200103-000001.backup"), "vehicle delete backups are untouched");
+    assert.match(result.stdout, /Pruned 1 Base Delete backup\(s\); the newest 3 are kept\./);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });

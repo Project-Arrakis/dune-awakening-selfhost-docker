@@ -13,6 +13,21 @@ AUTO_SERVICE_FILE="/etc/systemd/system/dune-awakening-db-backup.service"
 AUTO_TIMER_FILE="/etc/systemd/system/dune-awakening-db-backup.timer"
 PENDING_TRANSFER_FILE="runtime/generated/pending-character-transfers.tsv"
 BATTLEGROUP_RESTORE_FILE="runtime/generated/battlegroup-restore-point.env"
+DB_RESTORE_MAINTENANCE_FILE="${DUNE_DB_RESTORE_MAINTENANCE_FILE:-runtime/generated/db-restore-maintenance}"
+
+begin_db_restore_maintenance() {
+  mkdir -p "$(dirname "$DB_RESTORE_MAINTENANCE_FILE")"
+  printf 'Database restore started at %s by PID %s.\n' "$(date -Is)" "$$" > "$DB_RESTORE_MAINTENANCE_FILE"
+  chmod 600 "$DB_RESTORE_MAINTENANCE_FILE" 2>/dev/null || true
+  trap 'rm -f "$DB_RESTORE_MAINTENANCE_FILE"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+
+end_db_restore_maintenance() {
+  rm -f "$DB_RESTORE_MAINTENANCE_FILE"
+  trap - EXIT INT TERM
+}
 
 usage() {
   cat <<'EOF'
@@ -696,6 +711,18 @@ backup_db() {
     echo "Backup was not created because its file permissions could not be secured." >&2
     return 1
   fi
+  # System timers run as root, but the Console runs as the installation owner.
+  # Keep the dump private while making it readable by that same owner.
+  if [ "$(id -u)" = "0" ]; then
+    source runtime/scripts/host-file-ownership.sh
+    local backup_owner
+    backup_owner="$(dune_resolve_host_owner)"
+    if ! chown -h "$backup_owner" "$out_dir" "$staged_backup_file" "$staged_sidecar_file"; then
+      command rm -f -- "$staged_backup_file" "$staged_sidecar_file"
+      echo "Backup was not created because its ownership could not be assigned to the installation owner." >&2
+      return 1
+    fi
+  fi
   if ! mv -f -- "$staged_backup_file" "$backup_file"; then
     command rm -f -- "$staged_backup_file" "$staged_sidecar_file"
     echo "Backup was not created because the validated archive could not be published." >&2
@@ -728,6 +755,9 @@ backup_db() {
       ;;
     vehicle-delete)
       prune_vehicle_delete_backups "$out_dir"
+      ;;
+    base-delete)
+      prune_base_delete_backups "$out_dir"
       ;;
   esac
 }
@@ -1223,6 +1253,7 @@ delete_all_backups() {
 # releases are cleaned up too.
 MARKET_BOT_BACKUP_KEEP="${DUNE_MARKET_BOT_BACKUP_KEEP:-5}"
 VEHICLE_DELETE_BACKUP_KEEP="${DUNE_VEHICLE_DELETE_BACKUP_KEEP:-10}"
+BASE_DELETE_BACKUP_KEEP="${DUNE_BASE_DELETE_BACKUP_KEEP:-10}"
 
 backup_origin_value() {
   local backup_file="$1"
@@ -1243,6 +1274,13 @@ backup_is_market_bot() {
 backup_is_vehicle_delete() {
   case "$(backup_origin_value "$1" | tr '[:upper:]' '[:lower:]' | tr '_' '-')" in
     vehicle-delete) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+backup_is_base_delete() {
+  case "$(backup_origin_value "$1" | tr '[:upper:]' '[:lower:]' | tr '_' '-')" in
+    base-delete) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1277,6 +1315,41 @@ prune_vehicle_delete_backups() {
 
   if [ "$removed" -gt 0 ]; then
     echo "Pruned $removed Vehicle Delete backup(s); the newest $keep are kept."
+  fi
+}
+
+# The base-delete twin. A queued base delete takes one of these before every
+# apply attempt, and a base that cannot be deleted (picked up into a backup,
+# say) retries until the 7-day age limit -- so without a count cap this origin
+# alone can mint hundreds of full-database dumps for a single queued request.
+prune_base_delete_backups() {
+  local backup_dir="${1:-$BACKUP_DIR_DEFAULT}"
+  local keep="${2:-$BASE_DELETE_BACKUP_KEEP}"
+  local removed=0
+  local index=0
+  local name
+
+  validate_positive_integer "$keep" || return 0
+  [ -d "$backup_dir" ] || return 0
+
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    index=$((index + 1))
+    [ "$index" -gt "$keep" ] || continue
+    if delete_backup_files_for_name "$name" "$backup_dir" >/dev/null; then
+      removed=$((removed + 1))
+    fi
+  done < <(
+    iter_valid_backup_names "$backup_dir"       | while IFS= read -r candidate; do
+          [ -n "$candidate" ] || continue
+          backup_is_base_delete "$(backup_path_for_name "$candidate" "$backup_dir")" || continue
+          printf '%s	%s
+' "$(backup_timestamp_from_name "$candidate")" "$candidate"
+        done       | sort -r       | cut -f2-
+  )
+
+  if [ "$removed" -gt 0 ]; then
+    echo "Pruned $removed Base Delete backup(s); the newest $keep are kept."
   fi
 }
 
@@ -1877,6 +1950,11 @@ import_db() {
     adopt_backup_battlegroup_id "$backup_file"
   fi
 
+  # The Console remains online when it launches a restore so the browser can
+  # report task progress. Pause its database pool before the current database
+  # is dropped; otherwise a periodic Console/addon migration can recreate an
+  # archived trigger while pg_restore is still replaying the same object.
+  begin_db_restore_maintenance
   stop_db_dependents
   recreate_dune_database
 
@@ -1942,6 +2020,8 @@ import_db() {
       *) echo "Services remain stopped. Start them with: dune start" ;;
     esac
   fi
+
+  end_db_restore_maintenance
 }
 
 adapt_imported_battlegroup() {

@@ -370,12 +370,28 @@ function childAccessDb() {
   return db;
 }
 
+test("object access labels use the game order without reversing stored values", async () => {
+  const db = childAccessDb();
+  const query = db.query;
+  db.query = async (sql, values) => {
+    if (sql.includes("with base_entities")) return { rows: [1, 2, 3, 4, 5].map(level => ({
+      actor_id: String(100 + level), actor_name: "Door", access_level: level,
+      building_type: "Atre_Garage_Door_Placeable", is_child: true
+    })) };
+    return query(sql, values);
+  };
+  const result = await listBaseChildAccess(db, BASE_ID);
+  assert.deepEqual(result.rows.map(row => [row.currentAccess, row.currentAccessLabel]), [
+    [1, "Owner"], [2, "Co-Owner"], [3, "Associate"], [4, "Guild"], [5, "Public"]
+  ]);
+});
+
 test("listBaseChildAccess lists every child piece plus the base's own root object, flagging which ones match Sub-Fief", async () => {
   const result = await listBaseChildAccess(childAccessDb(), BASE_ID);
   assert.equal(result.inspected, 4);
   assert.deepEqual(result.rows, [
-    { actorId: "44186", name: "DesertMechanic Prudence Door", buildingType: "MTX_Neut_DesertMechanic_Prudence_Door_Placeable", group: "door", currentAccess: 5, currentAccessLabel: "Owner", isSubFief: false },
-    { actorId: "44187", name: "Desert Mechanic Garage Door", buildingType: "Neut_Desert_Mechanic_Garage_Door_Placeable", group: "door", currentAccess: 2, currentAccessLabel: "Guild", isSubFief: false },
+    { actorId: "44186", name: "DesertMechanic Prudence Door", buildingType: "MTX_Neut_DesertMechanic_Prudence_Door_Placeable", group: "door", currentAccess: 5, currentAccessLabel: "Public", isSubFief: false },
+    { actorId: "44187", name: "Desert Mechanic Garage Door", buildingType: "Neut_Desert_Mechanic_Garage_Door_Placeable", group: "door", currentAccess: 2, currentAccessLabel: "Co-Owner", isSubFief: false },
     { actorId: "44188", name: "Desert Mechanic Front Door", buildingType: "Neut_Desert_Mechanic_Front_Door_Placeable", group: "door", currentAccess: 3, currentAccessLabel: "Associate", isSubFief: true },
     // is_child = false: the base's own totem, not a door/device -- grouped
     // as Sub-Fief regardless of its building_type.
@@ -692,5 +708,94 @@ test("hasQueuedBaseChildAccess agrees with the list without parsing the payload"
     cancelQueuedBaseChildAccess(repoRoot, BASE_ID);
     assert.equal(hasQueuedBaseChildAccess(repoRoot), false, "an emptied queue must read as empty");
     assert.deepEqual(listQueuedBaseChildAccess(repoRoot), []);
+  });
+});
+
+// The restart's map-down hook passes ignoreRetryBackoff so its brief write
+// window is not wasted on an entry the 5s poller happens to have backed off.
+// Measured on a live server: a failed attempt stamps nextRetryAt 60s out while
+// the poller runs every 5s, so a persistently-failing entry is inside a backoff
+// window for roughly 55 of every 60 seconds. Both directions are asserted,
+// because only the pair is meaningful -- a skipped entry produces no flushed
+// record at all, which is what distinguishes it from one attempted and failed.
+test("the map-down pass applies a queued permission change the poller just backed off", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    queueBaseChildAccess(repoRoot, {
+      baseId: BASE_ID, map: "DeepDesert", partitionId: 59,
+      updates: [{ actorId: "44186", accessLevel: 5 }]
+    });
+    const at = 5_000_000;
+    const failing = flushDb({ onApply: async () => { throw new Error("simulated write failure"); } });
+
+    const first = await flushBaseChildAccess(failing, repoRoot, { now: () => at });
+    assert.equal(first.flushed.length, 1, "the first pass must actually attempt the entry");
+    assert.equal(first.flushed[0].ok, false);
+    assert.ok(listQueuedBaseChildAccess(repoRoot)[0].nextRetryAt > at, "a retry window must be stamped");
+
+    const skipped = await flushBaseChildAccess(failing, repoRoot, { now: () => at + 1 });
+    assert.deepEqual(skipped.flushed, [], "the poller must still honour its own backoff");
+
+    const forced = await flushBaseChildAccess(failing, repoRoot, { now: () => at + 1, ignoreRetryBackoff: true });
+    assert.equal(forced.flushed.length, 1, "ignoreRetryBackoff must override the window");
+    assert.equal(forced.flushed[0].baseId, BASE_ID);
+  });
+});
+
+// Every queued piece was demolished while the entry waited. Retrying cannot
+// bring them back, so this is reconciliation like the refill queues'
+// "nothing to refill" result -- not a failure that burns three attempts and
+// then reports the entry as dropped.
+test("flushBaseChildAccess clears an entry whose pieces are all gone instead of retrying it", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    queueBaseChildAccess(repoRoot, {
+      baseId: BASE_ID, map: "DeepDesert", partitionId: 59,
+      updates: [{ actorId: "44186", accessLevel: 5 }]
+    });
+    // childActorIds empty => every requested piece is stale => skipStale leaves
+    // nothing to apply and setBaseChildAccessLevels throws.
+    const db = flushDb({ childActorIds: [] });
+
+    const result = await flushBaseChildAccess(db, repoRoot);
+
+    assert.equal(result.flushed.length, 1);
+    assert.equal(result.flushed[0].ok, true, "obsolete, not failed");
+    assert.equal(result.flushed[0].noLongerApplicable, true);
+    assert.equal(result.flushed[0].updated, 0);
+    assert.deepEqual(listQueuedBaseChildAccess(repoRoot), [], "and it is dropped, not left to retry");
+  });
+});
+
+// setBaseChildAccessLevels caps each call at 100 pieces and each call is its own
+// transaction, so a base with more than 100 children flushes in several commits.
+// Real bases reach 315 children. If a later batch finds its pieces gone, the
+// earlier commits still happened, and reporting the entry as "none of those
+// pieces are still part of that base" would describe a base whose doors did in
+// fact change access level.
+test("a later batch finding its pieces gone still reports what earlier batches committed", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const live = Array.from({ length: 100 }, (_, i) => String(50000 + i));
+    const stale = Array.from({ length: 50 }, (_, i) => String(60000 + i));
+    // Queued in two saves: the 1-100 cap is per save, and merged entries are
+    // exactly why the flush batches at all.
+    for (const batch of [live, stale]) {
+      queueBaseChildAccess(repoRoot, {
+        baseId: BASE_ID, map: "DeepDesert", partitionId: 59,
+        updates: batch.map((actorId) => ({ actorId, accessLevel: 5 }))
+      });
+    }
+    assert.equal(listQueuedBaseChildAccess(repoRoot)[0].updates.length, 150);
+    // Only the first 100 are still children, so batch 1 commits and batch 2
+    // throws "None of the queued pieces are still children of this base."
+    const applied = [];
+    const db = flushDb({ childActorIds: live, onApply: (values) => { applied.push(String(values[0])); } });
+
+    const result = await flushBaseChildAccess(db, repoRoot);
+
+    assert.equal(applied.length, 100, "the first batch must really have been written");
+    assert.equal(result.flushed.length, 1);
+    assert.equal(result.flushed[0].ok, true);
+    assert.equal(result.flushed[0].updated, 100, "must report the committed batch, not zero");
+    assert.deepEqual(result.flushed[0].skipped, stale, "only the pieces never applied are skipped");
+    assert.deepEqual(listQueuedBaseChildAccess(repoRoot), [], "and the entry is still cleared");
   });
 });

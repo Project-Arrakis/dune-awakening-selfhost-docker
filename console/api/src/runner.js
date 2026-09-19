@@ -311,6 +311,8 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["usersettings", "global-values"];
     case "userSettingsPartitionValues":
       return ["usersettings", "partition-values", validateMapName(payload.map), validatePartitionId(payload.partitionId)];
+    case "userSettingsServerCustomValues":
+      return ["usersettings", "server-custom-values", payload.scope === "serverCustomGlobal" ? "global" : payload.scope === "serverCustomPartition" ? "partition" : "map", validateMapName(payload.map || "Survival_1"), payload.partitionId ? validatePartitionId(payload.partitionId) : ""];
     case "userSettingsSave":
       return ["usersettings", "bulk-save", validateSettingsScope(payload.scope), validateMapName(payload.map || "Survival_1"), payload.partitionId ? validatePartitionId(payload.partitionId) : "", encodeJsonArg(payload.values || {})];
     case "userSettingsMigrateCoriolisRegionFields":
@@ -376,7 +378,7 @@ function encodeTextArg(value) {
 
 function validateSettingsScope(value) {
   const raw = String(value || "").trim();
-  if (["engine", "mapEngine", "partitionEngine", "global", "map", "partition", "profile"].includes(raw)) return raw;
+  if (["engine", "mapEngine", "partitionEngine", "global", "map", "partition", "serverCustomGlobal", "serverCustomMap", "serverCustomPartition", "profile"].includes(raw)) return raw;
   throw new Error(`Unsupported settings scope: ${raw}`);
 }
 
@@ -437,8 +439,12 @@ function killProcessTree(child) {
 }
 
 export function runDockerLogs(service, options = {}) {
-  const container = dockerContainerForLogService(service);
-  const args = ["logs", "--tail", String(options.tail || 400)];
+  const normalizedService = validateServiceName(service);
+  const useComposeService = normalizedService === "orchestrator";
+  const container = useComposeService ? "orchestrator" : dockerContainerForLogService(normalizedService);
+  const args = useComposeService
+    ? ["compose", "logs", "--tail", String(options.tail || 400)]
+    : ["logs", "--tail", String(options.tail || 400)];
   if (options.since) args.push("--since", String(options.since));
   if (options.follow) args.push("-f");
   args.push(container);
@@ -447,7 +453,8 @@ export function runDockerLogs(service, options = {}) {
     const spawnImpl = options.spawnImpl || spawn;
     const child = spawnImpl("docker", args, {
       shell: false,
-      env: { ...process.env }
+      env: { ...process.env },
+      cwd: useComposeService ? (process.env.DUNE_DOCKER_DIR || process.cwd()) : undefined
     });
     const stop = () => child.kill("SIGTERM");
     const timeout = setTimeout(stop, options.timeoutMs || 30000);
@@ -474,6 +481,43 @@ export function runDockerLogs(service, options = {}) {
     });
     if (options.signal?.aborted) stop();
     else options.signal?.addEventListener("abort", stop, { once: true });
+  });
+}
+
+// Game servers always write their active session to a DuneSandbox_PIDX*.log
+// file inside the container. That file is more authoritative than `docker
+// logs`: a stopped/started container can retain old stdout while the newly
+// launched game process writes only to Saved/Logs. Keep the lookup script
+// fixed and pass only an allowlisted container plus a numeric tail argument.
+const CURRENT_GAME_LOG_SCRIPT = [
+  'log_dir=/home/dune/server/DuneSandbox/Saved/Logs',
+  'latest="$(find "$log_dir" -maxdepth 1 -type f -name "DuneSandbox_PIDX*.log" ! -name "*-backup-*" -printf "%T@ %p\\n" 2>/dev/null | sort -nr | head -n 1 | cut -d" " -f2-)"',
+  '[ -n "$latest" ] || exit 3',
+  'exec tail -n "$1" "$latest"'
+].join("; ");
+
+export function runDockerCurrentGameLog(service, options = {}) {
+  const container = dockerContainerForLogService(service);
+  const requestedTail = Number.parseInt(String(options.tail || 10000), 10);
+  const tail = Number.isFinite(requestedTail) ? Math.max(1, Math.min(100000, requestedTail)) : 10000;
+  const args = ["exec", container, "sh", "-c", CURRENT_GAME_LOG_SCRIPT, "dune-current-game-log", String(tail)];
+
+  return new Promise((resolve, reject) => {
+    const spawnImpl = options.spawnImpl || spawn;
+    const child = spawnImpl("docker", args, { shell: false, env: { ...process.env } });
+    const stop = () => child.kill("SIGTERM");
+    const timeout = setTimeout(stop, options.timeoutMs || 5000);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout = appendBoundedOutput(stdout, redact(chunk.toString())); });
+    child.stderr.on("data", (chunk) => { stderr = appendBoundedOutput(stderr, redact(chunk.toString())); });
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      clearTimeout(timeout);
+      const result = { code, signal, stdout, stderr, args: ["docker", ...args] };
+      if (code === 0) resolve(result);
+      else reject(Object.assign(new Error(`docker exec could not read the current game log from ${container}`), result));
+    });
   });
 }
 

@@ -16,6 +16,12 @@ warming=0
 rmq_game_connections_cache="__unset__"
 udp_check_retries="${DUNE_STATUS_UDP_CHECK_RETRIES:-3}"
 udp_check_retry_sleep="${DUNE_STATUS_UDP_CHECK_RETRY_SLEEP:-0.25}"
+docker_timeout_seconds="${DUNE_STATUS_DOCKER_TIMEOUT_SECONDS:-12}"
+log_tail_lines="${DUNE_STATUS_LOG_TAIL_LINES:-4000}"
+
+docker_timeout() {
+  timeout --kill-after=2s "${docker_timeout_seconds}s" "$@"
+}
 
 config_value() {
   local file="$1"
@@ -80,7 +86,7 @@ container_logs_have_udp_listener() {
   [ -n "$container" ] || return 1
   is_running "$container" || return 1
 
-  docker logs --tail 4000 "$container" 2>&1 \
+  docker_timeout docker logs --tail "$log_tail_lines" "$container" 2>&1 \
     | grep -Eq "listening for (Clients|Servers) on [0-9.]+:${port}\\b"
 }
 
@@ -194,7 +200,7 @@ map_state() {
     return
   fi
 
-  logs="$(docker logs "$container" 2>&1 || true)"
+  logs="$(docker_timeout docker logs --tail "$log_tail_lines" "$container" 2>&1 || true)"
 
   if grep -Eiq 'fatal error|segmentation fault|sigsegv|assertion failed|unhandled exception|core dumped|panic:' <<< "$logs"; then
     issue=1
@@ -223,13 +229,13 @@ count_rmq_prefix() {
 
 recent_director_logs() {
   if is_running dune-director; then
-    docker logs --tail 5000 dune-director 2>&1 || true
+    docker_timeout docker logs --tail "$log_tail_lines" dune-director 2>&1 || true
   fi
 }
 
 recent_gateway_logs() {
   if is_running dune-server-gateway; then
-    docker logs --tail 5000 dune-server-gateway 2>&1 || true
+    docker_timeout docker logs --tail "$log_tail_lines" dune-server-gateway 2>&1 || true
   fi
 }
 
@@ -361,11 +367,12 @@ for c in \
   dune-server-gateway \
   dune-server-survival-1 \
   dune-server-overmap \
-  dune-coriolis-coordinator \
-  dune-orchestrator
+  dune-coriolis-coordinator
 do
   container_rows="${container_rows}$(printf "%-26s %s" "$c" "$(container_status "$c")")"$'\n'
 done
+orchestrator_container="$(dune_compose_running_service_container "$DUNE_COMPOSE_PROJECT_NAME" orchestrator 2>/dev/null || true)"
+container_rows="${container_rows}$(printf "%-26s %s" "dune-orchestrator" "$(container_status "${orchestrator_container:-dune-orchestrator}")")"$'\n'
 
 postgres_port="$(resolve_postgres_port)"
 rmq_admin_port="$(resolve_rmq_admin_port)"

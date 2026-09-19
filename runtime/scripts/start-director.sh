@@ -46,6 +46,7 @@ LOGIN_PASSWORD_SKEW_SECONDS="$(resolve_login_password_skew_seconds)"
 SERVER_TITLE="$(resolve_server_title)"
 SERVER_REGION="$(resolve_server_region)"
 SERVER_IP="$(resolve_server_ip)"
+HOST_DATACENTER_ID_VALUE="$(resolve_host_datacenter_id)"
 BATTLEGROUP_ID="$(resolve_battlegroup_id)"
 DUNE_DB_PASSWORD="${DUNE_DB_PASSWORD:-dune}"
 FAKE_K8S_SERVICEACCOUNT_DIR="$(fake_k8s_serviceaccount_dir director)"
@@ -60,6 +61,10 @@ repair_generated_file_path runtime/director/config/director_config.ini
 cat > runtime/director/config/director_config.ini <<'EOF'
 [Battlegroup]
 AuthorizationPreset=BattlegroupInternal
+; Refresh each Sietch's browser heartbeat independently of settings changes.
+; The Director default is 28800 seconds; its separate battlegroup heartbeat
+; does not refresh the per-partition timestamp sent by this update path.
+FlsServerHeartbeatUpdateFrequencySeconds=60
 EOF
 
 if [ -s runtime/generated/director-character-transfer.ini ]; then
@@ -132,12 +137,15 @@ NumExtraServers=0
 
 [CB_Overland_S_06]
 NumExtraServers=0
+MaxParties=1
 
 [CB_Overland_S_07]
 NumExtraServers=0
+MaxParties=1
 
 [CB_Overland_S_08]
 NumExtraServers=0
+MaxParties=1
 
 [CB_Story_BanditFortress01]
 NumExtraServers=0
@@ -324,7 +332,7 @@ docker run -d \
   -e "AuthenticationConfiguration__SchemeMap__BackendLogin__BackendLoginConfiguration__LoginPasswordSkewEnvironmentVariable=DUNE_LOGIN_PASSWORD_SKEW_SECONDS" \
   -e "AuthenticationConfiguration__SchemeMap__BackendLogin__BackendLoginConfiguration__LoginPasswordSkew=$LOGIN_PASSWORD_SKEW_SECONDS" \
   -e "fls-apikey=$FLS_APIKEY" \
-  -e "HOST_DATACENTER_ID=${SERVER_PROVIDER:-dune-docker}" \
+  -e "HOST_DATACENTER_ID=$HOST_DATACENTER_ID_VALUE" \
   -e "HOST_DATACENTER_IP_ADDRESS=$SERVER_IP" \
   -e "ASPNETCORE_URLS=http://0.0.0.0:11717" \
   -e "DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE=false" \

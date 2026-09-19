@@ -107,6 +107,38 @@ test("real PostgreSQL: Coriolis cleanup preserves BaseBackup actors after an ide
       "BaseBackup, existing protected states, and owned actors survive while an ordinary ownerless actor is removed");
 
     await pool.query(`
+      alter table dune.actors add column state text;
+      set search_path to dune, public;
+      create or replace function dune.delete_actors_and_respawns_on_server(
+        in_server_info dune.serverinfo,
+        in_vehicle_classes_spawned_on_map text[],
+        in_allow_vehicle_recovery boolean
+      ) returns void language plpgsql as $updated$
+      begin
+        with actors_to_delete as (
+          select a.id
+          from actors a
+          where owner_account_id is null
+            and a.state <> 'Travel'
+            and a.state <> 'VehicleBackup'
+            and a.state <> 'VehicleRecovery'
+            and server_info_match(a, in_server_info)
+        )
+        delete from actors a
+        where a.id = any(select id from actors_to_delete);
+      end
+      $updated$;
+      reset search_path;
+    `);
+    await pool.query(patchSql);
+    const updatedShape = await pool.query(`
+      select pg_get_functiondef(
+        'dune.delete_actors_and_respawns_on_server(dune.serverinfo,text[],boolean)'::regprocedure
+      ) as definition`);
+    assert.equal((updatedShape.rows[0].definition.match(/a[.]state <> 'BaseBackup'/gi) || []).length, 1,
+      "the current Funcom actor-state predicate must be patched without changing its operator or alias");
+
+    await pool.query(`
       set search_path to dune, public;
       create or replace function dune.delete_actors_and_respawns_on_server(
         in_server_info dune.serverinfo,

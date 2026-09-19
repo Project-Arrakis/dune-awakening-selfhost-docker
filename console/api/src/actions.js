@@ -210,17 +210,33 @@ export const ROUTE_ACTIONS = {
   "GET /api/bases":                            "bases:read",
   "GET /api/bases/pending-refills":            "bases:read",
   "GET /api/bases/auto-refill":                "bases:read",
+  "GET /api/bases/auto-refill/settings":       "bases:read",
   "GET /api/bases/pending-water-refills":      "bases:read",
   "GET /api/bases/auto-refill-water":          "bases:read",
   "GET /api/bases/permission-candidates":      "bases:read",
   "GET /api/bases/pending-deletes":            "bases:read",
   "GET /api/bases/pending-child-access":       "bases:read",
 
+  // --- Bases (console-owned settings) ---
+  // POST /api/bases/auto-refill/settings — thresholds and scan intervals for
+  // both scanners. Its own action for the same consent reason as
+  // bases:delete-item below: every other action in the bases:mutate bucket is
+  // scoped to one base, whereas this retunes every enrolled base at once, so a
+  // bases:mutate grant cannot be read as consent to it. Named for the
+  // per-feature settings convention (exchange:write-config, maps:write-config);
+  // owner/admin grant bases:*, so default access is unchanged.
+  //
+  // This entry is also what keeps the route off the "POST /api/bases/" →
+  // bases:mutate prefix rule, where it would resolve silently rather than
+  // failing closed.
+  "POST /api/bases/auto-refill/settings":      "bases:write-config",
+
   // --- Storage (read) ---
   "GET /api/storage":                          "storage:read",
 
   // --- Blueprints ---
   "GET /api/blueprints":                       "blueprints:read",
+  "GET /api/blueprints/community":             "blueprints:read",
   // POST-shaped but read-only in effect: blueprintBulkExportRoute only calls
   // exportBlueprint() per id and zips the results, and GET
   // /api/blueprints/{id}/export already resolves to blueprints:read. It is
@@ -458,6 +474,10 @@ export const REGEX_ACTIONS_BY_METHOD = {
 // the part that would distinguish them. Routes that need that distinction
 // go here instead, tested as a real regex before the prefix fallback.
 export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
+  // Installing a public community Blueprint writes a Solido item and its
+  // Blueprint rows for the selected player. Keep it under the existing
+  // blueprint import permission, never the read-only /api/blueprints prefix.
+  { method: "POST", pattern: /^\/api\/blueprints\/community\/[^/]+\/install$/, action: "blueprints:import" },
   // DELETE /api/bases/{baseId} — the actual, irreversible base delete.
   // Deliberately its own action rather than the shared bases:mutate bucket
   // every other base mutation uses (refills, permission edits, cancelling

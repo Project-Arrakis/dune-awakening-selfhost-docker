@@ -7,6 +7,7 @@ export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 
 cd "$(dirname "$0")/../.."
 source runtime/scripts/host-file-ownership.sh
+source runtime/scripts/farm-readiness.sh
 
 PID_FILE="runtime/generated/sietch-overrides.pid"
 LOOP_TOKEN_FILE="runtime/generated/sietch-overrides.loop-token"
@@ -17,11 +18,13 @@ CONFIG_FILE="runtime/generated/sietch-config.json"
 RMQ_CREDS_FILE="runtime/generated/sietch-rmq-admin-creds"
 TIMESTAMP_LEAD_SECONDS="${DUNE_SIETCH_OVERRIDE_TIMESTAMP_LEAD_SECONDS:-0}"
 RMQ_TIMEOUT_SECONDS="${DUNE_SIETCH_OVERRIDE_RMQ_TIMEOUT_SECONDS:-8}"
-RMQ_CREDS_TTL_SECONDS="${DUNE_SIETCH_OVERRIDE_RMQ_CREDS_TTL_SECONDS:-300}"
+RMQ_BINDING_CLEANUP_TIMEOUT_SECONDS="${DUNE_SIETCH_OVERRIDE_BINDING_CLEANUP_TIMEOUT_SECONDS:-2}"
 FORWARD_POLL_SECONDS="${DUNE_SIETCH_OVERRIDE_FORWARD_POLL_SECONDS:-5}"
 ROUTE_REFRESH_SECONDS="${DUNE_SIETCH_OVERRIDE_ROUTE_REFRESH_SECONDS:-300}"
 SNAPSHOT_REFRESH_SECONDS="${DUNE_SIETCH_OVERRIDE_SNAPSHOT_REFRESH_SECONDS:-10}"
 SPICEFIELD_RECONCILE_SECONDS="${DUNE_SIETCH_SPICEFIELD_RECONCILE_SECONDS:-60}"
+CREDENTIAL_LOG_TAIL_LINES="${DUNE_SIETCH_OVERRIDE_CREDENTIAL_LOG_TAIL_LINES:-20000}"
+DOCKER_LOG_TIMEOUT_SECONDS="${DUNE_SIETCH_OVERRIDE_DOCKER_LOG_TIMEOUT_SECONDS:-12}"
 
 SOURCE_EXCHANGE="completions"
 SOURCE_ROUTING_KEY="server_state.Survival_1"
@@ -144,19 +147,21 @@ ensure_text_router_log() {
 }
 
 load_rmq_admin_creds() {
-  local now mtime creds
-  if [ -f "$RMQ_CREDS_FILE" ]; then
-    now="$(date +%s)"
-    mtime="$(stat -c %Y "$RMQ_CREDS_FILE" 2>/dev/null || echo 0)"
-    if [ $((now - mtime)) -lt "$RMQ_CREDS_TTL_SECONDS" ] && [ "$(wc -l < "$RMQ_CREDS_FILE" | tr -d '[:space:]')" -ge 2 ]; then
+  local creds cache_tmp line_count
+  if [ -r "$RMQ_CREDS_FILE" ]; then
+    line_count="$(wc -l < "$RMQ_CREDS_FILE" 2>/dev/null || printf '0')"
+    line_count="$(printf '%s' "$line_count" | tr -cd '[:digit:]')"
+    line_count="${line_count:-0}"
+    if [ "$line_count" -ge 2 ]; then
       cat "$RMQ_CREDS_FILE"
       return 0
     fi
   fi
 
   ensure_text_router_log
-  creds="$(python3 - <<'PY'
+  creds="$(CREDENTIAL_LOG_TAIL_LINES="$CREDENTIAL_LOG_TAIL_LINES" DOCKER_LOG_TIMEOUT_SECONDS="$DOCKER_LOG_TIMEOUT_SECONDS" python3 - <<'PY'
 from pathlib import Path
+import os
 import re
 import subprocess
 import sys
@@ -167,6 +172,8 @@ patterns = [
     re.compile(r'(bgd\.[^/\s]+\.admin)/([A-Za-z0-9+/=]+) => allow administrator'),
 ]
 text = ""
+log_tail_lines = max(1, int(os.environ.get("CREDENTIAL_LOG_TAIL_LINES", "20000")))
+docker_log_timeout = max(1, int(os.environ.get("DOCKER_LOG_TIMEOUT_SECONDS", "12")))
 if log_path.exists():
     text = log_path.read_text(errors="ignore")
 matches = []
@@ -180,9 +187,10 @@ if not matches:
         for container in ("dune-director", "dune-text-router"):
             try:
                 logs.append(subprocess.check_output(
-                    ["docker", "logs", container],
+                    ["docker", "logs", "--tail", str(log_tail_lines), container],
                     text=True,
                     stderr=subprocess.STDOUT,
+                    timeout=docker_log_timeout,
                 ))
             except Exception:
                 pass
@@ -202,15 +210,21 @@ print(password)
 PY
 )"
   [ -n "$creds" ] || return 1
-  printf '%s\n' "$creds" >"$RMQ_CREDS_FILE"
-  chmod 600 "$RMQ_CREDS_FILE" 2>/dev/null || true
-  dune_set_host_path_owner "$RMQ_CREDS_FILE"
+  cache_tmp="${RMQ_CREDS_FILE}.tmp.$$"
+  if { printf '%s\n' "$creds" >"$cache_tmp" \
+      && chmod 600 "$cache_tmp" \
+      && dune_set_host_path_owner "$cache_tmp" \
+      && mv -f "$cache_tmp" "$RMQ_CREDS_FILE"; } 2>/dev/null; then
+    :
+  else
+    rm -f "$cache_tmp" 2>/dev/null || true
+  fi
   printf '%s\n' "$creds"
 }
 
 rmq_admin() {
-  local rmq_user rmq_password attempt rc
-  for attempt in 1 2; do
+  local rmq_user rmq_password rc
+  for _ in 1 2; do
     mapfile -t rmq_creds < <(load_rmq_admin_creds)
     [ "${#rmq_creds[@]}" -ge 2 ] || return 1
     rmq_user="${rmq_creds[0]}"
@@ -226,7 +240,7 @@ rmq_admin() {
 
 rmq_delete_binding_exact() {
   local source="$1" destination="$2" routing_key="$3"
-  timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqctl eval "
+  timeout --kill-after=1s "${RMQ_BINDING_CLEANUP_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqctl eval "
 Binding = {binding,
   {resource, <<\"/\">>, exchange, <<\"${source}\">>},
   <<\"${routing_key}\">>,
@@ -238,19 +252,25 @@ io:format(\"~p~n\", [rabbit_db_binding:delete(Binding, DeleteCallback)]).
 }
 
 ensure_route() {
-  rmq_admin declare exchange name="$FILTER_EXCHANGE" type=direct durable=true >/dev/null
-  rmq_admin declare queue name="$SOURCE_FILTER_QUEUE" durable=true >/dev/null
-  rmq_admin purge queue name="$SOURCE_FILTER_QUEUE" >/dev/null || true
+  local purge_existing="${1:-false}"
+
+  rmq_admin declare exchange name="$FILTER_EXCHANGE" type=direct durable=true >/dev/null || return 1
+  rmq_admin declare queue name="$SOURCE_FILTER_QUEUE" durable=true >/dev/null || return 1
+  if [ "$purge_existing" = "true" ]; then
+    rmq_admin purge queue name="$SOURCE_FILTER_QUEUE" >/dev/null || return 1
+  fi
   rmq_admin declare binding \
     source="$SOURCE_EXCHANGE" \
     destination="$SOURCE_FILTER_QUEUE" \
     destination_type=queue \
-    routing_key="$SOURCE_ROUTING_KEY" >/dev/null
+    routing_key="$SOURCE_ROUTING_KEY" >/dev/null || return 1
   rmq_admin declare binding \
     source="$FILTER_EXCHANGE" \
     destination="$SINK_QUEUE" \
     destination_type=queue \
-    routing_key="$SOURCE_ROUTING_KEY" >/dev/null
+    routing_key="$SOURCE_ROUTING_KEY" >/dev/null || return 1
+  # Cleanup is bounded separately so a slow rabbitmqctl cannot hold up state
+  # forwarding. The next refresh will retry if the direct binding remains.
   rmq_delete_binding_exact "$SOURCE_EXCHANGE" "$SINK_QUEUE" "$SOURCE_ROUTING_KEY" >/dev/null 2>&1 || true
 }
 
@@ -328,10 +348,8 @@ publish_snapshot_once() {
     return 1
   }
   heal_survival_alive_state
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-server-survival-1; then
-    if docker logs dune-server-survival-1 2>&1 | grep -Eq 'Server farm is READY .*partition 1'; then
-      survival_log_ready="true"
-    fi
+  if survival_farm_is_ready; then
+    survival_log_ready="true"
   fi
   rows="$(TIMESTAMP_LEAD_SECONDS="$TIMESTAMP_LEAD_SECONDS" SURVIVAL_LOG_READY="$survival_log_ready" python3 - <<'PY'
 import json
@@ -479,14 +497,14 @@ PY
 
 forward_batch_once() {
   local messages
-  messages="$(rmq_admin --format=raw_json get queue="$SOURCE_FILTER_QUEUE" count=20 ackmode=ack_requeue_false)"
-  [ "$messages" != "[]" ] || return 1
+  if ! messages="$(rmq_admin --format=raw_json get queue="$SOURCE_FILTER_QUEUE" count=20 ackmode=ack_requeue_false)"; then
+    return 1
+  fi
+  [ -n "$messages" ] && [ "$messages" != "[]" ] || return 1
 
   local survival_log_ready="false"
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-server-survival-1; then
-    if docker logs dune-server-survival-1 2>&1 | grep -Eq 'Server farm is READY .*partition 1'; then
-      survival_log_ready="true"
-    fi
+  if survival_farm_is_ready; then
+    survival_log_ready="true"
   fi
 
   FILTER_MESSAGES="$messages" FILTER_CONFIG_PATH="$CONFIG_FILE" SURVIVAL_LOG_READY="$survival_log_ready" python3 - <<'PY'
@@ -606,7 +624,8 @@ start_loop() {
   local route_refresh_at=0
   local snapshot_refresh_at=0
   local spicefield_reconcile_at=0
-  ensure_route
+  ensure_route true
+  route_refresh_at=$(( $(date +%s) + ROUTE_REFRESH_SECONDS ))
   publish_snapshot_once >>"$LOG_FILE" 2>&1 || true
   while true; do
     if ! loop_token_is_current "$loop_token"; then
@@ -614,7 +633,7 @@ start_loop() {
       return 0
     fi
     if [ "$(date +%s)" -ge "$route_refresh_at" ]; then
-      ensure_route >>"$LOG_FILE" 2>&1 || true
+      ensure_route false >>"$LOG_FILE" 2>&1 || true
       route_refresh_at=$(( $(date +%s) + ROUTE_REFRESH_SECONDS ))
     fi
     if [ "$(date +%s)" -ge "$snapshot_refresh_at" ]; then
@@ -637,9 +656,13 @@ start_loop() {
   done
 }
 
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  return 0
+fi
+
 case "${1:-start}" in
   once)
-    ensure_route
+    ensure_route true
     rows="$(forward_batch_once || true)"
     if [ -n "${rows:-}" ]; then
       while IFS= read -r payload; do

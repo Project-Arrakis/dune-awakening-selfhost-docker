@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { appendBoundedOutput, buildDuneArgs, dockerContainerForLogService, isReadOnlySql, parseVehicleList, runDockerLogs, validateServiceName } from "../src/runner.js";
+import { appendBoundedOutput, buildDuneArgs, dockerContainerForLogService, isReadOnlySql, parseVehicleList, runDockerCurrentGameLog, runDockerLogs, validateServiceName } from "../src/runner.js";
 import { redact } from "../src/redact.js";
 import { taskOperations } from "../src/tasks.js";
 
@@ -49,6 +49,60 @@ test("live Docker logs do not buffer output and stop when the client aborts", as
   assert.deepEqual(lines, ["large live log line\n"]);
   assert.equal(result.stdout, "");
   assert.equal(result.stderr, "");
+});
+
+test("orchestrator logs use the Compose service instead of a fixed container name", async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => {};
+  let command = null;
+  let args = null;
+  let spawnOptions = null;
+  const resultPromise = runDockerLogs("orchestrator", {
+    tail: 25,
+    timeoutMs: 1000,
+    spawnImpl: (nextCommand, nextArgs, nextOptions) => {
+      command = nextCommand;
+      args = nextArgs;
+      spawnOptions = nextOptions;
+      return child;
+    }
+  });
+  child.emit("close", 0, null);
+  await resultPromise;
+
+  assert.equal(command, "docker");
+  assert.deepEqual(args, ["compose", "logs", "--tail", "25", "orchestrator"]);
+  assert.equal(spawnOptions.shell, false);
+  assert.ok(!args.includes("dune-orchestrator"));
+});
+
+test("current game logs are read from the allowlisted container without interpolating service input", async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => {};
+  let command = null;
+  let args = null;
+  const resultPromise = runDockerCurrentGameLog("dune-server-deepdesert-1-59", {
+    tail: 1234,
+    timeoutMs: 1000,
+    spawnImpl: (nextCommand, nextArgs) => {
+      command = nextCommand;
+      args = nextArgs;
+      return child;
+    }
+  });
+  child.stdout.emit("data", Buffer.from("Current Coriolis World Seed: 4\n"));
+  child.emit("close", 0, null);
+  const result = await resultPromise;
+
+  assert.equal(command, "docker");
+  assert.deepEqual(args.slice(0, 3), ["exec", "dune-server-deepdesert-1-59", "sh"]);
+  assert.equal(args.at(-1), "1234");
+  assert.match(result.stdout, /World Seed: 4/);
+  assert.throws(() => runDockerCurrentGameLog("dune-server-deepdesert-1-59; touch /tmp/nope"), /Unsupported service/);
 });
 
 test("allows dynamic map containers as log targets", () => {
@@ -153,6 +207,9 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("userSettingsGlobalValues"), ["usersettings", "global-values"]);
   assert.deepEqual(buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), ["usersettings", "map-values", "Survival_1"]);
   assert.deepEqual(buildDuneArgs("userSettingsPartitionValues", { map: "Survival_1", partitionId: 1 }), ["usersettings", "partition-values", "Survival_1", "1"]);
+  assert.deepEqual(buildDuneArgs("userSettingsServerCustomValues", { scope: "serverCustomGlobal", map: "Survival_1" }), ["usersettings", "server-custom-values", "global", "Survival_1", ""]);
+  assert.deepEqual(buildDuneArgs("userSettingsServerCustomValues", { scope: "serverCustomPartition", map: "Survival_1", partitionId: 1 }), ["usersettings", "server-custom-values", "partition", "Survival_1", "1"]);
+  assert.deepEqual(buildDuneArgs("userSettingsSave", { scope: "serverCustomMap", map: "Overmap", values: { gathering_amount: "2.0" } }).slice(0, 5), ["usersettings", "bulk-save", "serverCustomMap", "Overmap", ""]);
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "global" }), ["usersettings", "reset-global-game"]);
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "mapEngine", map: "Survival_1" }), ["usersettings", "reset-map-engine", "Survival_1"]);
   assert.deepEqual(buildDuneArgs("userSettingsResetAndRestart", { scope: "partitionEngine", map: "Survival_1", partitionId: 3 }), ["usersettings", "reset-partition-engine", "Survival_1", "3"]);
@@ -328,4 +385,38 @@ test("redacts token-like sensitive values", () => {
   assert.doesNotMatch(output, /hunter2/);
   assert.doesNotMatch(output, /eyJaaaaaaaa/);
   assert.doesNotMatch(output, /runtime\/secrets\/funcom-token\.txt/);
+});
+
+// Credentials reach operator-facing text from more than postgres. These are
+// generic rules rather than a list of names, so a variable added later is
+// covered without anyone remembering to add it here.
+test("redacts credentials in any URI scheme, not only postgres", () => {
+  const longScheme = `a${"b".repeat(200)}+secure`;
+  for (const uri of ["amqp://admin:RmqS3cret@rabbitmq:5672", "redis://user:hunter2@cache:6379", "https://bob:pw123@example.com/x", `${longScheme}://user:longSchemeSecret@example.com/x`]) {
+    const output = redact(uri);
+    assert.doesNotMatch(output, /RmqS3cret|hunter2|pw123|longSchemeSecret/);
+    // The host has to survive -- redacting it would make the error useless.
+    assert.match(output, /@(rabbitmq|cache|example\.com)/);
+  }
+});
+
+test("redaction remains fast on long uncontrolled input", () => {
+  const input = `${"-".repeat(500_000)}! not-a-uri DUNE_COMMAND_AUTH_TOKEN=${"x".repeat(500_000)}`;
+  const started = Date.now();
+  const output = redact(input);
+  assert.ok(Date.now() - started < 2_000);
+  assert.doesNotMatch(output, /x{100}/);
+});
+
+test("redacts any *_TOKEN / *_SECRET / *_KEY assignment by shape", () => {
+  const output = redact("DUNE_COMMAND_AUTH_TOKEN=abc123deadbeef rejected, X_API_KEY=zzz");
+  assert.doesNotMatch(output, /abc123deadbeef|zzz/);
+  assert.match(output, /DUNE_COMMAND_AUTH_TOKEN=<redacted>/);
+  // The surrounding message still has to read as a diagnosis.
+  assert.match(output, /rejected/);
+});
+
+test("leaves an error carrying no credential untouched, and is idempotent", () => {
+  assert.equal(redact("connect ECONNREFUSED 127.0.0.1:15432"), "connect ECONNREFUSED 127.0.0.1:15432");
+  assert.equal(redact(redact("amqp://admin:s3cret@rabbitmq:5672")), redact("amqp://admin:s3cret@rabbitmq:5672"));
 });

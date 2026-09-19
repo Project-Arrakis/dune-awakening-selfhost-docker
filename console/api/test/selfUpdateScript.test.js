@@ -12,6 +12,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +20,52 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+
+test("local-state backup snapshots active audit files and keeps archive failures fatal", () => {
+  const root = mkdtempSync(join(tmpdir(), "arrakis-state-snapshot-"));
+  try {
+    const source = readFileSync(join(repoRoot, "runtime/scripts/self-update.sh"), "utf8");
+    const fn = source.slice(source.indexOf("backup_local_state() {"), source.indexOf("\nrestore_local_state_file_if_needed()"));
+    const generated = join(root, "runtime/generated"), bin = join(root, "bin"), backup = join(root, "backup");
+    mkdirSync(generated, { recursive: true }); mkdirSync(bin); mkdirSync(backup);
+    const audit = join(generated, "care-package-grants.jsonl");
+    writeFileSync(audit, '{"id":1}\n{"partial":', { mode: 0o600 });
+    writeFileSync(join(generated, "care-package-grant-receipts.json"), '[{"kitId":"starter"}]', { mode: 0o600 });
+    writeFileSync(join(generated, "care-package-first-online-claims.json"), '{"version":1,"players":{},"aliases":{}}', { mode: 0o600 });
+    writeFileSync(join(root, ".env"), "TEST_SETTING=preserved\n", { mode: 0o600 });
+    const realTar = spawnSync("which", ["tar"], { encoding: "utf8" }).stdout.trim();
+    // Start an active writer only once tar is invoked: the snapshot must be isolated.
+    writeFileSync(join(bin, "tar"), `#!/usr/bin/env bash
+set -eu
+if [ "\${FAIL_ARCHIVE:-0}" = 1 ]; then exit 2; fi
+(while true; do printf '%s\\n' '{"id":2}' >> "$AUDIT"; sleep .001; done) &
+writer=$!
+trap 'kill "$writer" 2>/dev/null || true; wait "$writer" 2>/dev/null || true' EXIT
+sleep .05
+"$REAL_TAR" "$@"
+`, { mode: 0o755 });
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, AUDIT: audit, REAL_TAR: realTar };
+    const run = (extra={}) => spawnSync("bash", ["-c", `set -euo pipefail\n${fn}\nbackup_local_state "$1"`, "test", backup], { cwd: root, env: { ...env, ...extra }, encoding: "utf8" });
+    const result = run(); assert.equal(result.status, 0, result.stderr);
+    const archive = join(backup, "local-state.tgz");
+    const extract = path => spawnSync(realTar, ["-xOzf", archive, path], { encoding: "utf8" });
+    assert.equal(extract("runtime/generated/care-package-grants.jsonl").stdout, '{"id":1}\n');
+    assert.equal(extract(".env").stdout, "TEST_SETTING=preserved\n");
+    assert.equal(extract("runtime/generated/care-package-grant-receipts.json").stdout, '[{"kitId":"starter"}]');
+    assert.equal(extract("runtime/generated/care-package-first-online-claims.json").stdout, '{"version":1,"players":{},"aliases":{}}');
+    assert.equal(statSync(archive).mode & 0o777, 0o600);
+    assert.ok(readFileSync(audit,"utf8").includes('{"id":2}'));
+    assert.equal(readdirSync(backup).some(name=>name.startsWith(".local-state")), false);
+    const original = readFileSync(archive);
+    assert.notEqual(run({ FAIL_ARCHIVE: "1" }).status, 0);
+    assert.deepEqual(readFileSync(archive), original, "failed archive cannot replace the last good backup");
+    assert.equal(readdirSync(backup).some(name=>name.startsWith(".local-state")), false);
+    mkdirSync(join(generated, "usersettings.json"));
+    assert.notEqual(run().status, 0, "unreadable state must fail the backup");
+    assert.deepEqual(readFileSync(archive), original);
+    assert.equal(readdirSync(backup).some(name=>name.startsWith(".local-state")), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("self-update check prefers the official upstream release repo in fork checkouts", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-self-update-"));
@@ -141,6 +188,7 @@ test("archive self-update replaces project files and preserves local state", asy
     join(repoRoot, "runtime", "scripts", "compose-project.sh"),
     join(stagingDir, "candidate", "runtime", "scripts", "compose-project.sh")
   );
+  copyFileSync(join(repoRoot, "VERSION"), join(stagingDir, "candidate", "VERSION"));
   const repackResult = spawnSync("tar", ["-czf", archive, "-C", stagingDir, "candidate"]);
   assert.equal(repackResult.status, 0, repackResult.stderr?.toString());
   cpSync(join(stagingDir, "candidate"), installDir, { recursive: true });
@@ -284,6 +332,69 @@ exit 0
   } finally {
     if (existsSync(blockedProjectDir)) chmodSync(blockedProjectDir, 0o755);
     if (existsSync(pythonCacheDir)) chmodSync(pythonCacheDir, 0o755);
+    server.closeAllConnections();
+    await new Promise((resolveClose) => server.close(resolveClose));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("archive self-update times out a stalled download before changing installed files", async () => {
+  const root = mkdtempSync(join(tmpdir(), "arrakis-self-update-download-timeout-"));
+  const fakeBin = join(root, "bin");
+  const runId = "123e4567-e89b-42d3-a456-426614174004";
+  mkdirSync(join(root, "runtime", "scripts"), { recursive: true });
+  mkdirSync(fakeBin);
+  copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(root, "runtime", "scripts", "self-update.sh"));
+  copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(root, "runtime", "scripts", "compose-project.sh"));
+  chmodSync(join(root, "runtime", "scripts", "self-update.sh"), 0o700);
+  writeFileSync(join(root, "VERSION"), "v1.4.12\n");
+  writeFileSync(join(fakeBin, "docker"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o700 });
+
+  const server = createServer((req, res) => {
+    if (req.url === "/repos/Red-Blink/dune-awakening-selfhost-docker/releases/tags/v1.4.16") {
+      const address = server.address();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ tag_name: "v1.4.16", tarball_url: `http://127.0.0.1:${address.port}/stalled.tar.gz` }));
+      return;
+    }
+    if (req.url === "/stalled.tar.gz") {
+      res.writeHead(200, { "content-type": "application/gzip" });
+      res.write("partial archive data");
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+
+  try {
+    const address = server.address();
+    const result = await runProcess("bash", ["runtime/scripts/self-update.sh", "install", "v1.4.16"], {
+      cwd: root,
+      timeout: 10000,
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        DUNE_SELF_UPDATE_API_BASE: `http://127.0.0.1:${address.port}`,
+        DUNE_SELF_UPDATE_REPO: "Red-Blink/dune-awakening-selfhost-docker",
+        DUNE_SELF_UPDATE_RUN_ID: runId,
+        DUNE_SELF_UPDATE_DOWNLOAD_TIMEOUT_SECONDS: "2",
+        DUNE_SELF_UPDATE_PROGRESS_INTERVAL_SECONDS: "1",
+        NO_PROXY: "127.0.0.1,localhost",
+        no_proxy: "127.0.0.1,localhost"
+      }
+    });
+
+    assert.equal(result.status, 124, result.stderr || result.stdout);
+    assert.match(result.stderr, /Downloading console release v1\.4\.16 timed out after 2 seconds/);
+    assert.equal(readFileSync(join(root, "VERSION"), "utf8"), "v1.4.12\n");
+    assert.deepEqual(readdirSync(join(root, "runtime", "backups", "self-update")), []);
+    const status = readFileSync(join(root, "runtime", "generated", "self-update-status", `${runId}.env`), "utf8");
+    assert.match(status, /^state=failed$/m);
+    assert.match(status, /^stage=downloading$/m);
+    assert.match(status, /^percent=20$/m);
+    assert.match(status, /^message=Downloading console release v1\.4\.16 timed out after 2 seconds\. Check the server's connection to GitHub, then retry\.$/m);
+  } finally {
     server.closeAllConnections();
     await new Promise((resolveClose) => server.close(resolveClose));
     rmSync(root, { recursive: true, force: true });

@@ -97,6 +97,62 @@ Claim Editor not covered here):
   live map is queued and written at that map's next restart. See
   [`docs/console/base-child-permissions.md`](console/base-child-permissions.md).
 
+**Auto-refill** is opt-in per base, enabled from the Power tab (generators)
+and the Water tab (water storage). An enrolled base is scanned on a fixed
+interval and queued for a refill when its lowest device falls below a
+threshold; the refill itself goes through the same queue as a manual one, so
+it applies at the next safe window rather than immediately. The two
+subsystems are independent — separate enrollment lists, separate schedules —
+so enrolling a base in one does not enroll it in the other.
+
+Both are tuned from one place: the **gear icon** to the left of Refresh at the
+top of the Bases panel. It opens a settings overlay with a threshold and a scan
+interval for each subsystem. Changes apply without restarting the console, and
+are stored console-side in `runtime/generated/auto-refill-settings.json` — no
+game data is touched.
+
+| Setting | Default | Range |
+|---|---:|---|
+| Generators — queue a refill below | 50 | 1-99 % |
+| Generators — check every | 24 | 1-168 h |
+| Water — queue a refill below | 50 | 1-99 % |
+| Water — check every | 24 | 1-168 h |
+
+Each field has a **Reset**, which clears the console override and falls back to
+the environment variable (`ADMIN_AUTO_REFILL_THRESHOLD_PERCENT`,
+`ADMIN_AUTO_REFILL_INTERVAL_HOURS`, `ADMIN_AUTO_REFILL_WATER_THRESHOLD_PERCENT`,
+`ADMIN_AUTO_REFILL_WATER_INTERVAL_HOURS`) if one is set, or the default above.
+The precedence is settings page, then environment variable, then default. An
+unparseable environment variable falls back to the default rather than failing
+startup; an out-of-range one is clamped to the nearest bound. A blank one reads
+as unset — though on the standard Docker deployment `docker-compose.web.yml`
+substitutes its own default for a variable that is blank or missing, so a blank
+never reaches the console there.
+
+**Upgrade note.** Until this release the four `ADMIN_AUTO_REFILL_*` variables
+never reached the console in the standard Docker deployment: the console
+service passes an explicit list of variables and these were not on it, and
+nothing loads `.env` directly. They worked only when the console was run
+outside Docker. They are now passed through, so a value you set in `.env` and
+never saw take effect **will** apply after this upgrade. If you set one while
+troubleshooting and forgot about it, check it before deploying — or set the
+value you want from the gear icon, which overrides the variable either way.
+
+Two timing details worth knowing. **A shortened interval pulls the next scan
+in**; a lengthened one applies only after the currently scheduled scan runs.
+And **a changed threshold is used by the next scan**, not immediately — at a
+168-hour interval that can be a week away.
+
+Saving these settings is a separate permission (`bases:write-config`) from the
+per-base on/off toggle (`bases:mutate`), so an operator can be allowed to enroll
+bases without being allowed to retune the policy for all of them. The shipped
+Owner and Admin roles have both.
+
+A base that stays low after three consecutive queued refills is marked stalled
+and stops being retried (audited as `bases.auto-refill-stalled` /
+`bases.auto-refill-water-stalled`); a healthy scan clears that. A base that no
+longer exists is un-enrolled automatically.
+
 **Deleting a base** is a separate, row-level action (trash icon) — it is
 permanent and irreversible. The console shows a danger-styled confirmation
 dialog you must click through, and automatically takes a full database
@@ -149,7 +205,11 @@ the Web UI's Updates panel — do not confuse them:
   `dune update auto enable [interval-minutes] ...` / `disable` /
   `status`, backed by a systemd timer that runs 5 minutes after boot and
   then repeats on a rolling interval (default: every 60 minutes,
-  configurable via the first argument to `auto enable`).
+  configurable via the first argument to `auto enable`). A successful Web
+  Console check is cached for 30 minutes and survives Console restarts;
+  **Refresh Game Check** always requests a live result. Read-only checks use
+  two short, bounded Steam attempts by default, while actual installations
+  retain the longer content-host retry policy needed for downloads.
 - **`dune self-update`** (alias `dune stack-update`) — updates **this
   repository/stack itself** (fetching a new GitHub release of
   `dune-awakening-selfhost-docker`). Subcommands: `check`, `list`,
@@ -199,6 +259,11 @@ service. From the **Console Settings page** you can:
 - Claim your server's listing to verify ownership.
 - Manage your public profile and Discord invite link.
 - Enable or disable the public listing at any time.
+
+Direct personalized latency uses UDP `32000-32015`. Permit or forward that
+range through both the host firewall and any internet-to-DMZ edge firewall or
+NAT device. This is optional: installations that leave it closed remain listed
+and use the Dune Docker relay for latency measurements.
 
 Local and LAN-only servers are never listed. By default, installations
 contribute only an anonymous server count (never server names, addresses,

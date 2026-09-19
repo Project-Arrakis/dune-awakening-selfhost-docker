@@ -34,6 +34,7 @@ RMQ_HTTP_TOKEN_AUTH_SECRET="$(tr -d '\r\n' < "$RMQ_SECRET_FILE")"
 SERVER_TITLE="$(resolve_server_title)"
 SERVER_REGION="$(resolve_server_region)"
 SERVER_IP="$(resolve_server_ip)"
+HOST_DATACENTER_ID_VALUE="$(resolve_host_datacenter_id)"
 BATTLEGROUP_ID="$(resolve_battlegroup_id)"
 DUNE_DB_PASSWORD="${DUNE_DB_PASSWORD:-dune}"
 FAKE_K8S_SERVICEACCOUNT_DIR="$(fake_k8s_serviceaccount_dir text-router)"
@@ -77,7 +78,7 @@ docker run -d \
   -e "FuncomLiveServices__RmqTlsEnabled=true" \
   -e "RMQ_HTTP_TOKEN_AUTH_SECRET=$RMQ_HTTP_TOKEN_AUTH_SECRET" \
   -e "BATTLEGROUP_LANGUAGE=en-US" \
-  -e "HOST_DATACENTER_ID=${SERVER_PROVIDER:-dune-docker}" \
+  -e "HOST_DATACENTER_ID=$HOST_DATACENTER_ID_VALUE" \
   -e "HOST_DATACENTER_IP_ADDRESS=$SERVER_IP" \
   -e "ASPNETCORE_URLS=http://0.0.0.0:5059" \
   -e "DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE=false" \

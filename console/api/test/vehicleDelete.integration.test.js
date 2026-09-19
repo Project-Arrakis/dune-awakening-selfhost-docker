@@ -28,7 +28,8 @@ import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgInteg
 //   inventories.vehicle_module_id -> vehicle_modules.id      CASCADE (line 75828)
 //   backup_vehicles.vehicle_id -> vehicles.id                CASCADE (line 75459)
 //   recovered_vehicles.vehicle_id -> vehicles.id             CASCADE (line 76348)
-//   overmap_players.vehicle_id -> actors.id                  SET NULL
+// Patch 1.5 stores lifecycle state inline on actors and removes the obsolete
+// vehicle_id from overmap_players. The fixture follows that current schema.
 // markers/player_markers are deliberately NOT FK-cascaded from actors,
 // matching production -- only permission_actor_destroy clears them.
 const VEHICLE_ID = 9201;
@@ -45,7 +46,13 @@ const SCHEMA = `
     'Default', 'Travel', 'VehicleBackup', 'AbortedAuthorityTransfer', 'VehicleRecovery', 'BaseBackup'
   );
 
-  create table dune.actors (id bigint primary key, map text, partition_id bigint, owner_account_id bigint);
+  create table dune.actors (
+    id bigint primary key,
+    map text,
+    partition_id bigint,
+    owner_account_id bigint,
+    state dune.actorstate not null default 'Default'
+  );
   create table dune.map_names (map_name_id smallint primary key, map_name text not null);
   create table dune.world_partition (partition_id bigint primary key, map text, dimension_index integer default 0, server_id text);
 
@@ -68,10 +75,8 @@ const SCHEMA = `
   create table dune.backup_vehicles (vehicle_id bigint not null references dune.vehicles(id) on delete cascade);
   create table dune.recovered_vehicles (vehicle_id bigint not null references dune.vehicles(id) on delete cascade);
   create table dune.overmap_players (
-    player_id bigint primary key,
-    vehicle_id bigint references dune.actors(id) on delete set null
+    player_id bigint primary key
   );
-  create table dune.actor_state (actor_id bigint primary key, state dune.actorstate not null);
 
   create table dune.permission_actor (
     actor_id bigint primary key references dune.actors(id) on delete cascade,
@@ -118,7 +123,7 @@ function seedVehicle(vehicleId, moduleIds, playerId, { claimed = true, withItems
     ${moduleRows}
     insert into dune.backup_vehicles (vehicle_id) values (${vehicleId});
     insert into dune.recovered_vehicles (vehicle_id) values (${vehicleId});
-    insert into dune.overmap_players (player_id, vehicle_id) values (${vehicleId} * 100, ${vehicleId});
+    insert into dune.overmap_players (player_id) values (${vehicleId} * 100);
     ${claimed ? `
       insert into dune.permission_actor (actor_id, actor_name) values (${vehicleId}, 'Test Vehicle ${vehicleId}');
       insert into dune.markers (marker_hash_id) values (${vehicleId});
@@ -183,10 +188,10 @@ test("real PostgreSQL: deleteVehicleCompletely cascades away the whole vehicle a
     const playerMarkers = await pool.query("select marker_hash_id from dune.player_markers");
     assert.deepEqual(playerMarkers.rows.map((row) => Number(row.marker_hash_id)), [OTHER_VEHICLE_ID]);
 
-    // overmap_players.vehicle_id -> actors.id is SET NULL, not CASCADE: the
-    // row itself survives, only the dangling reference clears.
-    const overmap = await pool.query("select vehicle_id from dune.overmap_players where player_id = $1", [VEHICLE_ID * 100]);
-    assert.equal(overmap.rows[0].vehicle_id, null);
+    // Patch 1.5 overmap persistence no longer stores a vehicle id. Deleting a
+    // vehicle must not disturb the player's independent overmap state row.
+    const overmap = await pool.query("select player_id from dune.overmap_players where player_id = $1", [VEHICLE_ID * 100]);
+    assert.equal(overmap.rowCount, 1);
 
     assert.equal(await actorCount(pool, [OTHER_VEHICLE_ID]), 1);
   });
@@ -225,7 +230,7 @@ test("real PostgreSQL: deleteVehicleCompletely deletes an unclaimed vehicle clea
 for (const state of ["Travel", "VehicleBackup", "VehicleRecovery"]) {
   test(`real PostgreSQL: deleteVehicleCompletely refuses a vehicle in ${state} state`, async (t) => {
     await withDatabase(t, async (pool) => {
-      await pool.query("insert into dune.actor_state (actor_id, state) values ($1, $2)", [VEHICLE_ID, state]);
+      await pool.query("update dune.actors set state = $2 where id = $1", [VEHICLE_ID, state]);
       const db = pgTransactionalDb(pool);
       await assert.rejects(() => deleteVehicleCompletely(db, VEHICLE_ID), new RegExp(state));
       assert.equal(await actorCount(pool, [VEHICLE_ID]), 1, "a blocked-state vehicle must not be touched");
@@ -236,7 +241,7 @@ for (const state of ["Travel", "VehicleBackup", "VehicleRecovery"]) {
 for (const state of ["Travel", "VehicleBackup", "VehicleRecovery"]) {
   test(`real PostgreSQL: an explicit map-down delete allows a vehicle in ${state} state`, async (t) => {
     await withDatabase(t, async (pool) => {
-      await pool.query("insert into dune.actor_state (actor_id, state) values ($1, $2)", [VEHICLE_ID, state]);
+      await pool.query("update dune.actors set state = $2 where id = $1", [VEHICLE_ID, state]);
       const db = pgTransactionalDb(pool);
       const result = await deleteVehicleCompletely(db, VEHICLE_ID, { allowBlockedState: true });
       assert.equal(result.ok, true);
@@ -248,7 +253,7 @@ for (const state of ["Travel", "VehicleBackup", "VehicleRecovery"]) {
 for (const state of ["Default", "AbortedAuthorityTransfer", "BaseBackup"]) {
   test(`real PostgreSQL: deleteVehicleCompletely allows a vehicle in ${state} state`, async (t) => {
     await withDatabase(t, async (pool) => {
-      await pool.query("insert into dune.actor_state (actor_id, state) values ($1, $2)", [VEHICLE_ID, state]);
+      await pool.query("update dune.actors set state = $2 where id = $1", [VEHICLE_ID, state]);
       const db = pgTransactionalDb(pool);
       const result = await deleteVehicleCompletely(db, VEHICLE_ID);
       assert.equal(result.ok, true);
@@ -256,14 +261,13 @@ for (const state of ["Default", "AbortedAuthorityTransfer", "BaseBackup"]) {
   });
 }
 
-test("real PostgreSQL: an older schema without dune.actor_state at all deletes normally", async (t) => {
+test("real PostgreSQL: a schema without lifecycle state deletes normally", async (t) => {
   await withIsolatedDatabase(t, {
-    namePrefix: "dune_vehicle_delete_no_actor_state",
+    namePrefix: "dune_vehicle_delete_no_lifecycle_state",
     unavailableLabel: "the vehicle deletion integration test"
   }, async (pool) => {
     const schemaWithoutActorState = SCHEMA
-      .replace(/create type dune\.actorstate[\s\S]*?\);/, "")
-      .replace(/create table dune\.actor_state[\s\S]*?\);/, "");
+      .replace(/,\n    state dune\.actorstate not null default 'Default'/, "");
     await pool.query(schemaWithoutActorState);
     await pool.query(SEED);
     const db = pgTransactionalDb(pool);
@@ -358,16 +362,21 @@ test("real PostgreSQL: background flush retains a Travel-state vehicle without b
     await withTempRepoRoot(async (repoRoot) => {
       _resetRefillPartitionDwellForTests();
       await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', null)");
-      await pool.query("insert into dune.actor_state (actor_id, state) values ($1, 'Travel')", [VEHICLE_ID]);
+      await pool.query("update dune.actors set state = 'Travel' where id = $1", [VEHICLE_ID]);
       queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
 
       const db = pgTransactionalDb(pool);
+      let backupCalls = 0;
       for (let round = 0; round < 4; round += 1) {
-        const result = await flushVehicleDeletes(db, repoRoot, { now: () => 1_000_000 + round * 120_000 });
+        const result = await flushVehicleDeletes(db, repoRoot, {
+          now: () => 1_000_000 + round * 120_000,
+          onBeforeApply: () => { backupCalls += 1; }
+        });
         assert.equal(result.flushed[0].ok, false);
         assert.equal(result.flushed[0].attempts, 0);
         assert.equal(result.flushed[0].dropped, false);
       }
+      assert.equal(backupCalls, 0, "a predictably blocked retry must not create a database backup");
       assert.equal(listQueuedVehicleDeletes(repoRoot)[0].attempts, 0);
       assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
     });
@@ -379,7 +388,7 @@ test("real PostgreSQL: explicit map-down flush deletes a Travel-state vehicle", 
     await withTempRepoRoot(async (repoRoot) => {
       _resetRefillPartitionDwellForTests();
       await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', null)");
-      await pool.query("insert into dune.actor_state (actor_id, state) values ($1, 'Travel')", [VEHICLE_ID]);
+      await pool.query("update dune.actors set state = 'Travel' where id = $1", [VEHICLE_ID]);
       queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
 
       const db = pgTransactionalDb(pool);
@@ -387,6 +396,55 @@ test("real PostgreSQL: explicit map-down flush deletes a Travel-state vehicle", 
       assert.equal(result.flushed[0].ok, true);
       assert.equal(result.pending, 0);
       assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
+    });
+  });
+});
+
+// Measured against a real database: the poller sets nextRetryAt = now + 60s on
+// every failed attempt, so a blocked entry sits inside a backoff window for ~55
+// of every 60 seconds. Honouring that window on the map-down pass meant the one
+// moment allowBlockedStates could ever apply was skipped most of the time --
+// upstream's fix was defeated in practice by a pre-existing skip.
+test("real PostgreSQL: the map-down pass applies an entry the poller just backed off", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', null)");
+      await pool.query("update dune.actors set state = 'Travel' where id = $1", [VEHICLE_ID]);
+      queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
+
+      const db = pgTransactionalDb(pool);
+      // Poller attempt: refused, and it stamps a retry window on the entry.
+      const blocked = await flushVehicleDeletes(db, repoRoot, { now: () => 1_000_000 });
+      assert.equal(blocked.flushed[0].ok, false);
+      assert.ok(listQueuedVehicleDeletes(repoRoot)[0].nextRetryAt > 1_000_000);
+
+      // Map-down hook lands inside that window, as it usually will.
+      const hook = await flushVehicleDeletes(db, repoRoot, {
+        now: () => 1_000_001, allowBlockedStates: true, ignoreRetryBackoff: true
+      });
+      assert.equal(hook.flushed[0].ok, true);
+      assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
+    });
+  });
+});
+
+test("real PostgreSQL: the background poller still honours its own backoff", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', null)");
+      await pool.query("update dune.actors set state = 'Travel' where id = $1", [VEHICLE_ID]);
+      queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
+
+      const db = pgTransactionalDb(pool);
+      await flushVehicleDeletes(db, repoRoot, { now: () => 1_000_000 });
+      // No ignoreRetryBackoff: the entry is skipped entirely, so nothing is
+      // reported for it at all.
+      const second = await flushVehicleDeletes(db, repoRoot, { now: () => 1_000_001 });
+      assert.deepEqual(second.flushed, []);
+      assert.equal(second.pending, 1);
+      assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
     });
   });
 });
@@ -407,6 +465,49 @@ test("real PostgreSQL: flush leaves a delete queued while its map is still live"
       const afterDwell = await flushVehicleDeletes(db, repoRoot, { now: () => 1_000_000 + 30_000 });
       assert.equal(afterDwell.flushed[0]?.ok, true);
       assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
+    });
+  });
+});
+
+test("real PostgreSQL: an explicitly stopped assigned partition bypasses only the disconnect dwell", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', 'srv-stopped')");
+      queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
+
+      const db = pgTransactionalDb(pool);
+      const result = await flushVehicleDeletes(db, repoRoot, {
+        now: () => 1_000_000,
+        trustedDownPartitionIds: new Set([3])
+      });
+
+      assert.equal(result.flushed[0]?.ok, true);
+      assert.equal(result.pending, 0);
+      assert.equal(await actorCount(pool, [VEHICLE_ID]), 0);
+    });
+  });
+});
+
+test("real PostgreSQL: trusted stop metadata never overrides a live game connection", async (t) => {
+  await withDatabase(t, async (pool) => {
+    await withTempRepoRoot(async (repoRoot) => {
+      _resetRefillPartitionDwellForTests();
+      await pool.query("insert into dune.world_partition (partition_id, map, server_id) values (3, 'Survival_1', 'srv-live')");
+      queueVehicleDelete(repoRoot, { vehicleId: VEHICLE_ID, map: "HaggaBasin", partitionId: 3 });
+      const live = await pool.connect();
+      try {
+        await live.query("set application_name = 'DuneSandbox - srv-live'");
+        const result = await flushVehicleDeletes(pgTransactionalDb(pool), repoRoot, {
+          now: () => 1_000_000,
+          trustedDownPartitionIds: new Set([3])
+        });
+        assert.deepEqual(result.flushed, []);
+        assert.equal(result.pending, 1);
+        assert.equal(await actorCount(pool, [VEHICLE_ID]), 1);
+      } finally {
+        live.release();
+      }
     });
   });
 });

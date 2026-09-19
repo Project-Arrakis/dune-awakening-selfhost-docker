@@ -9,6 +9,7 @@ trap 'rm -rf "$test_root"' EXIT
 bin_dir="$test_root/bin"
 mkdir -p "$bin_dir" "$test_root/runtime/scripts"
 cp runtime/scripts/env-file.sh "$test_root/runtime/scripts/env-file.sh"
+cp runtime/scripts/host-file-ownership.sh "$test_root/runtime/scripts/host-file-ownership.sh"
 
 cat > "$bin_dir/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -29,6 +30,17 @@ case "${1:-} ${2:-}" in
       pg_dump)
         ;;
       pg_restore)
+        if [ "${2:-}" = "-U" ]; then
+          maintenance_file="${DUNE_DB_RESTORE_MAINTENANCE_FILE:-runtime/generated/db-restore-maintenance}"
+          if [ ! -f "$maintenance_file" ]; then
+            echo "database restore ran without Console maintenance protection" >&2
+            exit 97
+          fi
+          if [ "${MOCK_RESTORE_FAIL:-0}" = "1" ]; then
+            echo "mock restore failure" >&2
+            exit 42
+          fi
+        fi
         if [ "${MOCK_ARCHIVE_VALID:-1}" = "1" ]; then
           cat <<'TOC'
 5; 2615 16385 SCHEMA - dune dune
@@ -135,7 +147,7 @@ echo "PASS invalid-restore-aborts-before-database-changes"
 
 identity_root="$test_root/identity-choice"
 mkdir -p "$identity_root/runtime/scripts" "$identity_root/runtime/generated" "$identity_root/runtime/secrets"
-cp runtime/scripts/db.sh runtime/scripts/env-file.sh "$identity_root/runtime/scripts/"
+cp runtime/scripts/db.sh runtime/scripts/env-file.sh runtime/scripts/host-file-ownership.sh "$identity_root/runtime/scripts/"
 printf '%s\n' mock-valid-archive > "$identity_root/manual.backup"
 cat > "$identity_root/manual.backup.yaml" <<'EOF'
 backup_origin: manual
@@ -216,6 +228,8 @@ grep -Fq 'PREVIOUS_BATTLEGROUP_ID=sh-aaaaaaaaaaaaaaaa-current' "$identity_root/r
   || fail "explicit adoption did not create a rollback point"
 grep -Fq 'Database import finished.' "$identity_root/adopt.log" \
   || fail "compatible explicit adoption did not finish the mocked restore"
+[ ! -e "$identity_root/runtime/generated/db-restore-maintenance" ] \
+  || fail "successful restore left Console database maintenance enabled"
 echo "PASS compatible-explicit-adoption-preserves-identity-and-rollback"
 
 rm -f "$identity_root/runtime/generated/battlegroup-restore-point.env"
@@ -234,3 +248,22 @@ grep -Fq 'BATTLEGROUP_ID=sh-aaaaaaaaaaaaaaaa-current' "$identity_root/runtime/ge
 grep -Fq 'Characters associated with sh-bbbbbbbbbbbbbbbb-original may not appear in game.' "$identity_root/keep.log" \
   || fail "keep-current restore did not warn about character visibility"
 echo "PASS explicit-keep-current-preserves-current-identity"
+
+set +e
+(
+  cd "$identity_root"
+  PATH="$bin_dir:$PATH" \
+    MOCK_DOCKER_LOG="$identity_root/failed-restore-docker.log" \
+    MOCK_ARCHIVE_VALID=1 \
+    MOCK_RESTORE_FAIL=1 \
+    DUNE_DB_ASSUME_YES=1 \
+    bash runtime/scripts/db.sh restore "$identity_root/manual.backup" --no-safety-backup --keep-current-battlegroup
+) > "$identity_root/failed-restore.log" 2>&1
+failed_restore_exit=$?
+set -e
+[ "$failed_restore_exit" -ne 0 ] || fail "mocked pg_restore failure was accepted"
+[ ! -e "$identity_root/runtime/generated/db-restore-maintenance" ] \
+  || fail "failed restore left Console database maintenance enabled"
+grep -Fq 'mock restore failure' "$identity_root/failed-restore.log" \
+  || fail "mocked pg_restore failure was not preserved"
+echo "PASS failed-restore-clears-console-database-maintenance"

@@ -10,7 +10,7 @@ import { createLoginRateLimiter, createMutationRateLimiter, createApiKeyRateLimi
 import { createApiKeyStore, GLOBAL_RATE_LIMIT_PER_MINUTE } from "./apiKeys.js";
 import { scopeCatalog } from "./apiKeyScopes.js";
 import { createBridgeRateLimiter } from "./bridgeRateLimit.js";
-import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, TaskManager, publicTask } from "./tasks.js";
+import { buildSelfUpdateHelperDockerArgs, detectDockerSocketGid, mapWriteFlushTimeoutMs, TaskManager, publicTask } from "./tasks.js";
 import { preflight } from "./preflight.js";
 import { buildDuneArgs, isDynamicServerService, parseVehicleList, runDockerLogs, runDune, validateServiceName } from "./runner.js";
 // isReadOnlySql comes from db.js, NOT runner.js. runner's copy tests the raw
@@ -25,8 +25,8 @@ import * as duneDb from "./duneDb.js";
 import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
-import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishMapChat, publishServerCommand } from "./rmq.js";
-import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
+import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishCarePackageWhisper, publishServerCommand } from "./rmq.js";
+import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, maintainCarePackageHistory, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
 import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
 import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon } from "./addons.js";
@@ -46,18 +46,23 @@ import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { actionForRoute, ROUTE_ACTIONS } from "./actions.js";
 import { evaluate, loadPolicies, getAllPolicies, setPolicies, allKnownActions } from "./policy.js";
-import { liveItemGrantOk, liveItemGrantWarning } from "./grantResults.js";
+import { customizationGrantOutcome, liveItemGrantOk, liveItemGrantPublished, liveItemGrantWarning, summarizeCustomizationGrantResults } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
 import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
 import * as restartQueue from "./services/restartQueue.js";
 import { persistSpicefieldOverride } from "./services/spicefieldOverrides.js";
 import { liveMapSpice } from "./services/liveMapSpice.js";
+import { resolveCoriolisCycle } from "./services/coriolisSeed.js";
 import { liveMapPoi } from "./services/liveMapPoi.js";
+import { deliverMapChatToRecipients } from "./services/mapChatDelivery.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
+import { getCommunityBlueprint, getCommunityBlueprintPreview, listCommunityBlueprints } from "./services/blueprintCatalog.js";
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { grantAddonItem } from "./addonItemGrants.js";
+import { deleteAddonData, listAddonData, readAddonData, writeAddonData } from "./addonDataStore.js";
+import { createAddonDeliveryService, deferAddonDelivery } from "./addonDeliveries.js";
 import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, refreshBuybackLog, readBuybackLog, clearBuybackLog, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
@@ -66,22 +71,27 @@ import { ensureExchangeHistory, listExchangeTransactions } from "./services/exch
 import { listMarketExchanges, marketBotStatus, saveMarketBuybackSchedule, saveMarketSeedSchedule, decodeSeedPlanCsvUpload, exportMarketSeedPlanCsv, importMarketSeedPlanFromCsv, renameMarketSeedPlan, setActiveMarketSeedPlan } from "./services/exchangeMarket.js";
 import { loadMarketSeedPlan } from "./addonSeedJob.js";
 import { readMarketItemOverrides, saveMarketItemOverrides, readUnsafeTemplateIds, listBotItemCatalogPickerItems, getOverrideRow } from "./services/marketItemOverrides.js";
-import { autoRefillPublicState, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
-import { autoRefillWaterPublicState, createAutoRefillWaterScheduler, setBaseAutoRefillWater } from "./services/autoRefillWater.js";
+import { autoRefillPublicState, clampAutoRefillNextRun, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
+import { autoRefillWaterPublicState, clampAutoRefillWaterNextRun, createAutoRefillWaterScheduler, setBaseAutoRefillWater } from "./services/autoRefillWater.js";
+import { autoRefillSettingsView, saveAutoRefillSettings } from "./services/autoRefillSettings.js";
 import { calculateAlwaysOnHostMemorySafety } from "./services/hostMemorySafety.js";
 import { parseEffectiveGuildMemberLimit } from "./services/guildSettings.js";
 import { parseEffectivePermissionLimit } from "./services/permissionSettings.js";
-import { flushBaseRefillQueues } from "./services/baseRefillFlush.js";
+import { createSharedDeleteBackup, flushBaseRefillQueues } from "./services/baseRefillFlush.js";
 import { verifyBaseBackupState } from "./services/baseBackupSafety.js";
+import { createSingleFlight } from "./services/singleFlight.js";
+import { createReadCommandCache } from "./services/readCommandCache.js";
 import { banPlayer, bannedFlsIds, createPlayerBanEnforcer, playerBanFor, unbanPlayer } from "./services/playerBans.js";
 import { findPlayerForLiveAction, playerIsOnlineForLiveAction } from "./playerLiveActions.js";
 import { retireLegacyEdaExchangeBot } from "./services/marketBotRetirement.js";
 import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
 import { createScheduledMapMessageScheduler } from "./services/scheduledMapMessages.js";
 import { createQaUpdates } from "./services/qaUpdates.js";
+import { SETUP_CONFIG_KEYS, validHostDatacenterId } from "./services/setupConfig.js";
 
 const config = loadConfig();
 const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
+const readCommandCache = createReadCommandCache();
 const CONSOLE_PROCESS_STARTED_AT = Date.now();
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
 try {
@@ -143,42 +153,77 @@ function shouldNoteApiKeyAuthThrottle(failureKey, at = Date.now()) {
 }
 const apiKeys = createApiKeyStore({ file: config.apiKeysFile });
 const bridgeRateLimiter = createBridgeRateLimiter();
+
+async function trustedPartitionsForCompletedStop(operation, payload = {}) {
+  if (operation === "stopGameServersForDbWrites") return "all";
+  if (operation === "sietchesRestartStop") {
+    const partitionId = Number(payload.partitionId);
+    return Number.isInteger(partitionId) && partitionId > 0 ? new Set([partitionId]) : new Set();
+  }
+  if (operation === "restartServiceStop" && ["survival", "survival-1"].includes(String(payload.service || "").toLowerCase())) {
+    const targets = await duneDb.partitionRestartTargets(db);
+    return new Set([...targets.entries()]
+      .filter(([, target]) => target.map === "Survival_1" && target.dimensionIndex === 0)
+      .map(([partitionId]) => partitionId));
+  }
+  return new Set();
+}
+
 // Deferred db read: db is assigned below and is reassignable on reconnect.
 // Both flush paths go through flushQueuedGeneratorRefills/flushQueuedWaterRefills
 // so a write lands in the audit log no matter which one applied it.
 const tasks = new TaskManager(config, {
-  onMapDown: () => flushBaseRefillQueues({
-    flushGenerators: flushQueuedGeneratorRefills,
-    flushWater: flushQueuedWaterRefills,
-    flushDeletes: flushQueuedBaseDeletes,
-    flushChildAccess: flushQueuedBaseChildAccess,
-    // A background probe may have sampled the map immediately before the stop.
-    // Wait for it, then perform a fresh pass while the map is positively down.
+  // forceFresh on every leg: the tick's in-flight pass, if there is one, was
+  // started before the map stopped and so observed it as still live. Reusing
+  // that result here would report "nothing to flush" for the one window in
+  // which the queued writes are actually safe to apply.
+  onMapDown: async (operation, payload) => {
+    const trustedDownPartitionIds = await trustedPartitionsForCompletedStop(operation, payload);
+    // Base and vehicle queues are independent, but the same database snapshot
+    // protects both destructive batches in this one write-safe window. Share
+    // the in-flight promise so mixed batches cannot dump the whole database
+    // twice in parallel.
+    const ensureDeleteBackup = createSharedDeleteBackup(config.mockMode ? undefined : () =>
+      runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } }));
+    return flushBaseRefillQueues({
+    // ignoreRetryBackoff: the poller's 60s backoff would otherwise skip an
+    // entry for ~55 of every 60 seconds, so most restarts silently applied
+    // nothing. Only this hook sets it; the poller keeps backing off.
+    flushGenerators: () => flushQueuedGeneratorRefills({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds }),
+    flushWater: () => flushQueuedWaterRefills({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds }),
+    flushDeletes: () => flushQueuedBaseDeletes({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds, onBeforeApply: ensureDeleteBackup }),
+    flushChildAccess: () => flushQueuedBaseChildAccess({ forceFresh: true, ignoreRetryBackoff: true, trustedDownPartitionIds }),
     // The task hook runs only after the requested map servers have positively
-    // stopped. At that point an explicit admin delete may safely remove even
-    // a stale Travel/backup/recovery row; the background poller remains
+    // stopped. At that point an explicit admin delete may safely remove even a
+    // stale Travel/backup/recovery row; the background poller stays
     // conservative and leaves those states queued while maps may be live.
-    flushVehicleDeletes: () => flushQueuedVehicleDeletes({ forceFresh: true, allowBlockedStates: true })
-  })
+    flushVehicleDeletes: () => flushQueuedVehicleDeletes({ forceFresh: true, allowBlockedStates: true, ignoreRetryBackoff: true, trustedDownPartitionIds, onBeforeApply: ensureDeleteBackup })
+    });
+  }
 });
 let db = createDb(config);
+const addonDeliveryService = createAddonDeliveryService(config, {
+  canRun: (addonId, permission) => {
+    try {
+      assertInstalledAddonPermission(config, addonId, permission);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  deliver: (payload, context) => deliverAddonPayload(payload, context)
+});
 const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db });
 let carePackageAutoRunning = false;
 let carePackageAutoLastRun = 0;
 let carePackageAutoNextAllowedRun = 0;
-// The 5s poll and the restart-task onMapDown hook both call
-// flushQueuedGeneratorRefills and can overlap; refillBaseGenerators only locks
-// existing fuel rows, so an empty generator has nothing to serialize two
-// concurrent inserts against without this guard.
-let generatorRefillFlushRunning = false;
-// Same reasoning as generatorRefillFlushRunning, for the water queue.
-let waterRefillFlushRunning = false;
-// Same reasoning as generatorRefillFlushRunning, for the pending-delete queue.
-let baseDeleteFlushRunning = false;
-// Same reasoning as generatorRefillFlushRunning, for the base permission queue.
-let baseChildAccessFlushRunning = false;
-// Same reasoning as baseDeleteFlushRunning, for the vehicle pending-delete queue.
-let vehicleDeleteFlushPromise = null;
+// The 5s poll and the restart-task onMapDown hook both call every one of the
+// flushes below and can overlap; refillBaseGenerators only locks existing fuel
+// rows, so an empty generator has nothing to serialize two concurrent inserts
+// against without a guard. Each flush is therefore wrapped in createSingleFlight
+// rather than a boolean: a boolean serializes correctly but makes the hook's
+// call a no-op whenever the tick is mid-pass, which is precisely when the hook
+// matters -- see services/singleFlight.js.
 let messageOfTheDayAutoRunning = false;
 let messageOfTheDayAutoLastRun = 0;
 let messageOfTheDayAutoNextAllowedRun = 0;
@@ -293,6 +338,7 @@ setInterval(() => {
   runBackgroundTick("Message of the Day", messageOfTheDayAutoTick);
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
   runBackgroundTick("Addon scheduled jobs", () => addonJobScheduler.tick());
+  runBackgroundTick("Addon queued deliveries", () => addonDeliveryService.tick());
   runBackgroundTick("Scheduled map messages", () => scheduledMapMessages.tick());
   runBackgroundTick("Landsraad milestone preset", () => landsraadMilestoneReconciler.tick());
   // Daily, but gated inside the tick like every other long-period job here.
@@ -348,98 +394,70 @@ setInterval(() => {
 // Every queued-refill write goes through here so it is audited whichever path
 // triggered it: the tick above, or the restart task runner's onMapDown hook.
 // These are real writes to player property, so an unaudited one is not acceptable.
-async function flushQueuedGeneratorRefills() {
-  if (generatorRefillFlushRunning) return { flushed: [] };
-  generatorRefillFlushRunning = true;
-  try {
-    const result = await duneDb.flushGeneratorRefills(db, config.repoRoot);
-    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-refill", entry);
-    return result;
-  } finally {
-    generatorRefillFlushRunning = false;
-  }
-}
+const flushQueuedGeneratorRefills = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) => {
+  const result = await duneDb.flushGeneratorRefills(db, config.repoRoot, { ignoreRetryBackoff, trustedDownPartitionIds });
+  for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-refill", entry);
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
 
 // Same reasoning as flushQueuedGeneratorRefills, for the water queue.
-async function flushQueuedWaterRefills() {
-  if (waterRefillFlushRunning) return { flushed: [] };
-  waterRefillFlushRunning = true;
-  try {
-    const result = await duneDb.flushWaterRefills(db, config.repoRoot);
-    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-water-refill", entry);
-    return result;
-  } finally {
-    waterRefillFlushRunning = false;
-  }
-}
+const flushQueuedWaterRefills = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) => {
+  const result = await duneDb.flushWaterRefills(db, config.repoRoot, { ignoreRetryBackoff, trustedDownPartitionIds });
+  for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-water-refill", entry);
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
 
 // Same reasoning as flushQueuedGeneratorRefills, for the base permission
 // queue. These change who can open a player's doors, so an unaudited apply is
 // not acceptable either.
-async function flushQueuedBaseChildAccess() {
-  if (baseChildAccessFlushRunning) return { flushed: [] };
-  baseChildAccessFlushRunning = true;
-  try {
-    const result = await duneDb.flushBaseChildAccess(db, config.repoRoot);
-    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-child-access", entry);
-    return result;
-  } finally {
-    baseChildAccessFlushRunning = false;
-  }
-}
+const flushQueuedBaseChildAccess = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds } = {}) => {
+  const result = await duneDb.flushBaseChildAccess(db, config.repoRoot, { ignoreRetryBackoff, trustedDownPartitionIds });
+  for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-child-access", entry);
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
 
 // Same guard reasoning as flushQueuedGeneratorRefills. The one full-database
 // safety backup for this pass happens inside flushBaseDeletes's onBeforeApply
 // hook -- lazily, at most once, immediately before the first entry that is
 // actually about to be deleted, not merely because the queue is non-empty.
-async function flushQueuedBaseDeletes() {
-  if (baseDeleteFlushRunning) return { flushed: [] };
-  baseDeleteFlushRunning = true;
-  try {
-    const result = await duneDb.flushBaseDeletes(db, config.repoRoot, {
-      // Matches databaseQuery's explicit mock-mode guard: this runs as a
-      // background tick, not through directDbMutation, so it is not skipped
-      // for free the way a request-time delete's backup call is.
-      onBeforeApply: config.mockMode
-        ? undefined
-        : () => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } })
-    });
-    for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-delete", entry);
-    if (result.backupFailed) {
-      audit(config, null, "bases.flush-queued-delete-backup-failed", { error: result.error, pending: result.pending });
-    }
-    return result;
-  } finally {
-    baseDeleteFlushRunning = false;
+const flushQueuedBaseDeletes = createSingleFlight(async ({ ignoreRetryBackoff = false, trustedDownPartitionIds, onBeforeApply } = {}) => {
+  const result = await duneDb.flushBaseDeletes(db, config.repoRoot, {
+    ignoreRetryBackoff,
+    trustedDownPartitionIds,
+    // Matches databaseQuery's explicit mock-mode guard: this runs as a
+    // background tick, not through directDbMutation, so it is not skipped
+    // for free the way a request-time delete's backup call is.
+    onBeforeApply: config.mockMode
+      ? undefined
+      : onBeforeApply || (() => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-delete" } }))
+  });
+  for (const entry of result.flushed || []) audit(config, null, "bases.flush-queued-delete", entry);
+  if (result.backupFailed) {
+    audit(config, null, "bases.flush-queued-delete-backup-failed", { error: result.error, pending: result.pending });
   }
-}
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
 
 // Same guard reasoning as flushQueuedBaseDeletes, for the vehicle queue.
-async function flushQueuedVehicleDeletes({ forceFresh = false, allowBlockedStates = false } = {}) {
-  if (vehicleDeleteFlushPromise) {
-    const inFlight = await vehicleDeleteFlushPromise;
-    if (!forceFresh) return inFlight;
+// allowBlockedStates reaches the pass through createSingleFlight, which hands
+// each call's options to the run function. Only the map-down hook sets it, and
+// that hook always sets forceFresh too, so it never rides along on a reused
+// in-flight result that was started without it.
+const flushQueuedVehicleDeletes = createSingleFlight(async ({ allowBlockedStates = false, ignoreRetryBackoff = false, trustedDownPartitionIds, onBeforeApply } = {}) => {
+  const result = await duneDb.flushVehicleDeletes(db, config.repoRoot, {
+    allowBlockedStates,
+    ignoreRetryBackoff,
+    trustedDownPartitionIds,
+    onBeforeApply: config.mockMode
+      ? undefined
+      : onBeforeApply || (() => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "vehicle-delete" } }))
+  });
+  for (const entry of result.flushed || []) audit(config, null, "vehicles.flush-queued-delete", entry);
+  if (result.backupFailed) {
+    audit(config, null, "vehicles.flush-queued-delete-backup-failed", { error: result.error, pending: result.pending });
   }
-  const current = (async () => {
-    const result = await duneDb.flushVehicleDeletes(db, config.repoRoot, {
-      allowBlockedStates,
-      onBeforeApply: config.mockMode
-        ? undefined
-        : () => runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "vehicle-delete" } })
-    });
-    for (const entry of result.flushed || []) audit(config, null, "vehicles.flush-queued-delete", entry);
-    if (result.backupFailed) {
-      audit(config, null, "vehicles.flush-queued-delete-backup-failed", { error: result.error, pending: result.pending });
-    }
-    return result;
-  })();
-  vehicleDeleteFlushPromise = current;
-  try {
-    return await current;
-  } finally {
-    if (vehicleDeleteFlushPromise === current) vehicleDeleteFlushPromise = null;
-  }
-}
+  return result;
+}, { waitTimeoutMs: mapWriteFlushTimeoutMs() });
 
 function runBackgroundTick(label, fn) {
   Promise.resolve()
@@ -598,7 +616,7 @@ async function handleApi(req, res) {
       return json(res, 429, { error: "Too many sign-in attempts. Please wait a few minutes, then try again." }, { "retry-after": String(rate.retryAfterSeconds) });
     }
     const body = await readJson(req);
-    if (!config.authDisabled && !auth.passwordMatches(body.password)) {
+    if (!config.authDisabled && !(await auth.passwordMatches(body.password))) {
       loginRateLimiter.recordFailure(rateKey);
       return json(res, 401, { error: "Incorrect password. Please try again!" });
     }
@@ -924,6 +942,8 @@ async function handleApi(req, res) {
   }));
   if (path === "/api/bases/pending-refills") return pendingGeneratorRefillsRoute(res);
   if (path === "/api/bases/auto-refill") return basesAutoRefillStateRoute(res);
+  if (path === "/api/bases/auto-refill/settings" && req.method === "GET") return basesAutoRefillSettingsRoute(res);
+  if (path === "/api/bases/auto-refill/settings" && req.method === "POST") return basesAutoRefillSettingsSaveRoute(req, res);
   if (path === "/api/bases/pending-water-refills") return pendingWaterRefillsRoute(res);
   if (path === "/api/bases/auto-refill-water") return basesAutoRefillWaterStateRoute(res);
   if (path === "/api/bases/pending-deletes") return pendingBaseDeletesRoute(res);
@@ -1114,6 +1134,9 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/storage\/[^/]+\/give-item$/) && req.method === "POST") return storageGiveItemRoute(req, res, path);
   if (path.match(/^\/api\/storage\/[^/]+\/export$/)) return exportJson(res, `storage-${decodeURIComponent(path.split("/")[3])}.json`, () => duneDb.storageItems(db, decodeURIComponent(path.split("/")[3])));
   if (path === "/api/blueprints" && req.method === "GET") return dbJson(res, () => listBlueprints(db));
+  if (path === "/api/blueprints/community" && req.method === "GET") return communityBlueprintListRoute(res, url);
+  if (path.match(/^\/api\/blueprints\/community\/[^/]+\/preview$/) && req.method === "GET") return communityBlueprintPreviewRoute(res, path);
+  if (path.match(/^\/api\/blueprints\/community\/[^/]+\/install$/) && req.method === "POST") return communityBlueprintInstallRoute(req, res, path);
   if (path === "/api/blueprints/export" && req.method === "POST") return blueprintBulkExportRoute(req, res);
   if (path.match(/^\/api\/blueprints\/([^/]+)\/export$/) && req.method === "GET") return blueprintExportRoute(req, res, path);
   if (path === "/api/blueprints/import" && req.method === "POST") return blueprintImportRoute(req, res);
@@ -1292,10 +1315,62 @@ async function addonBridgeRoute(req, res, path) {
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
     return json(res, 200, { ok: true, result });
   }
+  if (action === "players.summary.list") {
+    const addon = assertInstalledAddonPermission(config, id, "players:read");
+    const result = await duneDb.addonLeadershipPlayers(db);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
   if (action === "players.identity.list") {
     const addon = assertInstalledAddonPermission(config, id, "players:read");
     const result = await duneDb.addonPlayerIdentities(db);
     audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "players.progression.get") {
+    const addon = assertInstalledAddonPermission(config, id, "players:read");
+    const playerId = String(body.playerId || "").trim();
+    if (!playerId) return json(res, 400, { error: "playerId is required." });
+    const result = await duneDb.addonPlayerProgression(db, playerId, journeyTagsData);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, playerId, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "addon.storage.get" || action === "addon.storage.list" || action === "addon.storage.put" || action === "addon.storage.delete") {
+    const addon = assertInstalledAddonPermission(config, id, "files:addon-data");
+    const writeAction = action === "addon.storage.put" || action === "addon.storage.delete";
+    if (writeAction && !applyMutationRateLimit(req, res, `addon:${id}:${action}`)) return;
+    const result = action === "addon.storage.get"
+      ? readAddonData(config, addon.id, body.key)
+      : action === "addon.storage.list"
+        ? listAddonData(config, addon.id, body)
+        : action === "addon.storage.put"
+          ? await writeAddonData(config, addon.id, body)
+          : await deleteAddonData(config, addon.id, body);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, key: String(body.key || ""), ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "rewards.deliver" || action === "rewards.status" || action === "rewards.list") {
+    const addon = assertInstalledAddonPermission(config, id, "rewards:grant");
+    if (action === "rewards.deliver" && !applyMutationRateLimit(req, res, `addon:${id}:rewards.deliver`)) return;
+    let result = action === "rewards.deliver"
+      ? await addonDeliveryService.request(addon.id, body, { permission: addon.permission })
+      : action === "rewards.status"
+        ? addonDeliveryService.get(addon.id, body.requestId)
+        : addonDeliveryService.list(addon.id, body, { kind: "reward" });
+    if (action === "rewards.status" && result?.delivery?.type === "message") result = null;
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, requestId: String(body.requestId || ""), status: result?.status || "", ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "players.message.send" || action === "players.message.status" || action === "players.message.list") {
+    const addon = assertInstalledAddonPermission(config, id, "players:message");
+    if (action === "players.message.send" && !applyMutationRateLimit(req, res, `addon:${id}:players.message.send`)) return;
+    let result = action === "players.message.send"
+      ? await addonDeliveryService.request(addon.id, body, { permission: addon.permission, kind: "message" })
+      : action === "players.message.status"
+        ? addonDeliveryService.get(addon.id, body.requestId)
+        : addonDeliveryService.list(addon.id, body, { kind: "message" });
+    if (action === "players.message.status" && result?.delivery?.type !== "message") result = null;
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, requestId: String(body.requestId || ""), status: result?.status || "", ok: true });
     return json(res, 200, { ok: true, result });
   }
   if (action === "ops.health.summary" || action === "ops.health.players" || action === "ops.health.farms" || action === "ops.health.summary.v2") {
@@ -1519,16 +1594,28 @@ async function liveMapMarkersRoute(res, url) {
     const activeMap = configPayload.map.actorMap || configPayload.map.key;
     const partitionId = url.searchParams.get("partitionId") || "";
     const includeStatic = url.searchParams.get("static") !== "0";
-    const [markers, partitions, spice, poi] = await Promise.all([
+    // Fetched ahead of the Promise.all because the cycle resolver needs the
+    // partition ids: without a partitionId they are the only way to reach a
+    // container that logs the layout.
+    const partitions = await duneDb.liveMapPartitions(db).catch(() => ({ rows: [] }));
+    // Resolved once and handed to liveMapSpice: left to fetch its own, the two
+    // would race the 30s cache (no in-flight dedupe) and shell out twice.
+    const cycle = await resolveCoriolisCycle({
+      map: activeMap,
+      partitionId,
+      deepDesertPartitionIds: (partitions.rows || []).filter((row) => String(row.map) === "DeepDesert").map((row) => row.partition_id)
+    }).catch(() => ({ seed: null, nextCycleAt: null, layout: null }));
+    const [markers, spice, poi] = await Promise.all([
       duneDb.liveMapMarkers(db, activeMap),
-      duneDb.liveMapPartitions(db).catch(() => ({ rows: [] })),
-      liveMapSpice(db, config, activeMap, { partitionId, includeStaticPool: includeStatic }).catch(() => ({ capabilities: { ...(includeStatic ? { spice: false } : {}), spice_active: false, flour_sand: false }, rows: [] })),
+      liveMapSpice(db, config, activeMap, { partitionId, includeStaticPool: includeStatic, resolveCycle: async () => cycle }).catch(() => ({ capabilities: { ...(includeStatic ? { spice: false } : {}), spice_active: false, flour_sand: false }, rows: [] })),
       includeStatic ? liveMapPoi(db, activeMap).catch(() => ({ capabilities: {}, rows: [] })) : Promise.resolve({ capabilities: {}, rows: [] })
     ]);
     return {
       ...markers,
       ...configPayload,
       capabilities: { ...markers.capabilities, ...spice.capabilities, ...poi.capabilities },
+      knownSubtypes: poi.knownSubtypes || {},
+      subtypeLabels: poi.subtypeLabels || {},
       overlays: { ...markers.overlays, spice: spice.reason || "" },
       rows: [...markers.rows, ...spice.rows, ...poi.rows],
       // Every server container reports the identical farm-wide seed and
@@ -1536,9 +1623,17 @@ async function liveMapMarkersRoute(res, url) {
       // selected partitionId's own container first (more likely to actually
       // be running than a fixed default) before falling back to the
       // overmap/survival-1 default.
-      coriolisSeed: spice.currentSeed || "",
-      coriolisNextCycleAt: spice.nextCycleAt || "",
-      coriolisSeedStaleSince: spice.seedStaleSince || "",
+      // From the cycle this route resolved, not from spice. liveMapSpice is
+      // handed that same cycle, so the values are identical when it succeeds --
+      // but its catch path returns no seed at all, which used to serve an empty
+      // seed beside a perfectly good coriolisLayout.
+      coriolisSeed: cycle.seed || "",
+      coriolisNextCycleAt: cycle.nextCycleAt || "",
+      coriolisSeedStaleSince: cycle.staleSince || "",
+      // Which cartography layout is live, for the terrain renderer. Null when it
+      // cannot be read or the cycle has expired; the client then draws the flat
+      // image rather than guessing. ?? not ||: layout 0 is valid.
+      coriolisLayout: cycle.layout ?? null,
       partitions: partitions.rows || []
     };
   });
@@ -1560,13 +1655,20 @@ async function liveMapTeleportPlayerRoute(req, res) {
   }
   if (body.online === true) {
     try {
-      buildDuneArgs("adminTeleport", payload);
+      const resolved = await duneDb.teleportPlayer(db, playerId, { mode: "coordinates", ...payload });
+      const runtime = await duneDb.liveMapPartitionRuntimeState(db, resolved.partitionId);
+      if (runtime.known && (!runtime.exists || !runtime.ready)) {
+        return json(res, 409, { error: "The destination partition is offline. Start it through normal in-game travel before teleporting a player there." });
+      }
+      const taskPayload = { ...payload, playerId: resolved.playerId, partitionId: resolved.partitionId };
+      buildDuneArgs("adminTeleport", taskPayload);
+      if (!applyMutationRateLimit(req, res, "live-map.teleport.live")) return;
+      audit(config, req, "live-map.teleport.live", { playerId: resolved.playerId, x: payload.x, y: payload.y, z: payload.z, partitionId: resolved.partitionId });
+      return json(res, 202, { path: "live", task: tasks.create("admin", "adminTeleport", taskPayload) });
     } catch (error) {
-      return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
+      const failure = apiErrorPayload(error, 400);
+      return json(res, failure.status, failure.body);
     }
-    if (!applyMutationRateLimit(req, res, "live-map.teleport.live")) return;
-    audit(config, req, "live-map.teleport.live", { playerId, x: payload.x, y: payload.y, z: payload.z, partitionId: payload.partitionId });
-    return json(res, 202, { path: "live", task: tasks.create("admin", "adminTeleport", payload) });
   }
   try {
     if (!applyMutationRateLimit(req, res, "live-map.teleport.offline")) return;
@@ -1583,7 +1685,7 @@ async function liveMapTeleportPlayerRoute(req, res) {
 async function commandJson(res, operation, payload = {}) {
   if (config.mockMode) return json(res, 200, mockCommand(operation));
   const args = buildDuneArgs(operation, payload);
-  const result = await runDune(config, args);
+  const result = await readCommandCache.run(JSON.stringify(args), () => runDune(config, args));
   return json(res, 200, { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code });
 }
 
@@ -2005,7 +2107,7 @@ async function marketItemsSaveRoute(req, res) {
 async function safeCommand(operation, payload = {}) {
   try {
     const args = buildDuneArgs(operation, payload);
-    const result = await runDune(config, args);
+    const result = await readCommandCache.run(JSON.stringify(args), () => runDune(config, args));
     return { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code };
   } catch (error) {
     return { operation, stdout: redact(error.stdout || ""), stderr: redact(error.stderr || error?.message || "Unexpected error."), exitCode: error.code || 1 };
@@ -2106,7 +2208,7 @@ async function adminPasswordRoute(req, res) {
   const body = await readJson(req);
   if (config.authDisabled) return json(res, 400, { error: "Login password changes are unavailable while admin authentication is disabled." });
   if (config.adminPasswordEnvManaged) return json(res, 400, { error: "The login password is managed by ADMIN_PASSWORD. Update the environment value instead." });
-  if (!auth.passwordMatches(body.currentPassword)) return json(res, 400, { error: "Current password is incorrect." });
+  if (!(await auth.passwordMatches(body.currentPassword))) return json(res, 400, { error: "Current password is incorrect." });
   const password = validateAdminPassword(body.newPassword);
   writeFileSync(config.adminPasswordFile, `${password}\n`, { mode: 0o600 });
   try {
@@ -2920,13 +3022,15 @@ async function userSettingsValuesRoute(res, url) {
       ? "userSettingsMapEngineValues"
       : scope === "partitionEngine"
         ? "userSettingsPartitionEngineValues"
+    : scope.startsWith("serverCustom")
+      ? "userSettingsServerCustomValues"
     : scope === "partition"
       ? "userSettingsPartitionValues"
       : scope === "map"
         ? "userSettingsMapValues"
         : "userSettingsGlobalValues";
   try {
-    const result = await runDune(config, buildDuneArgs(operation, { map, partitionId }), { timeoutMs: 8000 });
+    const result = await runDune(config, buildDuneArgs(operation, { scope, map, partitionId }), { timeoutMs: 8000 });
     return json(res, 200, { stdout: result.stdout || "" });
   } catch (error) {
     return json(res, 500, { error: redact(error?.message || "Unexpected error.") });
@@ -2962,7 +3066,7 @@ async function userSettingsRawWriteRoute(req, res) {
 }
 
 function userSettingsTaskPayload(body) {
-  const scope = ["engine", "mapEngine", "partitionEngine", "global", "map", "partition", "profile"].includes(String(body.scope || "")) ? String(body.scope) : "map";
+  const scope = ["engine", "mapEngine", "partitionEngine", "global", "map", "partition", "serverCustomGlobal", "serverCustomMap", "serverCustomPartition", "profile"].includes(String(body.scope || "")) ? String(body.scope) : "map";
   const map = String(body.map || "Survival_1");
   const partitionId = String(body.partitionId || "").trim();
   const values = body.values && typeof body.values === "object" && !Array.isArray(body.values) ? body.values : {};
@@ -3013,6 +3117,7 @@ function readDeferredRestartPending(config) {
 }
 
 function deferredRestartLabel(payload) {
+  if (String(payload.scope).startsWith("serverCustom")) return payload.scope === "serverCustomGlobal" ? "Custom settings" : `Custom settings (${payload.map})`;
   if (payload.scope === "engine" || payload.scope === "mapEngine" || payload.scope === "partitionEngine") return "UserEngine settings";
   if (payload.scope === "global" || payload.scope === "profile") return "UserGame settings";
   return payload.map ? `UserGame settings (${payload.map})` : "UserGame settings";
@@ -3024,7 +3129,7 @@ function deferredRestartLabel(payload) {
 // to restart every game service to actually apply, not just the map that
 // happened to be selected in the editor.
 function restartPayload(scope, map, partitionId) {
-  if (scope === "profile" || scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global") {
+  if (scope === "profile" || scope === "engine" || scope === "mapEngine" || scope === "partitionEngine" || scope === "global" || scope === "serverCustomGlobal") {
     return { restartMode: "stack", restartLabel: "all game services" };
   }
   const normalizedMap = String(map || "").toLowerCase();
@@ -3341,10 +3446,77 @@ async function resolvePlayerGrantTarget(playerId) {
   await duneDb.resolvePlayerTarget(db, actorId);
   return {
     actionId: String(player.action_player_id || player.funcom_id || player.fls_id || ""),
+    funcomId: String(player.funcom_id || player.action_player_id || player.fls_id || ""),
+    flsId: String(player.fls_id || player.action_player_id || ""),
     actorId,
     characterName: player.character_name || "",
     online: playerIsOnlineForLiveAction(player)
   };
+}
+
+async function deliverAddonPayload(payload, { addonId, requestId } = {}) {
+  const target = await resolvePlayerGrantTarget(payload.playerId);
+  if (payload.type === "item") {
+    if (!target.online) deferAddonDelivery("Player is offline; the item reward will be delivered after they connect.");
+    const result = await grantPlayerItem(payload.playerId, {
+      itemId: payload.itemId,
+      quantity: payload.amount,
+      quality: payload.quality
+    }, target);
+    if (!result.ok) throw new Error(result.warning || "The game did not verify the item reward.");
+    return { ok: true, type: payload.type, itemId: payload.itemId, amount: payload.amount, quality: payload.quality };
+  }
+  if (payload.type === "xp") {
+    if (!target.online) deferAddonDelivery("Player is offline; the XP reward will be delivered after they connect.");
+    if (!config.mockMode) await runDune(config, buildDuneArgs("adminAddXp", { playerId: target.actionId || payload.playerId, amount: payload.amount }));
+    return { ok: true, type: payload.type, amount: payload.amount };
+  }
+  if (payload.type === "currency") {
+    const result = config.mockMode
+      ? { amount: payload.amount, currencyId: payload.currencyId }
+      : await duneDb.addCurrency(db, target.actorId, { currencyId: payload.currencyId, amount: payload.amount });
+    return { ok: true, type: payload.type, amount: Number(result.amount ?? payload.amount), currencyId: Number(result.currencyId ?? payload.currencyId) };
+  }
+  if (payload.type === "intel") {
+    if (target.online) deferAddonDelivery("Player is online; the Intel reward will be delivered safely after they disconnect.");
+    const result = config.mockMode
+      ? { amount: payload.amount, newValue: payload.amount }
+      : await duneDb.addIntel(db, target.actorId, { amount: payload.amount });
+    return { ok: true, type: payload.type, amount: Number(result.amount ?? payload.amount), newValue: Number(result.newValue ?? payload.amount), capped: Boolean(result.capped) };
+  }
+  if (payload.type === "building-unlock") {
+    const resolved = resolveCatalogItem(config.repoRoot, { itemId: payload.itemId });
+    if (!isBuildingUnlockItem(resolved)) throw new Error("The requested reward is not a verified Building Sets unlock.");
+    if (target.actorId) {
+      const state = await duneDb.playerBuildingUnlockState(db, target.actorId);
+      if (!state.capabilities?.buildingUnlockOwnership) throw new Error("This game database cannot verify building-set ownership.");
+      const status = buildingUnlockStatus(resolved.itemId, { ...state, supported: true });
+      if (status === "Owned" || status === "Pending") return { ok: true, type: payload.type, itemId: resolved.itemId, status, alreadyGranted: true };
+    }
+    const result = await grantPlayerItem(payload.playerId, { itemId: resolved.itemId, quantity: 1 }, target);
+    if (!result.ok) throw new Error(result.warning || "The game did not verify the building unlock reward.");
+    return { ok: true, type: payload.type, itemId: resolved.itemId, status: target.online ? "Processing" : "Pending" };
+  }
+  if (payload.type === "message") {
+    if (!target.online) deferAddonDelivery("Player is offline; the message will be delivered after they connect.");
+    const persona = config.mockMode
+      ? { funcomId: "Server#4242", hexFlsId: "5E121CE000000001" }
+      : await ensureCarePackageServerPersona(db);
+    if (!target.flsId) throw new Error("The online player has no stable message queue identity.");
+    if (!config.mockMode) {
+      await publishCarePackageWhisper(config, {
+        recipientFuncomId: target.funcomId,
+        recipientCharacterName: target.characterName,
+        recipientQueue: `${target.flsId}_queue`,
+        senderFuncomId: persona.funcomId,
+        senderHexFlsId: persona.hexFlsId,
+        message: payload.message,
+        messageId: `addon-${addonId}-${requestId}`.slice(0, 120)
+      });
+    }
+    return { ok: true, type: payload.type, delivered: true };
+  }
+  throw new Error("Unsupported addon delivery type.");
 }
 
 function queryParams(url, names) {
@@ -4205,6 +4377,36 @@ async function basesAutoRefillStateRoute(res) {
   return json(res, 200, { supported, ...autoRefillPublicState(config.repoRoot) });
 }
 
+// Tuning shared by both auto-refill scanners. Answers with the database down,
+// like basesAutoRefillStateRoute above: this is a file, not a query.
+async function basesAutoRefillSettingsRoute(res) {
+  return json(res, 200, autoRefillSettingsView(config.repoRoot));
+}
+
+// Console-owned configuration, so it follows the settings routes (plain handler
+// plus an explicit audit) rather than directDbMutation's confirmation machinery.
+// Unlike the per-base toggles below it IS rate limited, matching
+// exchangeConfigSaveRoute: this retunes every enrolled base at once.
+async function basesAutoRefillSettingsSaveRoute(req, res) {
+  // Before readJson, so a client spamming this never gets its body parsed.
+  if (!applyMutationRateLimit(req, res, "bases.auto-refill-settings")) return;
+  const body = await readJson(req);
+  try {
+    const saved = saveAutoRefillSettings(config.repoRoot, body);
+    // A shortened interval must pull the armed scan in, or the change looks
+    // like it did nothing until the old interval elapses. Both no-op otherwise.
+    const nextRunAt = clampAutoRefillNextRun(config.repoRoot);
+    const waterNextRunAt = clampAutoRefillWaterNextRun(config.repoRoot);
+    audit(config, req, "bases.auto-refill-settings", { ...saved, nextRunAt, waterNextRunAt });
+    return json(res, 200, { ok: true, ...autoRefillSettingsView(config.repoRoot), nextRunAt, waterNextRunAt });
+  } catch (error) {
+    return json(res, error?.statusCode === 400 ? 400 : 500, {
+      ok: false,
+      error: redact(error?.message || "Unexpected error.")
+    });
+  }
+}
+
 // Console-owned configuration rather than a database mutation, so this follows
 // the settings routes (plain handler plus an explicit audit) instead of
 // directDbMutation's confirmation-phrase machinery.
@@ -4827,6 +5029,58 @@ async function blueprintImportRoute(req, res) {
   }
 }
 
+async function communityBlueprintListRoute(res, url) {
+  try {
+    const result = await listCommunityBlueprints({
+      q: url.searchParams.get("q") || "",
+      set: url.searchParams.get("set") || "",
+      sort: url.searchParams.get("sort") || "newest",
+      limit: url.searchParams.get("limit") || 20,
+      offset: url.searchParams.get("offset") || 0
+    });
+    return json(res, 200, result);
+  } catch (error) {
+    return json(res, Number(error?.statusCode) || 502, { error: redact(error?.message || "The Blueprint catalog could not be reached.") });
+  }
+}
+
+async function communityBlueprintPreviewRoute(res, path) {
+  const id = decodeURIComponent(path.split("/")[4] || "");
+  try {
+    const preview = await getCommunityBlueprintPreview(id);
+    res.writeHead(200, withSecurityHeaders({
+      "cache-control": "private, max-age=300",
+      "content-length": String(preview.bytes.length),
+      "content-type": preview.contentType,
+      "x-content-type-options": "nosniff"
+    }));
+    return res.end(preview.bytes);
+  } catch (error) {
+    return json(res, Number(error?.statusCode) || 502, { error: redact(error?.message || "The Blueprint preview could not be loaded.") });
+  }
+}
+
+async function communityBlueprintInstallRoute(req, res, path) {
+  const id = decodeURIComponent(path.split("/")[4] || "");
+  try {
+    const body = await readJson(req);
+    const playerPawnId = Number(body.playerId);
+    if (!Number.isSafeInteger(playerPawnId) || playerPawnId < 1) return json(res, 400, { error: "Invalid player ID." });
+    const source = await getCommunityBlueprint(id);
+    const result = await importBlueprint(db, playerPawnId, source.blueprint, `${source.summary?.title || "Community Blueprint"}.json`);
+    audit(config, req, "blueprints.community-install", {
+      communityBlueprintId: id,
+      communityBlueprintVersion: source.summary?.version || null,
+      playerPawnId,
+      result
+    });
+    return json(res, 200, { ...result, source: source.summary });
+  } catch (error) {
+    if (error?.unsupported) return json(res, 501, { supported: false, error: redact(error?.message || "Blueprint import is unavailable.") });
+    return json(res, Number(error?.statusCode) || 500, { error: redact(error?.message || "The community Blueprint could not be installed.") });
+  }
+}
+
 function sanitizeFilename(s, fallback = "export") {
   return String(s).replace(/[\x00-\x1f\x7f<>:"/\\|?*]/g, "_").trim() || fallback;
 }
@@ -5037,17 +5291,25 @@ async function customizationGrantRoute(req, res, path) {
       }
       try {
         const result = await grantPlayerItem(playerId, { itemId: item.itemId, quantity: 1 }, target);
-        results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: result.ok, status: result.ok ? (target.online ? "Processing" : "Pending") : "Available", result });
+        const outcome = customizationGrantOutcome(result);
+        results.push({
+          itemId: item.itemId,
+          name: item.name,
+          groupId: item.groupId,
+          ...outcome,
+          status: outcome.ok ? (target.online ? "Processing" : "Pending") : "Available",
+          warning: outcome.deliveryRequested
+            ? "Dune accepted the delivery request, but cosmetic ownership cannot be verified because customization tokens may be consumed immediately."
+            : result.warning,
+          result
+        });
       } catch (error) {
         results.push({ itemId: item.itemId, name: item.name, groupId: item.groupId, ok: false, status: "Available", error: redact(error?.message || "Unexpected error.") });
       }
     }
-    const ok = results.every((result) => result.ok);
-    const granted = results.filter((result) => result.ok && !result.skipped).length;
-    const skipped = results.filter((result) => result.skipped).length;
-    const failed = results.filter((result) => !result.ok).length;
-    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, granted, skipped, failed, ok, results });
-    return json(res, ok ? 200 : 207, { ok, granted, skipped, failed, results });
+    const { ok, granted, requested, skipped, failed } = summarizeCustomizationGrantResults(results);
+    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, granted, requested, skipped, failed, ok, results });
+    return json(res, ok ? 200 : 207, { ok, granted, requested, skipped, failed, results });
   } catch (error) {
     audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, ok: false, error: redact(error?.message || "Unexpected error.") });
     return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
@@ -5111,6 +5373,7 @@ async function grantPlayerItem(playerId, item, target) {
   const warning = liveItemGrantWarning(result);
   return {
     ok: liveItemGrantOk(result),
+    published: liveItemGrantPublished(result),
     operation,
     item: payload,
     stdout: result.stdout,
@@ -5187,18 +5450,7 @@ async function mapChatRoute(req, res) {
 
 async function deliverMapChatMessage(mapName, dimension, message) {
   const recipients = config.mockMode ? [{ queue: "mock-player_queue" }] : await mapChatRecipients(mapName, dimension);
-  if (!recipients.length) throw new Error("No online players are currently subscribed to that map.");
-  const sender = config.mockMode ? { funcomId: "Server#4242", hexFlsId: "5E121CE000000001" } : await ensureCarePackageServerPersona(db);
-  const result = config.mockMode
-    ? { code: 0, stdout: "mock map chat\n", stderr: "", args: [] }
-    : await publishMapChat(config, {
-        mapName,
-        dimension,
-        message,
-        senderFuncomId: sender.funcomId,
-        senderHexFlsId: sender.hexFlsId
-      });
-  return { ...result, recipients: recipients.length };
+  return deliverMapChatToRecipients(config, { mapName, dimension, message, recipients }, { db, mockMode: config.mockMode });
 }
 
 async function deliverScheduledMapMessage(schedule) {
@@ -5449,7 +5701,7 @@ function publicDirectorySettings() {
 }
 
 function readSetupConfigValues() {
-  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID"];
+  const allowed = SETUP_CONFIG_KEYS;
   const values = {};
   for (const file of [resolve(config.repoRoot, ".env"), resolve(config.generatedDir, "battlegroup.env")]) {
     if (!existsSync(file)) continue;
@@ -5583,6 +5835,7 @@ async function carePackageAutoTick() {
   if (Date.now() < carePackageAutoNextAllowedRun) return;
   let kit;
   try {
+    await maintainCarePackageHistory(config);
     kit = carePackageConfig(config);
   } catch (error) {
     console.error(`Care Package auto-grant config read failed: ${redact(error?.message || "Unexpected error.")}`);
@@ -5687,9 +5940,12 @@ async function playerAnnouncementsAutoTick() {
 
 async function writeConfig(req, res) {
   const body = await readJson(req);
-  const allowed = ["SERVER_IP", "SERVER_IP_MODE", "SERVER_TITLE", "SERVER_REGION", "SERVER_PROVIDER", "STEAM_APP_ID", "BATTLEGROUP_ID"];
+  const allowed = SETUP_CONFIG_KEYS;
+  if (body.HOST_DATACENTER_ID !== undefined && !validHostDatacenterId(body.HOST_DATACENTER_ID)) {
+    return json(res, 400, { error: "Datacenter ID must be a valid hostname or short ID using only letters, numbers, dots, and hyphens." });
+  }
   for (const key of allowed) {
-    if (body[key] !== undefined) updateEnvFileValue(key, String(body[key]));
+    if (body[key] !== undefined) updateEnvFileValue(key, key === "HOST_DATACENTER_ID" ? String(body[key]).trim() : String(body[key]));
   }
   audit(config, req, "setup.write-config", { keys: Object.keys(body).filter((key) => allowed.includes(key)) });
   return json(res, 200, { ok: true });
