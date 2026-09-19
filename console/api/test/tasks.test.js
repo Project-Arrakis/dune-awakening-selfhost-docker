@@ -47,6 +47,27 @@ test("game update check exit 100 is treated as update-available success", async 
   assert.match(task.logLines.map((line) => line.line).join("\n"), /Update available/);
 });
 
+test("game update check failure keeps Steam diagnostics and gives retry guidance", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "arrakis-task-update-failure-"));
+  const duneScript = join(dir, "dune");
+  writeFileSync(duneScript, "#!/usr/bin/env bash\necho 'SteamCMD metadata check timed out after 45s.' >&2\necho 'No game files were changed.' >&2\nexit 2\n", { mode: 0o700 });
+
+  const manager = new TaskManager({
+    duneScript,
+    repoRoot: dir,
+    taskRetention: 20,
+    commandTimeoutMs: 5000
+  });
+
+  const created = manager.create("updates", "updateCheck", { fresh: true });
+  const task = await waitForTask(manager, created.id);
+  assert.equal(task.status, "failed");
+  assert.equal(task.exitCode, 2);
+  assert.equal(task.errorMessage, "Steam did not finish the game update check in time. Try again in a few minutes. No game files were changed.");
+  assert.match(task.logLines.map((line) => line.line).join("\n"), /SteamCMD metadata check timed out after 45s/);
+  assert.doesNotMatch(task.errorMessage, /failed with exit 2/i);
+});
+
 test("USERSETTINGS_WARNING lines surface as task.warnings without disturbing logLines", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-task-warn-"));
   const duneScript = join(dir, "dune");
