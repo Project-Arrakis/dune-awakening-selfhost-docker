@@ -401,7 +401,7 @@ test("redacts credentials in any URI scheme, not only postgres", () => {
 });
 
 test("redaction remains fast on long uncontrolled input", () => {
-  const input = `${"a".repeat(500_000)} not-a-uri DUNE_COMMAND_AUTH_TOKEN=${"x".repeat(500_000)}`;
+  const input = `${"-".repeat(500_000)}! not-a-uri DUNE_COMMAND_AUTH_TOKEN=${"x".repeat(500_000)}`;
   const started = Date.now();
   const output = redact(input);
   assert.ok(Date.now() - started < 2_000);
