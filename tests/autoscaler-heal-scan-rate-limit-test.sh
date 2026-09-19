@@ -110,24 +110,47 @@ sed -n "1,$((tail_line - 1))p" "$script" | sed '/^cd "\$(dirname "\$0")\/\.\.\/\
   export DUNE_AUTOSCALER_DIRECTOR_HEAL_FILE="$work_dir/director-heal.tsv"
 
   # The script's own top-level preflight requires `docker ps` to list
-  # dune-director/dune-postgres or it exits 1. Also serves
-  # scan_named_destination_failures's own `docker ps` call (its hub
-  # containers, matching hub_container_for_map's real outputs) and counts
-  # every `docker logs` invocation so the call-site check below can prove
-  # the gate actually suppresses the expensive work, not just that
+  # dune-director/dune-postgres or it exits 1. Also counts every `docker
+  # logs` invocation so the call-site check below can prove the gate
+  # actually suppresses the expensive work, not just that
   # director_heal_due's own state file logic works in isolation.
   docker_calls_log="$work_dir/docker-calls.log"
   : > "$docker_calls_log"
   docker() {
     echo "$*" >> "$docker_calls_log"
     case "$1" in
-      ps) printf 'dune-director\ndune-postgres\ndune-server-sh-arrakeen-3\ndune-server-sh-harkovillage-4\ndune-server-story-procesverbal-9\n' ;;
+      ps) printf 'dune-director\ndune-postgres\n' ;;
       logs) : ;;
     esac
   }
 
   # shellcheck source=/dev/null
   source "$defs_file" >/dev/null
+
+  # scan_named_destination_failures now sources its rows from
+  # named_destination_source_rows() (DB-driven, replacing the old
+  # hub_container_for_map()/docker-ps lookup) -- stub psql_value and
+  # dynamic_container_name_for_partition (defined after the source above,
+  # so these override the real functions the script just defined, not the
+  # other way around) to hand back one row per real named-destination
+  # source map (named_destination_source_maps' own list), so this call-site
+  # check keeps exercising scan_named_destination_failures' real per-source
+  # docker-logs work against the current implementation.
+  psql_value() {
+    case "$1" in
+      *"wp.map in ("*)
+        printf '%s\n' \
+          'SH_Arrakeen|31|story-server-31' \
+          'SH_HarkoVillage|32|story-server-32' \
+          'Story_ProcesVerbal|33|story-server-33' \
+          'CB_Story_DestroyedZanovar|34|story-server-34' \
+          'CB_Story_OrbitalMonitor|35|story-server-35'
+        ;;
+    esac
+  }
+  dynamic_container_name_for_partition() {
+    printf 'dune-server-story-%s\n' "$1"
+  }
 
   if ! director_heal_due rate_limit_smoke_test 100; then
     echo "expected first director_heal_due call to be due" >&2
@@ -145,21 +168,21 @@ sed -n "1,$((tail_line - 1))p" "$script" | sed '/^cd "\$(dirname "\$0")\/\.\.\/\
     exit 1
   fi
 
-  # Real call-site check: scan_named_destination_failures reads 3 hub
-  # containers per invocation (one `docker logs` each). A due first call
-  # must reach all 3; an immediate second call within the interval must be
-  # suppressed before any of them.
+  # Real call-site check: scan_named_destination_failures reads 5 real
+  # named-destination sources per invocation (one `docker logs` each). A due
+  # first call must reach all 5; an immediate second call within the
+  # interval must be suppressed before any of them.
   scan_named_destination_failures
   logs_after_first="$(grep -c '^logs ' "$docker_calls_log" || true)"
-  [ "$logs_after_first" -eq 3 ] || {
-    echo "expected 3 'docker logs' calls after the first scan_named_destination_failures call, got $logs_after_first" >&2
+  [ "$logs_after_first" -eq 5 ] || {
+    echo "expected 5 'docker logs' calls after the first scan_named_destination_failures call, got $logs_after_first" >&2
     exit 1
   }
 
   scan_named_destination_failures
   logs_after_second="$(grep -c '^logs ' "$docker_calls_log" || true)"
-  [ "$logs_after_second" -eq 3 ] || {
-    echo "expected 'docker logs' call count to stay at 3 after a second scan_named_destination_failures call within the interval (the gate should have suppressed it before any docker logs call), got $logs_after_second" >&2
+  [ "$logs_after_second" -eq 5 ] || {
+    echo "expected 'docker logs' call count to stay at 5 after a second scan_named_destination_failures call within the interval (the gate should have suppressed it before any docker logs call), got $logs_after_second" >&2
     exit 1
   }
 )
