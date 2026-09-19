@@ -170,6 +170,8 @@ assert 'delete_actors_and_respawns_on_server' not in spawn
 
 scan = source.split("scan_idle_servers() {", 1)[1].split("# Hyper-V scales", 1)[0]
 assert "wp.partition_id" in scan
+assert "join dune.actors pawn on pawn.id = ps.player_pawn_id" in scan
+assert "pawn.partition_id = wp.partition_id" in scan
 assert "read -r map partition_id server_id" in scan
 PY
 
