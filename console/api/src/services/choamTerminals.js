@@ -9,10 +9,10 @@ const TERMINAL_PROPERTIES = {
 };
 
 export const CHOAM_TRADE_CENTERS = Object.freeze([
-  { key: "griffins-reach", name: "Griffin's Reach", transform: { x: 23821.424411240638, y: 227439.2148393366, z: 8462.150017758495, qx: 0, qy: 0, qz: 0.5438738297278864, qw: -0.8391670020544909 } },
-  { key: "the-crossroads", name: "The Crossroads", transform: { x: -218903.32254668314, y: -162639.97934556464, z: 7331.373668714201, qx: 0, qy: 0, qz: 0.745993531027832, qw: 0.6659531902954045 } },
-  { key: "pinnacle-station", name: "Pinnacle Station", transform: { x: -32232.274005097282, y: -314295.0529503054, z: 11997.194233616301, qx: 0, qy: 0, qz: 0.6719665312138225, qw: 0.7405815153840007 } },
-  { key: "the-anvil", name: "The Anvil", transform: { x: 192342.5200698719, y: 3865.962718766717, z: 13459.1495039061, qx: 0, qy: 0, qz: 0.13209216855893113, qw: 0.9912374382585633 } }
+  { key: "griffins-reach", name: "Griffin's Reach", transform: { x: 22362.17092, y: 227322.55653, z: 8569.15, qx: 0, qy: 0, qz: 0.587675093782694, qw: -0.809097017759615 } },
+  { key: "the-crossroads", name: "The Crossroads", transform: { x: -219168.952922, y: -163864.859739, z: 7406.37, qx: 0, qy: 0, qz: 0.645243922876868, qw: 0.763976622672756 } },
+  { key: "pinnacle-station", name: "Pinnacle Station", transform: { x: -32508.744912, y: -312507.566723, z: 12072.19, qx: 0, qy: 0, qz: 0.998342907415711, qw: 0.057545105897411 } },
+  { key: "the-anvil", name: "The Anvil", transform: { x: 192623.204276, y: 2451.055987, z: 13551.53, qx: 0, qy: 0, qz: 0.578820294915985, qw: -0.815455128252543 } }
 ]);
 
 const DUPLICATE_RADIUS = 250;
