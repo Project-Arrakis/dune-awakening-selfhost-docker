@@ -971,7 +971,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     if (!(await confirmAction(`Install a CHOAM Exchange terminal at ${center.name}?`, {
       title: `Install at ${center.name}`,
       confirmLabel: "Install Terminals",
-      details: [["Installation Scope", `All ${sietchCount} active Sietches`], ["Reload Required", "Restart Battlegroup"]].map(([label, value]) => ({ label, value }))
+      details: [["Installation Scope", `All ${sietchCount} active Sietches`], ["Reload Required", "Restart Map"]].map(([label, value]) => ({ label, value }))
     }))) return;
     setChoamSavingKey(center.key);
     setChoamResult({ status: "running", title: `Installing ${center.name} Terminals...` });
@@ -982,7 +982,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       setChoamResult({
         status: "succeeded",
         title: created ? "CHOAM Terminals Installed" : "CHOAM Terminals Already Installed",
-        message: created ? `${created} terminal${created === 1 ? "" : "s"} added. Restart the battlegroup to load them in-game.` : "Every active sietch already has this trade-center terminal."
+        message: created ? `${created} terminal${created === 1 ? "" : "s"} added. Restart the map to load them in-game.` : "Every active sietch already has this trade-center terminal."
       });
     } catch (error) {
       setChoamResult({ status: "failed", title: "CHOAM Terminal Installation Failed", message: error instanceof Error ? error.message : String(error) });
@@ -996,14 +996,14 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       title: `Remove from ${center.name}`,
       confirmLabel: "Remove Terminals",
       danger: true,
-      details: [["Tracked Terminals", String(installed)], ["Reload Required", "Restart Battlegroup"]].map(([label, value]) => ({ label, value, tone: label === "Tracked Terminals" ? "danger" as const : undefined }))
+      details: [["Tracked Terminals", String(installed)], ["Reload Required", "Restart Map"]].map(([label, value]) => ({ label, value, tone: label === "Tracked Terminals" ? "danger" as const : undefined }))
     }))) return;
     setChoamSavingKey(center.key);
     setChoamResult({ status: "running", title: `Removing ${center.name} Terminals...` });
     try {
       const result = await mapsApi.removeChoamTerminals(center.key);
       await loadChoamTerminals();
-      setChoamResult({ status: "succeeded", title: "CHOAM Terminals Removed", message: result.removed ? `${result.removed} terminal${result.removed === 1 ? "" : "s"} removed. Restart the battlegroup to unload them in-game.` : "No console-managed terminals were installed at this trade post." });
+      setChoamResult({ status: "succeeded", title: "CHOAM Terminals Removed", message: result.removed ? `${result.removed} terminal${result.removed === 1 ? "" : "s"} removed. Restart the map to unload them in-game.` : "No console-managed terminals were installed at this trade post." });
     } catch (error) {
       setChoamResult({ status: "failed", title: "CHOAM Terminal Removal Failed", message: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -1017,7 +1017,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     if (installed && !(await confirmAction(`Move the ${installed} installed ${center.name} terminal${installed === 1 ? "" : "s"} to the new position?`, {
       title: `Move ${center.name}`,
       confirmLabel: "Save And Move",
-      warning: "The existing terminals are removed and reinstalled at the new position in a single step."
+      warning: "The existing terminals are removed and reinstalled at the new position in a single step.",
+      details: [["Tracked Terminals", String(installed)], ["Reload Required", "Restart Map"]].map(([label, value]) => ({ label, value }))
     }))) return;
     setChoamSavingKey(center.key);
     setChoamResult({ status: "running", title: `Saving ${center.name} Position...` });
@@ -1030,7 +1031,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       });
       await loadChoamTerminals();
       const message = result.moved
-        ? `Position saved and ${result.moved.created} terminal${result.moved.created === 1 ? "" : "s"} moved. Restart the battlegroup for the change to appear in-game.`
+        ? `Position saved and ${result.moved.created} terminal${result.moved.created === 1 ? "" : "s"} moved. Restart the map for the change to appear in-game.`
         : result.reinstallRequired
           ? `Position saved for ${center.name}. Remove and reinstall its terminals for the new position to take effect.`
           : `Position saved for ${center.name}. It will be used the next time terminals are installed.`;
@@ -2501,7 +2502,7 @@ function ChoamTerminalsEditor({
   const activeSietches = overview?.sietches.length || 0;
   return <section className="choam-terminals-editor">
     <div className="choam-terminals-toolbar">
-      <p>Restart the battlegroup after installing or removing terminals for the changes to appear in-game.</p>
+      <p>Restart the map after installing, moving or removing terminals for the changes to appear in-game.</p>
     </div>
     {result && <div className="maps-result-slot"><HomeTaskResultCard result={result} /></div>}
     {!overview ? <div className="empty">CHOAM terminal state is loading.</div> : null}
@@ -2833,6 +2834,7 @@ export function ChoamPositionEditor({
       {editedValid && !withinBound ? <p className="choam-position-editor-warning">This position is outside the allowed range for this trade post.</p> : null}
     </> : null}
     <p className="choam-position-editor-note">The game writes character positions about once a minute. Capture waits for that write and for the character to hold still across it, so it can take up to two minutes.</p>
+    <p className="choam-position-editor-restart">Saving records the position. An installed terminal only moves in-game after a map restart.</p>
     <div className="action-row">
       <button disabled={!editedValid || !withinBound || saving} onClick={() => edited && onSave(center, { x: edited.x, y: edited.y, z: edited.z, yaw: normalizeHeading(edited.heading - 90) }, selectedPlayerId)}>{saving ? "Saving..." : "Save position"}</button>
       {center.custom ? <button className="danger" disabled={saving} onClick={() => onReset(center)}>{saving ? "Working..." : "Reset to default"}</button> : null}

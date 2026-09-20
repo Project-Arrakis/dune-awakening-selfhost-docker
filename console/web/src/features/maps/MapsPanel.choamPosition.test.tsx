@@ -73,6 +73,12 @@ describe("CHOAM position editor", () => {
     await waitFor(() => expect(select).toBeDisabled());
   });
 
+  it("states that an installed terminal only moves after a restart", async () => {
+    renderEditor();
+    await screen.findByLabelText("X");
+    expect(screen.getByText(/only moves in-game after a map restart/i)).toBeTruthy();
+  });
+
   it("refuses a position outside the trade post bound", async () => {
     renderEditor();
     const x = await screen.findByLabelText("X");

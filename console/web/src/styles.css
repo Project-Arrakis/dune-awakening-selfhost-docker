@@ -7278,3 +7278,4 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 .choam-dial-needle { stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; }
 .choam-dial-grip { fill: var(--accent-strong); }
 .choam-dial-hub { fill: var(--muted); }
+.choam-position-editor-restart { margin: 0; font-size: 12px; color: var(--muted-warm); }
