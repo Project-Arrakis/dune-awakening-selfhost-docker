@@ -3301,13 +3301,26 @@ export async function playerPosition(db, id) {
     const result = await db.query(`
       select id as actor_id,
              map,
+             -- Bumped by the game's periodic row flush (~60s) even when the
+             -- character has not moved, so it doubles as a freshness marker:
+             -- once it advances, the row was rewritten with the live position.
+             serial::text as serial,
              ((transform).location).x as x,
              ((transform).location).y as y,
              ((transform).location).z as z,
-             -- Pure-yaw quaternion (qx/qy are 0 for pawns): the heading the
-             -- character is facing. Was hardcoded to 0, so "use current
-             -- position" never reflected real facing.
-             mod((degrees(2*atan2(((transform).rotation).z, ((transform).rotation).w)))::numeric + 360, 360)::float8 as yaw,
+             -- Heading the character is facing. Was hardcoded to 0, so "use
+             -- current position" never reflected real facing.
+             --
+             -- Full-quaternion yaw extraction, not the 2*atan2(z,w) shortcut:
+             -- roughly 7% of real player pawns carry non-zero qx/qy (pitch or
+             -- roll from slopes, vehicles or ragdoll), and the shortcut is only
+             -- exact when both are zero.
+             mod((degrees(atan2(
+                    2 * (((transform).rotation).w * ((transform).rotation).z
+                       + ((transform).rotation).x * ((transform).rotation).y),
+                    1 - 2 * (((transform).rotation).y * ((transform).rotation).y
+                           + ((transform).rotation).z * ((transform).rotation).z)
+                  )))::numeric + 360, 360)::float8 as yaw,
              (transform).location::text as location,
              (transform).rotation::text as rotation
       from dune.actors

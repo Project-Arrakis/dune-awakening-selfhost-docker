@@ -1,6 +1,6 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, Download, Grid2X2, Info, List, Lock, MapPin, RotateCcw } from "lucide-react";
-import { mapsApi, type ActiveSpicefieldRow, type ChoamCapturedPlacement, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
+import { mapsApi, type ChoamTransform, type ChoamCaptureBaseline, type ActiveSpicefieldRow, type ChoamCapturedPlacement, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
 import { playersApi } from "../../api/players";
 import { runGatedRestart, type RestartGate, type RestartGateChoice } from "../server/restartQueueGuard";
 import { serverApi, type RestartQueueTarget } from "../../api/server";
@@ -1010,17 +1010,31 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       setChoamSavingKey("");
     }
   }
-  async function saveChoamPosition(center: ChoamTradeCenter, placement: ChoamCapturedPlacement, playerId: string) {
+  async function saveChoamPosition(center: ChoamTradeCenter, position: { x: number; y: number; z: number; yaw: number }, playerId: string) {
+    const installed = choamOverview?.placements.filter((entry) => entry.trade_center_key === center.key && entry.actor_present).length || 0;
+    // Moving an installed terminal destroys and recreates its actors, so it is
+    // confirmed like the other destructive actions on this panel.
+    if (installed && !(await confirmAction(`Move the ${installed} installed ${center.name} terminal${installed === 1 ? "" : "s"} to the new position?`, {
+      title: `Move ${center.name}`,
+      confirmLabel: "Save And Move",
+      warning: "The existing terminals are removed and reinstalled at the new position in a single step."
+    }))) return;
     setChoamSavingKey(center.key);
     setChoamResult({ status: "running", title: `Saving ${center.name} Position...` });
     try {
-      const result = await mapsApi.setChoamPosition({ tradeCenterKey: center.key, x: placement.x, y: placement.y, z: placement.z, yaw: placement.yaw, sourcePlayerId: playerId || undefined });
-      await loadChoamTerminals();
-      setChoamResult({
-        status: "succeeded",
-        title: "CHOAM Terminal Position Saved",
-        message: result.reinstallRequired ? `Position saved for ${center.name}. Remove and reinstall its terminals for the new position to take effect.` : `Position saved for ${center.name}.`
+      const result = await mapsApi.setChoamPosition({
+        tradeCenterKey: center.key,
+        x: position.x, y: position.y, z: position.z, yaw: position.yaw,
+        sourcePlayerId: playerId || undefined,
+        applyNow: installed > 0
       });
+      await loadChoamTerminals();
+      const message = result.moved
+        ? `Position saved and ${result.moved.created} terminal${result.moved.created === 1 ? "" : "s"} moved. Restart the battlegroup for the change to appear in-game.`
+        : result.reinstallRequired
+          ? `Position saved for ${center.name}. Remove and reinstall its terminals for the new position to take effect.`
+          : `Position saved for ${center.name}. It will be used the next time terminals are installed.`;
+      setChoamResult({ status: "succeeded", title: "CHOAM Terminal Position Saved", message });
     } catch (error) {
       setChoamResult({ status: "failed", title: "CHOAM Terminal Position Save Failed", message: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -2419,7 +2433,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
           result={choamResult}
           onInstall={(center) => run(() => installChoamCenter(center))}
           onRemove={(center) => run(() => removeChoamCenter(center))}
-          onSavePosition={(center, placement, playerId) => run(() => saveChoamPosition(center, placement, playerId))}
+          onSavePosition={(center, position, playerId) => run(() => saveChoamPosition(center, position, playerId))}
           onResetPosition={(center) => run(() => resetChoamPosition(center))}
         />
       </>}</div>}
@@ -2480,7 +2494,7 @@ function ChoamTerminalsEditor({
   result: HomeTaskResult | null;
   onInstall: (center: ChoamTradeCenter) => void;
   onRemove: (center: ChoamTradeCenter) => void;
-  onSavePosition: (center: ChoamTradeCenter, placement: ChoamCapturedPlacement, playerId: string) => void;
+  onSavePosition: (center: ChoamTradeCenter, position: { x: number; y: number; z: number; yaw: number }, playerId: string) => void;
   onResetPosition: (center: ChoamTradeCenter) => void;
 }) {
   const [expandedKey, setExpandedKey] = useState("");
@@ -2537,7 +2551,97 @@ function ChoamTerminalsEditor({
 
 type ChoamPlayerOption = { id: string; name: string };
 
-function ChoamPositionEditor({
+
+// The stored quaternion is pure yaw; heading is that yaw plus the mesh's 90
+// degree front offset, i.e. the direction the console actually points.
+function formFromTransform(transform: ChoamTransform) {
+  const yaw = (Math.atan2(transform.qz, transform.qw) * 2 * 180) / Math.PI;
+  return {
+    x: String(transform.x),
+    y: String(transform.y),
+    z: String(transform.z),
+    heading: String(Math.round(normalizeHeading(yaw + 90) * 10) / 10)
+  };
+}
+
+function finiteField(value: string) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeHeading(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return ((value % 360) + 360) % 360;
+}
+
+// World heading, not the stored yaw: 0 points along +X, 90 along +Y, and the
+// dial draws +Y upward so it reads like a map rather than a rotation value.
+export function HeadingDial({ value, onChange }: { value: number; onChange: (next: number) => void }) {
+  const ref = useRef<SVGSVGElement | null>(null);
+  const size = 160;
+  const centre = size / 2;
+  const radius = 52;
+  const radians = (normalizeHeading(value) * Math.PI) / 180;
+  const tipX = centre + radius * Math.cos(radians);
+  const tipY = centre - radius * Math.sin(radians);
+
+  function headingFromEvent(event: { clientX: number; clientY: number }) {
+    const box = ref.current?.getBoundingClientRect();
+    if (!box) return null;
+    const dx = event.clientX - (box.left + box.width / 2);
+    const dy = (box.top + box.height / 2) - event.clientY;
+    if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return null;
+    return normalizeHeading((Math.atan2(dy, dx) * 180) / Math.PI);
+  }
+
+  function handlePointer(event: ReactPointerEvent<SVGSVGElement>) {
+    if (event.buttons === 0 && event.type === "pointermove") return;
+    const heading = headingFromEvent(event);
+    if (heading !== null) onChange(heading);
+  }
+
+  return <svg
+    ref={ref}
+    className="choam-dial"
+    viewBox={`0 0 ${size} ${size}`}
+    role="slider"
+    tabIndex={0}
+    aria-label="Direction the terminal faces, in degrees"
+    aria-valuemin={0}
+    aria-valuemax={359}
+    aria-valuenow={Math.round(normalizeHeading(value))}
+    onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); handlePointer(event); }}
+    onPointerMove={handlePointer}
+    onKeyDown={(event) => {
+      const step = event.shiftKey ? 15 : 1;
+      if (event.key === "ArrowLeft" || event.key === "ArrowUp") { event.preventDefault(); onChange(normalizeHeading(value + step)); }
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") { event.preventDefault(); onChange(normalizeHeading(value - step)); }
+    }}
+  >
+    <circle cx={centre} cy={centre} r={radius + 8} className="choam-dial-face" />
+    {[0, 45, 90, 135, 180, 225, 270, 315].map((tick) => {
+      const tickRadians = (tick * Math.PI) / 180;
+      const inner = tick % 90 === 0 ? radius - 6 : radius - 3;
+      return <line
+        key={tick}
+        x1={centre + inner * Math.cos(tickRadians)}
+        y1={centre - inner * Math.sin(tickRadians)}
+        x2={centre + (radius + 1) * Math.cos(tickRadians)}
+        y2={centre - (radius + 1) * Math.sin(tickRadians)}
+        className={tick % 90 === 0 ? "choam-dial-tick choam-dial-tick-major" : "choam-dial-tick"}
+      />;
+    })}
+    <text x={size - 6} y={centre + 4} className="choam-dial-axis" textAnchor="end">+X</text>
+    <text x={centre} y={14} className="choam-dial-axis" textAnchor="middle">+Y</text>
+    <line x1={centre} y1={centre} x2={tipX} y2={tipY} className="choam-dial-needle" />
+    <circle cx={tipX} cy={tipY} r={7} className="choam-dial-grip" />
+    <circle cx={centre} cy={centre} r={3} className="choam-dial-hub" />
+  </svg>;
+}
+
+export function ChoamPositionEditor({
   center,
   limits,
   saving,
@@ -2548,7 +2652,7 @@ function ChoamPositionEditor({
   center: ChoamTradeCenter;
   limits: { radiusUu: number; verticalUu: number };
   saving: boolean;
-  onSave: (center: ChoamTradeCenter, placement: ChoamCapturedPlacement, playerId: string) => void;
+  onSave: (center: ChoamTradeCenter, position: { x: number; y: number; z: number; yaw: number }, playerId: string) => void;
   onReset: (center: ChoamTradeCenter) => void;
   onClose: () => void;
 }) {
@@ -2558,6 +2662,17 @@ function ChoamPositionEditor({
   const [capturing, setCapturing] = useState(false);
   const [captureMessage, setCaptureMessage] = useState("");
   const [captured, setCaptured] = useState<ChoamCapturedPlacement | null>(null);
+  // Editable copy of the capture. Heading is the direction the terminal faces
+  // (stored yaw + 90), because that is what the operator is actually aiming.
+  const [form, setForm] = useState<{ x: string; y: string; z: string; heading: string } | null>(() => formFromTransform(center.transform));
+  const [waited, setWaited] = useState(0);
+  const [captureState, setCaptureState] = useState<"waiting" | "moving" | null>(null);
+  const [cycleSeconds, setCycleSeconds] = useState(0);
+  const cancelCapture = useRef(false);
+  // Read inside the polling loop, which closes over a stale selectedPlayerId.
+  const selectedPlayerIdRef = useRef("");
+  useEffect(() => { selectedPlayerIdRef.current = selectedPlayerId; }, [selectedPlayerId]);
+  useEffect(() => () => { cancelCapture.current = true; }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -2577,65 +2692,158 @@ function ChoamPositionEditor({
 
   async function useCharacterPosition() {
     if (!selectedPlayerId) return;
+    cancelCapture.current = false;
     setCapturing(true);
+    setCaptured(null);
     setCaptureMessage("");
+    setWaited(0);
+    setCaptureState(null);
+    setCycleSeconds(0);
+    const startedAt = Date.now();
+    // Reset whenever a save catches the character mid-move, so the progress bar
+    // tracks the wait for the NEXT save rather than total elapsed time.
+    let cycleStartedAt = Date.now();
+    let baseline: ChoamCaptureBaseline | null = null;
+    const capturingFor = selectedPlayerId;
     try {
-      const result = await mapsApi.captureChoamPosition(center.key, selectedPlayerId);
-      if (!result.supported || !result.placement) {
-        setCaptured(null);
-        setCaptureMessage(result.reason || "That character has no stored position yet.");
-        return;
+      for (;;) {
+        if (cancelCapture.current || capturingFor !== selectedPlayerIdRef.current) return;
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
+        setWaited(elapsed);
+        setCycleSeconds(Math.round((Date.now() - cycleStartedAt) / 1000));
+        if (elapsed > CHOAM_CAPTURE_TIMEOUT_SECONDS) {
+          setCaptureMessage("The game has not written that character's position yet. Stand still and try again.");
+          return;
+        }
+        const result = await mapsApi.captureChoamPosition(center.key, selectedPlayerId, baseline);
+        if (!result.supported || !result.placement || !result.source) {
+          setCaptureMessage(result.reason || "That character has no stored position yet.");
+          return;
+        }
+        if (result.ready) {
+          setCaptured(result.placement);
+          setForm({
+            x: String(result.placement.x),
+            y: String(result.placement.y),
+            z: String(result.placement.z),
+            heading: String(normalizeHeading(result.placement.yaw + 90))
+          });
+          return;
+        }
+        setCaptureState(result.state === "moving" ? "moving" : "waiting");
+        if (result.state === "moving") cycleStartedAt = Date.now();
+        baseline = {
+          serial: result.serial || "",
+          x: Number(result.source.x),
+          y: Number(result.source.y),
+          z: Number(result.source.z),
+          yaw: Number(result.source.yaw || 0)
+        };
+        await new Promise((resolve) => setTimeout(resolve, CHOAM_CAPTURE_POLL_MS));
       }
-      setCaptured(result.placement);
     } catch (error) {
-      setCaptured(null);
       setCaptureMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setCapturing(false);
     }
   }
 
-  const distanceMeters = captured ? captured.distanceUu / 100 : 0;
+  // Recomputed from the edited values against the post's SHIPPED default, which
+  // is what the server validates against on save.
+  // Mirrors finiteCoordinate() on the server: Number("") is 0, so a cleared
+  // field would otherwise pass validation and silently save that axis as zero.
+  const parsed = form
+    ? { x: finiteField(form.x), y: finiteField(form.y), z: finiteField(form.z), heading: finiteField(form.heading) }
+    : null;
+  const editedValid = Boolean(parsed && Object.values(parsed).every((value) => value !== null));
+  const edited = editedValid && parsed
+    ? { x: parsed.x as number, y: parsed.y as number, z: parsed.z as number, heading: parsed.heading as number }
+    : null;
+  const base = center.defaultTransform;
+  const distanceUu = edited && editedValid && base
+    ? Math.sqrt((edited.x - base.x) ** 2 + (edited.y - base.y) ** 2)
+    : captured?.distanceUu ?? 0;
+  const verticalUu = edited && editedValid && base ? Math.abs(edited.z - base.z) : captured?.verticalUu ?? 0;
+  const withinBound = distanceUu <= limits.radiusUu && verticalUu <= limits.verticalUu;
+  const distanceMeters = distanceUu / 100;
   const limitMeters = limits.radiusUu / 100;
-  const barPercent = captured ? Math.min(100, (captured.distanceUu / limits.radiusUu) * 100) : 0;
+  const barPercent = Math.min(100, (distanceUu / limits.radiusUu) * 100);
+
+  function setField(field: "x" | "y" | "z" | "heading", value: string) {
+    setForm((current) => (current ? { ...current, [field]: value } : current));
+  }
 
   return <div className="choam-position-editor">
-    <p className="choam-position-editor-hint">Stand where the terminal should go, facing the way it should face, then capture.</p>
+    <p className="choam-position-editor-hint">Edit the position directly, or stand where the terminal should go facing the way it should face and capture it from a character.</p>
     <div className="choam-position-editor-controls">
       <label className="compact-select">Character
-        <select value={selectedPlayerId} onChange={(event) => { setSelectedPlayerId(event.target.value); setCaptured(null); setCaptureMessage(""); }} disabled={playersLoading}>
+        <select value={selectedPlayerId} onChange={(event) => { cancelCapture.current = true; setCapturing(false); setSelectedPlayerId(event.target.value); setCaptured(null); setCaptureMessage(""); }} disabled={playersLoading || capturing}>
           <option value="">{playersLoading ? "Loading online characters..." : "Select an online character"}</option>
           {(players || []).map((player) => <option key={player.id} value={player.id}>{player.name}</option>)}
         </select>
       </label>
-      <button disabled={!selectedPlayerId || capturing} onClick={() => void useCharacterPosition()}>{capturing ? "Capturing..." : "Use character position"}</button>
+      <button disabled={!selectedPlayerId || capturing} onClick={() => void useCharacterPosition()}>Use character position</button>
     </div>
+    {capturing ? <div className="choam-capture-steps">
+      <div className="choam-capture-step">
+        <span className="spinner choam-capture-spinner" aria-hidden="true" />
+        <div className="choam-capture-step-body">
+          <p className="choam-capture-step-label">Waiting for the game to save the character position</p>
+          <span className="choam-capture-bar"><span style={{ width: `${Math.min(100, (cycleSeconds / CHOAM_HEARTBEAT_SECONDS) * 100)}%` }} /></span>
+          <p className="choam-capture-step-note">
+            {captureState === "moving"
+              ? "That save caught the character moving. Waiting for the next one."
+              : `Saves happen about once a minute. ${waited}s so far.`}
+          </p>
+        </div>
+      </div>
+      <div className="choam-capture-step choam-capture-step-pending">
+        <span className="choam-capture-dot" aria-hidden="true" />
+        <div className="choam-capture-step-body">
+          <p className="choam-capture-step-label">Confirming the character held still across that save</p>
+        </div>
+      </div>
+      <button className="choam-capture-stop" onClick={() => { cancelCapture.current = true; setCapturing(false); }}>Stop waiting</button>
+    </div> : null}
     {players && !playersLoading && !players.length ? <p className="empty">No characters are online right now.</p> : null}
     {captureMessage ? <p className="choam-position-editor-message">{captureMessage}</p> : null}
-    {captured ? <>
-      <div className="choam-position-editor-tiles">
-        <div className="choam-position-tile"><span>X</span><strong>{captured.x.toFixed(1)}</strong></div>
-        <div className="choam-position-tile"><span>Y</span><strong>{captured.y.toFixed(1)}</strong></div>
-        <div className="choam-position-tile"><span>Z</span><strong>{captured.z.toFixed(1)}</strong></div>
-        <div className="choam-position-tile"><span>Facing</span><strong>{captured.yaw.toFixed(1)}&deg;</strong></div>
+    {form ? <>
+      <div className="choam-position-sections">
+        <fieldset className="choam-position-section">
+          <legend>Position</legend>
+          <label>X<input type="number" step="1" value={form.x} onChange={(event) => setField("x", event.target.value)} /></label>
+          <label>Y<input type="number" step="1" value={form.y} onChange={(event) => setField("y", event.target.value)} /></label>
+          <label>Z<input type="number" step="1" value={form.z} onChange={(event) => setField("z", event.target.value)} /></label>
+        </fieldset>
+        <fieldset className="choam-position-section choam-position-section-facing">
+          <legend>Facing</legend>
+          <HeadingDial value={Number(form.heading) || 0} onChange={(next) => setField("heading", String(Math.round(next * 10) / 10))} />
+          <label className="choam-heading-value"><span className="sr-only">Facing in degrees</span><input type="number" step="1" value={form.heading} onChange={(event) => setField("heading", event.target.value)} /></label>
+        </fieldset>
       </div>
+      <p className="choam-position-editor-note">Drag the dial or type a heading. Arrow keys nudge by 1 degree, shift-arrow by 15.</p>
+      {!editedValid ? <p className="choam-position-editor-warning">Every value must be a number.</p> : null}
       <div className="choam-position-editor-distance">
         <span>{distanceMeters.toFixed(1)} m from the trade post</span>
         <span className="choam-position-editor-limit">limit {limitMeters.toFixed(1)} m</span>
       </div>
-      <div className={`choam-position-bar-track${captured.withinBound ? "" : " choam-position-bar-danger"}`}>
+      <div className={`choam-position-bar-track${withinBound ? "" : " choam-position-bar-danger"}`}>
         <span className="choam-position-bar-fill" style={{ width: `${barPercent}%` }} />
       </div>
-      {!captured.withinBound ? <p className="choam-position-editor-warning">This position is outside the allowed range for this trade post.</p> : null}
+      {editedValid && !withinBound ? <p className="choam-position-editor-warning">This position is outside the allowed range for this trade post.</p> : null}
     </> : null}
-    <p className="choam-position-editor-note">Positions save on a delay - stand still before capturing.</p>
+    <p className="choam-position-editor-note">The game writes character positions about once a minute. Capture waits for that write and for the character to hold still across it, so it can take up to two minutes.</p>
     <div className="action-row">
-      <button disabled={!captured || !captured.withinBound || saving} onClick={() => captured && onSave(center, captured, selectedPlayerId)}>{saving ? "Saving..." : "Save position"}</button>
+      <button disabled={!editedValid || !withinBound || saving} onClick={() => edited && onSave(center, { x: edited.x, y: edited.y, z: edited.z, yaw: normalizeHeading(edited.heading - 90) }, selectedPlayerId)}>{saving ? "Saving..." : "Save position"}</button>
       {center.custom ? <button className="danger" disabled={saving} onClick={() => onReset(center)}>{saving ? "Working..." : "Reset to default"}</button> : null}
       <button disabled={saving} onClick={onClose}>Cancel</button>
     </div>
   </div>;
 }
+
+const CHOAM_CAPTURE_TIMEOUT_SECONDS = 150;
+const CHOAM_HEARTBEAT_SECONDS = 60;
+const CHOAM_CAPTURE_POLL_MS = 3000;
 
 type MatchRegionControl = { fieldId: string; enabled: boolean; available: boolean; regionLabel: string; regionValueLabel: string; onToggle: (next: boolean) => void };
 

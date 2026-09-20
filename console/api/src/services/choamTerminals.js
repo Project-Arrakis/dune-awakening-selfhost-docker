@@ -105,13 +105,64 @@ export function evaluatePlacementBounds(tradeCenterKey, position = {}) {
   };
 }
 
+// Decides whether a freshly-read player position can be trusted for placement.
+//
+// dune.actors lags live movement, so a position read on demand may be stale --
+// and repeated reads inside that lag window return identical stale values, so
+// sampling alone cannot detect it. What makes this decidable is `serial`: the
+// game rewrites the row on a periodic heartbeat (~60s measured on dune2) even
+// when the character has not moved. Once serial advances past the baseline,
+// that row was written with the character's live position, so it is current by
+// construction -- no window to guess at.
+//
+// Caller supplies the baseline captured when the operator pressed capture, and
+// polls until this returns `ready`.
+export function evaluateCaptureFreshness(baseline, current) {
+  if (!current) return { ready: false, state: "unavailable" };
+  const currentSerial = String(current.serial ?? "");
+  if (!baseline || !baseline.serial) {
+    // First read: establishes the baseline, never accepted on its own.
+    return { ready: false, state: "waiting", serial: currentSerial };
+  }
+  if (currentSerial === String(baseline.serial)) {
+    return { ready: false, state: "waiting", serial: currentSerial };
+  }
+  // The heartbeat fired. If the position it wrote matches the baseline, the
+  // character was stationary across the whole interval.
+  const moved = !samePosition(baseline, current);
+  return {
+    ready: !moved,
+    state: moved ? "moving" : "ready",
+    serial: currentSerial,
+    movedUu: moved ? distanceBetween(baseline, current) : 0
+  };
+}
+
+function samePosition(a, b) {
+  return Number(a.x) === Number(b.x)
+    && Number(a.y) === Number(b.y)
+    && Number(a.z) === Number(b.z)
+    && normalizeDegrees(a.yaw) === normalizeDegrees(b.yaw);
+}
+
+function distanceBetween(a, b) {
+  const dx = Number(b.x) - Number(a.x);
+  const dy = Number(b.y) - Number(a.y);
+  const dz = Number(b.z) - Number(a.z);
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
 function applyPositionOverride(center, row) {
-  if (!row) return { ...center, custom: false };
+  // defaultTransform travels with every entry so the client can recompute the
+  // trade-post bound while the operator edits -- the bound is measured from the
+  // shipped default, never from whatever override is currently saved.
+  const base = { ...center, defaultTransform: center.transform };
+  if (!row) return { ...base, custom: false };
   const transform = {
     x: Number(row.x), y: Number(row.y), z: Number(row.z),
     qx: 0, qy: 0, qz: Number(row.qz), qw: Number(row.qw)
   };
-  return { ...center, custom: true, transform, updatedAt: row.updated_at || "" };
+  return { ...base, custom: true, transform, updatedAt: row.updated_at || "" };
 }
 
 async function requiredTablesAvailable(db) {
@@ -241,9 +292,18 @@ async function nearbyTerminal(tx, partitionId, dimensionIndex, transform) {
 export async function installChoamTerminals(db, { tradeCenterKey } = {}) {
   const baseCenter = defaultCenterForKey(tradeCenterKey);
   if (!(await requiredTablesAvailable(db))) throw serviceError("CHOAM terminal placement is unavailable for this database schema.", 409);
-
   return db.transaction(async (tx) => {
     await tx.query("select pg_advisory_xact_lock(hashtext('dune-docker-choam-terminals'))");
+    return installWithin(tx, baseCenter);
+  });
+}
+
+// Body of an install, minus the transaction and lock, so that a reposition can
+// remove and reinstall inside ONE transaction. If the install half throws, the
+// remove half rolls back with it and the trade post keeps its old terminal
+// rather than ending up with none.
+async function installWithin(tx, baseCenter) {
+  {
     await ensureTrackingTable(tx);
     await ensurePositionTable(tx);
     // Resolved inside the lock so a concurrent position save cannot install a
@@ -300,7 +360,7 @@ export async function installChoamTerminals(db, { tradeCenterKey } = {}) {
       position: { x: transform.x, y: transform.y, z: transform.z },
       restartRequired: created.length > 0
     };
-  });
+  }
 }
 
 export async function removeChoamTerminals(db, { tradeCenterKey } = {}) {
@@ -308,6 +368,12 @@ export async function removeChoamTerminals(db, { tradeCenterKey } = {}) {
   if (!(await trackingTableAvailable(db))) return { ok: true, tradeCenter: center, removed: 0, restartRequired: false };
   return db.transaction(async (tx) => {
     await tx.query("select pg_advisory_xact_lock(hashtext('dune-docker-choam-terminals'))");
+    return removeWithin(tx, center);
+  });
+}
+
+async function removeWithin(tx, center) {
+  {
     const result = await tx.query(`
       select actor_id::text
       from dune.admin_choam_terminals
@@ -317,10 +383,10 @@ export async function removeChoamTerminals(db, { tradeCenterKey } = {}) {
     if (ids.length) await tx.query("delete from dune.actors where id = any($1::bigint[])", [ids]);
     await tx.query("delete from dune.admin_choam_terminals where trade_center_key = $1", [center.key]);
     return { ok: true, tradeCenter: center, removed: ids.length, restartRequired: ids.length > 0 };
-  });
+  }
 }
 
-export async function setChoamTerminalPosition(db, { tradeCenterKey, x, y, z, yaw, sourcePlayerId } = {}) {
+export async function setChoamTerminalPosition(db, { tradeCenterKey, x, y, z, yaw, sourcePlayerId, applyNow = false } = {}) {
   const base = defaultCenterForKey(tradeCenterKey);
   const position = {
     x: finiteCoordinate(x, "X"),
@@ -354,24 +420,39 @@ export async function setChoamTerminalPosition(db, { tradeCenterKey, x, y, z, ya
       base.key, position.x, position.y, position.z, rotation.qz, rotation.qw, playerId
     ]);
     const installed = await installedCountForKey(tx, base.key);
+    // Moving an installed terminal is a remove + install, never an in-place
+    // UPDATE of dune.actors -- that path was never verified and this game
+    // silently ignores some direct DML. Both halves run in THIS transaction, so
+    // a failure cannot leave the trade post with no terminal at all.
+    let moved = null;
+    if (applyNow && installed > 0) {
+      const removal = await removeWithin(tx, base);
+      const install = await installWithin(tx, base);
+      moved = { removed: removal.removed, created: install.created.length };
+    }
     return {
       ok: true,
       tradeCenter: applyPositionOverride(base, await loadPositionOverride(tx, base.key)),
       ...bounds,
       yaw: normalizeDegrees(yaw),
-      // Saving only changes what the NEXT install writes. An in-place update of
-      // dune.actors is not attempted -- that path was never verified and this
-      // game silently ignores some direct DML.
-      reinstallRequired: installed > 0
+      moved,
+      restartRequired: Boolean(moved && moved.created > 0),
+      reinstallRequired: installed > 0 && !moved
     };
   });
 }
 
 export async function clearChoamTerminalPosition(db, { tradeCenterKey } = {}) {
   const base = defaultCenterForKey(tradeCenterKey);
-  if (!(await positionTableAvailable(db))) return { ok: true, tradeCenter: { ...base, custom: false }, cleared: 0, reinstallRequired: false };
   return db.transaction(async (tx) => {
     await tx.query("select pg_advisory_xact_lock(hashtext('dune-docker-choam-terminals'))");
+    // Probed inside the lock, not before it: a concurrent first-ever save
+    // creates this table while holding the same lock, so a probe on the pool
+    // could miss a row that exists by the time the delete runs and wrongly
+    // report the post as uncustomised.
+    if (!(await positionTableAvailable(tx))) {
+      return { ok: true, tradeCenter: { ...base, custom: false }, cleared: 0, reinstallRequired: false };
+    }
     const result = await tx.query("delete from dune.admin_choam_terminal_positions where trade_center_key = $1", [base.key]);
     const installed = await installedCountForKey(tx, base.key);
     return {

@@ -323,7 +323,9 @@ export const ROUTE_ACTIONS = {
   "GET /api/maps/spicefields":                 "maps:read",
   "GET /api/maps/combat-state":                "maps:read",
   "GET /api/maps/choam-terminals":             "maps:read",
-  "GET /api/maps/choam-terminals/capture":     "maps:read",
+  // Returns a live player position, so it is gated on players:read like the
+  // other player-location route rather than on maps:read.
+  "GET /api/maps/choam-terminals/capture":     "players:read",
   "GET /api/maps/user-settings/schema":        "maps:read",
   "GET /api/maps/user-settings/restart-pending":"maps:read",
   "GET /api/maps/user-settings/deferred-pending":"maps:read",

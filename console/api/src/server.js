@@ -65,7 +65,7 @@ import { deleteAddonData, listAddonData, readAddonData, writeAddonData } from ".
 import { createAddonDeliveryService, deferAddonDelivery } from "./addonDeliveries.js";
 import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, refreshBuybackLog, readBuybackLog, clearBuybackLog, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
-import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals, setChoamTerminalPosition, clearChoamTerminalPosition, derivePlacementFromPlayer } from "./services/choamTerminals.js";
+import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals, setChoamTerminalPosition, clearChoamTerminalPosition, derivePlacementFromPlayer, evaluateCaptureFreshness } from "./services/choamTerminals.js";
 import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
 import { ensureExchangeHistory, listExchangeTransactions } from "./services/exchangeHistory.js";
 import { listMarketExchanges, marketBotStatus, saveMarketBuybackSchedule, saveMarketSeedSchedule, decodeSeedPlanCsvUpload, exportMarketSeedPlanCsv, importMarketSeedPlanFromCsv, renameMarketSeedPlan, setActiveMarketSeedPlan } from "./services/exchangeMarket.js";
@@ -1190,7 +1190,7 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/maps\/spicefields\/[^/]+$/) && req.method === "PATCH") return mapsSpicefieldUpdateRoute(req, res, path);
   if (path === "/api/maps/spicefields") return dbJson(res, () => duneDb.listSpicefieldTypes(db));
   if (path === "/api/maps/combat-state") return mapCombatStateRoute(res, url);
-  if (path === "/api/maps/choam-terminals/capture" && req.method === "GET") return mapsChoamTerminalCaptureRoute(res, url.searchParams.get("tradeCenterKey") || "", url.searchParams.get("playerId") || "");
+  if (path === "/api/maps/choam-terminals/capture" && req.method === "GET") return mapsChoamTerminalCaptureRoute(res, url.searchParams.get("tradeCenterKey") || "", url.searchParams.get("playerId") || "", url.searchParams);
   if (path === "/api/maps/choam-terminals/position" && req.method === "POST") return mapsChoamTerminalPositionSaveRoute(req, res);
   if (path === "/api/maps/choam-terminals/position" && req.method === "DELETE") return mapsChoamTerminalPositionClearRoute(req, res);
   if (path === "/api/maps/choam-terminals" && req.method === "POST") return mapsChoamTerminalInstallRoute(req, res);
@@ -1830,18 +1830,35 @@ async function mapsChoamTerminalInstallRoute(req, res) {
 }
 
 // Preview only -- derives where a terminal would sit if it were placed at the
-// character's position and saves nothing, so the operator sees the numbers and
-// the trade-post bound before committing.
-async function mapsChoamTerminalCaptureRoute(res, tradeCenterKey, playerId) {
+// character's position, and saves nothing.
+//
+// Returns quickly and is polled by the client rather than blocking: waiting for
+// the game's row heartbeat can take up to ~2 minutes, which no HTTP request
+// should hold open. The client passes back the baseline from its first call.
+async function mapsChoamTerminalCaptureRoute(res, tradeCenterKey, playerId, params) {
   return dbJson(res, async () => {
-    // Same target resolution dbPlayerRoute applies to /api/players/:id/position,
-    // so this route cannot read a character the caller could not read directly.
     await duneDb.resolvePlayerTargetCached(db, playerId);
     const current = await duneDb.playerPosition(db, playerId);
     if (!current.capabilities?.position || !current.position) {
       return { supported: false, reason: current.reason || "That character has no stored position yet." };
     }
-    return { supported: true, source: current.position, placement: derivePlacementFromPlayer(tradeCenterKey, current.position) };
+    const baseline = params.get("afterSerial")
+      ? {
+          serial: params.get("afterSerial"),
+          x: params.get("afterX"), y: params.get("afterY"),
+          z: params.get("afterZ"), yaw: params.get("afterYaw")
+        }
+      : null;
+    const freshness = evaluateCaptureFreshness(baseline, current.position);
+    return {
+      supported: true,
+      source: current.position,
+      serial: String(current.position.serial ?? ""),
+      ready: freshness.ready,
+      state: freshness.state,
+      movedUu: freshness.movedUu || 0,
+      placement: derivePlacementFromPlayer(tradeCenterKey, current.position)
+    };
   });
 }
 

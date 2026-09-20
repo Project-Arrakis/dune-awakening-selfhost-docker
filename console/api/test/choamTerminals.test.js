@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CHOAM_TRADE_CENTERS, choamTerminalInternals, derivePlacementFromPlayer, evaluatePlacementBounds, setChoamTerminalPosition, choamTerminalOverview } from "../src/services/choamTerminals.js";
+import { CHOAM_TRADE_CENTERS, choamTerminalInternals, derivePlacementFromPlayer, evaluatePlacementBounds, setChoamTerminalPosition, choamTerminalOverview, evaluateCaptureFreshness, clearChoamTerminalPosition } from "../src/services/choamTerminals.js";
 
 test("CHOAM trade-center catalog contains the four Hagga Basin trade centers", () => {
   assert.deepEqual(CHOAM_TRADE_CENTERS.map((entry) => entry.key), ["griffins-reach", "the-crossroads", "pinnacle-station", "the-anvil"]);
@@ -142,4 +142,151 @@ test("overview applies a stored override over the shipped default", async () => 
   assert.equal(anvil.updatedAt, "2026-09-20T00:00:00Z");
   // Untouched posts must keep shipping their defaults.
   assert.equal(overview.tradeCenters.find((entry) => entry.key === "the-crossroads").custom, false);
+});
+
+// Freshness is decided by the game's row heartbeat, not by sampling.
+//
+// Measured on dune2: `serial` advances roughly every 60s and rewrites the row
+// with the live position even when the character has not moved (7767 -> 7768
+// with byte-identical coordinates). So an advanced serial proves the row was
+// written recently; an unchanged position across that tick proves the
+// character was stationary for the whole interval. Sampling could never
+// establish the first of those, which is why an earlier attempt reported a
+// stale coordinate as settled.
+
+const STILL = { serial: "100", x: 10, y: 20, z: 30, yaw: 90 };
+
+test("the first read only establishes a baseline, it is never accepted", () => {
+  const result = evaluateCaptureFreshness(null, STILL);
+  assert.equal(result.ready, false);
+  assert.equal(result.state, "waiting");
+  assert.equal(result.serial, "100");
+});
+
+test("an unchanged serial keeps waiting, however many times it is polled", () => {
+  for (let poll = 0; poll < 5; poll += 1) {
+    const result = evaluateCaptureFreshness(STILL, { ...STILL });
+    assert.equal(result.ready, false);
+    assert.equal(result.state, "waiting");
+  }
+});
+
+test("a stale row is never accepted just because it stopped changing", () => {
+  // The exact failure that made an earlier design report a stale coordinate as
+  // settled: the row is identical because nothing has been flushed yet.
+  const stale = { ...STILL };
+  assert.equal(evaluateCaptureFreshness(STILL, stale).ready, false);
+});
+
+test("the heartbeat firing with an unchanged position is accepted", () => {
+  const result = evaluateCaptureFreshness(STILL, { ...STILL, serial: "101" });
+  assert.equal(result.ready, true);
+  assert.equal(result.state, "ready");
+  assert.equal(result.movedUu, 0);
+});
+
+test("the heartbeat firing with a changed position means still moving", () => {
+  const result = evaluateCaptureFreshness(STILL, { ...STILL, serial: "101", x: 310 });
+  assert.equal(result.ready, false);
+  assert.equal(result.state, "moving");
+  assert.ok(Math.abs(result.movedUu - 300) < 1e-9);
+});
+
+test("turning on the spot across a heartbeat is not accepted", () => {
+  const result = evaluateCaptureFreshness(STILL, { ...STILL, serial: "101", yaw: 91 });
+  assert.equal(result.ready, false);
+  assert.equal(result.state, "moving");
+});
+
+test("position equality is exact - a millimetre counts as movement", () => {
+  const result = evaluateCaptureFreshness(STILL, { ...STILL, serial: "101", z: 30.001 });
+  assert.equal(result.ready, false);
+});
+
+test("an unreadable position is reported rather than treated as ready", () => {
+  const result = evaluateCaptureFreshness(STILL, null);
+  assert.equal(result.ready, false);
+  assert.equal(result.state, "unavailable");
+});
+
+test("every trade center carries its shipped default alongside any override", async () => {
+  const overview = await choamTerminalOverview(stubDb([
+    { trade_center_key: "the-anvil", x: 11, y: 22, z: 33, qz: 0.5, qw: 0.5, source_player_id: null, updated_at: "" }
+  ]));
+  const anvil = overview.tradeCenters.find((entry) => entry.key === "the-anvil");
+  assert.deepEqual(anvil.transform, { x: 11, y: 22, z: 33, qx: 0, qy: 0, qz: 0.5, qw: 0.5 });
+  // The default must survive the override, or the client would measure the
+  // bound from the override and let it drift post by post.
+  assert.deepEqual(anvil.defaultTransform, ANVIL);
+  const crossroads = overview.tradeCenters.find((entry) => entry.key === "the-crossroads");
+  assert.deepEqual(crossroads.defaultTransform, crossroads.transform);
+});
+
+// Repositioning an installed terminal must remove and reinstall inside one
+// transaction. Anything else can leave a trade post with no terminal at all if
+// the install half fails.
+test("applyNow repositions inside a single transaction", async () => {
+  const calls = [];
+  const tx = {
+    query: async (sql) => {
+      calls.push(sql.trim().split("\n")[0].slice(0, 42));
+      if (sql.includes("to_regclass('dune.admin_choam_terminal_positions')")) return { rows: [{ exists: true }] };
+      if (sql.includes("to_regclass('dune.admin_choam_terminals')")) return { rows: [{ exists: true }] };
+      if (sql.includes("from dune.admin_choam_terminal_positions")) return { rows: [] };
+      if (sql.includes("count(*)::int as installed")) return { rows: [{ installed: 2 }] };
+      if (sql.includes("select actor_id::text")) return { rows: [{ actor_id: "1" }, { actor_id: "2" }] };
+      if (sql.includes("dune.world_partition")) return { rows: [] };
+      return { rows: [], rowCount: 0 };
+    }
+  };
+  let transactions = 0;
+  const db = { transaction: async (fn) => { transactions += 1; return fn(tx); } };
+
+  // activeSietches returns nothing here, so the install half throws -- which is
+  // exactly the case that must not commit a half-done move.
+  await assert.rejects(
+    () => setChoamTerminalPosition(db, { tradeCenterKey: "the-anvil", x: ANVIL.x, y: ANVIL.y, z: ANVIL.z, yaw: 0, applyNow: true }),
+    /No active Hagga Basin sietches/
+  );
+  assert.equal(transactions, 1, "remove and install must share one transaction");
+  assert.ok(calls.some((sql) => sql.includes("delete from dune.actors")), "the remove half should have run before the failure");
+});
+
+test("without applyNow the caller is told a reinstall is still needed", async () => {
+  const tx = {
+    query: async (sql) => {
+      if (sql.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (sql.includes("count(*)::int as installed")) return { rows: [{ installed: 2 }] };
+      if (sql.includes("from dune.admin_choam_terminal_positions")) return { rows: [] };
+      return { rows: [], rowCount: 0 };
+    }
+  };
+  const db = { transaction: async (fn) => fn(tx) };
+  const result = await setChoamTerminalPosition(db, { tradeCenterKey: "the-anvil", x: ANVIL.x, y: ANVIL.y, z: ANVIL.z, yaw: 0 });
+  assert.equal(result.reinstallRequired, true);
+  assert.equal(result.moved, null);
+});
+
+// The table is created lazily by the first save, which holds the advisory lock
+// while doing so. Probing for it before taking that lock leaves a window where
+// a clear reports "not customised" for a post that just became customised.
+test("clearing a position probes for the table only after taking the lock", async () => {
+  const order = [];
+  const tx = {
+    query: async (sql) => {
+      if (sql.includes("pg_advisory_xact_lock")) { order.push("lock"); return { rows: [] }; }
+      if (sql.includes("to_regclass('dune.admin_choam_terminal_positions')")) { order.push("probe"); return { rows: [{ exists: true }] }; }
+      if (sql.includes("delete from dune.admin_choam_terminal_positions")) { order.push("delete"); return { rows: [], rowCount: 1 }; }
+      if (sql.includes("to_regclass('dune.admin_choam_terminals')")) return { rows: [{ exists: true }] };
+      if (sql.includes("count(*)::int as installed")) return { rows: [{ installed: 0 }] };
+      return { rows: [], rowCount: 0 };
+    }
+  };
+  const db = {
+    query: async () => { throw new Error("must not probe on the pool, outside the lock"); },
+    transaction: async (fn) => fn(tx)
+  };
+  const result = await clearChoamTerminalPosition(db, { tradeCenterKey: "the-anvil" });
+  assert.equal(result.cleared, 1);
+  assert.deepEqual(order.slice(0, 2), ["lock", "probe"]);
 });
