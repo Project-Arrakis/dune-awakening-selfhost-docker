@@ -489,11 +489,29 @@ export function runDockerLogs(service, options = {}) {
 // logs`: a stopped/started container can retain old stdout while the newly
 // launched game process writes only to Saved/Logs. Keep the lookup script
 // fixed and pass only an allowlisted container plus a numeric tail argument.
-const CURRENT_GAME_LOG_SCRIPT = [
+// Select the lines rather than tail the file. The Coriolis block is written
+// once, during startup, so it sits near the *top* of the current session's log
+// and scrolls out of any tail window within hours: on a live farm the log was
+// 24,539 lines with the block at 383-576, while `tail -n 10000` began at 14,438.
+// Because an active log that opens is treated as authoritative, that silently
+// cost the Deep Desert layout -- and with it the rendered terrain -- on any
+// server up more than a few hours.
+//
+// Grepping is cheaper than tailing here too: it returns a handful of lines
+// through `docker exec` instead of the ~4 MB a 10,000-line tail transfers
+// (measured on that farm: 35 ms per call against 40 ms).
+//
+// Matching the log categories rather than the message text keeps this loose;
+// coriolisSeed.js owns the real parsing. `$1` bounds the output, and grep's
+// "no matches" (1) is kept distinct from a genuine read error (2+): an active
+// log that is merely empty is authoritative, an unreadable one must fall back.
+export const CURRENT_GAME_LOG_SCRIPT = [
   'log_dir=/home/dune/server/DuneSandbox/Saved/Logs',
   'latest="$(find "$log_dir" -maxdepth 1 -type f -name "DuneSandbox_PIDX*.log" ! -name "*-backup-*" -printf "%T@ %p\\n" 2>/dev/null | sort -nr | head -n 1 | cut -d" " -f2-)"',
   '[ -n "$latest" ] || exit 3',
-  'exec tail -n "$1" "$latest"'
+  'matches="$(grep -E "LogCoriolis|LogWorldLayout" "$latest")"; status=$?',
+  '[ "$status" -le 1 ] || exit 4',
+  '[ -z "$matches" ] || echo "$matches" | tail -n "$1"'
 ].join("; ");
 
 export function runDockerCurrentGameLog(service, options = {}) {
