@@ -323,6 +323,7 @@ export const ROUTE_ACTIONS = {
   "GET /api/maps/spicefields":                 "maps:read",
   "GET /api/maps/combat-state":                "maps:read",
   "GET /api/maps/choam-terminals":             "maps:read",
+  "GET /api/maps/choam-terminals/capture":     "maps:read",
   "GET /api/maps/user-settings/schema":        "maps:read",
   "GET /api/maps/user-settings/restart-pending":"maps:read",
   "GET /api/maps/user-settings/deferred-pending":"maps:read",
@@ -347,6 +348,8 @@ export const ROUTE_ACTIONS = {
   "POST /api/maps/user-settings/materialize":  "maps:write-config",
   "POST /api/maps/choam-terminals":            "maps:write-config",
   "DELETE /api/maps/choam-terminals":          "maps:write-config",
+  "POST /api/maps/choam-terminals/position":   "maps:write-config",
+  "DELETE /api/maps/choam-terminals/position": "maps:write-config",
 
   // --- Sietches ---
   "GET /api/sietches":                         "sietches:read",

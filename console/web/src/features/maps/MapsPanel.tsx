@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ChevronDown, ChevronUp, Download, Grid2X2, Info, List, Lock, RotateCcw } from "lucide-react";
-import { mapsApi, type ActiveSpicefieldRow, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
+import { AlertTriangle, ChevronDown, ChevronUp, Download, Grid2X2, Info, List, Lock, MapPin, RotateCcw } from "lucide-react";
+import { mapsApi, type ActiveSpicefieldRow, type ChoamCapturedPlacement, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
+import { playersApi } from "../../api/players";
 import { runGatedRestart, type RestartGate, type RestartGateChoice } from "../server/restartQueueGuard";
 import { serverApi, type RestartQueueTarget } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
@@ -1005,6 +1006,45 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       setChoamResult({ status: "succeeded", title: "CHOAM Terminals Removed", message: result.removed ? `${result.removed} terminal${result.removed === 1 ? "" : "s"} removed. Restart the battlegroup to unload them in-game.` : "No console-managed terminals were installed at this trade post." });
     } catch (error) {
       setChoamResult({ status: "failed", title: "CHOAM Terminal Removal Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setChoamSavingKey("");
+    }
+  }
+  async function saveChoamPosition(center: ChoamTradeCenter, placement: ChoamCapturedPlacement, playerId: string) {
+    setChoamSavingKey(center.key);
+    setChoamResult({ status: "running", title: `Saving ${center.name} Position...` });
+    try {
+      const result = await mapsApi.setChoamPosition({ tradeCenterKey: center.key, x: placement.x, y: placement.y, z: placement.z, yaw: placement.yaw, sourcePlayerId: playerId || undefined });
+      await loadChoamTerminals();
+      setChoamResult({
+        status: "succeeded",
+        title: "CHOAM Terminal Position Saved",
+        message: result.reinstallRequired ? `Position saved for ${center.name}. Remove and reinstall its terminals for the new position to take effect.` : `Position saved for ${center.name}.`
+      });
+    } catch (error) {
+      setChoamResult({ status: "failed", title: "CHOAM Terminal Position Save Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setChoamSavingKey("");
+    }
+  }
+  async function resetChoamPosition(center: ChoamTradeCenter) {
+    if (!(await confirmAction(`Reset ${center.name} to its default position?`, {
+      title: `Reset ${center.name}`,
+      confirmLabel: "Reset Position",
+      danger: true
+    }))) return;
+    setChoamSavingKey(center.key);
+    setChoamResult({ status: "running", title: `Resetting ${center.name} Position...` });
+    try {
+      const result = await mapsApi.clearChoamPosition(center.key);
+      await loadChoamTerminals();
+      setChoamResult({
+        status: "succeeded",
+        title: "CHOAM Terminal Position Reset",
+        message: result.reinstallRequired ? `${center.name} reset to its default position. Remove and reinstall its terminals for the change to take effect.` : `${center.name} reset to its default position.`
+      });
+    } catch (error) {
+      setChoamResult({ status: "failed", title: "CHOAM Terminal Position Reset Failed", message: error instanceof Error ? error.message : String(error) });
     } finally {
       setChoamSavingKey("");
     }
@@ -2379,6 +2419,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
           result={choamResult}
           onInstall={(center) => run(() => installChoamCenter(center))}
           onRemove={(center) => run(() => removeChoamCenter(center))}
+          onSavePosition={(center, placement, playerId) => run(() => saveChoamPosition(center, placement, playerId))}
+          onResetPosition={(center) => run(() => resetChoamPosition(center))}
         />
       </>}</div>}
     </div>
@@ -2429,14 +2471,19 @@ function ChoamTerminalsEditor({
   savingKey,
   result,
   onInstall,
-  onRemove
+  onRemove,
+  onSavePosition,
+  onResetPosition
 }: {
   overview: ChoamTerminalOverview | null;
   savingKey: string;
   result: HomeTaskResult | null;
   onInstall: (center: ChoamTradeCenter) => void;
   onRemove: (center: ChoamTradeCenter) => void;
+  onSavePosition: (center: ChoamTradeCenter, placement: ChoamCapturedPlacement, playerId: string) => void;
+  onResetPosition: (center: ChoamTradeCenter) => void;
 }) {
+  const [expandedKey, setExpandedKey] = useState("");
   const activeSietches = overview?.sietches.length || 0;
   return <section className="choam-terminals-editor">
     <div className="choam-terminals-toolbar">
@@ -2446,29 +2493,148 @@ function ChoamTerminalsEditor({
     {!overview ? <div className="empty">CHOAM terminal state is loading.</div> : null}
     {overview && !overview.supported ? <div className="empty">{overview.reason || "CHOAM terminal placement is unavailable."}</div> : null}
     {overview?.supported ? <div className="settings-list-wrap choam-terminals-table-wrap"><table className="settings-list-table choam-terminals-table">
-      <thead><tr><th>Trade Post</th><th>Coverage</th><th>Status</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Trade Post</th><th>Coverage</th><th>Position</th><th>Status</th><th>Actions</th></tr></thead>
       <tbody>{overview.tradeCenters.map((center) => {
         const placements = overview.placements.filter((entry) => entry.trade_center_key === center.key && entry.actor_present);
         const installed = placements.length;
         const complete = activeSietches > 0 && installed >= activeSietches;
         const saving = savingKey === center.key;
-        return <tr key={center.key}>
-          <td><strong>{center.name}</strong></td>
-          <td className="choam-terminal-coverage">{installed} / {activeSietches} Sietches</td>
-          <td className="choam-terminal-status">
-            <span className={`badge ${complete ? "badge-pass" : installed ? "badge-warn" : "badge-info"}`}>
-              {complete ? "Installed" : installed ? "Partial" : "Not Installed"}
-            </span>
-          </td>
-          <td className="choam-terminal-actions-cell"><div className="action-row choam-terminal-actions">
-            {installed
-              ? <button className="danger" disabled={saving} onClick={() => onRemove(center)}>{saving ? "Working..." : "Remove"}</button>
-              : <button disabled={saving} onClick={() => onInstall(center)}>{saving ? "Working..." : "Install"}</button>}
-          </div></td>
-        </tr>;
+        const expanded = expandedKey === center.key;
+        return <Fragment key={center.key}>
+          <tr>
+            <td><strong>{center.name}</strong></td>
+            <td className="choam-terminal-coverage">{installed} / {activeSietches} Sietches</td>
+            <td className="choam-terminal-position">
+              <span className={`badge ${center.custom ? "badge-warn" : "badge-info"}`}>{center.custom ? "Custom" : "Default"}</span>
+            </td>
+            <td className="choam-terminal-status">
+              <span className={`badge ${complete ? "badge-pass" : installed ? "badge-warn" : "badge-info"}`}>
+                {complete ? "Installed" : installed ? "Partial" : "Not Installed"}
+              </span>
+            </td>
+            <td className="choam-terminal-actions-cell"><div className="action-row choam-terminal-actions">
+              {installed
+                ? <button className="danger" disabled={saving} onClick={() => onRemove(center)}>{saving ? "Working..." : "Remove"}</button>
+                : <button disabled={saving} onClick={() => onInstall(center)}>{saving ? "Working..." : "Install"}</button>}
+              <button disabled={saving} title="Set the position this trade post's terminals install at" onClick={() => setExpandedKey(expanded ? "" : center.key)}><MapPin size={16} /> {expanded ? "Close" : "Set position"}</button>
+            </div></td>
+          </tr>
+          {expanded ? <tr className="choam-position-editor-row"><td colSpan={5}>
+            <ChoamPositionEditor
+              center={center}
+              limits={overview.positionLimits}
+              saving={saving}
+              onSave={onSavePosition}
+              onReset={onResetPosition}
+              onClose={() => setExpandedKey("")}
+            />
+          </td></tr> : null}
+        </Fragment>;
       })}</tbody>
     </table></div> : null}
   </section>;
+}
+
+type ChoamPlayerOption = { id: string; name: string };
+
+function ChoamPositionEditor({
+  center,
+  limits,
+  saving,
+  onSave,
+  onReset,
+  onClose
+}: {
+  center: ChoamTradeCenter;
+  limits: { radiusUu: number; verticalUu: number };
+  saving: boolean;
+  onSave: (center: ChoamTradeCenter, placement: ChoamCapturedPlacement, playerId: string) => void;
+  onReset: (center: ChoamTradeCenter) => void;
+  onClose: () => void;
+}) {
+  const [players, setPlayers] = useState<ChoamPlayerOption[] | null>(null);
+  const [playersLoading, setPlayersLoading] = useState(false);
+  const [selectedPlayerId, setSelectedPlayerId] = useState("");
+  const [capturing, setCapturing] = useState(false);
+  const [captureMessage, setCaptureMessage] = useState("");
+  const [captured, setCaptured] = useState<ChoamCapturedPlacement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPlayersLoading(true);
+    playersApi.online()
+      .then((result) => {
+        if (cancelled) return;
+        const rows = (result.rows || [])
+          .map((row) => ({ id: String(row.actor_id ?? ""), name: String(row.character_name || "") || `Player ${row.actor_id}` }))
+          .filter((player) => player.id);
+        setPlayers(rows);
+      })
+      .catch(() => { if (!cancelled) setPlayers([]); })
+      .finally(() => { if (!cancelled) setPlayersLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  async function useCharacterPosition() {
+    if (!selectedPlayerId) return;
+    setCapturing(true);
+    setCaptureMessage("");
+    try {
+      const result = await mapsApi.captureChoamPosition(center.key, selectedPlayerId);
+      if (!result.supported || !result.placement) {
+        setCaptured(null);
+        setCaptureMessage(result.reason || "That character has no stored position yet.");
+        return;
+      }
+      setCaptured(result.placement);
+    } catch (error) {
+      setCaptured(null);
+      setCaptureMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCapturing(false);
+    }
+  }
+
+  const distanceMeters = captured ? captured.distanceUu / 100 : 0;
+  const limitMeters = limits.radiusUu / 100;
+  const barPercent = captured ? Math.min(100, (captured.distanceUu / limits.radiusUu) * 100) : 0;
+
+  return <div className="choam-position-editor">
+    <p className="choam-position-editor-hint">Stand where the terminal should go, facing the way it should face, then capture.</p>
+    <div className="choam-position-editor-controls">
+      <label className="compact-select">Character
+        <select value={selectedPlayerId} onChange={(event) => { setSelectedPlayerId(event.target.value); setCaptured(null); setCaptureMessage(""); }} disabled={playersLoading}>
+          <option value="">{playersLoading ? "Loading online characters..." : "Select an online character"}</option>
+          {(players || []).map((player) => <option key={player.id} value={player.id}>{player.name}</option>)}
+        </select>
+      </label>
+      <button disabled={!selectedPlayerId || capturing} onClick={() => void useCharacterPosition()}>{capturing ? "Capturing..." : "Use character position"}</button>
+    </div>
+    {players && !playersLoading && !players.length ? <p className="empty">No characters are online right now.</p> : null}
+    {captureMessage ? <p className="choam-position-editor-message">{captureMessage}</p> : null}
+    {captured ? <>
+      <div className="choam-position-editor-tiles">
+        <div className="choam-position-tile"><span>X</span><strong>{captured.x.toFixed(1)}</strong></div>
+        <div className="choam-position-tile"><span>Y</span><strong>{captured.y.toFixed(1)}</strong></div>
+        <div className="choam-position-tile"><span>Z</span><strong>{captured.z.toFixed(1)}</strong></div>
+        <div className="choam-position-tile"><span>Facing</span><strong>{captured.yaw.toFixed(1)}&deg;</strong></div>
+      </div>
+      <div className="choam-position-editor-distance">
+        <span>{distanceMeters.toFixed(1)} m from the trade post</span>
+        <span className="choam-position-editor-limit">limit {limitMeters.toFixed(1)} m</span>
+      </div>
+      <div className={`choam-position-bar-track${captured.withinBound ? "" : " choam-position-bar-danger"}`}>
+        <span className="choam-position-bar-fill" style={{ width: `${barPercent}%` }} />
+      </div>
+      {!captured.withinBound ? <p className="choam-position-editor-warning">This position is outside the allowed range for this trade post.</p> : null}
+    </> : null}
+    <p className="choam-position-editor-note">Positions save on a delay - stand still before capturing.</p>
+    <div className="action-row">
+      <button disabled={!captured || !captured.withinBound || saving} onClick={() => captured && onSave(center, captured, selectedPlayerId)}>{saving ? "Saving..." : "Save position"}</button>
+      {center.custom ? <button className="danger" disabled={saving} onClick={() => onReset(center)}>{saving ? "Working..." : "Reset to default"}</button> : null}
+      <button disabled={saving} onClick={onClose}>Cancel</button>
+    </div>
+  </div>;
 }
 
 type MatchRegionControl = { fieldId: string; enabled: boolean; available: boolean; regionLabel: string; regionValueLabel: string; onToggle: (next: boolean) => void };

@@ -1,3 +1,5 @@
+import { clampInt } from "../jsonStore.js";
+
 const TERMINAL_CLASS = "/Game/Dune/Systems/DuneExchange/BP_DuneChoamExchangeTerminal.BP_DuneChoamExchangeTerminal_C";
 const TERMINAL_PROPERTIES = {
   DEAccessPointComponent: {
@@ -17,17 +19,99 @@ export const CHOAM_TRADE_CENTERS = Object.freeze([
 
 const DUPLICATE_RADIUS = 250;
 
+// BP_DuneChoamExchangeTerminal_C parents its StaticMeshComponent to the actor
+// root with RelativeLocation Z=+15, and the mesh pivot sits at its own base --
+// so the visible base of the console lands at (actor root z + 15). A player
+// pawn's persisted z is at ground level (NOT the capsule centre: the capsule
+// half-height in the Blueprint does not describe the serialised transform),
+// which makes the ground-flush root exactly (player z - 15). Measured in-game.
+const MESH_BASE_OFFSET = 15;
+
+// The console mesh's visual front is its local +Y, while a player pawn faces
+// local +X. Both share one rotation convention (heading = 2*atan2(qz,qw) plus
+// the local axis offset), so a terminal that should face the way a player is
+// facing needs a yaw of (player yaw - 90).
+const TERMINAL_FRONT_OFFSET = 90;
+
+// Custom positions are bounded to the trade post rather than free placement:
+// far enough to move a terminal off a step or around a wall, not far enough to
+// drop one in open desert. Re-sitings during calibration moved 12.8-18.1 m.
+const POSITION_RADIUS_UU = clampInt(process.env.CHOAM_POSITION_RADIUS_UU, 5000, 250, 100000);
+const POSITION_VERTICAL_UU = clampInt(process.env.CHOAM_POSITION_VERTICAL_UU, 2000, 100, 100000);
+
 function serviceError(message, statusCode = 400) {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
 }
 
-function centerForKey(value) {
+function defaultCenterForKey(value) {
   const key = String(value || "").trim().toLowerCase();
   const center = CHOAM_TRADE_CENTERS.find((entry) => entry.key === key);
   if (!center) throw serviceError("Choose a valid Hagga Basin trade post.");
   return center;
+}
+
+function normalizeDegrees(value) {
+  const degrees = Number(value);
+  if (!Number.isFinite(degrees)) return 0;
+  return ((degrees % 360) + 360) % 360;
+}
+
+function yawToQuaternion(yawDegrees) {
+  const radians = (normalizeDegrees(yawDegrees) * Math.PI) / 180;
+  return { qx: 0, qy: 0, qz: Math.sin(radians / 2), qw: Math.cos(radians / 2) };
+}
+
+function quaternionYawDegrees(transform) {
+  return normalizeDegrees((2 * Math.atan2(Number(transform?.qz) || 0, Number(transform?.qw) || 0) * 180) / Math.PI);
+}
+
+function finiteCoordinate(value, label) {
+  // Number(null), Number("") and Number([]) are all 0, which would silently
+  // place a terminal at the world origin instead of rejecting the input.
+  if (value === null || value === undefined || value === "" || typeof value === "boolean" || Array.isArray(value)) {
+    throw serviceError(`${label} must be a number.`);
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw serviceError(`${label} must be a number.`);
+  return parsed;
+}
+
+// Pure and synchronous so the placement rules can be tested without a database.
+export function derivePlacementFromPlayer(tradeCenterKey, position = {}) {
+  defaultCenterForKey(tradeCenterKey);
+  const x = finiteCoordinate(position.x, "X");
+  const y = finiteCoordinate(position.y, "Y");
+  const z = finiteCoordinate(position.z, "Z") - MESH_BASE_OFFSET;
+  const yaw = normalizeDegrees(finiteCoordinate(position.yaw, "Facing") - TERMINAL_FRONT_OFFSET);
+  return { x, y, z, yaw, ...evaluatePlacementBounds(tradeCenterKey, { x, y, z }) };
+}
+
+// Bounds are always measured against the SHIPPED default for the post, never
+// against a previously saved override -- otherwise repeated small moves could
+// walk a terminal arbitrarily far from its trade post.
+export function evaluatePlacementBounds(tradeCenterKey, position = {}) {
+  const base = defaultCenterForKey(tradeCenterKey).transform;
+  const dx = finiteCoordinate(position.x, "X") - base.x;
+  const dy = finiteCoordinate(position.y, "Y") - base.y;
+  const distanceUu = Math.sqrt(dx * dx + dy * dy);
+  const verticalUu = Math.abs(finiteCoordinate(position.z, "Z") - base.z);
+  return {
+    distanceUu,
+    verticalUu,
+    withinBound: distanceUu <= POSITION_RADIUS_UU && verticalUu <= POSITION_VERTICAL_UU,
+    limits: { radiusUu: POSITION_RADIUS_UU, verticalUu: POSITION_VERTICAL_UU }
+  };
+}
+
+function applyPositionOverride(center, row) {
+  if (!row) return { ...center, custom: false };
+  const transform = {
+    x: Number(row.x), y: Number(row.y), z: Number(row.z),
+    qx: 0, qy: 0, qz: Number(row.qz), qw: Number(row.qw)
+  };
+  return { ...center, custom: true, transform, updatedAt: row.updated_at || "" };
 }
 
 async function requiredTablesAvailable(db) {
@@ -42,6 +126,38 @@ async function requiredTablesAvailable(db) {
 async function trackingTableAvailable(db) {
   const result = await db.query("select to_regclass('dune.admin_choam_terminals') is not null as exists");
   return Boolean(result.rows[0]?.exists);
+}
+
+async function positionTableAvailable(db) {
+  const result = await db.query("select to_regclass('dune.admin_choam_terminal_positions') is not null as exists");
+  return Boolean(result.rows[0]?.exists);
+}
+
+async function ensurePositionTable(tx) {
+  await tx.query(`
+    create table if not exists dune.admin_choam_terminal_positions (
+      trade_center_key text primary key,
+      x float8 not null,
+      y float8 not null,
+      z float8 not null,
+      qz float8 not null,
+      qw float8 not null,
+      source_player_id bigint,
+      updated_at timestamptz not null default now()
+    )`);
+}
+
+const POSITION_COLUMNS = "trade_center_key, x, y, z, qz, qw, source_player_id::text as source_player_id, updated_at::text as updated_at";
+
+async function loadPositionOverrides(db) {
+  if (!(await positionTableAvailable(db))) return new Map();
+  const result = await db.query(`select ${POSITION_COLUMNS} from dune.admin_choam_terminal_positions`);
+  return new Map(result.rows.map((row) => [row.trade_center_key, row]));
+}
+
+async function loadPositionOverride(tx, key) {
+  const result = await tx.query(`select ${POSITION_COLUMNS} from dune.admin_choam_terminal_positions where trade_center_key = $1`, [key]);
+  return result.rows[0] || null;
 }
 
 async function ensureTrackingTable(tx) {
@@ -75,10 +191,12 @@ export async function choamTerminalOverview(db) {
   if (!(await requiredTablesAvailable(db))) {
     return { supported: false, reason: "CHOAM terminal placement is unavailable for this database schema.", tradeCenters: CHOAM_TRADE_CENTERS, sietches: [], placements: [] };
   }
-  const [sietches, hasTracking] = await Promise.all([
+  const [sietches, hasTracking, overrides] = await Promise.all([
     activeSietches(db),
-    trackingTableAvailable(db)
+    trackingTableAvailable(db),
+    loadPositionOverrides(db)
   ]);
+  const tradeCenters = CHOAM_TRADE_CENTERS.map((center) => applyPositionOverride(center, overrides.get(center.key)));
   let placements = [];
   if (hasTracking) {
     const result = await db.query(`
@@ -95,7 +213,13 @@ export async function choamTerminalOverview(db) {
       order by t.trade_center_name, t.dimension_index`);
     placements = result.rows;
   }
-  return { supported: true, tradeCenters: CHOAM_TRADE_CENTERS, sietches, placements };
+  return {
+    supported: true,
+    tradeCenters,
+    sietches,
+    placements,
+    positionLimits: { radiusUu: POSITION_RADIUS_UU, verticalUu: POSITION_VERTICAL_UU }
+  };
 }
 
 async function nearbyTerminal(tx, partitionId, dimensionIndex, transform) {
@@ -115,12 +239,16 @@ async function nearbyTerminal(tx, partitionId, dimensionIndex, transform) {
 }
 
 export async function installChoamTerminals(db, { tradeCenterKey } = {}) {
-  const center = centerForKey(tradeCenterKey);
+  const baseCenter = defaultCenterForKey(tradeCenterKey);
   if (!(await requiredTablesAvailable(db))) throw serviceError("CHOAM terminal placement is unavailable for this database schema.", 409);
 
   return db.transaction(async (tx) => {
     await tx.query("select pg_advisory_xact_lock(hashtext('dune-docker-choam-terminals'))");
     await ensureTrackingTable(tx);
+    await ensurePositionTable(tx);
+    // Resolved inside the lock so a concurrent position save cannot install a
+    // terminal at a transform that was already superseded.
+    const center = applyPositionOverride(baseCenter, await loadPositionOverride(tx, baseCenter.key));
     const existingResult = await tx.query(`
       select t.dimension_index::int
       from dune.admin_choam_terminals t
@@ -176,7 +304,7 @@ export async function installChoamTerminals(db, { tradeCenterKey } = {}) {
 }
 
 export async function removeChoamTerminals(db, { tradeCenterKey } = {}) {
-  const center = centerForKey(tradeCenterKey);
+  const center = defaultCenterForKey(tradeCenterKey);
   if (!(await trackingTableAvailable(db))) return { ok: true, tradeCenter: center, removed: 0, restartRequired: false };
   return db.transaction(async (tx) => {
     await tx.query("select pg_advisory_xact_lock(hashtext('dune-docker-choam-terminals'))");
@@ -192,8 +320,88 @@ export async function removeChoamTerminals(db, { tradeCenterKey } = {}) {
   });
 }
 
+export async function setChoamTerminalPosition(db, { tradeCenterKey, x, y, z, yaw, sourcePlayerId } = {}) {
+  const base = defaultCenterForKey(tradeCenterKey);
+  const position = {
+    x: finiteCoordinate(x, "X"),
+    y: finiteCoordinate(y, "Y"),
+    z: finiteCoordinate(z, "Z")
+  };
+  const bounds = evaluatePlacementBounds(base.key, position);
+  if (!bounds.withinBound) {
+    throw serviceError(
+      `That position is ${Math.round(bounds.distanceUu / 100)} m from ${base.name}. Custom positions must stay within ${Math.round(bounds.limits.radiusUu / 100)} m horizontally and ${Math.round(bounds.limits.verticalUu / 100)} m vertically of the trade post.`
+    );
+  }
+  const rotation = yawToQuaternion(finiteCoordinate(yaw, "Facing"));
+  // Provenance only, and the column is a bigint -- an FLS account id or any
+  // other non-numeric handle is recorded as null rather than failing the save.
+  const rawPlayerId = String(sourcePlayerId ?? "").trim();
+  const playerId = /^\d+$/.test(rawPlayerId) ? rawPlayerId : null;
+
+  return db.transaction(async (tx) => {
+    await tx.query("select pg_advisory_xact_lock(hashtext('dune-docker-choam-terminals'))");
+    await ensurePositionTable(tx);
+    await tx.query(`
+      insert into dune.admin_choam_terminal_positions
+        (trade_center_key, x, y, z, qz, qw, source_player_id, updated_at)
+      values ($1, $2::float8, $3::float8, $4::float8, $5::float8, $6::float8, $7::bigint, now())
+      on conflict (trade_center_key) do update set
+        x = excluded.x, y = excluded.y, z = excluded.z,
+        qz = excluded.qz, qw = excluded.qw,
+        source_player_id = excluded.source_player_id,
+        updated_at = now()`, [
+      base.key, position.x, position.y, position.z, rotation.qz, rotation.qw, playerId
+    ]);
+    const installed = await installedCountForKey(tx, base.key);
+    return {
+      ok: true,
+      tradeCenter: applyPositionOverride(base, await loadPositionOverride(tx, base.key)),
+      ...bounds,
+      yaw: normalizeDegrees(yaw),
+      // Saving only changes what the NEXT install writes. An in-place update of
+      // dune.actors is not attempted -- that path was never verified and this
+      // game silently ignores some direct DML.
+      reinstallRequired: installed > 0
+    };
+  });
+}
+
+export async function clearChoamTerminalPosition(db, { tradeCenterKey } = {}) {
+  const base = defaultCenterForKey(tradeCenterKey);
+  if (!(await positionTableAvailable(db))) return { ok: true, tradeCenter: { ...base, custom: false }, cleared: 0, reinstallRequired: false };
+  return db.transaction(async (tx) => {
+    await tx.query("select pg_advisory_xact_lock(hashtext('dune-docker-choam-terminals'))");
+    const result = await tx.query("delete from dune.admin_choam_terminal_positions where trade_center_key = $1", [base.key]);
+    const installed = await installedCountForKey(tx, base.key);
+    return {
+      ok: true,
+      tradeCenter: { ...base, custom: false },
+      cleared: result.rowCount || 0,
+      reinstallRequired: (result.rowCount || 0) > 0 && installed > 0
+    };
+  });
+}
+
+async function installedCountForKey(tx, key) {
+  if (!(await trackingTableAvailable(tx))) return 0;
+  const result = await tx.query(`
+    select count(*)::int as installed
+    from dune.admin_choam_terminals t
+    join dune.actors a on a.id = t.actor_id
+    where t.trade_center_key = $1`, [key]);
+  return Number(result.rows[0]?.installed || 0);
+}
+
 export const choamTerminalInternals = Object.freeze({
   terminalClass: TERMINAL_CLASS,
   terminalProperties: TERMINAL_PROPERTIES,
-  duplicateRadius: DUPLICATE_RADIUS
+  duplicateRadius: DUPLICATE_RADIUS,
+  meshBaseOffset: MESH_BASE_OFFSET,
+  terminalFrontOffset: TERMINAL_FRONT_OFFSET,
+  positionRadiusUu: POSITION_RADIUS_UU,
+  positionVerticalUu: POSITION_VERTICAL_UU,
+  yawToQuaternion,
+  quaternionYawDegrees,
+  normalizeDegrees
 });

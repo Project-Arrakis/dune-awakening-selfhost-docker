@@ -644,6 +644,19 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 | GET | `/api/maps/choam-terminals` | Get CHOAM terminal overview | None |
 | POST | `/api/maps/choam-terminals` | Install CHOAM terminals | `tradeCenterKey` |
 | DELETE | `/api/maps/choam-terminals` | Remove CHOAM terminals | `tradeCenterKey` |
+| GET | `/api/maps/choam-terminals/capture` | Preview where a terminal would sit if placed at a character's position (saves nothing) | `tradeCenterKey`, `playerId` (query params) |
+| POST | `/api/maps/choam-terminals/position` | Save a custom terminal position for a trade post | `tradeCenterKey`, `x`, `y`, `z`, `yaw`, `sourcePlayerId?` |
+| DELETE | `/api/maps/choam-terminals/position` | Clear a custom position and fall back to the shipped default | `tradeCenterKey` |
+
+A custom position is bounded to its trade post: `CHOAM_POSITION_RADIUS_UU` (default 5000 uu / 50 m)
+horizontally and `CHOAM_POSITION_VERTICAL_UU` (default 2000 uu) vertically, measured from the
+shipped default rather than from any previously saved override. Saving only changes what the next
+install writes — an already-installed terminal must be removed and reinstalled to move.
+
+`capture` derives the placement from a standing character: the terminal root sits 15 uu below the
+character's `z` (the Blueprint's mesh-component offset; a pawn's stored `z` is at ground level),
+and the terminal's yaw is the character's facing minus 90° (the console mesh fronts on local +Y
+while a pawn faces local +X).
 
 ### Combat & User Settings
 

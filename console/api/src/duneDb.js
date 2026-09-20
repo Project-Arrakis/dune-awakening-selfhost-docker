@@ -3304,7 +3304,10 @@ export async function playerPosition(db, id) {
              ((transform).location).x as x,
              ((transform).location).y as y,
              ((transform).location).z as z,
-             0::float8 as yaw,
+             -- Pure-yaw quaternion (qx/qy are 0 for pawns): the heading the
+             -- character is facing. Was hardcoded to 0, so "use current
+             -- position" never reflected real facing.
+             mod((degrees(2*atan2(((transform).rotation).z, ((transform).rotation).w)))::numeric + 360, 360)::float8 as yaw,
              (transform).location::text as location,
              (transform).rotation::text as rotation
       from dune.actors
