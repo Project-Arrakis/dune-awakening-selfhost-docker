@@ -2121,7 +2121,7 @@ login_re = re.compile(
 )
 refusal_re = re.compile(
     r'Player ([A-F0-9]+) requested WorldPartition \{ '
-    r'PartitionId = ([0-9]+), ServerId = ([A-Za-z0-9_+\-/]+), Map = (Survival_1), .*?'
+    r'PartitionId = ([0-9]+), ServerId = ([A-Za-z0-9_+\-/]+), Map = (Survival_1|Overmap), .*?'
     r'DimensionIndex = ([0-9]+), .*?\}\. Teleport not allowed, returning to WorldPartition \{ '
     r'PartitionId = ([0-9]+), ServerId = ([A-Za-z0-9_+\-/]*), '
     r'Map = (CB_Story_(?:DestroyedZanovar|OrbitalMonitor)), .*?'
@@ -2176,9 +2176,15 @@ PY
 
   # Completed credits maps mark the player offline before the client submits
   # its next LoginRequest. Recover during that window so the Director sees the
-  # pawn in Hagga on the first request; otherwise suppressing the synthetic
-  # story demand correctly prevents the loop but leaves the client waiting on
-  # a queue it must cancel manually.
+  # pawn in the game-owned return destination on the first request; otherwise
+  # suppressing the synthetic story demand correctly prevents the loop but
+  # leaves the client waiting on a queue it must cancel manually.
+  #
+  # The normal final-scene flow returns through Overland before the player
+  # continues to Hagga. travel_return_info is authoritative when present. A
+  # legacy player can be missing that row, but overmap_players still preserves
+  # the exact Overland position; use that rather than inventing Survival_1 and
+  # skipping the game's normal vehicle-aware Overland handoff.
   completed_rows="$(psql_value "
     select
       'COMPLETED-' || ps.account_id || '-' || source_wp.partition_id || '|' ||
@@ -2211,14 +2217,19 @@ PY
      and completed_story.complete_condition_state = 'true'::jsonb
     left join dune.travel_return_info tri
       on tri.player_controller_id = ps.player_controller_id
+    left join dune.overmap_players op
+      on op.player_id = ps.player_pawn_id
     join dune.world_partition target_wp
       on dune.upgrade_map_name(target_wp.map) = dune.upgrade_map_name(
         case
-          when tri.player_controller_id is null then 'Survival_1'
+          when op.player_id is not null then 'Overmap'
           else tri.map
         end
       )
-     and coalesce(target_wp.dimension_index, 0) = coalesce(ps.return_dimension_index, 0)
+     and coalesce(target_wp.dimension_index, 0) = case
+       when op.player_id is not null then 0
+       else coalesce(ps.return_dimension_index, 0)
+     end
      and coalesce(target_wp.server_id, '') <> ''
     join dune.farm_state target_fs
       on target_fs.server_id = target_wp.server_id
@@ -2234,13 +2245,54 @@ PY
     [ -n "${request_id:-}" ] || continue
     hub_travel_seen "$request_id" && continue
 
-    local account_id source_server_predicate initial_source_predicate
+    local account_id source_server_predicate initial_source_predicate official_overmap_row
     source_server_predicate="false"
     initial_source_predicate="ps.previous_server_partition_id = $source_partition"
     if [ -n "$source_server" ]; then
       source_server_predicate="ps.server_id = '$source_server'"
       initial_source_predicate="($source_server_predicate or $initial_source_predicate)"
     fi
+
+    # A post-credits login can still name the player's last Survival target
+    # even though the completed mission's normal continuation is Overland.
+    # Prefer Overmap only when the exact story completion, pawn source, saved
+    # Overland position, and ready destination all agree. This preserves the
+    # game's Overland -> Hagga vehicle flow instead of skipping it.
+    official_overmap_row="$(psql_value "
+      select
+        target_wp.partition_id || '|' ||
+        target_wp.server_id || '|' ||
+        target_wp.map || '|' ||
+        coalesce(target_wp.dimension_index, 0)
+      from dune.accounts a
+      join dune.player_state ps on ps.account_id = a.id
+      join dune.actors pawn
+        on pawn.id = ps.player_pawn_id
+       and pawn.partition_id = $source_partition
+      join dune.world_partition source_wp
+        on source_wp.partition_id = pawn.partition_id
+       and source_wp.map = '$source_map'
+      join dune.journey_story_node completed_story
+        on completed_story.character_id = ps.id
+       and completed_story.story_node_id = case source_wp.map
+         when 'CB_Story_DestroyedZanovar' then 'DA_MQ_TheGreatConventionPt3.DestroyedZanovar'
+         when 'CB_Story_OrbitalMonitor' then 'DA_MQ_TheGreatConventionPt3.FourtyFears'
+       end
+       and completed_story.complete_condition_state = 'true'::jsonb
+      join dune.overmap_players op on op.player_id = ps.player_pawn_id
+      join dune.world_partition target_wp on target_wp.map = 'Overmap'
+      join dune.farm_state target_fs
+        on target_fs.server_id = target_wp.server_id
+       and target_fs.ready = true
+       and target_fs.alive = true
+      where a.\"user\" = '$funcom_id'
+      order by target_wp.partition_id
+      limit 1;
+    ")"
+    if [ -n "$official_overmap_row" ]; then
+      IFS='|' read -r target_partition target_server target_map target_dimension <<< "$official_overmap_row"
+    fi
+
     account_id="$(psql_value "
       select a.id
       from dune.accounts a
@@ -2260,36 +2312,38 @@ PY
     ")"
     [ -n "$account_id" ] || continue
 
-    local recovery_result moved_row moved_account_id recovery_source
+    local recovery_result moved_row moved_account_id recovery_source traveling_actor_count traveling_vehicle_count moved_partition
     recovery_result="$(psql_value "
       set search_path to dune, public;
       with eligible as (
         select
           ps.account_id,
+          ps.player_pawn_id,
           case
-            when cardinality(stranded.stranded_vehicle_ids) > 0
-             and fallback.location is not null then row(
-              (fallback.location).x,
-              (fallback.location).y,
-              (fallback.location).z + 300
-            )::dune.vector
-            when tri.player_controller_id is not null then (tri.transform).location
-            else row(
-              (fallback.location).x,
-              (fallback.location).y,
-              (fallback.location).z + 300
-            )::dune.vector
-          end as return_location,
+            when target_wp.map = 'Overmap' and op.player_id is not null then row(
+              op.overmap_location,
+              (pawn.transform).rotation
+            )::dune.transform
+            when tri.player_controller_id is not null then tri.transform
+          end as return_transform,
           case
-            when cardinality(stranded.stranded_vehicle_ids) > 0
-             and fallback.location is not null then 'owned-respawn'
+            when target_wp.map = 'Overmap' and op.player_id is not null then 'saved-overmap'
             when tri.player_controller_id is not null then 'saved-return'
-            else 'owned-respawn'
           end as recovery_source,
-          stranded.stranded_vehicle_ids
+          coalesce(op.has_polar_psu, false) as has_polar_psu,
+          (
+            select count(*)
+            from dune.get_traveling_actor_ids(ps.player_pawn_id)
+          ) as traveling_actor_count,
+          (
+            select count(*)
+            from dune.get_traveling_actor_ids(ps.player_pawn_id) traveling(id, is_instigator, level)
+            join dune.vehicles vehicle on vehicle.id = traveling.id
+          ) as traveling_vehicle_count
         from dune.player_state ps
         join dune.actors pawn on pawn.id = ps.player_pawn_id
         left join dune.travel_return_info tri on tri.player_controller_id = ps.player_controller_id
+        left join dune.overmap_players op on op.player_id = ps.player_pawn_id
         join dune.world_partition target_wp
           on target_wp.partition_id = $target_partition
          and target_wp.server_id = '$target_server'
@@ -2299,72 +2353,65 @@ PY
           on target_fs.server_id = target_wp.server_id
          and target_fs.ready = true
          and target_fs.alive = true
-        left join lateral (
-          select coalesce(array_agg(vehicle.id), array[]::bigint[]) as stranded_vehicle_ids
-            from dune.actors vehicle
-            join dune.vehicles on vehicles.id = vehicle.id
-            join dune.permission_actor_rank owner_permission
-              on owner_permission.permission_actor_id = vehicle.id
-             and owner_permission.player_id = ps.player_controller_id
-             and owner_permission.rank = 1::smallint
-            where vehicle.partition_id = pawn.partition_id
-              and vehicle.state = 'Default'
-        ) stranded on true
-        left join lateral (
-          select candidate.location
-          from (
-            select
-              (respawn_actor.transform).location as location,
-              count(*) over (partition by prl.\"group\") as candidate_count,
-              dense_rank() over (
-                order by case prl.\"group\" when 'BaseTotem' then 0 else 1 end
-              ) as priority_rank
-            from dune.player_respawn_locations prl
-            join dune.actors respawn_actor on respawn_actor.id = prl.locator_actor_id
-            where prl.character_id = ps.id
-              and prl.\"group\" in ('BaseTotem', 'Vehicle')
-              and respawn_actor.partition_id = target_wp.partition_id
-              and dune.upgrade_map_name(respawn_actor.map) = dune.upgrade_map_name(target_wp.map)
-          ) candidate
-          where candidate.candidate_count = 1
-            and candidate.priority_rank = 1
-          limit 1
-        ) fallback on true
         where ps.account_id = $account_id
           and pawn.partition_id = $source_partition
           and (
-            dune.upgrade_map_name(tri.map) = dune.upgrade_map_name(target_wp.map)
-            or fallback.location is not null
+            (
+              target_wp.map = 'Overmap'
+              and op.overmap_location is not null
+            )
+            or
+            (
+              tri.player_controller_id is not null
+              and dune.upgrade_map_name(tri.map) = dune.upgrade_map_name(target_wp.map)
+            )
           )
           and dune.is_player_offline('$funcom_id')
       )
-      select eligible.account_id || '|' || eligible.recovery_source || '|' || cardinality(eligible.stranded_vehicle_ids)
-        || coalesce(recovered_vehicles.stored::text, '')
+      select eligible.account_id || '|' || eligible.recovery_source || '|' ||
+        eligible.traveling_actor_count || '|' || eligible.traveling_vehicle_count || '|' ||
+        coalesce(length(overmap_saved.saved::text), 0)
       from eligible
       cross join lateral (
+        select coalesce(
+          array_agg(moved_actor.out_id::text || ':' || moved_actor.out_actor_state),
+          array[]::text[]
+        ) as invalid_states
+        from dune.update_traveling_actor_tree(
+          eligible.player_pawn_id,
+          eligible.return_transform,
+          dune.upgrade_map_name('$target_map'),
+          $target_dimension,
+          $target_partition
+        ) moved_actor
+      ) travel_move
+      cross join lateral (
         select case
-          when cardinality(eligible.stranded_vehicle_ids) > 0
-          then dune.store_recovered_vehicles_wiped_before_spawn(
-            eligible.stranded_vehicle_ids,
-            'RecoveredFromLostState'::dune.recoveredvehiclereason,
-            false
+          when '$target_map' = 'Overmap' then dune.overmap_save_player_survival_data(
+            eligible.player_pawn_id,
+            eligible.has_polar_psu,
+            (eligible.return_transform).location
           )
           else null
-        end
-      ) recovered_vehicles(stored)
-      cross join lateral dune.admin_move_offline_player_to_partition(
-        '$funcom_id',
-        $target_partition,
-        eligible.return_location
-      ) moved;
+        end as saved
+      ) overmap_saved
+      where cardinality(travel_move.invalid_states) = 0;
     ")"
     moved_row="$(tail -n 1 <<< "$recovery_result")"
-    local recovered_vehicle_count
-    IFS='|' read -r moved_account_id recovery_source recovered_vehicle_count <<< "$moved_row"
+    IFS='|' read -r moved_account_id recovery_source traveling_actor_count traveling_vehicle_count _overmap_saved <<< "$moved_row"
     [ "$moved_account_id" = "$account_id" ] || continue
 
+    moved_partition="$(psql_value "
+      select pawn.partition_id
+      from dune.player_state ps
+      join dune.actors pawn on pawn.id = ps.player_pawn_id
+      where ps.account_id = $account_id
+      limit 1;
+    ")"
+    [ "$moved_partition" = "$target_partition" ] || continue
+
     remember_hub_travel "$request_id" "$account_id" "$source_map" "$target_map" "$(date +%s)"
-    echo "STORY-RETURN account=$account_id request=$request_id action=moved-pawn location=$recovery_source recovered_vehicles=${recovered_vehicle_count:-0} from=$source_map partition=$source_partition to=$target_map partition=$target_partition dimension=$target_dimension"
+    echo "STORY-RETURN account=$account_id request=$request_id action=moved-travel-tree location=$recovery_source traveling_actors=${traveling_actor_count:-0} traveling_vehicles=${traveling_vehicle_count:-0} from=$source_map partition=$source_partition to=$target_map partition=$target_partition dimension=$target_dimension"
   done <<< "$rejected_rows"
 }
 

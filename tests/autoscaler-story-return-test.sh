@@ -57,13 +57,16 @@ rejected_end = text.index("scan_idle_servers()", rejected_start)
 rejected = text[rejected_start:rejected_end]
 assert "Teleport not allowed" in rejected
 assert "CB_Story_(?:DestroyedZanovar|OrbitalMonitor)" in rejected
+assert "Map = (Survival_1|Overmap)" in rejected
 assert "completed_story.complete_condition_state = 'true'::jsonb" in rejected
 assert "completed_story.story_node_id = case source_wp.map" in rejected
 assert "ps.online_status = 'Offline'" in rejected
 completed_scan = rejected.split('completed_rows="$(psql_value "', 1)[1].split('  ")"', 1)[0]
 assert "left join dune.travel_return_info tri" in completed_scan
-assert "when tri.player_controller_id is null then 'Survival_1'" in completed_scan
-assert "coalesce(target_wp.dimension_index, 0) = coalesce(ps.return_dimension_index, 0)" in completed_scan
+assert "left join dune.overmap_players op" in completed_scan
+assert "when op.player_id is not null then 'Overmap'" in completed_scan
+assert "when op.player_id is not null then 0" in completed_scan
+assert "when tri.player_controller_id is null then 'Survival_1'" not in completed_scan
 assert "source_fs.ready = true" in rejected
 assert "source_fs.alive = true" in rejected
 assert "target_fs.ready = true" in rejected
@@ -72,23 +75,23 @@ assert "ServerId = ([A-Za-z0-9_+\\-/]*)" in rejected
 assert "ps.previous_server_partition_id = $source_partition" in rejected
 assert "join dune.actors pawn on pawn.id = ps.player_pawn_id" in rejected
 assert "left join dune.travel_return_info tri on tri.player_controller_id = ps.player_controller_id" in rejected
-assert "dune.player_respawn_locations" in rejected
-assert r"prl.\"group\" in ('BaseTotem', 'Vehicle')" in rejected
-assert "candidate.candidate_count = 1" in rejected
-assert "candidate.priority_rank = 1" in rejected
-assert ") fallback on true" in rejected
-assert "coalesce(array_agg(vehicle.id), array[]::bigint[])" in rejected
-assert "when cardinality(stranded.stranded_vehicle_ids) > 0" in rejected
-assert "fallback.location is not null" in rejected
-assert "dune.store_recovered_vehicles_wiped_before_spawn" in rejected
-assert "'RecoveredFromLostState'::dune.recoveredvehiclereason" in rejected
-assert "false" in rejected
+assert "left join dune.overmap_players op on op.player_id = ps.player_pawn_id" in rejected
+assert "dune.get_traveling_actor_ids(ps.player_pawn_id)" in rejected
+assert "dune.update_traveling_actor_tree" in rejected
+assert "dune.overmap_save_player_survival_data" in rejected
+assert "dune.upgrade_map_name('$target_map')" in rejected
+assert "official_overmap_row" in rejected
+assert "target_wp.map = 'Overmap'" in rejected
+assert "dune.player_respawn_locations" not in rejected
+assert "dune.store_recovered_vehicles_wiped_before_spawn" not in rejected
+assert "RecoveredFromLostState" not in rejected
 assert "pawn.partition_id = $source_partition" in rejected
 assert "dune.is_player_offline('$funcom_id')" in rejected
-assert "dune.admin_move_offline_player_to_partition" in rejected
+assert "dune.admin_move_offline_player_to_partition" not in rejected
 assert "delete from dune.travel_return_info" not in text
 assert "update dune.encrypted_player_state" not in rejected
 assert '[ "$moved_account_id" = "$account_id" ] || continue' in rejected
+assert '[ "$moved_partition" = "$target_partition" ] || continue' in rejected
 alignment = text[text.index("scan_live_player_partition_alignment()"):text.index("scan_travel_demand()", text.index("scan_live_player_partition_alignment()"))]
 assert "join dune.actors pawn" in alignment
 assert "pawn.partition_id = wp.partition_id" in alignment
@@ -209,9 +212,11 @@ remember_hub_travel() { printf '%s\\n' \"\$1\" >> \"\$REJECTED_SEEN\"; }
 psql_value() {
   printf '%s\\n' \"\$1\" >> \"\$REJECTED_SQL\"
   case \"\$1\" in
-    *"'COMPLETED-'"*) printf 'COMPLETED-42-133|745EF36C1E46811A|31|targetServer31|Survival_1|1|133|storyServer133|CB_Story_OrbitalMonitor|0\\n' ;;
+    *"'COMPLETED-'"*) printf 'COMPLETED-42-133|745EF36C1E46811A|2|targetServer2|Overmap|0|133|storyServer133|CB_Story_OrbitalMonitor|0\\n' ;;
+    *'order by target_wp.partition_id'*) printf '2|targetServer2|Overmap|0\\n' ;;
     *'select a.id'*) printf '42\\n' ;;
-    *'admin_move_offline_player_to_partition'*) printf 'SET\\n42|owned-respawn|1\\n' ;;
+    *'update_traveling_actor_tree'*) printf 'SET\\n42|saved-overmap|2|1|0\\n' ;;
+    *'select pawn.partition_id'*) printf '2\\n' ;;
   esac
 }
 NAMED_DESTINATION_SINCE=10m
@@ -220,25 +225,23 @@ scan_rejected_story_returns")"
 
 test "$(grep -c '^STORY-RETURN account=42 request=0335A8724B8F8F5B0DB6908CCE7CEFCC ' <<<"$rejected_output")" -eq 1
 test "$(grep -c '^STORY-RETURN account=42 request=COMPLETED-42-133 ' <<<"$rejected_output")" -eq 1
-grep -Fq 'action=moved-pawn' <<< "$rejected_output"
-grep -Fq 'location=owned-respawn' <<< "$rejected_output"
-grep -Fq 'recovered_vehicles=1' <<< "$rejected_output"
-grep -Fq "server_id = 'targetServer31'" "$rejected_sql"
-grep -Fq "ps.server_id = 'targetServer31' or ps.previous_server_partition_id = 133" "$rejected_sql"
+grep -Fq 'action=moved-travel-tree' <<< "$rejected_output"
+grep -Fq 'location=saved-overmap' <<< "$rejected_output"
+grep -Fq 'traveling_actors=2' <<< "$rejected_output"
+grep -Fq 'traveling_vehicles=1' <<< "$rejected_output"
+grep -Fq 'to=Overmap partition=2 dimension=0' <<< "$rejected_output"
+grep -Fq "server_id = 'targetServer2'" "$rejected_sql"
+grep -Fq "ps.server_id = 'targetServer2' or ps.previous_server_partition_id = 133" "$rejected_sql"
 grep -Fq 'pawn.partition_id = 133' "$rejected_sql"
 grep -Fq "dune.is_player_offline('745EF36C1E46811A')" "$rejected_sql"
-grep -Fq 'dune.admin_move_offline_player_to_partition' "$rejected_sql"
-grep -Fq 'dune.player_respawn_locations' "$rejected_sql"
+grep -Fq 'dune.update_traveling_actor_tree' "$rejected_sql"
+grep -Fq 'dune.overmap_save_player_survival_data' "$rejected_sql"
+grep -Fq 'dune.get_traveling_actor_ids' "$rejected_sql"
+grep -Fq 'left join dune.overmap_players op' "$rejected_sql"
 grep -Fq 'left join dune.travel_return_info tri' "$rejected_sql"
-grep -Fq "when tri.player_controller_id is null then 'Survival_1'" "$rejected_sql"
-grep -Fq 'candidate.candidate_count = 1' "$rejected_sql"
-grep -Fq 'candidate.priority_rank = 1' "$rejected_sql"
-grep -Fq ') fallback on true' "$rejected_sql"
-grep -Fq 'coalesce(array_agg(vehicle.id), array[]::bigint[])' "$rejected_sql"
-grep -Fq 'when cardinality(stranded.stranded_vehicle_ids) > 0' "$rejected_sql"
-grep -Fq 'dune.store_recovered_vehicles_wiped_before_spawn' "$rejected_sql"
-if grep -Fq "eligible.recovery_source = 'owned-respawn'" "$rejected_sql"; then
-  echo "all stranded story vehicles must be sent to Vehicle Recovery" >&2
+grep -Fq "when op.player_id is not null then 'Overmap'" "$rejected_sql"
+if grep -Fq 'dune.store_recovered_vehicles_wiped_before_spawn' "$rejected_sql"; then
+  echo "story return recovery must keep the normal pawn-vehicle travel tree" >&2
   exit 1
 fi
 if grep -Fq 'delete from dune.travel_return_info' "$rejected_sql"; then
@@ -309,4 +312,4 @@ PY
   fi
 fi
 
-echo "autoscaler preserves story return state and moves eligible offline pawns"
+echo "autoscaler returns completed story travel through Overland with the pawn-vehicle tree intact"
