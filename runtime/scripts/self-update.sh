@@ -1399,7 +1399,15 @@ recreate_discord_adapter_env() {
   local up_rc=0
   prepare_web_console_rebuild_env
   self_update_running restarting 60 "Applying Discord adapter settings and restarting the console."
-  docker rm -f "$service" >/dev/null 2>&1 || true
+  # Maintainer review finding (PR #215): a pre-emptive `docker rm -f` here
+  # unconditionally destroyed the running console BEFORE the replacement was
+  # confirmed working, defeating `--force-recreate`'s own atomic swap (create
+  # the replacement, then stop/remove the old one only once the new one
+  # exists) -- if the recreate below then failed, the operator was left with
+  # no console at all instead of the still-running old one. `--force-recreate`
+  # alone is sufficient here; no build precedes it (see this function's own
+  # header comment), so there is nothing else that could make the old
+  # container the safer fallback to keep around.
   if COMPOSE_PROJECT_NAME="$web_compose_project" DUNE_COMPOSE_PROJECT_NAME="$DUNE_COMPOSE_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d --force-recreate "$service"; then
     verify_discord_adapter_health "$service"
   else
