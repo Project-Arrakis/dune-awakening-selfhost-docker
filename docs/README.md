@@ -63,6 +63,8 @@ by nature, so it gets its own.
 
 - [architecture/SYSTEM-OVERVIEW.md](architecture/SYSTEM-OVERVIEW.md) — Current. Whole-system engineering architecture reference: component map, the console's API/web/data layers, the `dune` CLI and Compose-project-name resolution, runtime state directories, and the Discord-integration split. Start here for a code-level overview before diving into a single component's docs.
 - [architecture/DATABASE.md](architecture/DATABASE.md) — Observed. The `dune` database: the encryption view layer, `world_partition` event-log provisioning, the eight notify channels and why direct DML is often a silent no-op, capability probes, the objects the console creates itself, and a domain map of the game's tables. Deliberately documents mechanisms rather than transcribing a schema that drifts with every game build — regenerate the inventory with `runtime/scripts/schema-report.sh`.
+- [architecture/SERVICES.md](architecture/SERVICES.md) — Observed. The always-on closed-source services (TextRouter, Director, Gateway, the two RabbitMQ brokers): each one's role and trust boundary, the messaging authorization topology (both brokers delegate all auth to TextRouter), the real startup order, and a failure-to-symptom map. Game servers are out of scope.
+- [architecture/WORLD-MODEL.md](architecture/WORLD-MODEL.md) — Observed. How the game addresses world space: map, dimension and partition as columns on `dune.world_partition`, why world state is keyed by `(map, dimension_index)`, and the full partition catalog of live worlds and on-demand content maps.
 
 ## Console (`console/api`, `console/web`)
 

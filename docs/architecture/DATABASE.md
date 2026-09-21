@@ -171,6 +171,11 @@ tables that actually carry distinct meaning.
 Practical effect: **never `insert into dune.world_partition` by hand.** A row
 there provisions tables.
 
+`world_partition` is also where the game's map/dimension/partition addressing
+lives — the `map`, `dimension_index` and `partition_definition` columns. That
+model, and why world state must be keyed by `(map, dimension_index)`, is
+covered in [`WORLD-MODEL.md`](WORLD-MODEL.md).
+
 ---
 
 ## 7. Routines, and why direct DML often does nothing
