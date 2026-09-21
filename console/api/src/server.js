@@ -2523,6 +2523,141 @@ async function handleApi(req, res) {
     return json(res, 200, { status, guildName: status === "confirmed" ? String(statusBody?.guildName || "") : undefined });
   }
 
+  // ---- Hosted-bot role-picker (dune-awakening-selfhost-docker#853,
+  // mentat-link#183) ---- Relays to mentat's already-shipped
+  // GET/POST /api/consoles/:guildId/roles via mentat-link's proxy, the
+  // same "Core never holds MENTAT_PROXY_SHARED_SECRET" pattern as the
+  // auto-invite routes above. The connected guildId comes from Core's own
+  // persisted state (persistHostedBotConnectedGuild), never from the
+  // caller -- there is exactly one guild a given console can be connected
+  // to at a time, so there is nothing for a client-supplied guildId to
+  // legitimately select between.
+  if (path === "/api/integrations/discord/hosted-bot/roles" && req.method === "GET") {
+    const state = readDiscordBotSettingsState(config);
+    // Same fail-closed ordering as /register and /auto-invite/start above
+    // -- cheapest, most fundamental check first, before any network work.
+    if (state.deploymentChoice !== "hosted") {
+      return json(res, 403, { error: "This console isn't configured for the hosted bot." });
+    }
+    if (!state.hostedBotConnectedGuildId) {
+      return json(res, 400, { error: "This console isn't connected to a Discord server yet." });
+    }
+    const adapterToken = readDiscordAdapterTokenForHostedBot(config);
+    if (!adapterToken) {
+      return json(res, 500, { error: "Could not prepare this console's adapter token." });
+    }
+    let mentatLinkResponse;
+    try {
+      mentatLinkResponse = await fetchWithTimeoutAndRetry(
+        `${config.mentatLinkRolesUrlBase}/${encodeURIComponent(state.hostedBotConnectedGuildId)}/roles`,
+        { method: "GET", headers: { authorization: `Bearer ${adapterToken}` } },
+        { timeoutMs: 15000 }
+      );
+    } catch {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.get", { ok: false, reason: "mentat_unreachable" });
+      return json(res, 502, { error: "Couldn't reach the hosted bot service. Try again in a moment." });
+    }
+    if (!mentatLinkResponse.ok) {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.get", { ok: false, reason: "mentat_rejected", status: mentatLinkResponse.status });
+      return json(res, 502, { error: "Could not load this server's roles. Try again in a moment." });
+    }
+    let rolesBody;
+    try {
+      rolesBody = await mentatLinkResponse.json();
+    } catch {
+      rolesBody = null;
+    }
+    audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.get", { ok: true, cacheStale: Boolean(rolesBody?.cacheStale) });
+    return json(res, 200, { roles: Array.isArray(rolesBody?.roles) ? rolesBody.roles : [], cacheStale: Boolean(rolesBody?.cacheStale) });
+  }
+  if (path === "/api/integrations/discord/hosted-bot/roles" && req.method === "POST") {
+    const state = readDiscordBotSettingsState(config);
+    if (state.deploymentChoice !== "hosted") {
+      return json(res, 403, { error: "This console isn't configured for the hosted bot." });
+    }
+    if (!state.hostedBotConnectedGuildId) {
+      return json(res, 400, { error: "This console isn't connected to a Discord server yet." });
+    }
+    const adapterToken = readDiscordAdapterTokenForHostedBot(config);
+    if (!adapterToken) {
+      return json(res, 500, { error: "Could not prepare this console's adapter token." });
+    }
+    const body = normalizeSettingsBody(await readJson(req));
+    // The hosted wire contract (design doc §4.4/§4.7, mentat's own
+    // guildRoles.js) is array-shaped (["123", "456"]), unlike the
+    // self-hosted form's comma-separated STRING fields --
+    // resolveRoleIdsTier()/validateDiscordRoleIds() above are built for
+    // the latter, so this route validates the array shape directly,
+    // reusing validateDiscordRoleIds()'s existing snowflake-pattern check
+    // per element (via a comma-join) rather than duplicating that regex.
+    function resolveHostedRoleIdsTier(fieldName, currentTierIds) {
+      if (!(fieldName in body)) return { ok: true, roleIds: currentTierIds };
+      const value = body[fieldName];
+      if (!Array.isArray(value)) return { ok: false, error: `${fieldName} must be an array of Discord role IDs.` };
+      return validateDiscordRoleIds(value.join(","));
+    }
+    const player = resolveHostedRoleIdsTier("playerRoleIds", state.roleIds.player);
+    if (!player.ok) return json(res, 400, { error: player.error });
+    const moderator = resolveHostedRoleIdsTier("moderatorRoleIds", state.roleIds.moderator);
+    if (!moderator.ok) return json(res, 400, { error: moderator.error });
+    const admin = resolveHostedRoleIdsTier("adminRoleIds", state.roleIds.admin);
+    if (!admin.ok) return json(res, 400, { error: admin.error });
+
+    // Same owner-only escalation guard as the self-hosted path's
+    // POST /api/settings/discord-bot/role-ids -- an admin-tier session
+    // must not be able to grant itself (or anyone) admin-tier Discord
+    // roles through this route just because it reaches mentat instead of
+    // writing local env vars directly.
+    if (discordAdminRoleIdsChanged(state.roleIds.admin, admin.roleIds) && session.tier !== "owner") {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.post", { ok: false, reason: "admin_role_change_requires_owner" });
+      return json(res, 403, { error: "Changing admin-tier Discord role mappings requires owner access." });
+    }
+
+    let mentatLinkResponse;
+    try {
+      mentatLinkResponse = await fetchWithTimeoutAndRetry(
+        `${config.mentatLinkRolesUrlBase}/${encodeURIComponent(state.hostedBotConnectedGuildId)}/roles`,
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${adapterToken}`, "content-type": "application/json" },
+          body: JSON.stringify({ playerRoleIds: player.roleIds, moderatorRoleIds: moderator.roleIds, adminRoleIds: admin.roleIds })
+        },
+        { timeoutMs: 15000 }
+      );
+    } catch {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.post", { ok: false, reason: "mentat_unreachable" });
+      return json(res, 502, { error: "Couldn't reach the hosted bot service. Your role selections were not saved -- try again in a moment." });
+    }
+    // A 409 tier-conflict is a real, expected outcome the picker surfaces
+    // as an inline validation error (design doc §4.7/§6) -- relayed as-is,
+    // not collapsed into the generic 502 path below.
+    if (mentatLinkResponse.status === 409) {
+      let conflictBody;
+      try {
+        conflictBody = await mentatLinkResponse.json();
+      } catch {
+        conflictBody = null;
+      }
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.post", { ok: false, reason: "tier_conflict" });
+      return json(res, 409, { conflict: conflictBody?.conflict ?? null });
+    }
+    if (!mentatLinkResponse.ok) {
+      audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.post", { ok: false, reason: "mentat_rejected", status: mentatLinkResponse.status });
+      return json(res, 502, { error: "Could not save this server's roles. Try again in a moment." });
+    }
+    // Design doc §4.7 point 3: Core's own local role-ID fields become a
+    // display cache only once this flow is in play -- mentat's DB write is
+    // authoritative, matching the same principle already established for
+    // guild registration itself (persistHostedBotConnectedGuild). No
+    // discordAdapterApply restart task is queued here (unlike the
+    // self-hosted route's own 202 response) -- there is no local adapter
+    // process to restart for the hosted bot; mentat enforces RBAC on its
+    // own already-running connection.
+    updateDiscordBotRoleIds(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds });
+    audit(config, sanitizedUrl(req, "/api/integrations/discord/hosted-bot/roles"), "hosted-bot.roles.post", { ok: true, playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length });
+    return json(res, 200, { applied: true });
+  }
+
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/settings") return json(res, 200, await setupState());
 
