@@ -237,6 +237,61 @@ class GameFieldOverridePrecedenceTests(ProfilePathTestCase):
         }
         self.assertEqual(project_defaults, official_defaults)
 
+    def test_server_custom_metadata_exposes_funcom_choices_and_bounds(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(usersettings.metadata(), 0)
+        fields = {field["id"]: field for field in json.loads(output.getvalue())["serverCustom"]}
+
+        self.assertEqual(fields["pvp_mode"]["options"], ["NoPVP", "Limited", "FullPVP"])
+        self.assertEqual(fields["drop_equipment_on_death"]["options"], ["All", "Backpack", "Default", "None"])
+        self.assertEqual((fields["gathering_amount"]["minimum"], fields["gathering_amount"]["maximum"]), (0.1, 10.0))
+        self.assertEqual((fields["crafting_time_multiplier"]["minimum"], fields["crafting_time_multiplier"]["maximum"]), (0.0, 5.0))
+        self.assertEqual(fields["fiefdom_limit"]["type"], "integer")
+        self.assertEqual((fields["fiefdom_limit"]["minimum"], fields["fiefdom_limit"]["maximum"]), (0, 10))
+
+    def test_server_custom_bulk_save_validates_and_canonicalizes_values(self):
+        payload = {
+            "pvp_mode": "fullpvp",
+            "gathering_amount": "0.1",
+            "crafting_time_multiplier": "5",
+            "fiefdom_limit": "10",
+            "allow_dynamic_building_damage": "false",
+        }
+        self.assertEqual(usersettings.bulk_save("serverCustomMap", MAP_NAME, "", _encode_bulk_save_payload(payload)), 0)
+        saved = usersettings.PROFILE_PATH.read_text(encoding="utf-8")
+        self.assertIn("PVPMode=FullPVP", saved)
+        self.assertIn("GatheringAmount=0.1", saved)
+        self.assertIn("CraftingTimeMultiplier=5", saved)
+        self.assertIn("FiefdomLimit=10", saved)
+        self.assertIn("bAllowDynamicBuildingDamage=False", saved)
+
+    def test_invalid_server_custom_values_are_rejected_before_profile_write(self):
+        usersettings.bulk_save(
+            "serverCustomMap",
+            MAP_NAME,
+            "",
+            _encode_bulk_save_payload({"gathering_amount": "2.0"}),
+        )
+        original = usersettings.PROFILE_PATH.read_bytes()
+        invalid_values = {
+            "pvp_mode": "Sometimes",
+            "gathering_amount": "0.09",
+            "crafting_time_multiplier": "5.1",
+            "fiefdom_limit": "3.5",
+            "allow_dynamic_building_damage": "maybe",
+            "base_backup_tool_time_restriction": "NaN",
+        }
+        for field_id, value in invalid_values.items():
+            with self.subTest(field_id=field_id), self.assertRaises(SystemExit):
+                usersettings.bulk_save(
+                    "serverCustomMap",
+                    MAP_NAME,
+                    "",
+                    _encode_bulk_save_payload({field_id: value}),
+                )
+            self.assertEqual(usersettings.PROFILE_PATH.read_bytes(), original)
+
 
 class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
     RETIRED_IDS = {

@@ -15,6 +15,7 @@ export type UserSettingField = {
   label?: string;
   minimum?: number | null;
   maximum?: number | null;
+  options?: string[];
 };
 
 export type UserSettingsSchema = {

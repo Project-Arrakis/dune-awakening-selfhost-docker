@@ -1426,6 +1426,10 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const engineDirty = changedKeys(engineValues, engineDraft, engineFields);
   const gameDirty = changedKeys(gameValues, gameDraft, userGameFields);
   const serverCustomDirty = changedKeys(serverCustomValues, serverCustomDraft, serverCustomFields);
+  const invalidServerCustomDirty = serverCustomDirty.filter((fieldId) => {
+    const field = serverCustomFields.find((candidate) => candidate.id === fieldId);
+    return Boolean(field && !settingValueIsValid(field, serverCustomDraft[fieldId] ?? field.default ?? ""));
+  });
   // The download buttons report how many settings each client ini actually carries.
   // Count the generated file rather than the drafts: downloads reflect saved state
   // and include only non-default values explicitly classified as client-required.
@@ -1922,7 +1926,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     await refreshDeferredRestartPending();
   }
   async function saveServerCustom() {
-    if (!userGameName) return;
+    if (!userGameName || invalidServerCustomDirty.length) return;
     const scope = isUserGameGlobal ? "serverCustomGlobal" : effectiveUserGamePartitionId ? "serverCustomPartition" : "serverCustomMap";
     const map = isUserGameGlobal ? "Survival_1" : userGameName;
     const partitionId = isUserGameGlobal ? undefined : effectiveUserGamePartitionId || undefined;
@@ -2424,7 +2428,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
           </div>
         </div>
         {userGameName && <><p className="muted">Official Patch 1.5 settings stored in <code>Saved/Config/LinuxServer/ServerCustomSettings.ini</code>. Dune Docker keeps <code>DifficultyLevel=Custom</code> and preserves unmanaged file values.</p><SettingsCardGrid fields={filteredServerCustomFields} values={serverCustomDraft} onChange={(id, value) => setServerCustomDraft({ ...serverCustomDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, serverCustomFields.length, modifierFilter, activeServerCustomCategory)} /></>}
-        <div className="action-row"><button disabled={!serverCustomDirty.length || !userGameName} onClick={() => run(saveServerCustom)}>Save</button><button disabled={!serverCustomDirty.length} onClick={() => setServerCustomDraft(serverCustomValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !serverCustomFields.length} title="Set every Server Setting on this tab back to its default value" onClick={() => setServerCustomDraft(Object.fromEntries(serverCustomFields.map((field) => [field.id, field.default ?? ""]))) }>Restore Defaults</button></div>
+        {invalidServerCustomDirty.length > 0 && <p className="error">Enter a supported value within the displayed range before saving.</p>}
+        <div className="action-row"><button disabled={!serverCustomDirty.length || !userGameName || invalidServerCustomDirty.length > 0} onClick={() => run(saveServerCustom)}>Save</button><button disabled={!serverCustomDirty.length} onClick={() => setServerCustomDraft(serverCustomValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !serverCustomFields.length} title="Set every Server Setting on this tab back to its default value" onClick={() => setServerCustomDraft(Object.fromEntries(serverCustomFields.map((field) => [field.id, field.default ?? ""]))) }>Restore Defaults</button></div>
       </> : settingsTab === "spicefields" ? <>
         <SpicefieldsEditor rows={filteredActiveSpicefields} allRows={activeSpicefields} loaded={spicefieldsLoaded} filter={spicefieldFilter} result={spicefieldResult} onFilterChange={setSpicefieldFilter} onRefresh={() => run(loadSpicefields)} />
       </> : <>
@@ -2939,13 +2944,22 @@ function SettingControl({ field, value, onChange, matchRegion }: { field: UserSe
 }
 
 function SettingInput({ field, value, inputId, onChange, disabled }: { field: UserSettingField; value: string; inputId: string; onChange: (value: string) => void; disabled?: boolean }) {
-  return field.type === "boolean"
+  const input = field.options?.length
+    ? <select id={inputId} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>{field.options.map((option) => <option key={option} value={option}>{option}</option>)}</select>
+    : field.type === "boolean"
     ? <select id={inputId} value={normalizeBooleanText(value)} disabled={disabled} onChange={(event) => onChange(event.target.value)}><option value="True">True</option><option value="False">False</option></select>
     : field.type === "integer" || field.type === "number"
       ? <input id={inputId} type="number" step={field.type === "integer" ? "1" : "any"} min={field.minimum ?? undefined} max={field.maximum ?? undefined} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
       : String(value).length > 72 || value.includes("(")
         ? <textarea id={inputId} rows={3} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
         : <input id={inputId} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />;
+  const bounded = field.minimum != null || field.maximum != null;
+  const range = field.minimum != null && field.maximum != null
+    ? `${field.minimum}–${field.maximum}`
+    : field.minimum != null
+      ? `${field.minimum} or greater`
+      : `${field.maximum} or less`;
+  return <>{input}{bounded && <small className="muted settings-value-constraint">Allowed: {range}{field.type === "integer" ? " (whole numbers)" : ""}</small>}</>;
 }
 
 export function MemoryUsageBar({ row, fallback, configuredLimit, swapEnabled = false }: { row: LiveMapMemoryRow | null; fallback: string; configuredLimit?: unknown; swapEnabled?: boolean }) {
@@ -3105,6 +3119,19 @@ function friendlySettingLabel(id: string, fallback: string, explicit = "") {
 
 function normalizeBooleanText(value: string) {
   return /^(1|true|yes|on)$/i.test(String(value)) ? "True" : "False";
+}
+
+export function settingValueIsValid(field: UserSettingField, value: string) {
+  const candidate = String(value ?? "").trim();
+  if (field.options?.length) return field.options.includes(candidate);
+  if (field.type === "boolean") return /^(true|false)$/i.test(candidate);
+  if (field.type !== "integer" && field.type !== "number") return true;
+  if (!candidate || (field.type === "integer" && !/^-?\d+$/.test(candidate))) return false;
+  const parsed = Number(candidate);
+  if (!Number.isFinite(parsed)) return false;
+  if (field.minimum != null && parsed < field.minimum) return false;
+  if (field.maximum != null && parsed > field.maximum) return false;
+  return true;
 }
 
 function parseUserSettingsMap(text: string) {

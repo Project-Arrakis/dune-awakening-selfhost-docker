@@ -232,6 +232,60 @@ SERVER_CUSTOM_FIELDS = {
     "landsraad_disable_decree_reroll_limit": (SERVER_CUSTOM_SETTINGS_SECTION, "bLandsraadDisableDecreeRerollLimit", "False"),
 }
 
+# Constraints published by Funcom alongside UserServerCustomSettings.ini in the
+# installed server build. Keep these keyed by our stable field ids so the same
+# contract drives CLI/API validation and Console metadata.
+SERVER_CUSTOM_ENUM_VALUES = {
+    "pvp_mode": ("NoPVP", "Limited", "FullPVP"),
+    "drop_equipment_on_death": ("All", "Backpack", "Default", "None"),
+    "sandworm_consequences": ("All", "Backpack", "Default", "None"),
+    "player_death_loot_rule": (
+        "DependsOnSecurityZone",
+        "NeverAllowOtherPlayers",
+        "AlwaysAllowOtherPlayers",
+    ),
+}
+
+SERVER_CUSTOM_NUMERIC_BOUNDS = {
+    **{field_id: (0.1, 10.0) for field_id in (
+        "gathering_amount",
+        "water_extraction_rate",
+        "loot_respawn_speed",
+        "resource_respawn_speed",
+        "inventory_volume_multiplier",
+        "player_damage_to_player",
+        "player_damage_to_npc",
+        "player_damage_to_vehicle",
+        "npc_health",
+        "npc_damage_to_player",
+        "npc_damage_to_npc",
+        "npc_respawn_multiplier",
+        "player_stamina_drain",
+        "player_shield_damage_absorption_multiplier",
+        "npc_shield_damage_absorption_multiplier",
+        "building_piece_limit_multiplier",
+    )},
+    **{field_id: (0.0, 10.0) for field_id in (
+        "crafting_cost",
+        "building_cost_multiplier",
+        "fuel_burn_time_multiplier",
+        "pvp_damage_structures",
+        "global_xp_multiplier",
+        "combat_xp",
+        "gathering_xp",
+        "mission_xp",
+        "item_durability_drain_multiplier",
+        "intel_points_gain_multiplier",
+        "heat_buildup_rate",
+        "thirst_multiplier",
+        "landsraad_contribution_multiplier",
+        "landsraad_specialization_xp_multiplier",
+        "landsraad_faction_standing_multiplier",
+    )},
+    "crafting_time_multiplier": (0.0, 5.0),
+    "fiefdom_limit": (0, 10),
+}
+
 SERVER_CUSTOM_FIELD_CATEGORIES = {
     **{key: "Combat" for key in ("pvp_mode", "player_damage_to_player", "player_damage_to_npc", "player_damage_to_vehicle", "npc_health", "npc_damage_to_player", "npc_damage_to_npc", "npc_respawn_multiplier", "pvp_damage_structures", "player_shield_damage_absorption_multiplier", "npc_shield_damage_absorption_multiplier")},
     **{key: "Progression" for key in ("global_xp_multiplier", "combat_xp", "gathering_xp", "mission_xp", "intel_points_gain_multiplier")},
@@ -1824,6 +1878,51 @@ def validate_profile_port_ranges(profile: dict) -> None:
         )
 
 
+def normalize_server_custom_value(field_id: str, value: str) -> str:
+    """Validate one native ServerCustomSettings value and canonicalize enums.
+
+    Existing materialized files remain readable even if an older build wrote a
+    value outside today's contract. Validation applies when an administrator
+    explicitly saves a field through any supported settings surface.
+    """
+    _section, key, default = SERVER_CUSTOM_FIELDS[field_id]
+    candidate = str(value).strip()
+    choices = SERVER_CUSTOM_ENUM_VALUES.get(field_id)
+    if choices:
+        canonical = next((choice for choice in choices if choice.casefold() == candidate.casefold()), None)
+        if canonical is None:
+            raise SystemExit(f"{key} must be one of: {', '.join(choices)}.")
+        return canonical
+
+    field_type = FIELD_TYPE_OVERRIDES.get(field_id, infer_field_type(default))
+    if field_type == "boolean":
+        if candidate.casefold() == "true":
+            return "True"
+        if candidate.casefold() == "false":
+            return "False"
+        raise SystemExit(f"{key} must be True or False.")
+
+    if field_type == "integer":
+        try:
+            parsed: int | float = int(candidate)
+        except ValueError as exc:
+            raise SystemExit(f"{key} must be a whole number.") from exc
+    elif field_type == "number":
+        try:
+            parsed = float(candidate)
+        except ValueError as exc:
+            raise SystemExit(f"{key} must be a number.") from exc
+        if not math.isfinite(parsed):
+            raise SystemExit(f"{key} must be a finite number.")
+    else:
+        return candidate
+
+    minimum, maximum = SERVER_CUSTOM_NUMERIC_BOUNDS.get(field_id, (None, None))
+    if minimum is not None and parsed < minimum or maximum is not None and parsed > maximum:
+        raise SystemExit(f"{key} must be between {minimum:g} and {maximum:g}.")
+    return candidate
+
+
 def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: str, field_id: str, value: str) -> None:
     if scope in {"server_custom_global", "server_custom_map", "server_custom_partition"}:
         if field_id not in SERVER_CUSTOM_FIELDS:
@@ -1833,7 +1932,15 @@ def set_profile_field(profile: dict, scope: str, map_name: str, partition_id: st
         if scope == "server_custom_partition" and not target_partition:
             raise SystemExit("Partition Server Custom Settings save requires a partition id.")
         section, key, _default = SERVER_CUSTOM_FIELDS[field_id]
-        profile_set_key(profile, scope, section, key, value, target_map, target_partition)
+        profile_set_key(
+            profile,
+            scope,
+            section,
+            key,
+            normalize_server_custom_value(field_id, value),
+            target_map,
+            target_partition,
+        )
         return
     if field_id in LANDSRAAD_DATA_FIELDS:
         if scope != "global":
@@ -2235,6 +2342,8 @@ def metadata() -> int:
         minimum, maximum = CORIOLIS_CYCLE_START_BOUNDS.get(field_id, (None, None))
         if field_id == "augment_jackpot_roll_percentage":
             minimum, maximum = AUGMENT_JACKPOT_ROLL_BOUNDS
+        if scope == "serverCustom":
+            minimum, maximum = SERVER_CUSTOM_NUMERIC_BOUNDS.get(field_id, (None, None))
         return {
             "scope": scope,
             "id": field_id,
@@ -2248,6 +2357,7 @@ def metadata() -> int:
             "label": FIELD_LABELS.get(field_id, ""),
             "minimum": minimum,
             "maximum": maximum,
+            "options": list(SERVER_CUSTOM_ENUM_VALUES.get(field_id, ())) if scope == "serverCustom" else [],
         }
 
     # A login password has no public default and is managed by the Sietch
