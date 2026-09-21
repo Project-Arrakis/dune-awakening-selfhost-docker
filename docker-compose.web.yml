@@ -184,6 +184,22 @@ services:
       # unset, so an operator who never configures this secret at all,
       # or who never migrates it, sees zero behavior change.
       DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET: "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}"
+      # Maintainer review finding (PR #215): config.js reads this
+      # server-side (autoInviteDiscordClientId) but it was never declared
+      # here, so an operator running their own hosted-bot backend under a
+      # different Discord Application could never actually override the
+      # default (Sahir Venn's client_id) in a real docker-compose
+      # deployment -- the fallback default worked, but this override never
+      # reached the container regardless of what was set in .env.
+      #
+      # Its siblings (AUTO_INVITE_DISCORD_REDIRECT_URI,
+      # MENTAT_LINK_AUTO_INVITE_START_URL, MENTAT_LINK_CONFIRMATION_STATUS_URL)
+      # are deliberately NOT added here: config.js's own comments document
+      # them as test-only overrides -- there is exactly one correct
+      # production value for each (design doc goal G2: the operator never
+      # configures anything Discord-related for this specific flow), so
+      # wiring them through would contradict that design, not fix a gap.
+      AUTO_INVITE_DISCORD_CLIENT_ID: "${AUTO_INVITE_DISCORD_CLIENT_ID:-}"
       # Finding 1 (CRITICAL, final review): a bare map-form interpolated
       # entry here (the previous "${DISCORD_PLAYER_ROLE_IDS:-}") ALWAYS sets
       # this var in the container -- as an empty string when unset in .env,
