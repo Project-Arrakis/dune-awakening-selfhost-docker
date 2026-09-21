@@ -186,19 +186,23 @@ services:
       DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET: "${DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET:-}"
       # Maintainer review finding (PR #215): config.js reads this
       # server-side (autoInviteDiscordClientId) but it was never declared
-      # here, so an operator running their own hosted-bot backend under a
-      # different Discord Application could never actually override the
-      # default (Sahir Venn's client_id) in a real docker-compose
-      # deployment -- the fallback default worked, but this override never
-      # reached the container regardless of what was set in .env.
+      # here, so it could never actually be overridden in a real
+      # docker-compose deployment -- the fallback default worked, but this
+      # override never reached the container regardless of what was set in
+      # .env.
       #
-      # Its siblings (AUTO_INVITE_DISCORD_REDIRECT_URI,
+      # Scope decision, closing dune-awakening-selfhost-docker#915: this
+      # auto-invite flow is tied to this project's own hosted-bot backend
+      # (mentat/mentat-link), not a generic bring-your-own-hosted-bot
+      # framework. This var exists only so a maintainer of *this* project
+      # can rotate/replace Sahir Venn's Discord Application without a code
+      # change. Its siblings (AUTO_INVITE_DISCORD_REDIRECT_URI,
       # MENTAT_LINK_AUTO_INVITE_START_URL, MENTAT_LINK_CONFIRMATION_STATUS_URL)
-      # are deliberately NOT added here: config.js's own comments document
-      # them as test-only overrides -- there is exactly one correct
-      # production value for each (design doc goal G2: the operator never
-      # configures anything Discord-related for this specific flow), so
-      # wiring them through would contradict that design, not fix a gap.
+      # are deliberately NOT added here, and not meant to be: they point at
+      # mentat-link's own real infrastructure, and overriding just these
+      # values would not let a fork stand up a competing hosted-bot service
+      # -- that would require building mentat-link's own backend first,
+      # which is out of scope for this design to support.
       AUTO_INVITE_DISCORD_CLIENT_ID: "${AUTO_INVITE_DISCORD_CLIENT_ID:-}"
       # Finding 1 (CRITICAL, final review): a bare map-form interpolated
       # entry here (the previous "${DISCORD_PLAYER_ROLE_IDS:-}") ALWAYS sets
