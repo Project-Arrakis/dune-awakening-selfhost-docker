@@ -9,7 +9,7 @@ schema legible: it is why world state tables carry a `dimension_index`, why
 `partition_id` appears throughout the event log, and why "the same map" can
 hold two completely independent worlds.
 
-Related: [`DATABASE.md`](DATABASE.md) §6 for how `partition_id` provisions the
+Related: [`DATABASE.md` §6](DATABASE.md#6-partitioning) for how `partition_id` provisions the
 `event_log_p*` tables, [`SERVICES.md`](SERVICES.md) for the game servers that
 own partitions at runtime, and
 [`live-map.md`](../console/live-map.md) for the Deep Desert sector grid.
@@ -68,7 +68,7 @@ into a spatial grid of partitions.
 
 `partition_id` is the identity the rest of the schema hangs off: inserting a
 `world_partition` row fires the trigger that provisions that partition's
-`event_log_p*` table (see [`DATABASE.md`](DATABASE.md) §6), and combat/world
+`event_log_p*` table (see [`DATABASE.md` §6](DATABASE.md#6-partitioning)), and combat/world
 state references it. **Never insert a `world_partition` row by hand** — it
 provisions tables as a side effect.
 

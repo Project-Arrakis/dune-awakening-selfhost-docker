@@ -12,7 +12,7 @@ responsible for, and the trust boundaries between them.
 **Out of scope:** the game servers themselves (Survival, Deep Desert,
 Overmap, sietches) and how they are spawned, despawned and autoscaled. Those
 are a moving population, not fixed infrastructure — see the autoscaler
-material in [`SYSTEM-OVERVIEW.md`](SYSTEM-OVERVIEW.md) §1.5. This document is
+material in [`SYSTEM-OVERVIEW.md` §1.5](SYSTEM-OVERVIEW.md#15-the-gameplay-containers-raw-docker-run-not-compose). This document is
 about the services that are *always* there and hold the others up.
 
 Related: [`DATABASE.md`](DATABASE.md) for the database every service shares,
@@ -31,16 +31,16 @@ observed.
 
 | Container | Image origin | Documented in |
 |---|---|---|
-| `dune-orchestrator` | this repo | [SYSTEM-OVERVIEW.md](SYSTEM-OVERVIEW.md) §1.1 |
-| `dune-coriolis-coordinator` | this repo (orchestrator image) | §4 below |
-| `dune-autoscaler` | this repo (orchestrator image) | [SYSTEM-OVERVIEW.md](SYSTEM-OVERVIEW.md) §1.5 |
-| `redblink-dune-docker-console` | this repo | [SYSTEM-OVERVIEW.md](SYSTEM-OVERVIEW.md) §1.2 |
-| `dune-public-probe` | this repo | [SYSTEM-OVERVIEW.md](SYSTEM-OVERVIEW.md) §1.4 |
+| `dune-orchestrator` | this repo | [SYSTEM-OVERVIEW.md §1.1](SYSTEM-OVERVIEW.md#11-the-orchestrator-container) |
+| `dune-coriolis-coordinator` | this repo (orchestrator image) | [§4](#4-coriolis-coordinator-dune-coriolis-coordinator) below |
+| `dune-autoscaler` | this repo (orchestrator image) | [SYSTEM-OVERVIEW.md §1.5](SYSTEM-OVERVIEW.md#15-the-gameplay-containers-raw-docker-run-not-compose) |
+| `redblink-dune-docker-console` | this repo | [SYSTEM-OVERVIEW.md §1.2](SYSTEM-OVERVIEW.md#12-the-console-redblink-dune-docker-console) |
+| `dune-public-probe` | this repo | [SYSTEM-OVERVIEW.md §1.4](SYSTEM-OVERVIEW.md#14-the-public-probe-opt-in) |
 | `dune-postgres` | Funcom (`igw-postgres`) | [DATABASE.md](DATABASE.md) |
-| `dune-rmq-game`, `dune-rmq-admin` | Funcom (`seabass-server-rabbitmq`) | §2, §3 |
-| `dune-text-router` | Funcom (`seabass-server-text-router`) | §2 |
-| `dune-director` | Funcom (`seabass-server-bg-director`) | §2 |
-| `dune-server-gateway` | Funcom (`seabass-server-gateway`) | §2 |
+| `dune-rmq-game`, `dune-rmq-admin` | Funcom (`seabass-server-rabbitmq`) | [§2](#2-the-closed-source-services), [§3](#3-messaging-authorization-topology) |
+| `dune-text-router` | Funcom (`seabass-server-text-router`) | [§2](#2-the-closed-source-services) |
+| `dune-director` | Funcom (`seabass-server-bg-director`) | [§2](#2-the-closed-source-services) |
+| `dune-server-gateway` | Funcom (`seabass-server-gateway`) | [§2](#2-the-closed-source-services) |
 | game servers | Funcom (`seabass-server`) | out of scope |
 
 Everything but Postgres and the game servers runs on the `dune-net` bridge
@@ -53,7 +53,7 @@ network; the Overmap game server and the orchestrator use host networking.
 ### TextRouter (`dune-text-router`)
 
 A .NET service on `dune-net`, listening on `:5059`. It is the **authorization
-authority for the entire messaging layer** — see §3. It also holds battlegroup
+authority for the entire messaging layer** — see [§3](#3-messaging-authorization-topology). It also holds battlegroup
 identity (region, language, display name) and its own database connection. It
 is configured with the hostnames of both RabbitMQ brokers.
 
@@ -172,7 +172,7 @@ order:
 9. the always-on world servers (Survival, Overmap) — out of scope here
 
 The ordering constraint that matters: **RabbitMQ starts before TextRouter,
-but neither can authenticate a client until TextRouter is up** (§3), and the
+but neither can authenticate a client until TextRouter is up** ([§3](#3-messaging-authorization-topology)), and the
 Director starts after both brokers because it connects to them.
 
 `runtime/scripts/stop-all.sh` tears the stack down; each service also has its
@@ -184,8 +184,8 @@ own `start-*.sh`.
 
 | Symptom | Look first at |
 |---|---|
-| RabbitMQ auth failing for everything, brokers otherwise healthy | TextRouter down/wedged (§3) |
+| RabbitMQ auth failing for everything, brokers otherwise healthy | TextRouter down/wedged ([§3](#3-messaging-authorization-topology)) |
 | Clients cannot connect but internal services are fine | Gateway, or the game broker's TLS/published port |
 | Login/session problems specific to a battlegroup | Director |
-| A Deep Desert reset event fires in-game but the host never restarts | Coriolis coordinator (§4) |
+| A Deep Desert reset event fires in-game but the host never restarts | Coriolis coordinator ([§4](#4-coriolis-coordinator-dune-coriolis-coordinator)) |
 | A published game-broker management port is unreachable | host firewall / port mapping — see [MULTI-SERVER-SINGLE-PUBLIC-IP.md](../runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) |

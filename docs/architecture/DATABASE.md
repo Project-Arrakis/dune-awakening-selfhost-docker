@@ -11,7 +11,7 @@ That last point governs how to read this document. It describes *mechanisms*
 that have been stable across builds — how encryption is layered, how
 partitions are created, how the game signals running map servers — and
 deliberately does **not** transcribe the ~490 functions or ~186 tables, which
-drift. For the current inventory, regenerate it (§10) rather than trusting a
+drift. For the current inventory, regenerate it ([§10](#10-patches-and-drift)) rather than trusting a
 list written down months ago.
 
 Related: [SYSTEM-OVERVIEW.md](SYSTEM-OVERVIEW.md) for the surrounding
@@ -60,7 +60,7 @@ Two independent writers share this database:
 | Writer | Connection | Owns |
 |---|---|---|
 | The dedicated server (closed source) | its own, not visible to us | virtually the entire schema |
-| The console (`console/api`) | one `pg` pool, `console/api/src/db.js` | five tables (§9) |
+| The console (`console/api`) | one `pg` pool, `console/api/src/db.js` | five tables ([§9](#9-console-authored-objects)) |
 
 They are separate OS processes. The console's pool object is not shared with
 the game server in any way; the two simply agree on a database.
@@ -83,8 +83,8 @@ Three schemas:
 - **`dune`** — the game. All tables, views, functions, procedures and types
   discussed below live here unless stated otherwise.
 - **`ext`** — extensions only, kept out of `dune` deliberately:
-  `pg_trgm` (trigram text search) and `pgcrypto` (§4).
-- **`console_market_history`** — console-owned, created by us (§9). The only
+  `pg_trgm` (trigram text search) and `pgcrypto` ([§4](#4-the-encryption-layer)).
+- **`console_market_history`** — console-owned, created by us ([§9](#9-console-authored-objects)). The only
   schema in this database that this repo defines.
 
 ---
@@ -225,8 +225,8 @@ Six, on the verified build — five Landsraad plus one operational:
 | `landsraad_update_decrees(landsraaddecree[])` | update decrees |
 | `landsraad_nominate_decrees_for_voting(bigint, integer)` | open decrees for voting |
 | `landsraad_update_factions(text[])` | reconcile faction names |
-| `create_event_log_partition_table(text, bigint)` | §6 |
-| `setup_user_data_encryption(boolean)` | §4 |
+| `create_event_log_partition_table(text, bigint)` | [§6](#6-partitioning) |
+| `setup_user_data_encryption(boolean)` | [§4](#4-the-encryption-layer) |
 
 ### Triggers
 
@@ -247,7 +247,7 @@ writes have side effects well beyond the row you touched:
 | `console_market_history_capture` **(ours)** | `dune_exchange_fulfilled_orders` | `console_market_history.capture_fulfilled_order()` |
 
 If you are enumerating triggers to reason about game behavior, exclude the
-last one — it is ours, and §9 covers it.
+last one — it is ours, and [§9](#9-console-authored-objects) covers it.
 
 ---
 
@@ -331,7 +331,7 @@ See [exchange.md](../console/exchange.md) for the feature itself.
 ## 10. Patches and drift
 
 `runtime/scripts/update-db.sh` applies the SQL under `runtime/sql/` and
-records what the game has applied in `dune.applied_patches` (§1). It connects
+records what the game has applied in `dune.applied_patches` ([§1](#1-scope-and-vintage)). It connects
 as `postgres` and reconciles trigger definitions as part of the run.
 
 Repo-supplied patches currently in `runtime/sql/`:
@@ -349,8 +349,8 @@ that can go stale, against a live database:
 runtime/scripts/schema-report.sh
 ```
 
-It is read-only, and reports: the patch-log vintage (§1), object counts,
-notify channels (§7), non-internal triggers (§7), and a drift check that
+It is read-only, and reports: the patch-log vintage ([§1](#1-scope-and-vintage)), object counts,
+notify channels ([§7](#7-routines-and-why-direct-dml-often-does-nothing)), non-internal triggers ([§7](#7-routines-and-why-direct-dml-often-does-nothing)), and a drift check that
 extracts every `dune.*` name referenced in `console/api/src` and lists the
 ones that do not resolve in the database.
 
@@ -360,8 +360,8 @@ overridable with `DUNE_POSTGRES_CONTAINER`, `DUNE_POSTGRES_ROLE` and
 
 A name in the drift list is **not automatically a bug.** It is one of:
 
-1. correctly guarded by a capability probe (§8) — the usual case;
-2. a console table not yet created, because the feature has not run (§9);
+1. correctly guarded by a capability probe ([§8](#8-capability-probes)) — the usual case;
+2. a console table not yet created, because the feature has not run ([§9](#9-console-authored-objects));
 3. prose — the extraction is textual, so `dune.<word>` in a comment or an
    error string is reported too;
 4. an actual latent bug.
