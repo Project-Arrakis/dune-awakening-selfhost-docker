@@ -217,7 +217,7 @@ psql_value() {
   esac
 }
 NAMED_DESTINATION_SINCE=10m
-NAMED_DESTINATION_SCAN_SECONDS=60
+STORY_RETURN_RECOVERY_SCAN_SECONDS=5
 STORY_RETURN_HOLD_SECONDS=300
 scan_rejected_story_returns
 scan_rejected_story_returns")"
