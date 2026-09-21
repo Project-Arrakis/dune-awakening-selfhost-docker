@@ -184,11 +184,11 @@ describe("MapsPanel modifier availability", () => {
     expect(screen.getByText("Allowed: 0.1–10")).toBeVisible();
     fireEvent.change(gatheringAmount, { target: { value: "10.1" } });
     expect(screen.getByText(/supported value within the displayed range/i)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save Custom Settings" })).toBeDisabled();
 
     fireEvent.change(gatheringAmount, { target: { value: "10" } });
     expect(screen.queryByText(/supported value within the displayed range/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save Custom Settings" })).toBeEnabled();
   });
 
   it("shows the global Spice Fields section under Custom Settings without needing a Target selected, and saves at Global scope", async () => {
