@@ -6345,6 +6345,9 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .settings-category .settings-grid-roomy { padding: 14px; }
 .settings-selector-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 12px; }
 .settings-selector-row .compact-select { min-width: min(100%, 280px); }
+.spicefield-settings-heading { margin: 22px 0 12px; padding-top: 18px; border-top: 1px solid rgba(214, 185, 140, .18); }
+.spicefield-settings-heading h3 { margin: 0 0 6px; color: var(--title); font-size: 14px; }
+.spicefield-settings-heading p { margin: 0; color: var(--muted); font-size: 12px; }
 .spicefields-toolbar { align-items: end; }
 .spicefields-toolbar .wide-field { flex: 1 1 420px; }
 .spicefields-refresh-button { flex: 0 0 auto; margin-bottom: 0; min-height: 42px; }
