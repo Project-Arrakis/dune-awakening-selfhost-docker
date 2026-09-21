@@ -246,6 +246,15 @@ describe("MapsPanel modifier availability", () => {
     // disabled just because no Target is selected.
     expect(screen.getByLabelText("Filter Custom Settings")).toBeEnabled();
 
+    fireEvent.change(screen.getByDisplayValue("9.000000"), { target: { value: "" } });
+    expect(screen.getByText(/valid value for every changed Spice Field setting/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Save Spice Fields" })).toBeDisabled();
+
+    fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "3.000000" } });
+    expect(screen.queryByText(/valid value for every changed Spice Field setting/i)).not.toBeInTheDocument();
+
+    // Return to the last-loaded value before exercising Discard independently.
+    fireEvent.click(screen.getByRole("button", { name: "Discard Spice Field Changes" }));
     fireEvent.change(screen.getByDisplayValue("9.000000"), { target: { value: "3.000000" } });
 
     // Discard reverts to the last-loaded value, not the field's schema default.

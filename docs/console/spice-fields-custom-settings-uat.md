@@ -1,13 +1,11 @@
 # Spice Fields (Custom Settings) — UAT
 
-**Status:** In Design | **For:** [PR #228](https://github.com/Red-Blink/dune-awakening-selfhost-docker/pull/228)
+**Status:** Pending Live Validation | **For:** [PR #228](https://github.com/Red-Blink/dune-awakening-selfhost-docker/pull/228)
 
 This is a manual test plan for verifying the new `Maps -> Interactive
 Modifiers -> Custom Settings -> Spice Fields` section against a real, live
-server — the one gate this PR is still in draft for (see the PR's "Known
-open item"). It isn't end-user documentation; once this PR is out of draft,
-a normal operator-facing doc can be added separately if the maintainer wants
-one.
+server. It isn't end-user documentation; a normal operator-facing document
+can be added separately if the maintainer wants one.
 
 ## Prerequisites
 

@@ -1436,6 +1436,10 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const spiceFieldSettings = (schema?.game || []).filter((field) => field.category === "Spice Fields");
   const filteredSpiceFieldSettings = filterSettingsFields(spiceFieldSettings, modifierFilter);
   const spiceFieldsDirty = changedKeys(spiceFieldValues, spiceFieldDraft, spiceFieldSettings);
+  const invalidSpiceFieldsDirty = spiceFieldsDirty.filter((fieldId) => {
+    const field = spiceFieldSettings.find((candidate) => candidate.id === fieldId);
+    return Boolean(field && !settingValueIsValid(field, spiceFieldDraft[fieldId] ?? field.default ?? ""));
+  });
   const filteredActiveSpicefields = filterActiveSpicefields(activeSpicefields, spicefieldFilter);
   const engineSchemaFields = isEngineGlobal
     ? schema?.engine || []
@@ -1966,6 +1970,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     await refreshDeferredRestartPending();
   }
   async function saveSpiceFields() {
+    if (invalidSpiceFieldsDirty.length) return;
     const choice = await confirmSettingsRestart("UserGame", settingsRestartTarget("global", "Survival_1"));
     if (choice === "cancel") return;
     await runTaskAndRefresh(
@@ -2471,7 +2476,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
           <p>These settings apply server-wide, independent of the Target selector above -- global spice-system pacing, visibility, and yield. Patch 1.5 removed the old per-map/per-size active-field caps and spawn weights entirely, so there is no longer a per-size (Small/Medium/Large) or per-map (Hagga Basin vs. Deep Desert) control surface in the live game server; these are the closest settings that still exist.</p>
         </div>
         <SettingsCardGrid fields={filteredSpiceFieldSettings} values={spiceFieldDraft} onChange={(id, value) => setSpiceFieldDraft({ ...spiceFieldDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, spiceFieldSettings.length, modifierFilter, "Spice Fields")} />
-        <div className="action-row"><button disabled={!spiceFieldsDirty.length} onClick={() => run(saveSpiceFields)}>Save Spice Fields</button><button disabled={!spiceFieldsDirty.length} onClick={() => setSpiceFieldDraft(spiceFieldValues)}>Discard Spice Field Changes</button><button className="settings-reset-all-button" disabled={!spiceFieldSettings.length} title="Set every Spice Field setting back to its default value" onClick={() => setSpiceFieldDraft(Object.fromEntries(spiceFieldSettings.map((field) => [field.id, field.default ?? ""])))}>Restore Spice Field Defaults</button></div>
+        {invalidSpiceFieldsDirty.length > 0 && <p className="error">Enter a valid value for every changed Spice Field setting before saving.</p>}
+        <div className="action-row"><button disabled={!spiceFieldsDirty.length || invalidSpiceFieldsDirty.length > 0} onClick={() => run(saveSpiceFields)}>Save Spice Fields</button><button disabled={!spiceFieldsDirty.length} onClick={() => setSpiceFieldDraft(spiceFieldValues)}>Discard Spice Field Changes</button><button className="settings-reset-all-button" disabled={!spiceFieldSettings.length} title="Set every Spice Field setting back to its default value" onClick={() => setSpiceFieldDraft(Object.fromEntries(spiceFieldSettings.map((field) => [field.id, field.default ?? ""])))}>Restore Spice Field Defaults</button></div>
       </> : settingsTab === "spicefields" ? <>
         <SpicefieldsEditor rows={filteredActiveSpicefields} allRows={activeSpicefields} loaded={spicefieldsLoaded} filter={spicefieldFilter} result={spicefieldResult} onFilterChange={setSpicefieldFilter} onRefresh={() => run(loadSpicefields)} />
       </> : <>
