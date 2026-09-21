@@ -499,33 +499,55 @@ director_heal_set() {
   local key="$1"
   local value="$2"
   local tmp
-  tmp="$(mktemp)"
 
-  awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
-  printf '%s\t%s\n' "$key" "$value" >> "$tmp"
-  mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  (
+    flock -x 9
+    tmp="$(mktemp)"
+    awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
+    printf '%s\t%s\n' "$key" "$value" >> "$tmp"
+    mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  ) 9>"${DIRECTOR_HEAL_FILE}.lock"
 }
 
 director_heal_clear() {
   local key="$1"
   local tmp
-  tmp="$(mktemp)"
 
-  awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
-  mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  (
+    flock -x 9
+    tmp="$(mktemp)"
+    awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
+    mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  ) 9>"${DIRECTOR_HEAL_FILE}.lock"
 }
 
+# director_heal_due inlines its own set (rather than calling director_heal_set)
+# because both take the same flock -- a nested flock attempt on the same lock
+# file from within an already-held lock would deadlock. The check-then-set
+# sequence itself must be one atomic critical section, not two separate
+# locked operations: scan_rejected_story_returns is called from two
+# independently-running loops (the main loop and the faster
+# follow_director_travel_demand background loop), so an unlocked
+# get-then-conditionally-set here would let both loops read the same stale
+# "last due" timestamp and both treat the scan as due at once, defeating the
+# gate's own purpose on exactly the schedule where it matters most.
 director_heal_due() {
   local key="$1"
   local interval="$2"
-  local now last
+  local now last tmp
 
-  now="$(date +%s)"
-  last="$(director_heal_get "scan:${key}" 2>/dev/null || true)"
-  if [ -n "$last" ] && [ $((now - last)) -lt "$interval" ]; then
-    return 1
-  fi
-  director_heal_set "scan:${key}" "$now"
+  (
+    flock -x 9
+    now="$(date +%s)"
+    last="$(director_heal_get "scan:${key}" 2>/dev/null || true)"
+    if [ -n "$last" ] && [ $((now - last)) -lt "$interval" ]; then
+      exit 1
+    fi
+    tmp="$(mktemp)"
+    awk -F '\t' -v key="scan:${key}" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
+    printf '%s\t%s\n' "scan:${key}" "$now" >> "$tmp"
+    mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  ) 9>"${DIRECTOR_HEAL_FILE}.lock"
 }
 
 repair_chat_exchanges_due() {
