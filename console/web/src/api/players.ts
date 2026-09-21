@@ -76,6 +76,7 @@ export const playersApi = {
   repairFactionReputation: (playerId: string, confirmation: string) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/repair-faction-reputation`, { confirmation }),
   repairLandsraadQuests: (playerId: string, confirmation: string) => post<{ supported: boolean; backupCreated?: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/repair-landsraad-quests`, { confirmation }),
   characterRecovery: (playerId: string) => api<CharacterRecoveryInspection>(`/api/players/${encodeURIComponent(playerId)}/character-recovery`, { cache: "no-store" }),
+  deletedCharacters: () => api<DeletedCharacterAssetsResult>("/api/players/deleted-characters", { cache: "no-store" }),
   recoverDeletedCharacter: (playerId: string, candidateId: string, confirmation: string) => post<{ supported: boolean; backupCreated?: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/character-recovery`, { candidateId, confirmation }),
   setFaction: (playerId: string, body: { factionId: 1 | 2 | 3; confirmation: string }) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/faction`, body),
   addIntel: (playerId: string, body: { amount: number; confirmation: string }) => post<{ supported: boolean; result?: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/add-intel`, body),
@@ -134,4 +135,66 @@ export type CharacterRecoveryInspection = {
   suggestedCandidateId: string;
   canRecover: boolean;
   message: string;
+};
+
+// One orphaned base or vehicle. `matchedBy` is the respawn-location group that
+// tied it to a deleted character ("Base totem", "Respawn point", "Respawn
+// beacon"); it is empty for unattributed rows. Counts are per-kind and null on
+// the kind they do not apply to, or when the optional table they need is absent.
+export type DeletedCharacterAsset = {
+  kind: "base" | "vehicle";
+  id: string;
+  actorId: string;
+  name: string;
+  assetType: string;
+  map: string;
+  partitionId: string;
+  partitionLabel: string;
+  x: number | null;
+  y: number | null;
+  z: number | null;
+  pieceCount: number | null;
+  placeableCount: number | null;
+  moduleCount: number | null;
+  characterStateId: string;
+  matchedBy: string;
+};
+
+export type DeletedCharacterEntry = {
+  characterStateId: string;
+  accountId: string;
+  characterName: string;
+  flsId: string;
+  deletedAt: string | null;
+  lastAvatarActivity: string | null;
+  lastLoginTime: string | null;
+  controllerId: string;
+  pawnId: string;
+  removalReason: string;
+  removalEventTime: string | null;
+  replacementCharacterName: string;
+  bases: DeletedCharacterAsset[];
+  vehicles: DeletedCharacterAsset[];
+};
+
+export type DeletedCharacterTotals = {
+  deletedCharacters: number;
+  deletedCharactersHoldingAssets: number;
+  deletedCharactersWithoutAssets: number;
+  attributedBases: number;
+  attributedVehicles: number;
+  unattributedBases: number;
+  unattributedVehicles: number;
+  orphanedBases: number;
+  orphanedVehicles: number;
+};
+
+export type DeletedCharacterAssetsResult = {
+  supported?: boolean;
+  capabilities?: Record<string, unknown>;
+  characters: DeletedCharacterEntry[];
+  unattributed: { bases: DeletedCharacterAsset[]; vehicles: DeletedCharacterAsset[] };
+  totals: DeletedCharacterTotals;
+  truncated?: boolean;
+  reason?: string;
 };

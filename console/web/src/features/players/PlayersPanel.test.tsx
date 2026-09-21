@@ -10,7 +10,8 @@ vi.mock("../../api/maps", () => ({ mapsApi: { sietchDimensions: vi.fn() } }));
 vi.mock("../../api/players", () => ({
   playersApi: {
     list: vi.fn(),
-    profile: vi.fn()
+    profile: vi.fn(),
+    deletedCharacters: vi.fn()
   }
 }));
 
@@ -39,6 +40,23 @@ beforeEach(() => {
     capabilities: { statusFilterApplied: true }
   });
   vi.mocked(playersApi.profile).mockResolvedValue({ player: bannedPlayer });
+  vi.mocked(playersApi.deletedCharacters).mockResolvedValue({
+    supported: true,
+    capabilities: { deletedCharacters: true },
+    characters: [],
+    unattributed: { bases: [], vehicles: [] },
+    totals: {
+      deletedCharacters: 0,
+      deletedCharactersHoldingAssets: 0,
+      deletedCharactersWithoutAssets: 0,
+      attributedBases: 0,
+      attributedVehicles: 0,
+      unattributedBases: 0,
+      unattributedVehicles: 0,
+      orphanedBases: 0,
+      orphanedVehicles: 0
+    }
+  });
 });
 
 afterEach(() => {
@@ -108,5 +126,57 @@ describe("PlayersPanel persistent bans", () => {
 
     expect(playersApi.profile).toHaveBeenCalledTimes(2);
     expect(screen.getByTestId("open-player-map")).toHaveTextContent("DeepDesert_1");
+  });
+});
+
+describe("PlayersPanel view mode", () => {
+  it("swaps the players list for the deleted-characters view", async () => {
+    render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
+    expect(await screen.findByText("Vixen")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Deleted characters" }));
+
+    await waitFor(() => expect(screen.getByText("Unattributed Orphans")).toBeInTheDocument());
+    // The players table, its filter and its search are gone, not merely hidden.
+    expect(screen.queryByText("Vixen")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Filter")).not.toBeInTheDocument();
+    expect(playersApi.deletedCharacters).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Active players" }));
+    expect(await screen.findByText("Vixen")).toBeInTheDocument();
+  });
+
+  it("stops polling the players list while the deleted view is open", async () => {
+    vi.useFakeTimers();
+    render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
+    await act(async () => { await Promise.resolve(); });
+
+    const callsBefore = vi.mocked(playersApi.list).mock.calls.length;
+    fireEvent.click(screen.getByRole("radio", { name: "Deleted characters" }));
+    await act(async () => { await Promise.resolve(); });
+
+    // Three full refresh intervals with nobody looking at the players list.
+    for (let tick = 0; tick < 3; tick += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    }
+    expect(vi.mocked(playersApi.list).mock.calls.length).toBe(callsBefore);
+  });
+
+  it("closes an open player detail when leaving the players list", async () => {
+    render(<PlayersPanel
+      onError={vi.fn()}
+      renderCharacterAdmin={() => <div data-testid="player-detail">Detail</div>}
+    />);
+    expect(await screen.findByText("Vixen")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Vixen"));
+    await waitFor(() => expect(screen.getByTestId("player-detail")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("radio", { name: "Deleted characters" }));
+    await waitFor(() => expect(screen.queryByTestId("player-detail")).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("radio", { name: "Active players" }));
+    expect(await screen.findByText("Vixen")).toBeInTheDocument();
+    expect(screen.queryByTestId("player-detail")).not.toBeInTheDocument();
   });
 });

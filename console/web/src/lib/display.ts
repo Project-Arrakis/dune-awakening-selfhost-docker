@@ -103,3 +103,42 @@ export function friendlyColumnName(value: string) {
   };
   return labels[value] || value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
+
+// One absolute date style for the whole console: short month, no seconds.
+// Panels previously each declared their own Intl config (Players, Bases,
+// Landsraad, Admin Tools) or fell back to a raw toLocaleString(), so the same
+// field could render as "May 26, 2026, 10:37 PM" in one view and
+// "5/26/2026, 10:37:04 PM" in the next one along.
+const ABSOLUTE_DATE_TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit"
+});
+
+export function parseDateValue(value: unknown): Date | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function formatAbsoluteDateTime(value: unknown, fallback = "Unavailable") {
+  const date = parseDateValue(value);
+  return date ? ABSOLUTE_DATE_TIME_FORMAT.format(date) : fallback;
+}
+
+// "3mo", "2d", "45s" -- the largest unit that fits, floored, never "0".
+export function formatRelativeAge(date: Date, now = Date.now()) {
+  const seconds = Math.max(0, Math.floor((now - date.getTime()) / 1000));
+  const units = [
+    ["y", 365 * 24 * 60 * 60],
+    ["mo", 30 * 24 * 60 * 60],
+    ["d", 24 * 60 * 60],
+    ["h", 60 * 60],
+    ["m", 60],
+    ["s", 1]
+  ] as const;
+  const [label, size] = units.find(([, unitSeconds]) => seconds >= unitSeconds) || units[units.length - 1];
+  return `${Math.max(1, Math.floor(seconds / size))}${label}`;
+}
