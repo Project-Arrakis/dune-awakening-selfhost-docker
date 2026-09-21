@@ -78,3 +78,63 @@ test("resolveRoleTier would silently promote on a conflict -- which is why it mu
   const dup = { admin: ["100000000000000002"], moderator: ["100000000000000002"], player: [] };
   assert.equal(resolveRoleTier(["100000000000000002"], dup), "admin");
 });
+
+// --- console vs. bot-capability mapping drift (#620) ------------------------
+import { roleTierDrift, describeRoleTierDrift, botRoleTier, BOT_TIER_ORDER, BOT_PRIVILEGED_TIERS } from "../src/integrations/discord/roleTiers.js";
+
+const ADMIN_ROLE = "200000000000000001";
+const MOD_ROLE = "200000000000000002";
+const OBSERVER_ROLE = "200000000000000003";
+const OWNER_ROLE = "200000000000000004";
+const bot = (over = {}) => ({ ownerRoleIds: [], adminRoleIds: [], moderatorRoleIds: [], observerRoleIds: [], ...over });
+
+test("#620: a role revoked from the console mapping still holding bot admin is reported", () => {
+  // The exact hazard: the operator cut a departed admin's role out of
+  // DISCORD_CONSOLE_ADMIN_ROLE_IDS; DISCORD_ADMIN_ROLE_IDS was never touched.
+  const drift = roleTierDrift({ admin: [], moderator: [], player: [] }, bot({ adminRoleIds: [ADMIN_ROLE] }));
+  assert.deepEqual(drift, [{ roleId: ADMIN_ROLE, botTier: "admin", consoleTier: "" }]);
+  assert.equal(describeRoleTierDrift(drift), `role ${ADMIN_ROLE} is admin to the Discord bot but has no console access`);
+});
+
+test("drift: a demotion that only landed on the console side is reported with both tiers", () => {
+  const drift = roleTierDrift({ admin: [], moderator: [ADMIN_ROLE], player: [] }, bot({ adminRoleIds: [ADMIN_ROLE] }));
+  assert.deepEqual(drift, [{ roleId: ADMIN_ROLE, botTier: "admin", consoleTier: "moderator" }]);
+  assert.equal(describeRoleTierDrift(drift), `role ${ADMIN_ROLE} is admin to the Discord bot but only moderator on the console`);
+});
+
+test("drift: mappings that agree, or grant the console MORE, are not drift", () => {
+  assert.deepEqual(roleTierDrift({ admin: [ADMIN_ROLE] }, bot({ adminRoleIds: [ADMIN_ROLE] })), []);
+  assert.deepEqual(roleTierDrift({ moderator: [MOD_ROLE] }, bot({ moderatorRoleIds: [MOD_ROLE] })), []);
+  assert.deepEqual(roleTierDrift({ admin: [MOD_ROLE] }, bot({ moderatorRoleIds: [MOD_ROLE] })), [], "console admin outranks bot moderator");
+});
+
+test("drift: a bot OWNER role always outranks the console, which never confers owner by role", () => {
+  assert.deepEqual(
+    roleTierDrift({ admin: [OWNER_ROLE] }, bot({ ownerRoleIds: [OWNER_ROLE] })),
+    [{ roleId: OWNER_ROLE, botTier: "owner", consoleTier: "admin" }]
+  );
+});
+
+test("drift: bot observer is never reported -- read-only asymmetry, not stale privilege", () => {
+  assert.deepEqual(roleTierDrift({}, bot({ observerRoleIds: [OBSERVER_ROLE] })), []);
+  assert.deepEqual(BOT_PRIVILEGED_TIERS, ["owner", "admin", "moderator"]);
+  assert.deepEqual(BOT_TIER_ORDER, ["owner", "admin", "moderator", "observer"]);
+});
+
+test("drift: a role under two bot tiers is reported once, at the higher one", () => {
+  const mapping = bot({ adminRoleIds: [ADMIN_ROLE], moderatorRoleIds: [ADMIN_ROLE] });
+  assert.equal(botRoleTier(ADMIN_ROLE, mapping), "admin");
+  assert.deepEqual(roleTierDrift({}, mapping), [{ roleId: ADMIN_ROLE, botTier: "admin", consoleTier: "" }]);
+});
+
+test("drift: absent/empty mappings never throw and report nothing", () => {
+  assert.deepEqual(roleTierDrift(null, null), []);
+  assert.deepEqual(roleTierDrift({}, bot()), []);
+  assert.deepEqual(roleTierDrift({ admin: [ADMIN_ROLE] }, undefined), []);
+  assert.equal(botRoleTier("", bot({ adminRoleIds: [""] })), "");
+  assert.equal(describeRoleTierDrift([]), "");
+});
+
+test("drift: role ids are compared trimmed, as both mappings store them", () => {
+  assert.equal(botRoleTier(` ${ADMIN_ROLE} `, bot({ adminRoleIds: [` ${ADMIN_ROLE} `] })), "admin");
+});

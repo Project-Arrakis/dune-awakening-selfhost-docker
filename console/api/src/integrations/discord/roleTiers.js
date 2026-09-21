@@ -81,3 +81,100 @@ export function roleTierConflicts(roleTiers) {
 export function describeRoleTierConflicts(conflicts) {
   return conflicts.map((c) => `role ${c.roleId} is mapped to ${c.tiers.join(" and ")}`).join("; ");
 }
+
+// ---------------------------------------------------------------------------
+// Console sign-in vs. bot-capability mapping drift (#620).
+//
+// Two independent Discord role -> tier mappings live in this one process:
+//   * this file's console mapping (DISCORD_CONSOLE_*_ROLE_IDS), which decides
+//     who may sign in to the web console, and at what tier; and
+//   * policy.js's bot-capability mapping (DISCORD_OBSERVER/MODERATOR/ADMIN/
+//     OWNER_ROLE_IDS), which decides what a Discord user may do through the
+//     bot.
+// They are edited independently -- only the console one has a Settings UI --
+// so revoking a departed admin's role from the console mapping cuts off console
+// sign-in while leaving that role's holders their bot capability. That is the
+// stale-authorization hazard #620 is about.
+//
+// Neither mapping is derived from the other, deliberately: they have different
+// tier vocabularies (the console has no observer/public and forbids role ->
+// owner outright; the bot has no player and allows it), different blast radii,
+// and rewriting one from the other would silently change live authorization on
+// upgrade. The drift is made loud instead -- reported at boot and in Settings,
+// never auto-resolved.
+
+// Bot tiers in highest-first order, as policy.js's discordActorTier() resolves
+// them. "public" is absent: it is the no-role fallback, not something a role
+// can be mapped to.
+export const BOT_TIER_ORDER = ["owner", "admin", "moderator", "observer"];
+
+// Bot tiers that grant more than the public status read. moderator is the
+// lowest of them: policy.js's CAPABILITY_BY_TIER gives it player-link:write
+// plus the backup/inventory/storage reads. observer is status/readiness/
+// services only, so a role holding it without console access is asymmetry,
+// not stale privilege, and would only make this warning noisy.
+export const BOT_PRIVILEGED_TIERS = ["owner", "admin", "moderator"];
+
+// policy.js's normalizeRoleMapping() key for each bot tier.
+const BOT_TIER_ROLE_IDS_KEY = { owner: "ownerRoleIds", admin: "adminRoleIds", moderator: "moderatorRoleIds", observer: "observerRoleIds" };
+
+// The console tier each bot tier is the counterpart of, so the two can be
+// ranked against each other on TIER_ORDER. The console folded observer into
+// player (it was unreachable via role mapping and a strict subset), so the
+// bot's observer compares as the console's player.
+const BOT_TIER_AS_CONSOLE_TIER = { owner: "owner", admin: "admin", moderator: "moderator", observer: "player" };
+
+// Highest bot tier the given role is mapped to, or "" when it is mapped to
+// none. Mirrors discordActorTier()'s highest-wins precedence.
+export function botRoleTier(roleId, botRoleMapping) {
+  const wanted = String(roleId || "").trim();
+  if (!wanted) return "";
+  for (const tier of BOT_TIER_ORDER) {
+    const mapped = botRoleMapping?.[BOT_TIER_ROLE_IDS_KEY[tier]] || [];
+    if (mapped.some((id) => String(id || "").trim() === wanted)) return tier;
+  }
+  return "";
+}
+
+// Rank on TIER_ORDER, where "" (no access) always loses to a real tier.
+function tierRank(tier) {
+  const index = TIER_ORDER.indexOf(tier);
+  return index === -1 ? Number.POSITIVE_INFINITY : index;
+}
+
+// Roles whose BOT capability outranks the console access the same role grants.
+// One entry per offending role: { roleId, botTier, consoleTier }, consoleTier
+// "" meaning the console grants that role nothing at all -- the revoked-admin
+// case. Empty when the two mappings are consistent.
+//
+// Only privileged bot tiers are reported (see BOT_PRIVILEGED_TIERS): a warning
+// that fires for every read-only community role would be ignored, and being
+// ignored is how the real one gets missed.
+export function roleTierDrift(consoleRoleTiers, botRoleMapping) {
+  const seen = new Set();
+  const drift = [];
+  for (const botTier of BOT_PRIVILEGED_TIERS) {
+    for (const id of botRoleMapping?.[BOT_TIER_ROLE_IDS_KEY[botTier]] || []) {
+      const roleId = String(id || "").trim();
+      if (!roleId || seen.has(roleId)) continue;
+      seen.add(roleId);
+      // Re-resolve rather than trusting the loop's tier: a role listed under
+      // both admin and moderator holds admin, and must be reported as such.
+      const effectiveBotTier = botRoleTier(roleId, botRoleMapping);
+      if (!BOT_PRIVILEGED_TIERS.includes(effectiveBotTier)) continue;
+      const consoleTier = resolveRoleTier([roleId], consoleRoleTiers);
+      if (tierRank(BOT_TIER_AS_CONSOLE_TIER[effectiveBotTier]) < tierRank(consoleTier)) {
+        drift.push({ roleId, botTier: effectiveBotTier, consoleTier });
+      }
+    }
+  }
+  return drift;
+}
+
+export function describeRoleTierDrift(drift) {
+  return drift.map((d) => (
+    d.consoleTier
+      ? `role ${d.roleId} is ${d.botTier} to the Discord bot but only ${d.consoleTier} on the console`
+      : `role ${d.roleId} is ${d.botTier} to the Discord bot but has no console access`
+  )).join("; ");
+}
