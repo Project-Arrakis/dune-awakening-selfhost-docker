@@ -105,6 +105,20 @@ NAMED_DESTINATION_SINCE_SECONDS="$(duration_to_seconds "$NAMED_DESTINATION_SINCE
 PROACTIVE_HAGGA_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS "${DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
 DEEPDESERT_LOADING_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS "${DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
 NAMED_DESTINATION_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS "${DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS:-60}" 60 "$NAMED_DESTINATION_SINCE_SECONDS")"
+# Deliberately its own interval, not a share of NAMED_DESTINATION_SCAN_SECONDS
+# (used by the unrelated scan_named_destination_failures): a player waiting on
+# a rejected story return to recover feels every second of this gate. Keep the
+# default at the existing fast-follower cadence: the live credits-loop fix
+# depends on recovery running before the paired synthetic story demand, so a
+# longer gate can reintroduce that race. Recovery runs only in the dedicated
+# fast follower, immediately before its paired travel-demand scan; the atomic
+# gate prevents duplicate invocations without letting the slower main loop
+# consume the recovery window.
+STORY_RETURN_RECOVERY_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS "${DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS:-2}" 2 "$NAMED_DESTINATION_SINCE_SECONDS")"
+if [ "$STORY_RETURN_RECOVERY_SCAN_SECONDS" -gt 2 ]; then
+  echo "DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS=${STORY_RETURN_RECOVERY_SCAN_SECONDS} exceeds the safe credits-return window; clamping to 2s." >&2
+  STORY_RETURN_RECOVERY_SCAN_SECONDS=2
+fi
 AUTOSCALER_STARTED_AT="$(date +%s)"
 
 mkdir -p "$(dirname "$STATE_FILE")"
@@ -135,6 +149,7 @@ echo "IGW socket health scan: ${IGW_SOCKET_HEALTH_SCAN_SECONDS}s"
 echo "Proactive Hagga handoff scan: ${PROACTIVE_HAGGA_SCAN_SECONDS}s"
 echo "Deep Desert loading response scan: ${DEEPDESERT_LOADING_SCAN_SECONDS}s"
 echo "Named destination failure scan: ${NAMED_DESTINATION_SCAN_SECONDS}s"
+echo "Story return recovery scan: ${STORY_RETURN_RECOVERY_SCAN_SECONDS}s"
 echo "State file: ${STATE_FILE}"
 echo
 
@@ -509,33 +524,52 @@ director_heal_set() {
   local key="$1"
   local value="$2"
   local tmp
-  tmp="$(mktemp)"
 
-  awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
-  printf '%s\t%s\n' "$key" "$value" >> "$tmp"
-  mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  (
+    flock -x 9
+    tmp="$(mktemp)"
+    awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
+    printf '%s\t%s\n' "$key" "$value" >> "$tmp"
+    mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  ) 9>"${DIRECTOR_HEAL_FILE}.lock"
 }
 
 director_heal_clear() {
   local key="$1"
   local tmp
-  tmp="$(mktemp)"
 
-  awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
-  mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  (
+    flock -x 9
+    tmp="$(mktemp)"
+    awk -F '\t' -v key="$key" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
+    mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  ) 9>"${DIRECTOR_HEAL_FILE}.lock"
 }
 
+# director_heal_due inlines its own set (rather than calling director_heal_set)
+# because both take the same flock -- a nested flock attempt on the same lock
+# file from within an already-held lock would deadlock. The check-then-set
+# sequence itself must be one atomic critical section, not two separate
+# locked operations. The state file is shared by the main loop and background
+# followers, so concurrent callers for any key must not both read the same
+# stale timestamp and claim the same due scan.
 director_heal_due() {
   local key="$1"
   local interval="$2"
-  local now last
+  local now last tmp
 
-  now="$(date +%s)"
-  last="$(director_heal_get "scan:${key}" 2>/dev/null || true)"
-  if [ -n "$last" ] && [ $((now - last)) -lt "$interval" ]; then
-    return 1
-  fi
-  director_heal_set "scan:${key}" "$now"
+  (
+    flock -x 9
+    now="$(date +%s)"
+    last="$(director_heal_get "scan:${key}" 2>/dev/null || true)"
+    if [ -n "$last" ] && [ $((now - last)) -lt "$interval" ]; then
+      exit 1
+    fi
+    tmp="$(mktemp)"
+    awk -F '\t' -v key="scan:${key}" '$1 != key { print }' "$DIRECTOR_HEAL_FILE" > "$tmp"
+    printf '%s\t%s\n' "scan:${key}" "$now" >> "$tmp"
+    mv "$tmp" "$DIRECTOR_HEAL_FILE"
+  ) 9>"${DIRECTOR_HEAL_FILE}.lock"
 }
 
 repair_chat_exchanges_due() {
@@ -2108,6 +2142,8 @@ PY
 scan_rejected_story_returns() {
   local director_log_file rejected_rows completed_rows
 
+  director_heal_due rejected_story_returns "$STORY_RETURN_RECOVERY_SCAN_SECONDS" || return 0
+
   director_log_file="$(mktemp)"
   docker logs --timestamps --since "$NAMED_DESTINATION_SINCE" dune-director > "$director_log_file" 2>&1 || true
   rejected_rows="$(LOG_FILE="$director_log_file" python3 - <<'PY'
@@ -3141,7 +3177,6 @@ while true; do
   scan_unscoped_stale_server_state
   progress_deepdesert_travel_handoffs
   scan_proactive_hagga_handoffs
-  scan_rejected_story_returns
   scan_named_destination_failures
   scan_idle_servers
   scan_reconnect_demand

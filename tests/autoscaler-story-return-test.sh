@@ -103,7 +103,7 @@ assert "rejected_story_demands[map_name] -= 1" in demand
 fast_follow = text[text.index("follow_director_travel_demand()"):text.index("scan_igwo_unavailable_maps()")]
 assert fast_follow.index("scan_rejected_story_returns") < fast_follow.index("scan_travel_demand")
 main_loop = text.rindex("while true; do")
-assert text.index("scan_rejected_story_returns", main_loop) < text.index("scan_named_destination_failures", main_loop)
+assert "scan_rejected_story_returns" not in text[main_loop:]
 PY
 
 source_functions="$(python3 - "$script" <<'PY'
@@ -209,6 +209,7 @@ rejected_output="$(REJECTED_LOG="$rejected_log" REJECTED_SQL="$rejected_sql" REJ
 docker() { cat \"\$REJECTED_LOG\"; }
 hub_travel_seen() { grep -qx \"\$1\" \"\$REJECTED_SEEN\"; }
 remember_hub_travel() { printf '%s\\n' \"\$1\" >> \"\$REJECTED_SEEN\"; }
+director_heal_due() { return 0; }
 psql_value() {
   printf '%s\\n' \"\$1\" >> \"\$REJECTED_SQL\"
   case \"\$1\" in
@@ -220,6 +221,7 @@ psql_value() {
   esac
 }
 NAMED_DESTINATION_SINCE=10m
+STORY_RETURN_RECOVERY_SCAN_SECONDS=2
 scan_rejected_story_returns
 scan_rejected_story_returns")"
 

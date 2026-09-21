@@ -10,9 +10,12 @@ bash -n "$script"
 grep -Fq 'director_heal_due proactive_hagga "$PROACTIVE_HAGGA_SCAN_SECONDS"' "$script"
 grep -Fq 'director_heal_due deepdesert_loading "$DEEPDESERT_LOADING_SCAN_SECONDS"' "$script"
 grep -Fq 'director_heal_due named_destination_failures "$NAMED_DESTINATION_SCAN_SECONDS"' "$script"
+grep -Fq 'director_heal_due rejected_story_returns "$STORY_RETURN_RECOVERY_SCAN_SECONDS"' "$script"
 grep -Fq 'PROACTIVE_HAGGA_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS "${DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"' "$script"
 grep -Fq 'DEEPDESERT_LOADING_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS "${DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"' "$script"
 grep -Fq 'NAMED_DESTINATION_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS "${DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS:-60}" 60 "$NAMED_DESTINATION_SINCE_SECONDS")"' "$script"
+grep -Fq 'STORY_RETURN_RECOVERY_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS "${DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS:-2}" 2 "$NAMED_DESTINATION_SINCE_SECONDS")"' "$script"
+grep -Fq 'if [ "$STORY_RETURN_RECOVERY_SCAN_SECONDS" -gt 2 ]; then' "$script"
 
 # validate_scan_seconds must reject a non-numeric override (e.g. a duration
 # string like other vars in this file use) instead of silently defeating the
@@ -63,6 +66,8 @@ checks = [
      'director_heal_due deepdesert_loading "$DEEPDESERT_LOADING_SCAN_SECONDS" || return 0'),
     ("scan_named_destination_failures()",
      'director_heal_due named_destination_failures "$NAMED_DESTINATION_SCAN_SECONDS" || return 0'),
+    ("scan_rejected_story_returns()",
+     'director_heal_due rejected_story_returns "$STORY_RETURN_RECOVERY_SCAN_SECONDS" || return 0'),
 ]
 
 for fn, gate_line in checks:
@@ -120,6 +125,7 @@ sed -n "1,$((tail_line - 1))p" "$script" | sed '/^cd "\$(dirname "\$0")\/\.\.\/\
   export DUNE_AUTOSCALER_DIRECTOR_HEAL_FILE="$work_dir/director-heal.tsv"
   export DUNE_AUTOSCALER_LOG_SINCE=30sm
   export DUNE_AUTOSCALER_NAMED_DESTINATION_LOG_SINCE=bogusm
+  export DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS=5
 
   # The script's own top-level preflight requires `docker ps` to list
   # dune-director/dune-postgres or it exits 1. Also counts every `docker
@@ -141,6 +147,7 @@ sed -n "1,$((tail_line - 1))p" "$script" | sed '/^cd "\$(dirname "\$0")\/\.\.\/\
 
   [ "$SINCE" = 30s ] || { echo "expected malformed log window to fall back to 30s" >&2; exit 1; }
   [ "$NAMED_DESTINATION_SINCE" = 10m ] || { echo "expected malformed named-destination log window to fall back to 10m" >&2; exit 1; }
+  [ "$STORY_RETURN_RECOVERY_SCAN_SECONDS" = 2 ] || { echo "expected story-return recovery interval to be capped at 2s" >&2; exit 1; }
 
   # scan_named_destination_failures now sources its rows from
   # named_destination_source_rows() (DB-driven, replacing the old
@@ -153,13 +160,28 @@ sed -n "1,$((tail_line - 1))p" "$script" | sed '/^cd "\$(dirname "\$0")\/\.\.\/\
   # docker-logs work against the current implementation.
   psql_value() {
     case "$1" in
-      *"wp.map in ("*)
+      # Deliberately "where wp.map in (" (the exact text
+      # named_destination_source_rows() uses), not the looser "wp.map in ("
+      # -- that broader pattern used to also match scan_rejected_story_returns'
+      # own completed_rows query ("...and source_wp.map in (...)"), silently
+      # handing it these 5 named-destination rows instead of the empty
+      # result its own case below expects, and only failing to matter by
+      # accident (a later, unrelated psql_value call in the same function
+      # returning empty for the next lookup). Found by a code review that
+      # actually checked for cross-stub contamination, not assumed distinct.
+      *"where wp.map in ("*)
         printf '%s\n' \
           'SH_Arrakeen|31|story-server-31' \
           'SH_HarkoVillage|32|story-server-32' \
           'Story_ProcesVerbal|33|story-server-33' \
           'CB_Story_DestroyedZanovar|34|story-server-34' \
           'CB_Story_OrbitalMonitor|35|story-server-35'
+        ;;
+      *"and source_wp.map in ("*)
+        # scan_rejected_story_returns' own completed_rows query -- deliberately
+        # empty, this call-site check only verifies docker-logs gating, not
+        # the SQL/recovery logic itself (see tests/autoscaler-story-return-test.sh
+        # for that).
         ;;
     esac
   }
@@ -183,6 +205,25 @@ sed -n "1,$((tail_line - 1))p" "$script" | sed '/^cd "\$(dirname "\$0")\/\.\.\/\
     exit 1
   fi
 
+  # The check and update must be atomic across all processes sharing this
+  # state file. Exactly one of these simultaneous calls may claim the scan.
+  director_heal_clear "scan:concurrent_rate_limit_smoke_test"
+  for index in $(seq 1 30); do
+    (
+      if director_heal_due concurrent_rate_limit_smoke_test 100; then
+        printf 'due\n'
+      else
+        printf 'gated\n'
+      fi
+    ) > "$work_dir/concurrent-result-${index}" &
+  done
+  wait
+  concurrent_due_count="$(awk '$0 == "due" { count++ } END { print count + 0 }' "$work_dir"/concurrent-result-*)"
+  [ "$concurrent_due_count" -eq 1 ] || {
+    echo "expected exactly 1 of 30 concurrent director_heal_due calls to be due, got $concurrent_due_count" >&2
+    exit 1
+  }
+
   # Real call-site check: scan_named_destination_failures reads 5 real
   # named-destination sources per invocation (one `docker logs` each). A due
   # first call must reach all 5; an immediate second call within the
@@ -200,6 +241,28 @@ sed -n "1,$((tail_line - 1))p" "$script" | sed '/^cd "\$(dirname "\$0")\/\.\.\/\
     echo "expected 'docker logs' call count to stay at 5 after a second scan_named_destination_failures call within the interval (the gate should have suppressed it before any docker logs call), got $logs_after_second" >&2
     exit 1
   }
+
+  # Real call-site check: scan_rejected_story_returns makes exactly one
+  # `docker logs` call per invocation (a single dune-director log pull, not
+  # per-source like scan_named_destination_failures above). A due first call
+  # must reach it; an immediate second call within the interval must be
+  # suppressed before it. This is the check a mutation test proved was
+  # missing: deleting the gate entirely, or degrading it to a literal "0"
+  # interval, both left every other test in this repo green.
+  logs_before_rejected="$(grep -c '^logs ' "$docker_calls_log" || true)"
+  scan_rejected_story_returns
+  logs_after_rejected_first="$(grep -c '^logs ' "$docker_calls_log" || true)"
+  [ "$((logs_after_rejected_first - logs_before_rejected))" -eq 1 ] || {
+    echo "expected exactly 1 'docker logs' call after the first scan_rejected_story_returns call, got $((logs_after_rejected_first - logs_before_rejected))" >&2
+    exit 1
+  }
+
+  scan_rejected_story_returns
+  logs_after_rejected_second="$(grep -c '^logs ' "$docker_calls_log" || true)"
+  [ "$logs_after_rejected_second" -eq "$logs_after_rejected_first" ] || {
+    echo "expected 'docker logs' call count to stay at $logs_after_rejected_first after a second scan_rejected_story_returns call within the interval (the gate should have suppressed it before any docker logs call), got $logs_after_rejected_second" >&2
+    exit 1
+  }
 )
 
-echo "autoscaler gates proactive-hagga, deep-desert-loading, and named-destination heal scans behind director_heal_due; director_heal_due itself rate-limits correctly; and scan_named_destination_failures's real docker-logs work is actually suppressed on a second call within the interval"
+echo "autoscaler gates proactive-hagga, deep-desert-loading, named-destination, and rejected-story-return heal scans behind director_heal_due; director_heal_due itself rate-limits correctly; and each gated scan's real docker-logs work is actually suppressed on a second call within its interval"
