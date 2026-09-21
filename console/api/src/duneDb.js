@@ -3301,10 +3301,26 @@ export async function playerPosition(db, id) {
     const result = await db.query(`
       select id as actor_id,
              map,
+             -- Bumped by the game's periodic row flush (~60s) even when the
+             -- character has not moved, so it doubles as a freshness marker:
+             -- once it advances, the row was rewritten with the live position.
+             serial::text as serial,
              ((transform).location).x as x,
              ((transform).location).y as y,
              ((transform).location).z as z,
-             0::float8 as yaw,
+             -- Heading the character is facing. Was hardcoded to 0, so "use
+             -- current position" never reflected real facing.
+             --
+             -- Full-quaternion yaw extraction, not the 2*atan2(z,w) shortcut:
+             -- roughly 7% of real player pawns carry non-zero qx/qy (pitch or
+             -- roll from slopes, vehicles or ragdoll), and the shortcut is only
+             -- exact when both are zero.
+             mod((degrees(atan2(
+                    2 * (((transform).rotation).w * ((transform).rotation).z
+                       + ((transform).rotation).x * ((transform).rotation).y),
+                    1 - 2 * (((transform).rotation).y * ((transform).rotation).y
+                           + ((transform).rotation).z * ((transform).rotation).z)
+                  )))::numeric + 360, 360)::float8 as yaw,
              (transform).location::text as location,
              (transform).rotation::text as rotation
       from dune.actors
@@ -5868,10 +5884,9 @@ function quaternionYawDegrees(qz, qw) {
 }
 
 // Gates base deletion the same way supportsBasePermissionEditing gates
-// permission edits. This repo has no migrations directory and never issues
-// CREATE FUNCTION anywhere (every write path composes the game's own shipped
-// procedures), so a self-hosted server missing these tables/functions cannot
-// have a delete proc added for it -- it is simply unsupported.
+// permission edits. This feature deliberately composes the game's shipped
+// procedures instead of installing a replacement delete routine, so a server
+// missing these tables/functions is simply unsupported.
 async function supportsBaseDelete(db) {
   // Every relation the delete path names, LEFT JOINs included: permission_actor
   // via the in-transaction baseIsBackedUp guard, map_names via

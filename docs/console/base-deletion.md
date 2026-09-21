@@ -1,6 +1,6 @@
 # Base deletion
 
-**Status:** Current | **Last Updated:** August 2026
+**Status:** Current | **Last Updated:** September 2026
 
 The Bases panel can permanently delete a base and everything built or stored
 on it. The action lives as a **Delete Base** row action (trash icon) in the
@@ -36,10 +36,15 @@ why the delete also calls the shipped `dune.permission_actor_destroy(bigint)`
 before deleting the actor rows themselves.
 
 No new stored procedure was added for this: the repo has no migrations
-directory and never issues `CREATE FUNCTION` anywhere, so a delete composes
-two functions the game already ships (`permission_actor_destroy` and
-`dune.delete_actors(bigint[])`) inside one transaction, the same way
-`mutateBasePermissions` composes the permission procedures.
+directory, and it defines no routine inside the game's own `dune` schema, so
+a delete composes two functions the game already ships
+(`permission_actor_destroy` and `dune.delete_actors(bigint[])`) inside one
+transaction, the same way `mutateBasePermissions` composes the permission
+procedures.
+
+(The project does create operational routines elsewhere, including exchange
+history capture and network-address normalization, but base deletion adds no
+database routine of its own. See [DATABASE.md](../architecture/DATABASE.md) §9.)
 
 ## Endpoints
 

@@ -8,7 +8,18 @@ own top-level folders.
 
 Docs marked **Historical record** describe a point-in-time state (a branch, a PR,
 an issue) and are not kept up to date — read them for context, not as current
-reference. Everything else is marked **Current** and is expected to stay accurate.
+reference.
+
+Docs marked **Observed** describe the closed-source game — its database schema,
+its services, its mechanics — rather than anything in this repo. They are
+maintained, but they cannot be kept accurate by reviewing our own changes,
+because nothing here causes them to drift: a Funcom build does. Each one names
+the game build it was verified against, so a reader can tell how stale it might
+be. Treat an `Observed` claim older than the running build as unverified until
+re-checked against a live database or container.
+
+Everything else is marked **Current** and is expected to stay accurate as this
+repo's code changes.
 
 ## Adding a new doc
 
@@ -20,10 +31,17 @@ reference. Everything else is marked **Current** and is expected to stay accurat
    components (a vulnerability class, a post-incident review) rather than a
    single feature. Don't add a new top-level folder for one document — put it
    in the closest existing one.
-2. **Decide Current vs Historical up front**, and put the line right after the
+2. **Decide the status up front**, and put the line right after the
    H1, matching the existing docs:
    - Living reference that should be kept accurate as code changes:
      `**Status:** Current | **Last Updated:** <Month Year>`
+   - A description of the closed-source game rather than of this repo — schema,
+     services, mechanics, anything only a running build can confirm:
+     `**Status:** Observed — verified against game build <build> (<Month Year>). Re-verify after a game update.`
+     Cite the evidence inline (the query, the container, the log line) so the
+     next person can re-run it rather than re-derive it. Prefer this over
+     `Current` whenever a claim would survive our review unchanged while
+     quietly becoming false — that has already happened here.
    - A frozen snapshot of a PR, branch, or issue — a test report, a change
      summary, implementation notes — goes in `docs/archive/` with:
      `**Status:** Historical record — describes the state at <PR/branch/issue>. Not maintained.`
@@ -44,6 +62,9 @@ belong to any single existing folder (`console/`, `runtime/`, `addons/`)
 by nature, so it gets its own.
 
 - [architecture/SYSTEM-OVERVIEW.md](architecture/SYSTEM-OVERVIEW.md) — Current. Whole-system engineering architecture reference: component map, the console's API/web/data layers, the `dune` CLI and Compose-project-name resolution, runtime state directories, and the Discord-integration split. Start here for a code-level overview before diving into a single component's docs.
+- [architecture/DATABASE.md](architecture/DATABASE.md) — Observed. The `dune` database: the encryption view layer, `world_partition` event-log provisioning, the eight notify channels and why direct DML is often a silent no-op, capability probes, the objects the console creates itself, and a domain map of the game's tables. Deliberately documents mechanisms rather than transcribing a schema that drifts with every game build — regenerate the inventory with `runtime/scripts/schema-report.sh`.
+- [architecture/SERVICES.md](architecture/SERVICES.md) — Observed. The always-on closed-source services (TextRouter, Director, Gateway, the two RabbitMQ brokers): each one's role and trust boundary, the messaging authorization topology (both brokers delegate all auth to TextRouter), the real startup order, and a failure-to-symptom map. Game servers are out of scope.
+- [architecture/WORLD-MODEL.md](architecture/WORLD-MODEL.md) — Observed. How the game addresses world space: map, dimension and partition as columns on `dune.world_partition`, why world state is keyed by `(map, dimension_index)`, and the full partition catalog of live worlds and on-demand content maps.
 
 ## Console (`console/api`, `console/web`)
 
@@ -59,7 +80,7 @@ by nature, so it gets its own.
 - [base-inventory.md](console/base-inventory.md) — Current. The base Inventory tab: which placeables count as storage, the two inventories every refinery carries, per-slot container contents, and the Give/Fill/Delete container actions (none of which require a stopped map).
 - [vehicle-storage.md](console/vehicle-storage.md) — Current. The Vehicles → Components View Contents overlay: which module counts as storage, why a vehicle's cargo hangs off its actor id rather than the (empty) `vehicle_module_id` link, and why the view is read-only.
 - [base-deletion.md](console/base-deletion.md) — Current. Permanently deleting a base: what "the base" means for enumeration, the pending-delete queue for a live map, the mandatory pre-delete safety backup, and why a pending delete freezes every other mutation on that base.
-- [vehicle-deletion.md](console/vehicle-deletion.md) — Current. Permanently deleting a vehicle: the FK cascade closure verified against a real schema dump, its own parallel pending-delete queue, and the vehicle-specific `dune.actor_state` guard bases have no equivalent of.
+- [vehicle-deletion.md](console/vehicle-deletion.md) — Current. Permanently deleting a vehicle: the FK cascade closure verified against a real schema dump, its own parallel pending-delete queue, and the vehicle-specific `dune.actors.state` guard bases have no equivalent of.
 - [base-backups.md](console/base-backups.md) — Current. What the game's own "pick up base" tool actually does in the database, why the Bases panel excludes a picked-up base, and the Coriolis compatibility patch that preserves saved Deep Desert base actors.
 - [database-backups.md](console/database-backups.md) — Current. Safe database restore behavior when the backup and current deployment use different Battlegroup IDs, and encrypted system backups that carry configuration and secrets to a new host.
 - [restart-queue.md](console/restart-queue.md) — Current. The Restart Queue toggle: player-aware countdowns with in-game warnings, the two broadcast variants, concurrency rules, crash recovery, the "Restart later" deferred-restart option, and the join-lock limitation.

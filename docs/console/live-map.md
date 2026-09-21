@@ -154,11 +154,20 @@ The active spice-blow schedule is tied to Deep Desert's Coriolis storm
 cycle. The current seed and next-cycle time are resolved from the selected
 partition's own server logs (`console/api/src/services/coriolisSeed.js`). The
 resolver reads the active `DuneSandbox_PIDX*.log` inside that allowlisted map
-container first, using a bounded 10,000-line tail and a 5-second timeout. This
-matters after a container stop/start: retained `docker logs` output can still
-contain the previous cycle even though the current game process has written a
-fresh seed to `Saved/Logs`. `docker logs` remains a compatibility fallback
-when the active file cannot be read. Results use a short server-side cache,
+container first, with a 5-second timeout. This matters after a container
+stop/start: retained `docker logs` output can still contain the previous cycle
+even though the current game process has written a fresh seed to `Saved/Logs`.
+`docker logs` remains a compatibility fallback when the active file cannot be
+read.
+
+It selects the `LogCoriolis`/`LogWorldLayout` lines out of that file rather than
+tailing it. The block is written once during startup, so it sits near the top and
+leaves any tail window within hours — on a live farm the log reached 24,539 lines
+with the block at 383-576, so a 10,000-line tail began at 14,438 and returned
+none of it. Since an active log that opens is authoritative, that silently cost
+the Deep Desert layout, and with it the rendered terrain, on any server up more
+than a few hours. Output is still bounded, and a log that opens but holds no
+block is treated as authoritative-empty, exactly as before. Results use a short server-side cache,
 since every server container prints the identical farm-wide seed and cycle
 boundary once at startup. Candidate container names are built from the
 map/partition (`dune-server-survival-1[-<id>]` for Hagga Basin,
