@@ -644,6 +644,35 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 | GET | `/api/maps/choam-terminals` | Get CHOAM terminal overview | None |
 | POST | `/api/maps/choam-terminals` | Install CHOAM terminals | `tradeCenterKey` |
 | DELETE | `/api/maps/choam-terminals` | Remove CHOAM terminals | `tradeCenterKey` |
+| GET | `/api/maps/choam-terminals/capture` | Preview where a terminal would sit if placed at a character's position (saves nothing). Polled — see below | `tradeCenterKey`, `playerId`, and on follow-up polls `afterSerial`, `afterX`, `afterY`, `afterZ`, `afterYaw` (query params) |
+| POST | `/api/maps/choam-terminals/position` | Save a custom terminal position for a trade post | `tradeCenterKey`, `x`, `y`, `z`, `yaw`, `sourcePlayerId?`, `applyNow?` |
+| DELETE | `/api/maps/choam-terminals/position` | Clear a custom position and fall back to the shipped default | `tradeCenterKey` |
+
+A custom position is bounded to its trade post: `CHOAM_POSITION_RADIUS_UU` (default 5000 uu / 50 m)
+horizontally and `CHOAM_POSITION_VERTICAL_UU` (default 2000 uu) vertically, measured from the
+shipped default rather than from any previously saved override. Saving only changes what the next
+install writes — an already-installed terminal must be removed and reinstalled to move.
+
+`capture` derives the placement from a standing character: the terminal root sits 15 uu below the
+character's `z` (the Blueprint's mesh-component offset; a pawn's stored `z` is at ground level),
+and the terminal's yaw is the character's facing minus 90° (the console mesh fronts on local +Y
+while a pawn faces local +X). It requires `players:read`, not `maps:read`, because it returns a
+live player position.
+
+**`capture` is polled, not awaited.** `dune.actors` lags live movement, and repeated reads inside
+that lag return identical *stale* values — so a position that has stopped changing is not
+necessarily current. Freshness is established from `dune.actors.serial`, a periodic row heartbeat
+(~60 s) that rewrites the row with the live position even when the character has not moved. The
+first call returns `{ ready: false, serial }`; the client passes that `serial` and position back as
+`afterSerial`/`afterX`/`afterY`/`afterZ`/`afterYaw` and keeps polling. Once `serial` advances the
+row is current by construction: if the position it wrote matches the baseline the response is
+`ready` (the character held still across the write), otherwise `state: "moving"` and the caller
+re-baselines. Expect up to ~2 minutes.
+
+`applyNow: true` on a save also moves any already-installed terminals for that post, removing and
+reinstalling them **in a single transaction** so a failed install cannot leave the post with no
+terminal. Without it the save only changes what the next install writes, and the response carries
+`reinstallRequired: true`. A restart of that terminal's map is still required for either to appear in-game.
 
 ### Combat & User Settings
 

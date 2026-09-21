@@ -65,7 +65,7 @@ import { deleteAddonData, listAddonData, readAddonData, writeAddonData } from ".
 import { createAddonDeliveryService, deferAddonDelivery } from "./addonDeliveries.js";
 import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, refreshBuybackLog, readBuybackLog, clearBuybackLog, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
-import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals } from "./services/choamTerminals.js";
+import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals, setChoamTerminalPosition, clearChoamTerminalPosition, derivePlacementFromPlayer, evaluateCaptureFreshness } from "./services/choamTerminals.js";
 import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
 import { ensureExchangeHistory, listExchangeTransactions } from "./services/exchangeHistory.js";
 import { listMarketExchanges, marketBotStatus, saveMarketBuybackSchedule, saveMarketSeedSchedule, decodeSeedPlanCsvUpload, exportMarketSeedPlanCsv, importMarketSeedPlanFromCsv, renameMarketSeedPlan, setActiveMarketSeedPlan } from "./services/exchangeMarket.js";
@@ -1190,6 +1190,9 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/maps\/spicefields\/[^/]+$/) && req.method === "PATCH") return mapsSpicefieldUpdateRoute(req, res, path);
   if (path === "/api/maps/spicefields") return dbJson(res, () => duneDb.listSpicefieldTypes(db));
   if (path === "/api/maps/combat-state") return mapCombatStateRoute(res, url);
+  if (path === "/api/maps/choam-terminals/capture" && req.method === "GET") return mapsChoamTerminalCaptureRoute(res, url.searchParams.get("tradeCenterKey") || "", url.searchParams.get("playerId") || "", url.searchParams);
+  if (path === "/api/maps/choam-terminals/position" && req.method === "POST") return mapsChoamTerminalPositionSaveRoute(req, res);
+  if (path === "/api/maps/choam-terminals/position" && req.method === "DELETE") return mapsChoamTerminalPositionClearRoute(req, res);
   if (path === "/api/maps/choam-terminals" && req.method === "POST") return mapsChoamTerminalInstallRoute(req, res);
   if (path === "/api/maps/choam-terminals" && req.method === "DELETE") return mapsChoamTerminalRemoveRoute(req, res);
   if (path === "/api/maps/choam-terminals") return dbJson(res, () => choamTerminalOverview(db));
@@ -1824,6 +1827,53 @@ async function mapsChoamTerminalInstallRoute(req, res) {
   if (!applyMutationRateLimit(req, res, "maps.choam-terminals.install")) return;
   audit(config, req, "maps.choam-terminals.install", { tradeCenterKey: body.tradeCenterKey });
   return dbJson(res, () => installChoamTerminals(db, body));
+}
+
+// Preview only -- derives where a terminal would sit if it were placed at the
+// character's position, and saves nothing.
+//
+// Returns quickly and is polled by the client rather than blocking: waiting for
+// the game's row heartbeat can take up to ~2 minutes, which no HTTP request
+// should hold open. The client passes back the baseline from its first call.
+async function mapsChoamTerminalCaptureRoute(res, tradeCenterKey, playerId, params) {
+  return dbJson(res, async () => {
+    await duneDb.resolvePlayerTargetCached(db, playerId);
+    const current = await duneDb.playerPosition(db, playerId);
+    if (!current.capabilities?.position || !current.position) {
+      return { supported: false, reason: current.reason || "That character has no stored position yet." };
+    }
+    const baseline = params.get("afterSerial")
+      ? {
+          serial: params.get("afterSerial"),
+          x: params.get("afterX"), y: params.get("afterY"),
+          z: params.get("afterZ"), yaw: params.get("afterYaw")
+        }
+      : null;
+    const freshness = evaluateCaptureFreshness(baseline, current.position);
+    return {
+      supported: true,
+      source: current.position,
+      serial: String(current.position.serial ?? ""),
+      ready: freshness.ready,
+      state: freshness.state,
+      movedUu: freshness.movedUu || 0,
+      placement: derivePlacementFromPlayer(tradeCenterKey, current.position)
+    };
+  });
+}
+
+async function mapsChoamTerminalPositionSaveRoute(req, res) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "maps.choam-terminals.position")) return;
+  audit(config, req, "maps.choam-terminals.position", { tradeCenterKey: body.tradeCenterKey });
+  return dbJson(res, () => setChoamTerminalPosition(db, body));
+}
+
+async function mapsChoamTerminalPositionClearRoute(req, res) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "maps.choam-terminals.position-clear")) return;
+  audit(config, req, "maps.choam-terminals.position-clear", { tradeCenterKey: body.tradeCenterKey });
+  return dbJson(res, () => clearChoamTerminalPosition(db, body));
 }
 
 async function mapsChoamTerminalRemoveRoute(req, res) {
