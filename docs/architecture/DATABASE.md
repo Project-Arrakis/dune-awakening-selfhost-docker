@@ -123,8 +123,23 @@ not configuration — a configured-but-down map does not appear.
 
 ## 5. Table domain map
 
-> Pending — see the plan's Phase 2. The ~127 non-partition tables grouped by
-> subsystem, each linking the feature doc that covers it in depth.
+| Subsystem | Tables | Deep-dive doc |
+|---|---|---|
+| Actors & world | `actors`, `actor_audit`, `actor_fgl_entities`, `actor_spawner_actors`, `actor_spawners`, `actor_state`, `fgl_entities`, `building_instances`, `placeables`, `totems`, `encounters_static`, `farm_state`, `farm_variables`, `map_areas`, `map_names`, `markers`, `player_markers`, `overmap_players` | [live-map.md](../console/live-map.md) |
+| Buildings & bases | `buildings`, `building_progression`, `building_favorites`, `building_blueprints`, `building_blueprint_instances`, `building_blueprint_pentashields`, `building_blueprint_placeables`, `base_backups`, `base_backup_linked_actors`, `landclaim_segments` | [blueprints.md](../console/blueprints.md), [base-backups.md](../console/base-backups.md), [base-deletion.md](../console/base-deletion.md) |
+| Inventory & items | `inventories`, `items`, `actor_inventories`, `removed_items`, `removed_recipes` | [base-inventory.md](../console/base-inventory.md) |
+| Players & accounts | `encrypted_accounts`, `account_removal_log`, `encrypted_player_state`, `character_transfer_imports`, `player_access_codes`, `player_faction`, `player_faction_reputation`, `player_tags`, `player_respawn_locations`, `player_virtual_currency_balances`, `communinet_player`, `communinet_player_channels`, `cheater_tracking` | — |
+| Guilds & parties | `guilds`, `guild_members`, `guild_invites`, `parties`, `party_members`, `party_invites`, `platform_parties_mapping` | — |
+| Landsraad | `landsraad_decrees`, `landsraad_decree_rotation`, `landsraad_decree_term`, `landsraad_decree_votes`, `landsraad_tasks`, `landsraad_task_progress`, `landsraad_task_progress_guild`, `landsraad_task_progress_player`, `landsraad_task_progress_processed`, `landsraad_task_faction_contributions`, `landsraad_task_guild_contributions`, `landsraad_task_player_contributions`, `landsraad_task_reveal_state`, `landsraad_task_rewards`, `landsraad_house_rewards` | — |
+| Exchange | `dune_exchanges`, `dune_exchange_accesspoints`, `dune_exchange_categories_hash`, `dune_exchange_orders`, `dune_exchange_sell_orders`, `dune_exchange_fulfilled_orders`, `dune_exchange_users` | [exchange.md](../console/exchange.md) |
+| Specializations & skills | `specialization_tracks`, `specialization_keystones_map`, `purchased_specialization_keystones`, `specialization_refund_id` | — |
+| Journey & tutorial | `journey_story_node`, `journey_story_node_cooldown`, `journey_tracked_cards`, `tutorial_per_player`, `tutorials`, `consumed_per_player_lore`, `consumed_temporary_per_player_lore`, `lore_pickups`, `lore_pickups_temporary`, `dialogue_met_npcs`, `dialogue_taken_nodes`, `mnemonic_recall`, `dungeon_completion`, `dungeon_completion_players` | — |
+| Spice & resource fields | `resourcefield_state`, `spicefield_types`, `spicefield_server_availability` | — |
+| Vehicles | `vehicles`, `vehicle_modules`, `vehicle_module_inventories`, `backup_vehicles`, `recovered_vehicles` | [vehicle-deletion.md](../console/vehicle-deletion.md), [vehicle-permissions.md](../console/vehicle-permissions.md), [vehicle-storage.md](../console/vehicle-storage.md) |
+| Permissions | `permission_actor`, `permission_actor_rank` | [base-permissions.md](../console/base-permissions.md), [base-child-permissions.md](../console/base-child-permissions.md) |
+| Travel | `player_travel_state`, `travel_actor_parent`, `travel_return_info` | — |
+| Coriolis & reset seeds | `world_farm_reset_seed`, `world_map_reset_seed`, `world_partition`, `world_partition_reset_seed` | — |
+| Misc/operational | `applied_patches`, `game_events`, `factions`, `network_address_config`, `sinkcharts`, `shiftingsands_data`, `tax_invoice`, `vendor_stock_cycle`, `vendor_stock_state` | — |
 
 One warning that belongs here regardless. The shipped schema contains the
 studio's own debugging and migration debris. These are not console tables,
@@ -322,11 +337,28 @@ Repo-supplied patches currently in `runtime/sql/`:
 
 ### Detecting drift
 
-> Pending — see the plan's Phase 3 (`runtime/scripts/schema-report.sh`), which
-> regenerates the object inventory and diffs it against what the console
-> references.
+`runtime/scripts/schema-report.sh` regenerates everything in this document
+that can go stale, against a live database:
 
-Until that lands, the manual check is to compare the `dune.*` names in
-`console/api/src` against `to_regclass` / `to_regprocedure` on a live
-database. A name the console references that resolves to NULL is either
-correctly guarded (§8) or a latent bug.
+```bash
+runtime/scripts/schema-report.sh
+```
+
+It is read-only, and reports: the patch-log vintage (§1), object counts,
+notify channels (§7), non-internal triggers (§7), and a drift check that
+extracts every `dune.*` name referenced in `console/api/src` and lists the
+ones that do not resolve in the database.
+
+Container, role and database default to `dune-postgres` / `dune` / `dune`,
+overridable with `DUNE_POSTGRES_CONTAINER`, `DUNE_POSTGRES_ROLE` and
+`DUNE_POSTGRES_DB`.
+
+A name in the drift list is **not automatically a bug.** It is one of:
+
+1. correctly guarded by a capability probe (§8) — the usual case;
+2. a console table not yet created, because the feature has not run (§9);
+3. prose — the extraction is textual, so `dune.<word>` in a comment or an
+   error string is reported too;
+4. an actual latent bug.
+
+On the verified build the list is eight names, and none are case 4.
