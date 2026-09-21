@@ -15,6 +15,12 @@ export SERVER_REGION SERVER_IP
 catalog_extract_timeout_seconds="${DUNE_CATALOG_EXTRACT_TIMEOUT_SECONDS:-120}"
 catalog_output="runtime/generated/partition-catalog.json"
 catalog_tmp="$(mktemp "${catalog_output}.tmp.XXXXXX")"
+orchestrator_container="$(dune_compose_running_service_container "$DUNE_COMPOSE_PROJECT_NAME" orchestrator 2>/dev/null || true)"
+
+if [ -z "$orchestrator_container" ]; then
+  echo "The orchestrator container is not running; cannot extract the partition catalog." >&2
+  exit 1
+fi
 
 cleanup_catalog_tmp() {
   rm -f -- "$catalog_tmp"
@@ -23,7 +29,7 @@ trap cleanup_catalog_tmp EXIT
 
 echo "Extracting partition catalog from world-template.yaml..."
 
-timeout --kill-after=2s "${catalog_extract_timeout_seconds}s" docker compose exec -T orchestrator python3 - > "$catalog_tmp" <<'PY'
+timeout --kill-after=2s "${catalog_extract_timeout_seconds}s" docker exec -i "$orchestrator_container" python3 - > "$catalog_tmp" <<'PY'
 import json
 import re
 import sys

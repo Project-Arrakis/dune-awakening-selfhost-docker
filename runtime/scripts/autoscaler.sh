@@ -1435,55 +1435,9 @@ core_map_is_reported_ready() {
   " | tr -d '\r[:space:]')" != "0" ]
 }
 
-recover_deadlocked_core_map() {
-  local map="$1"
-  local container partition
-
-  case "$map" in
-    Survival_1)
-      container="dune-server-survival-1"
-      partition="1"
-      runtime/scripts/start-server-survival-1.sh >/dev/null 2>&1
-      ;;
-    Overmap)
-      container="dune-server-overmap"
-      partition="2"
-      runtime/scripts/start-server-overmap.sh >/dev/null 2>&1
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-
-  wait_for_core_map_ready "$container" "$partition" || return 1
-  publish_state_for_map "$map"
-}
-
-wait_for_core_map_ready() {
-  local container="$1"
-  local partition="$2"
-  local started_at attempt logs
-
-  started_at="$(docker inspect -f '{{.State.StartedAt}}' "$container" 2>/dev/null || true)"
-  [ -n "$started_at" ] || return 1
-
-  for attempt in $(seq 1 90); do
-    logs="$(timeout --kill-after=1s 8s docker logs --since "$started_at" --tail 5000 "$container" 2>&1 || true)"
-    if grep -Eq "Server farm is READY .*partition ${partition}([,[:space:]]|$)" <<<"$logs"; then
-      return 0
-    fi
-    if ! docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true; then
-      return 1
-    fi
-    sleep 2
-  done
-
-  return 1
-}
-
 scan_core_igw_socket_health() {
   local now container map port queue first_seen age last_recovery players
-  local first_key recovery_key
+  local first_key recovery_key deferred_key
 
   director_heal_due igw_socket_health "$IGW_SOCKET_HEALTH_SCAN_SECONDS" || return 0
   now="$(date +%s)"
@@ -1491,6 +1445,7 @@ scan_core_igw_socket_health() {
   while IFS='|' read -r container map; do
     first_key="igw-stall:${map}"
     recovery_key="igw-recovery:${map}"
+    deferred_key="igw-recovery-deferred:${map}"
 
     if ! docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true; then
       director_heal_clear "$first_key"
@@ -1514,6 +1469,7 @@ scan_core_igw_socket_health() {
     queue="$(igw_receive_queue_bytes "$container" "$port" 2>/dev/null || true)"
     if ! [[ "$queue" =~ ^[0-9]+$ ]] || [ "$queue" -lt "$IGW_SOCKET_RX_QUEUE_THRESHOLD" ]; then
       director_heal_clear "$first_key"
+      director_heal_clear "$deferred_key"
       continue
     fi
 
@@ -1534,14 +1490,35 @@ scan_core_igw_socket_health() {
       continue
     fi
 
-    players="$(map_effective_player_count "$map" 2>/dev/null | tr -d '[:space:]' || true)"
+    players="$(battlegroup_effective_player_count 2>/dev/null | tr -d '[:space:]' || true)"
     [[ "$players" =~ ^[0-9]+$ ]] || players="unknown"
-    echo "HEAL deadlocked core map=$map port=$port rx_queue_bytes=$queue stalled_seconds=$age players=$players action=map-restart"
+    if [ "$players" = "unknown" ] || [ "$players" -gt 0 ]; then
+      if ! director_heal_get "$deferred_key" >/dev/null 2>&1; then
+        echo "DEFER deadlocked core map=$map port=$port rx_queue_bytes=$queue stalled_seconds=$age online_players=$players action=coordinated-game-farm-restart"
+        director_heal_set "$deferred_key" "$now"
+      fi
+      continue
+    fi
+
+    # Never replace one core map beneath a live farm. Funcom peers can retain
+    # the old topology, then crash in DuneWorldPartitioner when leadership is
+    # recalculated. The separate coordinator survives the Autoscaler shutdown
+    # performed by restart-game-farm.sh and rebuilds every world map against
+    # one consistent Director/farm generation.
+    if ! docker inspect -f '{{.State.Running}}' dune-coriolis-coordinator 2>/dev/null | grep -qx true; then
+      echo "ERROR deadlocked core map=$map action=coordinated-game-farm-restart coordinator=unavailable"
+      continue
+    fi
+    echo "HEAL deadlocked core map=$map port=$port rx_queue_bytes=$queue stalled_seconds=$age online_players=0 action=coordinated-game-farm-restart"
+    if ! docker exec -d dune-coriolis-coordinator bash -lc \
+      'mkdir -p runtime/logs && runtime/scripts/restart-game-farm.sh igw-socket-deadlock >> runtime/logs/igw-socket-recovery.log 2>&1'; then
+      echo "ERROR deadlocked core map=$map action=coordinated-game-farm-restart request=failed"
+      continue
+    fi
     director_heal_set "$recovery_key" "$now"
     director_heal_clear "$first_key"
-    if ! recover_deadlocked_core_map "$map"; then
-      echo "ERROR failed to recover deadlocked core map=$map"
-    fi
+    director_heal_clear "$deferred_key"
+    return 0
   done <<'EOF'
 dune-server-survival-1|Survival_1
 dune-server-overmap|Overmap
