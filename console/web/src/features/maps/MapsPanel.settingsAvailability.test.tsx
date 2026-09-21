@@ -170,4 +170,55 @@ describe("MapsPanel modifier availability", () => {
     expect(api.userSettingsValues).toHaveBeenCalledWith("serverCustomPartition", "Overmap", "2");
     expect(screen.getByText("ServerCustomSettings.ini", { exact: false })).toBeVisible();
   });
+
+  it("shows the global Spice Fields section under Custom Settings without needing a Target selected, and saves at Global scope", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: JSON.stringify({ maps: [{ map: "Overmap", status: "Ready", mode: "Core Map", partitionId: "2" }] }) },
+      services: { stdout: "" },
+      readiness: { stdout: "" }
+    });
+    api.userSettingsSchema.mockResolvedValue({
+      engine: [], mapEngine: [], partitionEngine: [], partition: [],
+      game: [{
+        scope: "game", id: "spice_manager_tick_rate_seconds", section: "/Script/DuneSandbox.SpiceHarvestingSystem",
+        key: "m_ManagerTickRateInSeconds", default: "5.000000", type: "number", clientFile: "", category: "Spice Fields",
+        description: "How often (seconds) the spice manager re-evaluates spawn/despawn state."
+      }],
+      serverCustom: []
+    });
+    // Two distinct mapsApi.userGame() calls happen: the always-on global Spice
+    // Fields load (map="__global__", no explicit Target selection needed) and,
+    // separately, the per-target "UserGame" tab's own load once a Target is
+    // picked. Assert on the call args rather than a single blanket mock so a
+    // regression that stops the global load firing independently is caught.
+    api.userGame.mockImplementation((map: string) =>
+      Promise.resolve(map === "__global__" ? { stdout: "spice_manager_tick_rate_seconds\t9.000000\n" } : { stdout: "" })
+    );
+
+    renderMapsPanel();
+    const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
+    await waitFor(() => expect(modifiers).toBeEnabled());
+    fireEvent.click(modifiers);
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Settings" }));
+
+    // No Target selected at all -- the section must still be visible and
+    // populated, proving it isn't gated behind userGameName like the rest
+    // of this tab.
+    expect(await screen.findByDisplayValue("9.000000")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Spice Fields" })).toBeVisible();
+    await waitFor(() => expect(api.userGame).toHaveBeenCalledWith("__global__"));
+
+    fireEvent.change(screen.getByDisplayValue("9.000000"), { target: { value: "3.000000" } });
+    // The Custom Settings section's own Save button is also on screen
+    // (disabled, no Target selected) -- find the one that's actually enabled.
+    const saveButtons = screen.getAllByRole("button", { name: "Save" });
+    const enabledSave = saveButtons.find((button) => !button.hasAttribute("disabled"));
+    if (!enabledSave) throw new Error("expected exactly one enabled Save button (Spice Fields)");
+    fireEvent.click(enabledSave);
+
+    await waitFor(() => expect(api.saveUserSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: "global", map: "Survival_1", values: { spice_manager_tick_rate_seconds: "3.000000" } })
+    ));
+  });
 });

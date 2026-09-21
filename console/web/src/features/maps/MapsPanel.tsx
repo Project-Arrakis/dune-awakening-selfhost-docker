@@ -422,6 +422,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [gameDraft, setGameDraft] = useState<Record<string, string>>({});
   const [serverCustomValues, setServerCustomValues] = useState<Record<string, string>>({});
   const [serverCustomDraft, setServerCustomDraft] = useState<Record<string, string>>({});
+  const [spiceFieldValues, setSpiceFieldValues] = useState<Record<string, string>>({});
+  const [spiceFieldDraft, setSpiceFieldDraft] = useState<Record<string, string>>({});
   const [serverRegion, setServerRegion] = useState("");
   const [gameValuesTargetKey, setGameValuesTargetKey] = useState("");
   const [rawEngine, setRawEngine] = useState("");
@@ -823,7 +825,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     // The raw Advanced editor is loaded only when it is opened. Making it part
     // of this gate would add another command before the normal modifier cards
     // can be used.
-    await Promise.all([loadSchema(), loadUserEngineValues(), loadServerRegion()]);
+    await Promise.all([loadSchema(), loadUserEngineValues(), loadServerRegion(), loadSpiceFieldSettings()]);
     setModifierSettingsLoaded(true);
   }
   async function loadSelectedEngineSettings(mapName: string, partitionId?: string) {
@@ -858,6 +860,18 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     const parsed = parseUserSettingsMap(values.stdout || "");
     setServerCustomValues(parsed);
     setServerCustomDraft(parsed);
+  }
+  // Spice Field settings are UserGame.ini fields (MAP_FIELDS, category "Spice
+  // Fields") that only make sense set at Global scope -- there is no per-map
+  // or per-size control surface left post-Patch-1.5 (see the "Spice Fields"
+  // section under Custom Settings). Deliberately decoupled from
+  // userGameName/gameValues so this section works regardless of whatever
+  // map/partition target the rest of the tab has selected.
+  async function loadSpiceFieldSettings() {
+    const values = await mapsApi.userGame("__global__");
+    const parsed = parseUserSettingsMap(values.stdout || "");
+    setSpiceFieldValues(parsed);
+    setSpiceFieldDraft(parsed);
   }
   // Three draft policies, deliberately distinct:
   //   preserveDrafts      -- background polling; whatever is on screen wins.
@@ -1360,6 +1374,9 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const activeServerCustomCategory = serverCustomGroups.some(([category]) => category === selectedServerCustomCategory) ? selectedServerCustomCategory : serverCustomGroups[0]?.[0] || "";
   const activeServerCustomFields = activeServerCustomCategory === "All" ? serverCustomFields : serverCustomGroups.find(([category]) => category === activeServerCustomCategory)?.[1] || [];
   const filteredServerCustomFields = filterSettingsFields(activeServerCustomFields, modifierFilter);
+  const spiceFieldSettings = (schema?.game || []).filter((field) => field.category === "Spice Fields");
+  const filteredSpiceFieldSettings = filterSettingsFields(spiceFieldSettings, modifierFilter);
+  const spiceFieldsDirty = changedKeys(spiceFieldValues, spiceFieldDraft, spiceFieldSettings);
   const filteredActiveSpicefields = filterActiveSpicefields(activeSpicefields, spicefieldFilter);
   const engineSchemaFields = isEngineGlobal
     ? schema?.engine || []
@@ -1885,6 +1902,18 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     await loadSelectedServerCustomSettings(userGameName, partitionId);
     await refreshDeferredRestartPending();
   }
+  async function saveSpiceFields() {
+    const choice = await confirmSettingsRestart("UserGame", settingsRestartTarget("global", "Survival_1"));
+    if (choice === "cancel") return;
+    await runTaskAndRefresh(
+      () => mapsApi.saveUserSettings({ scope: "global", map: "Survival_1", values: valuesForDirtyFields(spiceFieldValues, spiceFieldDraft, spiceFieldSettings), immediate: choice === "immediate", deferRestart: choice === "manual" }),
+      "Saving Spice Field settings",
+      "Spice Fields Saved",
+      { resultScope: "modifiers", restartAcceptedMessage: "Changes saved successfully. The maps are restarting and should be back up soon." }
+    );
+    await loadSpiceFieldSettings();
+    await refreshDeferredRestartPending();
+  }
   async function saveRaw(kind: "engine" | "game") {
     // Raw UserEngine.ini is always the stack-wide profile; raw UserGame.ini
     // here always saves as the global profile too (scope: "global" below),
@@ -2373,6 +2402,12 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         </div>
         {userGameName && <><p className="muted">Official Patch 1.5 settings stored in <code>Saved/Config/LinuxServer/ServerCustomSettings.ini</code>. Dune Docker keeps <code>DifficultyLevel=Custom</code> and preserves unmanaged file values.</p><SettingsCardGrid fields={filteredServerCustomFields} values={serverCustomDraft} onChange={(id, value) => setServerCustomDraft({ ...serverCustomDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, serverCustomFields.length, modifierFilter, activeServerCustomCategory)} /></>}
         <div className="action-row"><button disabled={!serverCustomDirty.length || !userGameName} onClick={() => run(saveServerCustom)}>Save</button><button disabled={!serverCustomDirty.length} onClick={() => setServerCustomDraft(serverCustomValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !serverCustomFields.length} title="Set every Server Setting on this tab back to its default value" onClick={() => setServerCustomDraft(Object.fromEntries(serverCustomFields.map((field) => [field.id, field.default ?? ""]))) }>Restore Defaults</button></div>
+        <div className="spicefield-settings-heading">
+          <h3>Spice Fields</h3>
+          <p>Patch 1.5 removed the old per-map/per-size active-field caps and spawn weights entirely -- there is no longer a per-size (Small/Medium/Large) or per-map (Hagga Basin vs. Deep Desert) control surface in the live game server. These are the closest settings that still exist: global spice-system pacing, visibility, and yield. They apply server-wide, independent of the Target selector above.</p>
+        </div>
+        <SettingsCardGrid fields={filteredSpiceFieldSettings} values={spiceFieldDraft} onChange={(id, value) => setSpiceFieldDraft({ ...spiceFieldDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, spiceFieldSettings.length, modifierFilter, "Spice Fields")} />
+        <div className="action-row"><button disabled={!spiceFieldsDirty.length} onClick={() => run(saveSpiceFields)}>Save</button><button disabled={!spiceFieldsDirty.length} onClick={() => setSpiceFieldDraft(spiceFieldValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!spiceFieldSettings.length} title="Set every Spice Field setting back to its default value" onClick={() => setSpiceFieldDraft(Object.fromEntries(spiceFieldSettings.map((field) => [field.id, field.default ?? ""])))}>Restore Defaults</button></div>
       </> : settingsTab === "spicefields" ? <>
         <SpicefieldsEditor rows={filteredActiveSpicefields} allRows={activeSpicefields} loaded={spicefieldsLoaded} filter={spicefieldFilter} result={spicefieldResult} onFilterChange={setSpicefieldFilter} onRefresh={() => run(loadSpicefields)} />
       </> : <>
