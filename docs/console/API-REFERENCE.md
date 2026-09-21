@@ -672,7 +672,7 @@ re-baselines. Expect up to ~2 minutes.
 `applyNow: true` on a save also moves any already-installed terminals for that post, removing and
 reinstalling them **in a single transaction** so a failed install cannot leave the post with no
 terminal. Without it the save only changes what the next install writes, and the response carries
-`reinstallRequired: true`. A battlegroup restart is still required for either to appear in-game.
+`reinstallRequired: true`. A restart of that terminal's map is still required for either to appear in-game.
 
 ### Combat & User Settings
 

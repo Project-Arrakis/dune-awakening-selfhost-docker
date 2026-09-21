@@ -2669,11 +2669,10 @@ export function ChoamPositionEditor({
   const [waited, setWaited] = useState(0);
   const [captureState, setCaptureState] = useState<"waiting" | "moving" | null>(null);
   const [cycleSeconds, setCycleSeconds] = useState(0);
-  const cancelCapture = useRef(false);
-  // Read inside the polling loop, which closes over a stale selectedPlayerId.
-  const selectedPlayerIdRef = useRef("");
-  useEffect(() => { selectedPlayerIdRef.current = selectedPlayerId; }, [selectedPlayerId]);
-  useEffect(() => () => { cancelCapture.current = true; }, []);
+  // Each start/stop gets a new generation. This prevents a late response from
+  // an earlier request from overwriting the form or stopping a newer capture.
+  const captureRunId = useRef(0);
+  useEffect(() => () => { captureRunId.current += 1; }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -2693,7 +2692,7 @@ export function ChoamPositionEditor({
 
   async function useCharacterPosition() {
     if (!selectedPlayerId) return;
-    cancelCapture.current = false;
+    const runId = ++captureRunId.current;
     setCapturing(true);
     setCaptured(null);
     setCaptureMessage("");
@@ -2705,10 +2704,9 @@ export function ChoamPositionEditor({
     // tracks the wait for the NEXT save rather than total elapsed time.
     let cycleStartedAt = Date.now();
     let baseline: ChoamCaptureBaseline | null = null;
-    const capturingFor = selectedPlayerId;
     try {
       for (;;) {
-        if (cancelCapture.current || capturingFor !== selectedPlayerIdRef.current) return;
+        if (runId !== captureRunId.current) return;
         const elapsed = Math.round((Date.now() - startedAt) / 1000);
         setWaited(elapsed);
         setCycleSeconds(Math.round((Date.now() - cycleStartedAt) / 1000));
@@ -2717,6 +2715,7 @@ export function ChoamPositionEditor({
           return;
         }
         const result = await mapsApi.captureChoamPosition(center.key, selectedPlayerId, baseline);
+        if (runId !== captureRunId.current) return;
         if (!result.supported || !result.placement || !result.source) {
           setCaptureMessage(result.reason || "That character has no stored position yet.");
           return;
@@ -2743,9 +2742,11 @@ export function ChoamPositionEditor({
         await new Promise((resolve) => setTimeout(resolve, CHOAM_CAPTURE_POLL_MS));
       }
     } catch (error) {
-      setCaptureMessage(error instanceof Error ? error.message : String(error));
+      if (runId === captureRunId.current) {
+        setCaptureMessage(error instanceof Error ? error.message : String(error));
+      }
     } finally {
-      setCapturing(false);
+      if (runId === captureRunId.current) setCapturing(false);
     }
   }
 
@@ -2778,7 +2779,7 @@ export function ChoamPositionEditor({
     <p className="choam-position-editor-hint">Edit the position directly, or stand where the terminal should go facing the way it should face and capture it from a character.</p>
     <div className="choam-position-editor-controls">
       <label className="compact-select">Character
-        <select value={selectedPlayerId} onChange={(event) => { cancelCapture.current = true; setCapturing(false); setSelectedPlayerId(event.target.value); setCaptured(null); setCaptureMessage(""); }} disabled={playersLoading || capturing}>
+        <select value={selectedPlayerId} onChange={(event) => { captureRunId.current += 1; setCapturing(false); setSelectedPlayerId(event.target.value); setCaptured(null); setCaptureMessage(""); }} disabled={playersLoading || capturing}>
           <option value="">{playersLoading ? "Loading online characters..." : "Select an online character"}</option>
           {(players || []).map((player) => <option key={player.id} value={player.id}>{player.name}</option>)}
         </select>
@@ -2804,7 +2805,7 @@ export function ChoamPositionEditor({
           <p className="choam-capture-step-label">Confirming the character held still across that save</p>
         </div>
       </div>
-      <button className="choam-capture-stop" onClick={() => { cancelCapture.current = true; setCapturing(false); }}>Stop waiting</button>
+      <button className="choam-capture-stop" onClick={() => { captureRunId.current += 1; setCapturing(false); }}>Stop waiting</button>
     </div> : null}
     {players && !playersLoading && !players.length ? <p className="empty">No characters are online right now.</p> : null}
     {captureMessage ? <p className="choam-position-editor-message">{captureMessage}</p> : null}

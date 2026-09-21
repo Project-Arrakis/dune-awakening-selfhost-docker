@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const captureChoamPosition = vi.fn();
@@ -71,6 +71,28 @@ describe("CHOAM position editor", () => {
     fireEvent.change(select, { target: { value: "6" } });
     fireEvent.click(screen.getByRole("button", { name: /use character position/i }));
     await waitFor(() => expect(select).toBeDisabled());
+  });
+
+  it("ignores a capture response that arrives after waiting is stopped", async () => {
+    let resolveCapture: (value: unknown) => void = () => {};
+    captureChoamPosition.mockReturnValue(new Promise((resolve) => { resolveCapture = resolve; }));
+    renderEditor();
+    const select = await screen.findByLabelText("Character");
+    fireEvent.change(select, { target: { value: "6" } });
+    fireEvent.click(screen.getByRole("button", { name: /use character position/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /stop waiting/i }));
+
+    await act(async () => {
+      resolveCapture({
+        supported: true,
+        ready: true,
+        source: { serial: "2", x: 192900, y: 2451.06, z: 13551.53, yaw: 0 },
+        placement: { x: 192900, y: 2451.06, z: 13551.53, yaw: 0, distanceUu: 277, verticalUu: 0 }
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByLabelText("X")).toHaveValue(TRANSFORM.x);
   });
 
   it("states that an installed terminal only moves after a restart", async () => {
