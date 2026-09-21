@@ -30,6 +30,16 @@ assert 'if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then' in body
 assert 'value="$default_value"' in body
 assert '[ "$value" -ge "$window_seconds" ]' in body
 assert "value=$((window_seconds - 1))" in body
+
+duration_start = text.index("duration_to_seconds()")
+duration_end = text.index("\n}\n", duration_start)
+duration_body = text[duration_start:duration_end]
+assert '[[ "$value" =~ ^([1-9][0-9]*)([smh]?)$ ]] || return 1' in duration_body
+
+window_start = text.index("validate_log_window()")
+window_end = text.index("\n}\n", window_start)
+window_body = text[window_start:window_end]
+assert 'if ! seconds="$(duration_to_seconds "$value")" || [ "$seconds" -le 1 ]; then' in window_body
 PY
 
 # Static check: the gate must be the first non-"local" statement in each
@@ -108,6 +118,8 @@ sed -n "1,$((tail_line - 1))p" "$script" | sed '/^cd "\$(dirname "\$0")\/\.\.\/\
   export DUNE_AUTOSCALER_HUB_TRAVEL_FILE="$work_dir/hub-travel.tsv"
   export DUNE_AUTOSCALER_DEEPDESERT_TRAVEL_FILE="$work_dir/deepdesert-travel.tsv"
   export DUNE_AUTOSCALER_DIRECTOR_HEAL_FILE="$work_dir/director-heal.tsv"
+  export DUNE_AUTOSCALER_LOG_SINCE=30sm
+  export DUNE_AUTOSCALER_NAMED_DESTINATION_LOG_SINCE=bogusm
 
   # The script's own top-level preflight requires `docker ps` to list
   # dune-director/dune-postgres or it exits 1. Also counts every `docker
@@ -126,6 +138,9 @@ sed -n "1,$((tail_line - 1))p" "$script" | sed '/^cd "\$(dirname "\$0")\/\.\.\/\
 
   # shellcheck source=/dev/null
   source "$defs_file" >/dev/null
+
+  [ "$SINCE" = 30s ] || { echo "expected malformed log window to fall back to 30s" >&2; exit 1; }
+  [ "$NAMED_DESTINATION_SINCE" = 10m ] || { echo "expected malformed named-destination log window to fall back to 10m" >&2; exit 1; }
 
   # scan_named_destination_failures now sources its rows from
   # named_destination_source_rows() (DB-driven, replacing the old

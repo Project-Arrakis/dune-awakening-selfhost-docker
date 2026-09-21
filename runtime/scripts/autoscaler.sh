@@ -52,12 +52,28 @@ IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_RECOVERY_COOL
 # against the log window it reads.
 duration_to_seconds() {
   local value="$1"
+  local amount
+
+  [[ "$value" =~ ^([1-9][0-9]*)([smh]?)$ ]] || return 1
+  amount="${BASH_REMATCH[1]}"
   case "$value" in
-    *h) echo $(( ${value%h} * 3600 )) ;;
-    *m) echo $(( ${value%m} * 60 )) ;;
-    *s) echo "${value%s}" ;;
-    *) echo "$value" ;;
+    *h) echo $((amount * 3600)) ;;
+    *m) echo $((amount * 60)) ;;
+    *) echo "$amount" ;;
   esac
+}
+
+validate_log_window() {
+  local var_name="$1"
+  local value="$2"
+  local default_value="$3"
+  local seconds
+
+  if ! seconds="$(duration_to_seconds "$value")" || [ "$seconds" -le 1 ]; then
+    echo "Invalid ${var_name}; using ${default_value}." >&2
+    value="$default_value"
+  fi
+  echo "$value"
 }
 
 # Validate a *_SCAN_SECONDS override: fall back to the default on a
@@ -82,6 +98,8 @@ validate_scan_seconds() {
   echo "$value"
 }
 
+SINCE="$(validate_log_window DUNE_AUTOSCALER_LOG_SINCE "$SINCE" 30s)"
+NAMED_DESTINATION_SINCE="$(validate_log_window DUNE_AUTOSCALER_NAMED_DESTINATION_LOG_SINCE "$NAMED_DESTINATION_SINCE" 10m)"
 SINCE_SECONDS="$(duration_to_seconds "$SINCE")"
 NAMED_DESTINATION_SINCE_SECONDS="$(duration_to_seconds "$NAMED_DESTINATION_SINCE")"
 PROACTIVE_HAGGA_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS "${DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"
@@ -2089,8 +2107,6 @@ PY
 
 scan_rejected_story_returns() {
   local director_log_file rejected_rows completed_rows
-
-  director_heal_due rejected_story_returns "$NAMED_DESTINATION_SCAN_SECONDS" || return 0
 
   director_log_file="$(mktemp)"
   docker logs --timestamps --since "$NAMED_DESTINATION_SINCE" dune-director > "$director_log_file" 2>&1 || true
