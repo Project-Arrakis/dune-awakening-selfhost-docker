@@ -46,3 +46,18 @@ for hosted_bot_var in \
 done
 
 echo "PASS: hosted-bot OAuth registration's env vars are wired into docker-compose.web.yml's console environment"
+
+# Auto-invite Discord Application Client ID (maintainer review finding, PR
+# #215): the exact same bug class as the two blocks above -- config.js
+# reads AUTO_INVITE_DISCORD_CLIENT_ID server-side, but it was never added
+# to this allowlist, so a self-hoster running their own hosted-bot backend
+# under their own Discord Application could never actually override the
+# default in any real docker-compose deployment. Its siblings
+# (AUTO_INVITE_DISCORD_REDIRECT_URI, MENTAT_LINK_AUTO_INVITE_START_URL,
+# MENTAT_LINK_CONFIRMATION_STATUS_URL) are deliberately NOT asserted here:
+# config.js documents them as test-only overrides with exactly one correct
+# production value each, so they are not meant to reach this file.
+grep -qE '^\s*AUTO_INVITE_DISCORD_CLIENT_ID:\s*"\$\{AUTO_INVITE_DISCORD_CLIENT_ID:-' "$compose_file" \
+  || fail "AUTO_INVITE_DISCORD_CLIENT_ID is not passed through to the console service in docker-compose.web.yml -- a self-hoster's own Discord Application override would be unreachable in any real deployment regardless of .env"
+
+echo "PASS: the auto-invite Discord Application Client ID override is wired into docker-compose.web.yml's console environment"
