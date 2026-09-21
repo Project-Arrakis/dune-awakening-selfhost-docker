@@ -6471,10 +6471,14 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .choam-terminal-status .badge-pass { background: rgba(61, 139, 98, .12); }
 .choam-terminal-actions { justify-content: center; flex-wrap: nowrap; margin: 0; }
 .choam-terminal-actions button { min-width: 96px; white-space: nowrap; }
+.choam-terminal-actions .choam-position-toggle { width: 140px; min-width: 140px; justify-content: center; }
 .choam-position-editor-row td { background: var(--panel-soft); }
 .choam-position-editor { display: grid; gap: 12px; padding: 4px 2px; text-align: left; }
 .choam-position-editor-hint { margin: 0; color: var(--text-subtle); }
 .choam-position-editor-controls { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.choam-character-select { gap: 0; }
+.choam-character-select > span { display: block; padding-bottom: 16px; }
+.choam-character-select select:disabled { opacity: .55; color: var(--text-faint); cursor: not-allowed; }
 .choam-position-editor-message { margin: 0; color: var(--text-subtle); }
 .choam-position-editor-tiles { display: grid; grid-template-columns: repeat(4, minmax(90px, 1fr)); gap: 10px; }
 .choam-position-tile { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-muted); text-align: center; }

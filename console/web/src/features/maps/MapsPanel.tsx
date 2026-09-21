@@ -2486,7 +2486,7 @@ export function SpicefieldsEditor({ rows, allRows, loaded, filter, result, onFil
   </section>;
 }
 
-function ChoamTerminalsEditor({
+export function ChoamTerminalsEditor({
   overview,
   savingKey,
   result,
@@ -2536,7 +2536,7 @@ function ChoamTerminalsEditor({
               {installed
                 ? <button className="danger" disabled={saving} onClick={() => onRemove(center)}>{saving ? "Working..." : "Remove"}</button>
                 : <button disabled={saving} onClick={() => onInstall(center)}>{saving ? "Working..." : "Install"}</button>}
-              <button disabled={saving} title="Set the position this trade post's terminals install at" onClick={() => setExpandedKey(expanded ? "" : center.key)}><MapPin size={16} /> {expanded ? "Close" : "Set position"}</button>
+              <button className="choam-position-toggle" disabled={saving} title="Set the position this trade post's terminals install at" onClick={() => setExpandedKey(expanded ? "" : center.key)}><MapPin size={16} /> {expanded ? "Close" : "Set Position"}</button>
             </div></td>
           </tr>
           {expanded ? <tr className="choam-position-editor-row"><td colSpan={5}>
@@ -2686,8 +2686,8 @@ export function ChoamPositionEditor({
       .then((result) => {
         if (cancelled) return;
         const rows = (result.rows || [])
-          .map((row) => ({ id: String(row.actor_id ?? ""), name: String(row.character_name || "") || `Player ${row.actor_id}` }))
-          .filter((player) => player.id);
+          .map((row) => ({ id: String(row.actor_id ?? ""), name: String(row.character_name || "").trim() }))
+          .filter((player) => player.id && player.name);
         setPlayers(rows);
       })
       .catch(() => { if (!cancelled) setPlayers([]); })
@@ -2775,6 +2775,7 @@ export function ChoamPositionEditor({
   const distanceMeters = distanceUu / 100;
   const limitMeters = limits.radiusUu / 100;
   const barPercent = Math.min(100, (distanceUu / limits.radiusUu) * 100);
+  const hasOnlinePlayers = Boolean(players?.length);
 
   function setField(field: "x" | "y" | "z" | "heading", value: string) {
     setForm((current) => (current ? { ...current, [field]: value } : current));
@@ -2783,13 +2784,13 @@ export function ChoamPositionEditor({
   return <div className="choam-position-editor">
     <p className="choam-position-editor-hint">Edit the position directly, or stand where the terminal should go facing the way it should face and capture it from a character.</p>
     <div className="choam-position-editor-controls">
-      <label className="compact-select">Character
-        <select value={selectedPlayerId} onChange={(event) => { captureRunId.current += 1; setCapturing(false); setSelectedPlayerId(event.target.value); setCaptured(null); setCaptureMessage(""); }} disabled={playersLoading || capturing}>
-          <option value="">{playersLoading ? "Loading online characters..." : "Select an online character"}</option>
+      <label className="compact-select choam-character-select"><span>Character</span>
+        <select value={selectedPlayerId} onChange={(event) => { captureRunId.current += 1; setCapturing(false); setSelectedPlayerId(event.target.value); setCaptured(null); setCaptureMessage(""); }} disabled={playersLoading || capturing || !hasOnlinePlayers}>
+          <option value="">{playersLoading || !hasOnlinePlayers ? "" : "Select an online character"}</option>
           {(players || []).map((player) => <option key={player.id} value={player.id}>{player.name}</option>)}
         </select>
       </label>
-      <button disabled={!selectedPlayerId || capturing} onClick={() => void useCharacterPosition()}>Use character position</button>
+      <button disabled={!selectedPlayerId || capturing} onClick={() => void useCharacterPosition()}>Use Character Position</button>
     </div>
     {capturing ? <div className="choam-capture-steps">
       <div className="choam-capture-step">
@@ -2842,8 +2843,8 @@ export function ChoamPositionEditor({
     <p className="choam-position-editor-note">The game writes character positions about once a minute. Capture waits for that write and for the character to hold still across it, so it can take up to two minutes.</p>
     <p className="choam-position-editor-restart">Saving records the position. An installed terminal only moves in-game after a map restart.</p>
     <div className="action-row">
-      <button disabled={!editedValid || !withinBound || saving} onClick={() => edited && onSave(center, { x: edited.x, y: edited.y, z: edited.z, yaw: normalizeHeading(edited.heading - 90) }, selectedPlayerId)}>{saving ? "Saving..." : "Save position"}</button>
-      {center.custom ? <button className="danger" disabled={saving} onClick={() => onReset(center)}>{saving ? "Working..." : "Reset to default"}</button> : null}
+      <button disabled={!editedValid || !withinBound || saving} onClick={() => edited && onSave(center, { x: edited.x, y: edited.y, z: edited.z, yaw: normalizeHeading(edited.heading - 90) }, selectedPlayerId)}>{saving ? "Saving..." : "Save Position"}</button>
+      {center.custom ? <button className="danger" disabled={saving} onClick={() => onReset(center)}>{saving ? "Working..." : "Reset to Default"}</button> : null}
       <button disabled={saving} onClick={onClose}>Cancel</button>
     </div>
   </div>;

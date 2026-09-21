@@ -7,7 +7,7 @@ const online = vi.fn();
 vi.mock("../../api/maps", () => ({ mapsApi: { captureChoamPosition: (...args: unknown[]) => captureChoamPosition(...args) } }));
 vi.mock("../../api/players", () => ({ playersApi: { online: () => online() } }));
 
-import { ChoamPositionEditor } from "./MapsPanel";
+import { ChoamPositionEditor, ChoamTerminalsEditor } from "./MapsPanel";
 
 const TRANSFORM = { x: 192623.2, y: 2451.06, z: 13551.53, qx: 0, qy: 0, qz: 0.5788, qw: -0.8155 };
 const CENTER = { key: "the-anvil", name: "The Anvil", transform: TRANSFORM, defaultTransform: TRANSFORM, custom: false };
@@ -26,11 +26,52 @@ beforeEach(() => {
 });
 
 describe("CHOAM position editor", () => {
+  it("keeps the Set Position and Close toggle at the same stable width", async () => {
+    render(<ChoamTerminalsEditor
+      overview={{ supported: true, tradeCenters: [CENTER], sietches: [], placements: [], positionLimits: LIMITS }}
+      savingKey=""
+      result={null}
+      onInstall={vi.fn()}
+      onRemove={vi.fn()}
+      onSavePosition={vi.fn()}
+      onResetPosition={vi.fn()}
+    />);
+    const setPosition = screen.getByRole("button", { name: "Set Position" });
+    expect(setPosition).toHaveClass("choam-position-toggle");
+    fireEvent.click(setPosition);
+    expect(screen.getByRole("button", { name: "Close" })).toHaveClass("choam-position-toggle");
+  });
+
   it("seeds from the post's current position so no character is needed", async () => {
     renderEditor();
     await waitFor(() => expect(screen.getByLabelText("X")).toHaveValue(192623.2));
     expect(screen.getByLabelText("Z")).toHaveValue(13551.53);
     expect(captureChoamPosition).not.toHaveBeenCalled();
+  });
+
+  it("shows online character names in the enabled character picker", async () => {
+    renderEditor();
+    const select = await screen.findByLabelText("Character");
+    await waitFor(() => expect(select).toBeEnabled());
+    expect(screen.getByRole("option", { name: "DarkShark" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Other" })).toBeTruthy();
+  });
+
+  it("leaves the character picker empty and disabled when nobody is online", async () => {
+    online.mockResolvedValue({ rows: [] });
+    renderEditor();
+    const select = await screen.findByLabelText("Character");
+    await screen.findByText("No characters are online right now.");
+    expect(select).toBeDisabled();
+    expect(select.textContent).toBe("");
+    expect(screen.queryByText("Select an online character")).toBeNull();
+  });
+
+  it("uses title capitalization for the position action buttons", async () => {
+    renderEditor({ center: { ...CENTER, custom: true } });
+    expect(await screen.findByRole("button", { name: "Save Position" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reset to Default" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use Character Position" })).toBeTruthy();
   });
 
   // Number("") is 0, so a cleared field used to pass validation and silently
