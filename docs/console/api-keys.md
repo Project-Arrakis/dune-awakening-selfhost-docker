@@ -117,7 +117,7 @@ namespace" rule, so Create stays disabled until something is selected.
 | `landsraad` | `landsraad:read` | `write` |
 | `server` | `server:read` | `console-reload`, `network-fix`, `restart`, `restart-service`, `start`, `stop`, `storage-cleanup`, `write-config` |
 | `logs` | `logs:read` | *nothing — no write action exists* |
-| `backups` | `backups:read` | `create`, `create-system`, `delete`, `delete-system`, `import`, `restore`, `write-config` — **not** `download-system`, `import-system` or `restore-system`, which no level grants (see below) |
+| `backups` | `backups:read` | `create`, `create-system`, `delete-system`, `write-config` (see below for the restore/import/delete and system-backup actions, which are excluded) |
 | `updates` | `updates:check`, `updates:read` | *nothing — write actions are denied to keys* |
 | `carepackage` | `carepackage:read` | `clear-history`, `scan` |
 | `addons` | `addons:read` | *nothing — write actions are denied to keys* |

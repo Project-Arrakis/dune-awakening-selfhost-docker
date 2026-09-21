@@ -637,7 +637,7 @@ export const DEFAULT_POLICIES = {
         "guilds:read", "landsraad:read", "sietches:read", "storage:read", "vehicles:read",
         "database:read", "database:query",   // query is read-only-enforced in the handler
         "updates:check", "updates:read", "updates:self-check",
-        "backups:create", "backups:read",
+        "backups:create", "backups:create-system", "backups:delete-system", "backups:read",
         "setup:read",
         "addons:read",
       ]},

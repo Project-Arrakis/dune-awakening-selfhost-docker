@@ -505,11 +505,19 @@ test("a stored write level does not reach the whole-host backup actions", () => 
   }
 });
 
-test("the excluded actions can still be granted by naming them", () => {
-  // The point is that the operator has to choose them, not that they are
-  // unreachable -- an explicit action list is a deliberate act.
+// Tightened during the 2026-09-21 upstream rebase: these three were originally
+// LEVEL_EXCLUDED_ACTIONS-only (unreachable via a level, but grantable by naming
+// them explicitly). Reconciling this list with policy.js's CROWN_JEWEL_DENY_ACTIONS
+// (upstream PR #201/#202 review requirement -- these three must stay owner-only
+// and excluded from API-key access) added them there too, which
+// scopeAllowsAction() checks FIRST and unconditionally -- so naming them
+// explicitly no longer works either. LEVEL_EXCLUDED_ACTIONS is now redundant for
+// these three specifically (isCrownJewelAction() already excludes them from the
+// catalog entirely) but is left in place since other, non-crown-jewel actions
+// could use the same level-exclusion mechanism in the future.
+test("the excluded actions cannot be granted at all, even by naming them", () => {
   for (const action of ["backups:download-system", "backups:import-system", "backups:restore-system"]) {
-    assert.equal(scopeAllowsAction("backups", [action], action), true, `an explicit grant of ${action} must work`);
+    assert.equal(scopeAllowsAction("backups", [action], action), false, `an explicit grant of ${action} must still be refused -- it is owner-only`);
   }
 });
 
