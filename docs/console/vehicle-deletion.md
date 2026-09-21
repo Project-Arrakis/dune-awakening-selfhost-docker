@@ -1,6 +1,6 @@
 # Vehicle deletion
 
-**Status:** Observed — verified against game build 2117304-0-shipping (September 2026). Re-verify after a game update.
+**Status:** Current | **Last Updated:** September 2026
 
 The Vehicles panel can permanently delete a vehicle and everything fitted or
 stored on it. The action lives as a **Delete Vehicle** row action (trash icon)

@@ -190,8 +190,8 @@ processes — the closed-source game server establishes its own connection
 to Postgres independently; it does not share this repo's in-process `pg`
 pool object. The `dune` schema is the game-world schema, populated
 primarily by the closed-source dedicated server itself. A small number of
-console-authored objects also live in this database, including one
-schema (`console_market_history`) that this repo defines outright.
+project-authored objects also live in this database, including the
+`console_market_history` and conditional `dune_runtime` schemas.
 
 **See [`DATABASE.md`](DATABASE.md) for the database itself** — the
 encryption view layer, partition provisioning, the notify channels that

@@ -79,7 +79,7 @@ echo
 echo "--- 5. Drift: dune.* referenced in console/api/src but absent from the database ---"
 
 # The grep pattern constrains names to [a-z_0-9]+, so they are safe to inline.
-referenced=$(grep -rhoE "dune\.[a-z_0-9]+" console/api/src --include='*.js' | sed 's/^dune\.//' | sort -u)
+referenced=$(grep -rhoE "dune\.[A-Za-z_0-9]+" console/api/src --include='*.js' | sed 's/^dune\.//' | tr '[:upper:]' '[:lower:]' | sort -u || true)
 
 if [ -z "$referenced" ]; then
   echo "error: found no dune.* references in console/api/src -- has the layout moved?" >&2

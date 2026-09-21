@@ -60,7 +60,7 @@ Two independent writers share this database:
 | Writer | Connection | Owns |
 |---|---|---|
 | The dedicated server (closed source) | its own, not visible to us | virtually the entire schema |
-| The console (`console/api`) | one `pg` pool, `console/api/src/db.js` | five tables ([§9](#9-console-authored-objects)) |
+| This project (Console and runtime scripts) | the Console's `pg` pool or `psql` from runtime scripts | the project-owned objects in [§9](#9-project-authored-objects) |
 
 They are separate OS processes. The console's pool object is not shared with
 the game server in any way; the two simply agree on a database.
@@ -78,14 +78,18 @@ this prevents; don't reimplement the precedence chain anywhere else.
 
 ## 3. Schemas and extensions
 
-Three schemas:
+Four schemas may be present:
 
-- **`dune`** — the game. All tables, views, functions, procedures and types
-  discussed below live here unless stated otherwise.
+- **`dune`** — primarily the game, with a small set of project-owned
+  operational objects listed in [§9](#9-project-authored-objects). All other
+  tables, views, functions, procedures and types discussed below live here
+  unless stated otherwise.
 - **`ext`** — extensions only, kept out of `dune` deliberately:
   `pg_trgm` (trigram text search) and `pgcrypto` ([§4](#4-the-encryption-layer)).
-- **`console_market_history`** — console-owned, created by us ([§9](#9-console-authored-objects)). The only
-  schema in this database that this repo defines.
+- **`console_market_history`** — console-owned exchange history
+  ([§9](#9-project-authored-objects)).
+- **`dune_runtime`** — project-owned compatibility state, created only when a
+  relevant patch needs it ([§9](#the-dune_runtime-compatibility-schema)).
 
 ---
 
@@ -230,8 +234,8 @@ Six, on the verified build — five Landsraad plus one operational:
 
 ### Triggers
 
-Nine on the verified build — eight shipped by the game, one installed by the
-console. Landsraad accounts for four of the game's, which is why Landsraad
+Nine on the verified build — seven shipped by the game, two installed by this
+project. Landsraad accounts for four of the game's, which is why Landsraad
 writes have side effects well beyond the row you touched:
 
 | Trigger | On table | Function |
@@ -241,13 +245,13 @@ writes have side effects well beyond the row you touched:
 | `landsraad_tasks_house_rewards_changed` | `landsraad_house_rewards` | `landsraad_notify_house_rewards_changed()` |
 | `landsraad_tasks_process_house_rewards` | `landsraad_task_player_contributions` | `landsraad_process_house_rewards()` |
 | `actor_fgl_entities_cleanup_orphaned_entities` | `actor_fgl_entities` | `cleanup_orphaned_entities()` |
-| `normalize_farm_state_addresses` | `farm_state` | `normalize_farm_state_addresses()` |
+| `normalize_farm_state_addresses` **(ours)** | `farm_state` | `normalize_farm_state_addresses()` |
 | `partitions_inserted_trigger` | `world_partition` | `determine_partition_label_trigger()` |
 | `trigger_create_event_log_partition` | `world_partition` | `create_event_log_partition()` |
 | `console_market_history_capture` **(ours)** | `dune_exchange_fulfilled_orders` | `console_market_history.capture_fulfilled_order()` |
 
-If you are enumerating triggers to reason about game behavior, exclude the
-last one — it is ours, and [§9](#9-console-authored-objects) covers it.
+If you are enumerating triggers to reason about shipped game behavior, exclude
+the two marked **ours**; [§9](#9-project-authored-objects) covers them.
 
 ---
 
@@ -281,14 +285,15 @@ machinery exists:
 
 ---
 
-## 9. Console-authored objects
+## 9. Project-authored objects
 
-There is no migrations directory. Everything the console owns is created
-lazily with `if not exists`, on first use of the feature that needs it.
-Because creation is lazy, **absence is not a fault** — a deployment that has
-never used the relevant feature simply will not have the object yet.
+There is no conventional migration framework. Console-owned objects are
+created lazily with `if not exists`, while runtime-owned objects are installed
+by startup reconciliation or the compatibility patches in `runtime/sql/`.
+Because some creation is lazy or conditional, **absence is not automatically
+a fault**.
 
-### Five tables inside the game's schema
+### Objects inside the game's schema
 
 | Table | Created in |
 |---|---|
@@ -296,7 +301,14 @@ never used the relevant feature simply will not have the object yet.
 | `dune.discord_player_links` | `duneDb.js:14933` |
 | `dune.discord_pending_links` | `duneDb.js:14950` |
 | `dune.admin_choam_terminals` | `services/choamTerminals.js:49` |
+| `dune.admin_choam_terminal_positions` | `services/choamTerminals.js` |
 | `dune.player_death_log` (+2 indexes) | `deathPoller.js:39` |
+| `dune.network_address_config` | `runtime/scripts/network-addresses.sh` |
+
+`runtime/scripts/network-addresses.sh` also creates the
+`dune.normalize_farm_state_addresses()` trigger function and attaches the
+`normalize_farm_state_addresses` trigger to `dune.farm_state`. These are
+project-owned even though they deliberately live in the game's schema.
 
 ### The `console_market_history` schema
 
@@ -312,8 +324,7 @@ of the *game's* tables:
 | `console_market_history.capture_fulfilled_order()` | function |
 | `console_market_history_capture` on `dune.dune_exchange_fulfilled_orders` | trigger |
 
-This is the only `CREATE FUNCTION` and the only trigger this repo issues. Two
-details matter if you touch it:
+Two details matter if you touch it:
 
 - **The function swallows every exception.** Its body ends in
   `exception when others then raise warning ... return new`, deliberately:
@@ -325,6 +336,13 @@ details matter if you touch it:
   goes to the Postgres log, not the console UI.
 
 See [exchange.md](../console/exchange.md) for the feature itself.
+
+### The `dune_runtime` compatibility schema
+
+The SQL patches may create `dune_runtime` for project-owned compatibility
+state. The current patches create `dune_runtime.compatibility_migrations` and
+can update an already-installed `guard_recovered_vehicle_restore()` function.
+These objects are not part of Funcom's shipped schema.
 
 ---
 
@@ -361,7 +379,7 @@ overridable with `DUNE_POSTGRES_CONTAINER`, `DUNE_POSTGRES_ROLE` and
 A name in the drift list is **not automatically a bug.** It is one of:
 
 1. correctly guarded by a capability probe ([§8](#8-capability-probes)) — the usual case;
-2. a console table not yet created, because the feature has not run ([§9](#9-console-authored-objects));
+2. a project table not yet created, because the feature or reconciliation has not run ([§9](#9-project-authored-objects));
 3. prose — the extraction is textual, so `dune.<word>` in a comment or an
    error string is reported too;
 4. an actual latent bug.

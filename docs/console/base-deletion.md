@@ -1,6 +1,6 @@
 # Base deletion
 
-**Status:** Observed — verified against game build 2117304-0-shipping (September 2026). Re-verify after a game update.
+**Status:** Current | **Last Updated:** September 2026
 
 The Bases panel can permanently delete a base and everything built or stored
 on it. The action lives as a **Delete Base** row action (trash icon) in the
@@ -42,9 +42,9 @@ a delete composes two functions the game already ships
 transaction, the same way `mutateBasePermissions` composes the permission
 procedures.
 
-(The console does issue one `CREATE FUNCTION`, but in its own
-`console_market_history` schema, for exchange history capture — see
-[DATABASE.md](../architecture/DATABASE.md) §9. Nothing in `dune` is ours.)
+(The project does create operational routines elsewhere, including exchange
+history capture and network-address normalization, but base deletion adds no
+database routine of its own. See [DATABASE.md](../architecture/DATABASE.md) §9.)
 
 ## Endpoints
 
