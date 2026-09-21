@@ -26,15 +26,18 @@ script="runtime/scripts/autoscaler.sh"
 #                                   continuous `docker logs -f` follower
 #                                   (like follow_director_hagga_handoffs
 #                                   already does), not a naive gate.
-#   scan_rejected_story_returns   - processes exact Director refusal pairs and
-#                                   also runs from the fast follower; delaying
-#                                   it can miss the reconnect window and leave
-#                                   a completed player in a story loop.
 #   scan_idle_servers             - not part of this fix's scope; each call
 #   scan_reconnect_demand           is comparatively cheap (indexed SQL, not
 #   scan_live_player_partition_      docker-logs+python3-regex over a large
 #     alignment                     window); tracked as a separate follow-up.
-KNOWN_UNGATED_SCANS="scan_travel_demand scan_rejected_story_returns scan_idle_servers scan_reconnect_demand scan_live_player_partition_alignment"
+#
+# scan_rejected_story_returns is deliberately NOT in this list: it is gated,
+# via its own dedicated STORY_RETURN_RECOVERY_SCAN_SECONDS interval (default
+# 5s) rather than sharing NAMED_DESTINATION_SCAN_SECONDS -- see the commit
+# that added this interval for why a shared 60s interval was too slow for a
+# player waiting on a stuck story return, and why a short dedicated interval
+# is the fix rather than leaving this scan ungated altogether.
+KNOWN_UNGATED_SCANS="scan_travel_demand scan_idle_servers scan_reconnect_demand scan_live_player_partition_alignment"
 
 python3 - "$script" "$KNOWN_UNGATED_SCANS" <<'PY'
 import re
