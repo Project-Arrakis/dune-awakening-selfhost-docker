@@ -78,8 +78,9 @@ Confirm each of the following renders as a **number input**:
 5. Reload the Console page (or navigate away from Custom Settings and back).
    Confirm the field still shows `7` (proves the value round-trips through
    a real reload, not just optimistic UI state).
-6. Restore the value to its default (`5`) via step 6 below before
-   continuing, so later checks start from a known state.
+6. Change **Spice Manager Tick Rate Seconds** back to `5` and click **Save
+   Spice Fields** again, so the live server and later checks in this
+   checklist start from a known state.
 
 ## 4. Discard Changes reverts to the last-loaded value (not the schema default)
 
