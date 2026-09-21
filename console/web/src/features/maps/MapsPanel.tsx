@@ -422,6 +422,8 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [gameDraft, setGameDraft] = useState<Record<string, string>>({});
   const [serverCustomValues, setServerCustomValues] = useState<Record<string, string>>({});
   const [serverCustomDraft, setServerCustomDraft] = useState<Record<string, string>>({});
+  const [spiceFieldValues, setSpiceFieldValues] = useState<Record<string, string>>({});
+  const [spiceFieldDraft, setSpiceFieldDraft] = useState<Record<string, string>>({});
   const [serverRegion, setServerRegion] = useState("");
   const [gameValuesTargetKey, setGameValuesTargetKey] = useState("");
   const [rawEngine, setRawEngine] = useState("");
@@ -823,7 +825,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     // The raw Advanced editor is loaded only when it is opened. Making it part
     // of this gate would add another command before the normal modifier cards
     // can be used.
-    await Promise.all([loadSchema(), loadUserEngineValues(), loadServerRegion()]);
+    await Promise.all([loadSchema(), loadUserEngineValues(), loadServerRegion(), loadSpiceFieldSettings()]);
     setModifierSettingsLoaded(true);
   }
   async function loadSelectedEngineSettings(mapName: string, partitionId?: string) {
@@ -858,6 +860,18 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     const parsed = parseUserSettingsMap(values.stdout || "");
     setServerCustomValues(parsed);
     setServerCustomDraft(parsed);
+  }
+  // Spice Field settings are UserGame.ini fields (MAP_FIELDS, category "Spice
+  // Fields") that only make sense set at Global scope -- there is no per-map
+  // or per-size control surface left post-Patch-1.5 (see the "Spice Fields"
+  // section under Custom Settings). Deliberately decoupled from
+  // userGameName/gameValues so this section works regardless of whatever
+  // map/partition target the rest of the tab has selected.
+  async function loadSpiceFieldSettings() {
+    const values = await mapsApi.userGame("__global__");
+    const parsed = parseUserSettingsMap(values.stdout || "");
+    setSpiceFieldValues(parsed);
+    setSpiceFieldDraft(parsed);
   }
   // Three draft policies, deliberately distinct:
   //   preserveDrafts      -- background polling; whatever is on screen wins.
@@ -1337,7 +1351,14 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const isEngineGlobal = engineMapName === "__global__";
   const engineTargetKey = settingsTargetKey(engineMapName, isEngineGlobal ? "" : enginePartitionId);
   const gameFields = schema ? (effectivePartitionId ? schema.partition : schema.game).filter((field) => field.id !== "partition_pve_enabled" || effectivePartitionId) : [];
-  const userGameFields = schema && userGameName ? (!isUserGameGlobal && effectiveUserGamePartitionId ? schema.partition : schema.game).filter((field) => field.id !== "partition_pve_enabled" || (!isUserGameGlobal && effectiveUserGamePartitionId)) : [];
+  // Spice Fields (category "Spice Fields") are deliberately excluded here --
+  // they have their own dedicated, always-visible global section under the
+  // Custom Settings tab (see spiceFieldSettings below), backed by its own
+  // load/save cycle. Leaving them in this list too would create a second,
+  // unsynchronized editable copy of the same UserGame.ini values: editing one
+  // surface wouldn't invalidate the other's already-loaded draft, so an
+  // operator could see stale values in whichever surface they opened second.
+  const userGameFields = schema && userGameName ? (!isUserGameGlobal && effectiveUserGamePartitionId ? schema.partition : schema.game).filter((field) => (field.id !== "partition_pve_enabled" || (!isUserGameGlobal && effectiveUserGamePartitionId)) && field.category !== "Spice Fields") : [];
   // userGameName/effectiveUserGamePartitionId flip synchronously the instant a
   // target is picked, one render before loadSelectedSettings's async fetch
   // resolves and actually updates gameValues/gameDraft for it. Without this,
@@ -1360,6 +1381,9 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const activeServerCustomCategory = serverCustomGroups.some(([category]) => category === selectedServerCustomCategory) ? selectedServerCustomCategory : serverCustomGroups[0]?.[0] || "";
   const activeServerCustomFields = activeServerCustomCategory === "All" ? serverCustomFields : serverCustomGroups.find(([category]) => category === activeServerCustomCategory)?.[1] || [];
   const filteredServerCustomFields = filterSettingsFields(activeServerCustomFields, modifierFilter);
+  const spiceFieldSettings = (schema?.game || []).filter((field) => field.category === "Spice Fields");
+  const filteredSpiceFieldSettings = filterSettingsFields(spiceFieldSettings, modifierFilter);
+  const spiceFieldsDirty = changedKeys(spiceFieldValues, spiceFieldDraft, spiceFieldSettings);
   const filteredActiveSpicefields = filterActiveSpicefields(activeSpicefields, spicefieldFilter);
   const engineSchemaFields = isEngineGlobal
     ? schema?.engine || []
@@ -1885,6 +1909,18 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     await loadSelectedServerCustomSettings(userGameName, partitionId);
     await refreshDeferredRestartPending();
   }
+  async function saveSpiceFields() {
+    const choice = await confirmSettingsRestart("UserGame", settingsRestartTarget("global", "Survival_1"));
+    if (choice === "cancel") return;
+    await runTaskAndRefresh(
+      () => mapsApi.saveUserSettings({ scope: "global", map: "Survival_1", values: valuesForDirtyFields(spiceFieldValues, spiceFieldDraft, spiceFieldSettings), immediate: choice === "immediate", deferRestart: choice === "manual" }),
+      "Saving Spice Field settings",
+      "Spice Fields Saved",
+      { resultScope: "modifiers", restartAcceptedMessage: "Changes saved successfully. The maps are restarting and should be back up soon." }
+    );
+    await loadSpiceFieldSettings();
+    await refreshDeferredRestartPending();
+  }
   async function saveRaw(kind: "engine" | "game") {
     // Raw UserEngine.ini is always the stack-wide profile; raw UserGame.ini
     // here always saves as the global profile too (scope: "global" below),
@@ -2364,7 +2400,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
           <label className="compact-select">Target<select value={userGameTargetKey} onChange={(event) => selectUserGameTarget(event.target.value)}><option value="">Select Map Or Partition</option>{userGameTargets.map((target) => <option key={target.key} value={target.key}>{target.label}</option>)}</select></label>
           <label className="compact-select">Setting Category<select disabled={!userGameName} value={activeServerCustomCategory} onChange={(event) => setSelectedServerCustomCategory(event.target.value)}>{serverCustomGroups.map(([category, fields]) => <option key={category} value={category}>{category} ({fields.length})</option>)}</select></label>
           <div className="modifier-search-tools">
-            <input className="modifier-filter-input" disabled={!userGameName} aria-label="Filter Custom Settings" value={modifierFilter} onChange={(event) => setModifierFilter(event.target.value)} placeholder="Filter custom settings" />
+            <input className="modifier-filter-input" disabled={!userGameName && !spiceFieldSettings.length} aria-label="Filter Custom Settings" value={modifierFilter} onChange={(event) => setModifierFilter(event.target.value)} placeholder="Filter custom settings" />
             <div className="catalog-view-toggle" aria-label="Custom Settings view">
               <button type="button" className={modifierViewMode === "grid" ? "active" : ""} title="Grid view" aria-label="Grid view" aria-pressed={modifierViewMode === "grid"} onClick={() => setModifierViewMode("grid")}><Grid2X2 size={17} /></button>
               <button type="button" className={modifierViewMode === "list" ? "active" : ""} title="List view" aria-label="List view" aria-pressed={modifierViewMode === "list"} onClick={() => setModifierViewMode("list")}><List size={18} /></button>
@@ -2372,7 +2408,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
           </div>
         </div>
         {userGameName && <><p className="muted">Official Patch 1.5 settings stored in <code>Saved/Config/LinuxServer/ServerCustomSettings.ini</code>. Dune Docker keeps <code>DifficultyLevel=Custom</code> and preserves unmanaged file values.</p><SettingsCardGrid fields={filteredServerCustomFields} values={serverCustomDraft} onChange={(id, value) => setServerCustomDraft({ ...serverCustomDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, serverCustomFields.length, modifierFilter, activeServerCustomCategory)} /></>}
-        <div className="action-row"><button disabled={!serverCustomDirty.length || !userGameName} onClick={() => run(saveServerCustom)}>Save</button><button disabled={!serverCustomDirty.length} onClick={() => setServerCustomDraft(serverCustomValues)}>Discard Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !serverCustomFields.length} title="Set every Server Setting on this tab back to its default value" onClick={() => setServerCustomDraft(Object.fromEntries(serverCustomFields.map((field) => [field.id, field.default ?? ""]))) }>Restore Defaults</button></div>
+        <div className="action-row"><button disabled={!serverCustomDirty.length || !userGameName} onClick={() => run(saveServerCustom)}>Save Custom Settings</button><button disabled={!serverCustomDirty.length} onClick={() => setServerCustomDraft(serverCustomValues)}>Discard Custom Settings Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !serverCustomFields.length} title="Set every Server Setting on this tab back to its default value" onClick={() => setServerCustomDraft(Object.fromEntries(serverCustomFields.map((field) => [field.id, field.default ?? ""]))) }>Restore Custom Settings Defaults</button></div>
+        <div className="spicefield-settings-heading">
+          <h3>Spice Fields</h3>
+          <p>These settings apply server-wide, independent of the Target selector above -- global spice-system pacing, visibility, and yield. Patch 1.5 removed the old per-map/per-size active-field caps and spawn weights entirely, so there is no longer a per-size (Small/Medium/Large) or per-map (Hagga Basin vs. Deep Desert) control surface in the live game server; these are the closest settings that still exist.</p>
+        </div>
+        <SettingsCardGrid fields={filteredSpiceFieldSettings} values={spiceFieldDraft} onChange={(id, value) => setSpiceFieldDraft({ ...spiceFieldDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, spiceFieldSettings.length, modifierFilter, "Spice Fields")} />
+        <div className="action-row"><button disabled={!spiceFieldsDirty.length} onClick={() => run(saveSpiceFields)}>Save Spice Fields</button><button disabled={!spiceFieldsDirty.length} onClick={() => setSpiceFieldDraft(spiceFieldValues)}>Discard Spice Field Changes</button><button className="settings-reset-all-button" disabled={!spiceFieldSettings.length} title="Set every Spice Field setting back to its default value" onClick={() => setSpiceFieldDraft(Object.fromEntries(spiceFieldSettings.map((field) => [field.id, field.default ?? ""])))}>Restore Spice Field Defaults</button></div>
       </> : settingsTab === "spicefields" ? <>
         <SpicefieldsEditor rows={filteredActiveSpicefields} allRows={activeSpicefields} loaded={spicefieldsLoaded} filter={spicefieldFilter} result={spicefieldResult} onFilterChange={setSpicefieldFilter} onRefresh={() => run(loadSpicefields)} />
       </> : <>
