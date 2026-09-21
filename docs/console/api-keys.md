@@ -17,9 +17,11 @@ engine, [API-REFERENCE.md](API-REFERENCE.md) for the management endpoints.
 ## Using a key
 
 ```bash
-curl -H "Authorization: Bearer dak_7f3c1a9b_xK2p9vRmQ4tLbN8wZfH3jY6cD1sA5eU7gT0nB" \
+curl -H "Authorization: Bearer <API_KEY>" \
   http://localhost:8088/api/players
 ```
+
+Replace `<API_KEY>` with the key shown by the Console when you create it.
 
 Keys use the same `Authorization: Bearer` header as the Discord adapter. No cookie and no
 CSRF token are involved: CSRF protects against a hostile page riding an ambient credential,

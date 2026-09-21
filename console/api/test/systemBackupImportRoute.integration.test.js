@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { createTarArchive } from "../src/services/backups.js";
 
 // Mirrors system_backup_encryption_available()'s own preflight in db.sh: an
 // AEAD archive needs gpg 2.3+, and test-api.sh deliberately mirrors CI's
@@ -163,5 +164,33 @@ test("POST /api/backups/system/import refuses a non-archive without a ReferenceE
   } finally {
     await stopServer(child);
     rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/backups/system/import accepts only the matching, bounded sidecar", { timeout: 30000, skip: SKIP_REASON }, async () => {
+  const repoRoot = makeRepoRoot();
+  const workDir = mkdtempSync(join(tmpdir(), "dune-system-import-bundle-"));
+  const { child, ready } = startServer(repoRoot);
+  try {
+    await ready;
+    const archiveName = "dune-system-20260830-120000-4711-9931.tar.gz.enc";
+    const archive = readFileSync(makeRealArchive(workDir, "test-passphrase-1234"));
+    const body = createTarArchive([
+      { name: archiveName, content: archive },
+      { name: "unrelated.yaml", content: Buffer.from("server_title: Spoofed\n") },
+      { name: `${archiveName}.yaml`, content: Buffer.alloc(1024 * 1024 + 1, 65) }
+    ]);
+    const response = await fetch(
+      `${BASE}/api/backups/system/import?filename=${encodeURIComponent("bundle.tar")}`,
+      { method: "POST", headers: { "content-type": "application/x-tar" }, body }
+    );
+    const text = await response.text();
+    assert.equal(response.status, 400, text);
+    assert.match(text, /metadata is too large/i);
+    assert.equal(existsSync(join(repoRoot, "runtime/backups/system", archiveName)), false);
+  } finally {
+    await stopServer(child);
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true });
   }
 });

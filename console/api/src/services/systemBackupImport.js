@@ -1,4 +1,4 @@
-import { closeSync, openSync, readSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 
 // Reading an uploaded system backup: what it is, what it should be called, and
 // what its sidecar should say. Kept apart from systemBackups.js, which answers
@@ -68,6 +68,7 @@ export function readTarMemberIndex(filePath) {
   const fd = openSync(filePath, "r");
   const members = [];
   try {
+    const fileSize = fstatSync(fd).size;
     const block = Buffer.alloc(512);
     let offset = 0;
     for (;;) {
@@ -76,9 +77,17 @@ export function readTarMemberIndex(filePath) {
       const name = tarField(block, 0, 100);
       const prefix = tarField(block, 345, 155);
       const size = Number.parseInt(tarField(block, 124, 12).trim(), 8);
-      if (!name || !Number.isInteger(size) || size < 0) break;
-      members.push({ name: prefix ? `${prefix}/${name}` : name, size, start: offset + 512 });
-      offset += 512 + size + ((512 - (size % 512)) % 512);
+      if (!name || !Number.isSafeInteger(size) || size < 0) throw new Error("The upload contains an invalid tar member.");
+      const start = offset + 512;
+      const padding = (512 - (size % 512)) % 512;
+      const nextOffset = start + size + padding;
+      // A forged size must not turn a tiny upload into a huge readSlice()
+      // allocation, or let writeSlice() silently publish a truncated archive.
+      if (!Number.isSafeInteger(nextOffset) || start + size > fileSize || nextOffset > fileSize) {
+        throw new Error("The upload contains a truncated tar member.");
+      }
+      members.push({ name: prefix ? `${prefix}/${name}` : name, size, start });
+      offset = nextOffset;
     }
   } finally {
     closeSync(fd);

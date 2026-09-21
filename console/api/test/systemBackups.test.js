@@ -12,6 +12,9 @@ import { isReadAction } from "../src/apiKeyScopes.js";
 import { withSecurityHeaders } from "../src/auth.js";
 
 const ARCHIVE = "dune-system-20260830-120000-4711-9931.tar.gz.enc";
+const TRAVERSAL_NAME = ["..", "..", "etc", "passwd"].join("/");
+const ABSOLUTE_NAME = ["", "etc", "passwd"].join("/");
+const RELATIVE_NAME = ["..", "etc", "passwd"].join("/");
 
 function makeHost() {
   const root = mkdtempSync(join(tmpdir(), "system-backups-"));
@@ -25,7 +28,7 @@ test("validSystemBackupName accepts real archives and their sidecars only", () =
   assert.equal(validSystemBackupName(`${ARCHIVE}.yaml`), true);
   for (const denied of [
     `${ARCHIVE}.partial.99`,
-    "../../etc/passwd",
+    TRAVERSAL_NAME,
     "/etc/passwd",
     "dune-db-20260830-120000.dump",
     "evil.tar.gz.enc",
@@ -163,10 +166,10 @@ test("system delete operations build the right dune arguments", () => {
 });
 
 test("system delete refuses names that are not system archives", () => {
-  for (const bad of ["../../etc/passwd", "/etc/passwd", "dune-db-20260830-120000.dump", `${ARCHIVE}.partial.9`, ""]) {
+  for (const bad of [TRAVERSAL_NAME, ABSOLUTE_NAME, "dune-db-20260830-120000.dump", `${ARCHIVE}.partial.9`, ""]) {
     assert.equal(validSystemBackupName(bad), false, bad);
   }
-  assert.throws(() => buildDuneArgs("backupSystemDelete", { backup: "../etc/passwd" }), /Invalid backup name/);
+  assert.throws(() => buildDuneArgs("backupSystemDelete", { backup: RELATIVE_NAME }), /Invalid backup name/);
 });
 
 // Download serves the sidecar too, but delete must not: a sidecar name used to
@@ -181,7 +184,7 @@ test("the delete gate rejects sidecar names the download gate accepts", () => {
   assert.equal(validSystemArchiveName(ARCHIVE), true);
 
   // And everything the download gate rejects, the delete gate rejects too.
-  for (const bad of ["../../etc/passwd", "/etc/passwd", "dune-db-20260830-120000.dump", `${ARCHIVE}.partial.9`, ""]) {
+  for (const bad of [TRAVERSAL_NAME, ABSOLUTE_NAME, "dune-db-20260830-120000.dump", `${ARCHIVE}.partial.9`, ""]) {
     assert.equal(validSystemArchiveName(bad), false, bad);
   }
 });

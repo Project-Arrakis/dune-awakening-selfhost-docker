@@ -100,9 +100,8 @@ export function listSystemBackups(config) {
       // Same vocabulary the database table uses (enrichBackupRows), from the
       // same sidecar field, so the two tables read alike.
       type: systemBackupType(origin),
-      // Nothing imports system archives yet, so this reads "Local" today. It
-      // is derived rather than hardcoded so an import path that writes
-      // backup_origin: external lights it up without touching this file.
+      // Imported archives are marked external by the upload path; older
+      // hand-copied archives may still have no origin and remain Local.
       source: /^(external|imported)$/.test(origin) ? "External" : "Local",
       encryption: metadata.encryption || "unknown",
       serverTitle: metadata.server_title || "Unknown",

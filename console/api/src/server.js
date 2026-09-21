@@ -1935,6 +1935,7 @@ async function systemBackupCreateRoute(req, res) {
 // together, and a raw body streams to disk without a boundary parser standing
 // between a gigabyte of upload and the filesystem.
 const IMPORT_STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const SYSTEM_BACKUP_SIDECAR_MAX_BYTES = 1024 * 1024;
 
 function sweepStaleImportStaging(directory) {
   try {
@@ -1994,8 +1995,12 @@ async function systemBackupImportRoute(req, res) {
     if (looksLikeTar(head)) {
       const members = readTarMemberIndex(staging);
       const archive = members.find((member) => validSystemArchiveName(member.name));
-      const sidecar = members.find((member) => member.name.endsWith(".yaml"));
       if (!archive) { discard(); return json(res, 400, { error: "That .tar does not contain a system backup archive." }); }
+      const sidecar = members.find((member) => member.name === `${archive.name}.yaml`);
+      if (sidecar && sidecar.size > SYSTEM_BACKUP_SIDECAR_MAX_BYTES) {
+        discard();
+        return json(res, 400, { error: "The system backup metadata is too large." });
+      }
       archiveSource = { path: staging, start: archive.start, size: archive.size };
       originalName = archive.name;
       if (sidecar) sidecarText = await readSlice(staging, sidecar.start, sidecar.size);

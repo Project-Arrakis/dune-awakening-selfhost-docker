@@ -1068,9 +1068,13 @@ chmod +x "$case16_root/altbin/docker"
 
 (
   cd "$case16_root/work"
-  PATH="$case16_root/altbin:$bin_dir:$PATH" TMPDIR="$case16_root/tmp" \
+  # runDune starts db.sh as its own process group and signals the whole group
+  # on cancellation. Mirror that here: killing only the parent shell leaves a
+  # stalled docker grandchild alive, so bash defers the cleanup trap until that
+  # child returns and this test becomes timing-dependent.
+  exec env PATH="$case16_root/altbin:$bin_dir:$PATH" TMPDIR="$case16_root/tmp" \
     DUNE_SYSTEM_BACKUP_PASSPHRASE="$TEST_PASSPHRASE" DUNE_DB_ASSUME_YES=1 \
-    bash runtime/scripts/db.sh restore-system "$case16_archive"
+    setsid bash runtime/scripts/db.sh restore-system "$case16_archive"
 ) > "$case16_root/restore.log" 2>&1 &
 case16_pid=$!
 
@@ -1085,16 +1089,14 @@ for _ in $(seq 1 200); do
   sleep 0.1
 done
 if [ "$case16_ready" -ne 1 ]; then
-  kill -TERM "$case16_pid" 2>/dev/null || true
-  pkill -TERM -P "$case16_pid" 2>/dev/null || true
+  kill -TERM -- "-$case16_pid" 2>/dev/null || true
   wait "$case16_pid" 2>/dev/null || true
   echo "FAIL restore-sigterm-leaves-no-plaintext: the staged plaintext never appeared, so a signal here would prove nothing"
   cat "$case16_root/restore.log"
   exit 1
 fi
 
-kill -TERM "$case16_pid" 2>/dev/null || true
-pkill -TERM -P "$case16_pid" 2>/dev/null || true
+kill -TERM -- "-$case16_pid" 2>/dev/null || true
 wait "$case16_pid" 2>/dev/null || true
 # The trap runs once bash regains control from the stalled child.
 for _ in $(seq 1 100); do
@@ -2819,3 +2821,72 @@ if ! grep -qx "BATTLEGROUP_ID=sh-test-1234" "$case55_generated/battlegroup.env";
   exit 1
 fi
 echo "PASS restore-keeps-host-shaped-generated"
+
+# --- Case 56: archive links cannot escape the restored tree ---------------
+# Member names can all be allowed while `env` itself is a symlink to a host
+# file. Validate extracted object types and link targets before a dry run can
+# bless the archive for apply.
+
+case56_root="$test_root/case56"
+mkdir -p "$case56_root/work" "$case56_root/tree/db" "$case56_root/tree/generated" "$case56_root/tree/secrets"
+seed_repo_tree "$case56_root/work"
+printf 'dump\n' > "$case56_root/tree/db/test.backup"
+ln -s /etc/passwd "$case56_root/tree/env"
+case56_archive="$case56_root/work/runtime/backups/system/dune-system-20260921-120000-1-56.tar.gz.enc"
+seal_tree "$case56_root/tree" "$case56_archive"
+
+case56_status=0
+run_restore "$case56_root" "$case56_root/tmp" "$TEST_PASSPHRASE" "$(basename "$case56_archive")" --dry-run || case56_status=$?
+if [ "$case56_status" -eq 0 ]; then
+  echo "FAIL restore-refuses-unsafe-links: an external .env symlink was accepted"
+  cat "$case56_root/restore.log"
+  exit 1
+fi
+if ! grep -qi "regular file\|unsafe link" "$case56_root/restore.log"; then
+  echo "FAIL restore-refuses-unsafe-links: refused without naming the unsafe object"
+  cat "$case56_root/restore.log"
+  exit 1
+fi
+echo "PASS restore-refuses-unsafe-links"
+
+# --- Case 57: restored state replaces stale files but keeps safe links -----
+# An overlay leaves credentials and IAM files that are absent from the backup
+# active on the restored host. The archive's generated/secrets trees must be
+# authoritative, with the current host audit log as the documented exception.
+
+case57_root="$test_root/case57"
+mkdir -p "$case57_root/work"
+seed_repo_tree "$case57_root/work"
+ln -s sietch-config.json "$case57_root/work/runtime/generated/sietch-config-current.json"
+(
+  cd "$case57_root/work"
+  PATH="$bin_dir:$PATH" DUNE_SYSTEM_BACKUP_PASSPHRASE="$TEST_PASSPHRASE" \
+    bash runtime/scripts/db.sh backup-system
+) > "$case57_root/backup.log" 2>&1
+case57_archive="$(find "$case57_root/work/runtime/backups/system" -maxdepth 1 -name '*.tar.gz.enc' | head -n1)"
+printf 'stale-api-key\n' > "$case57_root/work/runtime/secrets/stale-api-key.txt"
+printf 'stale-policy\n' > "$case57_root/work/runtime/generated/stale-policy.json"
+printf '{"event":"keep-this-host-history"}\n' > "$case57_root/work/runtime/generated/web-admin-audit.jsonl"
+
+case57_status=0
+run_restore "$case57_root" "$case57_root/tmp" "$TEST_PASSPHRASE" "$(basename "$case57_archive")" || case57_status=$?
+if [ "$case57_status" -ne 0 ]; then
+  echo "FAIL restore-replaces-stale-state: expected exit 0, got $case57_status"
+  cat "$case57_root/restore.log"
+  exit 1
+fi
+if [ -e "$case57_root/work/runtime/secrets/stale-api-key.txt" ] \
+    || [ -e "$case57_root/work/runtime/generated/stale-policy.json" ]; then
+  echo "FAIL restore-replaces-stale-state: files absent from the archive survived"
+  exit 1
+fi
+if [ ! -L "$case57_root/work/runtime/generated/sietch-config-current.json" ] \
+    || [ "$(readlink "$case57_root/work/runtime/generated/sietch-config-current.json")" != "sietch-config.json" ]; then
+  echo "FAIL restore-replaces-stale-state: a safe in-tree generated symlink was lost"
+  exit 1
+fi
+if ! grep -q "keep-this-host-history" "$case57_root/work/runtime/generated/web-admin-audit.jsonl"; then
+  echo "FAIL restore-replaces-stale-state: this host's audit history was lost"
+  exit 1
+fi
+echo "PASS restore-replaces-stale-state"

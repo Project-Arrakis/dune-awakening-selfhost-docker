@@ -1216,7 +1216,10 @@ backup_system() {
     return 1
   fi
 
-  if ! mkdir -p "$stage_dir/db"; then
+  # Always write the complete directory shape, even when the source host has
+  # not created generated state or secrets yet. restore_system replaces these
+  # trees rather than overlaying them, so an empty directory is meaningful.
+  if ! mkdir -p "$stage_dir/db" "$stage_dir/generated" "$stage_dir/secrets"; then
     backup_system_cleanup_on_failure
     echo "System backup was not created because staging failed." >&2
     return 1
@@ -1243,11 +1246,6 @@ backup_system() {
   fi
 
   if [ -d runtime/generated ]; then
-    if ! mkdir -p "$stage_dir/generated"; then
-      backup_system_cleanup_on_failure
-      echo "System backup was not created because staging failed." >&2
-      return 1
-    fi
     # tar pipe, not rsync: rsync is not installed by install.sh or in the
     # console container image (confirmed directly against both) -- this
     # feature must not introduce a dependency that only happens to be
@@ -1275,11 +1273,6 @@ backup_system() {
   fi
 
   if [ -d runtime/secrets ]; then
-    if ! mkdir -p "$stage_dir/secrets"; then
-      backup_system_cleanup_on_failure
-      echo "System backup was not created because staging failed." >&2
-      return 1
-    fi
     if ! tar -C runtime/secrets -cf - . | tar -C "$stage_dir/secrets" -xf -; then
       backup_system_cleanup_on_failure
       echo "System backup was not created because runtime/secrets/ could not be staged." >&2
@@ -1521,6 +1514,53 @@ choose_system_restore_audit_log_action() {
   esac
 }
 
+# The member-name allow-list above prevents path traversal, but names alone do
+# not describe what tar extracted. A crafted archive can make `env` a symlink,
+# or place a device/FIFO under generated or secrets. System backups legitimately
+# preserve relative convenience symlinks in generated/, so allow those only
+# when their fully resolved target remains inside the same restored tree.
+validate_system_restore_tree() {
+  local tree="$1"
+  local special="" link="" resolved="" allowed_root=""
+
+  # Absence is reported by restore_system's existing, more helpful
+  # "contains no .env" check below. This gate is specifically about a path
+  # that exists but is not safe to install as the host's .env.
+  if [ -L "$tree/env" ]; then
+    echo "Refusing archive: .env must be a regular file." >&2
+    return 1
+  fi
+  if [ ! -d "$tree/db" ] || [ -L "$tree/db" ] \
+      || [ ! -d "$tree/generated" ] || [ -L "$tree/generated" ] \
+      || [ ! -d "$tree/secrets" ] || [ -L "$tree/secrets" ]; then
+    echo "Refusing archive: db, generated and secrets must be real directories." >&2
+    return 1
+  fi
+
+  special="$(find "$tree" -xdev ! -type f ! -type d ! -type l -print -quit 2>/dev/null)"
+  if [ -n "$special" ]; then
+    echo "Refusing archive: unsupported member type: ${special#"$tree"/}" >&2
+    return 1
+  fi
+
+  while IFS= read -r -d '' link; do
+    case "$link" in
+      "$tree/generated/"*) allowed_root="$tree/generated" ;;
+      "$tree/secrets/"*) allowed_root="$tree/secrets" ;;
+      *)
+        echo "Refusing archive: unsafe link: ${link#"$tree"/}" >&2
+        return 1 ;;
+    esac
+    resolved="$(realpath -m -- "$link" 2>/dev/null || true)"
+    case "$resolved" in
+      "$allowed_root"|"$allowed_root/"*) ;;
+      *)
+        echo "Refusing archive: unsafe link target: ${link#"$tree"/}" >&2
+        return 1 ;;
+    esac
+  done < <(find "$tree" -xdev -type l -print0 2>/dev/null)
+}
+
 # Restores an encrypted system backup produced by backup_system(): the database
 # dump plus .env, runtime/generated/ and runtime/secrets/.
 #
@@ -1702,6 +1742,11 @@ restore_system() {
   rm -f -- "$plain_tgz"
   plain_tgz=""
 
+  if ! validate_system_restore_tree "$stage_dir/tree"; then
+    restore_system_cleanup
+    return 1
+  fi
+
   local dump
   dump="$(find "$stage_dir/tree/db" -maxdepth 1 -type f -name '*.backup' 2>/dev/null | head -1)"
   if [ -z "$dump" ]; then
@@ -1870,6 +1915,19 @@ restore_system() {
     cp -a -- "$BATTLEGROUP_RESTORE_FILE" "$restore_point_saved"
   fi
 
+  # This is a replacement, not an overlay. Leaving a file that the backup does
+  # not contain can retain an old API key, session secret, IAM policy or other
+  # machine state while the UI reports that the archive was restored. The
+  # complete previous trees are already in safety_dir if the operator needs
+  # them, and the two host-shaped generated files are restored explicitly
+  # below.
+  if ! find runtime/generated -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + \
+      || ! find runtime/secrets -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; then
+    echo "Could not clear the existing generated state and secrets. Previous state is in: $safety_dir" >&2
+    restore_system_cleanup
+    return 1
+  fi
+
   if ! tar -C "$stage_dir/tree/generated" -cf - . | tar -C runtime/generated -xf -; then
     echo "Could not restore runtime/generated/. Previous state is in: $safety_dir" >&2
     restore_system_cleanup
@@ -1942,7 +2000,9 @@ restore_system() {
   # Same reasoning, for the audit log: the wholesale generated/ extract just
   # landed the archive's copy (the "adopt" outcome), so "keep current" means
   # actively putting this host's own back from the safety copy taken above.
-  if [ "$RESTORE_SYSTEM_AUDIT_LOG_ACTION" = "keep-current" ] && [ -f "$safety_dir/generated/web-admin-audit.jsonl" ]; then
+  if { [ "$RESTORE_SYSTEM_AUDIT_LOG_ACTION" = "keep-current" ] \
+      || { [ "$archive_has_audit_log" != "1" ] && [ "$host_has_audit_log" = "1" ]; }; } \
+      && [ -f "$safety_dir/generated/web-admin-audit.jsonl" ]; then
     cp -a -- "$safety_dir/generated/web-admin-audit.jsonl" runtime/generated/web-admin-audit.jsonl
     echo "Kept this host's own admin audit history in runtime/generated/web-admin-audit.jsonl."
   fi

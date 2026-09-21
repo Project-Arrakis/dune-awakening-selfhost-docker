@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -90,6 +90,16 @@ test("tar members are indexed by offset without reading their content", () => {
   // padded to a block boundary.
   assert.equal(members[0].start, 512);
   assert.equal(members[1].start, 512 + 1024 + 512);
+});
+
+test("a tar member whose declared body extends past the upload is refused", () => {
+  const dir = mkdtempSync(join(tmpdir(), "import-tar-truncated-"));
+  const path = join(dir, "bundle.tar");
+  const tar = createTarArchive([{ name: "dune-system-20260830-120000-4711-9931.tar.gz.enc", content: AEAD_HEAD }]);
+  // Keep the header while cutting the declared member body short.
+  writeFileSync(path, tar.subarray(0, 512 + 2));
+  assert.throws(() => readTarMemberIndex(path), /truncated tar member/i);
+  assert.equal(readFileSync(path).length, 514);
 });
 
 test("a minted name is one the rest of the system will accept", () => {
