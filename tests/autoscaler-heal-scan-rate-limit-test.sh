@@ -157,13 +157,28 @@ sed -n "1,$((tail_line - 1))p" "$script" | sed '/^cd "\$(dirname "\$0")\/\.\.\/\
   # docker-logs work against the current implementation.
   psql_value() {
     case "$1" in
-      *"wp.map in ("*)
+      # Deliberately "where wp.map in (" (the exact text
+      # named_destination_source_rows() uses), not the looser "wp.map in ("
+      # -- that broader pattern used to also match scan_rejected_story_returns'
+      # own completed_rows query ("...and source_wp.map in (...)"), silently
+      # handing it these 5 named-destination rows instead of the empty
+      # result its own case below expects, and only failing to matter by
+      # accident (a later, unrelated psql_value call in the same function
+      # returning empty for the next lookup). Found by a code review that
+      # actually checked for cross-stub contamination, not assumed distinct.
+      *"where wp.map in ("*)
         printf '%s\n' \
           'SH_Arrakeen|31|story-server-31' \
           'SH_HarkoVillage|32|story-server-32' \
           'Story_ProcesVerbal|33|story-server-33' \
           'CB_Story_DestroyedZanovar|34|story-server-34' \
           'CB_Story_OrbitalMonitor|35|story-server-35'
+        ;;
+      *"and source_wp.map in ("*)
+        # scan_rejected_story_returns' own completed_rows query -- deliberately
+        # empty, this call-site check only verifies docker-logs gating, not
+        # the SQL/recovery logic itself (see tests/autoscaler-story-return-test.sh
+        # for that).
         ;;
     esac
   }
