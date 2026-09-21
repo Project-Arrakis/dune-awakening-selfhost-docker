@@ -532,6 +532,29 @@ Keep a Changelog style, grouped by upstream base version, newest first.
   `docker ps` once per invocation instead of once per source map (3x
   fewer calls). Operators upgrading need no action.
 
+- **Follow-up: `scan_rejected_story_returns` reopened, then re-closed, the
+  same class of gap.** This function was gated as part of the original
+  fix above, sharing `NAMED_DESTINATION_SCAN_SECONDS` (60s) with the
+  unrelated `scan_named_destination_failures`. Upstream reverted that
+  gate for this function entirely (`471c3151`, "Keep story-return
+  recovery responsive") because 60s made a player waiting on a stuck
+  story return wait too long — a real complaint, but the fix reopened
+  the original unbounded-`docker logs`-per-tick condition for this one
+  function specifically (it also runs from a faster, separate 2-second
+  background loop, `follow_director_travel_demand`, not just the main
+  5-second loop). Fixed by giving it its own dedicated interval,
+  `DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS` (default 5s),
+  instead of either sharing the slower interval or having no gate at
+  all. Verified the default is safe with a real measurement, not just
+  reasoning: `docker logs --since 10m dune-director` against live
+  production took ~0.44s wall-clock, negligible CPU — under a 9% duty
+  cycle even if the gate fired continuously every 5s. Operators
+  upgrading need no action; the new env var is optional with a safe
+  default. `tests/autoscaler-heal-scan-rate-limit-test.sh` extended to
+  cover this function's gate directly (a mutation-tested Eight Hats
+  review found the existing test suite would pass green even with the
+  gate fully removed or degraded to a no-op interval of `0` — closed).
+
 - **Corrected a systematic wrong `volume` value affecting live container
   capacity math for 70 of the 99 `raw_resource`/`refined_resource`/`component`
   catalog items** (issue #440). Every `refined_resource`/`component` item
