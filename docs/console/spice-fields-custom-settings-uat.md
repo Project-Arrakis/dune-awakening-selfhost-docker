@@ -1,13 +1,15 @@
 # Spice Fields (Custom Settings) — UAT
 
-**Status:** In Design | **For:** [PR #228](https://github.com/Red-Blink/dune-awakening-selfhost-docker/pull/228)
+**Status:** Merged, pending QA | **For:** [PR #228](https://github.com/Red-Blink/dune-awakening-selfhost-docker/pull/228) (merged upstream 2026-09-21, commit `461bd1e8`)
 
 This is a manual test plan for verifying the new `Maps -> Interactive
 Modifiers -> Custom Settings -> Spice Fields` section against a real, live
-server — the one gate this PR is still in draft for (see the PR's "Known
-open item"). It isn't end-user documentation; once this PR is out of draft,
-a normal operator-facing doc can be added separately if the maintainer wants
-one.
+server. PR #228 merged before this checklist was executed — per this fork's
+own process, live-deployment UAT runs after merge and before the next
+release is cut, not as a merge gate (see the PR's "Manual UAT" section).
+It isn't end-user documentation; once this checklist has been run and
+signed off, a normal operator-facing doc can be added separately if the
+maintainer wants one.
 
 ## Prerequisites
 
