@@ -437,6 +437,15 @@ ENGINE_FIELD_CATEGORIES = {
     "deathstill_conversion_time_override": "Environment",
     "double_difficulty_loot_enabled": "Loot",
     "regenerate_per_player_loot_enabled": "Loot",
+    "spice_spawning_active": "Spice Fields",
+    "spice_prime_rate_seconds": "Spice Fields",
+    "spice_manager_tick_rate_seconds": "Spice Fields",
+    "spice_manager_refresh_rate_seconds": "Spice Fields",
+    "spice_global_manager_refresh_rate_seconds": "Spice Fields",
+    "spice_player_must_witness_bloom": "Spice Fields",
+    "spice_bloom_long_range_replication": "Spice Fields",
+    "spice_field_long_range_replication": "Spice Fields",
+    "spice_node_value_to_resource_ratio": "Spice Fields",
 }
 
 # Free-text field descriptions shown in the console UI. Only populated for
@@ -488,6 +497,15 @@ FIELD_DESCRIPTIONS = {
     "coriolis_cycle_start_hour": "UTC hour (0-23). Regional master schedules: Europe 05, North America 10, South America 08, Asia 09, and Oceania 19.",
     "coriolis_cycle_start_minute": "UTC minute (0-59) for the Coriolis cycle start.",
     "coriolis_cycle_start_seed_index": "Funcom's seed index for the base Coriolis cycle. Leave at 0 unless intentionally coordinating a different cycle seed.",
+    "spice_spawning_active": "Master on/off for the entire spice spawning system. False stops all new spice fields from spawning anywhere; existing fields are unaffected until consumed.",
+    "spice_prime_rate_seconds": "Seconds a spice field spends 'priming' (visible but not yet harvestable) before becoming active. Lower = fields become harvestable sooner after appearing.",
+    "spice_manager_tick_rate_seconds": "How often (seconds) the spice manager re-evaluates spawn/despawn state. Lower = more responsive but more frequent server work.",
+    "spice_manager_refresh_rate_seconds": "How often (seconds) the spice manager does a full refresh pass. Distinct from the tick rate above -- this is the slower, heavier pass.",
+    "spice_global_manager_refresh_rate_seconds": "How often (seconds) the global (cross-map) spice manager refreshes. Affects spawn pacing at the whole-server level, not a single map.",
+    "spice_player_must_witness_bloom": "If true, a spice bloom must actually be seen by a player to register/replicate. False lets blooms happen unwitnessed.",
+    "spice_bloom_long_range_replication": "Whether spice blooms replicate to clients beyond normal render range. True can make distant blooms visible/audible sooner.",
+    "spice_field_long_range_replication": "Whether spice fields themselves replicate to clients beyond normal render range, independent of the bloom replication setting above.",
+    "spice_node_value_to_resource_ratio": "Yield multiplier: how much harvestable spice resource a field produces per unit of its underlying node value. This is NOT a spawn-count or field-size control -- it only affects how much spice an already-spawned field yields.",
 }
 
 FIELD_LABELS = {
