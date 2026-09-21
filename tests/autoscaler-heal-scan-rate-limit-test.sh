@@ -10,9 +10,11 @@ bash -n "$script"
 grep -Fq 'director_heal_due proactive_hagga "$PROACTIVE_HAGGA_SCAN_SECONDS"' "$script"
 grep -Fq 'director_heal_due deepdesert_loading "$DEEPDESERT_LOADING_SCAN_SECONDS"' "$script"
 grep -Fq 'director_heal_due named_destination_failures "$NAMED_DESTINATION_SCAN_SECONDS"' "$script"
+grep -Fq 'director_heal_due rejected_story_returns "$STORY_RETURN_RECOVERY_SCAN_SECONDS"' "$script"
 grep -Fq 'PROACTIVE_HAGGA_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS "${DUNE_AUTOSCALER_PROACTIVE_HAGGA_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"' "$script"
 grep -Fq 'DEEPDESERT_LOADING_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS "${DUNE_AUTOSCALER_DEEPDESERT_LOADING_SCAN_SECONDS:-15}" 15 "$SINCE_SECONDS")"' "$script"
 grep -Fq 'NAMED_DESTINATION_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS "${DUNE_AUTOSCALER_NAMED_DESTINATION_SCAN_SECONDS:-60}" 60 "$NAMED_DESTINATION_SINCE_SECONDS")"' "$script"
+grep -Fq 'STORY_RETURN_RECOVERY_SCAN_SECONDS="$(validate_scan_seconds DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS "${DUNE_AUTOSCALER_STORY_RETURN_RECOVERY_SCAN_SECONDS:-5}" 5 "$NAMED_DESTINATION_SINCE_SECONDS")"' "$script"
 
 # validate_scan_seconds must reject a non-numeric override (e.g. a duration
 # string like other vars in this file use) instead of silently defeating the
@@ -63,6 +65,8 @@ checks = [
      'director_heal_due deepdesert_loading "$DEEPDESERT_LOADING_SCAN_SECONDS" || return 0'),
     ("scan_named_destination_failures()",
      'director_heal_due named_destination_failures "$NAMED_DESTINATION_SCAN_SECONDS" || return 0'),
+    ("scan_rejected_story_returns()",
+     'director_heal_due rejected_story_returns "$STORY_RETURN_RECOVERY_SCAN_SECONDS" || return 0'),
 ]
 
 for fn, gate_line in checks:
@@ -200,6 +204,28 @@ sed -n "1,$((tail_line - 1))p" "$script" | sed '/^cd "\$(dirname "\$0")\/\.\.\/\
     echo "expected 'docker logs' call count to stay at 5 after a second scan_named_destination_failures call within the interval (the gate should have suppressed it before any docker logs call), got $logs_after_second" >&2
     exit 1
   }
+
+  # Real call-site check: scan_rejected_story_returns makes exactly one
+  # `docker logs` call per invocation (a single dune-director log pull, not
+  # per-source like scan_named_destination_failures above). A due first call
+  # must reach it; an immediate second call within the interval must be
+  # suppressed before it. This is the check a mutation test proved was
+  # missing: deleting the gate entirely, or degrading it to a literal "0"
+  # interval, both left every other test in this repo green.
+  logs_before_rejected="$(grep -c '^logs ' "$docker_calls_log" || true)"
+  scan_rejected_story_returns
+  logs_after_rejected_first="$(grep -c '^logs ' "$docker_calls_log" || true)"
+  [ "$((logs_after_rejected_first - logs_before_rejected))" -eq 1 ] || {
+    echo "expected exactly 1 'docker logs' call after the first scan_rejected_story_returns call, got $((logs_after_rejected_first - logs_before_rejected))" >&2
+    exit 1
+  }
+
+  scan_rejected_story_returns
+  logs_after_rejected_second="$(grep -c '^logs ' "$docker_calls_log" || true)"
+  [ "$logs_after_rejected_second" -eq "$logs_after_rejected_first" ] || {
+    echo "expected 'docker logs' call count to stay at $logs_after_rejected_first after a second scan_rejected_story_returns call within the interval (the gate should have suppressed it before any docker logs call), got $logs_after_rejected_second" >&2
+    exit 1
+  }
 )
 
-echo "autoscaler gates proactive-hagga, deep-desert-loading, and named-destination heal scans behind director_heal_due; director_heal_due itself rate-limits correctly; and scan_named_destination_failures's real docker-logs work is actually suppressed on a second call within the interval"
+echo "autoscaler gates proactive-hagga, deep-desert-loading, named-destination, and rejected-story-return heal scans behind director_heal_due; director_heal_due itself rate-limits correctly; and each gated scan's real docker-logs work is actually suppressed on a second call within its interval"
