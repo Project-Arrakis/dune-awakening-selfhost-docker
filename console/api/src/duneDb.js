@@ -5884,10 +5884,9 @@ function quaternionYawDegrees(qz, qw) {
 }
 
 // Gates base deletion the same way supportsBasePermissionEditing gates
-// permission edits. This repo has no migrations directory and never issues
-// CREATE FUNCTION anywhere (every write path composes the game's own shipped
-// procedures), so a self-hosted server missing these tables/functions cannot
-// have a delete proc added for it -- it is simply unsupported.
+// permission edits. This feature deliberately composes the game's shipped
+// procedures instead of installing a replacement delete routine, so a server
+// missing these tables/functions is simply unsupported.
 async function supportsBaseDelete(db) {
   // Every relation the delete path names, LEFT JOINs included: permission_actor
   // via the in-transaction baseIsBackedUp guard, map_names via

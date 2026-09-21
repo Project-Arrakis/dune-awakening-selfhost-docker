@@ -2,7 +2,7 @@
 
 **Status:** Current | **Last Updated:** August 2026
 
-Complete reference for all HTTP API endpoints in the Dune Docker Console. All endpoints require authentication unless otherwise noted — either a browser session (session cookie + CSRF token) or a scoped API key sent as `Authorization: Bearer <key>`. See [api-keys.md](api-keys.md) for how key scopes are granted and what they can never reach.
+Complete reference for all HTTP API endpoints in the Dune Docker Console. All endpoints require authentication unless otherwise noted — either a browser session (session cookie + CSRF token) or a scoped API key sent as `Authorization: Bearer <key>`. See [api-keys.md](api-keys.md) for how key scopes are granted and what they can never reach. For the database these endpoints read and write — the encryption view layer, the notify channels that decide whether a write reaches a running map server, and the capability probes that make an endpoint report a feature as unsupported rather than fail — see [DATABASE.md](../architecture/DATABASE.md).
 
 **Format:** HTTP Method | Route | Description | Parameters
 
