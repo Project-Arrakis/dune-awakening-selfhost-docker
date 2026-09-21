@@ -8,7 +8,18 @@ own top-level folders.
 
 Docs marked **Historical record** describe a point-in-time state (a branch, a PR,
 an issue) and are not kept up to date — read them for context, not as current
-reference. Everything else is marked **Current** and is expected to stay accurate.
+reference.
+
+Docs marked **Observed** describe the closed-source game — its database schema,
+its services, its mechanics — rather than anything in this repo. They are
+maintained, but they cannot be kept accurate by reviewing our own changes,
+because nothing here causes them to drift: a Funcom build does. Each one names
+the game build it was verified against, so a reader can tell how stale it might
+be. Treat an `Observed` claim older than the running build as unverified until
+re-checked against a live database or container.
+
+Everything else is marked **Current** and is expected to stay accurate as this
+repo's code changes.
 
 ## Adding a new doc
 
@@ -20,10 +31,17 @@ reference. Everything else is marked **Current** and is expected to stay accurat
    components (a vulnerability class, a post-incident review) rather than a
    single feature. Don't add a new top-level folder for one document — put it
    in the closest existing one.
-2. **Decide Current vs Historical up front**, and put the line right after the
+2. **Decide the status up front**, and put the line right after the
    H1, matching the existing docs:
    - Living reference that should be kept accurate as code changes:
      `**Status:** Current | **Last Updated:** <Month Year>`
+   - A description of the closed-source game rather than of this repo — schema,
+     services, mechanics, anything only a running build can confirm:
+     `**Status:** Observed — verified against game build <build> (<Month Year>). Re-verify after a game update.`
+     Cite the evidence inline (the query, the container, the log line) so the
+     next person can re-run it rather than re-derive it. Prefer this over
+     `Current` whenever a claim would survive our review unchanged while
+     quietly becoming false — that has already happened here.
    - A frozen snapshot of a PR, branch, or issue — a test report, a change
      summary, implementation notes — goes in `docs/archive/` with:
      `**Status:** Historical record — describes the state at <PR/branch/issue>. Not maintained.`
