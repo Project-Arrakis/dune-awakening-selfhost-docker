@@ -62,6 +62,7 @@ belong to any single existing folder (`console/`, `runtime/`, `addons/`)
 by nature, so it gets its own.
 
 - [architecture/SYSTEM-OVERVIEW.md](architecture/SYSTEM-OVERVIEW.md) — Current. Whole-system engineering architecture reference: component map, the console's API/web/data layers, the `dune` CLI and Compose-project-name resolution, runtime state directories, and the Discord-integration split. Start here for a code-level overview before diving into a single component's docs.
+- [architecture/DATABASE.md](architecture/DATABASE.md) — Observed. The `dune` database: the encryption view layer, `world_partition` event-log provisioning, the eight notify channels and why direct DML is often a silent no-op, capability probes, the objects the console creates itself, and a domain map of the game's tables. Deliberately documents mechanisms rather than transcribing a schema that drifts with every game build — regenerate the inventory with `runtime/scripts/schema-report.sh`.
 
 ## Console (`console/api`, `console/web`)
 
@@ -76,8 +77,8 @@ by nature, so it gets its own.
 - [vehicle-permissions.md](console/vehicle-permissions.md) — Current. Editing vehicle ownership and sharing: the same roster engine as base permissions, including the Transfer to Custodian action.
 - [base-inventory.md](console/base-inventory.md) — Current. The base Inventory tab: which placeables count as storage, the two inventories every refinery carries, per-slot container contents, and the Give/Fill/Delete container actions (none of which require a stopped map).
 - [vehicle-storage.md](console/vehicle-storage.md) — Current. The Vehicles → Components View Contents overlay: which module counts as storage, why a vehicle's cargo hangs off its actor id rather than the (empty) `vehicle_module_id` link, and why the view is read-only.
-- [base-deletion.md](console/base-deletion.md) — Current. Permanently deleting a base: what "the base" means for enumeration, the pending-delete queue for a live map, the mandatory pre-delete safety backup, and why a pending delete freezes every other mutation on that base.
-- [vehicle-deletion.md](console/vehicle-deletion.md) — Current. Permanently deleting a vehicle: the FK cascade closure verified against a real schema dump, its own parallel pending-delete queue, and the vehicle-specific `dune.actor_state` guard bases have no equivalent of.
+- [base-deletion.md](console/base-deletion.md) — Observed. Permanently deleting a base: what "the base" means for enumeration, the pending-delete queue for a live map, the mandatory pre-delete safety backup, and why a pending delete freezes every other mutation on that base.
+- [vehicle-deletion.md](console/vehicle-deletion.md) — Observed. Permanently deleting a vehicle: the FK cascade closure verified against a real schema dump, its own parallel pending-delete queue, and the vehicle-specific `dune.actors.state` guard bases have no equivalent of.
 - [base-backups.md](console/base-backups.md) — Current. What the game's own "pick up base" tool actually does in the database, why the Bases panel excludes a picked-up base, and the Coriolis compatibility patch that preserves saved Deep Desert base actors.
 - [database-backups.md](console/database-backups.md) — Current. Safe database restore behavior when the backup and current deployment use different Battlegroup IDs.
 - [restart-queue.md](console/restart-queue.md) — Current. The Restart Queue toggle: player-aware countdowns with in-game warnings, the two broadcast variants, concurrency rules, crash recovery, the "Restart later" deferred-restart option, and the join-lock limitation.

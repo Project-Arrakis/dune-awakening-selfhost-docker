@@ -189,10 +189,16 @@ server both write to the same `dune` schema, but they are separate OS
 processes — the closed-source game server establishes its own connection
 to Postgres independently; it does not share this repo's in-process `pg`
 pool object. The `dune` schema is the game-world schema, populated
-primarily by the closed-source dedicated server itself (`dune.accounts`,
-`dune.actors`, `dune.player_state`, `dune.landsraad_*`, world-partition
-tables, etc.). A small number of console-authored tables also live in
-this schema.
+primarily by the closed-source dedicated server itself. A small number of
+console-authored objects also live in this database, including one
+schema (`console_market_history`) that this repo defines outright.
+
+**See [`DATABASE.md`](DATABASE.md) for the database itself** — the
+encryption view layer, partition provisioning, the notify channels that
+make a write take effect on a running map server, the capability probes
+that absorb schema drift between game builds, and a domain map of the
+tables. That document is the reference; this section only places the
+database within the component map.
 
 Backups of this database are covered by the `pg_dump`-based backup
 pipeline — see
