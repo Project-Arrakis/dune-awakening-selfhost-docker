@@ -36,8 +36,13 @@ test("isRunningAsRoot: reflects the injected getuid function, not the real proce
   assert.equal(isRunningAsRoot(() => 1000), false);
 });
 
-test("isRunningAsRoot: with no injected getuid, reflects this actual process -- this environment happens to run as root (confirmed directly), which is exactly the condition production root-UID refusal must correctly detect, not a test artifact to work around", () => {
-  assert.equal(isRunningAsRoot(), true);
+test("isRunningAsRoot: with no injected getuid, reflects this actual process -- whichever UID it genuinely runs as (root in some dev sandboxes, non-root under most CI runners), not a hardcoded expectation", () => {
+  // Deliberately NOT a hardcoded true/false: this differs by environment
+  // (root in some dev sandboxes, non-root under GitHub Actions' ubuntu-latest
+  // runner -- confirmed directly, this exact assertion broke CI once). The
+  // real invariant under test is that the no-argument call reflects the
+  // REAL process, not that any specific environment happens to be root.
+  assert.equal(isRunningAsRoot(), process.getuid() === 0);
 });
 
 // --- probeSocketLiveness: real sockets, real timing, not mocked ---
