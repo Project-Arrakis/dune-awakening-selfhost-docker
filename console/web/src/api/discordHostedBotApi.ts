@@ -1,6 +1,18 @@
-import { api, post } from "./client";
+import { api, post, ApiError } from "./client";
 
 export type OwnedDiscordGuild = { id: string; name: string; owner: true };
+
+// dune-awakening-selfhost-docker#853/mentat-link#183: the role-picker
+// widget's own data shapes -- `color`/`position` come straight through from
+// mentat's own guild.roles.cache mapping (setupServer.js), used for display
+// ordering/swatches only, never for authorization.
+export type HostedBotDiscordRole = { id: string; name: string; color: string; position: number };
+export type HostedBotRolesResult = { roles: HostedBotDiscordRole[]; cacheStale: boolean };
+export type HostedBotRoleTierConflict = { roleId?: string; currentTier?: string; requestedTier?: string } | null;
+export type HostedBotSaveRolesResult =
+  | { ok: true }
+  | { ok: false; kind: "conflict"; conflict: HostedBotRoleTierConflict }
+  | { ok: false; kind: "error"; message: string };
 
 const OWNED_GUILDS_SESSION_STORAGE_KEY = "hostedBotOwnedGuilds";
 
@@ -62,5 +74,32 @@ export const discordHostedBotApi = {
     return api<{ status: "pending" | "confirmed" | "denied" | "owner_changed" | "timed_out" | "not_found"; guildName?: string }>(
       `/api/integrations/discord/hosted-bot/auto-invite/confirmation-status?confirmationId=${encodeURIComponent(confirmationId)}`
     );
+  },
+  // dune-awakening-selfhost-docker#853/mentat-link#183: the role-picker
+  // widget's read side. `cacheStale: true` means the bot hasn't reconnected
+  // to this guild's gateway cache yet -- the caller falls back to the
+  // manual comma-separated-ID fields, never a blank/broken picker (design
+  // doc §4.3/§6).
+  fetchRoles: () => {
+    return api<HostedBotRolesResult>("/api/integrations/discord/hosted-bot/roles");
+  },
+  // The write side. Unlike every other call in this module, this does NOT
+  // use post() -- a 409 tier-conflict is a real, expected outcome the
+  // picker must render as an inline validation error (design doc §4.7/§6),
+  // and post()/api() collapse every non-2xx response into a generic thrown
+  // Error, discarding the structured `conflict` body. Catches ApiError
+  // specifically to recover it; any other thrown error (network failure,
+  // 5xx, etc.) is surfaced as a generic message instead.
+  saveRoles: async (roleIds: { playerRoleIds: string[]; moderatorRoleIds: string[]; adminRoleIds: string[] }): Promise<HostedBotSaveRolesResult> => {
+    try {
+      await post<{ applied: true }>("/api/integrations/discord/hosted-bot/roles", roleIds);
+      return { ok: true };
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        const body = err.body as { conflict?: HostedBotRoleTierConflict } | null;
+        return { ok: false, kind: "conflict", conflict: body?.conflict ?? null };
+      }
+      return { ok: false, kind: "error", message: err instanceof Error ? err.message : "Could not save this server's roles." };
+    }
   }
 };
