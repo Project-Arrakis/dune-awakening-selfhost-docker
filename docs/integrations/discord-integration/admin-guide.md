@@ -162,7 +162,7 @@ DUNE_DISCORD_WRITES_ENABLED=1
 DISCORD_WRITE_ADMIN_ROLE_IDS=YOUR_ADMIN_ROLE_ID
 ```
 
-(`true` also works, case-insensitively -- Core and the bot both accept either value identically as of issue #217's fix. `1` is the standardized canonical value going forward, per `docs/rw-architecture.md` §3.7.)
+(`true` also works, case-insensitively -- Core and the bot both accept either value identically as of issue #217's fix. `1` is the standardized canonical value going forward, per `docs/rw-architecture.md` section 1, "Key Design Decisions," item 4.)
 
 > ⚠️ Write commands should only be enabled after the upstream write-contract
 > is approved and you've tested thoroughly.
