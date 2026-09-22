@@ -3,6 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck source=runtime/scripts/lib/igw-socket-health.sh
+source runtime/scripts/lib/igw-socket-health.sh
+
 INTERVAL="${DUNE_AUTOSCALER_INTERVAL:-5}"
 DEMAND_INTERVAL="${DUNE_AUTOSCALER_DEMAND_INTERVAL:-2}"
 if ! [[ "$DEMAND_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
@@ -43,9 +46,11 @@ IGWO_UNAVAILABLE_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_IGWO_UNAVAILABLE_COOLDOWN_S
 STALE_SERVER_STATE_SCAN_SECONDS="${DUNE_AUTOSCALER_STALE_SERVER_STATE_SCAN_SECONDS:-15}"
 STALE_SERVER_STATE_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_STALE_SERVER_STATE_COOLDOWN_SECONDS:-45}"
 IGW_SOCKET_HEALTH_SCAN_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_HEALTH_SCAN_SECONDS:-10}"
-IGW_SOCKET_STALL_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_STALL_SECONDS:-30}"
+IGW_SOCKET_STALL_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_STALL_SECONDS:-120}"
 IGW_SOCKET_RX_QUEUE_THRESHOLD="${DUNE_AUTOSCALER_IGW_SOCKET_RX_QUEUE_THRESHOLD:-1048576}"
+IGW_SOCKET_DROP_GRACE_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_DROP_GRACE_SECONDS:-30}"
 IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS="${DUNE_AUTOSCALER_IGW_SOCKET_RECOVERY_COOLDOWN_SECONDS:-600}"
+IGW_SOCKET_EVIDENCE_LOG="${DUNE_AUTOSCALER_IGW_SOCKET_EVIDENCE_LOG:-runtime/logs/igw-socket-watchdog.log}"
 
 # Convert a docker-logs-style duration ("30s", "10m", "1h", or a bare integer
 # already in seconds) into whole seconds, so a scan's interval can be checked
@@ -1395,108 +1400,186 @@ map_has_active_presence() {
   [ "$(map_effective_player_count "$map" | tr -d '[:space:]')" != "0" ]
 }
 
-igw_receive_queue_bytes() {
+igw_socket_sample() {
   local container="$1"
   local port="$2"
-  local port_hex rx_hex total=0
+  local port_hex rx_hex drop_count total_queue=0 total_drops=0
 
   [[ "$port" =~ ^[0-9]+$ ]] || return 1
   port_hex="$(printf '%04X' "$port")"
 
-  while IFS= read -r rx_hex; do
+  while IFS='|' read -r rx_hex drop_count; do
     [ -n "$rx_hex" ] || continue
     rx_hex="${rx_hex^^}"
     [[ "$rx_hex" =~ ^[0-9A-F]+$ ]] || continue
-    total=$((total + 16#$rx_hex))
+    [[ "$drop_count" =~ ^[0-9]+$ ]] || drop_count=0
+    total_queue=$((total_queue + 16#$rx_hex))
+    total_drops=$((total_drops + drop_count))
   done < <(
     timeout --kill-after=1s 5s docker exec "$container" sh -c \
       'cat /proc/net/udp /proc/net/udp6 2>/dev/null' 2>/dev/null \
       | awk -v port="$port_hex" '
           $2 ~ (":" port "$") {
             split($5, queue, ":")
-            print queue[2]
+            print queue[2] "|" $NF
           }
         '
   )
 
-  printf '%s\n' "$total"
+  printf '%s|%s\n' "$total_queue" "$total_drops"
 }
 
-core_map_igw_port() {
-  local map="$1"
-  local safe="${map//\'/\'\'}"
+core_container_igw_port() {
+  local container="$1"
 
-  psql_value "
-    select coalesce(igw_port::text, '')
-    from dune.farm_state
-    where map = '$safe'
-      and coalesce(alive, false) = true
-      and igw_port is not null
-    order by ready desc, server_id
-    limit 1;
-  " | tr -d '\r[:space:]'
+  docker inspect -f '{{range .Config.Cmd}}{{println .}}{{end}}' "$container" 2>/dev/null \
+    | sed -n 's/^-ini:engine:\[URL\]:IGWPort=//p' \
+    | tail -1 \
+    | tr -d '\r[:space:]'
 }
 
 core_map_is_reported_ready() {
   local map="$1"
+  local port="$2"
   local safe="${map//\'/\'\'}"
 
   [ "$(psql_value "
     select count(*)
     from dune.farm_state
     where map = '$safe'
+      and igw_port = $port
       and coalesce(alive, false) = true
       and coalesce(ready, false) = true;
   " | tr -d '\r[:space:]')" != "0" ]
 }
 
+clear_igw_socket_observation() {
+  local map="$1"
+  local key
+
+  for key in \
+    "igw-stall:${map}" \
+    "igw-last-drop:${map}" \
+    "igw-queue:${map}" \
+    "igw-drops:${map}" \
+    "igw-generation:${map}"; do
+    director_heal_clear "$key"
+  done
+}
+
+record_igw_socket_evidence() {
+  local level="$1"
+  local map="$2"
+  local container="$3"
+  local generation="$4"
+  local port="$5"
+  local queue="$6"
+  local drops="$7"
+  local first_seen="$8"
+  local last_drop="$9"
+  local message
+
+  mkdir -p "$(dirname "$IGW_SOCKET_EVIDENCE_LOG")"
+  message="$(date -u +%Y-%m-%dT%H:%M:%SZ) level=$level map=$map container=$container generation=$generation port=$port rx_queue_bytes=$queue drops=$drops first_blocked_at=${first_seen:-none} last_drop_at=${last_drop:-none}"
+  printf '%s\n' "$message" >>"$IGW_SOCKET_EVIDENCE_LOG"
+  printf '%s\n' "$message"
+}
+
 scan_core_igw_socket_health() {
-  local now container map port queue first_seen age last_recovery players
-  local first_key recovery_key deferred_key
+  local now container map port sample queue drops generation saved_generation
+  local first_seen last_drop previous_queue previous_drops decision age last_recovery players
+  local first_key last_drop_key queue_key drops_key generation_key recovery_key deferred_key
 
   director_heal_due igw_socket_health "$IGW_SOCKET_HEALTH_SCAN_SECONDS" || return 0
   now="$(date +%s)"
 
   while IFS='|' read -r container map; do
     first_key="igw-stall:${map}"
+    last_drop_key="igw-last-drop:${map}"
+    queue_key="igw-queue:${map}"
+    drops_key="igw-drops:${map}"
+    generation_key="igw-generation:${map}"
     recovery_key="igw-recovery:${map}"
     deferred_key="igw-recovery-deferred:${map}"
 
     if ! docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -qx true; then
-      director_heal_clear "$first_key"
+      clear_igw_socket_observation "$map"
+      continue
+    fi
+
+    generation="$(docker inspect -f '{{.State.StartedAt}}' "$container" 2>/dev/null || true)"
+    saved_generation="$(director_heal_get "$generation_key" 2>/dev/null || true)"
+    if [ -z "$generation" ] || [ "$generation" != "$saved_generation" ]; then
+      clear_igw_socket_observation "$map"
+      [ -n "$generation" ] && director_heal_set "$generation_key" "$generation"
+    fi
+
+    port="$(core_container_igw_port "$container" 2>/dev/null || true)"
+    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+      clear_igw_socket_observation "$map"
       continue
     fi
 
     # A large queue is expected while a core map is still loading and cannot
     # consume normal S2S traffic yet. Only a map that has already advertised
     # itself as ready can regress into the deadlock this watchdog repairs.
-    if ! core_map_is_reported_ready "$map"; then
-      director_heal_clear "$first_key"
+    if ! core_map_is_reported_ready "$map" "$port"; then
+      clear_igw_socket_observation "$map"
       continue
     fi
 
-    port="$(core_map_igw_port "$map" 2>/dev/null || true)"
-    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
-      director_heal_clear "$first_key"
-      continue
-    fi
-
-    queue="$(igw_receive_queue_bytes "$container" "$port" 2>/dev/null || true)"
-    if ! [[ "$queue" =~ ^[0-9]+$ ]] || [ "$queue" -lt "$IGW_SOCKET_RX_QUEUE_THRESHOLD" ]; then
-      director_heal_clear "$first_key"
-      director_heal_clear "$deferred_key"
+    sample="$(igw_socket_sample "$container" "$port" 2>/dev/null || true)"
+    IFS='|' read -r queue drops <<<"$sample"
+    if ! [[ "$queue" =~ ^[0-9]+$ && "$drops" =~ ^[0-9]+$ ]]; then
+      clear_igw_socket_observation "$map"
       continue
     fi
 
     first_seen="$(director_heal_get "$first_key" 2>/dev/null || true)"
-    if ! [[ "$first_seen" =~ ^[0-9]+$ ]]; then
-      echo "WARN IGW receive queue stalled map=$map port=$port bytes=$queue action=confirm"
-      director_heal_set "$first_key" "$now"
+    last_drop="$(director_heal_get "$last_drop_key" 2>/dev/null || true)"
+    previous_queue="$(director_heal_get "$queue_key" 2>/dev/null || true)"
+    previous_drops="$(director_heal_get "$drops_key" 2>/dev/null || true)"
+    IFS='|' read -r decision first_seen last_drop < <(
+      igw_socket_evidence_decision \
+        "$IGW_SOCKET_RX_QUEUE_THRESHOLD" \
+        "$IGW_SOCKET_STALL_SECONDS" \
+        "$IGW_SOCKET_DROP_GRACE_SECONDS" \
+        "$now" \
+        "$first_seen" \
+        "$last_drop" \
+        "$previous_queue" \
+        "$previous_drops" \
+        "$queue" \
+        "$drops"
+    )
+
+    if [ "$decision" = "clear" ]; then
+      clear_igw_socket_observation "$map"
+      director_heal_clear "$deferred_key"
+      continue
+    fi
+
+    director_heal_set "$generation_key" "$generation"
+    director_heal_set "$queue_key" "$queue"
+    director_heal_set "$drops_key" "$drops"
+    if [[ "$first_seen" =~ ^[0-9]+$ ]]; then
+      director_heal_set "$first_key" "$first_seen"
+    else
+      director_heal_clear "$first_key"
+    fi
+    if [[ "$last_drop" =~ ^[0-9]+$ ]]; then
+      director_heal_set "$last_drop_key" "$last_drop"
+    else
+      director_heal_clear "$last_drop_key"
+    fi
+
+    if [ "$decision" = "draining" ] || [ "$decision" = "baseline" ]; then
+      director_heal_clear "$deferred_key"
       continue
     fi
 
     age=$((now - first_seen))
-    if [ "$age" -lt "$IGW_SOCKET_STALL_SECONDS" ]; then
+    if [ "$decision" != "recover" ]; then
       continue
     fi
 
@@ -1509,7 +1592,8 @@ scan_core_igw_socket_health() {
     [[ "$players" =~ ^[0-9]+$ ]] || players="unknown"
     if [ "$players" = "unknown" ] || [ "$players" -gt 0 ]; then
       if ! director_heal_get "$deferred_key" >/dev/null 2>&1; then
-        echo "DEFER deadlocked core map=$map port=$port rx_queue_bytes=$queue stalled_seconds=$age online_players=$players action=coordinated-game-farm-restart"
+        record_igw_socket_evidence DEFERRED "$map" "$container" "$generation" "$port" "$queue" "$drops" "$first_seen" "$last_drop"
+        echo "DEFER confirmed IGW socket deadlock map=$map port=$port rx_queue_bytes=$queue drops=$drops stalled_seconds=$age online_players=$players action=coordinated-game-farm-restart"
         director_heal_set "$deferred_key" "$now"
       fi
       continue
@@ -1521,17 +1605,19 @@ scan_core_igw_socket_health() {
     # performed by restart-game-farm.sh and rebuilds every world map against
     # one consistent Director/farm generation.
     if ! docker inspect -f '{{.State.Running}}' dune-coriolis-coordinator 2>/dev/null | grep -qx true; then
+      record_igw_socket_evidence BLOCKED "$map" "$container" "$generation" "$port" "$queue" "$drops" "$first_seen" "$last_drop"
       echo "ERROR deadlocked core map=$map action=coordinated-game-farm-restart coordinator=unavailable"
       continue
     fi
-    echo "HEAL deadlocked core map=$map port=$port rx_queue_bytes=$queue stalled_seconds=$age online_players=0 action=coordinated-game-farm-restart"
+    record_igw_socket_evidence RECOVERING "$map" "$container" "$generation" "$port" "$queue" "$drops" "$first_seen" "$last_drop"
+    echo "HEAL confirmed IGW socket deadlock map=$map port=$port rx_queue_bytes=$queue drops=$drops stalled_seconds=$age online_players=0 action=coordinated-game-farm-restart"
     if ! docker exec -d dune-coriolis-coordinator bash -lc \
       'mkdir -p runtime/logs && runtime/scripts/restart-game-farm.sh igw-socket-deadlock >> runtime/logs/igw-socket-recovery.log 2>&1'; then
       echo "ERROR deadlocked core map=$map action=coordinated-game-farm-restart request=failed"
       continue
     fi
     director_heal_set "$recovery_key" "$now"
-    director_heal_clear "$first_key"
+    clear_igw_socket_observation "$map"
     director_heal_clear "$deferred_key"
     return 0
   done <<'EOF'
