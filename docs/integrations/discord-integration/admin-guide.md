@@ -158,9 +158,11 @@ Write commands like `/dune admin broadcast` are **disabled by default** for
 security. To enable them:
 
 ```bash
-DUNE_DISCORD_WRITES_ENABLED=true
+DUNE_DISCORD_WRITES_ENABLED=1
 DISCORD_WRITE_ADMIN_ROLE_IDS=YOUR_ADMIN_ROLE_ID
 ```
+
+(`true` also works, case-insensitively -- Core and the bot both accept either value identically as of issue #217's fix. `1` is the standardized canonical value going forward, per `docs/rw-architecture.md` §3.7.)
 
 > ⚠️ Write commands should only be enabled after the upstream write-contract
 > is approved and you've tested thoroughly.
