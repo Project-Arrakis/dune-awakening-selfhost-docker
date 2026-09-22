@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { playersApi } from "../../api/players";
 import { DataTable, useSortableRows } from "../../components/common/DataTable";
 import { InlineActionResult, type InlineActionResultState } from "../../components/common/InlineActionResult";
+import { CatalogItemThumb } from "../../components/common/ItemCatalog";
 import { friendlyInlineError } from "./playerAdminUtils";
 
 type BuildingUnlockRow = {
@@ -10,6 +11,8 @@ type BuildingUnlockRow = {
   group: string;
   status: "Available" | "Pending" | "Processing" | "Owned" | "Unknown";
   experimental: boolean;
+  image?: string;
+  requiredDlc?: string;
 };
 
 type ConfirmAction = (message: string, options?: {
@@ -51,7 +54,9 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
         name: String(row.name || row.itemId || row.id || "Building Set"),
         group: String(row.group || "Structures & Building Sets"),
         status: String(row.status || "Unknown") as BuildingUnlockRow["status"],
-        experimental: Boolean(row.experimental)
+        experimental: Boolean(row.experimental),
+        image: String(row.image || ""),
+        requiredDlc: String(row.requiredDlc || "")
       })).filter((row) => row.itemId));
     } catch (loadError) {
       setRows([]);
@@ -69,12 +74,14 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
     const warning = row.experimental
       ? "This building set is marked experimental because its game metadata is incomplete or developer-only. It may remain as an ordinary inventory item."
       : "Dune will consume the patent token and add the building set to this character. Offline players receive it on their next login.";
-    if (!(await confirmAction(`Grant ${row.name} to ${playerName}?\n\n${warning}`, {
+    const dlcWarning = row.requiredDlc ? ` The player must own ${row.requiredDlc}; the Console cannot verify DLC ownership.` : "";
+    if (!(await confirmAction(`Grant ${row.name} to ${playerName}?\n\n${warning}${dlcWarning}`, {
       title: row.experimental ? "Grant Experimental Building Set" : "Grant Building Set",
       confirmLabel: "Grant",
       details: [
         { label: "Building Set", value: row.name, tone: "accent" },
-        { label: "Item ID", value: row.itemId }
+        { label: "Item ID", value: row.itemId },
+        ...(row.requiredDlc ? [{ label: "Requires", value: row.requiredDlc }] : [])
       ]
     }))) return;
 
@@ -141,8 +148,8 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
       </div>
       {error ? <p className="playerAdmin_note danger">{error}</p> : <DataTable
         rows={sorted.sortedRows}
-        columns={["unlockName", "itemId", "group", "status"]}
-        columnLabels={{ unlockName: "Building Set", itemId: "Item ID" }}
+        columns={["image", "unlockName", "itemId", "group", "status"]}
+        columnLabels={{ image: "Preview", unlockName: "Building Set", itemId: "Item ID" }}
         emptyMessage={loading ? "Loading building sets..." : "No building sets match this filter."}
         sortColumn={sorted.sortColumn}
         sortDirection={sorted.sortDirection}
@@ -150,7 +157,9 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
         resizableColumns
         tableClassName="playerAdmin_schematicTable playerAdmin_buildingUnlockTable"
         rowKey={(item) => String(item.itemId)}
-        renderCell={(item, column) => column === "itemId"
+        renderCell={(item, column) => column === "image"
+          ? <CatalogItemThumb item={{ id: String(item.itemId), name: String(item.name), image: String(item.image || "") }} small />
+          : column === "itemId"
           ? <code>{String(item.itemId)}</code>
           : column === "status"
             ? <span className={`badge ${item.status === "Owned" ? "ok" : item.status === "Available" ? "" : item.status === "Unknown" ? "bad" : "warn"}`}>{item.status === "Pending" ? "Pending Login" : String(item.status)}</span>

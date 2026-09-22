@@ -26,6 +26,9 @@ function fixtureRepo() {
     { id: "B1C3_Hark_Maula_Pistol", name: "Harkonnen Pistol", category: "customizations", source: "Customizations" },
     { id: "MTX_B1C3_Smuggler_Kindjal_Variant", name: "Smuggler Kindjal", category: "customizations", source: "Customizations" },
     { id: "MTX_B1C2_DuneManCoverallsSetVariant_Top", name: "Dune Man Jacket", category: "customizations", source: "Customizations" },
+    { id: "MTX_Fremen_FedaykinArmor_SetVariant", name: "Aegis of an Unwalked Path", category: "customizations", source: "Customizations", requiredDlc: "Filmic Archive", requiredSteamDlc: "4857580" },
+    { id: "MTX_Atre_CaladanTrenchcoat_SetVariant", name: "Caladan Stormcoat", category: "customizations", source: "Customizations", requiredDlc: "Filmic Archive", requiredSteamDlc: "4857580" },
+    { id: "MTX_Sard_Scout_SetVariant", name: "Sardaukar Velites Armor", category: "customizations", source: "Customizations", requiredDlc: "Filmic Archive", requiredSteamDlc: "4857580" },
     { id: "Unrelated_Swatch", name: "Unrelated Swatch", category: "customizations", source: "Customizations" }
   ]));
   return root;
@@ -44,21 +47,53 @@ test("catalog item list returns real item rows only", () => {
 test("customization grants use the four curated sets and report pending tokens", () => {
   const root = fixtureRepo();
   const items = listCustomizationGrantItems(root);
-  assert.equal(items.length, 4);
+  assert.equal(items.length, 7);
   assert.deepEqual(customizationGrantGroups(root), [
     { id: "atreides", name: "Atreides", count: 1 },
     { id: "harkonnen", name: "Harkonnen", count: 1 },
     { id: "smuggler", name: "Smuggler", count: 1 },
-    { id: "dune-man", name: "Dune Man", count: 1 }
+    { id: "dune-man", name: "Dune Man", count: 1 },
+    { id: "filmic-archive", name: "Filmic Archive", count: 3 }
   ]);
   assert.equal(customizationGrantStatus("B1C3_Atre_Maula_Pistol", { pending: ["B1C3_Atre_Maula_Pistol"] }), "Pending");
   assert.equal(customizationGrantStatus("B1C3_Atre_Maula_Pistol", { pending: [] }), "Available");
+});
+
+test("catalog preserves DLC ownership metadata for grant warnings", () => {
+  const item = resolveCatalogItem(fixtureRepo(), { itemId: "MTX_Fremen_FedaykinArmor_SetVariant" });
+  assert.equal(item.requiredDlc, "Filmic Archive");
+  assert.equal(item.requiredSteamDlc, "4857580");
 });
 
 test("real catalog uses the corrected Dune Man Set 2 patent ID", () => {
   const unlocks = listBuildingUnlockItems(REAL_REPO_ROOT);
   assert.ok(unlocks.some((item) => item.itemId === "MTX_Neut_DesertMechanicSet02_Patent"));
   assert.equal(unlocks.some((item) => item.itemId === "MTX_Neut_DesertMechanicSet_02_Patent"), false);
+});
+
+test("real catalog exposes only verified Filmic Archive grant tokens through their correct flows", () => {
+  const unlocks = listBuildingUnlockItems(REAL_REPO_ROOT);
+  assert.deepEqual(
+    unlocks.filter((item) => item.requiredSteamDlc === "4857580").map((item) => item.itemId).sort(),
+    ["MTX_SardaukarFightingDummy_Patent", "MTX_SardaukarDecorationSet_Patent", "MTX_Sardaukar_BuildingSet_Patent"].sort()
+  );
+
+  const customizations = listCustomizationGrantItems(REAL_REPO_ROOT);
+  assert.deepEqual(
+    customizations.filter((item) => item.groupId === "filmic-archive").map((item) => item.itemId).sort(),
+    ["MTX_Atre_CaladanTrenchcoat_SetVariant", "MTX_Fremen_FedaykinArmor_SetVariant", "MTX_Sard_Scout_SetVariant"].sort()
+  );
+
+  for (const itemId of ["Emote_Sardaukar_Kneel", "Emote_Sardaukar_BloodWipe"]) {
+    const item = resolveCatalogItem(REAL_REPO_ROOT, { itemId });
+    assert.equal(item.category, "emotes");
+    assert.equal(item.source, "Emotes");
+    assert.equal(item.requiredSteamDlc, "4857580");
+  }
+
+  for (const entitlementOnlyId of ["Atreides_Light_Set_Torso", "Harkonnen_Heavy_Set_Torso", "Sardaukar_Broadsword", "Sardaukar_Disruptor"]) {
+    assert.equal(JSON.parse(readFileSync(join(REAL_REPO_ROOT, "runtime/data/admin-items.json"), "utf8")).some((item) => item.id === entitlementOnlyId), false);
+  }
 });
 
 test("building patent tokens are isolated while Developer Storage remains available to shared item selectors", () => {

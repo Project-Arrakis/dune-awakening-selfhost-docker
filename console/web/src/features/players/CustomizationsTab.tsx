@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { playersApi } from "../../api/players";
 import { DataTable, useSortableRows } from "../../components/common/DataTable";
 import { InlineActionResult, type InlineActionResultState } from "../../components/common/InlineActionResult";
+import { CatalogItemThumb } from "../../components/common/ItemCatalog";
 import { friendlyInlineError } from "./playerAdminUtils";
 
 type CustomizationRow = {
@@ -10,6 +11,8 @@ type CustomizationRow = {
   groupId: string;
   group: string;
   status: "Available" | "Pending" | "Processing";
+  image?: string;
+  requiredDlc?: string;
 };
 
 type CustomizationGroup = { id: string; name: string; count: number };
@@ -53,7 +56,9 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
         name: String(row.name || row.itemId || row.id || "Customization"),
         groupId: String(row.groupId || ""),
         group: String(row.group || "Customizations"),
-        status: String(row.status || "Available") as CustomizationRow["status"]
+        status: String(row.status || "Available") as CustomizationRow["status"],
+        image: String(row.image || ""),
+        requiredDlc: String(row.requiredDlc || "")
       })).filter((row) => row.itemId && row.groupId));
     } catch (loadError) {
       setRows([]);
@@ -67,15 +72,19 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
   useEffect(() => { void load(); }, [dbPlayerId]);
 
   async function grant(selection: { itemId?: string; groupId?: string; label: string; count: number }) {
-    const pending = rows.filter((row) => (selection.itemId ? row.itemId === selection.itemId : selection.groupId === "all" || row.groupId === selection.groupId) && row.status === "Pending").length;
+    const selectedRows = rows.filter((row) => selection.itemId ? row.itemId === selection.itemId : selection.groupId === "all" || row.groupId === selection.groupId);
+    const pending = selectedRows.filter((row) => row.status === "Pending").length;
     const deliverable = Math.max(0, selection.count - pending);
-    if (!(await confirmAction(`Grant ${selection.label} to ${playerName}?\n\n${deliverable} token${deliverable === 1 ? "" : "s"} will be delivered. ${pending ? `${pending} already pending ${pending === 1 ? "token will" : "tokens will"} be skipped.` : ""}`, {
+    const requiredDlcs = [...new Set(selectedRows.map((row) => row.requiredDlc).filter(Boolean))];
+    const dlcWarning = requiredDlcs.length ? ` The player must own ${requiredDlcs.join(" and ")}; the Console cannot verify DLC ownership.` : "";
+    if (!(await confirmAction(`Grant ${selection.label} to ${playerName}?\n\n${deliverable} token${deliverable === 1 ? "" : "s"} will be delivered. ${pending ? `${pending} already pending ${pending === 1 ? "token will" : "tokens will"} be skipped.` : ""}${dlcWarning}`, {
       title: selection.itemId ? "Grant Customization" : "Grant Customization Set",
       confirmLabel: "Grant",
       details: [
         { label: "Player", value: playerName, tone: "accent" },
         { label: selection.itemId ? "Customization" : "Set", value: selection.label },
-        { label: "Tokens", value: String(deliverable) }
+        { label: "Tokens", value: String(deliverable) },
+        ...(requiredDlcs.length ? [{ label: "Requires", value: requiredDlcs.join(", ") }] : [])
       ]
     }))) return;
 
@@ -160,8 +169,8 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
       <InlineActionResult result={result} resultKey="customizations" />
       {error ? <p className="playerAdmin_note danger">{error}</p> : <DataTable
         rows={sorted.sortedRows}
-        columns={["customizationName", "itemId", "group", "status"]}
-        columnLabels={{ customizationName: "Customization", itemId: "Item ID", group: "Set" }}
+        columns={["image", "customizationName", "itemId", "group", "status"]}
+        columnLabels={{ image: "Preview", customizationName: "Customization", itemId: "Item ID", group: "Set" }}
         emptyMessage={loading ? "Loading customizations..." : "No customizations match this filter."}
         sortColumn={sorted.sortColumn}
         sortDirection={sorted.sortDirection}
@@ -169,7 +178,9 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
         resizableColumns
         tableClassName="playerAdmin_schematicTable playerAdmin_customizationTable"
         rowKey={(item) => String(item.itemId)}
-        renderCell={(item, column) => column === "itemId" ? <code>{String(item.itemId)}</code> : column === "status" ? <span className={`badge ${item.status === "Available" ? "" : "warn"}`}>{item.status === "Pending" ? "Pending Login" : String(item.status)}</span> : String(item[column] || "")}
+        renderCell={(item, column) => column === "image"
+          ? <CatalogItemThumb item={{ id: String(item.itemId), name: String(item.name), image: String(item.image || "") }} small />
+          : column === "itemId" ? <code>{String(item.itemId)}</code> : column === "status" ? <span className={`badge ${item.status === "Available" ? "" : "warn"}`}>{item.status === "Pending" ? "Pending Login" : String(item.status)}</span> : String(item[column] || "")}
         actionClassName="playerAdmin_schematicActionCell"
         action={(item) => {
           const row = item as unknown as CustomizationRow;

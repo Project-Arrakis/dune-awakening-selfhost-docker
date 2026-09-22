@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { Task } from "../../api/setup";
 import { liveMapApi } from "../../api/liveMap";
-import { LiveMapPanel, mergeLiveMapRows } from "./LiveMapPanel";
+import { LiveMapPanel, liveMapMarkerMatchesSearch, mergeLiveMapRows } from "./LiveMapPanel";
 
 function fakeTask(status: Task["status"]): Task {
   return {
@@ -91,6 +91,56 @@ it("retains static markers during live-only refreshes without carrying them acro
   expect(mergeLiveMapRows(previous, incoming, true, "HaggaBasin")).toEqual(incoming);
 });
 
+it("matches players by name and bases or vehicles by owner", () => {
+  expect(liveMapMarkerMatchesSearch({ id: 1, type: "player", name: "Liet Kynes" }, "kynes")).toBe(true);
+  expect(liveMapMarkerMatchesSearch({ id: 2, type: "base", name: "Desert Home", owner_name: "Chani" }, "chani")).toBe(true);
+  expect(liveMapMarkerMatchesSearch({ id: 3, type: "vehicle", name: "BP_Sandbike_C", owner_name: "Stilgar" }, "stilgar")).toBe(true);
+  expect(liveMapMarkerMatchesSearch({ id: 3, type: "vehicle", name: "BP_Sandbike_C", owner_name: "Stilgar" }, "duncan")).toBe(false);
+});
+
+it("filters map markers by player, marker, and owner names", async () => {
+  render(<LiveMapPanel
+    onError={vi.fn()}
+    confirmAction={vi.fn().mockResolvedValue(true)}
+    waitForTask={vi.fn()}
+    taskTechnicalDetails={vi.fn().mockReturnValue("")}
+    onOpenBase={vi.fn()}
+    onOpenVehicle={vi.fn()}
+  />);
+
+  const search = await screen.findByRole("searchbox", { name: "Search Map" });
+  fireEvent.change(search, { target: { value: "Chani" } });
+  expect(screen.getByRole("button", { name: "Base: Desert Home" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Base: Second Base" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Vehicle: Sandbike" })).not.toBeInTheDocument();
+
+  fireEvent.change(search, { target: { value: "Stilgar" } });
+  expect(screen.getByRole("button", { name: "Vehicle: Sandbike" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Base: Desert Home" })).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+  expect(screen.getByRole("button", { name: "Player: Liet" })).toBeInTheDocument();
+});
+
+it("splits the Player layer into Online and Offline child layers", async () => {
+  render(<LiveMapPanel
+    onError={vi.fn()}
+    confirmAction={vi.fn().mockResolvedValue(true)}
+    waitForTask={vi.fn()}
+    taskTechnicalDetails={vi.fn().mockReturnValue("")}
+    onOpenBase={vi.fn()}
+    onOpenVehicle={vi.fn()}
+  />);
+
+  await screen.findByRole("button", { name: "Player: Liet" });
+  fireEvent.click(screen.getByRole("button", { name: "Expand Player" }));
+  const offline = screen.getByRole("checkbox", { name: /Offline/ });
+  expect(offline).toBeChecked();
+  fireEvent.click(offline);
+  expect(screen.queryByRole("button", { name: "Player: Duncan" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Player: Liet" })).toBeInTheDocument();
+});
+
 it("opens an overlay on the picked point, with its coordinates and a teleport action", async () => {
   const { container } = render(<LiveMapPanel
     onError={vi.fn()}
@@ -156,6 +206,34 @@ it("hovering a marker previews the overlay, and leaving without clicking closes 
 
   fireEvent.mouseLeave(marker);
   expect(screen.queryByText("Chani")).not.toBeInTheDocument();
+});
+
+it("shows player status beside the player name with distinct online and offline tones", async () => {
+  render(<LiveMapPanel
+    onError={vi.fn()}
+    confirmAction={vi.fn().mockResolvedValue(true)}
+    waitForTask={vi.fn()}
+    taskTechnicalDetails={vi.fn().mockReturnValue("")}
+    onOpenBase={vi.fn()}
+    onOpenVehicle={vi.fn()}
+  />);
+
+  const onlineMarker = await screen.findByRole("button", { name: "Player: Liet" });
+  fireEvent.mouseEnter(onlineMarker);
+  const onlineDialog = screen.getByRole("dialog", { name: "Player: Liet" });
+  const onlineHeader = onlineDialog.querySelector(".live-map-marker-overlay-header");
+  expect(onlineHeader?.querySelector("strong")?.textContent).toBe("Liet");
+  expect(onlineHeader?.querySelector(".live-map-player-status.online")?.textContent).toBe("Online");
+  expect(onlineDialog.querySelector(".live-map-marker-overlay-subtitle")).toBeNull();
+  fireEvent.mouseLeave(onlineMarker);
+
+  const offlineMarker = screen.getByRole("button", { name: "Player: Duncan" });
+  fireEvent.mouseEnter(offlineMarker);
+  const offlineDialog = screen.getByRole("dialog", { name: "Player: Duncan" });
+  const offlineHeader = offlineDialog.querySelector(".live-map-marker-overlay-header");
+  expect(offlineHeader?.querySelector("strong")?.textContent).toBe("Duncan");
+  expect(offlineHeader?.querySelector(".live-map-player-status.offline")?.textContent).toBe("Offline");
+  expect(offlineDialog.querySelector(".live-map-marker-overlay-subtitle")).toBeNull();
 });
 
 it("clicking pins the overlay open even after the mouse leaves, until a click lands outside every marker", async () => {

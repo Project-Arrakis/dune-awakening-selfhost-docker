@@ -4,7 +4,7 @@ import { liveMapApi, type LiveMapConfig, type LiveMapMarker, type LiveMapPartiti
 import { mapsApi } from "../../api/maps";
 import type { Task } from "../../api/setup";
 import { DataTable } from "../../components/common/DataTable";
-import { StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
+import { TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { firstDefined, formatUiSentence, titleCase } from "../../lib/display";
 import { friendlyInlineError } from "../players/playerAdminUtils";
 import {
@@ -134,7 +134,7 @@ const LEGEND_LAYOUT: LegendItem[] = [
 // settings popover's Reset action and the initial useState below share the
 // exact same values instead of drifting apart.
 const DEFAULT_LAYER_FILTERS: Record<string, boolean> = {
-  player: true, vehicle: true, base: true, storage: false,
+  player: true, player_online: true, player_offline: true, vehicle: true, base: true, storage: false,
   spice: true, spice_active: true, flour_sand: true, ore: false, scrap: false, flora: false,
   poi: true, house_representative: true, trainer: true, fortress: false, hazard: false, enemy: false
 };
@@ -214,6 +214,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   const [selected, setSelected] = useState<LiveMapMarker | null>(null);
   const [hoveredMarker, setHoveredMarker] = useState<LiveMapMarker | null>(null);
   const [filters, setFilters] = useState<Record<string, boolean>>(() => ({ ...DEFAULT_LAYER_FILTERS, ...loadDefaultLayerFilters() }));
+  const [markerSearch, setMarkerSearch] = useState("");
   const [layerSettingsOpen, setLayerSettingsOpen] = useState(false);
   const [layerSettingsDraft, setLayerSettingsDraft] = useState<Record<string, boolean>>(DEFAULT_LAYER_FILTERS);
   const [layerSettingsSubtypeDraft, setLayerSettingsSubtypeDraft] = useState<Record<string, Record<string, boolean>>>({});
@@ -481,8 +482,14 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
     // never be dropped by the partition filter. spice_active markers do
     // carry a real partition_id and filter normally.
     .filter((marker) => !partitionId || marker.partition_id == null || String(marker.partition_id) === partitionId);
-  const topLevelVisible = partitionFiltered.filter((marker) => filters[String(marker.type)] !== false);
-  const visible = topLevelVisible.filter((marker) => !marker.subtype || subtypeFilters[String(marker.type)]?.[marker.subtype] !== false);
+  const topLevelVisible = partitionFiltered.filter((marker) => {
+    const type = String(marker.type);
+    if (filters[type] === false) return false;
+    if (type.toLowerCase() !== "player") return true;
+    return filters[`player_${liveMapPlayerStatus(marker)}`] !== false;
+  });
+  const layerVisible = topLevelVisible.filter((marker) => !marker.subtype || subtypeFilters[String(marker.type)]?.[marker.subtype] !== false);
+  const visible = layerVisible.filter((marker) => liveMapMarkerMatchesSearch(marker, markerSearch));
   const plotted = visible.filter((marker) => Number.isFinite(Number(marker.x)) && Number.isFinite(Number(marker.y)));
   const displayRows = visible.filter((marker) => TABLE_MARKER_TYPES.has(String(marker.type))).map((marker) => ({ ...marker, display_name: friendlyMarkerName(marker), raw_name: marker.name || marker.id }));
   const markerCounts = countMarkers(visible);
@@ -500,6 +507,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   // hide when it truly has nothing right now, never because the user
   // unchecked its own or its parent category's checkbox.
   const rawSubtypeCounts = countBySubtype(partitionFiltered);
+  const rawPlayerStatusCounts = countPlayerStatuses(partitionFiltered);
   const inBounds = activeMap ? plotted.map((marker) => ({ marker, point: worldToLiveMapPoint(marker, activeMap) })).filter((item) => item.point?.inBounds) as { marker: LiveMapMarker; point: LiveMapPoint }[] : [];
   const targetPoint = target && activeMap ? worldToLiveMapPoint({ x: target.x, y: target.y }, activeMap) : null;
   const minimumZoom = liveMapMinimumZoom(activeMap, frameRef.current);
@@ -958,6 +966,16 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
     </section>
     <div className="live-map-layout">
       <aside className="live-map-sidebar">
+        <section className="action-section live-map-search-section">
+          <label htmlFor="live-map-marker-search">
+            <span className="live-map-view-label">Search Map</span>
+            <span className="live-map-search-control">
+              <input id="live-map-marker-search" type="search" value={markerSearch} onChange={(event) => setMarkerSearch(event.target.value)} placeholder="Player, owner, base, vehicle..." />
+              {markerSearch && <button type="button" onClick={() => setMarkerSearch("")}>Clear</button>}
+            </span>
+          </label>
+          <span className="muted">Searches player names and marker names, plus base and vehicle owners.</span>
+        </section>
         <section className="action-section">
           <div className="live-map-layers-header" ref={layerSettingsRef}>
             <h4>Layers</h4>
@@ -977,6 +995,29 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                   const key = item.key;
                   const indent = (node: React.ReactNode, keyValue: React.Key) =>
                     currentSection ? <div key={keyValue} className="live-map-layer-section-item">{node}</div> : <React.Fragment key={keyValue}>{node}</React.Fragment>;
+                  if (key === "player") {
+                    const statusKeys = ["online", "offline"];
+                    const checkedCount = statusKeys.filter((status) => layerSettingsDraft[`player_${status}`] !== false).length;
+                    const allChecked = checkedCount === statusKeys.length;
+                    const noneChecked = checkedCount === 0;
+                    return indent(<div className="live-map-layer-group" key={key}>
+                      <label className="checkbox-row live-map-layer">
+                        <span className="live-map-layer-label">Player</span>
+                        <IndeterminateCheckbox checked={allChecked} indeterminate={!allChecked && !noneChecked} onChange={() => {
+                          const nextValue = !allChecked;
+                          setLayerSettingsDraft((prev) => ({ ...prev, player: nextValue, player_online: nextValue, player_offline: nextValue }));
+                        }} />
+                      </label>
+                      <div className="live-map-layer-sublist">{statusKeys.map((status) => <label key={status} className="checkbox-row live-map-layer live-map-layer-sub">
+                        <span className="live-map-layer-label">{titleCase(status)}</span>
+                        <input type="checkbox" checked={layerSettingsDraft[`player_${status}`] !== false} onChange={() => setLayerSettingsDraft((prev) => {
+                          const next = { ...prev, [`player_${status}`]: prev[`player_${status}`] === false };
+                          next.player = statusKeys.some((playerStatus) => next[`player_${playerStatus}`] !== false);
+                          return next;
+                        })} />
+                      </label>)}</div>
+                    </div>, key);
+                  }
                   const subtypes = EXPANDABLE_KEYS.has(key) ? Object.keys(subtypeFilters[key] || {}).sort() : [];
                   if (subtypes.length === 0) {
                     return indent(<label className="checkbox-row live-map-layer">
@@ -1125,6 +1166,38 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
             const key = item.key;
             if (GATED_LAYER_KEYS.has(key) && capabilities[key] === false) return null;
             if ((rawCategoryCounts[key] || 0) === 0 && !(knownSubtypes[key]?.length)) return null;
+            if (key === "player") {
+              const statusKeys = ["online", "offline"];
+              const checkedCount = statusKeys.filter((status) => filters[`player_${status}`] !== false).length;
+              const allChecked = checkedCount === statusKeys.length;
+              const noneChecked = checkedCount === 0;
+              const expanded = Boolean(expandedGroups.player);
+              return indent(<div className="live-map-layer-group">
+                <label className="checkbox-row live-map-layer">
+                  <button type="button" className="live-map-layer-expand" aria-label={expanded ? "Collapse Player" : "Expand Player"} onClick={() => setExpandedGroups((prev) => ({ ...prev, player: !prev.player }))}>{expanded ? "−" : "+"}</button>
+                  <span className="live-map-layer-label">Player</span>
+                  <span className="muted">{markerCounts.player || 0}</span>
+                  <span className="live-map-legend-dot-spacer" aria-hidden="true" />
+                  <IndeterminateCheckbox checked={allChecked} indeterminate={!allChecked && !noneChecked} onChange={() => {
+                    const nextValue = !allChecked;
+                    setFilters((prev) => ({ ...prev, player: nextValue, player_online: nextValue, player_offline: nextValue }));
+                  }} />
+                </label>
+                {expanded && <div className="live-map-layer-sublist">{statusKeys.map((status) => {
+                  const checked = filters[`player_${status}`] !== false;
+                  return <label key={status} className="checkbox-row live-map-layer live-map-layer-sub">
+                    <span className="live-map-layer-label">{titleCase(status)}</span>
+                    <span className="muted">{rawPlayerStatusCounts[status] || 0}</span>
+                    <span className={`live-map-legend-dot marker-player ${status}`} />
+                    <input type="checkbox" checked={checked} onChange={() => setFilters((prev) => {
+                      const next = { ...prev, [`player_${status}`]: !checked };
+                      next.player = statusKeys.some((playerStatus) => next[`player_${playerStatus}`] !== false);
+                      return next;
+                    })} />
+                  </label>;
+                })}</div>}
+              </div>, key);
+            }
             const subtypes = EXPANDABLE_KEYS.has(key) ? Object.keys(subtypeFilters[key] || {}).sort() : [];
             if (subtypes.length === 0) {
               return indent(<label className="checkbox-row live-map-layer">{chevronSpacer}<span className="live-map-layer-label">{friendlyMarkerType(key)}</span><span className="muted">{markerCounts[key] || 0}</span><span className={`live-map-legend-dot marker-${key}`} /><input type="checkbox" checked={filters[key]} onChange={() => setFilters({ ...filters, [key]: !filters[key] })} /></label>, key);
@@ -1321,9 +1394,10 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                   {overlayOpen && <div className={`live-map-marker-overlay ${overlayAnchorClasses(renderPoint, zoom, frameRef.current)}`} role="dialog" aria-label={`${friendlyMarkerType(String(marker.type))}: ${friendlyMarkerName(marker)}`}>
                     <div className="live-map-marker-overlay-header">
                       <strong>{friendlyMarkerName(marker)}</strong>
+                      {isPlayer && <span className={`live-map-player-status ${playerStatus}`}>{titleCase(playerStatus)}</span>}
                       {isPinned && <button type="button" className="live-map-marker-overlay-close" aria-label="Close" onClick={(event) => { event.stopPropagation(); setSelected(null); setHoveredMarker(null); }}>×</button>}
                     </div>
-                    <div className="live-map-marker-overlay-subtitle">{liveMapOverlaySubtitle(marker)}</div>
+                    {!isPlayer && <div className="live-map-marker-overlay-subtitle">{liveMapOverlaySubtitle(marker)}</div>}
                     <div className="live-map-marker-overlay-facts">
                       {liveMapOverlayFacts(marker, maps, partitions, partitionDisplayNames).map(([key, value]) => <React.Fragment key={key}><span>{key}</span><strong>{value}</strong></React.Fragment>)}
                     </div>
@@ -1408,6 +1482,34 @@ function countBySubtype(markers: LiveMapMarker[]) {
   }, {});
 }
 
+function countPlayerStatuses(markers: LiveMapMarker[]) {
+  return markers.reduce<Record<string, number>>((acc, marker) => {
+    if (String(marker.type || "").toLowerCase() !== "player") return acc;
+    const status = liveMapPlayerStatus(marker);
+    acc[status] = (acc[status] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+export function liveMapMarkerMatchesSearch(marker: LiveMapMarker, search: string) {
+  const query = String(search || "").trim().toLocaleLowerCase();
+  if (!query) return true;
+  const searchable = [
+    friendlyMarkerName(marker),
+    marker.name,
+    marker.owner_name,
+    marker.character_name,
+    marker.player_name,
+    marker.subtypeLabel,
+    marker.subtype,
+    marker.base_type,
+    marker.sector,
+    marker.type,
+    marker.id
+  ];
+  return searchable.some((value) => String(value ?? "").toLocaleLowerCase().includes(query));
+}
+
 // Layer sub-type labels come straight off the game's blueprint names
 // ("ContainerVehicle", "BeneGesserit", "TradingPost") with no natural word
 // spacing. Insert a space at each lower/digit -> upper word boundary
@@ -1444,7 +1546,6 @@ function friendlyMarkerName(marker: LiveMapMarker) {
 // duplicated below in the facts grid.
 function liveMapOverlaySubtitle(marker: LiveMapMarker) {
   const type = String(marker.type).toLowerCase();
-  if (type === "player") return <StatusPill value={liveMapPlayerStatus(marker)} />;
   if (type === "base") return marker.base_type || "Unknown";
   return friendlyMarkerType(type);
 }

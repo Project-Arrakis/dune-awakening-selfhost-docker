@@ -2825,13 +2825,17 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   --live-map-sidebar-width: 320px;
   display: grid;
   grid-template-columns: var(--live-map-sidebar-width) minmax(0, 1fr);
-  width: min(100%, calc(var(--live-map-sidebar-width) + 16px + 82vh));
-  margin-inline: auto;
+  width: 100%;
   gap: 16px;
   align-items: start;
 }
 .live-map-sidebar { display: grid; gap: 12px; }
 .live-map-main { min-width: 0; display: grid; gap: 10px; }
+.live-map-search-section { display: grid; gap: 7px; }
+.live-map-search-control { display: flex; align-items: stretch; gap: 7px; }
+.live-map-search-control input { min-width: 0; }
+.live-map-search-control button { width: auto; flex: 0 0 auto; }
+.live-map-search-section > .muted { font-size: 11px; line-height: 1.4; }
 .live-map-map-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .live-map-map-buttons button { width: 100%; white-space: normal; min-height: 40px; }
 .live-map-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
@@ -3006,7 +3010,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
      original ask) without reintroducing letterboxing (found live on
      dune2 after the 920px cap was dropped: the frame got taller than
      wide, so the square map no longer reached the frame's edges). */
-  width: min(100%, 82vh);
+  width: 100%;
   aspect-ratio: 1 / 1;
   min-width: 560px;
   min-height: 560px;
@@ -3089,6 +3093,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-marker.marker-player:hover { width: 48px; height: 48px; }
 .live-map-marker.marker-player.dragging { cursor: grabbing; z-index: 16; width: 42px; height: 42px; }
 .live-map-marker.marker-player.offline { filter: grayscale(1) brightness(.65); }
+.live-map-legend-dot.marker-player.offline { filter: grayscale(1) brightness(.65); }
 .live-map-marker.marker-player.teleport-preview { z-index: 15; width: 42px; height: 42px; box-shadow: 0 0 0 3px rgba(255, 208, 138, .28), 0 0 18px rgba(255, 208, 138, .42); }
 .live-map-marker.marker-base, .live-map-legend-dot.marker-base { background: url("/images/maps/Base.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; }
 .live-map-marker.marker-base { width: 36px; height: 36px; z-index: 2; }
@@ -3388,6 +3393,9 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-marker-overlay.anchor-above { top: auto; bottom: calc(100% + 10px); }
 .live-map-marker-overlay-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 2px; }
 .live-map-marker-overlay-header strong { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; color: #fff1d4; }
+.live-map-player-status { flex: 0 0 auto; padding: 2px 7px; border: 1px solid currentColor; border-radius: 999px; font-size: 10px; font-weight: 800; line-height: 1.25; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
+.live-map-player-status.online { color: var(--success-text); background: rgba(61, 139, 98, .14); }
+.live-map-player-status.offline { color: var(--danger-text); background: rgba(167, 73, 73, .14); }
 .live-map-marker-overlay-close { width: 22px; height: 22px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; padding: 0; background: #252017; border: 1px solid #4d4032; border-radius: 6px; color: #ceb894; font-size: 14px; line-height: 1; cursor: pointer; }
 .live-map-marker-overlay-close:hover { color: #ffd08a; border-color: #6a5842; }
 .live-map-marker-overlay-subtitle { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #ad9f89; margin: 0 0 8px; }

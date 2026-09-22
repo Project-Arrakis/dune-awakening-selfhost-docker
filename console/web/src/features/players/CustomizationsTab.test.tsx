@@ -78,4 +78,19 @@ describe("CustomizationsTab", () => {
     expect(screen.getByText(/cosmetic ownership cannot be verified/i)).toBeInTheDocument();
     expect(screen.queryByText(/1 failed/i)).not.toBeInTheDocument();
   });
+
+  it("shows a DLC requirement in Filmic Archive grant confirmations", async () => {
+    const confirmAction = vi.fn().mockResolvedValue(false);
+    vi.mocked(playersApi.customizations).mockResolvedValue({
+      groups: [{ id: "filmic-archive", name: "Filmic Archive", count: 1 }],
+      rows: [{ itemId: "MTX_Fremen_FedaykinArmor_SetVariant", name: "Aegis of an Unwalked Path Armor", groupId: "filmic-archive", group: "Filmic Archive", status: "Available", requiredDlc: "Filmic Archive", image: "/images/items/MTX_Fremen_FedaykinArmor_SetVariant.png" }],
+      capabilities: { customizationOwnership: false, customizationPending: true }
+    });
+    render(<CustomizationsTab dbPlayerId="123" playerName="Chani" confirmAction={confirmAction} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Grant Set" }));
+    expect(confirmAction).toHaveBeenCalledWith(expect.stringMatching(/must own Filmic Archive/i), expect.objectContaining({
+      details: expect.arrayContaining([expect.objectContaining({ label: "Requires", value: "Filmic Archive" })])
+    }));
+  });
 });
