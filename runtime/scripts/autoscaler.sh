@@ -2997,7 +2997,7 @@ EOF
 
 scan_director_browser_state() {
   local rows ready_count capacity now first_seen core_ready_since last_restart age since_restart
-  local republish_at republish_age online_players restart_deferred restart_pending
+  local republish_at republish_age online_players restart_deferred
 
   director_heal_due browser_state "$DIRECTOR_BROWSER_SCAN_SECONDS" || return 0
 
@@ -3104,25 +3104,21 @@ scan_director_browser_state() {
     fi
   fi
 
-  # One automatic restart is enough while people are connected. If that
-  # restart did not restore publication, preserve their sessions and leave a
-  # clear diagnostic instead of repeatedly recycling Survival_1. Track this
-  # recovery incident separately from the general restart cooldown so an old,
-  # successful recovery never prevents the first restart of a new incident.
-  restart_pending="$(director_heal_get browser_restart_pending 2>/dev/null || true)"
-  if [ -n "$restart_pending" ]; then
-    online_players="$(battlegroup_effective_player_count 2>/dev/null | tr -d '[:space:]' || true)"
-    if ! [[ "$online_players" =~ ^[0-9]+$ ]]; then
-      online_players="unknown"
+  # Restarting Director also replaces Survival_1. Never run that disruptive
+  # recovery while a player is active (or while occupancy cannot be proved).
+  # Republishing above remains safe to perform while players are connected;
+  # the restart will be retried automatically after the battlegroup is empty.
+  online_players="$(battlegroup_effective_player_count 2>/dev/null | tr -d '[:space:]' || true)"
+  if ! [[ "$online_players" =~ ^[0-9]+$ ]]; then
+    online_players="unknown"
+  fi
+  if [ "$online_players" = "unknown" ] || [ "$online_players" -gt 0 ]; then
+    restart_deferred="$(director_heal_get browser_restart_deferred 2>/dev/null || true)"
+    if [ -z "$restart_deferred" ]; then
+      echo "DEFER director stale browser state action=restart online_players=$online_players"
+      director_heal_set browser_restart_deferred "$now"
     fi
-    if [ "$online_players" = "unknown" ] || [ "$online_players" -gt 0 ]; then
-      restart_deferred="$(director_heal_get browser_restart_deferred 2>/dev/null || true)"
-      if [ -z "$restart_deferred" ]; then
-        echo "DEFER director stale browser state action=restart online_players=$online_players previous_restart_at=$restart_pending"
-        director_heal_set browser_restart_deferred "$now"
-      fi
-      return 0
-    fi
+    return 0
   fi
 
   echo "HEAL director stale browser state action=restart capacity=${capacity:-unknown} ready_maps=$ready_count republish_age=$republish_age"
@@ -3131,7 +3127,6 @@ scan_director_browser_state() {
     return 0
   }
   director_heal_set last_restart "$now"
-  director_heal_set browser_restart_pending "$now"
   director_heal_clear stale_since
   director_heal_clear browser_republish_at
   director_heal_clear browser_restart_deferred
