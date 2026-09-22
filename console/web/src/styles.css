@@ -7359,3 +7359,82 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
 .choam-dial-grip { fill: var(--accent-strong); }
 .choam-dial-hub { fill: var(--muted); }
 .choam-position-editor-restart { margin: 0; font-size: 12px; color: var(--muted-warm); }
+/* Players -> Deleted characters sub-view.
+   The mode toggle sits between the heading and the filter row, so it must not
+   absorb the flex gap that .panel-title distributes with space-between. */
+.players-view-segments { margin-right: auto; }
+/* Direct child only: a descendant selector here also caught the nested
+   .deleted-character-unattributed > .panel-title and knocked its asset count
+   20px off the heading beside it. */
+.deleted-character-assets > .panel-title { align-items: flex-start; }
+/* .table-wrap caps height at min(64vh, 620px). Left on, the expanded detail
+   scrolls inside the character table while each asset table scrolls inside
+   that -- three nested scrollers. Every other panel with expandable rows opts
+   out the same way (.bases-table-wrap, .vehicles-table-wrap, ...). Two classes
+   because a later grouped rule re-declares .table-wrap at equal specificity. */
+.table-wrap.deleted-character-table-wrap { max-height: none; }
+.deleted-character-table th.deleted-character-expand-column,
+.deleted-character-table td.deleted-character-expand-column {
+  width: 32px;
+  padding-inline: 4px;
+  text-align: center;
+  overflow: visible;
+  text-overflow: clip;
+}
+.deleted-character-expand-button {
+  width: 24px;
+  height: 24px;
+  min-width: 0;
+  padding: 0;
+  margin: 0 auto;
+  border: 0;
+  background: none;
+  color: inherit;
+  display: inline-grid;
+  place-items: center;
+}
+/* The description above it is .action-help-note (italic, muted). Repeating that
+   style for the summary made two flat paragraphs; the summary is the finding,
+   so it reads upright in the neutral subtle tone rather than the warm muted. */
+.deleted-character-summary {
+  margin: 10px 0 4px;
+  font-style: normal;
+  font-size: 13px;
+  color: var(--text-subtle);
+}
+.deleted-character-detail { display: flex; flex-direction: column; gap: 14px; padding: 4px 0 8px; }
+.deleted-character-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.deleted-character-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .03);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.deleted-character-chip-label { color: var(--text-faint); }
+.deleted-character-chip-value { color: var(--text-subtle); }
+.deleted-character-assets-group { display: flex; flex-direction: column; gap: 6px; }
+.deleted-character-assets-subtitle {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+/* The unattributed block is a deviation callout, not another peer section:
+   a single-sided accent bar, so no radius on that edge. */
+.deleted-character-unattributed {
+  margin-top: 22px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warning);
+  border-radius: 0 8px 8px 0;
+  background: var(--panel-muted);
+}
+.deleted-character-unattributed .panel-title { margin-bottom: 4px; }
+.deleted-character-unattributed .deleted-character-assets-group { margin-top: 12px; }

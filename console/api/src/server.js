@@ -974,6 +974,9 @@ async function handleApi(req, res) {
     bannedFlsIds: bannedFlsIds(config.repoRoot)
   }));
   if (path === "/api/players/search") return dbJson(res, () => duneDb.listPlayers(db, { q: url.searchParams.get("q") || "", bannedFlsIds: bannedFlsIds(config.repoRoot) }));
+  // Must stay above the /api/players/<id>/... routes further down, which would
+  // otherwise capture "deleted-characters" as a player id.
+  if (path === "/api/players/deleted-characters") return dbJson(res, () => duneDb.listDeletedCharacterAssets(db));
   if (path === "/api/guilds") return dbJson(res, () => duneDb.listGuilds(db, {
     q: url.searchParams.get("q") || "",
     page: url.searchParams.get("page") || 0,

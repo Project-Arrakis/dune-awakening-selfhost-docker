@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { playersApi } from "../../api/players";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
+import { SegmentedControl } from "../../components/common/SegmentedControl";
+import { DeletedCharacterAssets } from "./DeletedCharacterAssets";
 import { PlayerStatusCell } from "../../components/common/DisplayPrimitives";
-import { formatCell } from "../../lib/display";
+import { formatAbsoluteDateTime, formatCell, formatRelativeAge } from "../../lib/display";
 import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames";
 
 export type CharacterAdminRenderProps = {
@@ -19,9 +21,22 @@ export type CharacterAdminRenderProps = {
 type PlayersPanelProps = {
   onError: (text: string) => void;
   renderCharacterAdmin: (props: CharacterAdminRenderProps) => ReactNode;
+  onOpenBase?: (baseId: string) => void;
+  onOpenVehicle?: (vehicleId: string) => void;
 };
 
 type PlayerStatusFilter = "all" | "online" | "offline" | "banned";
+
+// A sub-view, not a status filter. Deleted characters have no live pawn, so
+// they cannot be rows in the players table -- selecting one there opens
+// CharacterAdminUI, which assumes an inventory, skills, a position to teleport
+// and so on. The whole body swaps instead.
+type PlayersViewMode = "active" | "deleted";
+
+const PLAYERS_VIEW_MODES = [
+  { value: "active", label: "Active players" },
+  { value: "deleted", label: "Deleted characters" }
+] as const satisfies ReadonlyArray<{ value: PlayersViewMode; label: string }>;
 
 const PLAYERS_AUTO_REFRESH_MS = 10_000;
 const PLAYERS_PAGE_SIZES = [25, 50, 100, 200] as const;
@@ -33,7 +48,8 @@ function errorText(error: unknown) {
 
 type PlayersLoadParams = { q: string; page: number; pageSize: number; status: PlayerStatusFilter; sortColumn: string; sortDirection: SortDirection };
 
-export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProps) {
+export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, onOpenVehicle }: PlayersPanelProps) {
+  const [viewMode, setViewMode] = useState<PlayersViewMode>("active");
   const [q, setQ] = useState("");
   const [submittedQ, setSubmittedQ] = useState("");
   const [playerFilter, setPlayerFilter] = useState<PlayerStatusFilter>("all");
@@ -104,6 +120,10 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
   }, [onError]);
 
   useEffect(() => {
+    // The deleted-characters view has its own fetch and its own Refresh button.
+    // Without this guard the players poll keeps running underneath it, hitting
+    // /api/players every 10s for a list nobody is looking at.
+    if (viewMode !== "active") return;
     let cancelled = false;
     let timeoutId: number | undefined;
     const params = { q: submittedQ, page, pageSize, status: playerFilter, sortColumn, sortDirection };
@@ -131,7 +151,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
       window.clearTimeout(timeoutId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [submittedQ, page, pageSize, playerFilter, sortColumn, sortDirection, load]);
+  }, [viewMode, submittedQ, page, pageSize, playerFilter, sortColumn, sortDirection, load]);
 
   const partitionMapsKey = [...new Set(rows
     .map((row) => String(row.partitionMap || "").trim())
@@ -224,6 +244,18 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
     setPage(0);
   }
 
+  // Leaving the players list closes the open character detail: its refresh
+  // callback reloads the players list, which is exactly what this view mode is
+  // meant to stop doing.
+  function handleViewModeChange(next: PlayersViewMode) {
+    if (next === viewMode) return;
+    selectedPlayerIdRef.current = "";
+    profileRequestIdRef.current += 1;
+    setSelected(null);
+    setDetail(null);
+    setViewMode(next);
+  }
+
   function handleSort(column: string) {
     setPage(0);
     if (column === sortColumn) {
@@ -234,10 +266,37 @@ export function PlayersPanel({ onError, renderCharacterAdmin }: PlayersPanelProp
     setSortDirection("asc");
   }
 
+  if (viewMode === "deleted") {
+    return (
+      <section className="panel">
+        <div className="panel-title">
+          <h2>Players</h2>
+          <SegmentedControl
+            name="players-view-mode"
+            ariaLabel="Players view"
+            value={viewMode}
+            options={PLAYERS_VIEW_MODES}
+            onChange={handleViewModeChange}
+            groupClassName="segmented-control players-view-segments"
+          />
+        </div>
+        <DeletedCharacterAssets onOpenBase={onOpenBase} onOpenVehicle={onOpenVehicle} />
+      </section>
+    );
+  }
+
   return (
     <section className="panel">
       <div className="panel-title">
         <h2>Players</h2>
+        <SegmentedControl
+          name="players-view-mode"
+          ariaLabel="Players view"
+          value={viewMode}
+          options={PLAYERS_VIEW_MODES}
+          onChange={handleViewModeChange}
+          groupClassName="segmented-control players-view-segments"
+        />
         <div className="action-row players-filter-row">
           <label className="inline-filter-label players-filter-label">
             Filter
@@ -339,14 +398,7 @@ function formatLastOnline(row: Record<string, unknown>) {
   if (String(row.actual_online_status || row.online_status || "").toLowerCase() === "online") return "Currently Active";
   const date = parseLastOnline(row.last_seen);
   if (!date) return "Unavailable";
-  const absolute = new Intl.DateTimeFormat(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit"
-  }).format(date);
-  return `${absolute} (${formatAgo(date)} ago)`;
+  return `${formatAbsoluteDateTime(date)} (${formatRelativeAge(date)} ago)`;
 }
 
 export function formatTotalPlaytime(value: unknown) {
@@ -371,18 +423,4 @@ function parseLastOnline(value: unknown) {
     if (Number.isFinite(date.getTime()) && date.getFullYear() >= 2000) return date;
   }
   return null;
-}
-
-function formatAgo(date: Date) {
-  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
-  const units = [
-    ["y", 365 * 24 * 60 * 60],
-    ["mo", 30 * 24 * 60 * 60],
-    ["d", 24 * 60 * 60],
-    ["h", 60 * 60],
-    ["m", 60],
-    ["s", 1]
-  ] as const;
-  const [label, size] = units.find(([, unitSeconds]) => seconds >= unitSeconds) || units[units.length - 1];
-  return `${Math.max(1, Math.floor(seconds / size))}${label}`;
 }

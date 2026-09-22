@@ -6542,13 +6542,59 @@ function shapeCharacterRecoveryCandidate(row) {
   };
 }
 
+// encrypted_player_state.last_character_state_change is `timestamp WITHOUT time
+// zone`, while account_removal_log.event_time is `timestamptz`. The naive column
+// holds whatever wall clock the Postgres session TimeZone was showing when
+// dune.delete_account ran, so it only becomes a real instant once that same
+// TimeZone is applied back to it. Doing that explicitly matters twice over:
+//
+//  - Comparing the two implicitly makes Postgres perform this conversion
+//    silently, which reads as if the columns were the same type. They are not.
+//  - Selecting the raw column hands node-postgres a naive value, which it then
+//    parses in the *Node process's* local zone. On any host where the API
+//    container's TZ differs from the database's, the emitted deletedAt was off
+//    by that offset, and disagreed with the timestamptz fields beside it in the
+//    same payload.
+//
+// Residual limitation: if the database's TimeZone changes between the write and
+// the read (restoring a backup onto a host in another zone, say), the naive
+// value can no longer be resolved and the correlation below matches nothing --
+// the reason comes back empty rather than wrong. Widening the window to cover
+// every possible offset is deliberately NOT done: the recovery flow keys
+// `recoverable` off this reason, and a wrong match there restores the wrong
+// character, which is far worse than a missing label.
+function deletedAtInstantSql(epsAlias = "eps") {
+  return `(${epsAlias}.last_character_state_change at time zone current_setting('TimeZone'))`;
+}
+
+// dune.account_removal_log records the deletion but has no key back to the
+// character state row it deleted -- only account_id, which an account reuses
+// every time the player recreates. dune.delete_account writes both inside one
+// statement, so the removal row and the eps state change land within the same
+// moment; a +/-5s window around last_character_state_change, nearest first, is
+// the only correlation available. Shared by the recovery flow and the deleted-
+// character asset listing so the two can never disagree about which removal
+// reason belongs to which deleted character.
+function removalLogLateralSql(epsAlias = "eps", alias = "removal") {
+  const deletedAt = deletedAtInstantSql(epsAlias);
+  return `left join lateral (
+      select log.reason, log.event_time
+      from dune.account_removal_log log
+      where log.account_id = ${epsAlias}.account_id
+        and log.event_time between ${deletedAt} - interval '5 seconds'
+                               and ${deletedAt} + interval '5 seconds'
+      order by abs(extract(epoch from (log.event_time - ${deletedAt}))), log.event_time desc
+      limit 1
+    ) ${alias} on true`;
+}
+
 async function characterRecoveryCandidates(db, accountId, { lock = false } = {}) {
   const result = await db.query(`
     select eps.id::text as character_state_id,
            coalesce(dune.decrypt_user_data(eps.encrypted_character_name), '') as character_name,
            eps.last_avatar_activity,
            eps.last_login_time,
-           eps.last_character_state_change as deleted_at,
+           ${deletedAtInstantSql()} as deleted_at,
            eps.player_controller_id::text,
            eps.player_pawn_id::text,
            eps.player_state_id::text as player_state_actor_id,
@@ -6575,15 +6621,7 @@ async function characterRecoveryCandidates(db, accountId, { lock = false } = {})
     left join dune.actors pawn on pawn.id = eps.player_pawn_id
     left join dune.actors state_actor on state_actor.id = eps.player_state_id
     left join dune.world_partition wp on wp.partition_id = pawn.partition_id
-    left join lateral (
-      select log.reason, log.event_time
-      from dune.account_removal_log log
-      where log.account_id = eps.account_id
-        and log.event_time between eps.last_character_state_change - interval '5 seconds'
-                               and eps.last_character_state_change + interval '5 seconds'
-      order by abs(extract(epoch from (log.event_time - eps.last_character_state_change))), log.event_time desc
-      limit 1
-    ) removal on true
+    ${removalLogLateralSql()}
     where eps.account_id = $1::bigint
       and eps.character_state::text = 'Deleted'
     order by (lower(coalesce(removal.reason, '')) = 'new char in fls') desc,
@@ -6712,6 +6750,342 @@ export async function recoverDeletedCharacter(db, id, candidateId) {
       message: `${candidate.characterName}'s saved character data was recovered with ${candidate.itemCount} item${candidate.itemCount === 1 ? "" : "s"}. The current Funcom character name remains ${String(row.character_name || active.character_name || "unchanged")}.`
     };
   });
+}
+
+// Deleted characters that still hold bases or vehicles.
+//
+// The obvious query -- "permission ranks whose player has no player_state" --
+// can never match. permission_actor_rank.player_id references actors(id) ON
+// DELETE CASCADE, so a permanently deleted character's ranks cascade away; and
+// dune.ownership_handle_actor_delete(), called by BOTH dune.delete_account (the
+// soft path) and delete_account_permanently, deletes every rank row on any
+// actor the player owned at rank 1. Measured on a live server: 44 rank rows, 0
+// dangling. dune.actors.owner_account_id is NULL on base claim actors and
+// vehicles, so that fallback resolves nothing either.
+//
+// What survives is dune.player_respawn_locations: character_id references
+// encrypted_player_state(id) ON DELETE CASCADE, so it outlives a soft delete
+// (the eps row stays, marked 'Deleted') and dies with a permanent delete, where
+// nothing is recoverable anyway. locator_actor_id points at the base totem or
+// vehicle actor. That is the attribution link.
+//
+// An asset is orphaned when it has a dune.permission_actor row but no rank on
+// it resolves to a living character. The permission_actor row is what
+// distinguishes a deleted owner's base from world content that was never
+// claimed -- unclaimed CHOAM vehicle spawns have no permission_actor row at
+// all. The single not-exists below covers both the ordinary case (the ranks
+// were deleted outright) and the defensive one (ranks survive but resolve to
+// no Active character, which a future patch could produce).
+const DELETED_CHARACTER_ASSET_LIMIT = 2000;
+const DELETED_CHARACTER_LIMIT = 500;
+
+const DELETED_CHARACTER_RESPAWN_GROUPS = ["BaseTotem", "Vehicle", "RespawnBeacon"];
+
+const RESPAWN_GROUP_LABELS = Object.freeze({
+  BaseTotem: "Base totem",
+  Vehicle: "Respawn point",
+  RespawnBeacon: "Respawn beacon"
+});
+
+function orphanedActorPredicate(actorRef) {
+  return `not exists (
+      select 1
+      from dune.permission_actor_rank par
+      join dune.actors holder on holder.id = par.player_id
+      join dune.player_state ps on ps.account_id = holder.owner_account_id
+      where par.permission_actor_id = ${actorRef}
+    )`;
+}
+
+// Attribution runs against the actor id after grouping, so it is a join on the
+// CTE rather than a lateral inside it. Non-asset respawn groups (Checkpoint,
+// CheckpointSafe, PlayerStart) are world spawn points and must not attribute
+// anything to anyone.
+function respawnAttributionJoin(actorRef) {
+  return `left join lateral (
+      select rl."group", rl.character_id
+      from dune.player_respawn_locations rl
+      join dune.encrypted_player_state owner_eps on owner_eps.id = rl.character_id
+      where rl.locator_actor_id = ${actorRef}
+        and rl."group" = any($1::text[])
+        and owner_eps.character_state::text = 'Deleted'
+      -- Nothing constrains one locator to a single character: the PK is
+      -- (id, character_id) and locator_actor_id carries no unique index. Two
+      -- deleted characters last respawning at the same totem would therefore
+      -- both claim it, and this picks the most recent. No better key exists,
+      -- and the collision returns no rows on real data.
+      order by rl.last_used_timestamp desc nulls last, rl.character_id desc
+      limit 1
+    ) attribution on true`;
+}
+
+function shapeDeletedCharacterAsset(row, kind) {
+  const group = String(row.attributed_group || "");
+  return {
+    kind,
+    id: String(row.asset_id),
+    actorId: String(row.actor_id),
+    name: String(row.name || ""),
+    assetType: String(row.asset_type || ""),
+    map: String(row.map || ""),
+    partitionId: String(row.partition_id ?? ""),
+    partitionLabel: String(row.partition_label || ""),
+    x: row.x === null || row.x === undefined ? null : Number(row.x),
+    y: row.y === null || row.y === undefined ? null : Number(row.y),
+    z: row.z === null || row.z === undefined ? null : Number(row.z),
+    pieceCount: row.piece_count === null || row.piece_count === undefined ? null : Number(row.piece_count),
+    placeableCount: row.placeable_count === null || row.placeable_count === undefined ? null : Number(row.placeable_count),
+    moduleCount: row.module_count === null || row.module_count === undefined ? null : Number(row.module_count),
+    characterStateId: row.attributed_character_id === null || row.attributed_character_id === undefined
+      ? "" : String(row.attributed_character_id),
+    matchedBy: RESPAWN_GROUP_LABELS[group] || ""
+  };
+}
+
+export async function listDeletedCharacterAssets(db) {
+  const requiredTables = [
+    "encrypted_player_state", "account_removal_log", "player_respawn_locations",
+    "permission_actor", "permission_actor_rank", "actors", "player_state",
+    "buildings", "building_instances", "actor_fgl_entities", "vehicles"
+  ];
+  const [required, hasWorldPartition, hasBaseBackups, hasAccounts, hasPlaceables, hasVehicleModules, hasDecrypt] =
+    await Promise.all([
+      Promise.all(requiredTables.map((table) => tableExists(db, table))),
+      tableExists(db, "world_partition"),
+      tableExists(db, "base_backup_linked_actors"),
+      tableExists(db, "accounts"),
+      tableExists(db, "placeables"),
+      tableExists(db, "vehicle_modules"),
+      functionExists(db, "dune.decrypt_user_data(bytea)")
+    ]);
+  const missing = requiredTables.filter((table, index) => !required[index]).map((table) => `dune.${table}`);
+  if (!hasDecrypt) missing.push("dune.decrypt_user_data(bytea)");
+  if (missing.length) {
+    // unsupported() also carries a `rows: []` for the list endpoints that shape
+    // themselves that way; this one does not have a `rows` concept, so drop it
+    // rather than emit a key no consumer should read. `supported` is stated
+    // explicitly on both paths so `result.supported === false` is a usable
+    // check, not silently undefined on exactly the path that needs it.
+    const { rows, ...capability } = unsupported("deletedCharacters", missing);
+    void rows;
+    return {
+      supported: false,
+      ...capability,
+      characters: [],
+      unattributed: { bases: [], vehicles: [] },
+      totals: emptyDeletedCharacterTotals()
+    };
+  }
+
+  // Optional relations degrade a field rather than failing the whole view.
+  const partitionSelect = hasWorldPartition
+    ? "coalesce(wp.label, '') as partition_label"
+    : "'' as partition_label";
+  const partitionJoin = hasWorldPartition
+    ? "left join dune.world_partition wp on wp.partition_id = src.partition_id"
+    : "";
+  // A base picked up by the backup tool is unclaimed the same way, but the tool
+  // deletes the permission_actor row too, so the fingerprint above already
+  // excludes it. Kept explicit in case a redeploy ever restores permission_actor
+  // without restoring its ranks.
+  const backupExclusion = hasBaseBackups
+    ? "and not exists (select 1 from dune.base_backup_linked_actors bbla where bbla.actor_id = a.id)"
+    : "";
+  const placeableCount = hasPlaceables
+    ? `(select count(distinct pl.id) from dune.placeables pl
+         join dune.actor_fgl_entities pafe on pafe.entity_id = pl.owner_entity_id
+         where pafe.actor_id = src.actor_id)::int`
+    : "null::int";
+  const moduleCount = hasVehicleModules
+    ? "(select count(*) from dune.vehicle_modules vm where vm.vehicle_id = src.actor_id)::int"
+    : "null::int";
+
+  const groups = [DELETED_CHARACTER_RESPAWN_GROUPS];
+
+  const basesResult = await db.query(`
+    with orphan_bases as (
+      select min(b.id) as asset_id,
+             a.id as actor_id,
+             ${BASE_NAME_SQL} as name,
+             ${BASE_TYPE_SQL} as asset_type,
+             coalesce(a.map, '') as map,
+             coalesce(a.partition_id, 0) as partition_id,
+             ((a.transform).location).x as x,
+             ((a.transform).location).y as y,
+             ((a.transform).location).z as z
+      from dune.buildings b
+      join dune.building_instances bi on bi.building_id = b.id
+      join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
+      join dune.actors a on a.id = afe.actor_id
+      join dune.permission_actor pa on pa.actor_id = a.id
+      where a.transform is not null
+        and ${orphanedActorPredicate("a.id")}
+        ${backupExclusion}
+      group by a.id, a.class, pa.actor_name, a.map, a.partition_id, a.transform
+    )
+    select src.*,
+           ${partitionSelect},
+           (select count(*) from dune.building_instances cbi
+              join dune.actor_fgl_entities cafe on cafe.entity_id = cbi.owner_entity_id
+              where cafe.actor_id = src.actor_id)::int as piece_count,
+           ${placeableCount} as placeable_count,
+           null::int as module_count,
+           attribution."group" as attributed_group,
+           attribution.character_id as attributed_character_id
+    from orphan_bases src
+    ${partitionJoin}
+    ${respawnAttributionJoin("src.actor_id")}
+    order by src.name asc, src.asset_id asc
+    limit ${DELETED_CHARACTER_ASSET_LIMIT + 1}`, groups);
+
+  const vehiclesResult = await db.query(`
+    with orphan_vehicles as (
+      select v.id as asset_id,
+             a.id as actor_id,
+             coalesce(${VEHICLE_CUSTOM_NAME_SQL}, ${VEHICLE_TYPE_SQL}) as name,
+             ${VEHICLE_TYPE_SQL} as asset_type,
+             coalesce(a.map, '') as map,
+             coalesce(a.partition_id, 0) as partition_id,
+             ((a.transform).location).x as x,
+             ((a.transform).location).y as y,
+             ((a.transform).location).z as z
+      from dune.vehicles v
+      join dune.actors a on a.id = v.id
+      join dune.permission_actor pa on pa.actor_id = v.id
+      where ${orphanedActorPredicate("v.id")}
+    )
+    select src.*,
+           ${partitionSelect},
+           null::int as piece_count,
+           null::int as placeable_count,
+           ${moduleCount} as module_count,
+           attribution."group" as attributed_group,
+           attribution.character_id as attributed_character_id
+    from orphan_vehicles src
+    ${partitionJoin}
+    ${respawnAttributionJoin("src.actor_id")}
+    order by src.name asc, src.asset_id asc
+    limit ${DELETED_CHARACTER_ASSET_LIMIT + 1}`, groups);
+
+  const flsSelect = hasAccounts ? `coalesce(acct."user", '')` : `''`;
+  const flsJoin = hasAccounts ? "left join dune.accounts acct on acct.id = eps.account_id" : "";
+  const charactersResult = await db.query(`
+    select eps.id::text as character_state_id,
+           eps.account_id::text as account_id,
+           coalesce(dune.decrypt_user_data(eps.encrypted_character_name), '') as character_name,
+           ${deletedAtInstantSql()} as deleted_at,
+           eps.last_avatar_activity,
+           eps.last_login_time,
+           coalesce(eps.player_controller_id::text, '') as controller_id,
+           coalesce(eps.player_pawn_id::text, '') as pawn_id,
+           ${flsSelect} as fls_id,
+           coalesce(removal.reason, '') as removal_reason,
+           removal.event_time as removal_event_time,
+           coalesce(replacement.character_name, '') as replacement_character_name
+    from dune.encrypted_player_state eps
+    ${removalLogLateralSql()}
+    ${flsJoin}
+    left join lateral (
+      select coalesce(dune.decrypt_user_data(other.encrypted_character_name), '') as character_name
+      from dune.encrypted_player_state other
+      where other.account_id = eps.account_id
+        and other.character_state::text = 'Active'
+      order by other.id desc
+      limit 1
+    ) replacement on true
+    where eps.character_state::text = 'Deleted'
+    order by eps.last_character_state_change desc nulls last, eps.id desc
+    limit ${DELETED_CHARACTER_LIMIT + 1}`);
+
+  const baseRows = basesResult.rows.slice(0, DELETED_CHARACTER_ASSET_LIMIT).map((row) => shapeDeletedCharacterAsset(row, "base"));
+  const vehicleRows = vehiclesResult.rows.slice(0, DELETED_CHARACTER_ASSET_LIMIT).map((row) => shapeDeletedCharacterAsset(row, "vehicle"));
+  const characterRows = charactersResult.rows.slice(0, DELETED_CHARACTER_LIMIT);
+  const truncated = basesResult.rows.length > DELETED_CHARACTER_ASSET_LIMIT
+    || vehiclesResult.rows.length > DELETED_CHARACTER_ASSET_LIMIT
+    || charactersResult.rows.length > DELETED_CHARACTER_LIMIT;
+
+  const byCharacter = new Map();
+  for (const row of characterRows) {
+    byCharacter.set(row.character_state_id, {
+      characterStateId: String(row.character_state_id),
+      accountId: String(row.account_id || ""),
+      characterName: String(row.character_name || "") || "Unknown Character",
+      flsId: String(row.fls_id || ""),
+      deletedAt: row.deleted_at || null,
+      lastAvatarActivity: row.last_avatar_activity || null,
+      lastLoginTime: row.last_login_time || null,
+      controllerId: String(row.controller_id || ""),
+      pawnId: String(row.pawn_id || ""),
+      removalReason: String(row.removal_reason || ""),
+      removalEventTime: row.removal_event_time || null,
+      replacementCharacterName: String(row.replacement_character_name || ""),
+      bases: [],
+      vehicles: []
+    });
+  }
+
+  const unattributed = { bases: [], vehicles: [] };
+  const assign = (asset, bucket) => {
+    const owner = asset.characterStateId ? byCharacter.get(asset.characterStateId) : null;
+    // An attribution pointing at a character the character query did not return
+    // (past the cap, or deleted between the two round trips) is not a match --
+    // fall back to unattributed rather than silently dropping the asset.
+    if (owner) owner[bucket].push(asset);
+    else unattributed[bucket].push(asset);
+  };
+  for (const base of baseRows) assign(base, "bases");
+  for (const vehicle of vehicleRows) assign(vehicle, "vehicles");
+
+  const characters = [...byCharacter.values()]
+    .filter((character) => character.bases.length > 0 || character.vehicles.length > 0)
+    .sort((left, right) => {
+      const leftAssets = left.bases.length + left.vehicles.length;
+      const rightAssets = right.bases.length + right.vehicles.length;
+      if (leftAssets !== rightAssets) return rightAssets - leftAssets;
+      return String(right.deletedAt || "").localeCompare(String(left.deletedAt || ""));
+    });
+
+  return {
+    supported: true,
+    capabilities: {
+      deletedCharacters: true,
+      partitionLabels: hasWorldPartition,
+      // Without this table the picked-up-base exclusion silently does not run,
+      // which the docs present as a correctness guard -- so say so.
+      baseBackupExclusion: hasBaseBackups,
+      flsIds: hasAccounts,
+      placeableCounts: hasPlaceables,
+      moduleCounts: hasVehicleModules
+    },
+    characters,
+    unattributed,
+    truncated,
+    totals: {
+      deletedCharacters: byCharacter.size,
+      deletedCharactersHoldingAssets: characters.length,
+      deletedCharactersWithoutAssets: byCharacter.size - characters.length,
+      attributedBases: baseRows.length - unattributed.bases.length,
+      attributedVehicles: vehicleRows.length - unattributed.vehicles.length,
+      unattributedBases: unattributed.bases.length,
+      unattributedVehicles: unattributed.vehicles.length,
+      orphanedBases: baseRows.length,
+      orphanedVehicles: vehicleRows.length
+    }
+  };
+}
+
+function emptyDeletedCharacterTotals() {
+  return {
+    deletedCharacters: 0,
+    deletedCharactersHoldingAssets: 0,
+    deletedCharactersWithoutAssets: 0,
+    attributedBases: 0,
+    attributedVehicles: 0,
+    unattributedBases: 0,
+    unattributedVehicles: 0,
+    orphanedBases: 0,
+    orphanedVehicles: 0
+  };
 }
 
 const PLAYER_ASSIGNABLE_FACTIONS = Object.freeze({

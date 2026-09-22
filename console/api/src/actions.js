@@ -178,6 +178,7 @@ export const ROUTE_ACTIONS = {
   "GET /api/players":                          "players:read",
   "GET /api/players/online":                   "players:read",
   "GET /api/players/search":                   "players:read",
+  "GET /api/players/deleted-characters":       "players:read",
 
   // --- Vehicles ---
   "GET /api/vehicles":                         "vehicles:read",
