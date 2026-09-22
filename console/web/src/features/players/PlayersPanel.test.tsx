@@ -14,6 +14,7 @@ vi.mock("../../api/players", () => ({
     deletedCharacters: vi.fn()
   }
 }));
+vi.mock("../../api/vehicles", () => ({ vehiclesApi: { deleteVehicle: vi.fn(), pendingDeletes: vi.fn().mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] }) } }));
 
 const bannedPlayer = {
   actor_id: "82",
@@ -102,8 +103,8 @@ describe("PlayersPanel persistent bans", () => {
     expect(await screen.findByText("Banned", { selector: ".player-status-cell span" })).toBeInTheDocument();
     expect(screen.getByText("Currently Active")).toBeInTheDocument();
     expect(screen.getByText("1h 1m")).toBeInTheDocument();
-    const headers = screen.getAllByRole("columnheader").map((header) => header.textContent?.replace(/[ ↑↓]/g, ""));
-    expect(headers.indexOf("TotalPlaytime")).toBe(headers.indexOf("LastOnline") + 1);
+    const headers = screen.getAllByRole("columnheader").map((header) => header.textContent?.replace(/[↑↓]/g, "").trim());
+    expect(headers.indexOf("Total Playtime")).toBe(headers.indexOf("Last Online") + 1);
     const filter = screen.getByLabelText("Filter");
     expect(screen.getByRole("option", { name: "Banned" })).toBeInTheDocument();
     fireEvent.change(filter, { target: { value: "banned" } });
@@ -134,7 +135,7 @@ describe("PlayersPanel view mode", () => {
     render(<PlayersPanel onError={vi.fn()} renderCharacterAdmin={() => null} />);
     expect(await screen.findByText("Vixen")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("radio", { name: "Deleted characters" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Deleted Characters" }));
 
     await waitFor(() => expect(screen.getByText("Unattributed Orphans")).toBeInTheDocument());
     // The players table, its filter and its search are gone, not merely hidden.
@@ -142,7 +143,7 @@ describe("PlayersPanel view mode", () => {
     expect(screen.queryByLabelText("Filter")).not.toBeInTheDocument();
     expect(playersApi.deletedCharacters).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("radio", { name: "Active players" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Active Players" }));
     expect(await screen.findByText("Vixen")).toBeInTheDocument();
   });
 
@@ -152,7 +153,7 @@ describe("PlayersPanel view mode", () => {
     await act(async () => { await Promise.resolve(); });
 
     const callsBefore = vi.mocked(playersApi.list).mock.calls.length;
-    fireEvent.click(screen.getByRole("radio", { name: "Deleted characters" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Deleted Characters" }));
     await act(async () => { await Promise.resolve(); });
 
     // Three full refresh intervals with nobody looking at the players list.
@@ -172,10 +173,10 @@ describe("PlayersPanel view mode", () => {
     fireEvent.click(screen.getByText("Vixen"));
     await waitFor(() => expect(screen.getByTestId("player-detail")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("radio", { name: "Deleted characters" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Deleted Characters" }));
     await waitFor(() => expect(screen.queryByTestId("player-detail")).not.toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("radio", { name: "Active players" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Active Players" }));
     expect(await screen.findByText("Vixen")).toBeInTheDocument();
     expect(screen.queryByTestId("player-detail")).not.toBeInTheDocument();
   });

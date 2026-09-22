@@ -138,8 +138,8 @@ export type CharacterRecoveryInspection = {
 };
 
 // One orphaned base or vehicle. `matchedBy` is the respawn-location group that
-// tied it to a deleted character ("Base totem", "Respawn point", "Respawn
-// beacon"); it is empty for unattributed rows. Counts are per-kind and null on
+// tied it to a deleted character ("Base Totem", "Respawn Point", "Respawn
+// Beacon"); it is empty for unattributed rows. Counts are per-kind and null on
 // the kind they do not apply to, or when the optional table they need is absent.
 export type DeletedCharacterAsset = {
   kind: "base" | "vehicle";
@@ -149,6 +149,7 @@ export type DeletedCharacterAsset = {
   assetType: string;
   map: string;
   partitionId: string;
+  partitionMap: string;
   partitionLabel: string;
   x: number | null;
   y: number | null;

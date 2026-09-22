@@ -1,10 +1,11 @@
 # Deleted Characters
 
-Players → **Deleted characters**.
+Players → **Deleted Characters**.
 
 Finds characters that no longer exist on the server but still hold bases or vehicles, and
-lists what each one left behind. Read-only: every asset row links through to the Bases or
-Vehicles tab, where Transfer to System Custodian and Delete already live.
+lists what each one left behind. Base rows link through to the Bases tab. Vehicle rows
+provide a direct, confirmed Delete action so the operator can remain in this view; the same
+safety backup and live-map queue used by the Vehicles tab still apply.
 
 This is a different feature from **Recover Deleted Character** (Players → select a living
 character → Admin → Repair). That one is account-scoped and restores a deleted character's
@@ -79,8 +80,8 @@ player recreates — so the console correlates the two within a ±5 second windo
 
 | `account_removal_log.reason` | Shown as | Means |
 | --- | --- | --- |
-| `new char in fls` | Recreated character | The player deleted this character and immediately made another on the same Funcom account. The account is still active under a new name, shown in **Replacement Character**. |
-| `deleted in fls` | Deleted in FLS | An outright deletion. Usually no replacement character. |
+| `new char in fls` | Recreated Character | The player deleted this character and immediately made another on the same Funcom account. The account is still active under a new name, shown in **Replacement Character**. |
+| `deleted in fls` | Deleted In FLS | An outright deletion. Usually no replacement character. |
 
 ### Tying the two together
 
@@ -103,17 +104,18 @@ would attribute shared map furniture to individual players. The group is shown i
 
 | Group | Matched By |
 | --- | --- |
-| `BaseTotem` | Base totem |
-| `Vehicle` | Respawn point |
-| `RespawnBeacon` | Respawn beacon |
+| `BaseTotem` | Base Totem |
+| `Vehicle` | Respawn Point |
+| `RespawnBeacon` | Respawn Beacon |
 
-## Unattributed orphans
+## Unattributed Orphans
 
 Attribution is best-effort by construction, and the page says so rather than hiding it.
 
 A character who owned three bases but only ever set a respawn point at one of them leaves
 one attributed base and two orphans with no trail. Those appear in the **Unattributed
-orphans** block at the bottom of the page, which renders even when it is empty. An asset
+Orphans** toggle at the bottom of the page. It is closed by default and remains available
+when empty. An asset
 listed there is just as abandoned as one listed under a name — the console simply cannot
 prove whose it was.
 
@@ -127,8 +129,10 @@ being dropped.
   deleted characters hold none — the latter are not listed, but they are counted.
 - Each character row expands to its bases and vehicles, with account id, character-state id,
   FLS id and last-seen time.
-- **Open** on any row jumps to that base or vehicle on its own tab, with the id already in
-  the search box.
+- **Open** on a base jumps to that base on the Bases tab, with the ID already in the search
+  box.
+- The trash icon on a vehicle asks for confirmation, then deletes it in place or reports
+  that deletion was safely queued until its running map next restarts or stops.
 
 Results are capped at 500 characters and 2000 assets. If a cap is hit the page says so
 rather than quietly truncating.
@@ -137,7 +141,7 @@ rather than quietly truncating.
 
 - **No vehicle condition percentage.** `dune.vehicle_modules` stores durability inside a
   `stats` jsonb that needs the Vehicles tab's parsing machinery. The fitted-module count is
-  shown instead; open the vehicle for condition.
+  shown instead.
 - **`RespawnBeacon` is matched literally.** The locator is the beacon actor, not the base
   totem it stands inside, so a beacon-only trail does not roll up to its containing base.
   Resolving that would need land-claim geometry.
@@ -147,7 +151,7 @@ rather than quietly truncating.
   when `dune.delete_account` wrote it. The console anchors it back to the database's
   current `TimeZone`, which is correct as long as that hasn't changed. Restore a
   backup onto a host in a different zone and the ±5s correlation stops matching:
-  **Status** falls back to "Reason unrecorded" rather than showing a wrong reason.
+  **Status** falls back to "Reason Unrecorded" rather than showing a wrong reason.
   The window is deliberately not widened to cover arbitrary offsets — Recover
   Deleted Character keys its `recoverable` flag off the same reason, and a wrong
   match there would restore the wrong character.

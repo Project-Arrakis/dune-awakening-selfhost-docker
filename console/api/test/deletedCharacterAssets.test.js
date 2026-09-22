@@ -105,6 +105,7 @@ test("attributes orphaned assets to the deleted character that held them", async
         asset_type: "Ornithopter",
         map: "DeepDesert",
         partition_id: 2,
+        partition_map: "DeepDesert_1",
         x: 400.5,
         y: 500.5,
         z: 600.5,
@@ -140,8 +141,9 @@ test("attributes orphaned assets to the deleted character that held them", async
   assert.equal(result.characters[0].characterName, "kitty");
   assert.equal(result.characters[0].bases.length, 1);
   assert.equal(result.characters[0].vehicles.length, 1);
-  assert.equal(result.characters[0].bases[0].matchedBy, "Base totem");
-  assert.equal(result.characters[0].vehicles[0].matchedBy, "Respawn point");
+  assert.equal(result.characters[0].vehicles[0].partitionMap, "DeepDesert_1");
+  assert.equal(result.characters[0].bases[0].matchedBy, "Base Totem");
+  assert.equal(result.characters[0].vehicles[0].matchedBy, "Respawn Point");
 });
 
 test("lists assets with no respawn record as unattributed", async () => {
@@ -370,7 +372,7 @@ test("labels every allowed respawn group, so an unlabelled group cannot ship", a
   const result = await listDeletedCharacterAssets(db);
   const character = result.characters[0];
   const labels = [...character.bases, ...character.vehicles].map((asset) => asset.matchedBy);
-  assert.deepEqual(labels.sort(), ["Base totem", "Respawn beacon", "Respawn point"]);
+  assert.deepEqual(labels.sort(), ["Base Totem", "Respawn Beacon", "Respawn Point"]);
   assert.ok(!labels.includes(""), "every allowed group must resolve to a human label");
 });
 

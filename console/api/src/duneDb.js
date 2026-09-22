@@ -6782,9 +6782,9 @@ const DELETED_CHARACTER_LIMIT = 500;
 const DELETED_CHARACTER_RESPAWN_GROUPS = ["BaseTotem", "Vehicle", "RespawnBeacon"];
 
 const RESPAWN_GROUP_LABELS = Object.freeze({
-  BaseTotem: "Base totem",
-  Vehicle: "Respawn point",
-  RespawnBeacon: "Respawn beacon"
+  BaseTotem: "Base Totem",
+  Vehicle: "Respawn Point",
+  RespawnBeacon: "Respawn Beacon"
 });
 
 function orphanedActorPredicate(actorRef) {
@@ -6829,6 +6829,7 @@ function shapeDeletedCharacterAsset(row, kind) {
     assetType: String(row.asset_type || ""),
     map: String(row.map || ""),
     partitionId: String(row.partition_id ?? ""),
+    partitionMap: String(row.partition_map || ""),
     partitionLabel: String(row.partition_label || ""),
     x: row.x === null || row.x === undefined ? null : Number(row.x),
     y: row.y === null || row.y === undefined ? null : Number(row.y),
@@ -6879,8 +6880,8 @@ export async function listDeletedCharacterAssets(db) {
 
   // Optional relations degrade a field rather than failing the whole view.
   const partitionSelect = hasWorldPartition
-    ? "coalesce(wp.label, '') as partition_label"
-    : "'' as partition_label";
+    ? "coalesce(wp.label, '') as partition_label, coalesce(wp.map, '') as partition_map"
+    : "'' as partition_label, '' as partition_map";
   const partitionJoin = hasWorldPartition
     ? "left join dune.world_partition wp on wp.partition_id = src.partition_id"
     : "";

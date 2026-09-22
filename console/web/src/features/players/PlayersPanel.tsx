@@ -22,7 +22,7 @@ type PlayersPanelProps = {
   onError: (text: string) => void;
   renderCharacterAdmin: (props: CharacterAdminRenderProps) => ReactNode;
   onOpenBase?: (baseId: string) => void;
-  onOpenVehicle?: (vehicleId: string) => void;
+  confirmAction?: (message: string, options?: { title?: string; confirmLabel?: string; warning?: string; danger?: boolean; details?: { label: string; value: string; tone?: "accent" | "success" | "danger" }[] }) => Promise<boolean>;
 };
 
 type PlayerStatusFilter = "all" | "online" | "offline" | "banned";
@@ -34,8 +34,8 @@ type PlayerStatusFilter = "all" | "online" | "offline" | "banned";
 type PlayersViewMode = "active" | "deleted";
 
 const PLAYERS_VIEW_MODES = [
-  { value: "active", label: "Active players" },
-  { value: "deleted", label: "Deleted characters" }
+  { value: "active", label: "Active Players" },
+  { value: "deleted", label: "Deleted Characters" }
 ] as const satisfies ReadonlyArray<{ value: PlayersViewMode; label: string }>;
 
 const PLAYERS_AUTO_REFRESH_MS = 10_000;
@@ -48,7 +48,7 @@ function errorText(error: unknown) {
 
 type PlayersLoadParams = { q: string; page: number; pageSize: number; status: PlayerStatusFilter; sortColumn: string; sortDirection: SortDirection };
 
-export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, onOpenVehicle }: PlayersPanelProps) {
+export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, confirmAction }: PlayersPanelProps) {
   const [viewMode, setViewMode] = useState<PlayersViewMode>("active");
   const [q, setQ] = useState("");
   const [submittedQ, setSubmittedQ] = useState("");
@@ -280,7 +280,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, onOpen
             groupClassName="segmented-control players-view-segments"
           />
         </div>
-        <DeletedCharacterAssets onOpenBase={onOpenBase} onOpenVehicle={onOpenVehicle} />
+        <DeletedCharacterAssets onOpenBase={onOpenBase} onError={onError} confirmAction={confirmAction} />
       </section>
     );
   }
@@ -316,7 +316,7 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, onOpen
           value={q}
           onChange={(event) => setQ(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") submitSearch(); }}
-          placeholder="Search character, FLS ID, account id, or actor id"
+          placeholder="Search Character, FLS ID, Account ID, or Actor ID"
         />
         <button onClick={submitSearch}>Search</button>
         <button onClick={handleClearSearch} disabled={!q && !submittedQ}>Clear</button>
@@ -324,7 +324,15 @@ export function PlayersPanel({ onError, renderCharacterAdmin, onOpenBase, onOpen
       <DataTable
         rows={rows}
         columns={["actor_id", "character_name", "last_seen", "total_playtime_seconds", "online_status", "map", "fls_id"]}
-        columnLabels={{ actor_id: "DB Player ID" }}
+        columnLabels={{
+          actor_id: "DB Player ID",
+          character_name: "Character",
+          last_seen: "Last Online",
+          total_playtime_seconds: "Total Playtime",
+          online_status: "Status",
+          map: "Map",
+          fls_id: "FLS ID"
+        }}
         tableClassName="players-table"
         wrapClassName={`players-table-wrap ${selected ? "players-table-wrap-compact" : "players-table-wrap-expanded"}`}
         onRowClick={open}

@@ -7426,15 +7426,21 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   text-transform: uppercase;
   color: var(--text-faint);
 }
-/* The unattributed block is a deviation callout, not another peer section:
-   a single-sided accent bar, so no radius on that edge. */
+.deleted-character-assets-table th.deleted-character-asset-actions,
+.deleted-character-assets-table td.deleted-character-asset-actions {
+  width: 60px;
+  text-align: center;
+}
+/* The unattributed block uses the same navigation toggle as the Player Admin
+   sections, with a warning edge to distinguish unassigned assets. */
 .deleted-character-unattributed {
   margin-top: 22px;
-  padding: 12px 14px;
   border: 1px solid var(--border);
   border-left: 3px solid var(--warning);
   border-radius: 0 8px 8px 0;
   background: var(--panel-muted);
+  overflow: hidden;
 }
-.deleted-character-unattributed .panel-title { margin-bottom: 4px; }
-.deleted-character-unattributed .deleted-character-assets-group { margin-top: 12px; }
+.deleted-character-unattributed > .playerAdmin_toggleHeader { border-radius: 0; background: var(--panel-muted); }
+.deleted-character-unattributed > .playerAdmin_toggleBody { display: flex; flex-direction: column; gap: 12px; }
+.deleted-character-unattributed-count { margin-left: auto; color: var(--text-faint); font-weight: 500 !important; }
