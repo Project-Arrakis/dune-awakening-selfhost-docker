@@ -16,6 +16,7 @@ LOG_POINTER_FILE="runtime/generated/sietch-overrides-current.log"
 TEXT_ROUTER_LOG="runtime/text-router/director-current.log"
 CONFIG_FILE="runtime/generated/sietch-config.json"
 RMQ_CREDS_FILE="runtime/generated/sietch-rmq-admin-creds"
+SHARED_RMQ_CREDS_FILES=("runtime/generated/deepdesert-rmq-admin-creds")
 TIMESTAMP_LEAD_SECONDS="${DUNE_SIETCH_OVERRIDE_TIMESTAMP_LEAD_SECONDS:-0}"
 RMQ_TIMEOUT_SECONDS="${DUNE_SIETCH_OVERRIDE_RMQ_TIMEOUT_SECONDS:-8}"
 RMQ_BINDING_CLEANUP_TIMEOUT_SECONDS="${DUNE_SIETCH_OVERRIDE_BINDING_CLEANUP_TIMEOUT_SECONDS:-2}"
@@ -96,10 +97,19 @@ write_live_pidfile() {
 
 clear_stale_pidfile() {
   [ -f "$PID_FILE" ] || return 0
-  local pid
+  local pid visible_pid
   pid="$(cat "$PID_FILE" 2>/dev/null || true)"
   if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
-    rm -f "$PID_FILE"
+    # The loop may have been started from inside the Autoscaler container,
+    # whose PID namespace differs from the host. Prefer the process visible
+    # to this caller instead of deleting otherwise-valid ownership state.
+    visible_pid="$(loop_pids | head -n 1)"
+    if [ -n "$visible_pid" ]; then
+      printf '%s\n' "$visible_pid" >"$PID_FILE"
+      dune_set_host_path_owner "$PID_FILE"
+    else
+      rm -f "$PID_FILE"
+    fi
   fi
 }
 
@@ -147,7 +157,8 @@ ensure_text_router_log() {
 }
 
 load_rmq_admin_creds() {
-  local creds cache_tmp line_count
+  local allow_shared="${1:-true}"
+  local creds cache_tmp line_count shared_creds_file
   if [ -r "$RMQ_CREDS_FILE" ]; then
     line_count="$(wc -l < "$RMQ_CREDS_FILE" 2>/dev/null || printf '0')"
     line_count="$(printf '%s' "$line_count" | tr -cd '[:digit:]')"
@@ -156,6 +167,21 @@ load_rmq_admin_creds() {
       cat "$RMQ_CREDS_FILE"
       return 0
     fi
+  fi
+
+  # All state publishers use the same battlegroup administrator. Reuse a
+  # credential cache already validated by a sibling publisher before parsing
+  # historical logs, whose newest credential line may no longer be active.
+  if [ "$allow_shared" = "true" ]; then
+    for shared_creds_file in "${SHARED_RMQ_CREDS_FILES[@]}"; do
+      [ -r "$shared_creds_file" ] || continue
+      line_count="$(wc -l < "$shared_creds_file" 2>/dev/null || printf '0')"
+      line_count="$(printf '%s' "$line_count" | tr -cd '[:digit:]')"
+      if [ "${line_count:-0}" -ge 2 ]; then
+        cat "$shared_creds_file"
+        return 0
+      fi
+    done
   fi
 
   ensure_text_router_log
@@ -223,9 +249,9 @@ PY
 }
 
 rmq_admin() {
-  local rmq_user rmq_password rc
+  local rmq_user rmq_password rc allow_shared=true
   for _ in 1 2; do
-    mapfile -t rmq_creds < <(load_rmq_admin_creds)
+    mapfile -t rmq_creds < <(load_rmq_admin_creds "$allow_shared")
     [ "${#rmq_creds[@]}" -ge 2 ] || return 1
     rmq_user="${rmq_creds[0]}"
     rmq_password="${rmq_creds[1]}"
@@ -234,6 +260,7 @@ rmq_admin() {
     fi
     rc=$?
     rm -f "$RMQ_CREDS_FILE"
+    allow_shared=false
   done
   return "$rc"
 }
@@ -613,6 +640,45 @@ for offset, partition_id in enumerate(sorted(latest_by_partition, key=lambda val
 PY
 }
 
+publish_once() {
+  local rows="" keep_route=false rc=0
+
+  # A one-shot repair may run after the long-lived publisher has died. In
+  # that case it must not leave Survival_1 diverted into an unconsumed queue:
+  # restore the native route after publishing the repaired snapshot. When the
+  # loop is healthy it remains the route owner and keeps the filter in place.
+  if loop_running; then
+    keep_route=true
+  fi
+
+  ensure_route true || return 1
+  rows="$(forward_batch_once || true)"
+  if [ -n "$rows" ]; then
+    while IFS= read -r payload; do
+      [ -n "$payload" ] || continue
+      publish_payload "$payload" || rc=1
+    done <<< "$rows"
+  else
+    publish_snapshot_once || rc=1
+  fi
+
+  if [ "$keep_route" != "true" ]; then
+    restore_route || rc=1
+  fi
+  return "$rc"
+}
+
+cleanup_loop() {
+  local loop_token="$1"
+
+  loop_token_is_current "$loop_token" || return 0
+  # If the publisher exits unexpectedly, fail open to the game's native
+  # Survival_1 server-state stream instead of leaving the Director subscribed
+  # to an exchange that no process is feeding.
+  restore_route >>"$LOG_FILE" 2>&1 || true
+  rm -f "$PID_FILE" "$LOOP_TOKEN_FILE"
+}
+
 start_loop() {
   local loop_token
 
@@ -620,11 +686,17 @@ start_loop() {
   loop_token="$(date +%s)-$$-${RANDOM:-0}"
   write_loop_token "$loop_token"
   write_live_pidfile
-  trap 'if loop_token_is_current "$loop_token"; then rm -f "$PID_FILE" "$LOOP_TOKEN_FILE"; fi' EXIT
+  # Expand the token while installing the trap. Function-local variables are
+  # no longer in scope when Bash runs an EXIT trap after start_loop returns.
+  # shellcheck disable=SC2064
+  trap "cleanup_loop $(printf '%q' "$loop_token")" EXIT
   local route_refresh_at=0
   local snapshot_refresh_at=0
   local spicefield_reconcile_at=0
-  ensure_route true
+  if ! ensure_route true; then
+    echo "ERROR sietch-state-publisher initialization failed: RabbitMQ route unavailable" >&2
+    return 1
+  fi
   route_refresh_at=$(( $(date +%s) + ROUTE_REFRESH_SECONDS ))
   publish_snapshot_once >>"$LOG_FILE" 2>&1 || true
   while true; do
@@ -662,16 +734,7 @@ fi
 
 case "${1:-start}" in
   once)
-    ensure_route true
-    rows="$(forward_batch_once || true)"
-    if [ -n "${rows:-}" ]; then
-      while IFS= read -r payload; do
-        [ -n "$payload" ] || continue
-        publish_payload "$payload"
-      done <<< "$rows"
-    else
-      publish_snapshot_once
-    fi
+    publish_once
     ;;
   start)
     clear_stale_pidfile

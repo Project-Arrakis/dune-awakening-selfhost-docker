@@ -375,6 +375,7 @@ Usage:
   dune sietches show <map-name>
   dune sietches dimensions <map-name> [--active-only] [--numbered|--labels|--ids|--partition-at=N]
   dune sietches set-max <map-name> <count>
+  dune sietches ensure-pool <map-name> <count>
   dune sietches set-active <map-name> <count> [--defer-start]
   dune sietches set-display <partition-id> <display-name>
   dune sietches set-password <partition-id> [password]
@@ -915,15 +916,15 @@ catalog_max = len(maps[name])
 maps_cfg = config.setdefault("maps", {})
 entry = maps_cfg.setdefault(name, {})
 max_dimensions = int(entry.get("max_dimensions") or catalog_max)
+raw = next((server.get("raw", {}) for server in servers if str(server.get("map", "")).lower() == name.lower()), {})
 if name == "Overmap":
     print("Overmap must remain at one dimension.", file=sys.stderr)
     raise SystemExit(1)
 if key == "active_dimensions":
-    raw = next((server.get("raw", {}) for server in servers if str(server.get("map", "")).lower() == name.lower()), {})
     if raw.get("dedicatedScaling") and name != "DeepDesert_1":
         print(f"{name} has dedicated scaling enabled; active dimensions are managed at runtime.", file=sys.stderr)
         raise SystemExit(1)
-can_create_dimensions = name in {"Survival_1", "DeepDesert_1"}
+can_create_dimensions = name in {"Survival_1", "DeepDesert_1"} or bool(raw.get("dedicatedScaling"))
 if value > catalog_max and not (
     (key == "max_dimensions" and can_create_dimensions)
     or (key == "active_dimensions" and can_create_dimensions and value <= max_dimensions)
@@ -1580,6 +1581,47 @@ select dune.update_partition_labels(true);
   fi
 }
 
+ensure_dynamic_partition_pool() {
+  local map="$1"
+  local wanted="$2"
+  local safe_map lock_file dedicated_scaling
+
+  validate_positive_integer "$wanted" || {
+    echo "Instance pool size must be a positive integer." >&2
+    return 1
+  }
+  safe_map="$(printf '%s' "$map" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
+  [ -n "$safe_map" ] || return 1
+  mkdir -p runtime/generated
+  lock_file="runtime/generated/dynamic-instance-pool-${safe_map}.lock"
+  exec 8>"$lock_file"
+  flock 8
+
+  ensure_config
+  dedicated_scaling="$(python3 - "$map" "$SERVER_CATALOG" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+target = sys.argv[1].lower()
+path = Path(sys.argv[2])
+if not path.exists():
+    print("0")
+    raise SystemExit
+for server in json.loads(path.read_text()):
+    if str(server.get("map", "")).lower() == target:
+        print("1" if bool((server.get("raw") or {}).get("dedicatedScaling")) else "0")
+        raise SystemExit
+print("0")
+PY
+)"
+  if [ "$dedicated_scaling" != "1" ]; then
+    echo "$map is not a dedicated-scaling map." >&2
+    return 1
+  fi
+  ensure_map_partitions "$map" "$wanted"
+}
+
 reconcile_map_dimensions() {
   local map="$1"
   local safe_map target target_state target_explicit available base_partition assigned_count initial_assigned_count
@@ -2149,6 +2191,12 @@ case "$cmd" in
       echo "dune-postgres is not running; saved max dimensions and will create missing rows on next start/reconcile."
     fi
     echo "Max dimensions for $2 set to $count."
+    ;;
+  ensure-pool)
+    [ "$#" -eq 3 ] || { usage; exit 2; }
+    count="$(sanitize_positive_integer_arg "$3")"
+    validate_positive_integer "$count" || { echo "Instance pool size must be a positive integer."; exit 1; }
+    ensure_dynamic_partition_pool "$2" "$count"
     ;;
   set-active)
     [ "$#" -eq 3 ] || { [ "$#" -eq 4 ] && [ "$4" = "--defer-start" ]; } || { usage; exit 2; }

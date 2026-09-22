@@ -19,6 +19,7 @@ assert_contains() {
 }
 
 SCRIPT="runtime/scripts/publish-sietch-overrides.sh"
+AUTOSCALER_SCRIPT="runtime/scripts/autoscaler.sh"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -45,6 +46,22 @@ CREDENTIAL_RESULT="$(
 
 [ "$CREDENTIAL_RESULT" = $'cached-user\ncached-password' ] \
   || fail "expected valid cached credentials to remain usable regardless of age"
+
+SHARED_CREDS="$TMP_DIR/shared-rmq-creds"
+MISSING_PRIMARY_CREDS="$TMP_DIR/missing-primary-rmq-creds"
+printf '%s\n' "shared-user" "shared-password" >"$SHARED_CREDS"
+SHARED_CREDENTIAL_RESULT="$(
+  source "$SCRIPT"
+  RMQ_CREDS_FILE="$MISSING_PRIMARY_CREDS"
+  SHARED_RMQ_CREDS_FILES=("$SHARED_CREDS")
+  ensure_text_router_log() {
+    fail "valid shared credentials unexpectedly triggered a log scan"
+  }
+  load_rmq_admin_creds true
+)"
+
+[ "$SHARED_CREDENTIAL_RESULT" = $'shared-user\nshared-password' ] \
+  || fail "expected the Sietch publisher to reuse a sibling publisher credential cache"
 
 # Routine route verification fails at its first RabbitMQ error and never purges
 # the active source queue. A purge is allowed only during initial setup.
@@ -102,5 +119,88 @@ EMPTY_READ_RESULT="$(
 
 [ -z "$EMPTY_READ_RESULT" ] \
   || fail "failed RabbitMQ read emitted output instead of returning quietly: $EMPTY_READ_RESULT"
+
+# A one-shot recovery without a live loop must restore the game's native
+# Survival_1 route. Otherwise native states pile up in the source queue and
+# the Director alternates the in-game destination between Online and Offline.
+ONE_SHOT_RESULT="$(
+  source "$SCRIPT"
+  loop_running() { return 1; }
+  ensure_route() { printf 'ensure:%s\n' "$1"; }
+  forward_batch_once() { return 1; }
+  publish_snapshot_once() { echo snapshot; }
+  restore_route() { echo restore; }
+  publish_once
+)"
+
+[ "$ONE_SHOT_RESULT" = $'ensure:true\nsnapshot\nrestore' ] \
+  || fail "one-shot recovery did not restore the native route: $ONE_SHOT_RESULT"
+
+# A healthy loop owns the filtered route, so an operator's one-shot refresh
+# must not take that route away underneath it.
+LIVE_LOOP_RESULT="$(
+  source "$SCRIPT"
+  loop_running() { return 0; }
+  ensure_route() { printf 'ensure:%s\n' "$1"; }
+  forward_batch_once() { return 1; }
+  publish_snapshot_once() { echo snapshot; }
+  restore_route() { echo restore; }
+  publish_once
+)"
+
+[ "$LIVE_LOOP_RESULT" = $'ensure:true\nsnapshot' ] \
+  || fail "one-shot recovery disturbed the live loop route: $LIVE_LOOP_RESULT"
+
+# An unexpected loop exit must also fail open before removing its ownership
+# files. This covers exits that happen between Autoscaler health scans.
+EXIT_RESULT="$(
+  source "$SCRIPT"
+  PID_FILE="$TMP_DIR/loop.pid"
+  LOOP_TOKEN_FILE="$TMP_DIR/loop.token"
+  LOG_FILE="$TMP_DIR/loop.log"
+  printf '123\n' >"$PID_FILE"
+  printf 'current-token\n' >"$LOOP_TOKEN_FILE"
+  restore_route() { echo restore; }
+  cleanup_loop current-token
+  cat "$LOG_FILE"
+  [ ! -e "$PID_FILE" ] && [ ! -e "$LOOP_TOKEN_FILE" ] && echo cleaned
+)"
+
+[ "$EXIT_RESULT" = $'restore\ncleaned' ] \
+  || fail "unexpected loop exit did not restore the native route: $EXIT_RESULT"
+
+# Bash runs the EXIT trap after start_loop's local scope has ended. The token
+# therefore has to be embedded into the trap command when it is installed;
+# referencing the local variable later fails under set -u and skips cleanup.
+assert_contains "$SCRIPT" 'trap "cleanup_loop $(printf '\''%q'\'' "$loop_token")" EXIT'
+if grep -Fq 'trap '\''cleanup_loop "$loop_token"'\'' EXIT' "$SCRIPT"; then
+  fail "$SCRIPT must not defer expansion of the function-local loop token"
+fi
+
+# The publisher normally runs inside the Autoscaler PID namespace while the
+# status/stop commands run on the host. Repair the PID file to the process ID
+# visible to the caller rather than misclassifying the healthy loop as stale.
+PID_NAMESPACE_RESULT="$(
+  source "$SCRIPT"
+  PID_FILE="$TMP_DIR/namespace.pid"
+  printf '999999\n' >"$PID_FILE"
+  kill() { return 1; }
+  loop_pids() { echo 4242; }
+  clear_stale_pidfile
+  cat "$PID_FILE"
+)"
+
+[ "$PID_NAMESPACE_RESULT" = "4242" ] \
+  || fail "publisher PID was not repaired across namespaces: $PID_NAMESPACE_RESULT"
+
+# The Autoscaler owns a foreground publisher child and restarts it after any
+# exit. This closes the original unsupervised-daemon failure mode instead of
+# relying on a later stale-state scan to notice missing heartbeats.
+assert_contains "$AUTOSCALER_SCRIPT" 'supervise_sietch_override_publisher() {'
+assert_contains "$AUTOSCALER_SCRIPT" 'runtime/scripts/publish-sietch-overrides.sh loop || true'
+assert_contains "$AUTOSCALER_SCRIPT" 'supervise_sietch_override_publisher &'
+if grep -Fq 'publish-sietch-overrides.sh start >/dev/null' "$AUTOSCALER_SCRIPT"; then
+  fail "$AUTOSCALER_SCRIPT must not launch detached publisher generations from stale-state scans"
+fi
 
 echo "PASS: Sietch state publication remains responsive during RabbitMQ maintenance failures"

@@ -104,8 +104,11 @@ docker exec dune-postgres psql -U dune -d dune -c \
 
 ### On-demand content maps (no persistent server)
 
-These carry a partition row but no `server_id` until a player instance is
-loaded. All are dimension 0, all a single `1x1` box.
+These start with a dimension-0 partition row and no `server_id` until a player
+instance is loaded. For Director requests marked `ClassicalInstancing`, Dune
+Docker creates additional partition dimensions on demand (five by default) so
+independent parties do not share or displace one another. Every dimension is a
+single `1x1` box.
 
 **Dungeons**
 

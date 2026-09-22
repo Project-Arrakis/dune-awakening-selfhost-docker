@@ -449,11 +449,26 @@ PY
     return 0
   fi
 
+  if [ "$(map_uses_dedicated_scaling "$map")" = "1" ]; then
+    local dynamic_default="${DUNE_DYNAMIC_INSTANCE_MAX_DIMENSIONS:-5}"
+    [[ "$dynamic_default" =~ ^[1-9][0-9]*$ ]] || dynamic_default=5
+    echo "$dynamic_default"
+    return 0
+  fi
+
   psql_value "
     select count(*)
     from dune.world_partition
     where lower(map) = lower('${map//\'/\'\'}');
   "
+}
+
+ensure_dynamic_instance_partitions() {
+  local map="$1"
+  local wanted="$2"
+
+  [[ "$wanted" =~ ^[1-9][0-9]*$ ]] || return 1
+  timeout 20 runtime/scripts/sietches.sh ensure-pool "$map" "$wanted" >/dev/null 2>&1
 }
 
 active_dimensions_for_map() {
@@ -1773,6 +1788,10 @@ handle_demand() {
       # configured dimension while the requested server is starting.
       desired=$((occupied + num))
       [ "$desired" -le "$max_dimensions" ] || desired="$max_dimensions"
+      if ! ensure_dynamic_instance_partitions "$map" "$desired"; then
+        echo "ERROR failed to prepare instance dimensions map=$map desired=$desired"
+        return 0
+      fi
       capacity="$assigned"
       [ "$running" -le "$capacity" ] || capacity="$running"
 
@@ -2831,6 +2850,17 @@ publish_state_for_map() {
   esac
 }
 
+supervise_sietch_override_publisher() {
+  while true; do
+    # Keep the filtered Survival_1 stream in the Autoscaler's PID namespace so
+    # an unexpected publisher exit is noticed and restarted immediately. The
+    # publisher's EXIT cleanup restores the native route during the short gap.
+    runtime/scripts/publish-sietch-overrides.sh loop || true
+    echo "HEAL sietch-state-publisher action=restart"
+    sleep 2
+  done
+}
+
 scan_stale_server_state() {
   local rows now event_id partition_id map last_seen
 
@@ -3135,6 +3165,7 @@ scan_director_browser_state() {
 follow_director_hagga_handoffs &
 follow_director_travel_demand &
 follow_fresh_process_lifecycle &
+supervise_sietch_override_publisher &
 reconcile_always_on_maps
 repair_chat_exchanges_due
 
