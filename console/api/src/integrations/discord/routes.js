@@ -15,7 +15,7 @@ import { discordStatusProvider } from "./statusProvider.js";
 import { discordReadinessProvider, discordServicesProvider } from "./readOnlyProviders.js";
 import {
   opsActivityProvider, opsCombatProvider, opsResourcesProvider,
-  opsEconomyProvider, opsInventoryProvider,
+  opsEconomyProvider, opsInventoryProvider, opsLocationProvider,
   opsSocProvider, opsPrometheusProvider, opsDashboardProvider
 } from "./opsProvider.js";
 import {
@@ -253,6 +253,10 @@ export async function handleDiscordAdapterRoute({
       [DISCORD_ADAPTER_ROUTES.OPS_RESOURCES]: { capability: DISCORD_CAPABILITIES.OPS_RESOURCES_READ, provider: opsResourcesProvider },
       [DISCORD_ADAPTER_ROUTES.OPS_ECONOMY]: { capability: DISCORD_CAPABILITIES.OPS_ECONOMY_READ, provider: opsEconomyProvider },
       [DISCORD_ADAPTER_ROUTES.OPS_INVENTORY]: { capability: DISCORD_CAPABILITIES.OPS_INVENTORY_READ, provider: opsInventoryProvider },
+      // Issue #1001 (R0 completion): opsLocationProvider() is a permanent
+      // placeholder (see its own comment) -- queryBound: false since it
+      // never touches db, same as soc/prometheus below.
+      [DISCORD_ADAPTER_ROUTES.OPS_LOCATION]: { capability: DISCORD_CAPABILITIES.OPS_LOCATION_READ, provider: opsLocationProvider, queryBound: false },
       [DISCORD_ADAPTER_ROUTES.OPS_SOC]: { capability: DISCORD_CAPABILITIES.OPS_SOC_READ, provider: opsSocProvider, queryBound: false },
       [DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS]: { capability: DISCORD_CAPABILITIES.OPS_PROMETHEUS_READ, provider: opsPrometheusProvider, queryBound: false },
       // queryBound defaults to true (real transaction + statement_timeout) --

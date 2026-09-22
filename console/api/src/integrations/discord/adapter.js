@@ -126,6 +126,10 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.OPS_RESOURCES,
   DISCORD_ADAPTER_ROUTES.OPS_ECONOMY,
   DISCORD_ADAPTER_ROUTES.OPS_INVENTORY,
+  // Issue #1001 (R0 completion): wires the already-existing, permanent
+  // opsLocationProvider() placeholder (see its own comment in
+  // opsProvider.js) as a live route -- not real per-player tracking.
+  DISCORD_ADAPTER_ROUTES.OPS_LOCATION,
   DISCORD_ADAPTER_ROUTES.OPS_SOC,
   DISCORD_ADAPTER_ROUTES.OPS_PROMETHEUS,
   DISCORD_ADAPTER_ROUTES.OPS_DASHBOARD,

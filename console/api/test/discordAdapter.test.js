@@ -76,6 +76,7 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/ops/dashboard",
     "/api/integrations/discord/ops/economy",
     "/api/integrations/discord/ops/inventory",
+    "/api/integrations/discord/ops/location",
     "/api/integrations/discord/ops/prometheus",
     "/api/integrations/discord/ops/resources",
     "/api/integrations/discord/ops/soc",
@@ -108,16 +109,20 @@ test("reports adapter health with isolated link-state writes", async () => {
   ].sort());
   // ops/activity, ops/combat, ops/resources, ops/economy, ops/inventory,
   // ops/soc, ops/prometheus are now wired to real data sources and moved
-  // to liveRoutes (see the seven assertions above — soc via an in-memory
+  // to liveRoutes (see the assertions above — soc via an in-memory
   // rolling counter over the audit log, prometheus via a real HTTP
   // integration against an optional metrics stack that may itself report
-  // "not running", neither a SQL query like the other five). The
-  // remaining OPS route (location) is intentionally, permanently out of
-  // scope for this addon (per-player location tracking already belongs
-  // to the Console's own map UI — decided 2026-07-24) and is correctly,
-  // permanently reported as planned.
-  assert.ok(result.plannedRoutes.includes("/api/integrations/discord/ops/location"));
-  assert.ok(!result.liveRoutes.includes("/api/integrations/discord/ops/location"));
+  // "not running", neither a SQL query like the other five). ops/location
+  // (issue #1001) is ALSO now live -- but wired to opsLocationProvider()'s
+  // permanent, dated (2026-07-24) placeholder response, not real
+  // per-player tracking, which stays intentionally out of scope for this
+  // addon (that data already belongs to the Console's own map UI). "Live"
+  // here means "returns an honest, well-formed response instead of a
+  // 404" -- it does not mean the underlying tracking capability exists,
+  // matching ops/prometheus's own precedent of a live route that can
+  // itself report "not currently available".
+  assert.ok(!result.plannedRoutes.includes("/api/integrations/discord/ops/location"));
+  assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/location"));
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/soc"));
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/inventory"));
   assert.ok(result.liveRoutes.includes("/api/integrations/discord/ops/prometheus"));
@@ -1589,12 +1594,14 @@ test("account-link verify route rate limits independently from the single-link v
 // OPS observability routes — real data wiring (Phase 1/2 of the cross-repo
 // stats/live-data remediation effort). ops/activity, ops/combat,
 // ops/resources, ops/economy, ops/inventory, ops/soc, ops/prometheus are
-// now backed by real data sources via opsProvider.js; the remaining OPS
-// route (location) remains an unimplemented placeholder pending a
-// privacy-consideration decision. Exercises the actual HTTP route path
-// (not just the provider function directly) to prove db reaches the
-// provider correctly through handleDiscordAdapterRoute()'s routing.
-test("ops/activity, ops/inventory, ops/soc, and ops/prometheus routes return real data (or a real, specific 'unavailable' reason) through the HTTP route path, ops/location remains a planned placeholder", async () => {
+// now backed by real data sources via opsProvider.js. ops/location (issue
+// #1001) is also live, but wired to opsLocationProvider()'s permanent,
+// dated (2026-07-24) placeholder response — real per-player tracking
+// stays intentionally out of scope for this addon. Exercises the actual
+// HTTP route path (not just the provider function directly) to prove db
+// reaches the provider correctly through handleDiscordAdapterRoute()'s
+// routing.
+test("ops/activity, ops/inventory, ops/soc, and ops/prometheus routes return real data (or a real, specific 'unavailable' reason) through the HTTP route path, ops/location returns its permanent planned placeholder live (not 404)", async () => {
   const tokenFile = "/tmp/discord-adapter-ops-live-test-token.txt";
   writeFileSync(tokenFile, "server-test-token");
   const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-ops-live-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-ops-live-test-generated" };
@@ -1714,24 +1721,25 @@ test("ops/activity, ops/inventory, ops/soc, and ops/prometheus routes return rea
           assert.equal(prometheusBody.result.status, "planned");
           assert.equal(prometheusBody.result.reason, "metrics_stack_not_running", "must report the specific reason, distinct from a generically unimplemented route");
 
-          // ops/location is intentionally, permanently out of scope for
-          // this addon (per-player location tracking already belongs to
-          // the Console's own map UI — decided 2026-07-24) and, unlike
-          // the other OPS routes, is not wired into opsRoutes' dispatch
-          // table at all (no capability defined for it, since it will
-          // never return real data) -- the route correctly 404s through
-          // the same dispatch path every other unrecognized route does,
-          // rather than a fake 200 placeholder response. Confirmed via
-          // discordAdapterHealth()'s own plannedRoutes/liveRoutes split
-          // (tested separately, above) that this is reported accurately
-          // to callers who ask about capability, without ever needing a
-          // live HTTP round-trip to a route that can never do anything.
+          // ops/location (issue #1001): real per-player tracking is
+          // intentionally, permanently out of scope for this addon
+          // (already belongs to the Console's own map UI — decided
+          // 2026-07-24), but the ROUTE itself is now wired into
+          // opsRoutes' dispatch table like every sibling OPS route,
+          // returning opsLocationProvider()'s honest, well-formed
+          // placeholder — never a 404, matching ops/prometheus's own
+          // precedent of a live route that can itself report
+          // "not currently available".
           const locationResponse = await fetch(`${base}/api/integrations/discord/ops/location`, {
             method: "POST",
             headers: { ...auth, "content-type": "application/json" },
             body: JSON.stringify({ actor: observerActor })
           });
-          assert.equal(locationResponse.status, 404);
+          assert.equal(locationResponse.status, 200);
+          const locationBody = await locationResponse.json();
+          assert.equal(locationBody.ok, true);
+          assert.equal(locationBody.status, "planned");
+          assert.equal(locationBody.domain, "location");
 
           server.close();
           resolve();

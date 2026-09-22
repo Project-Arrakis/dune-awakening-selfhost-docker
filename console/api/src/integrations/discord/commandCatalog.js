@@ -285,6 +285,12 @@ export const COMMAND_METADATA = Object.freeze({
     capability: DISCORD_CAPABILITIES.OPS_INVENTORY_READ,
     params: []
   },
+  [DISCORD_ADAPTER_ROUTES.OPS_LOCATION]: {
+    group: "ops", subcommand: "location",
+    description: "Map location activity summary (permanent placeholder -- real per-player tracking is out of scope by design; see opsLocationProvider()).",
+    capability: DISCORD_CAPABILITIES.OPS_LOCATION_READ,
+    params: []
+  },
   [DISCORD_ADAPTER_ROUTES.OPS_SOC]: {
     group: "ops", subcommand: "soc",
     description: "Security operations center bridge-request summary.",

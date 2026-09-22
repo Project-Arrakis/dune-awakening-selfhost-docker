@@ -25,6 +25,12 @@ export const DISCORD_CAPABILITIES = Object.freeze({
   OPS_RESOURCES_READ: "ops:resources:read",
   OPS_ECONOMY_READ: "ops:economy:read",
   OPS_INVENTORY_READ: "ops:inventory:read",
+  // OPS_LOCATION_READ (issue #1001, R0 completion): opsLocationProvider()
+  // is a permanent, dated (2026-07-24) placeholder, not real per-player
+  // tracking -- see that function's own comment. Admin/owner only, same
+  // as every sibling ops:* capability (CAPABILITY_BY_TIER's moderator set
+  // below deliberately excludes all of them).
+  OPS_LOCATION_READ: "ops:location:read",
   OPS_SOC_READ: "ops:soc:read",
   OPS_PROMETHEUS_READ: "ops:prometheus:read",
   OPS_DASHBOARD_READ: "ops:dashboard:read",
