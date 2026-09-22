@@ -56,7 +56,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/server/status` | Server status command | None |
+| GET | `/api/server/status` | Structured server status and command diagnostics | None |
 | GET | `/api/server/performance` | Performance snapshot (CPU, memory, disk) | None |
 | GET | `/api/server/readiness` | Service readiness check | None |
 | GET | `/api/server/ports` | List service ports | None |
@@ -92,6 +92,37 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 **`409 { queued: false, error }`** on a concurrency conflict; append
 `?restartQueue=immediate` to force an immediate restart. See
 [restart-queue.md](restart-queue.md).
+
+### Structured Server Status
+
+`GET /api/server/status` returns a stable, versioned object for integrations. Use `data` instead of parsing command output:
+
+```json
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "data": {
+    "summary": {
+      "overall": "READY",
+      "title": "My Dune Server",
+      "region": "Europe",
+      "mode": "public",
+      "serverIp": "203.0.113.10",
+      "battlegroup": "sh-example",
+      "population": { "current": 4, "capacity": 60 }
+    },
+    "containers": [{ "name": "dune-postgres", "status": "Up 2 hours" }],
+    "listeners": [{ "name": "Postgres localhost", "port": 15432, "protocol": "TCP", "status": "OK" }],
+    "database": { "worldPartitions": 36 },
+    "gameServers": [{ "map": "Survival_1", "status": "READY", "uptime": "Up 2 hours" }],
+    "automation": { "autoscaler": "RUNNING", "autoUpdates": "DISABLED" },
+    "rabbitmq": { "directorConnections": 1, "gameServerConnections": 2, "textRouterConnections": 1, "details": null },
+    "fls": { "directorHeartbeat": "OK", "populationDeclaration": "OK", "maxCapacityDeclaration": "OK", "gatewayDbMonitoring": "OK" }
+  }
+}
+```
+
+Unavailable numeric and boolean values are `null`, and unavailable collections are empty arrays. `ok` reports whether the underlying status command completed successfully; health is reported separately in `data.summary.overall`. The legacy `operation`, `stdout`, `stderr`, and `exitCode` fields remain available for command diagnostics and backward compatibility.
 
 ---
 
@@ -646,7 +677,7 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
 | GET | `/api/maps` | List all maps | None |
-| GET | `/api/map/status` | Get status of all maps | None |
+| GET | `/api/map/status` | Get structured status of all maps | None |
 | GET | `/api/maps/mode` | Get map mode (static/dynamic) | `map?` (query param) |
 | POST | `/api/maps/mode` | Set map mode | `map`, `mode`, `confirmation: "SET MAP MODE"` |
 | POST | `/api/maps/settings` | Save map settings | `map`, `partitionId?`, `mode?`, `memory?`, `modeChanged`, `memoryChanged`, `confirmation: "SAVE MAP SETTINGS"` |
@@ -656,6 +687,17 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 | POST | `/api/maps/spawn` | Spawn map server | `target`, `confirmation: "SPAWN MAP"` |
 | POST | `/api/maps/despawn` | Despawn map server | `target`, `confirmation: "DESPAWN MAP"` |
 | POST | `/api/maps/respawn` | Restart a map with no managed service (despawn then respawn its partition) | `target`, `confirmation: "RESTART MAP"` |
+
+### Structured Map Status
+
+`GET /api/map/status` returns `schemaVersion`, `ok`, and a `data` object with these integration-ready fields:
+
+- `data.maps`: map configuration rows with `map`, `mode`, numeric `partitions`, and numeric `assigned` values.
+- `data.partitions`: partition rows with numeric IDs and ports, nullable booleans for `ready` and `alive`, and a derived `status`.
+- `data.readiness`: overall readiness plus a `checks` array of `{ section, status, label }` objects.
+- `data.autoscaler`: the Autoscaler state, container name, and container status.
+
+The existing `maps`, `services`, `readiness`, and `autoscaler` command result objects remain available for backward compatibility. Each contains its raw `stdout`, `stderr`, and `exitCode`; new integrations should consume `data` instead.
 
 ### Memory Management
 

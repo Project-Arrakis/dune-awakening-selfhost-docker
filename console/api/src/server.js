@@ -29,7 +29,7 @@ import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatu
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishCarePackageWhisper, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, maintainCarePackageHistory, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm, streamRequestToFile } from "./httpSafety.js";
-import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
+import { buildMapStatusResponse, buildServerStatusResponse, parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
 import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon } from "./addons.js";
 import { createHardwareStatusProvider, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
@@ -726,7 +726,7 @@ async function handleApi(req, res) {
   if (path === "/api/public-directory/status") return json(res, 200, publicDirectory.publicState());
   if (path.startsWith("/api/setup/tasks/")) return taskRoute(req, res, path);
 
-  if (path === "/api/server/status") return commandJson(res, "status");
+  if (path === "/api/server/status") return serverStatusRoute(res);
   if (path === "/api/server/performance") return json(res, 200, await collectPerformanceSnapshot(config.repoRoot));
   if (path === "/api/server/readiness") return safeCommandJson(res, "readiness");
   if (path === "/api/server/ports") return commandJson(res, "ports");
@@ -2156,6 +2156,11 @@ async function backupAutoStatusRoute(res) {
   return json(res, 200, { ...result, status: parseBackupAutoStatus(result) });
 }
 
+async function serverStatusRoute(res) {
+  const result = config.mockMode ? mockCommand("status") : await safeCommand("status");
+  return json(res, 200, buildServerStatusResponse(result));
+}
+
 async function structuredVehiclesRoute(res) {
   if (config.mockMode) return json(res, 200, { vehicles: [] });
   const result = await runDune(config, buildDuneArgs("adminVehicleList"));
@@ -2167,14 +2172,20 @@ async function structuredVehiclesRoute(res) {
 }
 
 async function mapStatusRoute(res) {
-  if (config.mockMode) return json(res, 200, { maps: mockCommand("mapsList"), services: mockCommand("servers"), readiness: mockCommand("readiness") });
-  const [maps, services, readiness, autoscaler] = await Promise.all([
-    safeCommand("mapsList"),
-    safeCommand("servers"),
-    safeCommand("readiness"),
-    safeCommand("autoscalerStatus")
-  ]);
-  return json(res, 200, { maps, services, readiness, autoscaler });
+  const results = config.mockMode
+    ? {
+        maps: mockCommand("mapsList"),
+        services: mockCommand("servers"),
+        readiness: mockCommand("readiness"),
+        autoscaler: mockCommand("autoscalerStatus")
+      }
+    : Object.fromEntries(await Promise.all([
+        ["maps", "mapsList"],
+        ["services", "servers"],
+        ["readiness", "readiness"],
+        ["autoscaler", "autoscalerStatus"]
+      ].map(async ([key, operation]) => [key, await safeCommand(operation)])));
+  return json(res, 200, buildMapStatusResponse(results));
 }
 
 async function mapsSpicefieldUpdateRoute(req, res, path) {

@@ -53,6 +53,43 @@ export type RestartQueueResponse = {
 
 export type RestartQueueTarget = { partitionId?: string | number; map?: string };
 
+export type ServerStatusResponse = {
+  operation: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  schemaVersion: 1;
+  ok: boolean;
+  data: {
+    summary: {
+      overall: string | null;
+      title: string | null;
+      region: string | null;
+      mode: string | null;
+      serverIp: string | null;
+      battlegroup: string | null;
+      population: { current: number | null; capacity: number | null };
+    };
+    containers: Array<{ name: string; status: string }>;
+    listeners: Array<{ name: string; port: number | null; protocol: string; status: string }>;
+    database: { worldPartitions: number | null };
+    gameServers: Array<{ map: string; status: string; uptime: string }>;
+    automation: { autoscaler: string | null; autoUpdates: string | null };
+    rabbitmq: {
+      directorConnections: number | null;
+      gameServerConnections: number | null;
+      textRouterConnections: number | null;
+      details: string | null;
+    };
+    fls: {
+      directorHeartbeat: string | null;
+      populationDeclaration: string | null;
+      maxCapacityDeclaration: string | null;
+      gatewayDbMonitoring: string | null;
+    };
+  };
+};
+
 // The backend now merges a partial body onto the currently persisted
 // settings (see restartQueue.js saveSettings), so every field here is
 // optional -- a caller sends only what it actually changed (e.g. the
@@ -81,7 +118,7 @@ function immediateQuery(immediate?: boolean) {
 }
 
 export const serverApi = {
-  status: () => api<{ stdout: string }>("/api/server/status"),
+  status: () => api<ServerStatusResponse>("/api/server/status"),
   performance: () => api<PerformanceSnapshot>("/api/server/performance"),
   readiness: () => api<{ stdout: string; stderr?: string; exitCode?: number }>("/api/server/readiness"),
   ports: () => api<{ stdout: string }>("/api/server/ports"),

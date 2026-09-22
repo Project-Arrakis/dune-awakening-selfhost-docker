@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseBackupAutoStatus, parseBackupListRows, parseDoctorWarnings, parseFlsSummary, parseHomeStatus, parseMapListRows, parseMemoryStatusRows, parsePortRows, parseRabbitConnections, parseReadyRows, parseServerPartitionRows, parseSkillModules, parseStatusGameServers, parseStatusListenerRows } from "../src/statusParsers.js";
+import { buildMapStatusResponse, buildServerStatusResponse, parseBackupAutoStatus, parseBackupListRows, parseDoctorWarnings, parseFlsSummary, parseHomeStatus, parseMapListRows, parseMemoryStatusRows, parsePortRows, parseRabbitConnections, parseReadyRows, parseServerPartitionRows, parseSkillModules, parseStatusGameServers, parseStatusListenerRows } from "../src/statusParsers.js";
 
 const healthyStatus = `=== Dune status ===
 Overall:     READY
@@ -131,6 +131,12 @@ const postgresBooleanServersOutput = `=== Dune server partitions ===
             5 | CB_Story_Hephaestus                |   0 | Hephaestus                     |                        |           |          | f     | f
 (3 rows)`;
 
+const autoscalerOutput = `=== Autoscaler status ===
+State: running
+Container: dune-autoscaler
+Status: Up 56 minutes
+Logs: dune autoscaler logs`;
+
 test("healthy home status does not create false warnings", () => {
   const summary = parseHomeStatus(healthyStatus);
   assert.equal(summary.population, "0/60");
@@ -212,6 +218,67 @@ test("status fixture exposes exact logical listeners and game servers", () => {
     "DeepDesert_1 S2S:7897/UDP"
   ]);
   assert.deepEqual(parseStatusGameServers(healthyStatusWithSections).map((row) => row.map), ["Survival_1", "Overmap"]);
+});
+
+test("server status response provides a typed contract and preserves command diagnostics", () => {
+  const response = buildServerStatusResponse({ operation: "status", stdout: healthyStatusWithSections, stderr: "", exitCode: 0 });
+  assert.equal(response.schemaVersion, 1);
+  assert.equal(response.ok, true);
+  assert.equal(response.stdout, healthyStatusWithSections);
+  assert.deepEqual(response.data.summary.population, { current: 0, capacity: 60 });
+  assert.equal(response.data.summary.serverIp, "37.76.210.36");
+  assert.deepEqual(response.data.containers[0], { name: "dune-postgres", status: "Up 29 minutes" });
+  assert.deepEqual(response.data.listeners[0], { name: "Postgres localhost", port: 15432, protocol: "TCP", status: "OK" });
+  assert.deepEqual(response.data.database, { worldPartitions: 30 });
+  assert.deepEqual(response.data.gameServers[0], { map: "Survival_1", status: "READY", uptime: "Up 29 minutes" });
+  assert.equal(response.data.rabbitmq.directorConnections, 1);
+  assert.equal(response.data.fls.gatewayDbMonitoring, "OK");
+});
+
+test("map status response provides typed arrays without removing legacy command results", () => {
+  const response = buildMapStatusResponse({
+    maps: { operation: "mapsList", stdout: mapsListOutput, stderr: "", exitCode: 0 },
+    services: { operation: "servers", stdout: postgresBooleanServersOutput, stderr: "", exitCode: 0 },
+    readiness: { operation: "readiness", stdout: healthyReady, stderr: "", exitCode: 0 },
+    autoscaler: { operation: "autoscalerStatus", stdout: autoscalerOutput, stderr: "", exitCode: 0 }
+  });
+  assert.equal(response.schemaVersion, 1);
+  assert.equal(response.ok, true);
+  assert.equal(response.maps.stdout, mapsListOutput);
+  assert.deepEqual(response.data.maps[0], { map: "SH_Arrakeen", mode: "dynamic", partitions: 1, assigned: 0 });
+  assert.deepEqual(response.data.partitions[0], {
+    partitionId: 3,
+    map: "SH_Arrakeen",
+    dimension: 0,
+    label: "Arrakeen",
+    serverId: "Wt8UaAi5QrumxjclQehfpQ",
+    gamePort: 7800,
+    igwPort: 7900,
+    ready: true,
+    alive: true,
+    status: "Ready"
+  });
+  assert.equal(response.data.readiness.status, "ready");
+  assert(response.data.readiness.checks.some((row) => row.section === "Database world partition checks" && row.label === "world_partition rows: 30"));
+  assert.deepEqual(response.data.autoscaler, { state: "running", container: "dune-autoscaler", status: "Up 56 minutes" });
+});
+
+test("structured status responses remain valid when a command fails or output is empty", () => {
+  const server = buildServerStatusResponse({ operation: "status", stdout: "", stderr: "failed", exitCode: 2 });
+  assert.equal(server.ok, false);
+  assert.deepEqual(server.data.summary.population, { current: null, capacity: null });
+  assert.deepEqual(server.data.containers, []);
+
+  const maps = buildMapStatusResponse({
+    maps: { stdout: "", exitCode: 0 },
+    services: { stdout: "", exitCode: 0 },
+    readiness: { stdout: "", exitCode: 2 },
+    autoscaler: { stdout: "", exitCode: 0 }
+  });
+  assert.equal(maps.ok, false);
+  assert.deepEqual(maps.data.maps, []);
+  assert.deepEqual(maps.data.partitions, []);
+  assert.deepEqual(maps.data.readiness, { status: "unknown", message: null, checks: [] });
 });
 
 test("status listener parser keeps separate map rows even when ports match", () => {

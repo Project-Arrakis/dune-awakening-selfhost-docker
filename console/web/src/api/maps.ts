@@ -154,9 +154,41 @@ export type ChoamCaptureResult = { supported: boolean; reason?: string; serial?:
 export type ChoamPositionSaveResult = { ok: boolean; tradeCenter: ChoamTradeCenter; distanceUu: number; verticalUu: number; withinBound: boolean; limits: ChoamPositionLimits; yaw: number; moved: { removed: number; created: number } | null; restartRequired: boolean; reinstallRequired: boolean };
 export type ChoamPositionClearResult = { ok: boolean; tradeCenter: ChoamTradeCenter; cleared: number; reinstallRequired: boolean };
 
+type CommandResult = { operation?: string; stdout: string; stderr?: string; exitCode: number };
+
+export type MapStatusResponse = {
+  maps: CommandResult;
+  services: CommandResult;
+  readiness: CommandResult;
+  autoscaler: CommandResult;
+  schemaVersion: 1;
+  ok: boolean;
+  data: {
+    maps: Array<{ map: string; mode: string | null; partitions: number | null; assigned: number | null }>;
+    partitions: Array<{
+      partitionId: number | null;
+      map: string;
+      dimension: number | null;
+      label: string;
+      serverId: string | null;
+      gamePort: number | null;
+      igwPort: number | null;
+      ready: boolean | null;
+      alive: boolean | null;
+      status: string;
+    }>;
+    readiness: {
+      status: "ready" | "waiting" | "failed" | "unknown";
+      message: string | null;
+      checks: Array<{ section: string | null; status: string; label: string }>;
+    };
+    autoscaler: { state: string | null; container: string | null; status: string | null };
+  };
+};
+
 export const mapsApi = {
   maps: () => api<{ stdout: string }>("/api/maps"),
-  status: () => api<Record<string, { stdout?: string; stderr?: string; exitCode?: number }>>("/api/map/status"),
+  status: () => api<MapStatusResponse>("/api/map/status"),
   mode: (map = "") => api<{ stdout: string }>(`/api/maps/mode${map ? `?map=${encodeURIComponent(map)}` : ""}`),
   saveMapSettings: (body: { map: string; partitionId?: string; mode?: string; memory?: string; modeChanged: boolean; memoryChanged: boolean; running: boolean; confirmation: string }) => post<{ task: Task }>("/api/maps/settings", body),
   runtimeSettings: () => api<MapRuntimeSettings>("/api/maps/runtime-settings"),

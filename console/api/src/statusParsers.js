@@ -7,6 +7,105 @@ export function parseHomeStatus(text) {
   };
 }
 
+export function parseStructuredServerStatus(text) {
+  const summary = keyValueSection(text, "Dune status");
+  const database = keyValueSection(text, "Database");
+  const automation = keyValueSection(text, "Automation");
+  const rabbitmq = keyValueSection(text, "RabbitMQ game connections");
+  const fls = keyValueSection(text, "Funcom/FLS summary");
+  const population = parsePopulation(summary.Population);
+
+  return {
+    summary: {
+      overall: summary.Overall || null,
+      title: summary.Title || null,
+      region: summary.Region || null,
+      mode: summary.Mode || null,
+      serverIp: summary["Server IP"] || null,
+      battlegroup: summary.Battlegroup || null,
+      population
+    },
+    containers: sectionLines(text, "Containers")
+      .filter((line) => !/^SERVICE\s+STATUS$/i.test(line))
+      .map(parseContainerStatus)
+      .filter(Boolean),
+    listeners: parseStatusListenerRows(text).map((row) => ({
+      name: row.name,
+      port: nullableNumber(row.port),
+      protocol: row.protocol,
+      status: row.state
+    })),
+    database: {
+      worldPartitions: nullableNumber(database["World partitions"])
+    },
+    gameServers: parseStatusGameServers(text).map((row) => ({
+      map: row.map,
+      status: row.state,
+      uptime: row.uptime
+    })),
+    automation: {
+      autoscaler: automation.Autoscaler || null,
+      autoUpdates: automation["Auto updates"] || null
+    },
+    rabbitmq: {
+      directorConnections: nullableNumber(rabbitmq["Director connections"]),
+      gameServerConnections: nullableNumber(rabbitmq["Game server connections"]),
+      textRouterConnections: nullableNumber(rabbitmq["TextRouter connections"]),
+      details: rabbitmq["RabbitMQ connection details"] || null
+    },
+    fls: {
+      directorHeartbeat: fls["Director heartbeat"] || null,
+      populationDeclaration: fls["Population declaration"] || null,
+      maxCapacityDeclaration: fls["Max capacity declaration"] || null,
+      gatewayDbMonitoring: fls["Gateway DB monitoring"] || null
+    }
+  };
+}
+
+export function parseStructuredMapStatus({ maps = {}, services = {}, readiness = {}, autoscaler = {} } = {}) {
+  return {
+    maps: parseMapListRows(maps.stdout || "").map((row) => ({
+      map: row.map,
+      mode: normalizeMapMode(row.mode),
+      partitions: nullableNumber(row.partitions),
+      assigned: nullableNumber(row.assigned)
+    })),
+    partitions: parseServerPartitionRows(services.stdout || "").map((row) => ({
+      partitionId: nullableNumber(row.partitionId),
+      map: row.map,
+      dimension: nullableNumber(row.dimension),
+      label: row.label,
+      serverId: row.assignedServer || null,
+      gamePort: nullableNumber(row.gamePort),
+      igwPort: nullableNumber(row.igwPort),
+      ready: nullableBoolean(row.ready),
+      alive: nullableBoolean(row.alive),
+      status: row.status
+    })),
+    readiness: parseStructuredReadiness(readiness.stdout || ""),
+    autoscaler: parseStructuredAutoscaler(autoscaler.stdout || "")
+  };
+}
+
+export function buildServerStatusResponse(result = {}) {
+  return {
+    ...result,
+    schemaVersion: 1,
+    ok: Number(result.exitCode ?? 1) === 0,
+    data: parseStructuredServerStatus(result.stdout || "")
+  };
+}
+
+export function buildMapStatusResponse(results = {}) {
+  const commands = [results.maps, results.services, results.readiness, results.autoscaler].filter(Boolean);
+  return {
+    ...results,
+    schemaVersion: 1,
+    ok: commands.length === 4 && commands.every((result) => Number(result.exitCode ?? 1) === 0),
+    data: parseStructuredMapStatus(results)
+  };
+}
+
 export function parseReadyRows(text) {
   return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^(OK|WAIT|FAIL)\s+/.test(line) && !/world_partition|partition/i.test(line)).map((line) => ({
     status: line.startsWith("OK") ? "Ready" : line.startsWith("WAIT") ? "Warn" : "Failed",
@@ -235,6 +334,85 @@ function findPopulation(text) {
   const max = /^unknown$/i.test(match[2]) ? "?" : match[2];
   if (current === "?" && max === "?") return "";
   return `${current}/${max}`;
+}
+
+function parsePopulation(value) {
+  const match = String(value || "").match(/^\s*(\d+|\?|unknown)\s*\/\s*(\d+|\?|unknown)\s*$/i);
+  if (!match) return { current: null, capacity: null };
+  return {
+    current: nullableNumber(match[1]),
+    capacity: nullableNumber(match[2])
+  };
+}
+
+function parseContainerStatus(line) {
+  const match = String(line || "").match(/^(dune-[a-z0-9-]+)\s+(.+)$/i);
+  if (!match) return null;
+  return { name: match[1], status: match[2].trim() };
+}
+
+function parseStructuredReadiness(text) {
+  const checks = [];
+  let section = null;
+  let status = "unknown";
+  let message = null;
+
+  for (const rawLine of String(text || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const sectionMatch = line.match(/^===\s+(.+?)\s+===$/);
+    if (sectionMatch) {
+      section = sectionMatch[1];
+      continue;
+    }
+    const checkMatch = line.match(/^(OK|WARN|WAIT|FAIL)\s+(.+)$/i);
+    if (checkMatch) {
+      checks.push({ section, status: checkMatch[1].toLowerCase(), label: checkMatch[2].trim() });
+      continue;
+    }
+    const overallMatch = line.match(/^(READY|WAIT|FAIL|NOT READY):\s*(.*)$/i);
+    if (overallMatch) {
+      const value = overallMatch[1].toUpperCase();
+      status = value === "READY" ? "ready" : value === "WAIT" ? "waiting" : "failed";
+      message = overallMatch[2].trim() || null;
+    }
+  }
+
+  return { status, message, checks };
+}
+
+function parseStructuredAutoscaler(text) {
+  const values = keyValueSection(text, "Autoscaler status");
+  return {
+    state: values.State || null,
+    container: values.Container || null,
+    status: values.Status || null
+  };
+}
+
+function keyValueSection(text, section) {
+  const values = {};
+  for (const line of sectionLines(String(text || ""), section)) {
+    const separator = line.indexOf(":");
+    if (separator < 1) continue;
+    values[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();
+  }
+  return values;
+}
+
+function normalizeMapMode(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, "-") || null;
+}
+
+function nullableNumber(value) {
+  if (!/^\d+$/.test(String(value || "").trim())) return null;
+  return Number(value);
+}
+
+function nullableBoolean(value) {
+  const text = String(value || "").trim();
+  if (/^(true|t|1|yes|y)$/i.test(text)) return true;
+  if (/^(false|f|0|no|n)$/i.test(text)) return false;
+  return null;
 }
 
 function summarizeDatabase(text) {

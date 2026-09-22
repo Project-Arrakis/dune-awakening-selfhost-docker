@@ -754,10 +754,9 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         const reason = status.status === "rejected" ? status.reason : memoryStatus.reason;
         throw new Error(reason instanceof Error ? reason.message : String(reason));
       }
-      const mapStatus = status.status === "fulfilled" ? status.value : {};
-      setMapsText(status.status === "fulfilled" ? String(mapStatus.maps?.stdout || "") : "");
-      setServersText(status.status === "fulfilled" ? String(mapStatus.services?.stdout || "") : "");
-      setReadinessText(status.status === "fulfilled" ? String(mapStatus.readiness?.stdout || "") : "");
+      setMapsText(status.status === "fulfilled" ? String(status.value.maps?.stdout || "") : "");
+      setServersText(status.status === "fulfilled" ? String(status.value.services?.stdout || "") : "");
+      setReadinessText(status.status === "fulfilled" ? String(status.value.readiness?.stdout || "") : "");
       setMemoryText(memoryStatus.status === "fulfilled" ? memoryStatus.value.stdout : "");
       if (status.status !== "fulfilled" || memoryStatus.status !== "fulfilled") {
         const failed = status.status === "rejected" ? status.reason : memoryStatus.status === "rejected" ? memoryStatus.reason : "";
