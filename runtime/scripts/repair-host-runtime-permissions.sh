@@ -75,6 +75,7 @@ CONTROL_PATHS=(
   runtime/rabbitmq-game/config
   runtime/rabbitmq-game/certs
   runtime/postgres/initdb
+  runtime/postgres/bootstrap
 )
 
 path_list="$(printf '%s\n' "${CONTROL_PATHS[@]}")"

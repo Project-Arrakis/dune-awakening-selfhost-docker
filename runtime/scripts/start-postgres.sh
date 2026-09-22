@@ -29,26 +29,14 @@ POSTGRES_IMAGE_TAG="$(resolve_postgres_image_tag)"
 IMAGE="registry.funcom.com/funcom/self-hosting/igw-postgres:${POSTGRES_IMAGE_TAG}"
 POSTGRES_PORT="$(resolve_postgres_port)"
 
-mkdir -p runtime/postgres/initdb
+POSTGRES_BOOTSTRAP_DIR="runtime/postgres/bootstrap"
+POSTGRES_BOOTSTRAP_SQL="$POSTGRES_BOOTSTRAP_DIR/ensure-dune.sql"
+mkdir -p "$POSTGRES_BOOTSTRAP_DIR"
 
 dune_db_password="${DUNE_DB_PASSWORD:-dune}"
-dune_db_password_sql="$(printf '%s' "$dune_db_password" | sed "s/'/''/g")"
-
-cat > runtime/postgres/initdb/01-create-dune-user.sql <<SQL
-DO
-\$\$
-BEGIN
-   IF NOT EXISTS (
-      SELECT FROM pg_catalog.pg_roles WHERE rolname = 'dune'
-   ) THEN
-      CREATE ROLE dune LOGIN PASSWORD '$dune_db_password_sql';
-   END IF;
-END
-\$\$;
-
-ALTER DATABASE dune OWNER TO dune;
-GRANT ALL PRIVILEGES ON DATABASE dune TO dune;
-SQL
+DUNE_DB_PASSWORD="$dune_db_password" runtime/scripts/postgres-bootstrap-sql.sh \
+  > "$POSTGRES_BOOTSTRAP_SQL"
+chmod 600 "$POSTGRES_BOOTSTRAP_SQL"
 
 docker network create dune-net 2>/dev/null || true
 
@@ -66,13 +54,12 @@ docker run -d \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=dune \
   -v dune-postgres-data:/var/lib/postgresql/data \
-  -v "$(host_path "$PWD/runtime/postgres/initdb"):/docker-entrypoint-initdb.d:ro" \
   "$IMAGE"
 
 echo "Waiting for Postgres..."
 ready=0
 for i in $(seq 1 60); do
-  if docker exec dune-postgres pg_isready -h 127.0.0.1 -p 5432 -U postgres -d dune >/dev/null 2>&1; then
+  if docker exec dune-postgres pg_isready -h 127.0.0.1 -p 5432 -U postgres -d postgres >/dev/null 2>&1; then
     ready=1
     break
   fi
@@ -87,11 +74,25 @@ if [ "$ready" != "1" ]; then
   exit 1
 fi
 
-docker exec dune-postgres pg_isready -h 127.0.0.1 -p 5432 -U postgres -d dune
+docker exec dune-postgres pg_isready -h 127.0.0.1 -p 5432 -U postgres -d postgres
 
 echo
-echo "=== Normalizing dune schema ownership and privileges ==="
-docker exec -i dune-postgres psql -h 127.0.0.1 -p 5432 -U postgres -d dune <<'SQL'
+echo "=== Ensuring dune database role and database ==="
+# Apply the bootstrap after readiness so every data volume, including an
+# existing or partially initialized one, has the required project role before
+# the migration starts.
+docker exec -i dune-postgres psql -h 127.0.0.1 -p 5432 -U postgres -d postgres \
+  -v ON_ERROR_STOP=1 \
+  < "$POSTGRES_BOOTSTRAP_SQL"
+
+schema_exists="$(docker exec dune-postgres psql -h 127.0.0.1 -p 5432 -U postgres -d dune -Atc \
+  "SELECT count(*) FROM pg_namespace WHERE nspname = 'dune';" | tr -d '[:space:]')"
+
+if [ "$schema_exists" = "1" ]; then
+  echo
+  echo "=== Normalizing dune schema ownership and privileges ==="
+  docker exec -i dune-postgres psql -h 127.0.0.1 -p 5432 -U postgres -d dune \
+    -v ON_ERROR_STOP=1 <<'SQL'
 ALTER DATABASE dune OWNER TO dune;
 ALTER SCHEMA dune OWNER TO dune;
 GRANT ALL PRIVILEGES ON DATABASE dune TO dune;
@@ -145,6 +146,10 @@ BEGIN
 END
 $$;
 SQL
+else
+  echo
+  echo "The dune schema is not present yet; the database migration will create it."
+fi
 
 echo
 echo "=== Databases ==="
