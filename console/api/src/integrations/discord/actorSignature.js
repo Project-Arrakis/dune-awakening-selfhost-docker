@@ -36,6 +36,31 @@ const TIMESTAMP_HEADER = "x-dune-actor-timestamp";
 // payload later does not silently invalidate every existing signature.
 const SIGNED_ACTOR_FIELDS = ["userId", "guildId", "channelId", "roleIds", "interactionId"];
 
+// Independent field set for the Discord write bridge (docs/rw-architecture.md
+// section 3.8, issue #215). Deliberately NOT added to SIGNED_ACTOR_FIELDS above
+// -- that array is consumed by every existing actor-signed route (link, verify,
+// unlink, steam-link), and this codebase has an explicit, on-point precedent
+// (issue #691, referenced in policy.js's own comments) that expanding a shared
+// signed-field set requires a separate, coordinated, versioned rollout across
+// both repos, since Core and the bot ship on independent release trains.
+// write/preview and write/execute are brand-new routes with no existing wire
+// format to preserve, so they define their own set from inception instead:
+// adds `username` (a real actor field, not currently in the shared subset) and
+// `roleSnapshotAt` (when the bot re-derived actor.roleIds from Discord, closing
+// the gap where "actor signature + capability re-validated at both preview AND
+// execute" only proves the same functions ran twice, not that roleIds reflects
+// the actor's CURRENT roles rather than a value cached from the original
+// interaction); deliberately omits `interactionId` since the write bridge's own
+// 60s nonce/expiry already binds each request to one specific confirm-click,
+// making a separate per-interaction replay guard redundant here.
+//
+// Any FUTURE change to this array must follow the same coordinated,
+// versioned, Core/bot-synchronized rollout discipline #691 established for the
+// shared array above -- being independent from it exempts this array only from
+// needing that discipline retroactively for its one-time initial creation, not
+// from needing it for any later change.
+export const WRITE_BRIDGE_SIGNED_ACTOR_FIELDS = ["userId", "username", "roleIds", "guildId", "channelId", "roleSnapshotAt"];
+
 export function actorSignatureSecret(config = {}) {
   const direct = process.env.DUNE_DISCORD_ACTOR_SECRET || config.discordActorSecret || "";
   if (direct) return String(direct).trim();
@@ -70,22 +95,27 @@ export function actorSignatureRequired(config = {}) {
 // window — see FINDING-LINK-1's Known Limitations for why a full nonce/
 // one-time-use scheme was not implemented here), but it eliminates
 // cross-route and cross-body-parameter forgery using a captured envelope.
-export function canonicalActorSignaturePayload(actorPayload = {}, timestamp, route = "") {
-  const fields = {};
-  for (const key of SIGNED_ACTOR_FIELDS) {
+export function canonicalActorSignaturePayload(actorPayload = {}, timestamp, route = "", fields = SIGNED_ACTOR_FIELDS) {
+  const canonical = {};
+  for (const key of fields) {
     const value = actorPayload?.[key];
-    fields[key] = Array.isArray(value) ? [...value].map(String).sort() : String(value ?? "");
+    canonical[key] = Array.isArray(value) ? [...value].map(String).sort() : String(value ?? "");
   }
-  return `${timestamp}.${String(route)}.${JSON.stringify(fields)}`;
+  return `${timestamp}.${String(route)}.${JSON.stringify(canonical)}`;
 }
 
-export function signActorPayload(actorPayload, secret, timestamp = Math.floor(Date.now() / 1000), route = "") {
-  const message = canonicalActorSignaturePayload(actorPayload, timestamp, route);
+export function signActorPayload(actorPayload, secret, timestamp = Math.floor(Date.now() / 1000), route = "", fields = SIGNED_ACTOR_FIELDS) {
+  const message = canonicalActorSignaturePayload(actorPayload, timestamp, route, fields);
   const signature = createHmac("sha256", String(secret)).update(message).digest("hex");
   return { signature, timestamp };
 }
 
-function constantTimeHexEqual(a, b) {
+// Exported per round-6 audit (#776): this length-guard-then-timingSafeEqual
+// pattern must have exactly one implementation, imported everywhere it's
+// needed, not reimplemented -- unstated duplication of this exact logic is
+// the recurring bug class (clear-backpack, history-clear wording drift) this
+// design doc has already found more than once.
+export function constantTimeHexEqual(a, b) {
   const bufferA = Buffer.from(String(a || ""), "hex");
   const bufferB = Buffer.from(String(b || ""), "hex");
   if (bufferA.length === 0 || bufferA.length !== bufferB.length) return false;
@@ -101,7 +131,7 @@ function constantTimeHexEqual(a, b) {
 //
 // `route` must be the exact adapter route path the request was made to
 // (see canonicalActorSignaturePayload() for why).
-export function verifyActorSignature({ actorPayload, headers, config, route = "", required = false, now = Math.floor(Date.now() / 1000) }) {
+export function verifyActorSignature({ actorPayload, headers, config, route = "", required = false, now = Math.floor(Date.now() / 1000), fields = SIGNED_ACTOR_FIELDS }) {
   const secret = actorSignatureSecret(config);
   if (!secret) {
     if (required) throw policyError("actor_signing_disabled", "Actor signing is not configured. Mutation routes require DUNE_DISCORD_ACTOR_SECRET.", 403);
@@ -124,7 +154,7 @@ export function verifyActorSignature({ actorPayload, headers, config, route = ""
     throw policyError("stale_actor_signature", "Discord actor signature has expired. Retry the command.", 403);
   }
 
-  const expected = signActorPayload(actorPayload, secret, timestamp, route).signature;
+  const expected = signActorPayload(actorPayload, secret, timestamp, route, fields).signature;
   if (!constantTimeHexEqual(signature, expected)) {
     throw policyError("invalid_actor_signature", "Discord actor signature does not match the expected value.", 403);
   }

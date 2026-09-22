@@ -61,7 +61,7 @@ function stripComments(text) {
 const source = stripComments(rawSource);
 
 function handleApiBody() {
-  const match = source.match(/async function handleApi\(req,\s*res\)\s*\{/);
+  const match = source.match(/async function handleApi\(req,\s*res,\s*path\)\s*\{/);
   assert.ok(match, "handleApi not found in server.js");
   const start = match.index + match[0].length;
   let depth = 1;
@@ -84,7 +84,7 @@ const at = (needle) => {
 // auth.requireAuth twice -- the logout route above the gate uses it too -- so
 // a bare indexOf("auth.requireAuth") would match the wrong one and make these
 // ordering assertions pass vacuously.
-const GATE = "const session = bearer?.session || auth.requireAuth(req, res);";
+const GATE = "const session = bearer?.session || req._writeBridgePrincipal || auth.requireAuth(req, res);";
 
 test("the comment stripper this file depends on actually works", () => {
   // Everything below asserts against stripped text, so a stripper that quietly
@@ -136,6 +136,23 @@ test("an invalid bearer credential stops the request instead of falling through"
 test("the session is the bearer's when present, otherwise the cookie's", () => {
   assert.ok(body.includes(GATE));
   assert.match(body, /if \(!session\) return;/);
+});
+
+test("a write-bridge principal reaches req.authSession, so audit()'s principalOf() attributes write-bridge mutations to the real Discord actor (Layer 2 QA finding, issue #1023)", () => {
+  // req._writeBridgePrincipal only ever has a non-null value for a request
+  // that arrived over the write-bridge Unix socket and passed every real
+  // check requestHandler runs before handleApi is even called (see the
+  // GATE comment above) -- this assertion is what actually makes issue
+  // #1010's fix (userId: discordUserId on that principal) reach the real
+  // audit log, not just the object writeBridgeCredential.js constructs.
+  const gateAt = at(GATE);
+  const sessionAssignAt = at("req.authSession = session;");
+  assert.ok(gateAt < sessionAssignAt, "req.authSession must be assigned AFTER the session variable can hold a write-bridge principal");
+  // No unrelated reassignment of `session` (or a stale second `req.authSession =`)
+  // may sit between the two -- otherwise a write-bridge principal could be
+  // computed but never actually reach req.authSession.
+  const between = body.slice(gateAt, sessionAssignAt);
+  assert.ok(!/\bsession\s*=[^=]/.test(between.slice(GATE.length)), "nothing may reassign `session` between the gate and req.authSession = session;");
 });
 
 test("both the policy engine and the key scope gate the request", () => {
@@ -271,4 +288,17 @@ test("the throttle-notice map cannot grow without bound", () => {
   // The key space is attacker-controlled (one entry per source address).
   assert.match(source, /if \(apiKeyAuthThrottleNotices\.size > \d+\) \{/);
   assert.match(source, /apiKeyAuthThrottleNotices\.delete\(key\)/);
+});
+
+test("the write-bridge socket's requestListener forwards its own opts argument rather than re-hardcoding viaWriteBridgeSocket a second time (issue #1024)", () => {
+  // Before this fix, this exact closure ignored its own third argument and
+  // hardcoded { viaWriteBridgeSocket: true } independently of
+  // writeBridgeSocketServer.js's own call site -- illusory defense-in-depth,
+  // not a live bug, but two places that could silently drift apart. The
+  // fixed shape has exactly one source of truth: whatever
+  // writeBridgeSocketServer.js passes.
+  assert.match(source, /requestListener:\s*\(req,\s*res,\s*opts\)\s*=>\s*requestHandler\(req,\s*res,\s*opts\)/);
+  // The main TCP listener is the one place viaWriteBridgeSocket: false is
+  // correctly hardcoded on purpose -- nothing else could ever supply it.
+  assert.match(source, /requestHandler\(req,\s*res,\s*\{\s*viaWriteBridgeSocket:\s*false\s*\}\)/);
 });
