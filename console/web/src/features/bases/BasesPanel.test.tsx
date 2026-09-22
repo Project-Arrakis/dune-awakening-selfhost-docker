@@ -133,6 +133,9 @@ describe("BasesPanel player scope", () => {
     expect(screen.queryByRole("button", { name: "First" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Page 1 of/)).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText("Search ID, name, type, or owner")).not.toBeInTheDocument();
+    expect(document.querySelector(".player-bases-panel .bases-table")).toBeInTheDocument();
+    expect(screen.getByText("Owned Home").closest("td")).toHaveAttribute("data-label", "Base Name");
+    expect(screen.getAllByRole("button", { name: /Download Base as Blueprint/ })[0].closest("td")).toHaveAttribute("data-label", "Actions");
   });
 });
 

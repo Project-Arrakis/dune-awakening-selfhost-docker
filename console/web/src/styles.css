@@ -3681,6 +3681,130 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   .bases-search-row { position: static; }
 }
 
+/* Player Summary embeds the same wide Bases table used by the full Bases
+   page. Horizontal scrolling is useful on that management page, but inside a
+   phone-width player summary it leaves almost every field and the row actions
+   off-screen. Only the embedded view becomes a labelled card; the full Bases
+   page keeps its dense, scrollable table. */
+@media (max-width: 760px) {
+  .player-bases-panel .table-wrap.bases-table-wrap {
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+  }
+  .player-bases-panel .bases-table,
+  .player-bases-panel .bases-table > tbody {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+  .player-bases-panel .bases-table > thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .player-bases-panel .bases-table > tbody {
+    display: grid;
+    gap: 12px;
+  }
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border: 1px solid rgba(198, 139, 74, .5);
+    border-radius: 10px;
+    background: #14171a;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, .18);
+    overflow: hidden;
+  }
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td[data-column],
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td.bases-actions-column {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    gap: 6px;
+    width: auto;
+    min-width: 0;
+    min-height: 62px;
+    padding: 10px 12px;
+    border-right: 1px solid rgba(58, 49, 39, .72);
+    border-bottom: 1px solid rgba(58, 49, 39, .72);
+    text-align: left;
+  }
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td[data-column]::before,
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td.bases-actions-column::before {
+    content: attr(data-label);
+    color: #c9ad83;
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1.2;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td[data-column="name"] {
+    order: -1;
+    grid-column: 1 / -1;
+    min-height: 0;
+    padding: 13px 52px 13px 14px;
+    border-right: 0;
+    background: rgba(198, 139, 74, .055);
+    color: var(--title);
+    font-weight: 700;
+  }
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td[data-column="coordinates"],
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td.bases-actions-column {
+    grid-column: 1 / -1;
+    border-right: 0;
+  }
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td.bases-actions-column {
+    min-height: 0;
+    border-bottom: 0;
+  }
+  .player-bases-panel .bases-table td.bases-actions-column .icon-toggle-group {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+  .player-bases-panel .bases-table td.bases-expand-column {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 1;
+    width: 34px;
+    padding: 0;
+    border: 0;
+  }
+  .player-bases-panel .bases-table > tbody > tr.expanded-row-sticky,
+  .player-bases-panel .bases-table > tbody > tr.expanded-row {
+    position: static;
+    display: block;
+    width: 100%;
+  }
+  .player-bases-panel .bases-table > tbody > tr.expanded-row-sticky > td.expanded-row-cell,
+  .player-bases-panel .bases-table > tbody > tr.expanded-row > td.expanded-row-cell {
+    display: block;
+    width: 100%;
+    padding-inline: 10px;
+  }
+}
+
+@media (max-width: 430px) {
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td[data-column],
+  .player-bases-panel .bases-table > tbody > tr:not(.expanded-row):not(.expanded-row-sticky) > td.bases-actions-column {
+    grid-column: 1;
+    border-right: 0;
+  }
+}
+
 .bases-expanded-tablist {
   display: flex;
   gap: 4px;
@@ -6353,9 +6477,11 @@ td .inline-action-result-wrap { flex: 1 0 100%; justify-content: flex-start; min
 .settings-category .settings-grid-roomy { padding: 14px; }
 .settings-selector-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 12px; }
 .settings-selector-row .compact-select { min-width: min(100%, 280px); }
-.spicefield-settings-heading { margin: 22px 0 12px; padding-top: 18px; border-top: 1px solid rgba(214, 185, 140, .18); }
+.spicefield-settings-section { display: grid; gap: 12px; margin-top: 22px; padding-top: 18px; border-top: 1px solid rgba(214, 185, 140, .18); }
+.spicefield-settings-heading { margin: 0; }
 .spicefield-settings-heading h3 { margin: 0 0 6px; color: var(--title); font-size: 14px; }
 .spicefield-settings-heading p { margin: 0; color: var(--muted); font-size: 12px; }
+.spicefield-settings-tools { width: 100%; }
 .spicefields-toolbar { align-items: end; }
 .spicefields-toolbar .wide-field { flex: 1 1 420px; }
 .spicefields-refresh-button { flex: 0 0 auto; margin-bottom: 0; min-height: 42px; }

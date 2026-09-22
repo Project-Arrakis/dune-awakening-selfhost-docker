@@ -191,7 +191,7 @@ describe("MapsPanel modifier availability", () => {
     expect(screen.getByRole("button", { name: "Save Custom Settings" })).toBeEnabled();
   });
 
-  it("shows the global Spice Fields section under Custom Settings without needing a Target selected, and saves at Global scope", async () => {
+  it("shows global settings below the Spice Fields table and saves them at Global scope", async () => {
     const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
     api.status.mockResolvedValue({
       maps: { stdout: JSON.stringify({ maps: [{ map: "Overmap", status: "Ready", mode: "Core Map", partitionId: "2" }] }) },
@@ -215,6 +215,10 @@ describe("MapsPanel modifier availability", () => {
     api.userGame.mockImplementation((map: string) =>
       Promise.resolve(map === "__global__" ? { stdout: "spice_manager_tick_rate_seconds\t9.000000\n" } : { stdout: "" })
     );
+    api.spicefields.mockResolvedValue({
+      activeFields: [{ field_id: "12345", map_name: "HaggaBasin", field_type: "Small", dimension_index: 0, spawn_time: 10, value_remaining: 5000 }],
+      reason: ""
+    });
 
     renderMapsPanel();
     const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
@@ -222,47 +226,39 @@ describe("MapsPanel modifier availability", () => {
     fireEvent.click(modifiers);
     fireEvent.click(screen.getByRole("tab", { name: "Custom Settings" }));
 
-    // No Target selected at all -- the section must still be visible and
-    // populated, proving it isn't gated behind userGameName like the rest
-    // of this tab.
+    // It no longer appears in Custom Settings, where global controls looked
+    // like they belonged to the selected map or partition.
+    expect(screen.queryByDisplayValue("9.000000")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Spice Fields" }));
+
+    // No Target is needed: this editor is global and follows the live table.
     expect(await screen.findByDisplayValue("9.000000")).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Spice Fields" })).toBeVisible();
+    const table = document.querySelector(".spicefields-table");
+    const settingsHeading = screen.getByRole("heading", { name: "Settings" });
+    expect(table).not.toBeNull();
+    expect(table!.compareDocumentPosition(settingsHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     await waitFor(() => expect(api.userGame).toHaveBeenCalledWith("__global__"));
 
-    // Scoped button names (not just "Save"/"Discard Changes") are load-bearing
-    // here: the Custom Settings section's own Save/Discard/Restore Defaults
-    // buttons are also on screen (disabled, no Target selected), and a
-    // regression back to identically-named buttons across both action rows
-    // would make this test itself ambiguous, not just the real UI.
-    // Restore Defaults is enabled whenever the section has fields at all
-    // (it doesn't depend on dirty state, unlike Save/Discard) -- just confirm
-    // both sections' buttons are independently present and distinctly named.
-    expect(screen.getByRole("button", { name: "Restore Spice Field Defaults" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Restore Custom Settings Defaults" })).toBeInTheDocument();
-
-    // The "Filter Custom Settings" search box is shared with the
-    // target-scoped grid above (disabled without a Target), but it also
-    // drives the always-visible Spice Fields grid -- it must not be
-    // disabled just because no Target is selected.
-    expect(screen.getByLabelText("Filter Custom Settings")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Restore Defaults" })).toBeEnabled();
+    expect(screen.getByLabelText("Filter Spice Field Settings")).toBeEnabled();
 
     fireEvent.change(screen.getByDisplayValue("9.000000"), { target: { value: "" } });
-    expect(screen.getByText(/valid value for every changed Spice Field setting/i)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Save Spice Fields" })).toBeDisabled();
+    expect(screen.getByText(/valid value for every changed setting/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 
     fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "3.000000" } });
-    expect(screen.queryByText(/valid value for every changed Spice Field setting/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/valid value for every changed setting/i)).not.toBeInTheDocument();
 
     // Return to the last-loaded value before exercising Discard independently.
-    fireEvent.click(screen.getByRole("button", { name: "Discard Spice Field Changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard Changes" }));
     fireEvent.change(screen.getByDisplayValue("9.000000"), { target: { value: "3.000000" } });
 
     // Discard reverts to the last-loaded value, not the field's schema default.
-    fireEvent.click(screen.getByRole("button", { name: "Discard Spice Field Changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard Changes" }));
     expect(await screen.findByDisplayValue("9.000000")).toBeVisible();
 
     fireEvent.change(screen.getByDisplayValue("9.000000"), { target: { value: "3.000000" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save Spice Fields" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(api.saveUserSettings).toHaveBeenCalledWith(
       expect.objectContaining({ scope: "global", map: "Survival_1", values: { spice_manager_tick_rate_seconds: "3.000000" } })

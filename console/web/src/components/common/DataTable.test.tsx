@@ -34,3 +34,17 @@ describe("DataTable cell titles", () => {
     expect(screen.getByText("Action")).toBeTruthy();
   });
 });
+
+describe("DataTable responsive labels", () => {
+  it("exposes the displayed column and action labels on body cells", () => {
+    render(<DataTable
+      rows={[{ base_name: "Sietch Tabr" }]}
+      columns={["base_name"]}
+      columnLabels={{ base_name: "Base Name" }}
+      action={() => <button>Open</button>}
+    />);
+
+    expect(document.querySelector("td[data-column='base_name']")).toHaveAttribute("data-label", "Base Name");
+    expect(screen.getByRole("button", { name: "Open" }).closest("td")).toHaveAttribute("data-label", "Actions");
+  });
+});
