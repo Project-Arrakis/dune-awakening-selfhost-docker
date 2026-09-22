@@ -115,13 +115,13 @@ test("every catalog route entry's route is a real member of DISCORD_ADAPTER_ROUT
   }
 });
 
-test("broadcast is the only route entry requiring DUNE_DISCORD_WRITES_ENABLED", () => {
+test("broadcast and the write bridge (issue #215) are the only route entries requiring DUNE_DISCORD_WRITES_ENABLED", () => {
   const catalog = buildCommandCatalog();
   const writeGated = [];
   for (const entry of flattenRoutes(catalog)) {
     if (entry.requiresWritesEnabled) writeGated.push(`${entry.group}.${entry.name}`);
   }
-  assert.deepEqual(writeGated, ["admin.broadcast"]);
+  assert.deepEqual(writeGated.sort(), ["admin.broadcast", "write.execute", "write.preview"]);
 });
 
 test("catalog version matches the exported CATALOG_VERSION constant", () => {
@@ -289,6 +289,57 @@ function extractBodyFieldsForRoute(routeConstantName) {
   const fieldRegex = /body\.([A-Za-z0-9_]+)/g;
   let match;
   while ((match = fieldRegex.exec(block)) !== null) fields.add(match[1]);
+
+  // Some routes (write/preview, write/execute, issue #215) delegate their
+  // entire body to a single named handler function instead of inlining it
+  // in the dispatch block itself, since those handlers are substantially
+  // larger than every other route's inline body. When the block's only
+  // content is `return someHandlerName({...})`, follow into that
+  // function's own real source and scan it too, unioning the result --
+  // this keeps the same "the real handler code, not the doc" verification
+  // this test exists for, without forcing every future route to inline.
+  const delegateMatch = block.match(/return\s+(?:await\s+)?([A-Za-z0-9_]+)\(/);
+  if (delegateMatch) {
+    const fnName = delegateMatch[1];
+    const fnMarker = new RegExp(`(?:async\\s+)?function\\s+${fnName}\\s*\\(`);
+    const fnStartMatch = fnMarker.exec(routesSrc);
+    if (fnStartMatch) {
+      // The function's parameter list is itself object-destructured
+      // (`({ req, res, ... })`), which has its own `{...}` -- track PAREN
+      // depth first to find where the parameter list actually closes, then
+      // take the first `{` after that as the real function-body brace.
+      // Naively taking the first `{` after the function name would instead
+      // match the destructured-parameter brace and extract only a few dozen
+      // characters of parameter names, never the real body (caught by this
+      // test's own dry run: fnBlock.length was 53, not the real body size).
+      let parenDepth = 0;
+      let parenEnd = -1;
+      for (let i = fnStartMatch.index; i < routesSrc.length; i++) {
+        const ch = routesSrc[i];
+        if (ch === "(") parenDepth++;
+        else if (ch === ")") {
+          parenDepth--;
+          if (parenDepth === 0) { parenEnd = i; break; }
+        }
+      }
+      const fnBraceStart = parenEnd === -1 ? -1 : routesSrc.indexOf("{", parenEnd);
+      if (fnBraceStart !== -1) {
+        let fnDepth = 1;
+        let fnEnd = fnBraceStart + 1;
+        for (let i = fnBraceStart + 1; i < routesSrc.length && fnDepth > 0; i++) {
+          const ch = routesSrc[i];
+          if (ch === "{") fnDepth++;
+          else if (ch === "}") fnDepth--;
+          if (fnDepth === 0) { fnEnd = i; break; }
+        }
+        const fnBlock = routesSrc.slice(fnBraceStart, fnEnd);
+        let fnMatch;
+        const fnFieldRegex = /body\.([A-Za-z0-9_]+)/g;
+        while ((fnMatch = fnFieldRegex.exec(fnBlock)) !== null) fields.add(fnMatch[1]);
+      }
+    }
+  }
+
   return fields;
 }
 
