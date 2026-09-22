@@ -1,8 +1,8 @@
 # Spice Fields (Custom Settings) — UAT
 
-**Status:** Merged, pending QA | **For:** [PR #228](https://github.com/Red-Blink/dune-awakening-selfhost-docker/pull/228) (merged upstream 2026-09-21, commit `461bd1e8`)
+**Status:** Merged, pending QA | **For:** [PR #228](https://github.com/Red-Blink/dune-awakening-selfhost-docker/pull/228) (merged upstream 2026-09-21, commit `461bd1e8`) — **updated for the per-map/per-partition scoping follow-up** (issue [#996](https://github.com/Project-Arrakis/dune-awakening-selfhost-docker/issues/996), fork PR #1014)
 
-This is a manual test plan for verifying the new `Maps -> Interactive
+This is a manual test plan for verifying the `Maps -> Interactive
 Modifiers -> Custom Settings -> Spice Fields` section against a real, live
 server. PR #228 merged before this checklist was executed — per this fork's
 own process, live-deployment UAT runs after merge and before the next
@@ -10,6 +10,15 @@ release is cut, not as a merge gate (see the PR's "Manual UAT" section).
 It isn't end-user documentation; once this checklist has been run and
 signed off, a normal operator-facing doc can be added separately if the
 maintainer wants one.
+
+**Known caveat, not a merge blocker:** per-map write isolation for these
+settings is confirmed (config-file level, and now UI-level via §9 below),
+but full *behavioral* isolation per-field is not guaranteed for all 9
+fields — one field (`spice_spawning_active`) is confirmed to not do what
+its name implies regardless of scope (issue
+[#998](https://github.com/Project-Arrakis/dune-awakening-selfhost-docker/issues/998)).
+Don't treat a successful UAT pass on the *other* 8 fields as proof #998 is
+also resolved — it isn't, and is tracked separately.
 
 ## Prerequisites
 
@@ -31,7 +40,13 @@ maintainer wants one.
       the Spice Fields section is still visible and its 9 fields are
       populated with real values (not blank/loading forever).
 - [ ] Confirm the section's explanatory paragraph is present and states
-      these settings apply server-wide, independent of the Target selector.
+      these settings apply server-wide (Global) with no Target selected, or
+      to that specific map/partition once one is chosen — **not**
+      "independent of the Target selector" (that was true before the #996
+      per-map scoping follow-up; it no longer is, see §9).
+- [ ] Confirm a small **"Editing: Global"** label is visible directly in
+      the Spice Fields section's own header (new in this PR) — this is the
+      persistent scope indicator, not just the paragraph text.
 - [ ] Confirm the **Filter Custom Settings** search box is enabled (not
       greyed out) even with no Target selected, and typing into it filters
       the Spice Fields grid.
@@ -108,6 +123,11 @@ Confirm each of the following renders as a **number input**:
 
 ## 6. The two Custom Settings action rows don't interfere with each other
 
+(As of #996's follow-up, both sections now share the *same* Target
+selector — but each still tracks its own pending edits and Save/Discard/
+Restore Defaults independently. This section verifies that independence
+still holds now that the underlying scope is shared, not just visually.)
+
 1. Select a real Target (map or partition) so the existing per-target
    Custom Settings grid also becomes usable.
 2. Make a pending (unsaved) change in **both** the per-target grid and the
@@ -137,6 +157,23 @@ feature; verifying it still works correctly alongside the new section.)
       Global-scope fields — this PR reuses that exact mechanism and should
       not behave differently.
 
+## 9. Per-map/per-partition scoping (new, #996/PR #1014)
+
+Automated tests already cover this at the component level (`MapsPanel.settingsAvailability.test.tsx`); this section is the live, real-server confirmation those tests can't provide on their own.
+
+1. In the shared **Target** dropdown above the Custom Settings grid, select a Deep Desert partition.
+   - [ ] Confirm the Spice Fields header's scope label updates to that partition (e.g. "Editing: DeepDesert_1 - ... (8)").
+   - [ ] Confirm the field values shown are that partition's own saved values, not Global's (change one value at Global scope first, then confirm the partition shows a *different* value if one was previously set there, or the schema default if not).
+2. Change a value and click **Save Spice Fields**.
+   - [ ] On the host, inspect that partition's own compiled `UserGame.ini` (e.g. `runtime/game/deepdesert-1-<id>/Saved/UserSettings/UserGame.ini`) and confirm the new value landed there under `[/Script/DuneSandbox.SpiceHarvestingSystem]`.
+   - [ ] Confirm the **Global** `UserGame.ini` (or Survival_1's) was **not** touched by this save.
+3. Select **Overmap** in the Target dropdown.
+   - [ ] Confirm the Spice Fields section shows a distinct, worded notice ("Overmap doesn't host spice fields...") instead of the field grid — visually different from the ordinary "select a Target" empty state elsewhere on the page, not just different text.
+   - [ ] Confirm **Save Spice Fields**, **Discard Spice Field Changes**, and **Restore Spice Field Defaults** are all disabled while Overmap is selected.
+4. Deselect the Target (choose "Select Map Or Partition" again).
+   - [ ] Confirm Spice Fields reverts to showing **Global**'s values and the scope label reads "Editing: Global" again.
+5. Repeat step 1-2 for a Hagga Basin (Survival_1) Sietch partition, confirming the same isolation.
+
 ## Sign-off
 
 | Section | Result | Notes |
@@ -149,5 +186,6 @@ feature; verifying it still works correctly alongside the new section.)
 | 6. Two action rows independent | ☐ Pass ☐ Fail | |
 | 7. Range validation unaffected | ☐ Pass ☐ Fail | |
 | 8. Restart flow matches UserGame tab | ☐ Pass ☐ Fail | |
+| 9. Per-map/per-partition scoping | ☐ Pass ☐ Fail | |
 
 **Tested against:** commit ___________ | **Server:** ___________ | **Date:** ___________
