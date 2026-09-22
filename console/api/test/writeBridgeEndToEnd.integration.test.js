@@ -43,14 +43,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// This sandbox's default tmpdir() (/root/.cache/claude-scratch) refuses
-// AF_UNIX listen() with EACCES for reasons unrelated to this code (the same
-// restriction marketBotBackupPrune.test.js hits) -- /root/projects has no
-// such restriction and is this session's established scratch location.
-const E2E_SCRATCH_ROOT = "/root/projects/.scratch/write-bridge-e2e";
-mkdirSync(E2E_SCRATCH_ROOT, { recursive: true });
+const E2E_SCRATCH_ROOT = tmpdir();
 import { handleDiscordAdapterRoute, WRITE_BRIDGE_SOCKET_FILENAME } from "../src/integrations/discord/routes.js";
 import { signActorPayload, ACTOR_SIGNATURE_HEADER, ACTOR_TIMESTAMP_HEADER, WRITE_BRIDGE_SIGNED_ACTOR_FIELDS } from "../src/integrations/discord/actorSignature.js";
 import { resetWriteNonceStoreForTests } from "../src/integrations/discord/writeBridgeState.js";
@@ -174,8 +170,6 @@ let socketServer;
 let OLD_ACTOR_SECRET;
 let OLD_WRITES_ENABLED;
 let OLD_ADMIN_ROLE_IDS;
-
-test.after(() => { rmSync(E2E_SCRATCH_ROOT, { recursive: true, force: true }); });
 
 test.beforeEach(async () => {
   resetWriteNonceStoreForTests();
