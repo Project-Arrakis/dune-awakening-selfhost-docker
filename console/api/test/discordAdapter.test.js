@@ -95,6 +95,7 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/players/link",
     "/api/integrations/discord/players/link/verify",
     "/api/integrations/discord/players/me",
+    "/api/integrations/discord/players/playtime",
     "/api/integrations/discord/players/storage",
     "/api/integrations/discord/players/unlink",
     "/api/integrations/discord/population",
@@ -239,6 +240,7 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/players/link",
     "/api/integrations/discord/players/link/verify",
     "/api/integrations/discord/players/me",
+    "/api/integrations/discord/players/playtime",
     "/api/integrations/discord/players/storage",
     "/api/integrations/discord/players/unlink",
     "/api/integrations/discord/population",
@@ -741,6 +743,94 @@ test("item-audit-log route enforces moderator tier and up and requires an explic
   } finally {
     try { unlinkSync(tokenFile); } catch {}
   }
+});
+
+// Players playtime route (meta#64 "Chronicles of Kanly", mentat#364) —
+// self-scoped like players/me and players/faction (INVENTORY_READ, i.e.
+// player tier and up), never takes a target actorId.
+async function playtimeRouteFixture(db, run) {
+  const tokenFile = "/tmp/discord-adapter-playtime-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-playtime-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-playtime-test-generated" };
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db });
+      });
+      server.listen(async () => {
+        try {
+          await run(`http://127.0.0.1:${server.address().port}`, { authorization: "Bearer server-test-token" });
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+  }
+}
+
+test("playtime route reports not-linked for a caller with no linked character", async () => {
+  const db = {
+    query: async (text) => {
+      if (text.includes("discord_player_links") || text.includes("discord_account_links")) return { rows: [] };
+      return { rows: [], rowCount: 0 };
+    }
+  };
+  await playtimeRouteFixture(db, async (base, auth) => {
+    const response = await fetch(`${base}/api/integrations/discord/players/playtime`, {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify({ actor: actor(["role-moderator"]) })
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).linked, false);
+  });
+});
+
+test("playtime route returns real playtime and last-seen for a linked caller", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("discord_player_links")) {
+        return { rows: [{ discord_user_id: "user-1", player_controller_id: "473", character_name: "Kerplunk Kersplat", player_pawn_id: "475", online_status: "Online" }] };
+      }
+      if (text.includes("discord_account_links")) return { rows: [] };
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        return { rows: [{ column_name: "account_id" }, { column_name: "online_status" }, { column_name: "last_login_time" }] };
+      }
+      if (text.includes("from dune.player_state ps")) {
+        assert.deepEqual(values, ["473"]);
+        return { rows: [{ account_id: 201, online_status: "Online", last_seen_at: "2026-09-16T00:00:00.000Z" }] };
+      }
+      if (text.includes("from dune.console_player_playtime")) {
+        assert.deepEqual(values, [201]);
+        return { rows: [{ total_seconds: "500", session_started_at: null }] };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+  };
+  await playtimeRouteFixture(db, async (base, auth) => {
+    const response = await fetch(`${base}/api/integrations/discord/players/playtime`, {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify({ actor: actor(["role-moderator"]) })
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.linked, true);
+    assert.equal(body.characterName, "Kerplunk Kersplat");
+    assert.equal(body.totalPlaytimeSeconds, 500);
+    assert.equal(body.lastSeenAt, "2026-09-16T00:00:00.000Z");
+  });
 });
 
 // World Coriolis cycle route (mentat#370, issue #942) — public tier, no

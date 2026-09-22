@@ -9,7 +9,8 @@ import {
   consumePendingLink,
   characterHasSteamId,
   getPlayerRealFaction,
-  getGuildFactionTally
+  getGuildFactionTally,
+  playerPlaytimeSummary
 } from "../../duneDb.js";
 import { policyError } from "./policy.js";
 import { publishCarePackageWhisper } from "../../rmq.js";
@@ -315,6 +316,25 @@ export async function playerFactionProvider(db, { discordUserId }) {
 export async function guildFactionSummaryProvider(db, { discordUserIds }) {
   const { tally, consideredCount } = await getGuildFactionTally(db, discordUserIds);
   return { ok: true, tally, consideredCount };
+}
+
+// Read-only, self-scoped (meta#64 "Chronicles of Kanly", mentat#364) --
+// total playtime + last-seen for the caller's own linked character, for
+// the bot's /profile command. Mirrors whoamiProvider/playerFactionProvider's
+// "not linked" shape so callers can handle all three self-scoped routes the
+// same way.
+export async function playerPlaytimeProvider(db, { discordUserId }) {
+  const linked = await getLinkedPlayer(db, discordUserId);
+  if (!linked) {
+    return { ok: true, linked: false, message: "Not linked. Use /dune data link <character-name>" };
+  }
+  const summary = await playerPlaytimeSummary(db, linked.player_controller_id);
+  return {
+    ok: true,
+    linked: true,
+    characterName: linked.character_name,
+    ...summary
+  };
 }
 
 export async function requireLinkedPlayer(db, discordUserId) {

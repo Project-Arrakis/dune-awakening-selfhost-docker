@@ -24,6 +24,7 @@ import {
   unlinkProvider,
   whoamiProvider,
   playerFactionProvider,
+  playerPlaytimeProvider,
   guildFactionSummaryProvider,
   requireLinkedPlayer
 } from "./linkProvider.js";
@@ -510,6 +511,17 @@ export async function handleDiscordAdapterRoute({
       const actor = validateDiscordActor(body.actor);
       requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.INVENTORY_READ);
       return json(res, 200, await playerFactionProvider(db, {
+        discordUserId: actor.userId
+      }));
+    }
+
+    // Players playtime (meta#64, mentat#364) -- read-only, self-scoped, same
+    // shape convention as players/me and players/faction above.
+    if (path === DISCORD_ADAPTER_ROUTES.PLAYERS_PLAYTIME && req.method === "POST") {
+      const body = await readJsonWithActorSignature(req);
+      const actor = validateDiscordActor(body.actor);
+      requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.INVENTORY_READ);
+      return json(res, 200, await playerPlaytimeProvider(db, {
         discordUserId: actor.userId
       }));
     }

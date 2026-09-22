@@ -1610,6 +1610,54 @@ export async function trackPlayerPlaytime(db) {
         updated_at = current_timestamp`);
 }
 
+// Self-scoped playtime + last-seen summary for one linked player (meta#64
+// "Chronicles of Kanly", mentat#364 -- powers /profile). Deliberately a
+// narrow, single-purpose read distinct from listPlayers()'s admin-tier
+// paginated query and playerProfile()'s admin-tier detail card -- neither
+// exposes playtime/last-seen in a shape a self-scoped route can reuse
+// directly. Mirrors listPlayers()'s own live-elapsed-time computation
+// (completed console_player_playtime.total_seconds, plus time elapsed
+// since session_started_at if still online) so the two never silently
+// diverge on what "total playtime" means.
+export async function playerPlaytimeSummary(db, playerControllerId) {
+  if (!(await tableExists(db, "player_state"))) {
+    return { ...unsupported("playtime", ["dune.player_state"]), totalPlaytimeSeconds: 0, lastSeenAt: null };
+  }
+  const playerStateColumns = await columnsFor(db, "player_state");
+  const hasOnlineStatus = playerStateColumns.has("online_status");
+  const hasPlayerPlaytime = await tableExists(db, "console_player_playtime");
+  const lastSeenSelect = await playerLastSeenSelect(db);
+  const result = await db.query(`
+    select coalesce(ps.account_id, 0) as account_id,
+           ${hasOnlineStatus ? "coalesce(ps.online_status::text, 'Offline')" : "'Offline'"} as online_status,
+           ${lastSeenSelect} as last_seen_at
+    from dune.player_state ps
+    left join dune.actors a on a.id = ps.player_pawn_id
+    left join dune.accounts ac on ac.id = ps.account_id
+    where ps.player_controller_id::text = $1
+    order by ps.id desc
+    limit 1`, [String(playerControllerId)]);
+  const row = result.rows[0];
+  if (!row) return { capabilities: { playtime: hasPlayerPlaytime }, totalPlaytimeSeconds: 0, lastSeenAt: null };
+  if (!hasPlayerPlaytime || !row.account_id) {
+    return { capabilities: { playtime: false }, totalPlaytimeSeconds: 0, lastSeenAt: row.last_seen_at || null };
+  }
+  const playtime = await db.query(`
+    select total_seconds, session_started_at
+    from dune.console_player_playtime
+    where account_id = $1`, [row.account_id]);
+  const tracked = playtime.rows[0];
+  let totalPlaytimeSeconds = Number(tracked?.total_seconds || 0);
+  if (tracked?.session_started_at && row.online_status === "Online") {
+    totalPlaytimeSeconds += Math.max(0, Math.floor((Date.now() - new Date(tracked.session_started_at).getTime()) / 1000));
+  }
+  return {
+    capabilities: { playtime: true },
+    totalPlaytimeSeconds,
+    lastSeenAt: row.last_seen_at || null
+  };
+}
+
 // Funcom creates this reserved GM identity in some freshly initialized
 // battlegroups. It is an internal service actor, not an administrable player.
 const INTERNAL_GM_PLAYER_PAWN_ID = FUNCOM_GM_PERSONA.playerPawnId;

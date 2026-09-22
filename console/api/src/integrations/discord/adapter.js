@@ -56,6 +56,13 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   // cannot claim a faction they don't actually belong to. Matches
   // Project-Arrakis/mentat's DEFAULT_PATHS["players-faction"] exactly.
   PLAYERS_FACTION: "/api/integrations/discord/players/faction",
+  // PLAYERS_PLAYTIME: read-only, self-scoped (meta#64 "Chronicles of
+  // Kanly", mentat#364) -- total playtime + last-seen for the caller's own
+  // linked character, for the bot's /profile command. Same self-scoping
+  // and capability tier as PLAYERS_ME/PLAYERS_FACTION above; a separate
+  // route rather than folding into either since both already have an
+  // established response shape other callers depend on.
+  PLAYERS_PLAYTIME: "/api/integrations/discord/players/playtime",
   // GUILD_GRANTS_*: per-Discord-guild enable/disable/default for an
   // already-linked character (issue #696) -- distinct from
   // PLAYERS_ACCOUNTS_SET_DEFAULT's global-across-all-guilds default. Paths
@@ -150,6 +157,7 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.PLAYERS_ACCOUNTS_LINK_STEAM,
   DISCORD_ADAPTER_ROUTES.PLAYERS_ME,
   DISCORD_ADAPTER_ROUTES.PLAYERS_FACTION,
+  DISCORD_ADAPTER_ROUTES.PLAYERS_PLAYTIME,
   DISCORD_ADAPTER_ROUTES.GUILD_GRANTS_ENABLE,
   DISCORD_ADAPTER_ROUTES.GUILD_GRANTS_DISABLE,
   DISCORD_ADAPTER_ROUTES.GUILD_GRANTS_DEFAULT,
