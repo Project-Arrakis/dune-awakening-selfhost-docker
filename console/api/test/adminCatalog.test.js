@@ -63,12 +63,31 @@ test("catalog preserves DLC ownership metadata for grant warnings", () => {
   const item = resolveCatalogItem(fixtureRepo(), { itemId: "MTX_Fremen_FedaykinArmor_SetVariant" });
   assert.equal(item.requiredDlc, "Filmic Archive");
   assert.equal(item.requiredSteamDlc, "4857580");
+  assert.equal(item.entitlementControlled, true);
+});
+
+test("catalog identifies Lost Harvest and other entitlement-controlled MTX grants", () => {
+  const root = fixtureRepo();
+  const duneMan = resolveCatalogItem(root, { itemId: "MTX_B1C2_DuneManCoverallsSetVariant_Top" });
+  assert.equal(duneMan.requiredDlc, "Lost Harvest");
+  assert.equal(duneMan.requiredSteamDlc, "3596900");
+  assert.equal(duneMan.entitlementControlled, true);
+
+  const ordinary = resolveCatalogItem(root, { itemId: "BasicLighting_Patent" });
+  assert.equal(ordinary.entitlementControlled, undefined);
 });
 
 test("real catalog uses the corrected Dune Man Set 2 patent ID", () => {
   const unlocks = listBuildingUnlockItems(REAL_REPO_ROOT);
-  assert.ok(unlocks.some((item) => item.itemId === "MTX_Neut_DesertMechanicSet02_Patent"));
+  const duneManSets = unlocks.filter((item) => ["MTX_Neut_DesertMechanicSet_Patent", "MTX_Neut_DesertMechanicSet02_Patent"].includes(item.itemId));
+  assert.equal(duneManSets.length, 2);
+  for (const item of duneManSets) {
+    assert.equal(item.requiredDlc, "Lost Harvest");
+    assert.equal(item.requiredSteamDlc, "3596900");
+    assert.equal(item.entitlementControlled, true);
+  }
   assert.equal(unlocks.some((item) => item.itemId === "MTX_Neut_DesertMechanicSet_02_Patent"), false);
+  assert.equal(unlocks.find((item) => item.itemId === "MTX_Atre_BreakfastRoomSet_Patent")?.entitlementControlled, true);
 });
 
 test("real catalog exposes only verified Filmic Archive grant tokens through their correct flows", () => {

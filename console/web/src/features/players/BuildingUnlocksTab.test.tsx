@@ -72,4 +72,16 @@ describe("BuildingUnlocksTab", () => {
       details: expect.arrayContaining([expect.objectContaining({ label: "Requires", value: "Filmic Archive" })])
     }));
   });
+
+  it("shows entitlement-controlled database records without claiming DLC ownership", async () => {
+    vi.mocked(playersApi.buildingUnlocks).mockResolvedValue({
+      capabilities: { buildingUnlockOwnership: true },
+      rows: [{ itemId: "MTX_Neut_DesertMechanicSet_Patent", name: "Dune Man Building Set", group: "Special & Promotional", status: "Owned", experimental: false, requiredDlc: "Lost Harvest", entitlementControlled: true }]
+    });
+    render(<BuildingUnlocksTab dbPlayerId="123" playerName="Chani" confirmAction={vi.fn().mockResolvedValue(true)} />);
+
+    expect(await screen.findByText("Lost Harvest")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Recorded" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Owned" })).not.toBeInTheDocument();
+  });
 });

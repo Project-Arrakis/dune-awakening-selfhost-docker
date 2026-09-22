@@ -10,9 +10,10 @@ type CustomizationRow = {
   name: string;
   groupId: string;
   group: string;
-  status: "Available" | "Pending" | "Processing";
+  status: "Available" | "Pending" | "Delivered" | "Processing";
   image?: string;
   requiredDlc?: string;
+  entitlementControlled?: boolean;
 };
 
 type CustomizationGroup = { id: string; name: string; count: number };
@@ -58,7 +59,8 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
         group: String(row.group || "Customizations"),
         status: String(row.status || "Available") as CustomizationRow["status"],
         image: String(row.image || ""),
-        requiredDlc: String(row.requiredDlc || "")
+        requiredDlc: String(row.requiredDlc || ""),
+        entitlementControlled: Boolean(row.entitlementControlled)
       })).filter((row) => row.itemId && row.groupId));
     } catch (loadError) {
       setRows([]);
@@ -76,7 +78,12 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
     const pending = selectedRows.filter((row) => row.status === "Pending").length;
     const deliverable = Math.max(0, selection.count - pending);
     const requiredDlcs = [...new Set(selectedRows.map((row) => row.requiredDlc).filter(Boolean))];
-    const dlcWarning = requiredDlcs.length ? ` The player must own ${requiredDlcs.join(" and ")}; the Console cannot verify DLC ownership.` : "";
+    const entitlementControlled = selectedRows.some((row) => row.entitlementControlled);
+    const dlcWarning = requiredDlcs.length
+      ? ` The player must own ${requiredDlcs.join(" and ")}; delivering its token does not grant DLC ownership.`
+      : entitlementControlled
+        ? " These cosmetics are entitlement-controlled. Delivering their tokens does not grant or verify the required account entitlement."
+        : "";
     if (!(await confirmAction(`Grant ${selection.label} to ${playerName}?\n\n${deliverable} token${deliverable === 1 ? "" : "s"} will be delivered. ${pending ? `${pending} already pending ${pending === 1 ? "token will" : "tokens will"} be skipped.` : ""}${dlcWarning}`, {
       title: selection.itemId ? "Grant Customization" : "Grant Customization Set",
       confirmLabel: "Grant",
@@ -84,7 +91,11 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
         { label: "Player", value: playerName, tone: "accent" },
         { label: selection.itemId ? "Customization" : "Set", value: selection.label },
         { label: "Tokens", value: String(deliverable) },
-        ...(requiredDlcs.length ? [{ label: "Requires", value: requiredDlcs.join(", ") }] : [])
+        ...(requiredDlcs.length
+          ? [{ label: "Requires", value: requiredDlcs.join(", ") }]
+          : entitlementControlled
+            ? [{ label: "Requires", value: "Account Entitlement" }]
+            : [])
       ]
     }))) return;
 
@@ -99,8 +110,9 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
       });
       const statuses = new Map((response.results || []).map((entry) => [String(entry.itemId || ""), String(entry.status || "Available") as CustomizationRow["status"]]));
       setRows((current) => current.map((row) => statuses.has(row.itemId) ? { ...row, status: statuses.get(row.itemId)! } : row));
+      const delivered = response.delivered ?? response.granted;
       const parts: string[] = [];
-      if (response.granted) parts.push(`${response.granted} granted`);
+      if (delivered) parts.push(`${delivered} delivered`);
       if (response.requested) parts.push(`${response.requested} delivery requested`);
       if (response.skipped) parts.push(`${response.skipped} already pending`);
       if (response.failed) parts.push(`${response.failed} failed`);
@@ -108,12 +120,14 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
       const detail = response.failed
         ? "Some requests could not be delivered."
         : response.requested
-          ? "Dune accepted the request, but cosmetic ownership cannot be verified. The player may need to relog."
-          : response.granted
-            ? "Dune will apply the tokens when the character is processed."
+          ? "Dune accepted the delivery request, but persistent ownership cannot be verified. The player may need to relog."
+          : delivered
+            ? entitlementControlled
+              ? "Token delivery was verified, but persistent ownership requires the player's account entitlement and cannot be verified by the Console."
+              : "Token delivery was verified. Dune will process it for the character."
             : "All selected tokens are already pending. No duplicate tokens were added.";
       setResult({ key: "customizations", tone: response.failed ? "danger" : "success", text: `${parts.join(" · ")}. ${detail}` });
-      onActionLog?.("Grant Customizations", selection.label, String(response.granted + (response.requested || 0)), response.failed ? `${response.failed} Failed` : response.requested ? `${response.requested} Delivery Requested` : response.skipped ? `${response.skipped} Already Pending` : "Succeeded");
+      onActionLog?.("Grant Customizations", selection.label, String(delivered + (response.requested || 0)), response.failed ? `${response.failed} Failed` : response.requested ? `${response.requested} Delivery Requested` : response.skipped ? `${response.skipped} Already Pending` : `${delivered} Delivered`);
     } catch (grantError) {
       const message = friendlyInlineError(grantError);
       setResult({ key: "customizations", tone: "danger", text: message });
@@ -127,7 +141,11 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
     const terms = filter.toLowerCase().split(/\s+/).map((term) => term.trim()).filter(Boolean);
     return rows.filter((row) => (!selectedGroup || row.groupId === selectedGroup) && terms.every((term) => `${row.name} ${row.itemId} ${row.group} ${row.status}`.toLowerCase().includes(term)));
   }, [filter, rows, selectedGroup]);
-  const sorted = useSortableRows(filteredRows.map((row) => ({ ...row, customizationName: row.name })));
+  const sorted = useSortableRows(filteredRows.map((row) => ({
+    ...row,
+    customizationName: row.name,
+    requirement: row.requiredDlc || (row.entitlementControlled ? "Account Entitlement" : "None")
+  })));
 
   return <div className="playerAdmin_content">
     <section className="playerAdmin_box playerAdmin_customizations">
@@ -138,15 +156,17 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
         </div>
         <button disabled={!dbPlayerId || loading || Boolean(busyKey)} onClick={() => void grant({ groupId: "all", label: "all customization sets", count: rows.length })}>Grant All Sets</button>
       </div>
-      <p className="playerAdmin_note">Dune removes cosmetic tokens after processing them, so the Console cannot verify which cosmetics a player owns. Available means no matching token is currently pending. Tokens still waiting in inventory are shown and skipped automatically.</p>
+      <p className="playerAdmin_note">Dune removes cosmetic tokens after processing them. Token delivery does not grant or verify DLC and other account entitlements, so the Console cannot confirm persistent cosmetic ownership. Available means no matching token is currently pending.</p>
       <div className="playerAdmin_customizationCards">
         {groups.map((group) => {
           const groupRows = rows.filter((row) => row.groupId === group.id);
           const pending = groupRows.filter((row) => row.status === "Pending").length;
+          const requiredDlcs = [...new Set(groupRows.map((row) => row.requiredDlc).filter(Boolean))];
+          const requirement = requiredDlcs.length ? `Requires ${requiredDlcs.join(", ")}` : groupRows.some((row) => row.entitlementControlled) ? "Entitlement Controlled" : "";
           return <article className={`playerAdmin_customizationCard${selectedGroup === group.id ? " active" : ""}`} key={group.id}>
             <button className="playerAdmin_customizationCardSelect" type="button" onClick={() => setSelectedGroup((current) => current === group.id ? "" : group.id)}>
               <strong>{group.name}</strong>
-              <span>{group.count} Cosmetics{pending ? ` · ${pending} Pending` : ""}</span>
+              <span>{group.count} Cosmetics{requirement ? ` · ${requirement}` : ""}{pending ? ` · ${pending} Pending` : ""}</span>
             </button>
             <button disabled={!dbPlayerId || Boolean(busyKey) || groupRows.length === 0} onClick={() => void grant({ groupId: group.id, label: group.name, count: groupRows.length })}>{busyKey === `group:${group.id}` ? "Granting..." : "Grant Set"}</button>
           </article>;
@@ -169,8 +189,8 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
       <InlineActionResult result={result} resultKey="customizations" />
       {error ? <p className="playerAdmin_note danger">{error}</p> : <DataTable
         rows={sorted.sortedRows}
-        columns={["image", "customizationName", "itemId", "group", "status"]}
-        columnLabels={{ image: "Preview", customizationName: "Customization", itemId: "Item ID", group: "Set" }}
+        columns={["image", "customizationName", "itemId", "group", "requirement", "status"]}
+        columnLabels={{ image: "Preview", customizationName: "Customization", itemId: "Item ID", group: "Set", requirement: "Requires" }}
         emptyMessage={loading ? "Loading customizations..." : "No customizations match this filter."}
         sortColumn={sorted.sortColumn}
         sortDirection={sorted.sortDirection}
@@ -180,12 +200,12 @@ export function CustomizationsTab({ dbPlayerId, playerName, confirmAction, onAct
         rowKey={(item) => String(item.itemId)}
         renderCell={(item, column) => column === "image"
           ? <CatalogItemThumb item={{ id: String(item.itemId), name: String(item.name), image: String(item.image || "") }} small />
-          : column === "itemId" ? <code>{String(item.itemId)}</code> : column === "status" ? <span className={`badge ${item.status === "Available" ? "" : "warn"}`}>{item.status === "Pending" ? "Pending Login" : String(item.status)}</span> : String(item[column] || "")}
+          : column === "itemId" ? <code>{String(item.itemId)}</code> : column === "status" ? <span className={`badge ${item.status === "Available" ? "" : "warn"}`}>{item.status === "Pending" ? "Pending Login" : item.status === "Processing" ? "Delivered" : String(item.status)}</span> : String(item[column] || "")}
         actionClassName="playerAdmin_schematicActionCell"
         action={(item) => {
           const row = item as unknown as CustomizationRow;
           const disabled = row.status !== "Available" || Boolean(busyKey);
-          const label = busyKey === `item:${row.itemId}` ? "Granting..." : row.status === "Available" ? "Grant" : row.status === "Pending" ? "Pending" : "Processing";
+          const label = busyKey === `item:${row.itemId}` ? "Granting..." : row.status === "Available" ? "Grant" : row.status === "Pending" ? "Pending" : "Delivered";
           return <button className="playerAdmin_stateActionButton" disabled={disabled} onClick={() => void grant({ itemId: row.itemId, label: row.name, count: 1 })}>{label}</button>;
         }}
       />}

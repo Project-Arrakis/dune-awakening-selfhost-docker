@@ -9,10 +9,11 @@ type BuildingUnlockRow = {
   itemId: string;
   name: string;
   group: string;
-  status: "Available" | "Pending" | "Processing" | "Owned" | "Unknown";
+  status: "Available" | "Pending" | "Delivered" | "Processing" | "Owned" | "Unknown";
   experimental: boolean;
   image?: string;
   requiredDlc?: string;
+  entitlementControlled?: boolean;
 };
 
 type ConfirmAction = (message: string, options?: {
@@ -56,7 +57,8 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
         status: String(row.status || "Unknown") as BuildingUnlockRow["status"],
         experimental: Boolean(row.experimental),
         image: String(row.image || ""),
-        requiredDlc: String(row.requiredDlc || "")
+        requiredDlc: String(row.requiredDlc || ""),
+        entitlementControlled: Boolean(row.entitlementControlled)
       })).filter((row) => row.itemId));
     } catch (loadError) {
       setRows([]);
@@ -74,7 +76,11 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
     const warning = row.experimental
       ? "This building set is marked experimental because its game metadata is incomplete or developer-only. It may remain as an ordinary inventory item."
       : "Dune will consume the patent token and add the building set to this character. Offline players receive it on their next login.";
-    const dlcWarning = row.requiredDlc ? ` The player must own ${row.requiredDlc}; the Console cannot verify DLC ownership.` : "";
+    const dlcWarning = row.requiredDlc
+      ? ` The player must own ${row.requiredDlc}; delivering its token does not grant DLC ownership.`
+      : row.entitlementControlled
+        ? " This is entitlement-controlled content. Delivering its token does not grant or verify the required account entitlement."
+        : "";
     if (!(await confirmAction(`Grant ${row.name} to ${playerName}?\n\n${warning}${dlcWarning}`, {
       title: row.experimental ? "Grant Experimental Building Set" : "Grant Building Set",
       confirmLabel: "Grant",
@@ -96,11 +102,15 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
       const nextStatus = String(response.status || "Pending") as BuildingUnlockRow["status"];
       setRows((current) => current.map((item) => item.itemId === row.itemId ? { ...item, status: nextStatus } : item));
       const message = response.alreadyOwned
-        ? "Already owned. No duplicate token was granted."
+        ? row.entitlementControlled
+          ? "Recorded in the character database. The Console cannot verify whether the account entitlement makes this content usable."
+          : "Already owned. No duplicate token was granted."
         : response.alreadyPending
           ? "Already pending in the player's inventory. No duplicate token was granted."
-          : nextStatus === "Processing"
-            ? "Delivered to the online player. Reload after Dune processes the token to confirm ownership."
+          : nextStatus === "Delivered" || nextStatus === "Processing"
+            ? row.entitlementControlled
+              ? "Token delivery verified. Persistent ownership still requires the player's account entitlement and cannot be verified by the Console."
+              : "Token delivery verified. Reload after Dune processes it to confirm the building unlock."
             : "Queued in the player's inventory. Dune will process it on the next login.";
       setResult({ key, tone: "success", text: message });
       onActionLog?.("Grant Building Set", row.name, "1", response.alreadyOwned ? "Already Owned" : response.alreadyPending ? "Already Pending" : nextStatus);
@@ -121,14 +131,18 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
     const haystack = `${row.name} ${row.itemId} ${row.group} ${row.status}`.toLowerCase();
     return filterTerms.every((term) => haystack.includes(term));
   });
-  const displayRows = filteredRows.map((row) => ({ ...row, unlockName: row.name }));
+  const displayRows = filteredRows.map((row) => ({
+    ...row,
+    unlockName: row.name,
+    requirement: row.requiredDlc || (row.entitlementControlled ? "Account Entitlement" : "None")
+  }));
   const sorted = useSortableRows(displayRows);
 
   return <div className="playerAdmin_content">
     <section className="playerAdmin_box">
       <h4>Building Sets</h4>
       <div className="playerAdmin_boxHeaderLine playerAdmin_filterHeaderLine">
-        <p>Grants the real patent token and lets Dune add the building set to this character. Research entries remain in the Research tab.</p>
+        <p>Delivers the patent token for Dune to process. Token delivery cannot grant or verify DLC and other account entitlements. Research entries remain in the Research tab.</p>
       </div>
       {!ownershipSupported && <p className="playerAdmin_note danger">This game database cannot report building-set ownership. Grants are disabled to prevent duplicate or misleading entries.</p>}
       <div className="playerAdmin_filterRow playerAdmin_filterActionLine">
@@ -148,8 +162,8 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
       </div>
       {error ? <p className="playerAdmin_note danger">{error}</p> : <DataTable
         rows={sorted.sortedRows}
-        columns={["image", "unlockName", "itemId", "group", "status"]}
-        columnLabels={{ image: "Preview", unlockName: "Building Set", itemId: "Item ID" }}
+        columns={["image", "unlockName", "itemId", "group", "requirement", "status"]}
+        columnLabels={{ image: "Preview", unlockName: "Building Set", itemId: "Item ID", requirement: "Requires" }}
         emptyMessage={loading ? "Loading building sets..." : "No building sets match this filter."}
         sortColumn={sorted.sortColumn}
         sortDirection={sorted.sortDirection}
@@ -162,7 +176,7 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
           : column === "itemId"
           ? <code>{String(item.itemId)}</code>
           : column === "status"
-            ? <span className={`badge ${item.status === "Owned" ? "ok" : item.status === "Available" ? "" : item.status === "Unknown" ? "bad" : "warn"}`}>{item.status === "Pending" ? "Pending Login" : String(item.status)}</span>
+            ? <span className={`badge ${item.status === "Owned" && !item.entitlementControlled ? "ok" : item.status === "Available" ? "" : item.status === "Unknown" ? "bad" : "warn"}`}>{item.status === "Pending" ? "Pending Login" : item.status === "Owned" && item.entitlementControlled ? "Recorded" : String(item.status)}</span>
             : String(item[column] || "")}
         secondaryAction={(item) => <InlineActionResult result={result} resultKey={`building:${item.itemId}`} />}
         secondaryActionLabel="Result"
@@ -171,7 +185,7 @@ export function BuildingUnlocksTab({ dbPlayerId, playerName, confirmAction, onAc
         action={(item) => {
           const row = item as unknown as BuildingUnlockRow;
           const disabled = !ownershipSupported || row.status !== "Available" || Boolean(busyItemId);
-          const label = busyItemId === row.itemId ? "Granting..." : row.status === "Owned" ? "Owned" : row.status === "Pending" ? "Pending" : row.status === "Processing" ? "Processing" : row.status === "Unknown" ? "Unavailable" : "Grant";
+          const label = busyItemId === row.itemId ? "Granting..." : row.status === "Owned" ? row.entitlementControlled ? "Recorded" : "Owned" : row.status === "Pending" ? "Pending" : row.status === "Delivered" || row.status === "Processing" ? "Delivered" : row.status === "Unknown" ? "Unavailable" : "Grant";
           return <button className="playerAdmin_stateActionButton" disabled={disabled} onClick={() => void grant(row)}>{label}</button>;
         }}
       />}

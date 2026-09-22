@@ -5662,15 +5662,17 @@ async function buildingUnlockGrantRoute(req, res, path) {
         supported: true
       });
       if (status === "Owned" || status === "Pending") {
-        audit(config, req, "players.building-unlocks.grant", { playerId, itemId: resolved.itemId, status, ok: true, noOp: true });
-        return json(res, 200, { ok: true, status, alreadyOwned: status === "Owned", alreadyPending: status === "Pending", item: resolved });
+        const ownershipVerified = status === "Owned" && !resolved.entitlementControlled;
+        audit(config, req, "players.building-unlocks.grant", { playerId, itemId: resolved.itemId, status, ownershipVerified, ok: true, noOp: true });
+        return json(res, 200, { ok: true, status, ownershipVerified, alreadyOwned: status === "Owned", alreadyPending: status === "Pending", item: resolved });
       }
     }
 
     const result = await grantPlayerItem(playerId, { itemId: resolved.itemId, quantity: 1 }, target);
-    const status = result.ok ? (target.online ? "Processing" : "Pending") : "Available";
-    audit(config, req, "players.building-unlocks.grant", { playerId, itemId: resolved.itemId, status, ok: result.ok });
-    return json(res, result.ok ? 200 : 207, { ok: result.ok, status, item: resolved, result });
+    const status = result.ok ? (target.online ? "Delivered" : "Pending") : "Available";
+    const ownershipVerified = false;
+    audit(config, req, "players.building-unlocks.grant", { playerId, itemId: resolved.itemId, status, deliveryVerified: result.ok, ownershipVerified, ok: result.ok });
+    return json(res, result.ok ? 200 : 207, { ok: result.ok, status, deliveryVerified: result.ok, ownershipVerified, item: resolved, result });
   } catch (error) {
     audit(config, req, "players.building-unlocks.grant", { playerId, itemId: body.itemId, ok: false, error: redact(error?.message || "Unexpected error.") });
     return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
@@ -5737,10 +5739,12 @@ async function customizationGrantRoute(req, res, path) {
           name: item.name,
           groupId: item.groupId,
           ...outcome,
-          status: outcome.ok ? (target.online ? "Processing" : "Pending") : "Available",
-          warning: outcome.deliveryRequested
-            ? "Dune accepted the delivery request, but cosmetic ownership cannot be verified because customization tokens may be consumed immediately."
-            : result.warning,
+          status: outcome.ok ? (target.online ? "Delivered" : "Pending") : "Available",
+          warning: item.entitlementControlled
+            ? `${outcome.inventoryVerified ? "Inventory delivery was verified" : "Dune accepted the delivery request"}, but persistent ownership requires the player's Funcom/Steam entitlement and cannot be verified by the Console.`
+            : outcome.deliveryRequested
+              ? "Dune accepted the delivery request, but cosmetic ownership cannot be verified because customization tokens may be consumed immediately."
+              : result.warning,
           result
         });
       } catch (error) {
@@ -5748,8 +5752,9 @@ async function customizationGrantRoute(req, res, path) {
       }
     }
     const { ok, granted, requested, skipped, failed } = summarizeCustomizationGrantResults(results);
-    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, granted, requested, skipped, failed, ok, results });
-    return json(res, ok ? 200 : 207, { ok, granted, requested, skipped, failed, results });
+    const delivered = granted;
+    audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, delivered, requested, skipped, failed, ok, results });
+    return json(res, ok ? 200 : 207, { ok, delivered, granted, requested, skipped, failed, ownershipVerified: false, results });
   } catch (error) {
     audit(config, req, "players.customizations.grant", { playerId, itemId: body.itemId || null, groupId: body.groupId || null, ok: false, error: redact(error?.message || "Unexpected error.") });
     return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });

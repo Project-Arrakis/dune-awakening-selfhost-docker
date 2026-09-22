@@ -18,7 +18,7 @@ const groups = [
 const rows = [
   { itemId: "B1C3_Atre_Maula_Pistol", name: "Atreides Pistol", groupId: "atreides", group: "Atreides", status: "Available" },
   { itemId: "B1C3_Atre_Sword", name: "Atreides Sword", groupId: "atreides", group: "Atreides", status: "Pending" },
-  { itemId: "MTX_B1C2_DuneManCoverallsSetVariant_Top", name: "Dune Man Jacket", groupId: "dune-man", group: "Dune Man", status: "Available" }
+  { itemId: "MTX_B1C2_DuneManCoverallsSetVariant_Top", name: "Dune Man Jacket", groupId: "dune-man", group: "Dune Man", status: "Available", requiredDlc: "Lost Harvest", entitlementControlled: true }
 ];
 
 beforeEach(() => {
@@ -57,7 +57,7 @@ describe("CustomizationsTab", () => {
       confirmation: "GRANT CUSTOMIZATIONS"
     }));
     expect(confirmAction).toHaveBeenCalled();
-    expect(await screen.findByText(/1 granted · 1 already pending/i)).toBeInTheDocument();
+    expect(await screen.findByText(/1 delivered · 1 already pending/i)).toBeInTheDocument();
   });
 
   it("reports an accepted but immediately consumed token as a delivery request", async () => {
@@ -75,7 +75,7 @@ describe("CustomizationsTab", () => {
     await screen.findByText("Atreides Pistol");
     fireEvent.click(screen.getAllByRole("button", { name: "Grant" })[0]);
     expect(await screen.findByText(/^1 delivery requested\./i)).toBeInTheDocument();
-    expect(screen.getByText(/cosmetic ownership cannot be verified/i)).toBeInTheDocument();
+    expect(screen.getByText(/persistent ownership cannot be verified/i)).toBeInTheDocument();
     expect(screen.queryByText(/1 failed/i)).not.toBeInTheDocument();
   });
 
@@ -92,5 +92,25 @@ describe("CustomizationsTab", () => {
     expect(confirmAction).toHaveBeenCalledWith(expect.stringMatching(/must own Filmic Archive/i), expect.objectContaining({
       details: expect.arrayContaining([expect.objectContaining({ label: "Requires", value: "Filmic Archive" })])
     }));
+  });
+
+  it("labels Dune Man as Lost Harvest content and does not claim ownership", async () => {
+    const confirmAction = vi.fn().mockResolvedValue(true);
+    vi.mocked(playersApi.grantCustomizations).mockResolvedValue({
+      ok: true,
+      delivered: 1,
+      granted: 1,
+      requested: 0,
+      skipped: 0,
+      failed: 0,
+      ownershipVerified: false,
+      results: [{ itemId: "MTX_B1C2_DuneManCoverallsSetVariant_Top", status: "Delivered", ok: true, inventoryVerified: true, ownershipVerified: false }]
+    });
+    render(<CustomizationsTab dbPlayerId="123" playerName="Chani" confirmAction={confirmAction} />);
+
+    fireEvent.click((await screen.findAllByRole("button", { name: "Grant Set" }))[1]);
+    expect(confirmAction).toHaveBeenCalledWith(expect.stringMatching(/must own Lost Harvest.*does not grant DLC ownership/is), expect.anything());
+    expect(await screen.findByText(/persistent ownership requires the player's account entitlement/i)).toBeInTheDocument();
+    expect(screen.getAllByText("Delivered")).toHaveLength(2);
   });
 });

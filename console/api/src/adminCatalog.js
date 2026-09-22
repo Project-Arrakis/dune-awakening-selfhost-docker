@@ -11,6 +11,14 @@ const CUSTOMIZATION_GROUPS = Object.freeze([
   { id: "filmic-archive", name: "Filmic Archive", matches: (itemId) => /^(?:MTX_Fremen_FedaykinArmor_SetVariant|MTX_Atre_CaladanTrenchcoat_SetVariant|MTX_Sard_Scout_SetVariant)$/i.test(itemId) }
 ]);
 
+const KNOWN_DLC_REQUIREMENTS = Object.freeze([
+  {
+    name: "Lost Harvest",
+    steamAppId: "3596900",
+    matches: (itemId) => /^(?:MTX_B1C2_DuneMan|MTX_Neut_DesertMechanic)/i.test(itemId)
+  }
+]);
+
 export function resolveCatalogItem(repoRoot, { itemName = "", itemId = "" } = {}) {
   const value = String(itemId || itemName || "").trim();
   if (!value || value.length > 240 || /[\r\n]/.test(value)) throw new Error("Item name or id is required");
@@ -249,8 +257,12 @@ function normalizeItem(item, repoRoot = "") {
   if (item.group) result.group = String(item.group);
   if (item.volume !== undefined && item.volume !== null) result.volume = Number(item.volume);
   if (isValidStackSize(item.stackSize)) result.stackSize = item.stackSize;
-  if (item.requiredDlc) result.requiredDlc = String(item.requiredDlc);
-  if (item.requiredSteamDlc) result.requiredSteamDlc = String(item.requiredSteamDlc);
+  const knownRequirement = KNOWN_DLC_REQUIREMENTS.find((entry) => entry.matches(id));
+  const requiredDlc = item.requiredDlc || knownRequirement?.name;
+  const requiredSteamDlc = item.requiredSteamDlc || knownRequirement?.steamAppId;
+  if (requiredDlc) result.requiredDlc = String(requiredDlc);
+  if (requiredSteamDlc) result.requiredSteamDlc = String(requiredSteamDlc);
+  if (item.entitlementControlled || requiredDlc || /^MTX_/i.test(id)) result.entitlementControlled = true;
   return result;
 }
 
