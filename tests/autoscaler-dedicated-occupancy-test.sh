@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+test_root="$(mktemp -d)"
+container="dune-autoscaler-occupancy-test-$$"
+cleanup() {
+  docker rm -f "$container" >/dev/null 2>&1 || true
+  rm -rf "$test_root"
+}
+trap cleanup EXIT
+
+python3 - "$test_root/function.sh" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path("runtime/scripts/autoscaler.sh").read_text(encoding="utf-8")
+start = source.index("occupied_dimensions_for_map() {")
+end = source.index("\ncontainer_count_for_map() {", start)
+Path(sys.argv[1]).write_text(source[start:end].rstrip() + "\n", encoding="utf-8")
+PY
+
+docker run -d --rm \
+  --name "$container" \
+  -e POSTGRES_PASSWORD=postgres \
+  postgres:17-alpine >/dev/null
+
+for _ in $(seq 1 60); do
+  if docker exec "$container" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+docker exec "$container" pg_isready -U postgres -d postgres >/dev/null
+
+docker exec -i "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
+create schema dune;
+
+create table dune.farm_state (
+  server_id text primary key,
+  map text not null
+);
+
+create table dune.world_partition (
+  partition_id bigint primary key,
+  server_id text,
+  map text not null
+);
+
+create table dune.actors (
+  id bigint primary key,
+  partition_id bigint
+);
+
+create table dune.player_state (
+  player_pawn_id bigint,
+  server_id text,
+  previous_server_partition_id bigint,
+  online_status text,
+  reconnect_grace_period_end timestamp without time zone,
+  last_avatar_activity timestamp without time zone
+);
+
+insert into dune.farm_state (server_id, map) values
+  ('overmap-server', 'Overmap'),
+  ('hephaestus-story-server', 'CB_Story_Hephaestus'),
+  ('hephaestus-server', 'CB_Dungeon_Hephaestus');
+
+insert into dune.world_partition (partition_id, server_id, map) values
+  (1, 'overmap-server', 'Overmap'),
+  (5, 'hephaestus-story-server', 'CB_Story_Hephaestus'),
+  (14, 'hephaestus-server', 'CB_Dungeon_Hephaestus');
+
+insert into dune.actors (id, partition_id) values
+  (101, 14),
+  (102, 5);
+
+-- This is the reported travel shape: only the pawn has reached Hephaestus;
+-- player_state still names the source server and source partition.
+insert into dune.player_state (
+  player_pawn_id,
+  server_id,
+  previous_server_partition_id,
+  online_status
+) values
+  (101, 'overmap-server', 1, 'Online'),
+  (102, 'overmap-server', 1, 'Online');
+SQL
+
+CONTAINER="$container" FUNCTION_FILE="$test_root/function.sh" bash <<'SH'
+set -euo pipefail
+
+psql_value() {
+  docker exec "$CONTAINER" psql -U postgres -d postgres -Atc "$1"
+}
+
+IDLE_SECONDS=300
+source "$FUNCTION_FILE"
+
+# The pawn's authoritative partition must reserve the first isolated instance
+# even while player_state still points at the source server.
+[ "$(occupied_dimensions_for_map CB_Dungeon_Hephaestus | tr -d '[:space:]')" = "1" ]
+[ "$(occupied_dimensions_for_map CB_Story_Hephaestus | tr -d '[:space:]')" = "1" ]
+
+# A genuinely offline pawn without reconnect/activity grace must not hold it.
+docker exec "$CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c "update dune.player_state set online_status = 'Offline';" >/dev/null
+[ "$(occupied_dimensions_for_map CB_Dungeon_Hephaestus | tr -d '[:space:]')" = "0" ]
+[ "$(occupied_dimensions_for_map CB_Story_Hephaestus | tr -d '[:space:]')" = "0" ]
+
+# Recent activity retains capacity during the established idle grace window.
+docker exec "$CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c "update dune.player_state set last_avatar_activity = current_timestamp;" >/dev/null
+[ "$(occupied_dimensions_for_map CB_Dungeon_Hephaestus | tr -d '[:space:]')" = "1" ]
+[ "$(occupied_dimensions_for_map CB_Story_Hephaestus | tr -d '[:space:]')" = "1" ]
+SH
+
+echo "Autoscaler counts pawn-resident players in isolated activity dimensions."

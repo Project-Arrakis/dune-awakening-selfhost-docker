@@ -392,18 +392,30 @@ occupied_dimensions_for_map() {
   psql_value "
     select count(distinct fs.server_id)
     from dune.farm_state fs
+    join dune.world_partition wp
+      on wp.server_id = fs.server_id
+     and lower(wp.map) = lower('$safe')
     where fs.map = '$safe'
       and coalesce(fs.server_id, '') <> ''
       and exists (
         select 1
         from dune.player_state ps
+        left join dune.actors pawn
+          on pawn.id = ps.player_pawn_id
+        left join dune.farm_state player_fs
+          on player_fs.server_id = ps.server_id
         left join dune.world_partition previous_wp
           on previous_wp.partition_id = ps.previous_server_partition_id
         where (
           ps.server_id = fs.server_id
+          or pawn.partition_id = wp.partition_id
           or (
             previous_wp.server_id = fs.server_id
-            and coalesce(ps.server_id, '') <> fs.server_id
+            and (
+              coalesce(ps.server_id, '') = ''
+              or player_fs.server_id is null
+              or ps.server_id <> fs.server_id
+            )
           )
         )
           and (
