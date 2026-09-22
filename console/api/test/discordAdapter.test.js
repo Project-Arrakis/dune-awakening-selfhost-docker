@@ -88,7 +88,9 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/servers",
     "/api/integrations/discord/services",
     "/api/integrations/discord/status",
-    "/api/integrations/discord/version"
+    "/api/integrations/discord/version",
+    "/api/integrations/discord/write/execute",
+    "/api/integrations/discord/write/preview"
   ].sort());
   assert.ok(!result.plannedRoutes.includes("/api/integrations/discord/logs"));
   assert.ok(!result.plannedRoutes.includes("/api/integrations/discord/ops/activity"));
@@ -146,9 +148,23 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/servers",
     "/api/integrations/discord/services",
     "/api/integrations/discord/status",
-    "/api/integrations/discord/version"
+    "/api/integrations/discord/version",
+    "/api/integrations/discord/write/execute",
+    "/api/integrations/discord/write/preview"
   ].sort());
+  // write/preview, write/execute (issue #215) are a deliberate exception to
+  // this naming lint -- these genuinely ARE the write bridge's own
+  // destructive-action entry points; the name is accurate, not accidental.
+  // Their real security is enforced by the actor-signature + capability +
+  // per-action-tier + nonce stack, never by keeping the route name
+  // innocuous -- allowlisted here as a conscious, reviewed exception, not a
+  // silent bypass of what this lint exists to catch.
+  const WRITE_BRIDGE_ALLOWLIST = new Set([
+    "/api/integrations/discord/write/preview",
+    "/api/integrations/discord/write/execute"
+  ]);
   for (const route of routes) {
+    if (WRITE_BRIDGE_ALLOWLIST.has(route)) continue;
     assert.doesNotMatch(route, /write|execute|delete|restore|kick|grant|teleport|reset|admin/i);
   }
 });

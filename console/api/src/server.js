@@ -45,8 +45,11 @@ import { createDeathPoller } from "./deathPoller.js";
 import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
-import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./integrations/discord/routes.js";
-import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
+import { handleDiscordAdapterRoute, isDiscordAdapterRoute, WRITE_BRIDGE_SOCKET_FILENAME } from "./integrations/discord/routes.js";
+import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
+import { resolveWriteBridgePrincipal, WRITE_BRIDGE_TOKEN_HEADER, WRITE_BRIDGE_ACTION_HEADER, WRITE_BRIDGE_TIER_HEADER, WRITE_BRIDGE_ACTOR_USER_ID_HEADER, WRITE_BRIDGE_ACTOR_USERNAME_HEADER, getWriteBridgeToken } from "./integrations/discord/writeBridgeCredential.js";
+import { startWriteBridgeSocketServer } from "./integrations/discord/writeBridgeSocketServer.js";
+import { selfCheckWriteActionRoutes, checkConfirmPhrasesAgainstRealHandlers } from "./integrations/discord/writeActionRoutes.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { actionForRoute, ROUTE_ACTIONS } from "./actions.js";
 import { evaluate, loadPolicies, getAllPolicies, setPolicies, allKnownActions } from "./policy.js";
@@ -286,8 +289,34 @@ process.on("unhandledRejection", (error) => {
   console.error(`Unhandled background rejection: ${redact(error?.message || "Unexpected error.")}`);
 });
 
-createServer(async (req, res) => {
-  if (config.allowedIps.length) {
+// requestHandler is shared, unmodified, between the main TCP listener and
+// the Discord write bridge's Unix-socket listener (issue #215, docs/rw-
+// architecture.md section 3.1 -- "no parallel implementation"). `opts`
+// declares a default of {} for defense-in-depth: even a future refactor
+// that accidentally drops the explicit third argument fails safe
+// (opts.viaWriteBridgeSocket reads as undefined/falsy) rather than throwing
+// and hanging every request. The TCP listener below must NEVER omit this
+// argument regardless.
+async function requestHandler(req, res, opts = {}) {
+  const path = new URL(req.url || "/", "http://localhost").pathname;
+
+  // Write-bridge credential resolution: this must run BEFORE the
+  // config.allowedIps gate, not after it -- the real ADMIN_ALLOWED_IPS
+  // check below runs unconditionally, before handleApi is ever reached,
+  // and a Unix-socket connection's remoteAddress is always undefined
+  // (normalizing to ""), which can never match a configured allowlist
+  // entry. Without this exemption, every write-bridge request would be
+  // unconditionally 403'd for any operator running the documented, code-
+  // enforced ADMIN_ALLOWED_IPS compensating control -- exactly the
+  // security-conscious operator population this feature must not break.
+  // Resolving here, once, and threading the result through rather than
+  // re-checking inside handleApi also means this credential is never
+  // consulted a second time with a subtly different check.
+  const writeBridgePrincipal = opts.viaWriteBridgeSocket
+    ? resolveWriteBridgePrincipal({ headers: req.headers, method: req.method, path, viaWriteBridgeSocket: true })
+    : null;
+
+  if (!writeBridgePrincipal && config.allowedIps.length) {
     const remoteIp = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
     if (!config.allowedIps.includes(remoteIp)) {
       res.writeHead(403, { "content-type": "application/json" });
@@ -297,7 +326,8 @@ createServer(async (req, res) => {
   }
   try {
     if (req.url?.startsWith("/api/")) {
-      await handleApi(req, res);
+      if (writeBridgePrincipal) req._writeBridgePrincipal = writeBridgePrincipal;
+      await handleApi(req, res, path);
       return;
     }
     serveStatic(config, req, res);
@@ -305,7 +335,9 @@ createServer(async (req, res) => {
     const payload = apiErrorPayload(error);
     json(res, payload.status, payload.body);
   }
-}).listen(config.port, config.host, () => {
+}
+
+createServer((req, res) => requestHandler(req, res, { viaWriteBridgeSocket: false })).listen(config.port, config.host, () => {
   console.log(`${config.appName} API listening on http://${config.host}:${config.port}`);
   if (config.host === "0.0.0.0") {
     console.warn("Warning: ADMIN_BIND_HOST is 0.0.0.0 — the Web Console is reachable on all network interfaces.");
@@ -321,6 +353,59 @@ createServer(async (req, res) => {
     initializeDiscordAdapterSchema(db).catch((error) => {
       console.warn(`Discord adapter schema initialization failed: ${redact(error?.message || "Unexpected error.")}`);
     });
+  }
+  // Hop B's internal-loopback listener (issue #215, docs/rw-architecture.md
+  // section 3.1). Only started when the write bridge is actually enabled --
+  // an operator who hasn't opted into Discord-driven mutations gets no new
+  // listening socket at all. startWriteBridgeSocketServer() itself fails
+  // safe (root-UID refusal, live-listener collision) rather than throwing,
+  // so a startup issue here degrades write/execute to a 503, never crashes
+  // the main console.
+  if (discordWritesEnabled(config)) {
+    // Boot-time route-table consistency check (issue #1020): catches a
+    // WRITE_ACTION_ROUTES entry whose (method, path) no longer resolves to a
+    // real Core route, or whose declared policyAction has drifted from
+    // actions.js's real one -- exactly the class of bug issue #1012 found by
+    // hand. Deliberately fails safe: a problem here disables the whole
+    // subsystem (never starts the socket) rather than crashing Core's boot,
+    // matching selfCheckWriteActionRoutes()'s own documented contract.
+    const writeActionRouteProblems = selfCheckWriteActionRoutes();
+    if (writeActionRouteProblems.length) {
+      console.warn("Discord write bridge disabled: WRITE_ACTION_ROUTES failed its startup consistency check:");
+      for (const problem of writeActionRouteProblems) console.warn(`  - ${problem}`);
+    } else {
+      checkConfirmPhrasesAgainstRealHandlers().then((confirmPhraseProblems) => {
+        if (confirmPhraseProblems.length) {
+          console.warn("Discord write bridge disabled: a confirmPhrase check against a real target handler failed:");
+          for (const problem of confirmPhraseProblems) console.warn(`  - ${problem}`);
+          return;
+        }
+        const writeBridgeSocketPath = join(config.generatedDir, WRITE_BRIDGE_SOCKET_FILENAME);
+        startWriteBridgeSocketServer({
+          socketPath: writeBridgeSocketPath,
+          // Forwards whatever opts writeBridgeSocketServer.js's own createServer
+          // callback passes (issue #1024) -- that call site is the single
+          // source of truth for "this request came from the write-bridge
+          // socket," not a second, independently-hardcoded copy here. Before
+          // this fix, this closure ignored its own third argument and
+          // hardcoded { viaWriteBridgeSocket: true } itself, so
+          // writeBridgeSocketServer.js's own value was silently discarded --
+          // illusory defense-in-depth, not a live bug (both agreed), but a
+          // future edit to one side with no effect on the other.
+          requestListener: (req, res, opts) => requestHandler(req, res, opts)
+        }).then(({ disabled, reason }) => {
+          if (disabled) {
+            console.warn(`Discord write bridge socket did not start (${reason}). Discord write commands will fail closed with a 503.`);
+          } else {
+            console.log(`Discord write bridge listening on ${writeBridgeSocketPath}`);
+          }
+        }).catch((error) => {
+          console.warn(`Discord write bridge socket startup failed: ${redact(error?.message || "Unexpected error.")}`);
+        });
+      }).catch((error) => {
+        console.warn(`Discord write bridge disabled: confirmPhrase self-check itself failed unexpectedly: ${redact(error?.message || "Unexpected error.")}`);
+      });
+    }
   }
   ensureExchangeHistory(db).catch((error) => {
     console.warn(`Market transaction recorder initialization failed: ${redact(error?.message || "Unexpected error.")}`);
@@ -620,9 +705,16 @@ function requireAction(req, res, action) {
   return true;
 }
 
-async function handleApi(req, res) {
+async function handleApi(req, res, path) {
+  // `url` (for its .searchParams -- query-string reads throughout this
+  // function) is re-derived here from the same immutable req.url
+  // requestHandler already parsed for `path`. This is a second, cheap parse
+  // of the same input, not a divergence risk: `path` (the value requestHandler
+  // computed and the write-bridge credential check's exact-match scoping
+  // relies on) is passed in as a parameter and never recomputed here, so the
+  // one value that actually needs "reuse the same canonicalized value, never
+  // re-parse" (docs/rw-architecture.md 3.2's round-3 correction) still is.
   const url = new URL(req.url, "http://localhost");
-  const path = url.pathname;
 
   if (path === "/api/health") return json(res, 200, { ok: true, app: config.appName });
   if (path === "/api/auth/state") {
@@ -693,7 +785,16 @@ async function handleApi(req, res) {
     }
   }
 
-  const session = bearer?.session || auth.requireAuth(req, res);
+  // req._writeBridgePrincipal (issue #215): a third short-circuit option,
+  // matching the exact pattern `bearer?.session` already establishes for
+  // "a non-cookie principal skips auth.requireAuth() (and its CSRF check)
+  // entirely" -- reusing this already-proven integration pattern instead of
+  // introducing a second, structurally different mechanism for the same
+  // class of decision. Already fully resolved (token + exact-path-match
+  // verified) by requestHandler before handleApi was ever called; never
+  // re-verified here, per this design's own "never re-verify a credential a
+  // second time with a subtly different check" principle.
+  const session = bearer?.session || req._writeBridgePrincipal || auth.requireAuth(req, res);
   if (!session) return;
   req.authSession = session;
   // Stashed for requireAction(), the second gate a body-dependent route runs
