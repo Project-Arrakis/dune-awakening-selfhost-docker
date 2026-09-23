@@ -397,38 +397,44 @@ occupied_dimensions_for_map() {
      and lower(wp.map) = lower('$safe')
     where fs.map = '$safe'
       and coalesce(fs.server_id, '') <> ''
-      and exists (
-        select 1
-        from dune.player_state ps
-        left join dune.actors pawn
-          on pawn.id = ps.player_pawn_id
-        left join dune.farm_state player_fs
-          on player_fs.server_id = ps.server_id
-        left join dune.world_partition previous_wp
-          on previous_wp.partition_id = ps.previous_server_partition_id
-        where (
-          ps.server_id = fs.server_id
-          or pawn.partition_id = wp.partition_id
-          or (
-            previous_wp.server_id = fs.server_id
+      and (
+        -- The world server's live connection count is authoritative. Story
+        -- activity player_state rows can remain Offline or point at Overmap
+        -- while the player is already active inside the instance.
+        coalesce(fs.connected_players, 0) > 0
+        or exists (
+          select 1
+          from dune.player_state ps
+          left join dune.actors pawn
+            on pawn.id = ps.player_pawn_id
+          left join dune.farm_state player_fs
+            on player_fs.server_id = ps.server_id
+          left join dune.world_partition previous_wp
+            on previous_wp.partition_id = ps.previous_server_partition_id
+          where (
+            ps.server_id = fs.server_id
+            or pawn.partition_id = wp.partition_id
+            or (
+              previous_wp.server_id = fs.server_id
+              and (
+                coalesce(ps.server_id, '') = ''
+                or player_fs.server_id is null
+                or ps.server_id <> fs.server_id
+              )
+            )
+          )
             and (
-              coalesce(ps.server_id, '') = ''
-              or player_fs.server_id is null
-              or ps.server_id <> fs.server_id
+              ps.online_status <> 'Offline'
+              or (
+                ps.reconnect_grace_period_end is not null
+                and ps.reconnect_grace_period_end > (current_timestamp at time zone 'UTC')
+              )
+              or (
+                ps.last_avatar_activity is not null
+                and ps.last_avatar_activity > (current_timestamp - make_interval(secs => ${IDLE_SECONDS}))
+              )
             )
-          )
         )
-          and (
-            ps.online_status <> 'Offline'
-            or (
-              ps.reconnect_grace_period_end is not null
-              and ps.reconnect_grace_period_end > (current_timestamp at time zone 'UTC')
-            )
-            or (
-              ps.last_avatar_activity is not null
-              and ps.last_avatar_activity > (current_timestamp - make_interval(secs => ${IDLE_SECONDS}))
-            )
-          )
       );
   "
 }

@@ -39,7 +39,8 @@ create schema dune;
 
 create table dune.farm_state (
   server_id text primary key,
-  map text not null
+  map text not null,
+  connected_players integer not null default 0
 );
 
 create table dune.world_partition (
@@ -103,9 +104,18 @@ source "$FUNCTION_FILE"
 [ "$(occupied_dimensions_for_map CB_Dungeon_Hephaestus | tr -d '[:space:]')" = "1" ]
 [ "$(occupied_dimensions_for_map CB_Story_Hephaestus | tr -d '[:space:]')" = "1" ]
 
-# A genuinely offline pawn without reconnect/activity grace must not hold it.
+# The server connection counter remains authoritative when the story map has
+# left the central player row at Offline with no reconnect/activity grace.
 docker exec "$CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
-  -c "update dune.player_state set online_status = 'Offline';" >/dev/null
+  -c "update dune.player_state set online_status = 'Offline';
+      update dune.farm_state set connected_players = 1
+      where map in ('CB_Dungeon_Hephaestus', 'CB_Story_Hephaestus');" >/dev/null
+[ "$(occupied_dimensions_for_map CB_Dungeon_Hephaestus | tr -d '[:space:]')" = "1" ]
+[ "$(occupied_dimensions_for_map CB_Story_Hephaestus | tr -d '[:space:]')" = "1" ]
+
+# A genuinely empty server and stale offline pawn must not hold capacity.
+docker exec "$CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c "update dune.farm_state set connected_players = 0;" >/dev/null
 [ "$(occupied_dimensions_for_map CB_Dungeon_Hephaestus | tr -d '[:space:]')" = "0" ]
 [ "$(occupied_dimensions_for_map CB_Story_Hephaestus | tr -d '[:space:]')" = "0" ]
 
@@ -116,4 +126,4 @@ docker exec "$CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
 [ "$(occupied_dimensions_for_map CB_Story_Hephaestus | tr -d '[:space:]')" = "1" ]
 SH
 
-echo "Autoscaler counts pawn-resident players in isolated activity dimensions."
+echo "Autoscaler counts live server connections and pawn-resident players in isolated activity dimensions."
