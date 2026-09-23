@@ -30,7 +30,10 @@ export const WRITE_ACTION_MIN_TIER = {
   "carepackage.scan": "admin",
   "carepackage.history-clear": "owner",
   "guild.add": "admin",
-  "guild.remove": "admin"
+  "guild.remove": "admin",
+  "backup.create": "owner",
+  "updates.apply-game": "owner",
+  "updates.fix-steamcmd": "owner"
 };
 
 // broadcast.* is intentionally absent -- gated by the existing, separate

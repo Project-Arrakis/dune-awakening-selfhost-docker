@@ -55,3 +55,12 @@ test("WRITE_ACTION_MIN_TIER: table is frozen against poisoned-prototype lookups 
   assert.equal(Object.hasOwn(WRITE_ACTION_MIN_TIER, "constructor"), false);
   assert.equal(Object.hasOwn(WRITE_ACTION_MIN_TIER, "toString"), false);
 });
+
+test("WRITE_ACTION_MIN_TIER: backup.create and updates.* require owner tier", () => {
+  assert.equal(meetsMinTier("owner", "backup.create"), true);
+  assert.equal(meetsMinTier("admin", "backup.create"), false);
+  assert.equal(meetsMinTier("owner", "updates.apply-game"), true);
+  assert.equal(meetsMinTier("admin", "updates.apply-game"), false);
+  assert.equal(meetsMinTier("owner", "updates.fix-steamcmd"), true);
+  assert.equal(meetsMinTier("admin", "updates.fix-steamcmd"), false);
+});

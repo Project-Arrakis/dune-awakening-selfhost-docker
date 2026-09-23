@@ -110,8 +110,8 @@ test("WRITE_ACTION_ROUTES: is frozen -- no entry can be mutated at runtime", () 
   }, TypeError);
 });
 
-test("WRITE_ACTION_ROUTES: exactly 25 entries, matching the design doc's own count", () => {
-  assert.equal(Object.keys(WRITE_ACTION_ROUTES).length, 25);
+test("WRITE_ACTION_ROUTES: exactly 28 entries, matching the design doc's own count", () => {
+  assert.equal(Object.keys(WRITE_ACTION_ROUTES).length, 28);
 });
 
 test("WRITE_ACTION_ROUTES: broadcast.* is intentionally absent", () => {
@@ -147,7 +147,7 @@ test("WRITE_ACTION_ROUTES: every entry with a confirmPhrase matches the real doc
   }
 });
 
-test("matchesWriteActionTarget: every real action's own resolved (method, path) matches itself, exhaustively across all 25 entries", () => {
+test("matchesWriteActionTarget: every real action's own resolved (method, path) matches itself, exhaustively across all 28 entries", () => {
   for (const action of Object.keys(WRITE_ACTION_ROUTES)) {
     const resolved = resolveWriteActionRoute(action, { playerId: "Server#4242", baseId: "1", guildId: "abc123" });
     assert.equal(matchesWriteActionTarget(action, resolved.method, resolved.path), true, `${action} should match its own resolved target`);
@@ -203,4 +203,15 @@ test("matchesWriteActionTarget: multi-segment param routes (guild.remove has two
   assert.equal(matchesWriteActionTarget("guild.remove", removeResolved.method, removeResolved.path), true);
   assert.equal(matchesWriteActionTarget("guild.add", removeResolved.method, removeResolved.path), false);
   assert.equal(matchesWriteActionTarget("guild.remove", addResolved.method, addResolved.path), false);
+});
+
+test("WRITE_ACTION_ROUTES: backup.create and updates.* resolve to their real Core routes", () => {
+  const backup = resolveWriteActionRoute("backup.create", {});
+  assert.deepEqual(backup, { method: "POST", path: "/api/backups/create", confirmPhrase: null, policyAction: "backups:create", auditAction: "backup.create", requiresDualConfirmation: false });
+
+  const applyGame = resolveWriteActionRoute("updates.apply-game", {});
+  assert.deepEqual(applyGame, { method: "POST", path: "/api/updates/apply-game", confirmPhrase: null, policyAction: "updates:apply", auditAction: "updates.apply-game", requiresDualConfirmation: false });
+
+  const fixSteamcmd = resolveWriteActionRoute("updates.fix-steamcmd", {});
+  assert.deepEqual(fixSteamcmd, { method: "POST", path: "/api/updates/fix-steamcmd", confirmPhrase: null, policyAction: "updates:fix", auditAction: "updates.fix-steamcmd", requiresDualConfirmation: false });
 });
