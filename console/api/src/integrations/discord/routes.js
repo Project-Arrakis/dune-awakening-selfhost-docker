@@ -511,10 +511,17 @@ async function writePreviewRoute({ req, res, json, readJsonWithActorSignature, c
 // interaction may have arrived with stale/tampered claims), then performs
 // the real mutation via Core's own internal loopback (Hop B, issue #215;
 // see docs/rw-architecture.md section 3.1-3.4 for the design). For a
-// dual-confirmation action (currently only server.stop, issue #1019), the
-// nonce is peeked rather than eagerly consumed, so a second, distinct actor
-// can independently pass every gate below before Hop B is ever reached --
-// see the requiresDualConfirmation branch further down.
+// dual-confirmation action, the nonce is peeked rather than eagerly consumed,
+// so a second, distinct actor can independently pass every gate below before
+// Hop B is ever reached -- see the requiresDualConfirmation branch further
+// down. NOTE (issue #1019, superseded): server.stop was this mechanism's
+// original and only user; it no longer sets the flag (see the note above its
+// WRITE_ACTION_ROUTES entry for why), so NO production action currently
+// requires dual confirmation. This dispatch logic is entirely generic --
+// driven only by the resolved route's own requiresDualConfirmation field,
+// never by an action name -- so it remains real, available infrastructure for
+// any future action, and stays exercised end-to-end by
+// writeBridge.integration.test.js via setRequiresDualConfirmationForTests().
 async function writeExecuteRoute({ req, res, json, readJsonWithActorSignature, config }) {
   if (!discordWritesEnabled(config)) throw policyError("writes_disabled", "Write operations are not enabled.", 403);
   const body = await readJsonWithActorSignature(req, { requireActorSignature: true, fields: WRITE_BRIDGE_SIGNED_ACTOR_FIELDS });
@@ -600,6 +607,9 @@ async function writeExecuteRoute({ req, res, json, readJsonWithActorSignature, c
   // is extended to give a second, distinct admin realistic time to act. The
   // second call (isDualConfirmSecondStep, checked above) falls through to
   // the real consume + Hop B dispatch below like any other action.
+  // "A qualifying action" is currently an empty set in production (server.stop
+  // no longer sets the flag -- see the route-table note); this branch is
+  // deliberately kept, generic, and tested rather than removed.
   if (resolved.requiresDualConfirmation && !peeked.secondConfirmationRequired) {
     const marked = store.markPendingSecondConfirmation(nonceValue, DUAL_CONFIRMATION_EXTENDED_TTL_SECONDS);
     if (!marked) throw policyError("nonce_not_found", "Confirmation expired or was already used. Please re-run the command.", 410);
