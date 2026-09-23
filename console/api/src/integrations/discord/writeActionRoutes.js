@@ -108,7 +108,10 @@ const RAW_WRITE_ACTION_ROUTES = {
   "carepackage.scan": { method: "POST", path: () => "/api/care-package/run", confirmPhrase: "RUN CARE PACKAGE SCAN", policyAction: "carepackage:scan", auditAction: "care-package.run" },
   "carepackage.history-clear": { method: "POST", path: () => "/api/care-package/history/clear", confirmPhrase: "CLEAR GRANT HISTORY", policyAction: "carepackage:clear-history", auditAction: "care-package.history-clear" },
   "guild.add": { method: "POST", path: (p) => `/api/guilds/${encodeURIComponent(validateGuildId(p.guildId))}/members`, policyAction: "guilds:membership", auditAction: "guilds.add-member" },
-  "guild.remove": { method: "DELETE", path: (p) => `/api/guilds/${encodeURIComponent(validateGuildId(p.guildId))}/members/${encodeURIComponent(validatePlayerId(p.playerId))}`, policyAction: "guilds:membership", auditAction: "guilds.remove-member" }
+  "guild.remove": { method: "DELETE", path: (p) => `/api/guilds/${encodeURIComponent(validateGuildId(p.guildId))}/members/${encodeURIComponent(validatePlayerId(p.playerId))}`, policyAction: "guilds:membership", auditAction: "guilds.remove-member" },
+  "backup.create": { method: "POST", path: () => "/api/backups/create", policyAction: "backups:create", auditAction: "backup.create" },
+  "updates.apply-game": { method: "POST", path: () => "/api/updates/apply-game", policyAction: "updates:apply", auditAction: "updates.apply-game" },
+  "updates.fix-steamcmd": { method: "POST", path: () => "/api/updates/fix-steamcmd", policyAction: "updates:fix", auditAction: "updates.fix-steamcmd" }
 };
 
 // Object.freeze() is shallow -- freezing only the outer table would still let
