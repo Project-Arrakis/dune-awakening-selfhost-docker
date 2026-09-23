@@ -8,7 +8,9 @@ import {
   validatePlayerId,
   validateBaseId,
   validateGuildId,
-  matchesWriteActionTarget
+  matchesWriteActionTarget,
+  setRequiresDualConfirmationForTests,
+  resetRequiresDualConfirmationOverridesForTests
 } from "../src/integrations/discord/writeActionRoutes.js";
 
 test("selfCheckWriteActionRoutes: clean against real actions.js -- every entry resolves to a real route with a matching policyAction", () => {
@@ -214,4 +216,46 @@ test("WRITE_ACTION_ROUTES: backup.create and updates.* resolve to their real Cor
 
   const fixSteamcmd = resolveWriteActionRoute("updates.fix-steamcmd", {});
   assert.deepEqual(fixSteamcmd, { method: "POST", path: "/api/updates/fix-steamcmd", confirmPhrase: null, policyAction: "updates:fix", auditAction: "task.updateFixSteamcmd", requiresDualConfirmation: false });
+});
+
+test("server.stop no longer requires dual confirmation -- the flag is absent from its entry and resolves to false, matching every other action", () => {
+  // Deliberate operator decision, not a regression: the companion Discord
+  // bot's RBAC model makes owner tier exactly one account per guild, so a
+  // "second, genuinely different owner-tier admin" cannot exist in practice
+  // and the gate was impossible to satisfy rather than merely strict. The
+  // generic mechanism itself is untouched -- see writeBridge.integration.test.js,
+  // which still exercises it end-to-end via the test-only override below.
+  assert.equal(Object.hasOwn(WRITE_ACTION_ROUTES["server.stop"], "requiresDualConfirmation"), false, "the field should be absent entirely, matching every other non-dual-confirmation action's convention");
+  assert.equal(resolveWriteActionRoute("server.stop", {}).requiresDualConfirmation, false);
+});
+
+test("no production action requires dual confirmation -- the mechanism exists but nothing currently opts in (regression guard: turning it back on anywhere is a deliberate change that must update this test)", () => {
+  const optedIn = Object.keys(WRITE_ACTION_ROUTES).filter((action) => resolveWriteActionRoute(action, { playerId: "Server#4242", baseId: "1", guildId: "1" }).requiresDualConfirmation);
+  assert.deepEqual(optedIn, []);
+});
+
+test("setRequiresDualConfirmationForTests: overrides ONLY the requiresDualConfirmation field of an already-real action, and resets cleanly", () => {
+  const before = resolveWriteActionRoute("server.restart", {});
+  assert.equal(before.requiresDualConfirmation, false);
+
+  setRequiresDualConfirmationForTests("server.restart", true);
+  try {
+    const overridden = resolveWriteActionRoute("server.restart", {});
+    assert.equal(overridden.requiresDualConfirmation, true);
+    // Every other field must be untouched -- this is a real action with real
+    // path/policy/audit behavior, not a fabricated one.
+    assert.deepEqual({ ...overridden, requiresDualConfirmation: false }, before);
+    // Other actions are unaffected by one action's override.
+    assert.equal(resolveWriteActionRoute("server.start", {}).requiresDualConfirmation, false);
+  } finally {
+    resetRequiresDualConfirmationOverridesForTests();
+  }
+
+  assert.deepEqual(resolveWriteActionRoute("server.restart", {}), before);
+});
+
+test("setRequiresDualConfirmationForTests: refuses an action that isn't a real WRITE_ACTION_ROUTES entry -- the override can never fabricate an action", () => {
+  assert.throws(() => setRequiresDualConfirmationForTests("server.does-not-exist", true), /unknown write action/);
+  assert.throws(() => setRequiresDualConfirmationForTests("__proto__", true), /unknown write action/);
+  assert.equal(resolveWriteActionRoute("server.does-not-exist", {}), null);
 });
