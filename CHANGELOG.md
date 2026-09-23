@@ -47,6 +47,34 @@ Keep a Changelog style, grouped by upstream base version, newest first.
 
 - **`ops/dashboard` Discord adapter route regression fixed** (issue #695). `opsDashboardProvider()` (aggregates all eight `ops-*` providers into one combined summary) was never wired into `routes.js`'s `opsRoutes` dispatch table, so `/dune ops dashboard` hard-404'd -- the provider function itself was untouched and correct, only the dispatch entry was missing. Added the `OPS_DASHBOARD_READ` capability (`policy.js`, admin/owner-only, matching every other `OPS_*` capability), the dispatch entry (`routes.js`), the `DISCORD_LIVE_ADAPTER_ROUTES` listing (`adapter.js`), and the `commandCatalog.js` metadata entry (missing catalog metadata for a live route is a hard error in `buildCommandCatalog()`, which caught this immediately during testing). New end-to-end HTTP-path regression test (`discordAdapter.test.js`) exercises the real route, not just the provider function, and asserts the admin/owner-only capability gate. Full backend suite (1932 tests) re-verified green, not just the new test.
 
+### Documentation
+
+- Added `docs/console/building-set-grants.md`, documenting why a
+  raw-SQL/admin grant of a `category: "buildings"` patent must deliver the
+  real item via `dune.items` (matching `giveItemToPlayer()`) rather than
+  writing its ID into `CraftingRecipesLibraryActorComponent.m_KnownItemRecipes`
+  — the latter makes the item show "known" in the Crafting tab but does not
+  populate `dune.building_progression`, the store that actually gates
+  construction-menu availability in-game. Found by hand: a batch grant of 40
+  Construction-category patents via the recipe-list write left 3 of them
+  (Large Ore Refinery, Large Spice Refinery, Medium Chemical Refinery)
+  unusable in-game despite the database write succeeding. Includes a dated
+  addendum cross-referencing the announced Filmic Archive DLC (ships
+  2026-09-22) against this fork's `runtime/data/admin-items.json`: 27 of its
+  "Caladan Castle" placeables are already present in the catalog ahead of
+  the DLC's entitlement unlock, with their in-game names and template IDs
+  listed; the Part Two Sardaukar set and several named armor/weapon/emote
+  items were not found under any guessed naming. Follow-up same day: found
+  Harkonnen Cataphract Armor is actually present under an internal codename
+  (`Hark_Armor_CombatSuit01`, a complete 6-piece set) but has no item/reward
+  wiring anywhere, so it's still not obtainable. Added
+  `docs/console/examples-grant-building-sets.sql`, a tested worked example
+  (executed live against both dune-dev and dune-prod: 68 candidate items, 5
+  actually new, the rest already owned) that also documents a real Postgres
+  bug — `text[] || 'literal'` is ambiguous between the array-append and
+  array-concatenation overloads and fails with `malformed array literal`;
+  use `array_append(arr, 'literal'::text)` instead.
+
 ### Changed
 
 - **Companion-bot naming references updated: Sentinel/ACP/Arrakis Control Panel → Mentat**, matching the bot repository's own completed rebrand (`sentinel#234`). Docs, code comments, and the Discord player-link verification-code prefix (`"ACP-"` → `"MENTAT-"`) updated across `docs/rw-architecture.md`, `docs/bot/output-architecture.md`, `docs/runtime/METRICS-ALERTMANAGER-DISCORD-RELAY.md`, `docs/security/secrets-management.md`, `docs/security/console-rbac-implementation-and-testing.md`, `console/api/src/integrations/discord/{commandCatalog,handoff,linkProvider,multiAccountLinkProvider}.js`, `console/api/src/duneDb.js`, `.env.example`, and the corresponding tests. The in-game "Mentat" player specialization (`CharacterAdminUI.tsx` and friends) is unrelated and untouched — see `docs/bot/mentat-naming-disambiguation.md` for the full disambiguation. Dated, commit-SHA-pinned historical citations (e.g. "verified against arrakis-control-panel @ 8f3d3ed") and the entirely separate `docs/security/discord-player-link-hardening.md` investigation write-up were deliberately left as-is — they're accurate history, not current-state claims.
