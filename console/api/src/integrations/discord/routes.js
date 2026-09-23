@@ -496,7 +496,23 @@ async function writePreviewRoute({ req, res, json, readJsonWithActorSignature, c
   }
 
   const store = getWriteNonceStore();
-  const { nonce, expiresAt } = store.create({ actorUserId: actor.userId, action, params: body.params || {} });
+  // [Layer 3 integration audit fix, MEDIUM, issue #1038] store.create() used
+  // to be called unguarded here, while the resolveWriteActionRoute() call
+  // above it is wrapped. When an actor exceeds MAX_ENTRIES_PER_ACTOR (20
+  // pending previews), writeNonceStore throws a bare Error with no
+  // .code/.statusCode, which used to propagate uncaught into the generic
+  // adapter error handler -- a plain 500 `{code:"adapter_error"}`,
+  // indistinguishable from a real server bug to any monitoring that treats
+  // 5xx as an incident. This is a real, expected client condition (an actor
+  // spamming previews), so it gets the same distinguishable, documented
+  // 429 shape every other rate-limited path in this codebase already uses.
+  let created;
+  try {
+    created = store.create({ actorUserId: actor.userId, action, params: body.params || {} });
+  } catch (error) {
+    throw policyError("too_many_pending_confirmations", error.message, 429);
+  }
+  const { nonce, expiresAt } = created;
 
   return json(res, 200, {
     ok: true,

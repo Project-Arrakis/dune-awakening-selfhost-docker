@@ -144,9 +144,9 @@ test("resolveWriteBridgePrincipal: missing actor user id is rejected", () => {
   assert.equal(result, null);
 });
 
-test("resolveWriteBridgePrincipal: each of the three valid tiers is accepted and reflected verbatim", () => {
+test("resolveWriteBridgePrincipal: a tier meeting or exceeding the action's own minimum is accepted and reflected verbatim (player.kick requires admin)", () => {
   const target = kickTarget();
-  for (const tier of ["moderator", "admin", "owner"]) {
+  for (const tier of ["admin", "owner"]) {
     const result = resolveWriteBridgePrincipal({
       headers: validHeaders({ [WRITE_BRIDGE_TIER_HEADER]: tier }),
       method: target.method,
@@ -156,3 +156,31 @@ test("resolveWriteBridgePrincipal: each of the three valid tiers is accepted and
     assert.equal(result.tier, tier);
   }
 });
+
+// [Layer 3 integration audit fix, HIGH, issue #1034] Before this fix,
+// resolveWriteBridgePrincipal only checked the tier header was ONE OF the
+// three valid strings -- never that it met the specific action's own
+// declared minimum. A caller asserting "moderator" for player.kick (which
+// requires admin per WRITE_ACTION_MIN_TIER) used to be silently accepted;
+// only routes.js's own pre-check (recomputing the real tier before ever
+// calling Hop B) prevented this from mattering in practice.
+test("resolveWriteBridgePrincipal: a syntactically valid tier below the action's own minimum is rejected (moderator claiming player.kick, which requires admin)", () => {
+  const target = kickTarget();
+  const result = resolveWriteBridgePrincipal({
+    headers: validHeaders({ [WRITE_BRIDGE_TIER_HEADER]: "moderator" }),
+    method: target.method,
+    path: target.path,
+    viaWriteBridgeSocket: true
+  });
+  assert.equal(result, null);
+});
+
+// meetsMinTier() itself throws for an action missing a WRITE_ACTION_MIN_TIER
+// entry (see test/writeActionMinTier.test.js) -- resolveWriteBridgePrincipal
+// catches that throw and returns null rather than propagating it (see the
+// try/catch around the meetsMinTier call above). There is currently no real
+// WRITE_ACTION_ROUTES entry without a matching WRITE_ACTION_MIN_TIER entry
+// to exercise that catch branch against live data (issue #1039 adds a
+// boot-time check specifically to keep it that way), so this exact branch
+// is defensive-only by design today, not independently unit-testable here
+// without mocking the imported module.

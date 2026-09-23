@@ -3,10 +3,65 @@ import test from "node:test";
 import {
   DISCORD_CAPABILITIES,
   DISCORD_ROLE_TIERS,
+  DISCORD_WRITE_CAPABILITIES,
   discordActorCan,
   minTierForCapability,
-  requireDiscordCapability
+  requireDiscordCapability,
+  requireExperimentalReadOnlyCapability
 } from "../src/integrations/discord/policy.js";
+
+// [Layer 3 integration audit fix, MEDIUM, issue #1037] requireExperimentalReadOnlyCapability()
+// is structurally a no-op: EXPERIMENTAL_READ_ONLY_CAPABILITIES is defined as
+// exactly "DISCORD_CAPABILITIES minus DISCORD_WRITE_CAPABILITIES", so its own
+// throw branch can never fire for any real capability -- a future write-type
+// capability added to DISCORD_CAPABILITIES but accidentally omitted from
+// DISCORD_WRITE_CAPABILITIES is automatically absorbed into the "read-only"
+// set by construction, exactly the mistake class this codebase just made
+// once already when introducing WRITE_BRIDGE_ACCESS.
+//
+// A real, non-tautological fix requires understanding what "experimental
+// read-only mode" was originally meant to gate -- this function predates
+// this branch and is called from every Discord capability check
+// (requireDiscordCapability), so redesigning its live logic under this
+// change's own time/risk budget would be a wide-blast-radius change to
+// authorization enforcement across the entire Discord integration, based on
+// a guess at intent rather than a verified one.
+//
+// This test is the safe middle ground: a zero-production-risk tripwire that
+// independently re-derives the current write/read-only capability split by
+// hand (not from EXPERIMENTAL_READ_ONLY_CAPABILITIES's own derivation) and
+// fails the moment DISCORD_CAPABILITIES gains a new entry this list hasn't
+// been deliberately updated for -- catching the exact "forgot to classify a
+// new capability as write" mistake at test time instead of silently at
+// runtime, without touching any live authorization code path.
+const KNOWN_WRITE_CAPABILITIES = new Set([
+  DISCORD_CAPABILITIES.PLAYER_LINK_WRITE,
+  DISCORD_CAPABILITIES.BROADCAST_SEND,
+  DISCORD_CAPABILITIES.WRITE_BRIDGE_ACCESS
+]);
+
+test("DISCORD_WRITE_CAPABILITIES matches an independently hand-maintained list -- catches a new capability added without being deliberately classified", () => {
+  assert.deepEqual(
+    new Set(DISCORD_WRITE_CAPABILITIES),
+    KNOWN_WRITE_CAPABILITIES,
+    "DISCORD_WRITE_CAPABILITIES has drifted from this test's independently maintained list -- if this is a deliberate new write capability, update KNOWN_WRITE_CAPABILITIES here too"
+  );
+});
+
+test("every DISCORD_CAPABILITIES value is accounted for by either DISCORD_WRITE_CAPABILITIES or the independently maintained KNOWN_WRITE_CAPABILITIES list (no orphaned capability)", () => {
+  for (const capability of Object.values(DISCORD_CAPABILITIES)) {
+    const isWrite = DISCORD_WRITE_CAPABILITIES.has(capability);
+    const isKnownWrite = KNOWN_WRITE_CAPABILITIES.has(capability);
+    assert.equal(isWrite, isKnownWrite, `capability "${capability}" is classified inconsistently between DISCORD_WRITE_CAPABILITIES (${isWrite}) and this test's independent list (${isKnownWrite})`);
+  }
+});
+
+test("requireExperimentalReadOnlyCapability: documents its current no-op behavior -- never throws for any real capability (see the note above; this is the finding, not a passing assertion of correctness)", () => {
+  for (const capability of Object.values(DISCORD_CAPABILITIES)) {
+    assert.doesNotThrow(() => requireExperimentalReadOnlyCapability(capability));
+  }
+  assert.throws(() => requireExperimentalReadOnlyCapability(""), /capability.*required/i);
+});
 
 const mapping = {
   observerRoleIds: ["role-observer"],
