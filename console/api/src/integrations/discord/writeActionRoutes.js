@@ -61,17 +61,30 @@ export function validateGuildId(value) {
 // This field exists so a reader of this table alone can see what audit event
 // a given write action produces, without having to trace into server.js.
 //
-// requiresDualConfirmation (issue #1019): true only for server.stop -- this
-// workstream's single most destructive write-bridge action (stops the live
-// game server outright). write/execute's own state machine (see routes.js)
-// requires two DISTINCT actors to each independently pass every other gate
-// (tier, capability, fresh actor signature) before Hop B is ever reached --
-// entirely a write-bridge-internal control, layered on top of, not a
-// replacement for, the real target route's own behavior. Deliberately a
+// requiresDualConfirmation (issue #1019): originally true for server.stop --
+// this workstream's single most destructive write-bridge action (stops the
+// live game server outright). write/execute's own state machine (see
+// routes.js) requires two DISTINCT actors to each independently pass every
+// other gate (tier, capability, fresh actor signature) before Hop B is ever
+// reached -- entirely a write-bridge-internal control, layered on top of, not
+// a replacement for, the real target route's own behavior. Deliberately a
 // per-action boolean on this table (matching every other per-action
 // mechanism here) rather than a hardcoded action-name check inside
 // writeExecuteRoute, so a future action needing the same control is a
 // one-line table change, not new branching logic.
+//
+// NO LONGER THE CURRENT STATE -- server.stop deliberately no longer sets this
+// field (operator decision): the companion Discord bot's own RBAC model makes
+// owner tier exactly one account per guild, so a "second, genuinely different
+// owner-tier admin" cannot exist in practice, making the gate impossible to
+// satisfy rather than merely strict. No production action currently sets this
+// field, so `resolveWriteActionRoute` resolves it to `false` everywhere by
+// the absent-field default below. The MECHANISM itself is untouched, real,
+// and still fully exercised end-to-end over real HTTP -- via the test-only
+// override further down this file, which forces the flag on for an already-
+// real action for the duration of one test. Turning it back on for any
+// action, now or in the future, remains the same one-line table change it was
+// designed to be.
 const RAW_WRITE_ACTION_ROUTES = {
   "player.kick": { method: "POST", path: (p) => `/api/players/${encodeURIComponent(validatePlayerId(p.playerId))}/kick`, policyAction: "players:moderate", auditAction: "task.adminKick" },
   "player.ban": { method: "POST", path: (p) => `/api/players/${encodeURIComponent(validatePlayerId(p.playerId))}/ban`, confirmPhrase: "BAN PLAYER", policyAction: "players:moderate", auditAction: "players.ban" },
@@ -83,7 +96,7 @@ const RAW_WRITE_ACTION_ROUTES = {
   "base.refill-generators": { method: "POST", path: (p) => `/api/bases/${encodeURIComponent(validateBaseId(p.baseId))}/refill-generators`, policyAction: "bases:mutate", auditAction: "bases.refill-generators" },
   "base.refill-water": { method: "POST", path: (p) => `/api/bases/${encodeURIComponent(validateBaseId(p.baseId))}/refill-water`, policyAction: "bases:mutate", auditAction: "bases.refill-water" },
   "server.restart": { method: "POST", path: () => "/api/server/restart", policyAction: "server:restart", auditAction: null },
-  "server.stop": { method: "POST", path: () => "/api/server/stop", policyAction: "server:stop", auditAction: "task.stop", requiresDualConfirmation: true },
+  "server.stop": { method: "POST", path: () => "/api/server/stop", policyAction: "server:stop", auditAction: "task.stop" },
   "server.start": { method: "POST", path: () => "/api/server/start", policyAction: "server:start", auditAction: "task.start" },
   "server.restart-service": { method: "POST", path: () => "/api/server/restart-service", policyAction: "server:restart-service", auditAction: null },
   "map.spawn": { method: "POST", path: () => "/api/maps/spawn", confirmPhrase: "SPAWN MAP", policyAction: "maps:spawn", auditAction: "task.mapsSpawn" },
@@ -125,6 +138,42 @@ export const WRITE_ACTION_ROUTES = Object.freeze(
 // broadcast.* is intentionally absent -- see Group F's note in the design doc;
 // it never goes through this table or the internal loopback.
 
+// Test-only escape hatch, following the exact pattern
+// writeBridgeState.js's resetWriteNonceStoreForTests() already establishes in
+// this module family: a narrowly-scoped, explicitly-named-for-tests export
+// that temporarily mutates module state and MUST be reset between tests (see
+// writeBridge.integration.test.js's beforeEach/afterEach).
+//
+// Why it exists: no production action sets requiresDualConfirmation any more
+// (see the note above server.stop's entry), but the dual-confirmation state
+// machine in routes.js is real, reusable, already-audited infrastructure that
+// must stay genuinely tested end-to-end over real HTTP -- not silently
+// downgraded to unit-test-only coverage just because nothing currently opts
+// in. This lets a test force the flag on for ONE already-real action
+// (server.restart in the current tests) so the whole multi-actor flow runs
+// through the real route handler, real nonce store, real tier/capability
+// gates, and real Hop-B dispatch boundary.
+//
+// Deliberately narrow: it overrides exactly one boolean field on an action
+// that must already exist in WRITE_ACTION_ROUTES (unknown names throw rather
+// than inventing a fake action), so every other consumer -- path resolution,
+// policyAction, min-tier, audit, matchesWriteActionTarget -- still sees a
+// completely real, unmodified action. It is never consulted by anything but
+// resolveWriteActionRoute, and is empty (a no-op) unless a test explicitly
+// sets it.
+const REQUIRES_DUAL_CONFIRMATION_TEST_OVERRIDES = new Map();
+
+export function setRequiresDualConfirmationForTests(action, value) {
+  if (!Object.hasOwn(WRITE_ACTION_ROUTES, action)) {
+    throw new Error(`Cannot override requiresDualConfirmation for unknown write action: ${JSON.stringify(action)}`);
+  }
+  REQUIRES_DUAL_CONFIRMATION_TEST_OVERRIDES.set(action, value === true);
+}
+
+export function resetRequiresDualConfirmationOverridesForTests() {
+  REQUIRES_DUAL_CONFIRMATION_TEST_OVERRIDES.clear();
+}
+
 export function resolveWriteActionRoute(action, params) {
   if (!Object.hasOwn(WRITE_ACTION_ROUTES, action)) {
     // Lookup safety (round-2 audit, Security MEDIUM #740): action arrives
@@ -140,7 +189,9 @@ export function resolveWriteActionRoute(action, params) {
     confirmPhrase: entry.confirmPhrase || null,
     policyAction: entry.policyAction,
     auditAction: entry.auditAction,
-    requiresDualConfirmation: entry.requiresDualConfirmation === true
+    requiresDualConfirmation: REQUIRES_DUAL_CONFIRMATION_TEST_OVERRIDES.has(action)
+      ? REQUIRES_DUAL_CONFIRMATION_TEST_OVERRIDES.get(action)
+      : entry.requiresDualConfirmation === true
   };
 }
 

@@ -329,7 +329,7 @@ here. Both places now agree.**
 | Subcommand | Core Adapter Endpoint | IAM Action | Tier | Confirmation |
 |------------|----------------------|------------|------|-------------|
 | `restart` | write/execute → `POST /api/server/restart` | `server:restart` | **owner** | Yes (shows live player count, 30s cancellable countdown, requires typing server name) |
-| `stop [reason]` | write/execute → `POST /api/server/stop` | `server:stop` | **owner** | Yes (requires typing "STOP"; dual-confirmation gate when 2+ eligible admins exist — see Safety note and its round-7 redesign below) |
+| `stop [reason]` | write/execute → `POST /api/server/stop` | `server:stop` | **owner** | Yes (requires typing "STOP"). **Dual-confirmation gate turned OFF — see the 2026-09-23 correction below**; the historical design of that gate is retained unchanged further down this section. |
 | `start` | write/execute → `POST /api/server/start` | `server:start` | admin | No (non-destructive) |
 | `restart-service <name>` | write/execute → `POST /api/server/restart-service` | `server:restart-service` | admin | Yes (shows affected service) |
 
@@ -346,6 +346,39 @@ currently call plain `task()`, with no server-side phrase check at all).
 Bot displays live player count in preview embed. 60s cooldown group. 30s
 cancellable countdown between confirm and execute. `stop` requires a second
 administrator to confirm (dual-confirmation gate).
+
+**Correction (2026-09-23): `stop`'s dual-confirmation gate is turned OFF —
+every description of it below this line is retained as accurate design
+history, not current behavior.** Deliberate operator decision, implemented as
+a one-line route-table change: `server.stop`'s `requiresDualConfirmation`
+field was removed from `WRITE_ACTION_ROUTES`
+(`console/api/src/integrations/discord/writeActionRoutes.js`), so
+`resolveWriteActionRoute("server.stop", …)` now resolves it to `false` by the
+same absent-field default every other action already uses. Reason: the
+companion Discord bot's own RBAC model makes **owner tier exactly one account
+per guild**, so the "second, genuinely different owner-tier admin" this gate
+requires cannot exist in practice — the gate was not merely strict, it was
+impossible to satisfy, and the single-admin fallback described in point 6
+below was never built. This is a safe change specifically because of point 1
+below, which this document already established: the gate is *additive process
+friction on top of an already-fully-authorized action*, never the real
+security boundary (that remains the signature + capability + tier + nonce +
+rate-limit stack, all untouched here). `stop` still requires owner tier, a
+fresh actor signature, a typed confirmation phrase, and a single-use nonce.
+
+**The generic mechanism itself is untouched and still fully tested.** The
+dual-confirmation state machine in `routes.js` is driven entirely by the
+resolved route's own `requiresDualConfirmation` field, never by an action
+name, so no production action opting in today does not make it dead code —
+turning it on for `stop`, or for any future action, is the same one-line
+table change it was designed to be. Because no real action sets the flag,
+`writeBridge.integration.test.js` exercises the whole multi-actor flow over
+real HTTP by forcing the flag on for one already-real action
+(`server.restart`) via `setRequiresDualConfirmationForTests()`, a test-only
+export following `resetWriteNonceStoreForTests()`'s established pattern.
+Unchanged by this correction: the nonce store's own dual-confirmation fields
+(`secondConfirmationRequired`/`primaryConfirmedAt`) and its per-action TTL
+table, both of which remain valid, and `stop`'s own owner-tier requirement.
 
 **Corrected after round-6 audit (was MEDIUM, batch #776, UI/UX hat): the dual-confirmation gate had no described end-to-end mechanism anywhere in this document.** Round 6's own first-pass design was substantially redesigned in round 7 after five hats found real problems (#782/#785/#786/#787) — but round 7's own redesign (an "independent second `write/preview`→`write/execute` cycle" tied to a brand-new, unspecified "pending stop request" record) was itself found structurally broken by a dedicated four-hat isolated review before it ever reached a full round 8: no field anywhere carried the correlation ID between the two confirmers' calls; idempotency-key semantics for the two cycles were unspecified with a plausible silent-fail-closed path where the real mutation never runs even though both admins genuinely confirmed; "Core's `stop` handler" was ambiguous enough to risk modifying the real, shared `/api/server/stop` route the web console also calls directly; the real, already-shipped bot-side button-click code enforces the *opposite* (same-user-only) authorization rule the second confirmer needs; the single-admin fallback decided whether a safety control applied *at all* using unsigned, unbounded, bot-cached role data — exactly the class of bug `roleSnapshotAt` exists to prevent; and the second confirmer's flow was ambiguous enough that a literal implementation could require two clicks instead of one. Filed as #792-799.
 

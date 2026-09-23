@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { handleDiscordAdapterRoute } from "../src/integrations/discord/routes.js";
 import { signActorPayload, ACTOR_SIGNATURE_HEADER, ACTOR_TIMESTAMP_HEADER, WRITE_BRIDGE_SIGNED_ACTOR_FIELDS } from "../src/integrations/discord/actorSignature.js";
 import { resetWriteNonceStoreForTests } from "../src/integrations/discord/writeBridgeState.js";
+import { setRequiresDualConfirmationForTests, resetRequiresDualConfirmationOverridesForTests } from "../src/integrations/discord/writeActionRoutes.js";
 
 const BOT_TOKEN = "write-bridge-test-bot-token";
 const ACTOR_SECRET = "write-bridge-test-actor-secret";
@@ -76,6 +77,7 @@ let OLD_OWNER_ROLE_IDS;
 
 test.beforeEach(() => {
   resetWriteNonceStoreForTests();
+  resetRequiresDualConfirmationOverridesForTests();
   tempDir = mkdtempSync(join(tmpdir(), "write-bridge-test-"));
   tokenFile = join(tempDir, "bot-token.txt");
   auditLog = join(tempDir, "audit.jsonl");
@@ -98,6 +100,7 @@ test.beforeEach(() => {
 test.afterEach(() => {
   rmSync(tempDir, { recursive: true, force: true });
   resetWriteNonceStoreForTests();
+  resetRequiresDualConfirmationOverridesForTests();
   process.env.DUNE_DISCORD_ACTOR_SECRET = OLD_ACTOR_SECRET;
   process.env.DUNE_DISCORD_WRITES_ENABLED = OLD_WRITES_ENABLED;
   process.env.DISCORD_MODERATOR_ROLE_IDS = OLD_MODERATOR_ROLE_IDS;
@@ -377,7 +380,31 @@ test("write/execute: malformed roleSnapshotAt (NaN-shaped) is rejected, never si
   });
 });
 
-// --- server.stop dual-confirmation gate (issue #1019) ---
+// --- the generic dual-confirmation gate mechanism (issue #1019) ---
+//
+// These tests exercise the REAL dual-confirmation state machine in routes.js
+// over real HTTP, exactly as they always have. What changed: they no longer
+// ride on server.stop's own route-table flag, because server.stop no longer
+// sets it (deliberate operator decision -- the companion bot's RBAC model
+// makes owner tier exactly one account per guild, so a second, genuinely
+// different owner-tier confirmer cannot exist in practice). No production
+// action currently opts in.
+//
+// The mechanism itself is real, reusable, already-audited infrastructure that
+// must not silently drop to unit-test-only coverage just because nothing
+// currently opts in -- so these tests force the flag on for ONE already-real
+// action (server.restart, chosen because it is owner-tier just like
+// server.stop was, so every tier assertion below maps across unchanged) via
+// writeActionRoutes.js's test-only setRequiresDualConfirmationForTests(),
+// reset in this file's beforeEach/afterEach alongside
+// resetWriteNonceStoreForTests(). Only that one boolean field is overridden:
+// the action's real path, policyAction, min tier, audit behavior, nonce
+// handling, and Hop-B dispatch are all genuinely unmodified.
+const DUAL_CONFIRM_TEST_ACTION = "server.restart";
+
+function forceDualConfirmation(action = DUAL_CONFIRM_TEST_ACTION) {
+  setRequiresDualConfirmationForTests(action, true);
+}
 
 async function executeAs(base, a, nonce, action) {
   const response = await fetch(`${base}${EXECUTE_ROUTE}`, {
@@ -388,12 +415,13 @@ async function executeAs(base, a, nonce, action) {
   return { status: response.status, body: await response.json() };
 }
 
-test("server.stop dual-confirmation: the first execute call marks the nonce pending a second confirmation and never reaches Hop B", async () => {
+test("the dual-confirmation gate mechanism (exercised via a test-only override, since no real action currently requires it): the first execute call marks the nonce pending a second confirmation and never reaches Hop B", async () => {
+  forceDualConfirmation();
   await withServer(testConfig, async (base) => {
     const primary = actor(["role-owner"], { userId: "owner-primary" });
-    const { nonce } = await preview(base, primary, "server.stop");
+    const { nonce } = await preview(base, primary, DUAL_CONFIRM_TEST_ACTION);
 
-    const first = await executeAs(base, primary, nonce, "server.stop");
+    const first = await executeAs(base, primary, nonce, DUAL_CONFIRM_TEST_ACTION);
     assert.equal(first.status, 202);
     assert.equal(first.body.code, "second_confirmation_required");
     assert.equal(first.body.nonce, nonce, "the same nonce is reused for the second confirmation, not a fresh one");
@@ -401,27 +429,29 @@ test("server.stop dual-confirmation: the first execute call marks the nonce pend
   });
 });
 
-test("server.stop dual-confirmation: the SAME actor cannot provide both confirmations", async () => {
+test("the dual-confirmation gate mechanism (test-only override): the SAME actor cannot provide both confirmations", async () => {
+  forceDualConfirmation();
   await withServer(testConfig, async (base) => {
     const primary = actor(["role-owner"], { userId: "owner-primary" });
-    const { nonce } = await preview(base, primary, "server.stop");
-    await executeAs(base, primary, nonce, "server.stop");
+    const { nonce } = await preview(base, primary, DUAL_CONFIRM_TEST_ACTION);
+    await executeAs(base, primary, nonce, DUAL_CONFIRM_TEST_ACTION);
 
-    const second = await executeAs(base, primary, nonce, "server.stop");
+    const second = await executeAs(base, primary, nonce, DUAL_CONFIRM_TEST_ACTION);
     assert.equal(second.status, 403);
     assert.equal(second.body.code, "second_confirmation_same_actor");
   });
 });
 
-test("server.stop dual-confirmation: a second, DIFFERENT owner-tier actor completes the confirmation and reaches the real Hop-B boundary", async () => {
+test("the dual-confirmation gate mechanism (test-only override): a second, DIFFERENT owner-tier actor completes the confirmation and reaches the real Hop-B boundary", async () => {
+  forceDualConfirmation();
   await withServer(testConfig, async (base) => {
     const primary = actor(["role-owner"], { userId: "owner-primary" });
-    const { nonce } = await preview(base, primary, "server.stop");
-    const first = await executeAs(base, primary, nonce, "server.stop");
+    const { nonce } = await preview(base, primary, DUAL_CONFIRM_TEST_ACTION);
+    const first = await executeAs(base, primary, nonce, DUAL_CONFIRM_TEST_ACTION);
     assert.equal(first.status, 202);
 
     const secondAdmin = actor(["role-owner"], { userId: "owner-second" });
-    const second = await executeAs(base, secondAdmin, nonce, "server.stop");
+    const second = await executeAs(base, secondAdmin, nonce, DUAL_CONFIRM_TEST_ACTION);
     // No write-bridge socket is running in this test's config -- reaching the
     // 503 Hop-B boundary (rather than 202/403/410) is exactly the proof that
     // both confirmations passed and the real dispatch was actually attempted.
@@ -430,43 +460,61 @@ test("server.stop dual-confirmation: a second, DIFFERENT owner-tier actor comple
   });
 });
 
-test("server.stop dual-confirmation: after the second confirmation consumes the nonce, a third attempt gets 410, not a third dispatch attempt", async () => {
+test("the dual-confirmation gate mechanism (test-only override): after the second confirmation consumes the nonce, a third attempt gets 410, not a third dispatch attempt", async () => {
+  forceDualConfirmation();
   await withServer(testConfig, async (base) => {
     const primary = actor(["role-owner"], { userId: "owner-primary" });
-    const { nonce } = await preview(base, primary, "server.stop");
-    await executeAs(base, primary, nonce, "server.stop");
+    const { nonce } = await preview(base, primary, DUAL_CONFIRM_TEST_ACTION);
+    await executeAs(base, primary, nonce, DUAL_CONFIRM_TEST_ACTION);
     const secondAdmin = actor(["role-owner"], { userId: "owner-second" });
-    const second = await executeAs(base, secondAdmin, nonce, "server.stop");
+    const second = await executeAs(base, secondAdmin, nonce, DUAL_CONFIRM_TEST_ACTION);
     assert.equal(second.status, 503, "precondition: the nonce must have been genuinely consumed by the second call");
 
-    const third = await executeAs(base, secondAdmin, nonce, "server.stop");
+    const third = await executeAs(base, secondAdmin, nonce, DUAL_CONFIRM_TEST_ACTION);
     assert.equal(third.status, 410);
     assert.equal(third.body.code, "nonce_not_found");
   });
 });
 
-test("server.stop dual-confirmation: a second confirmer who does not meet the min tier is rejected, independent of the primary confirmer's own tier", async () => {
+test("the dual-confirmation gate mechanism (test-only override): a second confirmer who does not meet the min tier is rejected, independent of the primary confirmer's own tier", async () => {
+  forceDualConfirmation();
   await withServer(testConfig, async (base) => {
     const primary = actor(["role-owner"], { userId: "owner-primary" });
-    const { nonce } = await preview(base, primary, "server.stop");
-    await executeAs(base, primary, nonce, "server.stop");
+    const { nonce } = await preview(base, primary, DUAL_CONFIRM_TEST_ACTION);
+    await executeAs(base, primary, nonce, DUAL_CONFIRM_TEST_ACTION);
 
-    // server.stop requires owner tier -- an admin-tier second confirmer must
-    // still be rejected, proving the tier gate is re-checked for whichever
-    // actor is presenting the nonce, not only for the original previewer.
+    // The vehicle action requires owner tier (the same min tier server.stop
+    // has) -- an admin-tier second confirmer must still be rejected, proving
+    // the tier gate is re-checked for whichever actor is presenting the
+    // nonce, not only for the original previewer. The override changes only
+    // requiresDualConfirmation, never the real min-tier table.
     const adminTierSecond = actor(["role-admin"], { userId: "admin-second" });
-    const rejected = await executeAs(base, adminTierSecond, nonce, "server.stop");
+    const rejected = await executeAs(base, adminTierSecond, nonce, DUAL_CONFIRM_TEST_ACTION);
     assert.equal(rejected.status, 403);
     assert.equal(rejected.body.code, "not_authorized");
   });
 });
 
-test("server.stop dual-confirmation: a non-dual-confirmation action is completely unaffected -- single actor, single call, straight to the Hop-B boundary", async () => {
+test("the dual-confirmation gate mechanism (test-only override): a non-dual-confirmation action is completely unaffected -- single actor, single call, straight to the Hop-B boundary", async () => {
+  forceDualConfirmation();
   await withServer(testConfig, async (base) => {
     const a = actor(["role-moderator"]);
     const { nonce } = await preview(base, a, "player.warn");
     const response = await executeAs(base, a, nonce, "player.warn");
     assert.equal(response.status, 503);
+    assert.equal(response.body.code, "write_backend_unavailable");
+  });
+});
+
+test("server.stop no longer requires dual confirmation at the real route: one owner-tier actor, one call, straight to the Hop-B boundary -- no 202 second_confirmation_required step", async () => {
+  // The operator-approved flag flip, proven at the real HTTP route rather
+  // than only against the route table. No override is set here: this is
+  // server.stop's genuine, current production behavior.
+  await withServer(testConfig, async (base) => {
+    const owner = actor(["role-owner"], { userId: "owner-primary" });
+    const { nonce } = await preview(base, owner, "server.stop");
+    const response = await executeAs(base, owner, nonce, "server.stop");
+    assert.equal(response.status, 503, `expected the Hop-B boundary, got ${response.status}: ${JSON.stringify(response.body)}`);
     assert.equal(response.body.code, "write_backend_unavailable");
   });
 });
