@@ -7,6 +7,8 @@
 import { randomBytes } from "node:crypto";
 import { constantTimeHexEqual } from "./actorSignature.js";
 import { matchesWriteActionTarget } from "./writeActionRoutes.js";
+import { meetsMinTier } from "./writeActionMinTier.js";
+import { DISCORD_ROLE_TIERS } from "./policy.js";
 
 export const WRITE_BRIDGE_TOKEN_HEADER = "x-dune-write-bridge-token";
 export const WRITE_BRIDGE_ACTION_HEADER = "x-dune-write-bridge-action";
@@ -14,7 +16,11 @@ export const WRITE_BRIDGE_TIER_HEADER = "x-dune-write-bridge-tier";
 export const WRITE_BRIDGE_ACTOR_USER_ID_HEADER = "x-dune-write-bridge-actor-user-id";
 export const WRITE_BRIDGE_ACTOR_USERNAME_HEADER = "x-dune-write-bridge-actor-username";
 
-const VALID_TIERS = new Set(["moderator", "admin", "owner"]);
+// [Layer 3 integration audit fix, LOW, issue #1042] Derived from the
+// canonical DISCORD_ROLE_TIERS rather than hand-listed a second time --
+// see writeActionMinTier.js's TIER_RANK for the same fix and its fuller
+// rationale.
+const VALID_TIERS = new Set(DISCORD_ROLE_TIERS.slice(DISCORD_ROLE_TIERS.indexOf("moderator")));
 
 // A single random token, generated once at process boot, held only in
 // module-level memory -- never written to disk, nothing to rotate
@@ -62,6 +68,28 @@ export function resolveWriteBridgePrincipal({ headers, method, path, viaWriteBri
 
   const tier = String(headers?.[WRITE_BRIDGE_TIER_HEADER] || "");
   if (!VALID_TIERS.has(tier)) return null;
+
+  // [Layer 3 integration audit fix, HIGH, issue #1034] Before this check,
+  // this boundary only verified the header carried A valid tier STRING --
+  // never that it actually met the specific action's own declared minimum.
+  // The only real enforcement was routes.js's writeExecuteRoute freshly
+  // recomputing actorTier from the real Discord role snapshot before ever
+  // calling into Hop B; nothing here would have caught a future second
+  // caller that skipped that step and simply asserted a tier. Re-deriving
+  // the tier from live Discord role state at this boundary would need the
+  // full role mapping threaded across Hop B (a larger, separate change --
+  // see issue #1034's tracking comment); this closes the concrete,
+  // structural gap that matters today: Hop B itself now independently
+  // rejects any asserted tier below what WRITE_ACTION_MIN_TIER requires for
+  // this exact action, rather than trusting the caller's claim outright.
+  // meetsMinTier() throws for an action with no WRITE_ACTION_MIN_TIER entry
+  // (issue #1039) -- caught here, not propagated, to preserve this
+  // function's documented "any failure returns null" contract.
+  try {
+    if (!meetsMinTier(tier, action)) return null;
+  } catch {
+    return null;
+  }
 
   const discordUserId = String(headers?.[WRITE_BRIDGE_ACTOR_USER_ID_HEADER] || "").trim();
   if (!discordUserId) return null;

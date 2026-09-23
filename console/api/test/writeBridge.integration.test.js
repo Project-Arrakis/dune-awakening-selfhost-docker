@@ -222,6 +222,31 @@ test("write/preview: owner attempting the same owner-tier action that rejected a
   });
 });
 
+// [Layer 3 integration audit fix, MEDIUM, issue #1038] Exceeding
+// MAX_ENTRIES_PER_ACTOR (20) used to propagate writeNonceStore's bare Error
+// uncaught into the generic adapter error handler -- a plain 500
+// `{code:"adapter_error"}`, indistinguishable from a real server bug to any
+// monitoring that treats 5xx as an incident. Real end-to-end proof: hits the
+// real route 21 times with the same actor/action, same as writeNonceStore's
+// own unit test proves the throttle itself fires at, but through the full
+// HTTP route this time.
+test("write/preview: exceeding the per-actor pending-preview limit returns a distinguishable 429, never a generic 500", async () => {
+  await withServer(testConfig, async (base) => {
+    const a = actor(["role-moderator"]);
+    let lastResponse;
+    for (let i = 0; i < 21; i++) {
+      lastResponse = await fetch(`${base}${PREVIEW_ROUTE}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE) },
+        body: JSON.stringify({ actor: a, action: "player.warn" })
+      });
+    }
+    assert.equal(lastResponse.status, 429);
+    const body = await lastResponse.json();
+    assert.equal(body.code, "too_many_pending_confirmations");
+  });
+});
+
 test("write/preview: path-traversal-shaped param is rejected with 400, never silently accepted into the internal path template", async () => {
   await withServer(testConfig, async (base) => {
     const a = actor(["role-admin"]);

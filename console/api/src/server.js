@@ -47,7 +47,10 @@ import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenVal
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute, WRITE_BRIDGE_SOCKET_FILENAME } from "./integrations/discord/routes.js";
 import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
-import { resolveWriteBridgePrincipal, WRITE_BRIDGE_TOKEN_HEADER, WRITE_BRIDGE_ACTION_HEADER, WRITE_BRIDGE_TIER_HEADER, WRITE_BRIDGE_ACTOR_USER_ID_HEADER, WRITE_BRIDGE_ACTOR_USERNAME_HEADER, getWriteBridgeToken } from "./integrations/discord/writeBridgeCredential.js";
+// [Layer 3 integration audit fix, LOW, issue #1043] The 5 header constants
+// and getWriteBridgeToken previously imported here became dead once
+// resolveWriteBridgePrincipal absorbed that logic -- removed.
+import { resolveWriteBridgePrincipal } from "./integrations/discord/writeBridgeCredential.js";
 import { startWriteBridgeSocketServer } from "./integrations/discord/writeBridgeSocketServer.js";
 import { selfCheckWriteActionRoutes, checkConfirmPhrasesAgainstRealHandlers } from "./integrations/discord/writeActionRoutes.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
@@ -298,7 +301,22 @@ process.on("unhandledRejection", (error) => {
 // and hanging every request. The TCP listener below must NEVER omit this
 // argument regardless.
 async function requestHandler(req, res, opts = {}) {
-  const path = new URL(req.url || "/", "http://localhost").pathname;
+  // [Layer 3 integration audit fix, HIGH, issue #1036] This parse used to
+  // run with no try/catch of its own, above/outside the function's main
+  // try/catch below. A request-target Node's raw HTTP parser accepts but
+  // WHATWG URL parsing rejects (e.g. an absolute-form proxy-style target
+  // with an out-of-range port) threw here before reaching that try/catch --
+  // caught only by the createServer callback's own unhandledRejection
+  // logging (see below), which never writes a response, silently hanging
+  // the connection instead of a graceful 400.
+  let path;
+  try {
+    path = new URL(req.url || "/", "http://localhost").pathname;
+  } catch {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "Malformed request URL." }));
+    return;
+  }
 
   // Write-bridge credential resolution: this must run BEFORE the
   // config.allowedIps gate, not after it -- the real ADMIN_ALLOWED_IPS
@@ -337,7 +355,22 @@ async function requestHandler(req, res, opts = {}) {
   }
 }
 
-createServer((req, res) => requestHandler(req, res, { viaWriteBridgeSocket: false })).listen(config.port, config.host, () => {
+createServer((req, res) => {
+  // [Layer 3 integration audit fix, HIGH, issue #1036] Defense in depth
+  // alongside requestHandler's own now-complete try/catch coverage above:
+  // if a future change reintroduces a code path that throws/rejects before
+  // requestHandler's try/catch is reached, this .catch() is the last line
+  // of defense against a silently hung connection with no response ever
+  // written -- it degrades to a generic 500 rather than leaving the client
+  // waiting forever.
+  Promise.resolve(requestHandler(req, res, { viaWriteBridgeSocket: false })).catch((error) => {
+    console.error(`Unhandled requestHandler error: ${redact(error?.message || "Unexpected error.")}`);
+    if (!res.headersSent) {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "Unexpected error." }));
+    }
+  });
+}).listen(config.port, config.host, () => {
   console.log(`${config.appName} API listening on http://${config.host}:${config.port}`);
   if (config.host === "0.0.0.0") {
     console.warn("Warning: ADMIN_BIND_HOST is 0.0.0.0 — the Web Console is reachable on all network interfaces.");
@@ -6607,6 +6640,19 @@ function loginRateLimitKey(req) {
 
 function applyMutationRateLimit(req, res, scope) {
   const sessionId = req.authSession?.id || "anonymous";
+  // [Layer 3 integration audit fix, MEDIUM, issue #1040] For a request that
+  // arrived over the Discord write bridge's Unix-domain-socket listener
+  // (Hop B reuses these exact same mutation route handlers unchanged),
+  // req.socket.remoteAddress is always undefined -- there is no real
+  // network peer to report an IP for. This deliberately, structurally
+  // collapses the IP dimension to the constant "unknown" for every
+  // write-bridge-originated mutation; there is no meaningful substitute
+  // value to use instead (the write-bridge credential is one shared,
+  // process-lifetime token, not something that varies per request). Per-
+  // actor isolation for this principal type relies entirely on sessionId
+  // (resolveWriteBridgePrincipal sets id:"discord:<userId>", unique per
+  // Discord actor) -- documented here explicitly so this isn't mistaken
+  // for an oversight if it's ever investigated.
   const remoteIp = (req.socket?.remoteAddress || "unknown").replace(/^::ffff:/, "");
   const key = `${scope}:${sessionId}:${remoteIp}`;
   const limit = mutationRateLimiter.check(key);

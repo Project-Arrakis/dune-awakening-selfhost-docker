@@ -3,7 +3,19 @@
 // coarse to distinguish kick from give-item) nor Discord's own CAPABILITY_BY_TIER
 // (which computes admin and owner as the identical set) can enforce the tier
 // ladder Section 1 requires -- this table is the explicit, independent check.
-const TIER_RANK = { moderator: 0, admin: 1, owner: 2 };
+import { DISCORD_ROLE_TIERS } from "./policy.js";
+
+// [Layer 3 integration audit fix, LOW, issue #1042] TIER_RANK used to be a
+// fourth independently hand-maintained encoding of the tier hierarchy
+// (alongside VALID_TIERS in writeBridgeCredential.js, a duplicate literal in
+// this file's own test, and the canonical DISCORD_ROLE_TIERS here) -- the
+// exact hand-duplicated-table drift class issue #1012 already burned this
+// codebase on once. Derived directly from DISCORD_ROLE_TIERS's own order
+// now: only "moderator" and above are ranked here since a write-bridge
+// principal can never resolve at "public"/"observer" tier in the first
+// place (VALID_TIERS in writeBridgeCredential.js enforces that boundary).
+const WRITE_BRIDGE_TIER_ORDER = DISCORD_ROLE_TIERS.slice(DISCORD_ROLE_TIERS.indexOf("moderator"));
+const TIER_RANK = Object.fromEntries(WRITE_BRIDGE_TIER_ORDER.map((tier, index) => [tier, index]));
 
 export const WRITE_ACTION_MIN_TIER = {
   "player.kick": "admin",
