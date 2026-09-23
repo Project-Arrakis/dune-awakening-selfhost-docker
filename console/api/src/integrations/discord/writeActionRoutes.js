@@ -152,11 +152,21 @@ export const WRITE_ACTION_ROUTES = Object.freeze(
 // sets it.
 const REQUIRES_DUAL_CONFIRMATION_TEST_OVERRIDES = new Map();
 
+// [Audit fix, LOW, round 2] `value` used to coerce anything non-`true` to
+// `false` -- today that's harmless (no production action opts in, so
+// writing `false` is a no-op), but that safety was a coincidence of the
+// current production state, not a structural property of this function.
+// Requiring exactly `true` makes "this override can only ever TIGHTEN a
+// gate, never weaken one" true regardless of what any future action's
+// table entry says.
 export function setRequiresDualConfirmationForTests(action, value) {
   if (!Object.hasOwn(WRITE_ACTION_ROUTES, action)) {
     throw new Error(`Cannot override requiresDualConfirmation for unknown write action: ${JSON.stringify(action)}`);
   }
-  REQUIRES_DUAL_CONFIRMATION_TEST_OVERRIDES.set(action, value === true);
+  if (value !== true) {
+    throw new Error(`setRequiresDualConfirmationForTests only ever tightens a gate -- call resetRequiresDualConfirmationOverridesForTests() to clear it, don't pass false.`);
+  }
+  REQUIRES_DUAL_CONFIRMATION_TEST_OVERRIDES.set(action, true);
 }
 
 export function resetRequiresDualConfirmationOverridesForTests() {
