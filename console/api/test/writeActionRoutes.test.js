@@ -207,11 +207,11 @@ test("matchesWriteActionTarget: multi-segment param routes (guild.remove has two
 
 test("WRITE_ACTION_ROUTES: backup.create and updates.* resolve to their real Core routes", () => {
   const backup = resolveWriteActionRoute("backup.create", {});
-  assert.deepEqual(backup, { method: "POST", path: "/api/backups/create", confirmPhrase: null, policyAction: "backups:create", auditAction: "backup.create", requiresDualConfirmation: false });
+  assert.deepEqual(backup, { method: "POST", path: "/api/backups/create", confirmPhrase: null, policyAction: "backups:create", auditAction: "task.backupCreate", requiresDualConfirmation: false });
 
   const applyGame = resolveWriteActionRoute("updates.apply-game", {});
-  assert.deepEqual(applyGame, { method: "POST", path: "/api/updates/apply-game", confirmPhrase: null, policyAction: "updates:apply", auditAction: "updates.apply-game", requiresDualConfirmation: false });
+  assert.deepEqual(applyGame, { method: "POST", path: "/api/updates/apply-game", confirmPhrase: null, policyAction: "updates:apply", auditAction: "task.updateApply", requiresDualConfirmation: false });
 
   const fixSteamcmd = resolveWriteActionRoute("updates.fix-steamcmd", {});
-  assert.deepEqual(fixSteamcmd, { method: "POST", path: "/api/updates/fix-steamcmd", confirmPhrase: null, policyAction: "updates:fix", auditAction: "updates.fix-steamcmd", requiresDualConfirmation: false });
+  assert.deepEqual(fixSteamcmd, { method: "POST", path: "/api/updates/fix-steamcmd", confirmPhrase: null, policyAction: "updates:fix", auditAction: "task.updateFixSteamcmd", requiresDualConfirmation: false });
 });
