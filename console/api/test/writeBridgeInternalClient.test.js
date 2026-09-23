@@ -198,6 +198,8 @@ test("callWriteBridgeInternalRoute: a connection-level error rejects the promise
     fake.end = () => {
       setImmediate(() => fake.emit("error", new Error("ECONNREFUSED (simulated)")));
     };
+    fake.setTimeout = () => {};
+    fake.destroy = () => {};
     return fake;
   };
   await assert.rejects(
@@ -228,7 +230,7 @@ test("callWriteBridgeInternalRoute: request options (socketPath, path, method) a
         fakeRes.emit("end");
       });
     });
-    return { end: () => {}, on: () => {} };
+    return { end: () => {}, on: () => {}, setTimeout: () => {}, destroy: () => {} };
   };
   await callWriteBridgeInternalRoute({
     socketPath: "/tmp/example.sock",
@@ -244,4 +246,67 @@ test("callWriteBridgeInternalRoute: request options (socketPath, path, method) a
   assert.equal(capturedOptions.socketPath, "/tmp/example.sock");
   assert.equal(capturedOptions.path, "/api/maps/spawn");
   assert.equal(capturedOptions.method, "POST");
+});
+
+// --- issue #1033: Hop B must not hang forever after the nonce is consumed ---
+
+test("callWriteBridgeInternalRoute: a request that never responds is rejected via req.setTimeout, and the request is destroyed", async () => {
+  let timeoutCallback = null;
+  let destroyed = false;
+  const fakeRequestImpl = () => ({
+    end: () => {},
+    on: () => {},
+    setTimeout: (ms, cb) => {
+      assert.equal(ms, 15_000, "default timeout should be 15s when the env override is unset/invalid");
+      timeoutCallback = cb;
+    },
+    destroy: () => { destroyed = true; }
+  });
+  const pending = callWriteBridgeInternalRoute({
+    socketPath: "/tmp/never-responds.sock",
+    method: "POST",
+    path: "/api/server/stop",
+    action: "server.stop",
+    tier: "owner",
+    discordUserId: "user-7",
+    discordUsername: "u7",
+    body: {},
+    requestImpl: fakeRequestImpl
+  });
+  assert.ok(typeof timeoutCallback === "function", "setTimeout should have registered its callback synchronously");
+  timeoutCallback();
+  await assert.rejects(() => pending, /timed out after 15000ms/);
+  assert.equal(destroyed, true, "the hung request must be destroyed on timeout, not left open");
+});
+
+test("callWriteBridgeInternalRoute: an out-of-range DUNE_DISCORD_WRITE_BRIDGE_TIMEOUT_MS falls back to the 15s default", async () => {
+  const original = process.env.DUNE_DISCORD_WRITE_BRIDGE_TIMEOUT_MS;
+  process.env.DUNE_DISCORD_WRITE_BRIDGE_TIMEOUT_MS = "999999";
+  try {
+    let capturedMs = null;
+    let timeoutCallback = null;
+    const fakeRequestImpl = () => ({
+      end: () => {},
+      on: () => {},
+      setTimeout: (ms, cb) => { capturedMs = ms; timeoutCallback = cb; },
+      destroy: () => {}
+    });
+    const pending = callWriteBridgeInternalRoute({
+      socketPath: "/tmp/example.sock",
+      method: "POST",
+      path: "/api/server/stop",
+      action: "server.stop",
+      tier: "owner",
+      discordUserId: "user-8",
+      discordUsername: "u8",
+      body: {},
+      requestImpl: fakeRequestImpl
+    });
+    assert.equal(capturedMs, 15_000);
+    timeoutCallback();
+    await assert.rejects(() => pending, /timed out/);
+  } finally {
+    if (original === undefined) delete process.env.DUNE_DISCORD_WRITE_BRIDGE_TIMEOUT_MS;
+    else process.env.DUNE_DISCORD_WRITE_BRIDGE_TIMEOUT_MS = original;
+  }
 });

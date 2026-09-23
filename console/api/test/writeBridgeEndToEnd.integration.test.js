@@ -252,11 +252,18 @@ test("full real round trip: write/preview -> write/execute crosses a REAL runnin
     // writeBridgeCredential.js constructs a userId-bearing object in
     // isolation (already covered elsewhere) -- read the real audit.jsonl
     // file the real audit() call wrote to.
+    //
+    // type: "discord-write-bridge", not the generic "session" (issue #1041,
+    // Layer 3 STRIDE Repudiation fix): before that fix, principalOf() had no
+    // branch for the write-bridge principal, so this row was indistinguishable
+    // from a real interactive browser/OAuth session -- this real end-to-end
+    // assertion is the proof the fix actually reaches the durable audit log,
+    // not just principalOf()'s own unit tests.
     const auditRows = readFileSync(testConfig.auditLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     const auditRow = auditRows.find((row) => row.action === "care-package.enable");
     assert.ok(auditRow, "the real target route's audit() call must have produced a row");
-    assert.deepEqual(auditRow.principal, { type: "session", tier: "admin", userId: "e2e-user" },
-      "the audit row must attribute this mutation to the real Discord actor, not an anonymous/api-key principal");
+    assert.deepEqual(auditRow.principal, { type: "discord-write-bridge", tier: "admin", userId: "e2e-user" },
+      "the audit row must attribute this mutation to the real Discord actor via a distinguishable write-bridge type, not an anonymous/api-key/generic-session principal");
   });
 });
 

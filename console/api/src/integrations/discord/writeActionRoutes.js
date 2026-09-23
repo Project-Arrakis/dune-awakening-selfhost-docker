@@ -4,6 +4,7 @@
 // reimplements mutation logic, it only dispatches to these already-real handlers.
 import { actionForRoute } from "../../actions.js";
 import { grantCarePackage, grantEligibleCarePackages } from "../../carePackage.js";
+import { WRITE_ACTION_MIN_TIER } from "./writeActionMinTier.js";
 
 // Player/base identifiers seen in this codebase (server.js's own Funcom-style
 // funcomId/hexFlsId examples: "Server#4242", "5E121CE000000001") are alphanumeric
@@ -264,6 +265,16 @@ const REPRESENTATIVE_PARAMS = { playerId: "Server#4242", baseId: "1", guildId: "
 export function selfCheckWriteActionRoutes() {
   const problems = [];
   for (const [action, entry] of Object.entries(WRITE_ACTION_ROUTES)) {
+    // [Layer 3 integration audit fix, MEDIUM, issue #1039] Before this
+    // check, a WRITE_ACTION_ROUTES entry with no matching WRITE_ACTION_MIN_TIER
+    // entry passed boot silently -- meetsMinTier() only discovered the gap
+    // at request time via a bare thrown Error (an opaque 500 for the first
+    // Discord actor unlucky enough to hit it), not a startup warning. This
+    // is the exact hand-duplicated-table drift class issue #1012
+    // (policyAction staleness) already burned this codebase on once.
+    if (!Object.hasOwn(WRITE_ACTION_MIN_TIER, action)) {
+      problems.push(`"${action}": present in WRITE_ACTION_ROUTES but has no matching WRITE_ACTION_MIN_TIER entry`);
+    }
     let resolvedPath;
     try {
       resolvedPath = entry.path(REPRESENTATIVE_PARAMS);

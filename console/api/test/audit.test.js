@@ -80,3 +80,14 @@ test("principalOf carries a Discord identity but never a session id", () => {
   assert.deepEqual(principalOf(null), null);
   assert.deepEqual(principalOf(undefined), null);
 });
+
+// [Layer 3 integration audit fix, issue #1041] A write-bridge-triggered
+// mutation must be distinguishable in the durable audit log from a real
+// interactive session -- both carry tier+userId with no apiKeyId, so only
+// the source marker resolveWriteBridgePrincipal() sets tells them apart.
+test("principalOf distinguishes a write-bridge principal from a real interactive session", () => {
+  assert.deepEqual(
+    principalOf({ source: "discord-write-bridge", tier: "admin", userId: "557", discordUserId: "557", discordUsername: "tester", id: "discord:557", csrf: null }),
+    { type: "discord-write-bridge", tier: "admin", userId: "557" }
+  );
+});

@@ -12,10 +12,32 @@ import {
   setRequiresDualConfirmationForTests,
   resetRequiresDualConfirmationOverridesForTests
 } from "../src/integrations/discord/writeActionRoutes.js";
+import { WRITE_ACTION_MIN_TIER } from "../src/integrations/discord/writeActionMinTier.js";
 
 test("selfCheckWriteActionRoutes: clean against real actions.js -- every entry resolves to a real route with a matching policyAction", () => {
   const problems = selfCheckWriteActionRoutes();
   assert.deepEqual(problems, []);
+});
+
+// [Layer 3 integration audit fix, MEDIUM, issue #1039] Mutation-tested: a
+// WRITE_ACTION_ROUTES entry with no matching WRITE_ACTION_MIN_TIER entry
+// used to pass boot silently. Deletes and restores a real min-tier entry
+// (rather than adding a fake WRITE_ACTION_ROUTES entry) so this test can
+// never itself go stale relative to whichever action set is real at the
+// time it runs.
+test("selfCheckWriteActionRoutes: flags a WRITE_ACTION_ROUTES entry with no matching WRITE_ACTION_MIN_TIER entry", () => {
+  const [someAction] = Object.keys(WRITE_ACTION_ROUTES);
+  const savedMinTier = WRITE_ACTION_MIN_TIER[someAction];
+  delete WRITE_ACTION_MIN_TIER[someAction];
+  try {
+    const problems = selfCheckWriteActionRoutes();
+    assert.ok(
+      problems.some((p) => p.includes(someAction) && p.includes("no matching WRITE_ACTION_MIN_TIER entry")),
+      `expected a problem naming "${someAction}", got: ${JSON.stringify(problems)}`
+    );
+  } finally {
+    WRITE_ACTION_MIN_TIER[someAction] = savedMinTier;
+  }
 });
 
 test("checkConfirmPhrasesAgainstRealHandlers: clean -- the real carePackage.js handlers actually reject a wrong confirmation with the phrase this table declares", async () => {

@@ -109,7 +109,23 @@ export async function startWriteBridgeSocketServer({ socketPath, requestListener
     return { server: null, disabled: true, reason: "socket_path_unavailable", detail: prepared.reason };
   }
 
-  const server = createServer((req, res) => requestListener(req, res, { viaWriteBridgeSocket: true }));
+  // [Layer 3 integration audit fix, HIGH, issue #1036] Same defense-in-depth
+  // as server.js's own TCP listener: requestListener (the shared
+  // requestHandler) now catches its own thrown/rejected paths internally,
+  // but this .catch() is the last line of defense against a silently hung
+  // Hop B connection if a future change reintroduces an uncaught path.
+  const server = createServer((req, res) => {
+    // Promise.resolve(...) wraps in case a test double or future caller
+    // passes a synchronous (non-Promise-returning) requestListener --
+    // real production requestListener (requestHandler) is always async.
+    Promise.resolve(requestListener(req, res, { viaWriteBridgeSocket: true })).catch((error) => {
+      console.error(`Unhandled write-bridge request error: ${error?.message || "Unexpected error."}`);
+      if (!res.headersSent) {
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "Unexpected error." }));
+      }
+    });
+  });
 
   // Attach an explicit 'error' handler on THIS server instance before
   // calling .listen() -- an unhandled 'error' event on an http.Server

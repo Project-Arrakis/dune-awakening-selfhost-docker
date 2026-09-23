@@ -1,10 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WRITE_ACTION_MIN_TIER, meetsMinTier } from "../src/integrations/discord/writeActionMinTier.js";
+import { DISCORD_ROLE_TIERS } from "../src/integrations/discord/policy.js";
 
+// [Layer 3 integration audit fix, LOW, issue #1042] This matrix deliberately
+// computes its OWN expected rank rather than importing writeActionMinTier.js's
+// internal TIER_RANK -- testing meetsMinTier() against its own private
+// implementation detail would hide a real bug behind a tautology. But a bare
+// hand-typed { moderator: 0, admin: 1, owner: 2 } literal was itself a fourth
+// independently hand-maintained encoding of the tier hierarchy (alongside
+// TIER_RANK, VALID_TIERS in writeBridgeCredential.js, and the canonical
+// DISCORD_ROLE_TIERS) -- derived from DISCORD_ROLE_TIERS instead, so this
+// test's own expectation can never silently go stale if the canonical tier
+// order is ever changed, while still independently re-deriving rank rather
+// than trusting TIER_RANK's own computation of it.
 test("meetsMinTier: exhaustive matrix across every real action and every tier", () => {
-  const tiers = ["moderator", "admin", "owner"];
-  const rank = { moderator: 0, admin: 1, owner: 2 };
+  const tiers = DISCORD_ROLE_TIERS.slice(DISCORD_ROLE_TIERS.indexOf("moderator"));
+  const rank = Object.fromEntries(tiers.map((tier, index) => [tier, index]));
   for (const [action, minTier] of Object.entries(WRITE_ACTION_MIN_TIER)) {
     for (const actorTier of tiers) {
       const expected = rank[actorTier] >= rank[minTier];
