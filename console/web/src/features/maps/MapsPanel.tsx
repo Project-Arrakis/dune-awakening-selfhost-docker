@@ -862,13 +862,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     setServerCustomDraft(parsed);
   }
   // Spice Field settings are UserGame.ini fields (MAP_FIELDS, category "Spice
-  // Fields") that only make sense set at Global scope -- there is no per-map
-  // or per-size control surface left post-Patch-1.5 (see the "Spice Fields"
-  // section under Custom Settings). Deliberately decoupled from
-  // userGameName/gameValues so this section works regardless of whatever
-  // map/partition target the rest of the tab has selected.
-  async function loadSpiceFieldSettings() {
-    const values = await mapsApi.userGame("__global__");
+  // Fields"). They follow the same shared Target selector as the rest of
+  // this tab (see selectUserGameTarget) -- Global when no Target is chosen,
+  // matching PR #228's original always-visible UX, or that Target's own
+  // Map/Partition scope once one is picked.
+  async function loadSpiceFieldSettings(mapName?: string, partitionId?: string) {
+    const target = mapName || "__global__";
+    const values = await mapsApi.userGame(target, target === "__global__" ? undefined : partitionId);
     const parsed = parseUserSettingsMap(values.stdout || "");
     setSpiceFieldValues(parsed);
     setSpiceFieldDraft(parsed);
@@ -1315,6 +1315,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const isUserGameSurvival = userGameName === "Survival_1";
   const isUserGameDeepDesert = /^DeepDesert_/i.test(userGameName);
   const isUserGameDeepDesertRuntime = /^(DeepDesert_|Overmap$)/i.test(userGameName);
+  const isUserGameOvermap = userGameName === "Overmap";
   const sietchRows = parseSietchRows(sietchDimensionsText || sietchesText, sietchDimensionIdsText);
   const survivalSietchRows = sietchRows.filter((row) => row.partitionId);
   const primarySurvivalSietch = survivalSietchRows.find((row) => String(row.dimension) === "0") || survivalSietchRows[0] || null;
@@ -1384,6 +1385,11 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const spiceFieldSettings = (schema?.game || []).filter((field) => field.category === "Spice Fields");
   const filteredSpiceFieldSettings = filterSettingsFields(spiceFieldSettings, modifierFilter);
   const spiceFieldsDirty = changedKeys(spiceFieldValues, spiceFieldDraft, spiceFieldSettings);
+  // Spice Fields follows the same shared Target selector as the rest of this
+  // tab (userGameTargetKey), defaulting to "Global" when nothing is selected
+  // -- reuses the already-correct label strings from userGameTargets rather
+  // than reformatting the target ourselves.
+  const spiceFieldsTargetLabel = userGameTargetKey ? (userGameTargets.find((target) => target.key === userGameTargetKey)?.label || "Global") : "Global";
   const filteredActiveSpicefields = filterActiveSpicefields(activeSpicefields, spicefieldFilter);
   const engineSchemaFields = isEngineGlobal
     ? schema?.engine || []
@@ -1497,6 +1503,9 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
       setGameDraft({});
       setServerCustomValues({});
       setServerCustomDraft({});
+      // Deselecting reverts Spice Fields to Global too, matching §8.2 of
+      // docs/design/spice-fields-per-map-scoping-l1-design-2026-09-21.md.
+      void loadSpiceFieldSettings().catch((error) => onError(error instanceof Error ? error.message : String(error)));
       return;
     }
     setUserGameMapName(target.map);
@@ -1505,6 +1514,12 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     setSelectedServerCustomCategory("");
     const loader = settingsTab === "serverCustom" ? loadSelectedServerCustomSettings : loadSelectedSettings;
     void loader(target.map, target.partitionId || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error)));
+    // Spice Fields reloads for whichever target this shared selector just
+    // picked, independent of settingsTab -- it's only ever rendered under
+    // the serverCustom tab, but keeping it in sync here (not gated on the
+    // active tab) means it's already correct the moment an operator
+    // navigates there.
+    void loadSpiceFieldSettings(target.map, target.partitionId || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error)));
   }
   function selectEngineTarget(next: string) {
     const target = userGameTargets.find((item) => item.key === next);
@@ -1910,15 +1925,24 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     await refreshDeferredRestartPending();
   }
   async function saveSpiceFields() {
-    const choice = await confirmSettingsRestart("UserGame", settingsRestartTarget("global", "Survival_1"));
+    if (isUserGameOvermap) return;
+    // Same derivation as saveGame() (MapsPanel.tsx's per-target UserGame
+    // save), except "nothing selected" defaults to Global here instead of
+    // saveGame()'s own early-return guard -- Spice Fields must still save at
+    // Global scope with no Target chosen, matching PR #228's original UX.
+    const spiceIsGlobal = isUserGameGlobal || !userGameName;
+    const scope = spiceIsGlobal ? "global" : effectiveUserGamePartitionId ? "partition" : "map";
+    const map = spiceIsGlobal ? "Survival_1" : userGameName;
+    const partitionId = spiceIsGlobal ? undefined : effectiveUserGamePartitionId || undefined;
+    const choice = await confirmSettingsRestart("UserGame", settingsRestartTarget(scope, map, partitionId));
     if (choice === "cancel") return;
     await runTaskAndRefresh(
-      () => mapsApi.saveUserSettings({ scope: "global", map: "Survival_1", values: valuesForDirtyFields(spiceFieldValues, spiceFieldDraft, spiceFieldSettings), immediate: choice === "immediate", deferRestart: choice === "manual" }),
-      "Saving Spice Field settings",
+      () => mapsApi.saveUserSettings({ scope, map, partitionId, values: valuesForDirtyFields(spiceFieldValues, spiceFieldDraft, spiceFieldSettings), immediate: choice === "immediate", deferRestart: choice === "manual" }),
+      `Saving ${spiceIsGlobal ? "Global" : userGameName} Spice Field settings`,
       "Spice Fields Saved",
       { resultScope: "modifiers", restartAcceptedMessage: "Changes saved successfully. The maps are restarting and should be back up soon." }
     );
-    await loadSpiceFieldSettings();
+    await loadSpiceFieldSettings(spiceIsGlobal ? undefined : userGameName, partitionId);
     await refreshDeferredRestartPending();
   }
   async function saveRaw(kind: "engine" | "game") {
@@ -2411,10 +2435,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         <div className="action-row"><button disabled={!serverCustomDirty.length || !userGameName} onClick={() => run(saveServerCustom)}>Save Custom Settings</button><button disabled={!serverCustomDirty.length} onClick={() => setServerCustomDraft(serverCustomValues)}>Discard Custom Settings Changes</button><button className="settings-reset-all-button" disabled={!userGameName || !serverCustomFields.length} title="Set every Server Setting on this tab back to its default value" onClick={() => setServerCustomDraft(Object.fromEntries(serverCustomFields.map((field) => [field.id, field.default ?? ""]))) }>Restore Custom Settings Defaults</button></div>
         <div className="spicefield-settings-heading">
           <h3>Spice Fields</h3>
-          <p>These settings apply server-wide, independent of the Target selector above -- global spice-system pacing, visibility, and yield. Patch 1.5 removed the old per-map/per-size active-field caps and spawn weights entirely, so there is no longer a per-size (Small/Medium/Large) or per-map (Hagga Basin vs. Deep Desert) control surface in the live game server; these are the closest settings that still exist.</p>
+          <p className="spicefield-settings-scope"><strong>Editing:</strong> {spiceFieldsTargetLabel}</p>
+          <p>These settings apply to whichever Target is selected above -- server-wide (Global) when nothing is selected, or scoped to that specific map/partition once one is, exactly like every other Custom Settings field. Patch 1.5 removed the old per-size active-field caps and spawn weights entirely, so there is no longer a per-size (Small/Medium/Large) control surface in the live game server; these are the closest settings that still exist.</p>
         </div>
-        <SettingsCardGrid fields={filteredSpiceFieldSettings} values={spiceFieldDraft} onChange={(id, value) => setSpiceFieldDraft({ ...spiceFieldDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, spiceFieldSettings.length, modifierFilter, "Spice Fields")} />
-        <div className="action-row"><button disabled={!spiceFieldsDirty.length} onClick={() => run(saveSpiceFields)}>Save Spice Fields</button><button disabled={!spiceFieldsDirty.length} onClick={() => setSpiceFieldDraft(spiceFieldValues)}>Discard Spice Field Changes</button><button className="settings-reset-all-button" disabled={!spiceFieldSettings.length} title="Set every Spice Field setting back to its default value" onClick={() => setSpiceFieldDraft(Object.fromEntries(spiceFieldSettings.map((field) => [field.id, field.default ?? ""])))}>Restore Spice Field Defaults</button></div>
+        {isUserGameOvermap
+          ? <div className="empty spicefield-overmap-notice"><Info size={14} aria-hidden="true" /> Overmap doesn&apos;t host spice fields -- select Global, Hagga Basin, or Deep Desert to edit Spice Fields.</div>
+          : <SettingsCardGrid fields={filteredSpiceFieldSettings} values={spiceFieldDraft} onChange={(id, value) => setSpiceFieldDraft({ ...spiceFieldDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, spiceFieldSettings.length, modifierFilter, "Spice Fields")} />}
+        <div className="action-row"><button disabled={isUserGameOvermap || !spiceFieldsDirty.length} onClick={() => run(saveSpiceFields)}>Save Spice Fields</button><button disabled={isUserGameOvermap || !spiceFieldsDirty.length} onClick={() => setSpiceFieldDraft(spiceFieldValues)}>Discard Spice Field Changes</button><button className="settings-reset-all-button" disabled={isUserGameOvermap || !spiceFieldSettings.length} title="Set every Spice Field setting back to its default value" onClick={() => setSpiceFieldDraft(Object.fromEntries(spiceFieldSettings.map((field) => [field.id, field.default ?? ""])))}>Restore Spice Field Defaults</button></div>
       </> : settingsTab === "spicefields" ? <>
         <SpicefieldsEditor rows={filteredActiveSpicefields} allRows={activeSpicefields} loaded={spicefieldsLoaded} filter={spicefieldFilter} result={spicefieldResult} onFilterChange={setSpicefieldFilter} onRefresh={() => run(loadSpicefields)} />
       </> : <>
