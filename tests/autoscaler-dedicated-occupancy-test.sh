@@ -26,13 +26,26 @@ docker run -d --rm \
   -e POSTGRES_PASSWORD=postgres \
   postgres:17-alpine >/dev/null
 
+ready=0
 for _ in $(seq 1 60); do
-  if docker exec "$container" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
+  # A fresh official PostgreSQL container starts a temporary server for initdb,
+  # stops it, then starts the final server. Waiting on pg_isready alone can
+  # catch that temporary process and race its intentional shutdown on the next
+  # psql call. Require both readiness markers, as the bootstrap integration
+  # test does, before treating the disposable database as stable.
+  ready_markers="$(docker logs "$container" 2>&1 | grep -c 'database system is ready to accept connections' || true)"
+  if [ "$ready_markers" -ge 2 ] \
+    && docker exec "$container" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
+    ready=1
     break
   fi
   sleep 1
 done
-docker exec "$container" pg_isready -U postgres -d postgres >/dev/null
+if [ "$ready" != "1" ]; then
+  echo "Disposable PostgreSQL did not reach its final ready state." >&2
+  docker logs "$container" >&2 || true
+  exit 1
+fi
 
 docker exec -i "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
 create schema dune;
