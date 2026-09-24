@@ -30,6 +30,18 @@ const DEFAULT_MAX_SKEW_SECONDS = 30;
 const SIGNATURE_HEADER = "x-dune-actor-signature";
 const TIMESTAMP_HEADER = "x-dune-actor-timestamp";
 
+// [Layer 3 integration audit fix, MEDIUM, issue #1052] Matches the
+// boundedTimeoutMs()/boundedEnvInt() pattern already established elsewhere
+// in this feature (writeBridgeInternalClient.js, routes.js) -- `Number(x) ||
+// default` silently treats an explicit "0" as "use the default" and
+// enforces no upper bound, which would let a misconfigured or malicious
+// value effectively disable the anti-replay freshness window this variable
+// exists to enforce.
+function boundedMaxSkewSeconds() {
+  const value = Number(process.env.DUNE_DISCORD_ACTOR_SIGNATURE_MAX_SKEW_SECONDS);
+  return Number.isInteger(value) && value >= 5 && value <= 300 ? value : DEFAULT_MAX_SKEW_SECONDS;
+}
+
 // Fields covered by the signature. Order is fixed so the bot and console
 // compute byte-identical canonical strings; unknown/extra actor fields are
 // intentionally excluded so adding a new non-authorizing field to the actor
@@ -160,7 +172,7 @@ export function verifyActorSignature({ actorPayload, headers, config, route = ""
     throw policyError("invalid_actor_signature", "Discord actor signature timestamp is invalid.", 403);
   }
 
-  const maxSkewSeconds = Number(process.env.DUNE_DISCORD_ACTOR_SIGNATURE_MAX_SKEW_SECONDS) || DEFAULT_MAX_SKEW_SECONDS;
+  const maxSkewSeconds = boundedMaxSkewSeconds();
   if (Math.abs(now - timestamp) > maxSkewSeconds) {
     throw policyError("stale_actor_signature", "Discord actor signature has expired. Retry the command.", 403);
   }

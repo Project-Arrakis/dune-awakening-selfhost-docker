@@ -193,6 +193,50 @@ test("startWriteBridgeSocketServer: umask is restored to its original value afte
   }
 });
 
+// [Layer 3 integration audit fix, LOW, issue #1053] The test above only
+// checks the END STATE (umask is back to normal once the whole async
+// function resolves) -- it would pass equally under the previous, buggy
+// version, which restored the umask only after awaiting the async
+// 'listening' event rather than synchronously right after calling
+// .listen(), leaving the umask tightened process-wide for the real,
+// measured gap between bind() and 'listening' firing. This test proves the
+// actual TIMING: the restore call must happen in the same synchronous tick
+// as listen(), before even a single microtask (let alone the 'listening'
+// I/O event, which fires later) can run.
+test("startWriteBridgeSocketServer: umask restore happens synchronously in the same tick as listen(), not after awaiting the 'listening' event", async () => {
+  const socketPath = join(tempDir, "umask-sync.sock");
+  const originalUmaskFn = process.umask;
+  const calls = [];
+  // Real async work happens before this function ever reaches its umask
+  // section (prepareSocketPath's own await), so the marker must be armed
+  // relative to the FIRST umask() call (the tighten), not to an absolute
+  // point before the whole function starts -- this measures the gap
+  // BETWEEN the tighten and restore calls specifically, the exact race
+  // window this fix concerns.
+  let sinceTighten = null;
+  process.umask = function (...args) {
+    if (calls.length === 0) {
+      // This is the tighten call -- arm a microtask marker right now.
+      sinceTighten = true;
+      Promise.resolve().then(() => { sinceTighten = false; });
+    }
+    calls.push({ args, sinceTighten });
+    return originalUmaskFn.apply(process, args);
+  };
+  try {
+    const { server, disabled } = await startWriteBridgeSocketServer({ socketPath, requestListener: () => {}, deps: { getuid: () => 1000 } });
+    assert.equal(disabled, false);
+    try {
+      assert.equal(calls.length, 2, "expected exactly two process.umask() calls: tighten, then restore");
+      assert.equal(calls[1].sinceTighten, true, "the restore call must happen in the same synchronous tick as the tighten call (i.e. right after listen() returns), before any microtask can run -- this fails under the previous await-then-restore implementation, where at least the real 'listening' I/O event (plus its own microtask continuation) elapses first");
+    } finally {
+      server.close();
+    }
+  } finally {
+    process.umask = originalUmaskFn;
+  }
+});
+
 test("startWriteBridgeSocketServer: a genuinely stale file at the path does not prevent startup", async () => {
   const socketPath = join(tempDir, "stale-then-start.sock");
   writeFileSync(socketPath, "");

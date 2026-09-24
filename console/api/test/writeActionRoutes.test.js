@@ -107,6 +107,20 @@ test("validatePlayerId: accepts real Funcom-style ids", () => {
   assert.equal(validatePlayerId("5E121CE000000001"), "5E121CE000000001");
 });
 
+// [Layer 3 integration audit fix, LOW, issue #1051] "_", ":", "-" added --
+// real Steam-style/Funcom ids using these were previously accepted via the
+// admin CLI path (runner.js's own validatePlayerId) but silently rejected
+// here. "." remains deliberately excluded (see the module-level comment) --
+// the "rejects path-traversal-shaped values" test above already locks that
+// in and must keep passing unchanged.
+test("validatePlayerId: accepts underscore/colon/hyphen (issue #1051), still rejects dots", () => {
+  assert.equal(validatePlayerId("steam_76561198012345678"), "steam_76561198012345678");
+  assert.equal(validatePlayerId("steam:76561198012345678"), "steam:76561198012345678");
+  assert.equal(validatePlayerId("Server-4242"), "Server-4242");
+  assert.throws(() => validatePlayerId("a.b"), /Invalid playerId shape/);
+  assert.throws(() => validatePlayerId(".."), /Invalid playerId shape/);
+});
+
 test("validateBaseId: rejects non-numeric and traversal-shaped values", () => {
   for (const bad of ["..", "1.5", "01", "-1", "0", "abc", "1/2", ""]) {
     assert.throws(() => validateBaseId(bad), /Invalid baseId shape/);
@@ -146,6 +160,7 @@ test("WRITE_ACTION_ROUTES: every entry with a confirmPhrase matches the real doc
   const expected = {
     "player.ban": "BAN PLAYER",
     "player.clear-backpack": "CLEAN INVENTORY",
+    "server.stop": "STOP SERVER",
     "map.spawn": "SPAWN MAP",
     "map.despawn": "DESPAWN MAP",
     "map.respawn": "RESTART MAP",
