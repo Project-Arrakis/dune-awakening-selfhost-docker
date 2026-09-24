@@ -140,22 +140,39 @@ export async function startWriteBridgeSocketServer({ socketPath, requestListener
   });
 
   // Synchronous umask handling (docs/rw-architecture.md 3.4, round-5/6
-  // corrections): Node's bind() for a Unix-domain-socket path happens
-  // synchronously inside .listen(), so the socket file's permissions are
-  // set at that exact moment -- restoring the umask must happen
-  // synchronously on the very next line after .listen() returns, not in
-  // the async 'listening' callback, or every OTHER file this process
-  // creates during the real, measured ~1-2.5ms gap before 'listening'
-  // fires silently inherits the tightened umask too.
+  // corrections; re-fixed under Layer 3 integration audit issue #1053):
+  // Node's bind() for a Unix-domain-socket path happens synchronously
+  // inside .listen(), so the socket file's permissions are set at that
+  // exact moment -- restoring the umask must happen synchronously on the
+  // very next line after .listen() returns, not after awaiting the async
+  // 'listening' event, or every OTHER file this process creates during the
+  // real, measured ~1-2.5ms gap before 'listening' fires silently inherits
+  // the tightened umask too.
+  //
+  // The previous version of this fix registered the 'listening'/'error'
+  // handlers INSIDE a `new Promise(...)` executor passed as .listen()'s own
+  // second argument, then only restored the umask after `await`-ing that
+  // promise -- i.e. after 'listening' fires, not "the very next line after
+  // .listen() returns" as this comment already claimed. The umask stayed
+  // tightened process-wide for the entire async gap the comment above warns
+  // about. Fixed by separating the two: attach the listeners, call
+  // .listen() (bind() happens synchronously within this call), restore the
+  // umask immediately on the next line, THEN await the listen outcome.
   const originalUmask = process.umask(0o077);
-  await new Promise((resolve, reject) => {
+  const listenOutcome = new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(socketPath, resolve);
-  }).catch((error) => {
-    process.umask(originalUmask);
-    throw error;
+    server.once("listening", resolve);
   });
-  process.umask(originalUmask);
+  try {
+    server.listen(socketPath);
+  } finally {
+    // finally, not just the next line unconditionally: guarantees the
+    // restore runs even if .listen() itself threw synchronously (an
+    // invalid argument, for example) before ever reaching a following
+    // statement.
+    process.umask(originalUmask);
+  }
+  await listenOutcome;
 
   if (disabledAfterStart) {
     return { server: null, disabled: true, reason: "listen_error" };

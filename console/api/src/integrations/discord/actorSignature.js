@@ -26,6 +26,23 @@ const DEFAULT_MAX_SKEW_SECONDS = 30;
 const SIGNATURE_HEADER = "x-dune-actor-signature";
 const TIMESTAMP_HEADER = "x-dune-actor-timestamp";
 
+// [Layer 3 integration audit fix, MEDIUM, issue #1052] Was
+// `Number(process.env.X) || DEFAULT_MAX_SKEW_SECONDS` -- silently treated an
+// explicit "0" as "use the 30s default" (an operator asking for zero replay
+// tolerance got the default instead, via JS's `||` coercion quirk, not a
+// deliberate design choice) and enforced no upper bound (a huge value could
+// effectively disable this anti-replay window entirely). Bounded to [5, 300]:
+// an out-of-range or non-integer value -- including 0 and unbounded-large --
+// falls back to the default instead of being silently reinterpreted or
+// accepted as-is. A true zero-tolerance skew isn't practically enforceable
+// anyway (network/clock skew alone would break it), so 0 falling back to the
+// default is correct behavior, not a regression from this fix.
+function boundedMaxSkewSeconds() {
+  const raw = Number(process.env.DUNE_DISCORD_ACTOR_SIGNATURE_MAX_SKEW_SECONDS);
+  if (!Number.isInteger(raw) || raw < 5 || raw > 300) return DEFAULT_MAX_SKEW_SECONDS;
+  return raw;
+}
+
 // Fields covered by the signature. Order is fixed so the bot and console
 // compute byte-identical canonical strings; unknown/extra actor fields are
 // intentionally excluded so adding a new non-authorizing field to the actor
@@ -148,7 +165,7 @@ export function verifyActorSignature({ actorPayload, headers, config, route = ""
     throw policyError("invalid_actor_signature", "Discord actor signature timestamp is invalid.", 403);
   }
 
-  const maxSkewSeconds = Number(process.env.DUNE_DISCORD_ACTOR_SIGNATURE_MAX_SKEW_SECONDS) || DEFAULT_MAX_SKEW_SECONDS;
+  const maxSkewSeconds = boundedMaxSkewSeconds();
   if (Math.abs(now - timestamp) > maxSkewSeconds) {
     throw policyError("stale_actor_signature", "Discord actor signature has expired. Retry the command.", 403);
   }

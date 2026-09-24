@@ -507,7 +507,25 @@ async function writePreviewRoute({ req, res, json, readJsonWithActorSignature, c
   if (!resolved) throw policyError("unknown_write_action", `Unknown write action: ${action}`, 400);
 
   const actorTier = discordActorTier(actor, mapping);
-  if (!meetsMinTier(actorTier, action)) {
+  // [Layer 3 integration audit fix, MEDIUM, issue #1049] meetsMinTier() used
+  // to be called unwrapped here, unlike resolveWriteActionRoute() above and
+  // store.create() below (both explicitly wrapped, the latter for this
+  // exact same failure class under issue #1038). meetsMinTier() throws a
+  // bare Error with no .statusCode when an action has no
+  // WRITE_ACTION_MIN_TIER entry -- selfCheckWriteActionRoutes() only gates
+  // whether the Hop-B socket starts, it never prevents write/preview from
+  // being reachable, so this crash path was fully live even after the
+  // boot-time self-check had already flagged the drift. A distinguishable
+  // 500 (not the generic adapter_error a bare throw would produce) so
+  // monitoring can tell "this action's own table is broken" apart from an
+  // unrelated server bug.
+  let authorized;
+  try {
+    authorized = meetsMinTier(actorTier, action);
+  } catch (error) {
+    throw policyError("write_action_misconfigured", "This write action is misconfigured. Contact an administrator.", 500);
+  }
+  if (!authorized) {
     throw policyError("not_authorized", `Discord actor is not authorized for ${action}.`, 403);
   }
 
@@ -603,7 +621,16 @@ async function writeExecuteRoute({ req, res, json, readJsonWithActorSignature, c
   }
 
   const actorTier = discordActorTier(actor, mapping);
-  if (!meetsMinTier(actorTier, action)) {
+  // [Layer 3 integration audit fix, MEDIUM, issue #1049] see writePreviewRoute's
+  // identical fix above for the full rationale -- meetsMinTier() must never
+  // be called unwrapped.
+  let executeAuthorized;
+  try {
+    executeAuthorized = meetsMinTier(actorTier, action);
+  } catch (error) {
+    throw policyError("write_action_misconfigured", "This write action is misconfigured. Contact an administrator.", 500);
+  }
+  if (!executeAuthorized) {
     throw policyError("not_authorized", `Discord actor is not authorized for ${action}.`, 403);
   }
 
@@ -626,7 +653,15 @@ async function writeExecuteRoute({ req, res, json, readJsonWithActorSignature, c
   // unrelated reason (e.g. bot/host clock drift) and silently widen the
   // acceptance window for stale, possibly-since-revoked elevated roles on
   // this codebase's highest-risk mutation path, with no separate control.
-  const maxRoleAgeSeconds = Number(process.env.DUNE_DISCORD_WRITE_BRIDGE_ROLE_MAX_AGE_SECONDS) || 30;
+  // [Layer 3 integration audit fix, MEDIUM, issue #1052] Was
+  // `Number(process.env.X) || 30` -- silently treated an explicit "0" as
+  // "use the 30s default" (an operator asking for zero tolerance got the
+  // default instead) and enforced no upper bound (a huge value could
+  // effectively disable this freshness check entirely). boundedEnvInt()
+  // (already used elsewhere in this file) fixes both: an out-of-range or
+  // non-integer value -- including 0 and unbounded-large -- falls back to
+  // the default instead of being silently reinterpreted or accepted as-is.
+  const maxRoleAgeSeconds = boundedEnvInt("DUNE_DISCORD_WRITE_BRIDGE_ROLE_MAX_AGE_SECONDS", 30, 5, 300);
   const nowSeconds = Math.floor(Date.now() / 1000);
   if (Math.abs(nowSeconds - roleSnapshotAt) > maxRoleAgeSeconds) {
     throw policyError("stale_actor_signature", "Your role info expired. Please re-run the command.", 403);
@@ -661,6 +696,26 @@ async function writeExecuteRoute({ req, res, json, readJsonWithActorSignature, c
   // reported rather than as a 500.
   const entry = store.consume(nonceValue);
   if (!entry) throw policyError("nonce_not_found", "Confirmation expired or was already used. Please re-run the command.", 410);
+
+  // [Layer 3 integration audit fix, MEDIUM, issue #1050, STRIDE Repudiation]
+  // The real target handler's own audit() call (triggered when Hop B
+  // dispatches to it) only ever records the CURRENT request's actor -- for a
+  // dual-confirmation completion, that's the second confirmer only. The
+  // primary confirmer's identity (peeked.actorUserId) is read above only for
+  // the same-actor mismatch check and then discarded, meaning a two-person-
+  // approved destructive action's audit trail showed only ONE of the two
+  // required approvers, defeating the accountability purpose the mechanism
+  // exists for. This explicit record, written here (not inside the real
+  // target handler, which must stay unmodified per "no parallel
+  // implementation") captures both identities before Hop B is ever reached.
+  if (isDualConfirmSecondStep) {
+    audit(config, req, "write-bridge.dual-confirmation-completed", {
+      action,
+      primaryActorUserId: peeked.actorUserId,
+      secondActorUserId: actor.userId,
+      secondActorUsername: actor.username
+    });
+  }
 
   // Hop B: the internal loopback that actually performs the mutation
   // (docs/rw-architecture.md section 3.1-3.4). Reuses the real target route

@@ -107,6 +107,15 @@ test("validatePlayerId: accepts real Funcom-style ids", () => {
   assert.equal(validatePlayerId("5E121CE000000001"), "5E121CE000000001");
 });
 
+test("validatePlayerId: accepts underscore/colon/hyphen (issue #1051), still rejects dots", () => {
+  assert.equal(validatePlayerId("steam_76561198000000000"), "steam_76561198000000000");
+  assert.equal(validatePlayerId("steam:76561198000000000"), "steam:76561198000000000");
+  assert.equal(validatePlayerId("Server-4242"), "Server-4242");
+  for (const stillBad of ["a.b", ".."]) {
+    assert.throws(() => validatePlayerId(stillBad), /Invalid playerId shape/);
+  }
+});
+
 test("validateBaseId: rejects non-numeric and traversal-shaped values", () => {
   for (const bad of ["..", "1.5", "01", "-1", "0", "abc", "1/2", ""]) {
     assert.throws(() => validateBaseId(bad), /Invalid baseId shape/);
@@ -154,7 +163,8 @@ test("WRITE_ACTION_ROUTES: every entry with a confirmPhrase matches the real doc
     "carepackage.disable": "DISABLE CARE PACKAGE",
     "carepackage.scan": "RUN CARE PACKAGE SCAN",
     "carepackage.grant": "GRANT CARE PACKAGE",
-    "carepackage.grant-all": "GRANT CARE PACKAGE TO ELIGIBLE PLAYERS"
+    "carepackage.grant-all": "GRANT CARE PACKAGE TO ELIGIBLE PLAYERS",
+    "server.stop": "STOP SERVER"
   };
   for (const [action, phrase] of Object.entries(expected)) {
     assert.equal(WRITE_ACTION_ROUTES[action].confirmPhrase, phrase, `${action} confirmPhrase mismatch`);

@@ -14,13 +14,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleDiscordAdapterRoute } from "../src/integrations/discord/routes.js";
 import { signActorPayload, ACTOR_SIGNATURE_HEADER, ACTOR_TIMESTAMP_HEADER, WRITE_BRIDGE_SIGNED_ACTOR_FIELDS } from "../src/integrations/discord/actorSignature.js";
 import { resetWriteNonceStoreForTests } from "../src/integrations/discord/writeBridgeState.js";
 import { setRequiresDualConfirmationForTests, resetRequiresDualConfirmationOverridesForTests } from "../src/integrations/discord/writeActionRoutes.js";
+import { WRITE_ACTION_MIN_TIER } from "../src/integrations/discord/writeActionMinTier.js";
 
 const BOT_TOKEN = "write-bridge-test-bot-token";
 const ACTOR_SECRET = "write-bridge-test-actor-secret";
@@ -281,6 +282,34 @@ test("write/preview: unknown action -> 400 unknown_write_action, not a 500 or si
   });
 });
 
+// [Layer 3 integration audit fix, MEDIUM, issue #1049] Before this fix, an
+// action present in WRITE_ACTION_ROUTES with no matching WRITE_ACTION_MIN_TIER
+// entry (the exact drift class issue #1039's boot-time check exists to catch,
+// but which only gates the Hop-B socket, never write/preview/write/execute's
+// own reachability) crashed with an uncaught 500. Deletes and restores a
+// real min-tier entry (rather than adding a fake WRITE_ACTION_ROUTES entry)
+// so this test can never itself go stale relative to whichever action set is
+// real at the time it runs.
+test("write/preview: an action missing its WRITE_ACTION_MIN_TIER entry returns a distinguishable 500, never an uncaught crash", async () => {
+  const savedMinTier = WRITE_ACTION_MIN_TIER["player.warn"];
+  delete WRITE_ACTION_MIN_TIER["player.warn"];
+  try {
+    await withServer(testConfig, async (base) => {
+      const a = actor(["role-owner"]);
+      const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.warn") },
+        body: JSON.stringify({ actor: a, action: "player.warn" })
+      });
+      assert.equal(response.status, 500);
+      const body = await response.json();
+      assert.equal(body.code, "write_action_misconfigured");
+    });
+  } finally {
+    WRITE_ACTION_MIN_TIER["player.warn"] = savedMinTier;
+  }
+});
+
 // --- write/execute: full round trip through the real nonce store ---
 
 async function preview(base, a, action, params) {
@@ -394,6 +423,36 @@ test("write/execute: stale roleSnapshotAt (older than the freshness window) is r
   });
 });
 
+// [Layer 3 integration audit fix, MEDIUM, issue #1052] DUNE_DISCORD_WRITE_BRIDGE_ROLE_MAX_AGE_SECONDS
+// used to be `Number(process.env.X) || 30` -- an out-of-range value (0, or a
+// huge number) was either silently reinterpreted as the default or accepted
+// unbounded. Setting it to a huge value here and confirming a genuinely
+// stale (9999s old) roleSnapshotAt is still rejected proves the override
+// falls back to the real, bounded default rather than being honored as-is.
+test("write/execute: an out-of-range DUNE_DISCORD_WRITE_BRIDGE_ROLE_MAX_AGE_SECONDS falls back to the bounded default, never accepted unbounded", async () => {
+  const original = process.env.DUNE_DISCORD_WRITE_BRIDGE_ROLE_MAX_AGE_SECONDS;
+  process.env.DUNE_DISCORD_WRITE_BRIDGE_ROLE_MAX_AGE_SECONDS = "999999";
+  try {
+    await withServer(testConfig, async (base) => {
+      const fresh = actor(["role-moderator"]);
+      const { nonce } = await preview(base, fresh, "player.warn");
+
+      const stale = actor(["role-moderator"], { roleSnapshotAt: Math.floor(Date.now() / 1000) - 9999 });
+      const response = await fetch(`${base}${EXECUTE_ROUTE}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(stale, EXECUTE_ROUTE, "player.warn") },
+        body: JSON.stringify({ actor: stale, nonce, action: "player.warn" })
+      });
+      assert.equal(response.status, 403);
+      const body = await response.json();
+      assert.equal(body.code, "stale_actor_signature");
+    });
+  } finally {
+    if (original === undefined) delete process.env.DUNE_DISCORD_WRITE_BRIDGE_ROLE_MAX_AGE_SECONDS;
+    else process.env.DUNE_DISCORD_WRITE_BRIDGE_ROLE_MAX_AGE_SECONDS = original;
+  }
+});
+
 test("write/execute: malformed roleSnapshotAt (NaN-shaped) is rejected, never silently passes the freshness check (regression guard for the exact bug class the design doc warns about: Math.abs(now-NaN) > N is always false)", async () => {
   await withServer(testConfig, async (base) => {
     const fresh = actor(["role-moderator"]);
@@ -488,6 +547,32 @@ test("the dual-confirmation gate mechanism (test-only override): a second, DIFFE
     // both confirmations passed and the real dispatch was actually attempted.
     assert.equal(second.status, 503);
     assert.equal(second.body.code, "write_backend_unavailable");
+  });
+});
+
+// [Layer 3 integration audit fix, MEDIUM, issue #1050, STRIDE Repudiation]
+// Before this fix, the real target handler's own audit() call recorded only
+// the second confirmer -- the primary confirmer's identity was read for the
+// same-actor check and then discarded, so a two-person-approved destructive
+// action's audit trail showed only one of the two required approvers.
+test("the dual-confirmation gate mechanism (test-only override): completing the second confirmation writes an explicit audit record naming BOTH the primary and second confirmer", async () => {
+  forceDualConfirmation();
+  await withServer(testConfig, async (base) => {
+    const primary = actor(["role-owner"], { userId: "owner-primary" });
+    const { nonce } = await preview(base, primary, DUAL_CONFIRM_TEST_ACTION);
+    await executeAs(base, primary, nonce, DUAL_CONFIRM_TEST_ACTION);
+
+    const secondAdmin = actor(["role-owner"], { userId: "owner-second", username: "second-admin" });
+    const second = await executeAs(base, secondAdmin, nonce, DUAL_CONFIRM_TEST_ACTION);
+    assert.equal(second.status, 503, "precondition: the second call must have genuinely reached the Hop-B boundary");
+
+    const auditRows = readFileSync(testConfig.auditLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const dualConfirmRow = auditRows.find((row) => row.action === "write-bridge.dual-confirmation-completed");
+    assert.ok(dualConfirmRow, "expected an explicit write-bridge.dual-confirmation-completed audit row");
+    assert.equal(dualConfirmRow.detail.action, DUAL_CONFIRM_TEST_ACTION);
+    assert.equal(dualConfirmRow.detail.primaryActorUserId, "owner-primary");
+    assert.equal(dualConfirmRow.detail.secondActorUserId, "owner-second");
+    assert.equal(dualConfirmRow.detail.secondActorUsername, "second-admin");
   });
 });
 
