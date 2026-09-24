@@ -35,6 +35,17 @@ if ! run_output="$(docker run -d --rm \
   exit 1
 fi
 
+# [Real root cause found via the diagnostic hardening above, issue #1059]
+# A bare `pg_isready` loop races the official postgres image's own
+# entrypoint: it briefly starts a TEMPORARY server during initdb, which
+# `pg_isready` cannot distinguish from the real, final server -- confirmed
+# directly, this exact race produced "psql: error: connection ... failed:
+# No such file or directory" immediately after `pg_isready` reported ready,
+# because the temporary server had already shut down by the time the very
+# next `docker exec ... psql` command ran. tests/postgres-bootstrap-test.sh
+# already defends against this identical race by waiting for the SECOND
+# "database system is ready to accept connections" marker in the container's
+# own logs before ever trusting `pg_isready`; this script had no such guard.
 ready=0
 for _ in $(seq 1 60); do
   # A fresh official PostgreSQL container starts a temporary server for initdb,
