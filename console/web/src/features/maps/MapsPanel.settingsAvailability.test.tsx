@@ -288,13 +288,19 @@ describe("MapsPanel modifier availability", () => {
       services: { stdout: "8 | DeepDesert_1 | 0 | | server1 | 33001 | 33101 | true | true" },
       readiness: { stdout: "" }
     });
+    // Spice Fields is defined in both `game` and `partition` (real
+    // usersettings.py's PARTITION_FIELDS spreads MAP_FIELDS, so the two
+    // schema arrays carry the same Spice Fields specs) -- spiceFieldSettings
+    // reads whichever one matches the currently-selected scope, mirroring
+    // userGameFields' own game/partition switch.
+    const spiceField = {
+      scope: "game", id: "spice_prime_rate_seconds", section: "/Script/DuneSandbox.SpiceHarvestingSystem",
+      key: "m_PrimeRateInSeconds", default: "30.000000", type: "number", clientFile: "", category: "Spice Fields",
+      description: "Seconds a spice field spends priming before becoming harvestable."
+    };
     api.userSettingsSchema.mockResolvedValue({
-      engine: [], mapEngine: [], partitionEngine: [], partition: [],
-      game: [{
-        scope: "game", id: "spice_prime_rate_seconds", section: "/Script/DuneSandbox.SpiceHarvestingSystem",
-        key: "m_PrimeRateInSeconds", default: "30.000000", type: "number", clientFile: "", category: "Spice Fields",
-        description: "Seconds a spice field spends priming before becoming harvestable."
-      }],
+      engine: [], mapEngine: [], partitionEngine: [], partition: [spiceField],
+      game: [spiceField],
       serverCustom: []
     });
     api.userGame.mockImplementation((map: string, partitionId?: string) =>
@@ -335,6 +341,78 @@ describe("MapsPanel modifier availability", () => {
     await waitFor(() => expect(api.saveUserSettings).toHaveBeenCalledWith(
       expect.objectContaining({ scope: "partition", map: "DeepDesert_1", partitionId: "8", values: { spice_prime_rate_seconds: "222.000000" } })
     ));
+  });
+
+  // Regression test for a real Layer 3 audit finding (2026-09-24): the Target
+  // selector lives on a different tab than the Spice Fields settings it
+  // scopes, so switching it while an operator has an unsaved Spice Fields
+  // draft used to silently overwrite that draft -- discarding their edits
+  // with zero visibility, since they weren't even looking at that tab.
+  it("does not clobber an unsaved Spice Fields draft when the Target is changed from another tab, and re-syncs only once Discard Changes is clicked", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: "" },
+      services: { stdout: "8 | DeepDesert_1 | 0 | | server1 | 33001 | 33101 | true | true" },
+      readiness: { stdout: "" }
+    });
+    const spiceField = {
+      scope: "game", id: "spice_prime_rate_seconds", section: "/Script/DuneSandbox.SpiceHarvestingSystem",
+      key: "m_PrimeRateInSeconds", default: "30.000000", type: "number", clientFile: "", category: "Spice Fields",
+      description: "Seconds a spice field spends priming before becoming harvestable."
+    };
+    api.userSettingsSchema.mockResolvedValue({
+      engine: [], mapEngine: [], partitionEngine: [], partition: [spiceField],
+      game: [spiceField],
+      serverCustom: []
+    });
+    api.userGame.mockImplementation((map: string, partitionId?: string) =>
+      Promise.resolve(
+        map === "DeepDesert_1" && partitionId === "8"
+          ? { stdout: "spice_prime_rate_seconds\t111.000000\n" }
+          : { stdout: "spice_prime_rate_seconds\t30.000000\n" }
+      )
+    );
+
+    renderMapsPanel();
+    const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
+    await waitFor(() => expect(modifiers).toBeEnabled());
+    fireEvent.click(modifiers);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Spice Fields" }));
+    expect(await screen.findByDisplayValue("30.000000")).toBeVisible();
+
+    // Unsaved edit on the Spice Fields tab, made before touching the Target.
+    fireEvent.change(screen.getByDisplayValue("30.000000"), { target: { value: "999.000000" } });
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+
+    const callsBeforeTargetChange = api.userGame.mock.calls.length;
+
+    // Target changed from the *other* tab -- the operator never returns to
+    // Spice Fields to see this happen.
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Settings" }));
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "DeepDesert_1::8" } });
+
+    // No new fetch fired for Spice Fields -- the reload was skipped because a
+    // dirty draft existed, not silently issued and then discarded.
+    expect(api.userGame.mock.calls.length).toBe(callsBeforeTargetChange);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Spice Fields" }));
+
+    // The unsaved edit survived the cross-tab Target change.
+    expect(screen.getByDisplayValue("999.000000")).toBeVisible();
+    // But Save is disabled -- current target is DeepDesert_1/8, this draft is
+    // still Global's, and saving now would write it to the wrong scope.
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByText(/target changed on another tab/i)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard Changes" }));
+
+    // Discard Changes closes the loop: it both drops the stale draft and
+    // fetches the Target the operator actually has selected now.
+    await waitFor(() => expect(api.userGame).toHaveBeenCalledWith("DeepDesert_1", "8"));
+    expect(await screen.findByDisplayValue("111.000000")).toBeVisible();
+    expect(screen.queryByText(/target changed on another tab/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
   it("shows a distinct explanatory notice instead of the Spice Fields grid when Overmap is selected, and disables its action row", async () => {
