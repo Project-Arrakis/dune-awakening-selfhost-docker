@@ -152,7 +152,7 @@ export async function handleDiscordAdapterRoute({
   // actor to the SPECIFIC action being requested, not just to the route (both
   // write/preview and write/execute are the same one route for every action).
   // Before this fix, a captured, legitimately-signed envelope from a real
-  // moderator+ actor could be replayed with a DIFFERENT action/params within
+  // moderator+ actor could be replayed with a DIFFERENT action within
   // the freshness window and still verify -- meetsMinTier would then
   // evaluate the real actor's real tier against whatever action the replayed
   // request now claimed, up to and including server.stop for an owner-tier
@@ -161,10 +161,21 @@ export async function handleDiscordAdapterRoute({
   // inside it -- and this repo's own bot-side counterpart (Project-Arrakis/
   // mentat's actorSignature.js) must sign the identical shape or every real
   // request fails verification (see that repo's own fix, same issue).
+  //
+  // [Layer 3 integration audit fix] Same reasoning, one level down: "params"
+  // is ALSO merged in here, for the same structural reason (it's a sibling
+  // of `actor` in the request body, not one of its own fields) and to close
+  // the same class of gap -- see WRITE_BRIDGE_SIGNED_ACTOR_FIELDS's own
+  // comment in actorSignature.js for the full rationale (a captured
+  // write/preview envelope could otherwise be replayed with
+  // attacker-substituted params, e.g. a different playerId, and still mint
+  // a validly-signed nonce for a target the real signer never chose).
   async function readJsonWithActorSignature(request, { requireActorSignature = false, fields } = {}) {
     const body = await readJson(request);
     try {
-      const actorPayload = fields?.includes("action") ? { ...body?.actor, action: body?.action } : body?.actor;
+      const actorPayload = { ...body?.actor };
+      if (fields?.includes("action")) actorPayload.action = body?.action;
+      if (fields?.includes("params")) actorPayload.params = body?.params;
       verifyActorSignature({ actorPayload, headers: request.headers, config, route: path, required: requireActorSignature, ...(fields ? { fields } : {}) });
     } catch (error) {
       // When a secret is configured: always throw (even for read routes).

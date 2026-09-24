@@ -92,7 +92,21 @@ export function resolveWriteBridgePrincipal({ headers, method, path, viaWriteBri
 
   const discordUserId = String(headers?.[WRITE_BRIDGE_ACTOR_USER_ID_HEADER] || "").trim();
   if (!discordUserId) return null;
-  const discordUsername = String(headers?.[WRITE_BRIDGE_ACTOR_USERNAME_HEADER] || "").trim();
+  // The sender (writeBridgeInternalClient.js) encodeURIComponent()'s this
+  // header so any real Discord display name -- not just ASCII ones -- can
+  // survive as an HTTP header value at all. decodeURIComponent() can throw
+  // on a malformed percent-sequence; falling back to the raw header value
+  // rather than rejecting the whole request keeps this consistent with this
+  // function's own "malformed input degrades gracefully, never crashes"
+  // contract elsewhere (e.g. the tier/action checks above return null
+  // instead of throwing).
+  const rawUsernameHeader = String(headers?.[WRITE_BRIDGE_ACTOR_USERNAME_HEADER] || "").trim();
+  let discordUsername;
+  try {
+    discordUsername = decodeURIComponent(rawUsernameHeader);
+  } catch {
+    discordUsername = rawUsernameHeader;
+  }
 
   return {
     source: "discord-write-bridge",

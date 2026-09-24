@@ -139,7 +139,7 @@ test("callWriteBridgeInternalRoute: an empty discordUsername falls back to an em
   }
 });
 
-test("callWriteBridgeInternalRoute: CR/LF in discordUsername is stripped before it reaches the outgoing header (issue #1022)", async () => {
+test("callWriteBridgeInternalRoute: CR/LF in discordUsername can never reach the outgoing header raw -- encodeURIComponent escapes it, decodes back to the original content", async () => {
   const socketPath = join(tempDir, "crlf-username.sock");
   let received = null;
   const server = await startRealTarget(socketPath, (req, res) => {
@@ -148,6 +148,7 @@ test("callWriteBridgeInternalRoute: CR/LF in discordUsername is stripped before 
     res.end("{}");
   });
   try {
+    const original = "evil\r\nX-Injected: yes";
     await callWriteBridgeInternalRoute({
       socketPath,
       method: "POST",
@@ -155,11 +156,48 @@ test("callWriteBridgeInternalRoute: CR/LF in discordUsername is stripped before 
       action: "server.restart",
       tier: "owner",
       discordUserId: "user-3b",
-      discordUsername: "evil\r\nX-Injected: yes",
+      discordUsername: original,
       body: {}
     });
-    assert.equal(received.username, "evilX-Injected: yes");
-    assert.ok(!received.username.includes("\r") && !received.username.includes("\n"));
+    assert.ok(!received.username.includes("\r") && !received.username.includes("\n"), "the raw outgoing header value must never contain a literal CR/LF byte");
+    assert.equal(decodeURIComponent(received.username), original, "the receiving end must be able to recover the exact original content, not a lossily-stripped version of it");
+  } finally {
+    server.close();
+  }
+});
+
+// [Layer 3 integration audit fix] Real Discord display names routinely
+// contain characters outside Latin-1 (CJK, Cyrillic, Arabic, emoji) -- not
+// just adversarial input. Node's http.request throws synchronously
+// (ERR_INVALID_CHAR) for any header value containing a code unit outside
+// \t/\x20-\x7e/\x80-\xff; the previous version of this header only stripped
+// CR/LF and left every other such character raw, so an ordinary non-Latin-1
+// display name crashed this call -- AFTER writeExecuteRoute had already
+// irreversibly consumed the nonce, turning a legitimate confirmed action
+// into a spent confirmation and a confusing 503 write_backend_unavailable.
+test("callWriteBridgeInternalRoute: a real, non-Latin-1 Discord display name (CJK, Cyrillic, emoji) does not crash the outgoing request and round-trips exactly", async () => {
+  const socketPath = join(tempDir, "unicode-username.sock");
+  let received = null;
+  const server = await startRealTarget(socketPath, (req, res) => {
+    received = { username: req.headers[WRITE_BRIDGE_ACTOR_USERNAME_HEADER] };
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  try {
+    for (const original of ["田中太郎", "Дмитрий", "أحمد", "🎮 GameMaster 🎮"]) {
+      const result = await callWriteBridgeInternalRoute({
+        socketPath,
+        method: "POST",
+        path: "/api/server/restart",
+        action: "server.restart",
+        tier: "owner",
+        discordUserId: "user-unicode",
+        discordUsername: original,
+        body: {}
+      });
+      assert.equal(result.statusCode, 200, `a non-Latin-1 username must never prevent the real request from completing (got ${JSON.stringify(result)})`);
+      assert.equal(decodeURIComponent(received.username), original);
+    }
   } finally {
     server.close();
   }
