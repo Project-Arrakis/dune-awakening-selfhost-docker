@@ -1,19 +1,17 @@
-// Per-action minimum tier for the Discord write bridge (docs/rw-architecture.md
-// section 3.3a). Neither console policy.js (whose players:mutate action is too
-// coarse to distinguish kick from give-item) nor Discord's own CAPABILITY_BY_TIER
-// (which computes admin and owner as the identical set) can enforce the tier
-// ladder Section 1 requires -- this table is the explicit, independent check.
+// Per-action minimum tier for the Discord write bridge. Neither console
+// policy.js (whose players:mutate action is too coarse to distinguish kick
+// from give-item) nor Discord's own CAPABILITY_BY_TIER (which computes admin
+// and owner as the identical set) can enforce the DISCORD_ROLE_TIERS ladder
+// this table needs -- this table is the explicit, independent check.
 import { DISCORD_ROLE_TIERS } from "./policy.js";
 
-// [Layer 3 integration audit fix, LOW, issue #1042] TIER_RANK used to be a
-// fourth independently hand-maintained encoding of the tier hierarchy
-// (alongside VALID_TIERS in writeBridgeCredential.js, a duplicate literal in
-// this file's own test, and the canonical DISCORD_ROLE_TIERS here) -- the
-// exact hand-duplicated-table drift class issue #1012 already burned this
-// codebase on once. Derived directly from DISCORD_ROLE_TIERS's own order
-// now: only "moderator" and above are ranked here since a write-bridge
-// principal can never resolve at "public"/"observer" tier in the first
-// place (VALID_TIERS in writeBridgeCredential.js enforces that boundary).
+// TIER_RANK is deliberately derived directly from DISCORD_ROLE_TIERS's own
+// order, not a separately hand-maintained encoding of the tier hierarchy --
+// a hand-duplicated table drifting from its source of truth is a real,
+// recurring bug class in this codebase. Only "moderator" and above are
+// ranked here since a write-bridge principal can never resolve at
+// "public"/"observer" tier in the first place (VALID_TIERS in
+// writeBridgeCredential.js enforces that boundary).
 const WRITE_BRIDGE_TIER_ORDER = DISCORD_ROLE_TIERS.slice(DISCORD_ROLE_TIERS.indexOf("moderator"));
 const TIER_RANK = Object.fromEntries(WRITE_BRIDGE_TIER_ORDER.map((tier, index) => [tier, index]));
 
@@ -49,7 +47,7 @@ export const WRITE_ACTION_MIN_TIER = {
 };
 
 // broadcast.* is intentionally absent -- gated by the existing, separate
-// requireDiscordCapability() path instead (docs/rw-architecture.md section 1).
+// requireDiscordCapability() path instead.
 
 export function meetsMinTier(actorTier, action) {
   if (!Object.hasOwn(WRITE_ACTION_MIN_TIER, action)) {

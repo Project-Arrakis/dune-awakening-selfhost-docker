@@ -1,9 +1,10 @@
-// Unix-socket listener lifecycle for the Discord write bridge (issue #215,
-// docs/rw-architecture.md sections 3.1/3.4). This is Hop B's transport:
-// reachability is filesystem-permission-gated (mode 0700), never
-// network-address-gated -- eliminating the deployment-topology-dependent
-// trust boundary that made a TCP-source-IP check (CRITICAL #742,
-// unrelated -- a different, earlier design this fork rejected) unworkable.
+// Unix-socket listener lifecycle for the Discord write bridge. This is Hop
+// B's transport: reachability is filesystem-permission-gated (mode 0700),
+// never network-address-gated -- eliminating the deployment-topology-dependent
+// trust boundary that a TCP-source-IP check would create (source IPs vary by
+// deployment topology -- behind a reverse proxy, NAT, or container network,
+// the "real" peer address is often not what it appears to be, making such a
+// check unreliable as a security boundary).
 import { createServer } from "node:http";
 import { connect as netConnect } from "node:net";
 import { existsSync, rmSync, chmodSync, statSync } from "node:fs";
@@ -11,8 +12,7 @@ import { existsSync, rmSync, chmodSync, statSync } from "node:fs";
 const SOCKET_MODE = 0o700;
 const LIVENESS_PROBE_TIMEOUT_MS = 2000;
 
-// Root-UID startup refusal (docs/rw-architecture.md 3.4, CRITICAL #751):
-// under this project's own shipped default (docker-compose.web.yml's
+// Root-UID startup refusal: under this project's own shipped default (docker-compose.web.yml's
 // `user: "${DUNE_HOST_UID:-0}:${DUNE_HOST_GID:-0}"`), Core runs as UID/GID
 // 0 absent an explicitly-set env var. Root bypasses Unix DAC permission
 // checks entirely, so 0700 on the socket file provides zero protection
@@ -25,8 +25,7 @@ export function isRunningAsRoot(getuid = process.getuid?.bind(process)) {
   return getuid() === 0;
 }
 
-// Liveness probe (docs/rw-architecture.md 3.4, round-5/6/7 corrections):
-// distinguishes a genuinely stale socket file (safe to unlink) from one
+// Liveness probe: distinguishes a genuinely stale socket file (safe to unlink) from one
 // backing a currently-live listener (must NOT be unlinked -- doing so
 // silently orphans the live process and lets a second one take over,
 // turning a loud failure into a silent one) from a probe that couldn't
@@ -38,8 +37,8 @@ export function isRunningAsRoot(getuid = process.getuid?.bind(process)) {
 // 'error' -- since this probe's entire decision logic branches on 'connect'
 // vs 'error' with ECONNREFUSED/ENOENT, a bare destroy() on timeout reaches
 // neither branch and the calling code's await never settles, hanging Core's
-// entire boot sequence (this exact bug, empirically reproduced, was
-// CRITICAL #779 in this design's own audit history).
+// entire boot sequence (this exact bug was empirically reproduced against
+// an earlier version of this function that omitted the argument).
 export function probeSocketLiveness(socketPath, { connect = netConnect, timeoutMs = LIVENESS_PROBE_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
     const sock = connect({ path: socketPath });
@@ -73,8 +72,7 @@ export function probeSocketLiveness(socketPath, { connect = netConnect, timeoutM
 }
 
 // Prepares the socket path for a fresh .listen() call: probes for
-// liveness, unlinking only when genuinely confirmed stale (docs/rw-
-// architecture.md 3.4, round-5 correction #762). Returns whether it's now
+// liveness, unlinking only when genuinely confirmed stale. Returns whether it's now
 // safe to proceed with .listen() at all -- "live"/"timeout" both mean NO,
 // something else (or a real, currently-running instance) already holds
 // this path, and the caller must disable the RW subsystem rather than
@@ -91,8 +89,7 @@ export async function prepareSocketPath(socketPath, deps = {}) {
 
 // Starts the write-bridge's Unix-socket http.Server. `requestListener` is
 // the SAME function the main TCP server uses -- no duplicated routing
-// logic, matching docs/rw-architecture.md 3.1's "no parallel implementation"
-// principle. Returns { server, disabled, reason } -- disabled:true means
+// logic. Returns { server, disabled, reason } -- disabled:true means
 // the RW subsystem must not be considered available (caller's
 // responsibility to act on this; this function never throws for an
 // expected/recoverable startup condition, only for genuine programmer
@@ -109,9 +106,8 @@ export async function startWriteBridgeSocketServer({ socketPath, requestListener
     return { server: null, disabled: true, reason: "socket_path_unavailable", detail: prepared.reason };
   }
 
-  // [Layer 3 integration audit fix, HIGH, issue #1036] Same defense-in-depth
-  // as server.js's own TCP listener: requestListener (the shared
-  // requestHandler) now catches its own thrown/rejected paths internally,
+  // Same defense-in-depth as server.js's own TCP listener: requestListener
+  // (the shared requestHandler) catches its own thrown/rejected paths internally,
   // but this .catch() is the last line of defense against a silently hung
   // Hop B connection if a future change reintroduces an uncaught path.
   const server = createServer((req, res) => {
@@ -131,17 +127,15 @@ export async function startWriteBridgeSocketServer({ socketPath, requestListener
   // calling .listen() -- an unhandled 'error' event on an http.Server
   // throws by default, crashing the entire Node process (not just the RW
   // subsystem). This must never be able to take an operator's whole
-  // console offline (docs/rw-architecture.md 3.5's failure-scope
-  // principle, applied here to the socket listener itself).
+  // console offline, applying the same failure-scope isolation principle
+  // used elsewhere in this write bridge to the socket listener itself.
   let disabledAfterStart = false;
   server.on("error", (error) => {
     disabledAfterStart = true;
     console.error(`Write-bridge socket server error, RW subsystem disabled: ${error.message}`);
   });
 
-  // Synchronous umask handling (docs/rw-architecture.md 3.4, round-5/6
-  // corrections; re-fixed under Layer 3 integration audit issue #1053):
-  // Node's bind() for a Unix-domain-socket path happens synchronously
+  // Synchronous umask handling: Node's bind() for a Unix-domain-socket path happens synchronously
   // inside .listen(), so the socket file's permissions are set at that
   // exact moment -- restoring the umask must happen synchronously on the
   // very next line after .listen() returns, not after awaiting the async

@@ -1,6 +1,5 @@
-// Internal HTTP client for the Discord write bridge's Hop B loopback
-// (issue #215, docs/rw-architecture.md section 3.1). write/execute uses
-// this to invoke Core's own real mutation route over the Unix socket,
+// Internal HTTP client for the Discord write bridge's Hop B loopback.
+// write/execute uses this to invoke Core's own real mutation route over the Unix socket,
 // reusing the real route handler completely unchanged -- never
 // reimplementing mutation logic.
 import { request as httpRequest } from "node:http";
@@ -13,8 +12,7 @@ import {
   WRITE_BRIDGE_ACTOR_USERNAME_HEADER
 } from "./writeBridgeCredential.js";
 
-// [Layer 3 integration audit fix, HIGH, issue #1033] routes.js's
-// writeExecuteRoute consumes the write nonce (irreversible, single-use)
+// routes.js's writeExecuteRoute consumes the write nonce (irreversible, single-use)
 // immediately before awaiting this call -- with no timeout, a hung target
 // route handler (slow DB/RMQ round-trip) left the confirmation spent with
 // no bound and no retry path. Bounded and env-overridable like every other
@@ -65,8 +63,7 @@ export function callWriteBridgeInternalRoute({
           // actor payload) but not shape-validated -- Discord display names
           // are user-settable content. Node's http.request already throws on
           // CR/LF in a header value, but relying on that as the only guard
-          // (issue #1022, Security LOW) means a malformed username surfaces
-          // as an opaque connection-error 503 instead of an honest rejection
+          // means a malformed username surfaces as an opaque connection-error 503 instead of an honest rejection
           // at the point the bad value actually originated.
           [WRITE_BRIDGE_ACTOR_USERNAME_HEADER]: (discordUsername || "").replace(/[\r\n]/g, "")
         }
@@ -89,7 +86,7 @@ export function callWriteBridgeInternalRoute({
         });
       }
     );
-    // [issue #1033] req.setTimeout only starts a timer -- it does not itself
+    // req.setTimeout only starts a timer -- it does not itself
     // abort anything, so it must be paired with an explicit destroy() on
     // fire or the socket (and the pending write's already-consumed nonce)
     // would hang forever with no bound.

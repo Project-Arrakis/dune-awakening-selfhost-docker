@@ -1,5 +1,4 @@
-// Full, real end-to-end proof of the Discord write bridge (issue #215,
-// docs/rw-architecture.md). Every other write-bridge test either mounts
+// Full, real end-to-end proof of the Discord write bridge. Every other write-bridge test either mounts
 // handleDiscordAdapterRoute directly in-process with no socket server
 // running at all (writeBridge.integration.test.js, which deliberately gets
 // 503 write_backend_unavailable at the Hop-B boundary), or exercises Hop B's
@@ -86,12 +85,11 @@ function signedHeaders(actorPayload, route, action) {
 // enableCarePackage() call, same response shape, same real audit() call
 // with the same real attribution wiring server.js's requestHandler/handleApi
 // actually does (resolveWriteBridgePrincipal() -> req.authSession = principal
-// -> audit()'s principalOf(req.authSession)). Added per the Layer 2 QA hat's
-// finding (issue #1023): the original stand-in silently omitted both the
-// try/catch AND the audit() call, meaning no test anywhere verified that a
-// write-bridge-driven mutation is actually attributed to the real Discord
-// actor in the audit log -- exactly the chain issue #1010 was filed and
-// fixed for. This is what a real write-bridge internal HTTP client
+// -> audit()'s principalOf(req.authSession)). Added because the original
+// stand-in silently omitted both the try/catch AND the audit() call,
+// meaning no test anywhere verified that a write-bridge-driven mutation is
+// actually attributed to the real Discord actor in the audit log. This is
+// what a real write-bridge internal HTTP client
 // (callWriteBridgeInternalRoute) sees on the other end of the real socket --
 // exactly the interface server.js's real dispatcher presents.
 function realTargetRouteListener(testConfig) {
@@ -197,7 +195,7 @@ test.beforeEach(async () => {
   process.env.DUNE_DISCORD_WRITES_ENABLED = "1";
   process.env.DISCORD_ADMIN_ROLE_IDS = "role-admin";
 
-  // The REAL Unix-socket listener (issue #215's Hop B), started exactly the
+  // The REAL Unix-socket listener (Hop B), started exactly the
   // way server.js's own boot sequence starts it -- the only difference is
   // `deps: { getuid: () => 1000 }`, standing in for a real non-root
   // production process (this sandbox genuinely runs as root; see the header
@@ -231,11 +229,12 @@ test("full real round trip: write/preview -> write/execute crosses a REAL runnin
     assert.equal(preview.status, 200, `preview failed: ${JSON.stringify(preview.body)}`);
     assert.ok(preview.body.nonce, "preview must return a real, usable nonce");
 
-    // This is also the live regression proof for issue #1016: carepackage.enable
-    // was missing its required confirmPhrase in WRITE_ACTION_ROUTES, so
-    // write/execute never injected `confirmation` into the internal loopback
-    // body, and this exact call would have 400'd with "Confirmation phrase
-    // required: ENABLE CARE PACKAGE" against the real target route.
+    // This is also the live regression proof for a real, previously-shipped
+    // bug: carepackage.enable was missing its required confirmPhrase in
+    // WRITE_ACTION_ROUTES, so write/execute never injected `confirmation`
+    // into the internal loopback body, and this exact call would have
+    // 400'd with "Confirmation phrase required: ENABLE CARE PACKAGE"
+    // against the real target route.
     const execute = await writeExecute(base, a, preview.body.nonce, "carepackage.enable");
     assert.equal(execute.status, 200, `execute failed: ${JSON.stringify(execute.body)}`);
     assert.equal(execute.body.enabled, true);
@@ -250,14 +249,14 @@ test("full real round trip: write/preview -> write/execute crosses a REAL runnin
     assert.equal(onDisk.enabled, true);
     assert.equal(carePackageConfig(testConfig).enabled, true, "the real reader function must also observe the real mutation");
 
-    // Proof the real attribution chain (issue #1010) actually reaches the
+    // Proof the real attribution chain actually reaches the
     // real audit log for a write-bridge-driven mutation, not just that
     // writeBridgeCredential.js constructs a userId-bearing object in
     // isolation (already covered elsewhere) -- read the real audit.jsonl
     // file the real audit() call wrote to.
     //
-    // type: "discord-write-bridge", not the generic "session" (issue #1041,
-    // Layer 3 STRIDE Repudiation fix): before that fix, principalOf() had no
+    // type: "discord-write-bridge", not the generic "session" (STRIDE
+    // Repudiation): before this fix, principalOf() had no
     // branch for the write-bridge principal, so this row was indistinguishable
     // from a real interactive browser/OAuth session -- this real end-to-end
     // assertion is the proof the fix actually reaches the durable audit log,

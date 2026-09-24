@@ -20,14 +20,13 @@ export const DISCORD_CAPABILITIES = Object.freeze({
   OPS_PROMETHEUS_READ: "ops:prometheus:read",
   PLAYER_LINK_WRITE: "player-link:write",
   BROADCAST_SEND: "broadcast:send",
-  // WRITE_BRIDGE_ACCESS (issue #215, docs/rw-architecture.md section 3.3): the
-  // coarse floor gate for write/preview and write/execute -- "is this actor at
-  // least moderator tier at all." This is deliberately NOT one capability per
-  // write action; CAPABILITY_BY_TIER computes admin and owner as the identical
-  // set (see section 3.3's own comment), so it structurally cannot express
-  // "owner but not admin" for a specific action the way the tier ladder in
-  // Section 1 requires. The real per-action decision is
-  // writeActionMinTier.js's meetsMinTier(), checked separately and
+  // WRITE_BRIDGE_ACCESS: the coarse floor gate for write/preview and
+  // write/execute -- "is this actor at least moderator tier at all." This is
+  // deliberately NOT one capability per write action; CAPABILITY_BY_TIER
+  // computes admin and owner as the identical set, so it structurally cannot
+  // express "owner but not admin" for a specific action the way the
+  // DISCORD_ROLE_TIERS ladder (above) requires. The real per-action decision
+  // is writeActionMinTier.js's meetsMinTier(), checked separately and
   // additionally, never assumed to be redundant with this coarse gate.
   WRITE_BRIDGE_ACCESS: "write-bridge:access"
 });
@@ -60,7 +59,7 @@ const CAPABILITY_BY_TIER = Object.freeze({
     DISCORD_CAPABILITIES.STORAGE_READ,
     DISCORD_CAPABILITIES.PLAYER_LINK_WRITE,
     DISCORD_CAPABILITIES.GUILD_READ,
-    // WRITE_BRIDGE_ACCESS (issue #215): moderator is the lowest tier eligible
+    // WRITE_BRIDGE_ACCESS: moderator is the lowest tier eligible
     // to reach ANY write action (player.warn is moderator-tier per
     // writeActionMinTier.js) -- the permanent invariant is that public/
     // observer must never have it, not that moderator can't. OPS_*
@@ -91,16 +90,14 @@ export function normalizeDiscordActor(value) {
     roleIds: normalizeStringList(value.roleIds),
     interactionId: optionalString(value.interactionId),
     commandName: optionalString(value.commandName),
-    // roleSnapshotAt (issue #215, docs/rw-architecture.md section 3.8):
-    // Unix-seconds timestamp of when the bot re-derived actor.roleIds from
-    // Discord, used only by the write bridge's own freshness check at
-    // write/execute. Purely additive -- every existing caller of this
-    // function simply ignores it. Kept as the raw value (not coerced/
-    // validated here) since a malformed value must fail loud at the one
-    // call site that actually enforces it (writeExecuteRoute), not be
-    // silently normalized to 0/"" here in a way that could mask the exact
-    // "malformed timestamp silently treated as valid" bug class
-    // docs/rw-architecture.md section 3.8 explicitly warns about.
+    // roleSnapshotAt: Unix-seconds timestamp of when the bot re-derived
+    // actor.roleIds from Discord, used only by the write bridge's own
+    // freshness check at write/execute. Purely additive -- every existing
+    // caller of this function simply ignores it. Kept as the raw value (not
+    // coerced/validated here) since a malformed value must fail loud at the
+    // one call site that actually enforces it (writeExecuteRoute), not be
+    // silently normalized to 0/"" here in a way that could mask a malformed
+    // timestamp as a valid one.
     roleSnapshotAt: value.roleSnapshotAt
   };
   return actor;

@@ -47,9 +47,6 @@ import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenVal
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute, WRITE_BRIDGE_SOCKET_FILENAME } from "./integrations/discord/routes.js";
 import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
-// [Layer 3 integration audit fix, LOW, issue #1043] The 5 header constants
-// and getWriteBridgeToken previously imported here became dead once
-// resolveWriteBridgePrincipal absorbed that logic -- removed.
 import { resolveWriteBridgePrincipal } from "./integrations/discord/writeBridgeCredential.js";
 import { startWriteBridgeSocketServer } from "./integrations/discord/writeBridgeSocketServer.js";
 import { selfCheckWriteActionRoutes, checkConfirmPhrasesAgainstRealHandlers } from "./integrations/discord/writeActionRoutes.js";
@@ -293,22 +290,21 @@ process.on("unhandledRejection", (error) => {
 });
 
 // requestHandler is shared, unmodified, between the main TCP listener and
-// the Discord write bridge's Unix-socket listener (issue #215, docs/rw-
-// architecture.md section 3.1 -- "no parallel implementation"). `opts`
+// the Discord write bridge's Unix-socket listener -- no parallel
+// implementation. `opts`
 // declares a default of {} for defense-in-depth: even a future refactor
 // that accidentally drops the explicit third argument fails safe
 // (opts.viaWriteBridgeSocket reads as undefined/falsy) rather than throwing
 // and hanging every request. The TCP listener below must NEVER omit this
 // argument regardless.
 async function requestHandler(req, res, opts = {}) {
-  // [Layer 3 integration audit fix, HIGH, issue #1036] This parse used to
-  // run with no try/catch of its own, above/outside the function's main
-  // try/catch below. A request-target Node's raw HTTP parser accepts but
+  // This parse needs its own try/catch, separate from the function's main
+  // try/catch below: a request-target Node's raw HTTP parser accepts but
   // WHATWG URL parsing rejects (e.g. an absolute-form proxy-style target
-  // with an out-of-range port) threw here before reaching that try/catch --
-  // caught only by the createServer callback's own unhandledRejection
-  // logging (see below), which never writes a response, silently hanging
-  // the connection instead of a graceful 400.
+  // with an out-of-range port) would otherwise throw before ever reaching
+  // that later try/catch -- caught only by the createServer callback's own
+  // unhandledRejection logging (see below), which never writes a response,
+  // silently hanging the connection instead of a graceful 400.
   let path;
   try {
     path = new URL(req.url || "/", "http://localhost").pathname;
@@ -356,8 +352,7 @@ async function requestHandler(req, res, opts = {}) {
 }
 
 createServer((req, res) => {
-  // [Layer 3 integration audit fix, HIGH, issue #1036] Defense in depth
-  // alongside requestHandler's own now-complete try/catch coverage above:
+  // Defense in depth alongside requestHandler's own try/catch coverage above:
   // if a future change reintroduces a code path that throws/rejects before
   // requestHandler's try/catch is reached, this .catch() is the last line
   // of defense against a silently hung connection with no response ever
@@ -387,19 +382,18 @@ createServer((req, res) => {
       console.warn(`Discord adapter schema initialization failed: ${redact(error?.message || "Unexpected error.")}`);
     });
   }
-  // Hop B's internal-loopback listener (issue #215, docs/rw-architecture.md
-  // section 3.1). Only started when the write bridge is actually enabled --
+  // Hop B's internal-loopback listener. Only started when the write bridge is actually enabled --
   // an operator who hasn't opted into Discord-driven mutations gets no new
   // listening socket at all. startWriteBridgeSocketServer() itself fails
   // safe (root-UID refusal, live-listener collision) rather than throwing,
   // so a startup issue here degrades write/execute to a 503, never crashes
   // the main console.
   if (discordWritesEnabled(config)) {
-    // Boot-time route-table consistency check (issue #1020): catches a
+    // Boot-time route-table consistency check: catches a
     // WRITE_ACTION_ROUTES entry whose (method, path) no longer resolves to a
     // real Core route, or whose declared policyAction has drifted from
-    // actions.js's real one -- exactly the class of bug issue #1012 found by
-    // hand. Deliberately fails safe: a problem here disables the whole
+    // actions.js's real one -- exactly the class of bug this table's
+    // history has already produced once, found by hand. Deliberately fails safe: a problem here disables the whole
     // subsystem (never starts the socket) rather than crashing Core's boot,
     // matching selfCheckWriteActionRoutes()'s own documented contract.
     const writeActionRouteProblems = selfCheckWriteActionRoutes();
@@ -417,7 +411,7 @@ createServer((req, res) => {
         startWriteBridgeSocketServer({
           socketPath: writeBridgeSocketPath,
           // Forwards whatever opts writeBridgeSocketServer.js's own createServer
-          // callback passes (issue #1024) -- that call site is the single
+          // callback passes -- that call site is the single
           // source of truth for "this request came from the write-bridge
           // socket," not a second, independently-hardcoded copy here. Before
           // this fix, this closure ignored its own third argument and
@@ -745,8 +739,8 @@ async function handleApi(req, res, path) {
   // of the same input, not a divergence risk: `path` (the value requestHandler
   // computed and the write-bridge credential check's exact-match scoping
   // relies on) is passed in as a parameter and never recomputed here, so the
-  // one value that actually needs "reuse the same canonicalized value, never
-  // re-parse" (docs/rw-architecture.md 3.2's round-3 correction) still is.
+  // one value that actually needs "reuse the same canonicalized value,
+  // never re-parse" still is.
   const url = new URL(req.url, "http://localhost");
 
   if (path === "/api/health") return json(res, 200, { ok: true, app: config.appName });
@@ -818,15 +812,16 @@ async function handleApi(req, res, path) {
     }
   }
 
-  // req._writeBridgePrincipal (issue #215): a third short-circuit option,
+  // req._writeBridgePrincipal: a third short-circuit option,
   // matching the exact pattern `bearer?.session` already establishes for
   // "a non-cookie principal skips auth.requireAuth() (and its CSRF check)
   // entirely" -- reusing this already-proven integration pattern instead of
   // introducing a second, structurally different mechanism for the same
   // class of decision. Already fully resolved (token + exact-path-match
   // verified) by requestHandler before handleApi was ever called; never
-  // re-verified here, per this design's own "never re-verify a credential a
-  // second time with a subtly different check" principle.
+  // re-verified here -- a credential should never be re-verified a second
+  // time with a subtly different check than the one that already resolved
+  // it.
   const session = bearer?.session || req._writeBridgePrincipal || auth.requireAuth(req, res);
   if (!session) return;
   req.authSession = session;
@@ -3064,24 +3059,23 @@ async function task(req, res, type, operation, payload, options = {}) {
   } catch (error) {
     return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
   }
-  // [Layer 3 integration audit fix, MEDIUM, issue #1056] task() is the one
-  // shared dispatch point behind /api/server/stop|start|restart|restart-service,
-  // /api/updates/*, /api/backups/*, and every other applyMutationRateLimit-free
-  // route above that calls it -- none of them ever throttled, unlike the 40+
+  // task() is the one shared dispatch point behind
+  // /api/server/stop|start|restart|restart-service, /api/updates/*,
+  // /api/backups/*, and every other applyMutationRateLimit-free route above
+  // that calls it -- none of them are otherwise throttled, unlike the 40+
   // other mutation routes in this file that already call
   // applyMutationRateLimit individually. The Discord write bridge's Hop B
-  // reuses this exact function unchanged (docs/rw-architecture.md 3.1's "no
-  // parallel implementation" principle), so a write-bridge-driven
-  // server.stop/restart/start loop had no cooldown beyond the nonce store's
-  // unrelated 20-pending-preview cap. Fixed at this single choke point,
-  // scoped by `type`/`operation`, rather than duplicated per call site or
-  // reimplemented as a separate write-bridge-only limiter: req.authSession is
-  // already correctly populated for a write-bridge request
-  // (resolveWriteBridgePrincipal sets id:"discord:<userId>", issue #1040), so
-  // this shares one real rate-limit budget per actor+operation across both
-  // the web console and the write bridge, rather than letting an attacker
-  // double their effective rate by interleaving both paths against two
-  // independent counters.
+  // reuses this exact function unchanged (no parallel implementation), so a
+  // write-bridge-driven server.stop/restart/start loop would otherwise have
+  // no cooldown beyond the nonce store's unrelated 20-pending-preview cap.
+  // Fixed at this single choke point, scoped by `type`/`operation`, rather
+  // than duplicated per call site or reimplemented as a separate
+  // write-bridge-only limiter: req.authSession is already correctly
+  // populated for a write-bridge request (resolveWriteBridgePrincipal sets
+  // id:"discord:<userId>"), so this shares one real rate-limit budget per
+  // actor+operation across both the web console and the write bridge,
+  // rather than letting an attacker double their effective rate by
+  // interleaving both paths against two independent counters.
   if (!applyMutationRateLimit(req, res, `task:${type}:${operation}`)) return;
   if (await maybeQueueRestart(req, res, type, operation, payload)) return;
   // Only `payload` is audited. Secrets travel in options.env, which is never
@@ -6659,8 +6653,8 @@ function loginRateLimitKey(req) {
 
 function applyMutationRateLimit(req, res, scope) {
   const sessionId = req.authSession?.id || "anonymous";
-  // [Layer 3 integration audit fix, MEDIUM, issue #1040] For a request that
-  // arrived over the Discord write bridge's Unix-domain-socket listener
+  // For a request that arrived over the Discord write bridge's
+  // Unix-domain-socket listener
   // (Hop B reuses these exact same mutation route handlers unchanged),
   // req.socket.remoteAddress is always undefined -- there is no real
   // network peer to report an IP for. This deliberately, structurally
