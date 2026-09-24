@@ -15,6 +15,8 @@ export type UserSettingField = {
   label?: string;
   minimum?: number | null;
   maximum?: number | null;
+  recommendedMinimum?: number | null;
+  recommendedMaximum?: number | null;
   options?: string[];
 };
 

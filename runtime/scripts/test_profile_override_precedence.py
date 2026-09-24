@@ -249,6 +249,17 @@ class GameFieldOverridePrecedenceTests(ProfilePathTestCase):
         self.assertEqual((fields["crafting_time_multiplier"]["minimum"], fields["crafting_time_multiplier"]["maximum"]), (0.0, 5.0))
         self.assertEqual(fields["fiefdom_limit"]["type"], "integer")
         self.assertEqual((fields["fiefdom_limit"]["minimum"], fields["fiefdom_limit"]["maximum"]), (0, 10))
+        self.assertEqual(
+            (fields["building_piece_limit_multiplier"]["minimum"], fields["building_piece_limit_multiplier"]["maximum"]),
+            (0.1, None),
+        )
+        self.assertEqual(
+            (
+                fields["building_piece_limit_multiplier"]["recommendedMinimum"],
+                fields["building_piece_limit_multiplier"]["recommendedMaximum"],
+            ),
+            (0.1, 10.0),
+        )
 
     def test_server_custom_bulk_save_validates_and_canonicalizes_values(self):
         payload = {
@@ -256,6 +267,7 @@ class GameFieldOverridePrecedenceTests(ProfilePathTestCase):
             "gathering_amount": "0.1",
             "crafting_time_multiplier": "5",
             "fiefdom_limit": "10",
+            "building_piece_limit_multiplier": "20",
             "allow_dynamic_building_damage": "false",
         }
         self.assertEqual(usersettings.bulk_save("serverCustomMap", MAP_NAME, "", _encode_bulk_save_payload(payload)), 0)
@@ -264,6 +276,7 @@ class GameFieldOverridePrecedenceTests(ProfilePathTestCase):
         self.assertIn("GatheringAmount=0.1", saved)
         self.assertIn("CraftingTimeMultiplier=5", saved)
         self.assertIn("FiefdomLimit=10", saved)
+        self.assertIn("BuildingPieceLimitMultiplier=20", saved)
         self.assertIn("bAllowDynamicBuildingDamage=False", saved)
 
     def test_invalid_server_custom_values_are_rejected_before_profile_write(self):
@@ -277,6 +290,7 @@ class GameFieldOverridePrecedenceTests(ProfilePathTestCase):
         invalid_values = {
             "pvp_mode": "Sometimes",
             "gathering_amount": "0.09",
+            "building_piece_limit_multiplier": "0.09",
             "crafting_time_multiplier": "5.1",
             "fiefdom_limit": "3.5",
             "allow_dynamic_building_damage": "maybe",

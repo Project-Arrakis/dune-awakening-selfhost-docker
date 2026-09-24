@@ -3018,7 +3018,24 @@ function SettingInput({ field, value, inputId, onChange, disabled }: { field: Us
     : field.minimum != null
       ? `${field.minimum} or greater`
       : `${field.maximum} or less`;
-  return <>{input}{bounded && <small className="muted settings-value-constraint">Allowed: {range}{field.type === "integer" ? " (whole numbers)" : ""}</small>}</>;
+  const recommended = field.recommendedMinimum != null || field.recommendedMaximum != null;
+  const recommendedRange = field.recommendedMinimum != null && field.recommendedMaximum != null
+    ? `${field.recommendedMinimum}–${field.recommendedMaximum}`
+    : field.recommendedMinimum != null
+      ? `${field.recommendedMinimum} or greater`
+      : `${field.recommendedMaximum} or less`;
+  const numericCandidate = String(value).trim();
+  const numericValue = Number(numericCandidate);
+  const hasNumericValue = numericCandidate !== "" && Number.isFinite(numericValue);
+  const belowRecommendation = recommended && hasNumericValue && field.recommendedMinimum != null && numericValue < field.recommendedMinimum;
+  const aboveRecommendation = recommended && hasNumericValue && field.recommendedMaximum != null && numericValue > field.recommendedMaximum;
+  return <>
+    {input}
+    {bounded && <small className="muted settings-value-constraint">Allowed: {range}{field.type === "integer" ? " (whole numbers)" : ""}</small>}
+    {recommended && <small className="muted settings-value-constraint">Recommended: {recommendedRange}</small>}
+    {aboveRecommendation && <small className="settings-value-recommendation-warning">Above Funcom&apos;s recommended range. Higher values may increase server and client load.</small>}
+    {belowRecommendation && <small className="settings-value-recommendation-warning">Below Funcom&apos;s recommended range. Lower values may produce unsupported gameplay behavior.</small>}
+  </>;
 }
 
 export function MemoryUsageBar({ row, fallback, configuredLimit, swapEnabled = false }: { row: LiveMapMemoryRow | null; fallback: string; configuredLimit?: unknown; swapEnabled?: boolean }) {
