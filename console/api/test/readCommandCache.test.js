@@ -59,3 +59,42 @@ test("failed commands are not cached and can be retried", async () => {
 
   assert.equal(await cache.run("ready", async () => ++runs), 2);
 });
+
+test("stale readers return immediately while one background refresh runs", async () => {
+  let now = 1000;
+  let runs = 0;
+  const gate = deferred();
+  const cache = createReadCommandCache({ ttlMs: 100, staleMs: 500, clock: () => now });
+
+  assert.deepEqual(await cache.run("status", async () => ({ run: ++runs })), { run: 1 });
+  now = 1100;
+  const staleReaders = await Promise.all([
+    cache.run("status", () => { runs += 1; return gate.promise; }),
+    cache.run("status", () => { runs += 1; return gate.promise; })
+  ]);
+  assert.deepEqual(staleReaders, [{ run: 1 }, { run: 1 }]);
+  assert.equal(runs, 2);
+
+  gate.resolve({ run: 2 });
+  await gate.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(await cache.run("status", async () => ({ run: ++runs })), { run: 2 });
+  assert.equal(runs, 2);
+});
+
+test("failed background refresh retains the bounded stale snapshot", async () => {
+  let now = 1000;
+  let runs = 0;
+  const cache = createReadCommandCache({ ttlMs: 100, staleMs: 500, clock: () => now });
+
+  assert.equal(await cache.run("status", async () => ++runs), 1);
+  now = 1100;
+  assert.equal(await cache.run("status", async () => {
+    runs += 1;
+    throw new Error("Docker is busy");
+  }), 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await cache.run("status", async () => ++runs), 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(runs, 3);
+});

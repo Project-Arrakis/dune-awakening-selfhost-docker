@@ -158,9 +158,13 @@ describe("MapsPanel modifier availability", () => {
       }, {
         scope: "serverCustom", id: "gathering_amount", section: "/Script/DuneSandbox.UserServerCustomSettings",
         key: "GatheringAmount", default: "1.000000", type: "number", minimum: 0.1, maximum: 10, clientFile: "", category: "Crafting And Resources", description: ""
+      }, {
+        scope: "serverCustom", id: "building_piece_limit_multiplier", section: "/Script/DuneSandbox.UserServerCustomSettings",
+        key: "BuildingPieceLimitMultiplier", default: "1.000000", type: "number", minimum: 0.1, maximum: null,
+        recommendedMinimum: 0.1, recommendedMaximum: 10, clientFile: "", category: "Building", description: ""
       }]
     });
-    api.userSettingsValues.mockResolvedValue({ stdout: "pvp_mode\tLimited\ngathering_amount\t2.000000\n" });
+    api.userSettingsValues.mockResolvedValue({ stdout: "pvp_mode\tLimited\ngathering_amount\t2.000000\nbuilding_piece_limit_multiplier\t1.000000\n" });
 
     renderMapsPanel();
     const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
@@ -188,6 +192,14 @@ describe("MapsPanel modifier availability", () => {
 
     fireEvent.change(gatheringAmount, { target: { value: "10" } });
     expect(screen.queryByText(/supported value within the displayed range/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save Custom Settings" })).toBeEnabled();
+
+    const buildingLimit = screen.getByLabelText("Building Piece Limit Multiplier");
+    expect(buildingLimit).toHaveAttribute("min", "0.1");
+    expect(buildingLimit).not.toHaveAttribute("max");
+    expect(screen.getByText("Recommended: 0.1–10")).toBeVisible();
+    fireEvent.change(buildingLimit, { target: { value: "20" } });
+    expect(screen.getByText(/above Funcom's recommended range/i)).toBeVisible();
     expect(screen.getByRole("button", { name: "Save Custom Settings" })).toBeEnabled();
   });
 

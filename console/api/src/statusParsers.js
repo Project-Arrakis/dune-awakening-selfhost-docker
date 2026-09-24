@@ -87,19 +87,33 @@ export function parseStructuredMapStatus({ maps = {}, services = {}, readiness =
   };
 }
 
-export function buildServerStatusResponse(result = {}) {
+export function buildServerStatusResponse(result = {}, { includeRaw = true } = {}) {
   return {
-    ...result,
+    ...(includeRaw ? result : {}),
     schemaVersion: 1,
     ok: Number(result.exitCode ?? 1) === 0,
     data: parseStructuredServerStatus(result.stdout || "")
   };
 }
 
-export function buildMapStatusResponse(results = {}) {
+export function buildMapsListResponse(result = {}, { includeRaw = true } = {}) {
+  return {
+    ...(includeRaw ? result : {}),
+    schemaVersion: 1,
+    ok: Number(result.exitCode ?? 1) === 0,
+    data: { maps: parseMapListRows(result.stdout || "").map((row) => ({
+      map: row.map,
+      mode: normalizeMapMode(row.mode),
+      partitions: nullableNumber(row.partitions),
+      assigned: nullableNumber(row.assigned)
+    })) }
+  };
+}
+
+export function buildMapStatusResponse(results = {}, { includeRaw = true } = {}) {
   const commands = [results.maps, results.services, results.readiness, results.autoscaler].filter(Boolean);
   return {
-    ...results,
+    ...(includeRaw ? results : {}),
     schemaVersion: 1,
     ok: commands.length === 4 && commands.every((result) => Number(result.exitCode ?? 1) === 0),
     data: parseStructuredMapStatus(results)

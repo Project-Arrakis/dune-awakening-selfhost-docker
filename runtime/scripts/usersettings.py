@@ -263,7 +263,6 @@ SERVER_CUSTOM_NUMERIC_BOUNDS = {
         "player_stamina_drain",
         "player_shield_damage_absorption_multiplier",
         "npc_shield_damage_absorption_multiplier",
-        "building_piece_limit_multiplier",
     )},
     **{field_id: (0.0, 10.0) for field_id in (
         "crafting_cost",
@@ -284,6 +283,14 @@ SERVER_CUSTOM_NUMERIC_BOUNDS = {
     )},
     "crafting_time_multiplier": (0.0, 5.0),
     "fiefdom_limit": (0, 10),
+    # Funcom documents 10 as the normal upper range, but the server accepts
+    # larger values and operators use them for large bases. Keep the real
+    # lower bound while exposing the documented range separately as guidance.
+    "building_piece_limit_multiplier": (0.1, None),
+}
+
+SERVER_CUSTOM_RECOMMENDED_NUMERIC_BOUNDS = {
+    "building_piece_limit_multiplier": (0.1, 10.0),
 }
 
 SERVER_CUSTOM_FIELD_CATEGORIES = {
@@ -488,6 +495,7 @@ FIELD_DESCRIPTIONS = {
     "building_blueprint_max_extensions": "Maximum number of times a blueprinted building can be extended.",
     "base_backup_max_extensions": "Maximum number of times a Base Backup can be extended.",
     "building_restriction_limits_enabled": "Enforces building restriction limits (e.g. disallowing construction inside dungeons/restricted areas).",
+    "building_piece_limit_multiplier": "Scales building-piece limits, including lights. Values above Funcom's recommended range are supported, but may increase server and client load.",
     "force_pvp_all_partitions": "If enabled, forces PvP on for every map partition regardless of each partition's individual PvP/PvE setting.",
     "security_zones_enabled": "Master toggle for Security Zones. Disable to allow PvP and combat abilities everywhere on the map (no safe zones).",
     "coriolis_auto_spawn_enabled": "Whether Coriolis storms spawn automatically on their normal cycle.",
@@ -1936,8 +1944,12 @@ def normalize_server_custom_value(field_id: str, value: str) -> str:
         return candidate
 
     minimum, maximum = SERVER_CUSTOM_NUMERIC_BOUNDS.get(field_id, (None, None))
-    if minimum is not None and parsed < minimum or maximum is not None and parsed > maximum:
+    if minimum is not None and maximum is not None and (parsed < minimum or parsed > maximum):
         raise SystemExit(f"{key} must be between {minimum:g} and {maximum:g}.")
+    if minimum is not None and parsed < minimum:
+        raise SystemExit(f"{key} must be at least {minimum:g}.")
+    if maximum is not None and parsed > maximum:
+        raise SystemExit(f"{key} must be at most {maximum:g}.")
     return candidate
 
 
@@ -2358,10 +2370,12 @@ def metadata() -> int:
     def row(scope: str, field_id: str, spec: tuple[str | None, str | None, str | None]) -> dict:
         section, key, default = spec
         minimum, maximum = CORIOLIS_CYCLE_START_BOUNDS.get(field_id, (None, None))
+        recommended_minimum, recommended_maximum = (None, None)
         if field_id == "augment_jackpot_roll_percentage":
             minimum, maximum = AUGMENT_JACKPOT_ROLL_BOUNDS
         if scope == "serverCustom":
             minimum, maximum = SERVER_CUSTOM_NUMERIC_BOUNDS.get(field_id, (None, None))
+            recommended_minimum, recommended_maximum = SERVER_CUSTOM_RECOMMENDED_NUMERIC_BOUNDS.get(field_id, (None, None))
         return {
             "scope": scope,
             "id": field_id,
@@ -2375,6 +2389,8 @@ def metadata() -> int:
             "label": FIELD_LABELS.get(field_id, ""),
             "minimum": minimum,
             "maximum": maximum,
+            "recommendedMinimum": recommended_minimum,
+            "recommendedMaximum": recommended_maximum,
             "options": list(SERVER_CUSTOM_ENUM_VALUES.get(field_id, ())) if scope == "serverCustom" else [],
         }
 

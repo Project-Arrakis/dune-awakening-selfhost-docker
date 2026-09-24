@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildMapStatusResponse, buildServerStatusResponse, parseBackupAutoStatus, parseBackupListRows, parseDoctorWarnings, parseFlsSummary, parseHomeStatus, parseMapListRows, parseMemoryStatusRows, parsePortRows, parseRabbitConnections, parseReadyRows, parseServerPartitionRows, parseSkillModules, parseStatusGameServers, parseStatusListenerRows } from "../src/statusParsers.js";
+import { buildMapStatusResponse, buildMapsListResponse, buildServerStatusResponse, parseBackupAutoStatus, parseBackupListRows, parseDoctorWarnings, parseFlsSummary, parseHomeStatus, parseMapListRows, parseMemoryStatusRows, parsePortRows, parseRabbitConnections, parseReadyRows, parseServerPartitionRows, parseSkillModules, parseStatusGameServers, parseStatusListenerRows } from "../src/statusParsers.js";
 
 const healthyStatus = `=== Dune status ===
 Overall:     READY
@@ -261,6 +261,39 @@ test("map status response provides typed arrays without removing legacy command 
   assert.equal(response.data.readiness.status, "ready");
   assert(response.data.readiness.checks.some((row) => row.section === "Database world partition checks" && row.label === "world_partition rows: 30"));
   assert.deepEqual(response.data.autoscaler, { state: "running", container: "dune-autoscaler", status: "Up 56 minutes" });
+});
+
+test("status responses can omit raw command diagnostics", () => {
+  const server = buildServerStatusResponse(
+    { operation: "status", stdout: healthyStatusWithSections, stderr: "", exitCode: 0 },
+    { includeRaw: false }
+  );
+  assert.equal(server.ok, true);
+  assert.equal(server.data.summary.overall, "READY");
+  assert.equal("stdout" in server, false);
+  assert.equal("operation" in server, false);
+
+  const maps = buildMapStatusResponse({
+    maps: { stdout: mapsListOutput, exitCode: 0 },
+    services: { stdout: postgresBooleanServersOutput, exitCode: 0 },
+    readiness: { stdout: healthyReady, exitCode: 0 },
+    autoscaler: { stdout: autoscalerOutput, exitCode: 0 }
+  }, { includeRaw: false });
+  assert.equal(maps.ok, true);
+  assert.equal(maps.data.maps[0].map, "SH_Arrakeen");
+  assert.equal("maps" in maps, false);
+});
+
+test("maps list response adds typed rows and can omit legacy stdout", () => {
+  const raw = { operation: "mapsList", stdout: mapsListOutput, stderr: "", exitCode: 0 };
+  const compatible = buildMapsListResponse(raw);
+  assert.equal(compatible.stdout, mapsListOutput);
+  assert.deepEqual(compatible.data.maps[0], { map: "SH_Arrakeen", mode: "dynamic", partitions: 1, assigned: 0 });
+
+  const compact = buildMapsListResponse(raw, { includeRaw: false });
+  assert.equal(compact.ok, true);
+  assert.equal("stdout" in compact, false);
+  assert.equal(compact.data.maps.length > 0, true);
 });
 
 test("structured status responses remain valid when a command fails or output is empty", () => {
