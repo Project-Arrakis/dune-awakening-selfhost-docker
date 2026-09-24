@@ -47,6 +47,7 @@ import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenVal
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
 import { handleDiscordAdapterRoute, isDiscordAdapterRoute, WRITE_BRIDGE_SOCKET_FILENAME } from "./integrations/discord/routes.js";
 import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
+import { selfCheckDiscordCapabilityPartition } from "./integrations/discord/policy.js";
 import { resolveWriteBridgePrincipal } from "./integrations/discord/writeBridgeCredential.js";
 import { startWriteBridgeSocketServer } from "./integrations/discord/writeBridgeSocketServer.js";
 import { selfCheckWriteActionRoutes, checkConfirmPhrasesAgainstRealHandlers } from "./integrations/discord/writeActionRoutes.js";
@@ -381,6 +382,17 @@ createServer((req, res) => {
     initializeDiscordAdapterSchema(db).catch((error) => {
       console.warn(`Discord adapter schema initialization failed: ${redact(error?.message || "Unexpected error.")}`);
     });
+    // Boot-time capability-taxonomy consistency check (issue #1037): every
+    // DISCORD_CAPABILITIES entry must land in exactly one of
+    // {EXPERIMENTAL_READ_ONLY_CAPABILITIES, DISCORD_WRITE_CAPABILITIES}.
+    // Warn-only, not fatal -- a violation here means a specific capability's
+    // requireDiscordCapability() calls may now incorrectly accept or reject,
+    // not that the whole adapter is unsafe to run.
+    const capabilityPartitionProblems = selfCheckDiscordCapabilityPartition();
+    if (capabilityPartitionProblems.length) {
+      console.warn("Discord adapter capability taxonomy failed its startup consistency check:");
+      for (const problem of capabilityPartitionProblems) console.warn(`  - ${problem}`);
+    }
   }
   // Hop B's internal-loopback listener. Only started when the write bridge is actually enabled --
   // an operator who hasn't opted into Discord-driven mutations gets no new
@@ -3076,7 +3088,20 @@ async function task(req, res, type, operation, payload, options = {}) {
   // actor+operation across both the web console and the write bridge,
   // rather than letting an attacker double their effective rate by
   // interleaving both paths against two independent counters.
-  if (!applyMutationRateLimit(req, res, `task:${type}:${operation}`)) return;
+  //
+  // [Layer 3 integration audit fix] options.skipRateLimit: a small number of
+  // callers (playerTask(), giveItemsRoute()) already call
+  // applyMutationRateLimit themselves, under their own more specific scope
+  // name (e.g. "players.adminKick"), before delegating here -- for those,
+  // this call would be a second, independently-keyed check against the
+  // identical default bound, incrementing in lockstep with the caller's own
+  // check on every request. Not a functional bug (both buckets always agree,
+  // so the effective limit is unchanged either way), just wasted Map
+  // lookups/writes on an already-hot path -- skipped only when a caller
+  // explicitly opts out, so every OTHER caller (the ones this fix actually
+  // exists for, which had zero throttling before it) keeps the new check by
+  // default.
+  if (!options.skipRateLimit && !applyMutationRateLimit(req, res, `task:${type}:${operation}`)) return;
   if (await maybeQueueRestart(req, res, type, operation, payload)) return;
   // Only `payload` is audited. Secrets travel in options.env, which is never
   // written to the audit log nor stored on the task -- keep it that way.
@@ -3132,7 +3157,18 @@ async function maybeQueueRestart(req, res, type, operation, payload) {
     mapLabel: classification.mapLabel,
     partitionId: classification.partitionId,
     map: classification.map,
-    requestedBy: "web-admin",
+    // [Layer 3 integration audit fix] Was hardcoded to "web-admin"
+    // unconditionally -- accurate before the write bridge existed, since
+    // only the web console could ever reach this code path. The write
+    // bridge's Hop B now reuses task() (and therefore this function)
+    // unchanged for server.restart/restart-service/map.respawn, and its own
+    // principal carries a real Discord identity in req.authSession
+    // (resolveWriteBridgePrincipal sets discordUsername) -- falling back to
+    // "web-admin" only when no such identity is present (a plain
+    // password-authenticated console session, whose session object never
+    // sets a username) keeps the old, correct behavior for the case it was
+    // originally written for.
+    requestedBy: req.authSession?.discordUsername || req.authSession?.username || "web-admin",
     countdownMinutes: settings.defaultCountdownMinutes,
     now: Date.now()
   });
@@ -3806,7 +3842,7 @@ async function playerTask(req, res, path, operation, phrase = "") {
       return json(res, 409, { error: "The player must be online to change skills." });
     }
   }
-  return task(req, res, "admin", operation, { ...body, playerId });
+  return task(req, res, "admin", operation, { ...body, playerId }, { skipRateLimit: true });
 }
 
 async function playerTeleportRoute(req, res, path) {
@@ -5711,7 +5747,7 @@ async function giveItemsRoute(req, res, path) {
   if (!Array.isArray(body.items)) {
     if (!applyMutationRateLimit(req, res, "players.give-items")) return;
     await resolvePlayerGrantTarget(playerId);
-    return task(req, res, "admin", "adminGiveItems", { ...body, playerId });
+    return task(req, res, "admin", "adminGiveItems", { ...body, playerId }, { skipRateLimit: true });
   }
   if (body.items.length < 1 || body.items.length > 25) return json(res, 400, { error: "Give Multiple Items requires 1-25 items" });
   if (!applyMutationRateLimit(req, res, "players.give-items")) return;
