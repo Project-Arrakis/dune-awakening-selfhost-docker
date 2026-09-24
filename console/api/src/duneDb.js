@@ -1749,7 +1749,14 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
   // to their own Discord account via `dune.discord_player_links`. Callers that
   // don't need scoping (owner/admin/moderator sessions) pass null, leaving
   // this filter a no-op -- identical to every other tier's existing behavior.
-  if (onlyPlayerControllerId) {
+  // /code-review high finding (2026-09-24): explicit null/undefined check,
+  // not truthiness -- player_controller_id = 0 is a real, distinct-from-NULL
+  // sentinel elsewhere in this schema (see the coalesce(...,0)/nullif(...,0)
+  // handling for it in this same file), so a bare `if (onlyPlayerControllerId)`
+  // would silently skip this own-record filter entirely for a controller id
+  // of 0, returning the caller's own-record query unfiltered against the
+  // whole roster instead of the empty/own-record result it's supposed to.
+  if (onlyPlayerControllerId !== null && onlyPlayerControllerId !== undefined) {
     values.push(String(onlyPlayerControllerId));
     where += ` and ps.player_controller_id::text = $${values.length}`;
   }
@@ -2223,17 +2230,30 @@ const GUILD_SORT_COLUMNS = {
   guild_id: { order: ["guild_id"] }
 };
 
-// Resolves which guild (if any) a given actor/pawn id currently belongs to --
-// used by the console's `player` IAM tier to scope GET /api/guilds and
-// GET /api/guilds/:id/members to the caller's own guild (Red-Blink PR #202
-// review). A player belongs to at most one guild, matching this game's own
-// design, so `limit 1` is correct here, not a shortcut.
-export async function getPlayerGuildId(db, actorId) {
-  const id = Number(actorId);
+// Resolves which guild (if any) a given player CONTROLLER id currently
+// belongs to -- used by the console's `player` IAM tier to scope
+// GET /api/guilds and GET /api/guilds/:id/members to the caller's own guild
+// (Red-Blink PR #202 review; corrected 2026-09-24 -- the caller previously
+// passed the pawn/actor id here, which guild_members.player_id does not use,
+// see resolveOwnPlayerScope's own comment for how that was confirmed). A
+// player belongs to at most one guild, matching this game's own design, so
+// `limit 1` is correct here, not a shortcut.
+export async function getPlayerGuildId(db, playerControllerId) {
+  const id = Number(playerControllerId);
   if (!Number.isFinite(id) || id <= 0) return null;
   if (!(await tableExists(db, "guild_members"))) return null;
+  // Resolved dynamically, not hardcoded to "player_id" (/code-review high
+  // finding, 2026-09-24), matching guildMembers()'s own column-resolution a
+  // few lines down -- an install whose guild_members table names this column
+  // differently (player_controller_id/actor_id/account_id/player_pawn_id)
+  // would otherwise 500 on every own-guild-scoped request instead of the
+  // graceful "unsupported" this function's own tableExists() guard is
+  // supposed to provide.
+  const memberColumns = await columnsFor(db, "guild_members");
+  const memberPlayerColumn = firstExistingColumn(memberColumns, ["player_id", "player_controller_id", "actor_id", "account_id", "player_pawn_id"]);
+  if (!memberPlayerColumn) return null;
   const result = await db.query(
-    "select guild_id::text as guild_id from dune.guild_members where player_id = $1::bigint limit 1",
+    `select guild_id::text as guild_id from dune.guild_members where ${quoteIdentifier(memberPlayerColumn)} = $1::bigint limit 1`,
     [id]
   );
   return result.rows[0]?.guild_id || null;

@@ -2703,6 +2703,7 @@ test("getPlayerGuildId returns the guild id for a real actor, and null when ungu
   const guildedDb = {
     query: async (text, values = []) => {
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "player_id" }, { column_name: "guild_id" }] };
       if (text.includes("from dune.guild_members")) {
         assert.equal(values[0], 82);
         return { rows: [{ guild_id: "7" }] };
@@ -2715,6 +2716,7 @@ test("getPlayerGuildId returns the guild id for a real actor, and null when ungu
   const unguildedDb = {
     query: async (text) => {
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "player_id" }, { column_name: "guild_id" }] };
       return { rows: [] };
     }
   };
@@ -2722,6 +2724,23 @@ test("getPlayerGuildId returns the guild id for a real actor, and null when ungu
 
   const missingTableDb = { query: async (text) => (text.includes("to_regclass") ? { rows: [{ exists: false }] } : { rows: [] }) };
   assert.equal(await getPlayerGuildId(missingTableDb, 82), null);
+
+  // A real, differently-named install: guild_members has no literal
+  // "player_id" column, only "player_controller_id" -- the dynamic column
+  // resolution added in this same fix must still find and use it.
+  const differentColumnNameDb = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "player_controller_id" }, { column_name: "guild_id" }] };
+      if (text.includes("from dune.guild_members")) {
+        assert.match(text, /player_controller_id/);
+        assert.equal(values[0], 82);
+        return { rows: [{ guild_id: "9" }] };
+      }
+      return { rows: [] };
+    }
+  };
+  assert.equal(await getPlayerGuildId(differentColumnNameDb, 82), "9");
 
   // Fails closed on a garbage id rather than passing it to the query as a
   // bigint cast that could throw or, worse, coerce unexpectedly.

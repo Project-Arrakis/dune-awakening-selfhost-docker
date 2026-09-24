@@ -5029,7 +5029,17 @@ async function playerIdentityForBan(playerId) {
 async function resolveOwnPlayerScope(discordUserId) {
   const linked = await duneDb.getLinkedPlayer(db, discordUserId);
   if (!linked) return { linked: false, playerControllerId: null, guildId: null };
-  const guildId = await duneDb.getPlayerGuildId(db, linked.player_pawn_id);
+  // /code-review high finding (2026-09-24): this was passing the pawn/actor
+  // id (linked.player_pawn_id), but dune.guild_members.player_id is keyed by
+  // the player CONTROLLER id, not the pawn/actor id -- confirmed via
+  // addFactionReputation's landsraad-contribution join a few hundred lines up
+  // in this same file (`insert into landsraad_task_player_contributions
+  // (player_id, ...) values (player.controllerId, ...)` joined directly
+  // against `guild_members gm on gm.player_id = pc.player_id`). With the
+  // wrong id, getPlayerGuildId() never matched a real row, so a linked player
+  // who genuinely IS in a guild was always told "not in a guild" and always
+  // 403'd on their own guild's roster.
+  const guildId = await duneDb.getPlayerGuildId(db, linked.player_controller_id);
   return { linked: true, playerControllerId: linked.player_controller_id, guildId };
 }
 
@@ -5076,6 +5086,13 @@ async function playerBanRoute(req, res, path) {
   if (!["GET", "POST", "DELETE"].includes(req.method || "GET")) return json(res, 405, { error: "Method not allowed" });
   if (req.method !== "GET" && !applyMutationRateLimit(req, res, `players.${req.method === "POST" ? "ban" : "unban"}`)) return;
   const playerId = decodeURIComponent(path.split("/")[3]);
+  // /code-review high finding (2026-09-24): unlike the other by-id player
+  // sub-resource routes fixed in this same pass, this one's GET branch had
+  // no own-record check -- POST/DELETE are already blocked for the `player`
+  // tier at the policy layer (players:mutate isn't granted), but GET falls
+  // under the generic players:read prefix rule, letting any player-tier
+  // session read any other player's ban record/reason.
+  if (!(await requireOwnPlayerAccess(req, res, playerId))) return;
   try {
     const player = await playerIdentityForBan(playerId);
     const existing = playerBanFor(config.repoRoot, player);
