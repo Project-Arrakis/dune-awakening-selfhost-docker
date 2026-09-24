@@ -17,7 +17,7 @@ The adapter exposes a set of API routes that a Discord bot (or any bearer-token
 authenticated client) can call to get server status and data. It is:
 
 - **Disabled by default** — must be explicitly enabled
-- **Read-only** — all routes provide data, none modify the server
+- **Read-only by default** — the routes in this guide provide data, none modify the server. A separate, further-gated write bridge exists for a fixed set of real mutations (player kick/ban, care package grants, map/server control, etc.) — see the [API adapter contract](../discord-control-bot/api-adapter-contract.md#write-bridge-hop-a--hop-b) for the full write bridge documentation, or your bot's admin guide for how to enable it.
 - **Bearer-token protected** — every request requires a shared secret token
 - **Role-gated** — you can restrict which Discord roles can access which data
 
@@ -100,7 +100,7 @@ match the roles configured on the Discord bot side.
 - **Bearer token required** — every request must include `Authorization: Bearer <token>`
 - **Constant-time token comparison** — prevents timing attacks
 - **Output sanitization** — removes internal IPs, credentials, connection strings
-- **No write access** — all routes are read-only
+- **No write access via these routes** — the routes in this guide are read-only; the separate write bridge (disabled unless explicitly enabled) has its own independent bot-token + actor-signature + per-action tier gate, see the [API adapter contract](../discord-control-bot/api-adapter-contract.md#write-bridge-hop-a--hop-b)
 
 ## Companion Bot
 

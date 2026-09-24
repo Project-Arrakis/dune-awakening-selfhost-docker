@@ -19,17 +19,90 @@ export const DISCORD_CAPABILITIES = Object.freeze({
   OPS_SOC_READ: "ops:soc:read",
   OPS_PROMETHEUS_READ: "ops:prometheus:read",
   PLAYER_LINK_WRITE: "player-link:write",
-  BROADCAST_SEND: "broadcast:send"
+  BROADCAST_SEND: "broadcast:send",
+  // WRITE_BRIDGE_ACCESS: the coarse floor gate for write/preview and
+  // write/execute -- "is this actor at least moderator tier at all." This is
+  // deliberately NOT one capability per write action; CAPABILITY_BY_TIER
+  // computes admin and owner as the identical set, so it structurally cannot
+  // express "owner but not admin" for a specific action the way the
+  // DISCORD_ROLE_TIERS ladder (above) requires. The real per-action decision
+  // is writeActionMinTier.js's meetsMinTier(), checked separately and
+  // additionally, never assumed to be redundant with this coarse gate.
+  WRITE_BRIDGE_ACCESS: "write-bridge:access"
 });
 
 export const DISCORD_WRITE_CAPABILITIES = Object.freeze(new Set([
   DISCORD_CAPABILITIES.PLAYER_LINK_WRITE,
-  DISCORD_CAPABILITIES.BROADCAST_SEND
+  DISCORD_CAPABILITIES.BROADCAST_SEND,
+  DISCORD_CAPABILITIES.WRITE_BRIDGE_ACCESS
 ]));
 
-export const EXPERIMENTAL_READ_ONLY_CAPABILITIES = Object.freeze(
-  new Set(Object.values(DISCORD_CAPABILITIES).filter((capability) => !DISCORD_WRITE_CAPABILITIES.has(capability)))
-);
+// [Layer 3 integration audit fix, issue #1037] Deliberately an independent,
+// hand-maintained allowlist -- NOT "everything that isn't a write
+// capability," which is what this used to be (`new Set(Object.values(
+// DISCORD_CAPABILITIES).filter((c) => !DISCORD_WRITE_CAPABILITIES.has(c)))`).
+// That derivation made requireExperimentalReadOnlyCapability() below
+// structurally unable to ever reject anything: any capability is, by
+// definition, either in DISCORD_WRITE_CAPABILITIES or NOT in it, so it was
+// always in exactly one of the two sets -- a tautology, not a real check. A
+// future write-type capability added to DISCORD_CAPABILITIES but
+// accidentally omitted from DISCORD_WRITE_CAPABILITIES would have been
+// silently absorbed into this set instead of being caught -- precisely the
+// mistake class this codebase's own history shows actually happens (this
+// exact scenario nearly occurred when WRITE_BRIDGE_ACCESS was added).
+// selfCheckDiscordCapabilityPartition() below verifies at boot that every
+// real capability is in exactly one of these two sets.
+export const EXPERIMENTAL_READ_ONLY_CAPABILITIES = Object.freeze(new Set([
+  DISCORD_CAPABILITIES.STATUS_READ,
+  DISCORD_CAPABILITIES.READINESS_READ,
+  DISCORD_CAPABILITIES.SERVICES_READ,
+  DISCORD_CAPABILITIES.POPULATION_READ,
+  DISCORD_CAPABILITIES.LOGS_READ,
+  DISCORD_CAPABILITIES.MAPS_READ,
+  DISCORD_CAPABILITIES.BACKUPS_READ,
+  DISCORD_CAPABILITIES.INVENTORY_READ,
+  DISCORD_CAPABILITIES.STORAGE_READ,
+  DISCORD_CAPABILITIES.GUILD_READ,
+  DISCORD_CAPABILITIES.OPS_ACTIVITY_READ,
+  DISCORD_CAPABILITIES.OPS_COMBAT_READ,
+  DISCORD_CAPABILITIES.OPS_RESOURCES_READ,
+  DISCORD_CAPABILITIES.OPS_ECONOMY_READ,
+  DISCORD_CAPABILITIES.OPS_INVENTORY_READ,
+  DISCORD_CAPABILITIES.OPS_SOC_READ,
+  DISCORD_CAPABILITIES.OPS_PROMETHEUS_READ
+]));
+
+// Boot-time consistency check (called from server.js, matching
+// selfCheckWriteActionRoutes()'s established pattern): every real capability
+// in DISCORD_CAPABILITIES must land in EXACTLY one of
+// {EXPERIMENTAL_READ_ONLY_CAPABILITIES, DISCORD_WRITE_CAPABILITIES}. Catches
+// both mistake directions -- a capability accidentally listed in both
+// (ambiguous), and a capability forgotten in both (which, with this now-real
+// independent allowlist, means requireExperimentalReadOnlyCapability() would
+// fail closed and reject every use of it -- a real, disruptive break, not a
+// silent gap, so this check exists to catch it BEFORE that happens).
+// Pure, parameterized core logic -- separated from selfCheckDiscordCapabilityPartition()
+// below purely so a test can exercise it against a deliberately-broken
+// capability/set combination without needing to mutate the real, frozen
+// production constants (impossible) or wait for a real future drift to
+// occur. Not used by any other real caller.
+export function partitionProblems(capabilities, readOnlySet, writeSet) {
+  const problems = [];
+  for (const capability of capabilities) {
+    const inReadOnly = readOnlySet.has(capability);
+    const inWrite = writeSet.has(capability);
+    if (inReadOnly && inWrite) {
+      problems.push(`"${capability}" is listed in BOTH EXPERIMENTAL_READ_ONLY_CAPABILITIES and DISCORD_WRITE_CAPABILITIES`);
+    } else if (!inReadOnly && !inWrite) {
+      problems.push(`"${capability}" is in NEITHER EXPERIMENTAL_READ_ONLY_CAPABILITIES nor DISCORD_WRITE_CAPABILITIES -- every real use of it will now be rejected by requireExperimentalReadOnlyCapability()`);
+    }
+  }
+  return problems;
+}
+
+export function selfCheckDiscordCapabilityPartition() {
+  return partitionProblems(Object.values(DISCORD_CAPABILITIES), EXPERIMENTAL_READ_ONLY_CAPABILITIES, DISCORD_WRITE_CAPABILITIES);
+}
 
 const CAPABILITY_BY_TIER = Object.freeze({
   public: new Set([DISCORD_CAPABILITIES.STATUS_READ]),
@@ -48,7 +121,14 @@ const CAPABILITY_BY_TIER = Object.freeze({
     DISCORD_CAPABILITIES.INVENTORY_READ,
     DISCORD_CAPABILITIES.STORAGE_READ,
     DISCORD_CAPABILITIES.PLAYER_LINK_WRITE,
-    DISCORD_CAPABILITIES.GUILD_READ
+    DISCORD_CAPABILITIES.GUILD_READ,
+    // WRITE_BRIDGE_ACCESS: moderator is the lowest tier eligible
+    // to reach ANY write action (player.warn is moderator-tier per
+    // writeActionMinTier.js) -- the permanent invariant is that public/
+    // observer must never have it, not that moderator can't. OPS_*
+    // capabilities are deliberately still admin/owner only, not granted to
+    // moderator here -- do not add them.
+    DISCORD_CAPABILITIES.WRITE_BRIDGE_ACCESS
   ]),
   admin: new Set(Object.values(DISCORD_CAPABILITIES)),
   owner: new Set(Object.values(DISCORD_CAPABILITIES))
@@ -72,7 +152,16 @@ export function normalizeDiscordActor(value) {
     username: requiredString(value.username, "actor.username"),
     roleIds: normalizeStringList(value.roleIds),
     interactionId: optionalString(value.interactionId),
-    commandName: optionalString(value.commandName)
+    commandName: optionalString(value.commandName),
+    // roleSnapshotAt: Unix-seconds timestamp of when the bot re-derived
+    // actor.roleIds from Discord, used only by the write bridge's own
+    // freshness check at write/execute. Purely additive -- every existing
+    // caller of this function simply ignores it. Kept as the raw value (not
+    // coerced/validated here) since a malformed value must fail loud at the
+    // one call site that actually enforces it (writeExecuteRoute), not be
+    // silently normalized to 0/"" here in a way that could mask a malformed
+    // timestamp as a valid one.
+    roleSnapshotAt: value.roleSnapshotAt
   };
   return actor;
 }

@@ -38,6 +38,12 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   SERVERS: "/api/integrations/discord/servers",
   PORTS: "/api/integrations/discord/ports",
   DB: "/api/integrations/discord/db",
+  // WRITE_PREVIEW / WRITE_EXECUTE: the write bridge. Gated by requireDiscordBotToken() (like
+  // every route in this table, automatically, before any route-specific
+  // dispatch) + verifyActorSignature({required:true}) + requireDiscordCapability
+  // (WRITE_BRIDGE_ACCESS) + meetsMinTier() for the specific requested action.
+  WRITE_PREVIEW: "/api/integrations/discord/write/preview",
+  WRITE_EXECUTE: "/api/integrations/discord/write/execute",
   // CATALOG is deliberately NOT added to DISCORD_LIVE_ADAPTER_ROUTES below.
   // It is metadata ABOUT the live routes, not itself one of them -- adding
   // it there would require commandCatalog.js's COMMAND_METADATA to have an
@@ -81,7 +87,9 @@ export const DISCORD_LIVE_ADAPTER_ROUTES = Object.freeze([
   DISCORD_ADAPTER_ROUTES.VERSION,
   DISCORD_ADAPTER_ROUTES.SERVERS,
   DISCORD_ADAPTER_ROUTES.PORTS,
-  DISCORD_ADAPTER_ROUTES.DB
+  DISCORD_ADAPTER_ROUTES.DB,
+  DISCORD_ADAPTER_ROUTES.WRITE_PREVIEW,
+  DISCORD_ADAPTER_ROUTES.WRITE_EXECUTE
 ]);
 
 export const DISCORD_PLANNED_ADAPTER_ROUTES = Object.freeze(

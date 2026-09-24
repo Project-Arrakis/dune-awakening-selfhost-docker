@@ -21,18 +21,46 @@ end = source.index("\ncontainer_count_for_map() {", start)
 Path(sys.argv[1]).write_text(source[start:end].rstrip() + "\n", encoding="utf-8")
 PY
 
-docker run -d --rm \
+# Captured (not discarded) and checked explicitly: a `docker run` failure
+# here previously surfaced only as a bare, unexplained "exit code 2" under
+# set -e, with the actual reason -- whatever `docker run` printed -- silently
+# swallowed by the old `>/dev/null` redirect (which only discards stdout;
+# some docker CLI versions print startup errors there rather than stderr).
+if ! run_output="$(docker run -d --rm \
   --name "$container" \
   -e POSTGRES_PASSWORD=postgres \
-  postgres:17-alpine >/dev/null
+  postgres:17-alpine 2>&1)"; then
+  echo "docker run failed to start the postgres container:" >&2
+  echo "$run_output" >&2
+  exit 1
+fi
 
+# [Real root cause found via the diagnostic hardening above, issue #1059]
+# A bare `pg_isready` loop races the official postgres image's own
+# entrypoint: it briefly starts a TEMPORARY server during initdb, which
+# `pg_isready` cannot distinguish from the real, final server -- confirmed
+# directly, this exact race produced "psql: error: connection ... failed:
+# No such file or directory" immediately after `pg_isready` reported ready,
+# because the temporary server had already shut down by the time the very
+# next `docker exec ... psql` command ran. tests/postgres-bootstrap-test.sh
+# already defends against this identical race by waiting for the SECOND
+# "database system is ready to accept connections" marker in the container's
+# own logs before ever trusting `pg_isready`; this script had no such guard.
+ready=0
 for _ in $(seq 1 60); do
-  if docker exec "$container" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
+  ready_markers="$(docker logs "$container" 2>&1 | grep -c 'database system is ready to accept connections' || true)"
+  if [ "$ready_markers" -ge 2 ] \
+    && docker exec "$container" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
+    ready=1
     break
   fi
   sleep 1
 done
-docker exec "$container" pg_isready -U postgres -d postgres >/dev/null
+if [ "$ready" -ne 1 ]; then
+  echo "postgres container never became ready within 60s; container logs:" >&2
+  docker logs "$container" >&2 2>&1 || true
+  exit 1
+fi
 
 docker exec -i "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
 create schema dune;
