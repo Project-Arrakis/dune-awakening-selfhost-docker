@@ -59,7 +59,18 @@ const SIGNED_ACTOR_FIELDS = ["userId", "guildId", "channelId", "roleIds", "inter
 // shared array above -- being independent from it exempts this array only from
 // needing that discipline retroactively for its one-time initial creation, not
 // from needing it for any later change.
-export const WRITE_BRIDGE_SIGNED_ACTOR_FIELDS = ["userId", "username", "roleIds", "guildId", "channelId", "roleSnapshotAt"];
+// [CRITICAL fix] `action` added: write/preview and write/execute are the
+// SAME route for every action -- without it in the signed payload, a
+// captured, legitimately-signed envelope from a real moderator+ actor could
+// be replayed with a DIFFERENT action/params within the freshness window
+// and still verify, since nothing about the signed payload changed.
+// routes.js's readJsonWithActorSignature merges body.action into the signed
+// actor payload before verification -- `action` cannot be read from
+// actorPayload itself, since it is a sibling of `actor` in the request
+// body, not one of its fields. mentat's own actorSignature.js must sign the
+// identical shape or every real write-bridge request fails verification
+// (see that repo's own fix, same finding).
+export const WRITE_BRIDGE_SIGNED_ACTOR_FIELDS = ["userId", "username", "roleIds", "guildId", "channelId", "roleSnapshotAt", "action"];
 
 export function actorSignatureSecret(config = {}) {
   const direct = process.env.DUNE_DISCORD_ACTOR_SECRET || config.discordActorSecret || "";

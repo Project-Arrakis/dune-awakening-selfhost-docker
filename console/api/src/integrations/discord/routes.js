@@ -187,10 +187,18 @@ export async function handleDiscordAdapterRoute({
   // both repos -- tracked, not done here); until then, signed deployments
   // fall back to the pre-existing DISCORD_OWNER_ROLE_IDS role mapping,
   // exactly as they did before this PR.
+  // [Layer 3 integration audit fix, CRITICAL] WRITE_BRIDGE_SIGNED_ACTOR_FIELDS
+  // includes "action" specifically so the write bridge's signature binds the
+  // actor to the SPECIFIC action being requested, not just the route (both
+  // write/preview and write/execute are the same one route for every
+  // action). body.action must be merged into the signed payload here,
+  // before verification, since it lives alongside `actor` in the body, not
+  // inside it.
   async function readJsonWithActorSignature(request, { requireActorSignature = false, fields } = {}) {
     const body = await readJson(request);
     try {
-      verifyActorSignature({ actorPayload: body?.actor, headers: request.headers, config, route: path, required: requireActorSignature, ...(fields ? { fields } : {}) });
+      const actorPayload = fields?.includes("action") ? { ...body?.actor, action: body?.action } : body?.actor;
+      verifyActorSignature({ actorPayload, headers: request.headers, config, route: path, required: requireActorSignature, ...(fields ? { fields } : {}) });
     } catch (error) {
       // When a secret is configured: always throw (even for read routes).
       // When no secret: only throw for mutation routes (requireActorSignature).
