@@ -38,8 +38,7 @@ export const DISCORD_ADAPTER_ROUTES = Object.freeze({
   SERVERS: "/api/integrations/discord/servers",
   PORTS: "/api/integrations/discord/ports",
   DB: "/api/integrations/discord/db",
-  // WRITE_PREVIEW / WRITE_EXECUTE (issue #215, docs/rw-architecture.md
-  // section 3): the write bridge. Gated by requireDiscordBotToken() (like
+  // WRITE_PREVIEW / WRITE_EXECUTE: the write bridge. Gated by requireDiscordBotToken() (like
   // every route in this table, automatically, before any route-specific
   // dispatch) + verifyActorSignature({required:true}) + requireDiscordCapability
   // (WRITE_BRIDGE_ACCESS) + meetsMinTier() for the specific requested action.

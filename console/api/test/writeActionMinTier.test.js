@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import { WRITE_ACTION_MIN_TIER, meetsMinTier } from "../src/integrations/discord/writeActionMinTier.js";
 import { DISCORD_ROLE_TIERS } from "../src/integrations/discord/policy.js";
 
-// [Layer 3 integration audit fix, LOW, issue #1042] This matrix deliberately
-// computes its OWN expected rank rather than importing writeActionMinTier.js's
+// This matrix deliberately computes its OWN expected rank rather than importing writeActionMinTier.js's
 // internal TIER_RANK -- testing meetsMinTier() against its own private
 // implementation detail would hide a real bug behind a tautology. But a bare
 // hand-typed { moderator: 0, admin: 1, owner: 2 } literal was itself a fourth
@@ -59,9 +58,7 @@ test("meetsMinTier: broadcast.* is intentionally absent from this table", () => 
 });
 
 test("WRITE_ACTION_MIN_TIER: table is frozen against poisoned-prototype lookups via Object.hasOwn, not a bare index", () => {
-  // Regression guard for the class of bug this table's own design doc explicitly
-  // calls out (docs/rw-architecture.md 3.3a, round-3 correction #747): a bare
-  // WRITE_ACTION_MIN_TIER[action] lookup on a poisoned key resolves to a
+  // Regression guard: a bare WRITE_ACTION_MIN_TIER[action] lookup on a poisoned key resolves to a
   // non-tier inherited value rather than undefined, which meetsMinTier's own
   // TIER_RANK comparison would silently evaluate as false instead of throwing.
   assert.equal(Object.hasOwn(WRITE_ACTION_MIN_TIER, "constructor"), false);

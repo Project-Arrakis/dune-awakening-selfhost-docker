@@ -1,12 +1,10 @@
-// Nonce store for the Discord write bridge (docs/rw-architecture.md section
-// 3.8 / section 4). write/preview mints a nonce binding one specific actor,
+// Nonce store for the Discord write bridge. write/preview mints a nonce binding one specific actor,
 // action, and params; write/execute consumes it exactly once. In-memory only
 // -- a server restart mid-confirmation simply expires the pending nonce
 // (nothing has mutated yet, so losing it is safe; the user just retries).
 import { randomUUID } from "node:crypto";
 
-// General 60s TTL, with named per-action overrides (section 4's Confirmation
-// Flow correction): restart's post-match 30s cancellable countdown needs the
+// General 60s TTL, with named per-action overrides: restart's post-match 30s cancellable countdown needs the
 // nonce to still be valid when write/execute is finally called, so its TTL
 // is widened to 90s (60s window + 30s countdown budget) at issuance, not
 // renegotiated at confirm time. stop's own TTLs depend on which confirmation
@@ -19,11 +17,10 @@ const ACTION_TTL_OVERRIDES = {
   "server.restart": 90
 };
 
-// Eviction policy (round-2 audit, DBA/Security LOW #740): both stores this
-// design specifies are pruned on a periodic timer, with a max-entries-per-
-// actor bound as a belt-and-braces cap against unbounded growth from a
-// misbehaving moderator+ actor flooding write/preview (cheap to call
-// repeatedly since it doesn't mutate anything).
+// Eviction policy: entries are pruned on a periodic timer, with a
+// max-entries-per-actor bound as a belt-and-braces cap against unbounded
+// growth from a misbehaving moderator+ actor flooding write/preview (cheap
+// to call repeatedly since it doesn't mutate anything).
 const MAX_ENTRIES_PER_ACTOR = 20;
 const DEFAULT_PRUNE_INTERVAL_MS = 30_000;
 
@@ -65,9 +62,9 @@ export function createWriteNonceStore({ now = () => Date.now(), pruneIntervalMs 
       action,
       params: params || {},
       expiresAt,
-      // Dual-confirmation fields for server.stop's 2+-admin gate (section 3
-      // Group C, section 3.8's Nonce store entry). null/false until that
-      // specific flow marks them -- every other action never touches these.
+      // Dual-confirmation fields for server.stop's 2+-admin gate. null/false
+      // until that specific flow marks them -- every other action never
+      // touches these.
       secondConfirmationRequired: false,
       primaryConfirmedAt: null
     });
@@ -77,8 +74,8 @@ export function createWriteNonceStore({ now = () => Date.now(), pruneIntervalMs 
   // Single-use: deletes the entry on lookup, whether or not it was valid, so
   // a caller can never accidentally consume the same nonce twice by racing
   // its own retry logic. Returns null (not a thrown error) for "not found or
-  // expired" -- the caller maps that to the design's own 410 response, a
-  // distinct case from every other rejection (section 4's Errors table).
+  // expired" -- the caller maps that to a 410 response, a distinct case
+  // from every other rejection.
   function consume(nonce) {
     const entry = entries.get(nonce);
     if (!entry) return null;
@@ -105,9 +102,9 @@ export function createWriteNonceStore({ now = () => Date.now(), pruneIntervalMs 
 
   // Extends an existing, still-valid entry's expiry and marks it pending a
   // second confirmation, without deleting it -- used only by server.stop's
-  // 2+-admin gate (section 3.8's Nonce store entry: the primary's own call
-  // does not consume the nonce, it marks secondConfirmationRequired and
-  // extends the TTL to 5 minutes from now).
+  // 2+-admin gate: the primary's own call does not consume the nonce, it
+  // marks secondConfirmationRequired and extends the TTL to 5 minutes from
+  // now.
   function markPendingSecondConfirmation(nonce, extendedTtlSeconds) {
     const entry = entries.get(nonce);
     if (!entry || entry.expiresAt <= now()) {

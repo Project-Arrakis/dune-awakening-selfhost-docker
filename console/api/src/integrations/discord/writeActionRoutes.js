@@ -1,5 +1,5 @@
-// Route/action mapping table for the Discord write bridge (docs/rw-architecture.md
-// section 3.5). Each entry maps a dot-namespaced write action to the real Core
+// Route/action mapping table for the Discord write bridge. Each entry maps a
+// dot-namespaced write action to the real Core
 // mutation route it must invoke via the internal loopback -- write/execute never
 // reimplements mutation logic, it only dispatches to these already-real handlers.
 import { actionForRoute } from "../../actions.js";
@@ -8,24 +8,24 @@ import { WRITE_ACTION_MIN_TIER } from "./writeActionMinTier.js";
 
 // Player/base identifiers seen in this codebase (server.js's own Funcom-style
 // funcomId/hexFlsId examples: "Server#4242", "5E121CE000000001") are alphanumeric
-// plus "#" only -- deliberately excludes "." and "/" so a value of exactly ".."
-// can never shift which real route is requested after URL normalization
-// (docs/rw-architecture.md 3.5, round-2 Security finding #740). encodeURIComponent
-// alone is not sufficient shape validation: it escapes "/" but not ".".
+// plus "#"/"_"/":"/"-" -- deliberately excludes "." and "/" so a value of
+// exactly ".." can never shift which real route is requested after URL
+// normalization. encodeURIComponent alone is not sufficient shape
+// validation: it escapes "/" but not ".".
 //
-// [Layer 3 integration audit fix, LOW, issue #1051] Widened to also allow
-// "_" and ":" (real Steam-style/Funcom id characters this pattern was
-// otherwise silently rejecting -- the identical action would be accepted via
-// the admin CLI path in runner.js but rejected here) -- but this pattern
-// deliberately does NOT adopt runner.js's own validatePlayerId as-is
-// (`/^[A-Za-z0-9_:#.-]{1,128}$/`, which also allows "." and a bare "*"
-// wildcard): runner.js's validated value becomes a CLI argument passed to a
-// subprocess, where "." has no special meaning at all, while this
-// function's value becomes a URL PATH SEGMENT via encodeURIComponent()
-// above -- exactly the context #740's own "." exclusion protects. Blindly
-// matching runner.js's pattern here would silently reintroduce that
-// CRITICAL finding. "-" is safe to add in either context (never
-// traversal-meaningful on its own).
+// "_" and ":" are real Steam-style/Funcom id characters this pattern would
+// otherwise silently reject -- the identical action is accepted via the
+// admin CLI path in runner.js but would be rejected here without them --
+// but this pattern deliberately does NOT adopt runner.js's own
+// validatePlayerId as-is (`/^[A-Za-z0-9_:#.-]{1,128}$/`, which also allows
+// "." and a bare "*" wildcard): runner.js's validated value becomes a CLI
+// argument passed to a subprocess, where "." has no special meaning at all,
+// while this function's value becomes a URL PATH SEGMENT via
+// encodeURIComponent() above -- exactly the path-traversal risk this
+// pattern's own "." exclusion (above) protects against. Blindly matching
+// runner.js's pattern here would silently reintroduce that vulnerability.
+// "-" is safe to add in either context (never traversal-meaningful on its
+// own).
 const PLAYER_ID_PATTERN = /^[A-Za-z0-9#_:-]{1,128}$/;
 const NUMERIC_ID_PATTERN = /^[1-9][0-9]*$/;
 const GUILD_ID_PATTERN = /^[A-Za-z0-9]{1,128}$/;
@@ -51,9 +51,8 @@ export function validateGuildId(value) {
   return value;
 }
 
-// confirmPhrase is a UX safeguard, not an independent security boundary
-// (docs/rw-architecture.md 3.5, round-3 Security finding, batch #747): these
-// values are static constants auto-injected into the loopback body for any
+// confirmPhrase is a UX safeguard, not an independent security boundary:
+// these values are static constants auto-injected into the loopback body for any
 // request that already has a valid nonce, actor signature, and passed
 // capability/tier checks -- never compared against anything the Discord user
 // actually typed. The real security boundary is the nonce + actor-signature +
@@ -68,15 +67,14 @@ export function validateGuildId(value) {
 // fabricating a value Layer 2's mechanical consistency check would then
 // incorrectly treat as authoritative.
 //
-// auditAction is documentation, not a second audit call site (Layer 2 audit,
-// Architect MEDIUM finding, issue #1020): Hop B dispatches to the real,
+// auditAction is documentation, not a second audit call site: Hop B dispatches to the real,
 // unmodified target route handler, which already calls the codebase's real
 // audit() with the real event name and real request-derived attribution --
 // duplicating that here would double-write the audit log, not fix a gap.
 // This field exists so a reader of this table alone can see what audit event
 // a given write action produces, without having to trace into server.js.
 //
-// requiresDualConfirmation (issue #1019): originally true for server.stop --
+// requiresDualConfirmation: originally true for server.stop --
 // this workstream's single most destructive write-bridge action (stops the
 // live game server outright). write/execute's own state machine (see
 // routes.js) requires two DISTINCT actors to each independently pass every
@@ -111,7 +109,7 @@ const RAW_WRITE_ACTION_ROUTES = {
   "base.refill-generators": { method: "POST", path: (p) => `/api/bases/${encodeURIComponent(validateBaseId(p.baseId))}/refill-generators`, policyAction: "bases:mutate", auditAction: "bases.refill-generators" },
   "base.refill-water": { method: "POST", path: (p) => `/api/bases/${encodeURIComponent(validateBaseId(p.baseId))}/refill-water`, policyAction: "bases:mutate", auditAction: "bases.refill-water" },
   "server.restart": { method: "POST", path: () => "/api/server/restart", policyAction: "server:restart", auditAction: null },
-  // confirmPhrase added (issue #1048): server.stop is this workstream's
+  // confirmPhrase added: server.stop is this workstream's
   // single most destructive write-bridge action -- stopping the live game
   // server outright -- and previously had NO confirmPhrase at all, unlike
   // every other comparably risky action (player.ban, map.spawn,
@@ -130,9 +128,9 @@ const RAW_WRITE_ACTION_ROUTES = {
   "carepackage.grant": { method: "POST", path: (p) => `/api/care-package/grant/${encodeURIComponent(validatePlayerId(p.playerId))}`, confirmPhrase: "GRANT CARE PACKAGE", policyAction: "carepackage:grant", auditAction: "care-package.grant" },
   // policyAction is "carepackage:grant" here, not "carepackage:grant-all":
   // fork's own actions.js has a narrower, dedicated policy action for this
-  // exact route (issue #219 -- per-player grants stay at carepackage:grant,
+  // exact route -- per-player grants stay at carepackage:grant,
   // this one hits every eligible player at once, so it's kept separate and
-  // more restricted at the Core policy layer). Upstream's actions.js does
+  // more restricted at the Core policy layer. Upstream's actions.js does
   // not yet have that split; this table's own meetsMinTier() check below
   // (owner tier) still independently enforces the stricter gate this action
   // needs regardless of what Core's own policyAction resolves to -- the
@@ -210,8 +208,8 @@ export function resetRequiresDualConfirmationOverridesForTests() {
 
 export function resolveWriteActionRoute(action, params) {
   if (!Object.hasOwn(WRITE_ACTION_ROUTES, action)) {
-    // Lookup safety (round-2 audit, Security MEDIUM #740): action arrives
-    // directly in an actor-signed request body -- a bare index risks resolving
+    // Lookup safety: action arrives directly in an actor-signed request
+    // body -- a bare index risks resolving
     // "constructor"/"__proto__"/"toString" to a truthy inherited value instead
     // of undefined.
     return null;
@@ -229,9 +227,9 @@ export function resolveWriteActionRoute(action, params) {
   };
 }
 
-// Exact-match (method, path) verification for Hop B (docs/rw-architecture.md
-// 3.2's CRITICAL #728 fix): the internal loopback credential must only ever
-// be recognized for a request whose (method, path) is an exact match against
+// Exact-match (method, path) verification for Hop B: the internal loopback
+// credential must only ever be recognized for a request whose (method, path)
+// is an exact match against
 // ONE specific WRITE_ACTION_ROUTES entry -- never a broader match (e.g. by
 // IAM action class alone, which would be too coarse: player.kick and
 // player.ban share the same real policyAction, "players:moderate", so a
@@ -239,8 +237,8 @@ export function resolveWriteActionRoute(action, params) {
 // authorize the other). Patterns are derived mechanically from the same
 // single source of truth (WRITE_ACTION_ROUTES's own path() functions) rather
 // than hand-duplicated as a second table, which this project's own history
-// shows drifts (policyAction's own #1012 staleness, found the same day this
-// was written).
+// shows drifts (a real, previously-found policyAction staleness bug in this
+// same table).
 const PLAYER_ID_SENTINEL = "XXXPLAYERIDSENTINELXXX";
 const BASE_ID_SENTINEL = "999999999";
 const GUILD_ID_SENTINEL = "XXXGUILDIDSENTINELXXX";
@@ -287,10 +285,10 @@ export function matchesWriteActionTarget(action, method, path) {
   return method === expectedMethod && pattern.test(path);
 }
 
-// Startup self-check (docs/rw-architecture.md 3.5): resolves every path()
+// Startup self-check: resolves every path()
 // template against a representative param set and confirms the resulting
 // (method, path) matches a real entry in actions.js's own route catalog.
-// Failure scope is deliberately narrow (round-2 UI/UX CRITICAL #737): this
+// Failure scope is deliberately narrow: this
 // must never crash Core's boot -- only disable the RW write-bridge subsystem
 // and let the rest of the console serve normally. Returns a list of problems
 // (empty = clean); the caller decides what "disable the subsystem" means.
@@ -299,12 +297,11 @@ const REPRESENTATIVE_PARAMS = { playerId: "Server#4242", baseId: "1", guildId: "
 export function selfCheckWriteActionRoutes() {
   const problems = [];
   for (const [action, entry] of Object.entries(WRITE_ACTION_ROUTES)) {
-    // [Layer 3 integration audit fix, MEDIUM, issue #1039] Before this
-    // check, a WRITE_ACTION_ROUTES entry with no matching WRITE_ACTION_MIN_TIER
-    // entry passed boot silently -- meetsMinTier() only discovered the gap
-    // at request time via a bare thrown Error (an opaque 500 for the first
-    // Discord actor unlucky enough to hit it), not a startup warning. This
-    // is the exact hand-duplicated-table drift class issue #1012
+    // Before this check, a WRITE_ACTION_ROUTES entry with no matching
+    // WRITE_ACTION_MIN_TIER entry passed boot silently -- meetsMinTier()
+    // only discovered the gap at request time via a bare thrown Error (an
+    // opaque 500 for the first Discord actor unlucky enough to hit it), not
+    // a startup warning. This is the same hand-duplicated-table drift class
     // (policyAction staleness) already burned this codebase on once.
     if (!Object.hasOwn(WRITE_ACTION_MIN_TIER, action)) {
       problems.push(`"${action}": present in WRITE_ACTION_ROUTES but has no matching WRITE_ACTION_MIN_TIER entry`);
@@ -328,8 +325,12 @@ export function selfCheckWriteActionRoutes() {
   return problems;
 }
 
-// Mechanical confirmPhrase check (issue #1020, closing the exact gap that let
-// #1016/#1018 both ship): for the subset of confirmPhrase-bearing actions
+// Mechanical confirmPhrase check, closing a real gap that previously let two
+// separate confirmPhrase-declaration bugs ship undetected -- a table entry
+// missing a confirmPhrase its real handler required, and a table entry
+// whose declared phrase didn't match what its real handler actually checked
+// -- since nothing mechanically cross-verified this table against the real
+// handlers it describes: for the subset of confirmPhrase-bearing actions
 // whose real confirmation check lives in an EXPORTED service function (as
 // opposed to a private route wrapper inside server.js, which nothing outside
 // server.js can call), actually invoke the real function with a deliberately

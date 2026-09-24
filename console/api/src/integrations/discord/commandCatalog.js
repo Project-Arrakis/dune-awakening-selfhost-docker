@@ -387,7 +387,7 @@ export const COMMAND_METADATA = Object.freeze({
     capability: DISCORD_CAPABILITIES.SERVICES_READ,
     params: []
   },
-  // WRITE_PREVIEW / WRITE_EXECUTE (issue #215): unlike every other entry in
+  // WRITE_PREVIEW / WRITE_EXECUTE: unlike every other entry in
   // this catalog, these are not themselves a user-facing slash-command
   // group/subcommand a Discord admin types -- they are the internal API the
   // bot's OWN dispatch layer calls on behalf of every real write command
@@ -405,10 +405,10 @@ export const COMMAND_METADATA = Object.freeze({
       { name: "action", type: "STRING", required: true, description: "The dot-namespaced write action, e.g. player.kick." },
       { name: "params", type: "OBJECT", required: false, description: "Action-specific parameters (playerId, baseId, guildId, ...)." }
       // idempotencyKey is NOT yet a real, read field -- the persisted
-      // idempotency cache (docs/rw-architecture.md section 3.8) is not
-      // implemented yet. Add it here only once write/execute actually
-      // reads and enforces it, matching this catalog's own "describe real
-      // code, not aspirational design" discipline.
+      // idempotency cache is not implemented yet. Add it here only once
+      // write/execute actually reads and enforces it, matching this
+      // catalog's own "describe real code, not aspirational design"
+      // discipline.
     ]
   },
   [DISCORD_ADAPTER_ROUTES.WRITE_EXECUTE]: {
@@ -421,8 +421,7 @@ export const COMMAND_METADATA = Object.freeze({
       { name: "action", type: "STRING", required: true, description: "Must match the action the nonce was issued for." }
       // params is deliberately NOT read from this route's own request body
       // -- write/execute uses the params captured in the nonce at preview
-      // time (docs/rw-architecture.md section 3.2's exact-match binding),
-      // never whatever a caller resends here. idempotencyKey: see the
+      // time, never whatever a caller resends here. idempotencyKey: see the
       // write/preview entry's own note above.
     ]
   }
