@@ -428,6 +428,14 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [serverRegion, setServerRegion] = useState("");
   const [gameValuesTargetKey, setGameValuesTargetKey] = useState("");
   const [spiceFieldValuesTargetKey, setSpiceFieldValuesTargetKey] = useState("");
+  // /code-review high finding (2026-09-24): spiceFieldValuesTargetKey alone
+  // only detects staleness against the *current* target -- it doesn't stop a
+  // genuinely out-of-order response (rapid Target A -> B -> C switches, none
+  // dirty, so the reload guard never blocks) from overwriting a fresher
+  // in-flight target's values with a staler one, since both requests are
+  // "for a real target" and neither is cancelled. A sequence ref closes this:
+  // a response is only ever applied if no newer request has been issued since.
+  const spiceFieldRequestSeqRef = useRef(0);
   const [rawEngine, setRawEngine] = useState("");
   const [rawGame, setRawGame] = useState("");
   const [rawEngineOriginal, setRawEngineOriginal] = useState("");
@@ -871,7 +879,12 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   // Target's own Map/Partition scope once one is picked.
   async function loadSpiceFieldSettings(mapName?: string, partitionId?: string) {
     const target = mapName || "__global__";
+    const seq = ++spiceFieldRequestSeqRef.current;
     const values = await mapsApi.userGame(target, target === "__global__" ? undefined : partitionId);
+    // A newer loadSpiceFieldSettings call has been issued since this one
+    // started -- applying this response now would overwrite that newer
+    // request's (possibly already-applied) result with stale data. Drop it.
+    if (seq !== spiceFieldRequestSeqRef.current) return;
     const parsed = parseUserSettingsMap(values.stdout || "");
     setSpiceFieldValues(parsed);
     setSpiceFieldDraft(parsed);
@@ -1452,7 +1465,23 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   // of silently reading the wrong schema.
   const spiceFieldSettings = (schema ? (!isUserGameGlobal && effectiveUserGamePartitionId ? schema.partition : schema.game) : []).filter((field) => field.category === "Spice Fields");
   const filteredSpiceFieldSettings = filterSettingsFields(spiceFieldSettings, spicefieldSettingsFilter);
-  const spiceFieldsDirty = changedKeys(spiceFieldValues, spiceFieldDraft, spiceFieldSettings);
+  // Dirty-detection deliberately does NOT use spiceFieldSettings above
+  // (test-found bug, 2026-09-24): spiceFieldValues/spiceFieldDraft can belong
+  // to a *different*, stale target than the one spiceFieldSettings is now
+  // scoped to (that's the whole premise of the reload-skip-while-dirty guard
+  // below) -- changedKeys() only ever compares field ids present in the
+  // fields list it's given, so if the current target's schema array happens
+  // to omit an id the stale draft actually differs on (empty for Overmap in
+  // this fixture; schema.game/schema.partition are expected to carry
+  // identical Spice Fields ids in real data, but nothing enforces that), a
+  // real pending edit would silently stop counting as dirty. Union of both
+  // schema arrays sidesteps this entirely for dirty-detection specifically;
+  // spiceFieldSettings itself stays correctly target-scoped for rendering,
+  // validation bounds, and defaults.
+  const spiceFieldDirtyDetectionFields = schema
+    ? [...schema.game, ...schema.partition].filter((field, index, all) => field.category === "Spice Fields" && all.findIndex((candidate) => candidate.id === field.id) === index)
+    : [];
+  const spiceFieldsDirty = changedKeys(spiceFieldValues, spiceFieldDraft, spiceFieldDirtyDetectionFields);
   const invalidSpiceFieldsDirty = spiceFieldsDirty.filter((fieldId) => {
     const field = spiceFieldSettings.find((candidate) => candidate.id === fieldId);
     return Boolean(field && !settingValueIsValid(field, spiceFieldDraft[fieldId] ?? field.default ?? ""));
@@ -2554,7 +2583,14 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             : <SettingsCardGrid fields={filteredSpiceFieldSettings} values={spiceFieldDraft} onChange={(id, value) => setSpiceFieldDraft({ ...spiceFieldDraft, [id]: value })} viewMode={modifierViewMode} emptyMessage={modifierEmptyMessage(!!schema, spiceFieldSettings.length, spicefieldSettingsFilter, "Settings")} />}
           {invalidSpiceFieldsDirty.length > 0 && <p className="error">Enter a valid value for every changed setting before saving.</p>}
           {!isUserGameOvermap && !spiceFieldValuesReady && spiceFieldsDirty.length > 0 && <p className="spicefield-settings-stale-notice">Target changed on another tab while this had unsaved edits, so these weren&apos;t discarded automatically -- they&apos;re still for the previous Target. Save is disabled until you Discard Changes, which also loads the new Target&apos;s Spice Field settings.</p>}
-          <div className="action-row"><button disabled={isUserGameOvermap || !spiceFieldsDirty.length || invalidSpiceFieldsDirty.length > 0 || !spiceFieldValuesReady} onClick={() => run(saveSpiceFields)}>Save</button><button disabled={isUserGameOvermap || !spiceFieldsDirty.length} onClick={() => { setSpiceFieldDraft(spiceFieldValues); if (!spiceFieldValuesReady) void loadSpiceFieldSettings(isUserGameGlobal ? undefined : userGameName, isUserGameGlobal ? undefined : effectiveUserGamePartitionId || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error))); }}>Discard Changes</button><button className="settings-reset-all-button" disabled={isUserGameOvermap || !spiceFieldSettings.length} title="Set every setting on this tab back to its default value" onClick={() => setSpiceFieldDraft(Object.fromEntries(spiceFieldSettings.map((field) => [field.id, field.default ?? ""])))}>Restore Defaults</button></div>
+          {/* Discard Changes deliberately has no isUserGameOvermap check, unlike
+              Save/Restore Defaults (/code-review high finding, 2026-09-24): if
+              Overmap is the current Target but the draft is a stale, dirty
+              leftover from a target picked before switching to Overmap (the
+              reload-skip above only fires while dirty), this is the only way
+              back -- disabling it too would trap the operator with no path to
+              a clean state. */}
+          <div className="action-row"><button disabled={isUserGameOvermap || !spiceFieldsDirty.length || invalidSpiceFieldsDirty.length > 0 || !spiceFieldValuesReady} onClick={() => run(saveSpiceFields)}>Save</button><button disabled={!spiceFieldsDirty.length} onClick={() => { setSpiceFieldDraft(spiceFieldValues); if (!spiceFieldValuesReady) void loadSpiceFieldSettings(isUserGameGlobal ? undefined : userGameName, isUserGameGlobal ? undefined : effectiveUserGamePartitionId || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error))); }}>Discard Changes</button><button className="settings-reset-all-button" disabled={isUserGameOvermap || !spiceFieldSettings.length} title="Set every setting on this tab back to its default value" onClick={() => setSpiceFieldDraft(Object.fromEntries(spiceFieldSettings.map((field) => [field.id, field.default ?? ""])))}>Restore Defaults</button></div>
         </section>
       </> : <>
         <ChoamTerminalsEditor

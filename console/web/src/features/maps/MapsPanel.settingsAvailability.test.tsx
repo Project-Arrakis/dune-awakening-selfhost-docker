@@ -415,6 +415,87 @@ describe("MapsPanel modifier availability", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
+  // Regression test for a /code-review high finding (2026-09-24): rapidly
+  // switching Target A -> B -> C with no unsaved edit in between never trips
+  // the dirty-guard, so if the fetch for B resolves *after* the fetch for C
+  // (a genuine out-of-order network response), B's stale values could
+  // silently overwrite C's already-applied, correct ones.
+  it("does not let an out-of-order Spice Fields response overwrite a newer target's already-applied values", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: "" },
+      // Two DeepDesert partitions so the Target selector has two real,
+      // distinct, non-Global options to switch between without ever
+      // revisiting the same key.
+      services: { stdout: "8 | DeepDesert_1 | 0 | | server1 | 33001 | 33101 | true | true\n9 | DeepDesert_1 | 1 | | server1 | 33002 | 33102 | true | true" },
+      readiness: { stdout: "" }
+    });
+    const spiceField = {
+      scope: "game", id: "spice_prime_rate_seconds", section: "/Script/DuneSandbox.SpiceHarvestingSystem",
+      key: "m_PrimeRateInSeconds", default: "30.000000", type: "number", clientFile: "", category: "Spice Fields",
+      description: "Seconds a spice field spends priming before becoming harvestable."
+    };
+    api.userSettingsSchema.mockResolvedValue({
+      engine: [], mapEngine: [], partitionEngine: [], partition: [spiceField],
+      game: [spiceField],
+      serverCustom: []
+    });
+
+    // Deferred promises per target, resolved manually by the test in a
+    // deliberately out-of-order sequence.
+    const pending = new Map<string, { resolve: (value: { stdout: string }) => void }>();
+    api.userGame.mockImplementation((map: string, partitionId?: string) => {
+      const key = `${map}::${partitionId || ""}`;
+      return new Promise((resolve) => { pending.set(key, { resolve }); });
+    });
+
+    renderMapsPanel();
+    const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
+    // Resolve the initial mount-time Global fetch so the app settles before
+    // the test's own two target switches begin -- must happen before
+    // waiting for the toggle to become enabled, since that itself depends on
+    // this same fetch resolving.
+    await waitFor(() => expect(pending.has("__global__::")).toBe(true));
+    pending.get("__global__::")!.resolve({ stdout: "spice_prime_rate_seconds\t30.000000\n" });
+    pending.delete("__global__::");
+    await waitFor(() => expect(modifiers).toBeEnabled());
+    fireEvent.click(modifiers);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Spice Fields" }));
+    expect(await screen.findByDisplayValue("30.000000")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Settings" }));
+    // A -> B: select partition 8. Its fetch is issued but deliberately left
+    // unresolved.
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "DeepDesert_1::8" } });
+    await waitFor(() => expect(pending.has("DeepDesert_1::8")).toBe(true));
+
+    // B -> C: select partition 9 *before* B's fetch has resolved -- no dirty
+    // draft exists at any point, so nothing here is gated by the dirty-check.
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "DeepDesert_1::9" } });
+    await waitFor(() => expect(pending.has("DeepDesert_1::9")).toBe(true));
+
+    // Resolve in the *wrong* order: C (the current, correct target) first,
+    // then the now-stale B request second.
+    pending.get("DeepDesert_1::9")!.resolve({ stdout: "spice_prime_rate_seconds\t909.000000\n" });
+    fireEvent.click(screen.getByRole("tab", { name: "Spice Fields" }));
+    expect(await screen.findByDisplayValue("909.000000")).toBeVisible();
+
+    pending.get("DeepDesert_1::8")!.resolve({ stdout: "spice_prime_rate_seconds\t808.000000\n" });
+
+    // B's late, stale response must be dropped -- C's value stays displayed,
+    // not silently overwritten by data that was fetched for a target the
+    // operator has since navigated away from.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByDisplayValue("909.000000")).toBeVisible();
+    expect(screen.queryByDisplayValue("808.000000")).not.toBeInTheDocument();
+
+    // And it's genuinely ready, not just displaying the right number by
+    // coincidence while still flagged stale: an edit now enables Save.
+    fireEvent.change(screen.getByDisplayValue("909.000000"), { target: { value: "950.000000" } });
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
   it("shows a distinct explanatory notice instead of the Spice Fields grid when Overmap is selected, and disables its action row", async () => {
     const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
     api.status.mockResolvedValue({
@@ -451,6 +532,60 @@ describe("MapsPanel modifier availability", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Discard Changes" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Restore Defaults" })).toBeDisabled();
+  });
+
+  // Regression test for a /code-review high finding (2026-09-24): Discard
+  // Changes used to be disabled whenever Overmap was the selected Target,
+  // even when the dirty draft on screen actually belonged to a *different*,
+  // previously-selected Target -- trapping the operator with no way to clear
+  // it short of navigating to some other non-Overmap target first.
+  it("still allows Discard Changes when Overmap is selected but the dirty draft is a stale leftover from a different Target", async () => {
+    const api = mapsApi as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    api.status.mockResolvedValue({
+      maps: { stdout: JSON.stringify({ maps: [{ map: "Overmap", status: "Ready", mode: "Core Map", partitionId: "2" }] }) },
+      services: { stdout: "" },
+      readiness: { stdout: "" }
+    });
+    api.userSettingsSchema.mockResolvedValue({
+      engine: [], mapEngine: [], partitionEngine: [], partition: [],
+      game: [{
+        scope: "game", id: "spice_manager_tick_rate_seconds", section: "/Script/DuneSandbox.SpiceHarvestingSystem",
+        key: "m_ManagerTickRateInSeconds", default: "5.000000", type: "number", clientFile: "", category: "Spice Fields",
+        description: "How often (seconds) the spice manager re-evaluates spawn/despawn state."
+      }],
+      serverCustom: []
+    });
+    api.userGame.mockImplementation((map: string) =>
+      Promise.resolve(map === "__global__" ? { stdout: "spice_manager_tick_rate_seconds\t5.000000\n" } : { stdout: "" })
+    );
+
+    renderMapsPanel();
+    const modifiers = await screen.findByRole("button", { name: "Expand Interactive Modifiers" });
+    await waitFor(() => expect(modifiers).toBeEnabled());
+    fireEvent.click(modifiers);
+    fireEvent.click(screen.getByRole("tab", { name: "Spice Fields" }));
+    expect(await screen.findByDisplayValue("5.000000")).toBeVisible();
+
+    // Unsaved edit while still on Global.
+    fireEvent.change(screen.getByDisplayValue("5.000000"), { target: { value: "9.000000" } });
+    expect(screen.getByRole("button", { name: "Discard Changes" })).toBeEnabled();
+
+    // Switch straight to Overmap without saving or discarding first.
+    fireEvent.click(screen.getByRole("tab", { name: "Custom Settings" }));
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "Overmap::2" } });
+    fireEvent.click(screen.getByRole("tab", { name: "Spice Fields" }));
+
+    expect(await screen.findByText(/doesn.t host spice fields/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Restore Defaults" })).toBeDisabled();
+    // The one button that must NOT be stuck disabled -- this is the escape hatch.
+    expect(screen.getByRole("button", { name: "Discard Changes" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard Changes" }));
+
+    // Clicking it clears the stale draft and doesn't throw/crash navigating
+    // into Overmap's own (empty) settings; the row settles back to disabled.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Discard Changes" })).toBeDisabled());
   });
 
   it("excludes Spice Fields from the plain UserGame tab's field list, so there is exactly one editable surface per field", async () => {
