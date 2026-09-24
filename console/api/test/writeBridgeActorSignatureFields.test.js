@@ -12,7 +12,7 @@ const SECRET = "test-actor-secret";
 const ACTOR = { userId: "111", username: "Alice", roleIds: ["mod"], guildId: "g1", channelId: "c1", interactionId: "i1", roleSnapshotAt: 1700000000 };
 
 test("WRITE_BRIDGE_SIGNED_ACTOR_FIELDS is its own independent set, not the shared array", () => {
-  assert.deepEqual(WRITE_BRIDGE_SIGNED_ACTOR_FIELDS, ["userId", "username", "roleIds", "guildId", "channelId", "roleSnapshotAt"]);
+  assert.deepEqual(WRITE_BRIDGE_SIGNED_ACTOR_FIELDS, ["userId", "username", "roleIds", "guildId", "channelId", "roleSnapshotAt", "action"]);
   assert.ok(!WRITE_BRIDGE_SIGNED_ACTOR_FIELDS.includes("interactionId"), "must not include interactionId -- nonce already binds the request");
 });
 
@@ -73,6 +73,48 @@ test("verifyActorSignature: a tampered roleSnapshotAt invalidates the write-brid
     }),
     (error) => error.code === "invalid_actor_signature"
   );
+});
+
+// [Layer 3 integration audit fix, CRITICAL] Before `action` was added to
+// WRITE_BRIDGE_SIGNED_ACTOR_FIELDS, write/preview and write/execute's
+// signature only bound the actor + route -- both routes are the SAME route
+// for every action, so a captured, legitimately-signed envelope could be
+// replayed with a completely different action and still verify. This test
+// signs a payload extended with one action (matching routes.js's own
+// readJsonWithActorSignature, which merges body.action into the signed
+// payload before verification) and proves swapping the action invalidates
+// the signature.
+test("verifyActorSignature: a signed write-bridge envelope for one action does not verify for a different action (closes the cross-action replay gap)", () => {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signedForWarn = { ...ACTOR, action: "player.warn" };
+  const { signature } = signActorPayload(signedForWarn, SECRET, timestamp, "/api/integrations/discord/write/execute", WRITE_BRIDGE_SIGNED_ACTOR_FIELDS);
+  const headers = { "x-dune-actor-signature": signature, "x-dune-actor-timestamp": String(timestamp) };
+
+  const replayedForStop = { ...ACTOR, action: "server.stop" };
+  assert.throws(
+    () => verifyActorSignature({
+      actorPayload: replayedForStop,
+      headers,
+      config: { discordActorSecret: SECRET },
+      route: "/api/integrations/discord/write/execute",
+      required: true,
+      fields: WRITE_BRIDGE_SIGNED_ACTOR_FIELDS
+    }),
+    (error) => error.code === "invalid_actor_signature"
+  );
+
+  // Sanity: the original, untampered envelope still verifies -- proves the
+  // failure above is specifically about the action mismatch, not some
+  // unrelated break.
+  const result = verifyActorSignature({
+    actorPayload: signedForWarn,
+    headers,
+    config: { discordActorSecret: SECRET },
+    route: "/api/integrations/discord/write/execute",
+    required: true,
+    fields: WRITE_BRIDGE_SIGNED_ACTOR_FIELDS
+  });
+  assert.equal(result.verified, true);
 });
 
 test("constantTimeHexEqual: exported, length-guarded before timingSafeEqual (never throws RangeError on mismatched length)", () => {

@@ -36,16 +36,29 @@ const TIMESTAMP_HEADER = "x-dune-actor-timestamp";
 const SIGNED_ACTOR_FIELDS = ["userId", "guildId", "channelId", "roleIds", "interactionId"];
 
 // Field set for the Discord write bridge's write/preview and write/execute
-// routes (docs/rw-architecture.md section 3.8, issue #215): adds `username`
-// (a real actor field) and `roleSnapshotAt` (when the bot re-derived
-// actor.roleIds from Discord -- closes the gap where "actor signature +
-// capability re-validated at both preview AND execute" only proves the same
-// functions ran twice, not that roleIds reflects the actor's CURRENT roles
-// rather than a value cached from the original interaction); deliberately
-// omits `interactionId` since the write bridge's own 60s nonce/expiry
-// already binds each request to one specific confirm-click, making a
-// separate per-interaction replay guard redundant here.
-export const WRITE_BRIDGE_SIGNED_ACTOR_FIELDS = ["userId", "username", "roleIds", "guildId", "channelId", "roleSnapshotAt"];
+// routes (issue #215): adds `username` (a real actor field) and
+// `roleSnapshotAt` (when the bot re-derived actor.roleIds from Discord --
+// closes the gap where "actor signature + capability re-validated at both
+// preview AND execute" only proves the same functions ran twice, not that
+// roleIds reflects the actor's CURRENT roles rather than a value cached
+// from the original interaction); deliberately omits `interactionId` since
+// the write bridge's own 60s nonce/expiry already binds each request to one
+// specific confirm-click, making a separate per-interaction replay guard
+// redundant here.
+//
+// [Layer 3 integration audit fix, CRITICAL] `action` was missing entirely.
+// write/preview and write/execute are the SAME route for every action --
+// without `action` in the signed payload, the route-binding this file's own
+// verifyActorSignature() provides cannot distinguish "this signed envelope
+// authorizes player.warn" from "this signed envelope authorizes
+// server.stop." A captured, legitimately-signed envelope from a real
+// moderator+ actor could be replayed with a different action/params within
+// the freshness window and still verify, since nothing about the signed
+// payload changed. The route's caller (routes.js's readJsonWithActorSignature)
+// merges body.action into the signed actor payload before verification --
+// `action` cannot be read from actorPayload itself, since it is a sibling
+// of `actor` in the request body, not one of its fields.
+export const WRITE_BRIDGE_SIGNED_ACTOR_FIELDS = ["userId", "username", "roleIds", "guildId", "channelId", "roleSnapshotAt", "action"];
 
 export function actorSignatureSecret(config = {}) {
   const direct = process.env.DUNE_DISCORD_ACTOR_SECRET || config.discordActorSecret || "";

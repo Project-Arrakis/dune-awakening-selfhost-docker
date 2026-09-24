@@ -37,9 +37,15 @@ function actor(roleIds, overrides = {}) {
   };
 }
 
-function signedHeaders(actorPayload, route) {
+// `action` (issue: signature must bind the specific action being requested,
+// not just the actor+route -- see actorSignature.js's WRITE_BRIDGE_SIGNED_ACTOR_FIELDS)
+// must match the real request body's `action` field exactly, or the real
+// route will reject with invalid_actor_signature -- mirroring exactly what
+// routes.js's readJsonWithActorSignature does server-side (merging body.action
+// into the signed payload before verification).
+function signedHeaders(actorPayload, route, action) {
   const timestamp = Math.floor(Date.now() / 1000);
-  const { signature } = signActorPayload(actorPayload, ACTOR_SECRET, timestamp, route, WRITE_BRIDGE_SIGNED_ACTOR_FIELDS);
+  const { signature } = signActorPayload({ ...actorPayload, action }, ACTOR_SECRET, timestamp, route, WRITE_BRIDGE_SIGNED_ACTOR_FIELDS);
   return { [ACTOR_SIGNATURE_HEADER]: signature, [ACTOR_TIMESTAMP_HEADER]: String(timestamp) };
 }
 
@@ -157,7 +163,7 @@ test("write/preview: writes disabled -> 403 writes_disabled, checked before acto
     const a = actor(["role-moderator"]);
     const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.warn") },
       body: JSON.stringify({ actor: a, action: "player.warn" })
     });
     assert.equal(response.status, 403);
@@ -171,7 +177,7 @@ test("write/preview: public tier (no role) -> 403 not_authorized, real end-to-en
     const a = actor([]);
     const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.warn") },
       body: JSON.stringify({ actor: a, action: "player.warn" })
     });
     assert.equal(response.status, 403);
@@ -185,7 +191,7 @@ test("write/preview: moderator attempting an owner-tier action -> 403 not_author
     const a = actor(["role-moderator"]);
     const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.give-item") },
       body: JSON.stringify({ actor: a, action: "player.give-item", params: { playerId: "Server#4242" } })
     });
     assert.equal(response.status, 403);
@@ -199,7 +205,7 @@ test("write/preview: moderator attempting a moderator-tier action succeeds -- po
     const a = actor(["role-moderator"]);
     const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.warn") },
       body: JSON.stringify({ actor: a, action: "player.warn" })
     });
     assert.equal(response.status, 200);
@@ -215,7 +221,7 @@ test("write/preview: owner attempting the same owner-tier action that rejected a
     const a = actor(["role-owner"]);
     const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.give-item") },
       body: JSON.stringify({ actor: a, action: "player.give-item", params: { playerId: "Server#4242" } })
     });
     assert.equal(response.status, 200);
@@ -237,7 +243,7 @@ test("write/preview: exceeding the per-actor pending-preview limit returns a dis
     for (let i = 0; i < 21; i++) {
       lastResponse = await fetch(`${base}${PREVIEW_ROUTE}`, {
         method: "POST",
-        headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE) },
+        headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.warn") },
         body: JSON.stringify({ actor: a, action: "player.warn" })
       });
     }
@@ -252,7 +258,7 @@ test("write/preview: path-traversal-shaped param is rejected with 400, never sil
     const a = actor(["role-admin"]);
     const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.kick") },
       body: JSON.stringify({ actor: a, action: "player.kick", params: { playerId: ".." } })
     });
     assert.equal(response.status, 400);
@@ -266,7 +272,7 @@ test("write/preview: unknown action -> 400 unknown_write_action, not a 500 or si
     const a = actor(["role-owner"]);
     const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.does-not-exist") },
       body: JSON.stringify({ actor: a, action: "player.does-not-exist" })
     });
     assert.equal(response.status, 400);
@@ -280,7 +286,7 @@ test("write/preview: unknown action -> 400 unknown_write_action, not a 500 or si
 async function preview(base, a, action, params) {
   const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
     method: "POST",
-    headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE) },
+    headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, action) },
     body: JSON.stringify({ actor: a, action, params })
   });
   assert.equal(response.status, 200, `preview failed: ${JSON.stringify(await response.clone().json())}`);
@@ -294,7 +300,7 @@ test("full round trip: preview -> execute reaches the real Hop-B boundary (503, 
 
     const response = await fetch(`${base}${EXECUTE_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE, "player.warn") },
       body: JSON.stringify({ actor: a, nonce, action: "player.warn" })
     });
     assert.equal(response.status, 503);
@@ -310,14 +316,14 @@ test("write/execute: nonce is single-use -- a second execute with the same nonce
 
     const first = await fetch(`${base}${EXECUTE_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE, "player.warn") },
       body: JSON.stringify({ actor: a, nonce, action: "player.warn" })
     });
     assert.equal(first.status, 503); // consumes the nonce even though no socket server is running in this test
 
     const second = await fetch(`${base}${EXECUTE_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE, "player.warn") },
       body: JSON.stringify({ actor: a, nonce, action: "player.warn" })
     });
     assert.equal(second.status, 410);
@@ -331,7 +337,7 @@ test("write/execute: unknown nonce -> 410, never a 500 or crash", async () => {
     const a = actor(["role-moderator"]);
     const response = await fetch(`${base}${EXECUTE_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE, "player.warn") },
       body: JSON.stringify({ actor: a, nonce: "not-a-real-nonce", action: "player.warn" })
     });
     assert.equal(response.status, 410);
@@ -346,7 +352,7 @@ test("write/execute: a different actor presenting someone else's nonce is reject
     const attacker = actor(["role-owner"], { userId: "attacker-user" });
     const response = await fetch(`${base}${EXECUTE_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(attacker, EXECUTE_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(attacker, EXECUTE_ROUTE, "player.give-item") },
       body: JSON.stringify({ actor: attacker, nonce, action: "player.give-item" })
     });
     assert.equal(response.status, 403);
@@ -362,7 +368,7 @@ test("write/execute: action mismatch between preview and execute is rejected wit
 
     const response = await fetch(`${base}${EXECUTE_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE, "player.kick") },
       body: JSON.stringify({ actor: a, nonce, action: "player.kick", params: { playerId: "Server#4242" } })
     });
     assert.equal(response.status, 409);
@@ -379,7 +385,7 @@ test("write/execute: stale roleSnapshotAt (older than the freshness window) is r
     const stale = actor(["role-moderator"], { roleSnapshotAt: Math.floor(Date.now() / 1000) - 9999 });
     const response = await fetch(`${base}${EXECUTE_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(stale, EXECUTE_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(stale, EXECUTE_ROUTE, "player.warn") },
       body: JSON.stringify({ actor: stale, nonce, action: "player.warn" })
     });
     assert.equal(response.status, 403);
@@ -396,7 +402,7 @@ test("write/execute: malformed roleSnapshotAt (NaN-shaped) is rejected, never si
     const malformed = actor(["role-moderator"], { roleSnapshotAt: "not-a-number" });
     const response = await fetch(`${base}${EXECUTE_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(malformed, EXECUTE_ROUTE) },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(malformed, EXECUTE_ROUTE, "player.warn") },
       body: JSON.stringify({ actor: malformed, nonce, action: "player.warn" })
     });
     assert.equal(response.status, 403);
@@ -434,7 +440,7 @@ function forceDualConfirmation(action = DUAL_CONFIRM_TEST_ACTION) {
 async function executeAs(base, a, nonce, action) {
   const response = await fetch(`${base}${EXECUTE_ROUTE}`, {
     method: "POST",
-    headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE) },
+    headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE, action) },
     body: JSON.stringify({ actor: a, nonce, action })
   });
   return { status: response.status, body: await response.json() };
