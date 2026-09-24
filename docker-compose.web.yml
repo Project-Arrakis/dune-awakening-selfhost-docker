@@ -92,11 +92,23 @@ services:
       ADMIN_RESTORE_PREVIEW_TTL_MS: "${ADMIN_RESTORE_PREVIEW_TTL_MS:-900000}"
       DUNE_DISCORD_ADAPTER_ENABLED: "${DUNE_DISCORD_ADAPTER_ENABLED:-false}"
       DUNE_DISCORD_ADAPTER_TOKEN: "${DUNE_DISCORD_ADAPTER_TOKEN:-}"
+      DUNE_DISCORD_ADAPTER_TOKEN_FILE: "${DUNE_DISCORD_ADAPTER_TOKEN_FILE:-}"
       DUNE_BOT_API_TOKEN_FILE: "${DUNE_BOT_API_TOKEN_FILE:-}"
       DISCORD_OBSERVER_ROLE_IDS: "${DISCORD_OBSERVER_ROLE_IDS:-}"
+      DISCORD_PLAYER_ROLE_IDS: "${DISCORD_PLAYER_ROLE_IDS:-}"
       DISCORD_MODERATOR_ROLE_IDS: "${DISCORD_MODERATOR_ROLE_IDS:-}"
       DISCORD_ADMIN_ROLE_IDS: "${DISCORD_ADMIN_ROLE_IDS:-}"
       DISCORD_OWNER_ROLE_IDS: "${DISCORD_OWNER_ROLE_IDS:-}"
+      # Write bridge (issue #215): without these three, DUNE_DISCORD_WRITES_ENABLED=1
+      # and a configured DUNE_DISCORD_ACTOR_SECRET in .env have zero effect --
+      # this file has no `env_file:` directive (see the note above), so a var
+      # missing from this explicit map never reaches the container at all,
+      # regardless of what an operator sets in .env. Found via live UAT: the
+      # write bridge was completely unreachable through this deployment path
+      # until these were added, on both this branch and fork main.
+      DUNE_DISCORD_WRITES_ENABLED: "${DUNE_DISCORD_WRITES_ENABLED:-}"
+      DUNE_DISCORD_ACTOR_SECRET: "${DUNE_DISCORD_ACTOR_SECRET:-}"
+      DUNE_DISCORD_ACTOR_SECRET_FILE: "${DUNE_DISCORD_ACTOR_SECRET_FILE:-}"
       DUNE_PUBLIC_DIRECTORY_URL: "${DUNE_PUBLIC_DIRECTORY_URL:-}"
       DUNE_PUBLIC_DIRECTORY_CLAIM_URL: "${DUNE_PUBLIC_DIRECTORY_CLAIM_URL:-}"
     volumes:
