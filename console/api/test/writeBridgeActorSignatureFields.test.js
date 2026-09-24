@@ -123,3 +123,59 @@ test("constantTimeHexEqual: exported, length-guarded before timingSafeEqual (nev
   assert.equal(constantTimeHexEqual("", ""), false);
   assert.doesNotThrow(() => constantTimeHexEqual("a", "abcdef"));
 });
+
+// [Layer 3 integration audit fix, MEDIUM, issue #1052] Before this fix, "0"
+// was silently reinterpreted as "use the 30s default" purely by accident of
+// `Number("0") || 30`'s falsy-OR coercion, indistinguishable from any other
+// invalid input landing on the default -- not a deliberate bounds decision.
+// A true "zero tolerance" skew isn't actually practical to honor (ordinary
+// network/clock skew would then reject every legitimate request), so this
+// fix's explicit minimum (5s) deliberately treats "0" the same as any other
+// out-of-range value: falls back to the real 30s default, now via clear,
+// documented MIN/MAX bounds rather than an accidental coercion quirk.
+test("verifyActorSignature: DUNE_DISCORD_ACTOR_SIGNATURE_MAX_SKEW_SECONDS=\"0\" is below the minimum and falls back to the 30s default (not honored as literal zero tolerance)", () => {
+  const OLD = process.env.DUNE_DISCORD_ACTOR_SIGNATURE_MAX_SKEW_SECONDS;
+  process.env.DUNE_DISCORD_ACTOR_SIGNATURE_MAX_SKEW_SECONDS = "0";
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const timestamp = now - 10; // within the true 30s default's acceptance window
+    const { signature } = signActorPayload(ACTOR, SECRET, timestamp, "/api/integrations/discord/write/execute", WRITE_BRIDGE_SIGNED_ACTOR_FIELDS);
+    const headers = { "x-dune-actor-signature": signature, "x-dune-actor-timestamp": String(timestamp) };
+    assert.doesNotThrow(() => verifyActorSignature({
+      actorPayload: ACTOR,
+      headers,
+      config: { discordActorSecret: SECRET },
+      route: "/api/integrations/discord/write/execute",
+      required: true,
+      now,
+      fields: WRITE_BRIDGE_SIGNED_ACTOR_FIELDS
+    }));
+  } finally {
+    process.env.DUNE_DISCORD_ACTOR_SIGNATURE_MAX_SKEW_SECONDS = OLD;
+  }
+});
+
+test("verifyActorSignature: an out-of-range huge DUNE_DISCORD_ACTOR_SIGNATURE_MAX_SKEW_SECONDS also falls back to the 30s default, never accepted unbounded", () => {
+  const OLD = process.env.DUNE_DISCORD_ACTOR_SIGNATURE_MAX_SKEW_SECONDS;
+  process.env.DUNE_DISCORD_ACTOR_SIGNATURE_MAX_SKEW_SECONDS = "999999999";
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const timestamp = now - 90; // outside the true 30s default's acceptance window
+    const { signature } = signActorPayload(ACTOR, SECRET, timestamp, "/api/integrations/discord/write/execute", WRITE_BRIDGE_SIGNED_ACTOR_FIELDS);
+    const headers = { "x-dune-actor-signature": signature, "x-dune-actor-timestamp": String(timestamp) };
+    assert.throws(
+      () => verifyActorSignature({
+        actorPayload: ACTOR,
+        headers,
+        config: { discordActorSecret: SECRET },
+        route: "/api/integrations/discord/write/execute",
+        required: true,
+        now,
+        fields: WRITE_BRIDGE_SIGNED_ACTOR_FIELDS
+      }),
+      (error) => error.code === "stale_actor_signature"
+    );
+  } finally {
+    process.env.DUNE_DISCORD_ACTOR_SIGNATURE_MAX_SKEW_SECONDS = OLD;
+  }
+});

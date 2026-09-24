@@ -3064,6 +3064,25 @@ async function task(req, res, type, operation, payload, options = {}) {
   } catch (error) {
     return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
   }
+  // [Layer 3 integration audit fix, MEDIUM, issue #1056] task() is the one
+  // shared dispatch point behind /api/server/stop|start|restart|restart-service,
+  // /api/updates/*, /api/backups/*, and every other applyMutationRateLimit-free
+  // route above that calls it -- none of them ever throttled, unlike the 40+
+  // other mutation routes in this file that already call
+  // applyMutationRateLimit individually. The Discord write bridge's Hop B
+  // reuses this exact function unchanged (docs/rw-architecture.md 3.1's "no
+  // parallel implementation" principle), so a write-bridge-driven
+  // server.stop/restart/start loop had no cooldown beyond the nonce store's
+  // unrelated 20-pending-preview cap. Fixed at this single choke point,
+  // scoped by `type`/`operation`, rather than duplicated per call site or
+  // reimplemented as a separate write-bridge-only limiter: req.authSession is
+  // already correctly populated for a write-bridge request
+  // (resolveWriteBridgePrincipal sets id:"discord:<userId>", issue #1040), so
+  // this shares one real rate-limit budget per actor+operation across both
+  // the web console and the write bridge, rather than letting an attacker
+  // double their effective rate by interleaving both paths against two
+  // independent counters.
+  if (!applyMutationRateLimit(req, res, `task:${type}:${operation}`)) return;
   if (await maybeQueueRestart(req, res, type, operation, payload)) return;
   // Only `payload` is audited. Secrets travel in options.env, which is never
   // written to the audit log nor stored on the task -- keep it that way.

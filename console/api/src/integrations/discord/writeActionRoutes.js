@@ -12,7 +12,21 @@ import { WRITE_ACTION_MIN_TIER } from "./writeActionMinTier.js";
 // can never shift which real route is requested after URL normalization
 // (docs/rw-architecture.md 3.5, round-2 Security finding #740). encodeURIComponent
 // alone is not sufficient shape validation: it escapes "/" but not ".".
-const PLAYER_ID_PATTERN = /^[A-Za-z0-9#]{1,128}$/;
+//
+// [Layer 3 integration audit fix, LOW, issue #1051] Widened to also allow
+// "_" and ":" (real Steam-style/Funcom id characters this pattern was
+// otherwise silently rejecting -- the identical action would be accepted via
+// the admin CLI path in runner.js but rejected here) -- but this pattern
+// deliberately does NOT adopt runner.js's own validatePlayerId as-is
+// (`/^[A-Za-z0-9_:#.-]{1,128}$/`, which also allows "." and a bare "*"
+// wildcard): runner.js's validated value becomes a CLI argument passed to a
+// subprocess, where "." has no special meaning at all, while this
+// function's value becomes a URL PATH SEGMENT via encodeURIComponent()
+// above -- exactly the context #740's own "." exclusion protects. Blindly
+// matching runner.js's pattern here would silently reintroduce that
+// CRITICAL finding. "-" is safe to add in either context (never
+// traversal-meaningful on its own).
+const PLAYER_ID_PATTERN = /^[A-Za-z0-9#_:-]{1,128}$/;
 const NUMERIC_ID_PATTERN = /^[1-9][0-9]*$/;
 const GUILD_ID_PATTERN = /^[A-Za-z0-9]{1,128}$/;
 
@@ -97,7 +111,16 @@ const RAW_WRITE_ACTION_ROUTES = {
   "base.refill-generators": { method: "POST", path: (p) => `/api/bases/${encodeURIComponent(validateBaseId(p.baseId))}/refill-generators`, policyAction: "bases:mutate", auditAction: "bases.refill-generators" },
   "base.refill-water": { method: "POST", path: (p) => `/api/bases/${encodeURIComponent(validateBaseId(p.baseId))}/refill-water`, policyAction: "bases:mutate", auditAction: "bases.refill-water" },
   "server.restart": { method: "POST", path: () => "/api/server/restart", policyAction: "server:restart", auditAction: null },
-  "server.stop": { method: "POST", path: () => "/api/server/stop", policyAction: "server:stop", auditAction: "task.stop" },
+  // confirmPhrase added (issue #1048): server.stop is this workstream's
+  // single most destructive write-bridge action -- stopping the live game
+  // server outright -- and previously had NO confirmPhrase at all, unlike
+  // every other comparably risky action (player.ban, map.spawn,
+  // carepackage.*). This is the same UX-safeguard-not-independent-security-
+  // boundary pattern documented above -- the real target handler (server.js's
+  // task()) does not itself check this phrase; write/execute's own dispatch
+  // relies on the bot's preview/confirm UX reading this field from
+  // write/preview's response before it ever calls write/execute.
+  "server.stop": { method: "POST", path: () => "/api/server/stop", confirmPhrase: "STOP SERVER", policyAction: "server:stop", auditAction: "task.stop" },
   "server.start": { method: "POST", path: () => "/api/server/start", policyAction: "server:start", auditAction: "task.start" },
   "server.restart-service": { method: "POST", path: () => "/api/server/restart-service", policyAction: "server:restart-service", auditAction: null },
   "map.spawn": { method: "POST", path: () => "/api/maps/spawn", confirmPhrase: "SPAWN MAP", policyAction: "maps:spawn", auditAction: "task.mapsSpawn" },
