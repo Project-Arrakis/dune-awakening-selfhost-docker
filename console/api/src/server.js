@@ -42,7 +42,7 @@ import { createDeathPoller } from "./deathPoller.js";
 import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
-import { handleDiscordAdapterRoute, isDiscordAdapterRoute, readDiscordBotApiToken } from "./integrations/discord/routes.js";
+import { handleDiscordAdapterRoute, isDiscordAdapterRoute, readDiscordBotApiToken, WRITE_BRIDGE_SOCKET_FILENAME } from "./integrations/discord/routes.js";
 import { createPendingStateStore, exchangeDiscordAuthCode, fetchDiscordIdentity, createOAuthTierResolver, buildAuthorizeUrl, oauthStateCookie, clearOAuthStateCookie, constantTimeStringEqual } from "./integrations/discord/oauth.js";
 import { fetchOwnedDiscordGuilds, createPendingRegistrationStore, hostedBotOAuthStateCookie, clearHostedBotOAuthStateCookie, hostedBotRegistrationHandleCookie, clearHostedBotRegistrationHandleCookie, hostedBotOAuthReturnPage } from "./integrations/discord/hostedBotOAuth.js";
 import { buildAutoInviteAuthorizeUrl, createAutoInvitePendingStateStore, autoInviteStateCookie, clearAutoInviteStateCookie, autoInviteCompletePage, autoInviteConfirmationIdCookie, clearAutoInviteConfirmationIdCookie } from "./integrations/discord/autoInvite.js";
@@ -50,7 +50,13 @@ import { fetchWithTimeoutAndRetry } from "./services/httpWithRetry.js";
 import { createHandoff } from "./integrations/discord/handoff.js";
 import { actionForRoute, ROUTE_ACTIONS, NAMESPACES } from "./actions.js";
 import { evaluate, loadPolicies, getAllPolicies, setPolicies, resolveAllowedActions, allKnownActions } from "./policy.js";
-import { discordAdapterEnabled } from "./integrations/discord/adapter.js";
+import { discordAdapterEnabled, discordWritesEnabled } from "./integrations/discord/adapter.js";
+// [Layer 3 integration audit fix, LOW, issue #1043] The 5 header constants
+// and getWriteBridgeToken previously imported here became dead once
+// resolveWriteBridgePrincipal absorbed that logic -- removed.
+import { resolveWriteBridgePrincipal } from "./integrations/discord/writeBridgeCredential.js";
+import { startWriteBridgeSocketServer } from "./integrations/discord/writeBridgeSocketServer.js";
+import { selfCheckWriteActionRoutes, checkConfirmPhrasesAgainstRealHandlers } from "./integrations/discord/writeActionRoutes.js";
 import { initializeDiscordAdapterSchema } from "./integrations/discord/schema.js";
 import { customizationGrantOutcome, liveItemGrantOk, liveItemGrantPublished, liveItemGrantWarning, summarizeCustomizationGrantResults } from "./grantResults.js";
 import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, recordMessageOfTheDayScanFailure, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
@@ -516,8 +522,52 @@ async function resolvePlayerScopedIds(session, db) {
   }
 }
 
-createServer(async (req, res) => {
-  if (config.allowedIps.length) {
+// requestHandler is shared, unmodified, between the main TCP listener and
+// the Discord write bridge's Unix-socket listener (issue #215, docs/rw-
+// architecture.md section 3.1 -- "no parallel implementation"). `opts`
+// declares a default of {} for defense-in-depth (docs/rw-architecture.md
+// 3.2, round-6 correction): even a future refactor that accidentally drops
+// the explicit third argument fails safe (opts.viaWriteBridgeSocket reads
+// as undefined/falsy) rather than throwing and hanging every request --
+// this exact bug, un-guarded, was CRITICAL #756 in this design's own
+// history. The TCP listener below must NEVER omit this argument regardless.
+async function requestHandler(req, res, opts = {}) {
+  // [Layer 3 integration audit fix, HIGH, issue #1036] This parse used to
+  // run with no try/catch of its own, above/outside the function's main
+  // try/catch below. A request-target Node's raw HTTP parser accepts but
+  // WHATWG URL parsing rejects (e.g. an absolute-form proxy-style target
+  // with an out-of-range port) threw here before reaching that try/catch --
+  // caught only by the createServer callback's own unhandledRejection
+  // logging (see below), which never writes a response, silently hanging
+  // the connection instead of a graceful 400.
+  let path;
+  try {
+    path = new URL(req.url || "/", "http://localhost").pathname;
+  } catch {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "Malformed request URL." }));
+    return;
+  }
+
+  // Write-bridge credential resolution (docs/rw-architecture.md 3.2/3.4,
+  // round-4/5/6 corrections, CRITICAL #750/#757/#763's fix chain): this
+  // must run BEFORE the config.allowedIps gate, not after it -- the real
+  // ADMIN_ALLOWED_IPS check below runs unconditionally, before handleApi is
+  // ever reached, and a Unix-socket connection's remoteAddress is always
+  // undefined (normalizing to ""), which can never match a configured
+  // allowlist entry. Without this exemption, every write-bridge request
+  // would be unconditionally 403'd for any operator running the documented,
+  // code-enforced ADMIN_ALLOWED_IPS compensating control -- exactly the
+  // security-conscious operator population this feature must not break.
+  // Resolving here, once, and threading the result through rather than
+  // re-checking inside handleApi also means this credential is never
+  // consulted a second time with a subtly different check (the "two copies
+  // silently diverge" risk this design doc repeatedly flags elsewhere).
+  const writeBridgePrincipal = opts.viaWriteBridgeSocket
+    ? resolveWriteBridgePrincipal({ headers: req.headers, method: req.method, path, viaWriteBridgeSocket: true })
+    : null;
+
+  if (!writeBridgePrincipal && config.allowedIps.length) {
     const remoteIp = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
     if (!config.allowedIps.includes(remoteIp)) {
       res.writeHead(403, { "content-type": "application/json" });
@@ -527,7 +577,8 @@ createServer(async (req, res) => {
   }
   try {
     if (req.url?.startsWith("/api/")) {
-      await handleApi(req, res);
+      if (writeBridgePrincipal) req._writeBridgePrincipal = writeBridgePrincipal;
+      await handleApi(req, res, path);
       return;
     }
     if (req.url?.startsWith("/atrium/")) {
@@ -552,6 +603,23 @@ createServer(async (req, res) => {
     const payload = apiErrorPayload(error);
     json(res, payload.status, payload.body);
   }
+}
+
+createServer((req, res) => {
+  // [Layer 3 integration audit fix, HIGH, issue #1036] Defense in depth
+  // alongside requestHandler's own now-complete try/catch coverage above:
+  // if a future change reintroduces a code path that throws/rejects before
+  // requestHandler's try/catch is reached, this .catch() is the last line
+  // of defense against a silently hung connection with no response ever
+  // written -- it degrades to a generic 500 rather than leaving the client
+  // waiting forever.
+  Promise.resolve(requestHandler(req, res, { viaWriteBridgeSocket: false })).catch((error) => {
+    console.error(`Unhandled requestHandler error: ${redact(error?.message || "Unexpected error.")}`);
+    if (!res.headersSent) {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "Unexpected error." }));
+    }
+  });
 }).listen(config.port, config.host, () => {
   console.log(`${config.appName} API listening on http://${config.host}:${config.port}`);
   if (config.host === "0.0.0.0") {
@@ -582,6 +650,59 @@ createServer(async (req, res) => {
     initializeDiscordAdapterSchema(db).catch((error) => {
       console.warn(`Discord adapter schema initialization failed: ${redact(error?.message || "Unexpected error.")}`);
     });
+  }
+  // Hop B's internal-loopback listener (issue #215, docs/rw-architecture.md
+  // section 3.1). Only started when the write bridge is actually enabled --
+  // an operator who hasn't opted into Discord-driven mutations gets no new
+  // listening socket at all. startWriteBridgeSocketServer() itself fails
+  // safe (root-UID refusal, live-listener collision) rather than throwing,
+  // so a startup issue here degrades write/execute to a 503, never crashes
+  // the main console.
+  if (discordWritesEnabled(config)) {
+    // Boot-time route-table consistency check (issue #1020): catches a
+    // WRITE_ACTION_ROUTES entry whose (method, path) no longer resolves to a
+    // real Core route, or whose declared policyAction has drifted from
+    // actions.js's real one -- exactly the class of bug issue #1012 found by
+    // hand. Deliberately fails safe: a problem here disables the whole
+    // subsystem (never starts the socket) rather than crashing Core's boot,
+    // matching selfCheckWriteActionRoutes()'s own documented contract.
+    const writeActionRouteProblems = selfCheckWriteActionRoutes();
+    if (writeActionRouteProblems.length) {
+      console.warn("Discord write bridge disabled: WRITE_ACTION_ROUTES failed its startup consistency check:");
+      for (const problem of writeActionRouteProblems) console.warn(`  - ${problem}`);
+    } else {
+      checkConfirmPhrasesAgainstRealHandlers().then((confirmPhraseProblems) => {
+        if (confirmPhraseProblems.length) {
+          console.warn("Discord write bridge disabled: a confirmPhrase check against a real target handler failed:");
+          for (const problem of confirmPhraseProblems) console.warn(`  - ${problem}`);
+          return;
+        }
+        const writeBridgeSocketPath = join(config.generatedDir, WRITE_BRIDGE_SOCKET_FILENAME);
+        startWriteBridgeSocketServer({
+          socketPath: writeBridgeSocketPath,
+          // Forwards whatever opts writeBridgeSocketServer.js's own createServer
+          // callback passes (issue #1024) -- that call site is the single
+          // source of truth for "this request came from the write-bridge
+          // socket," not a second, independently-hardcoded copy here. Before
+          // this fix, this closure ignored its own third argument and
+          // hardcoded { viaWriteBridgeSocket: true } itself, so
+          // writeBridgeSocketServer.js's own value was silently discarded --
+          // illusory defense-in-depth, not a live bug (both agreed), but a
+          // future edit to one side with no effect on the other.
+          requestListener: (req, res, opts) => requestHandler(req, res, opts)
+        }).then(({ disabled, reason }) => {
+          if (disabled) {
+            console.warn(`Discord write bridge socket did not start (${reason}). Discord write commands will fail closed with a 503.`);
+          } else {
+            console.log(`Discord write bridge listening on ${writeBridgeSocketPath}`);
+          }
+        }).catch((error) => {
+          console.warn(`Discord write bridge socket startup failed: ${redact(error?.message || "Unexpected error.")}`);
+        });
+      }).catch((error) => {
+        console.warn(`Discord write bridge disabled: confirmPhrase self-check itself failed unexpectedly: ${redact(error?.message || "Unexpected error.")}`);
+      });
+    }
   }
   ensureExchangeHistory(db).catch((error) => {
     console.warn(`Market transaction recorder initialization failed: ${redact(error?.message || "Unexpected error.")}`);
@@ -869,9 +990,16 @@ function requireAction(req, res, action) {
   return true;
 }
 
-async function handleApi(req, res) {
+async function handleApi(req, res, path) {
+  // `url` (for its .searchParams -- query-string reads throughout this
+  // function) is re-derived here from the same immutable req.url
+  // requestHandler already parsed for `path`. This is a second, cheap parse
+  // of the same input, not a divergence risk: `path` (the value requestHandler
+  // computed and the write-bridge credential check's exact-match scoping
+  // relies on) is passed in as a parameter and never recomputed here, so the
+  // one value that actually needs "reuse the same canonicalized value, never
+  // re-parse" (docs/rw-architecture.md 3.2's round-3 correction) still is.
   const url = new URL(req.url, "http://localhost");
-  const path = url.pathname;
 
   if (path === "/api/health") return json(res, 200, { ok: true, app: config.appName });
   if (path === "/api/auth/state") {
@@ -1220,7 +1348,16 @@ async function handleApi(req, res) {
     }
   }
 
-  const session = bearer?.session || auth.requireAuth(req, res);
+  // req._writeBridgePrincipal (issue #215): a third short-circuit option,
+  // matching the exact pattern `bearer?.session` already establishes for
+  // "a non-cookie principal skips auth.requireAuth() (and its CSRF check)
+  // entirely" -- reusing this already-proven integration pattern instead of
+  // introducing a second, structurally different mechanism for the same
+  // class of decision. Already fully resolved (token + exact-path-match
+  // verified) by requestHandler before handleApi was ever called; never
+  // re-verified here, per this design's own "never re-verify a credential a
+  // second time with a subtly different check" principle.
+  const session = bearer?.session || req._writeBridgePrincipal || auth.requireAuth(req, res);
   if (!session) return;
   req.authSession = session;
   // Stashed for requireAction(), the second gate a body-dependent route runs
@@ -7940,6 +8077,19 @@ async function handleOAuthCallback(req, res) {
 
 function applyMutationRateLimit(req, res, scope) {
   const sessionId = req.authSession?.id || "anonymous";
+  // [Layer 3 integration audit fix, MEDIUM, issue #1040] For a request that
+  // arrived over the Discord write bridge's Unix-domain-socket listener
+  // (Hop B reuses these exact same mutation route handlers unchanged),
+  // req.socket.remoteAddress is always undefined -- there is no real
+  // network peer to report an IP for. This deliberately, structurally
+  // collapses the IP dimension to the constant "unknown" for every
+  // write-bridge-originated mutation; there is no meaningful substitute
+  // value to use instead (the write-bridge credential is one shared,
+  // process-lifetime token, not something that varies per request). Per-
+  // actor isolation for this principal type relies entirely on sessionId
+  // (resolveWriteBridgePrincipal sets id:"discord:<userId>", unique per
+  // Discord actor) -- documented here explicitly so this isn't mistaken
+  // for an oversight if it's ever investigated.
   const remoteIp = (req.socket?.remoteAddress || "unknown").replace(/^::ffff:/, "");
   const key = `${scope}:${sessionId}:${remoteIp}`;
   const limit = mutationRateLimiter.check(key);

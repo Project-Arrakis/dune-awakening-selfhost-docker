@@ -209,3 +209,28 @@ CVE-2026-78410  # util-linux family -- restricted bind mounts do not pin the sou
 # library pulled in transitively, never an active daemon. No Debian fix
 # available at triage time regardless.
 CVE-2026-16742  # libsystemd0 -- systemd-homed privesc; systemd-homed never runs in this container
+
+# Added 2026-09-23 (found on PR #1026's write-bridge CI run). Per this
+# file's policy a version bump was checked first: node:24-trixie-slim is a
+# floating tag last pushed 2026-09-19 (confirmed via the Docker Hub tags
+# API), so this build was already pulling the current image -- no newer
+# base-image tag exists to bump to. Checked Debian's security tracker
+# directly (security-tracker.debian.org/tracker/CVE-2026-93990): trixie
+# (both plain and security) is still listed "vulnerable" at the exact
+# installed version, 2.8.3-1~deb13u1; only sid/unstable has the fix
+# (2.8.4-2, expat upstream R_2_8_5). No Debian trixie fix is available at
+# triage time -- an `apt-get --only-upgrade` (the libpcre2-8-0 pattern
+# above) would not help here since the fixed package simply isn't in
+# trixie's repos yet.
+#
+# Exposure is nil: this is Expat's UTF-16 low/high-surrogate validation gap
+# (XML injection via malformed UTF-16), reached through libexpat1 ->
+# python3's built-in pyexpat extension. python3 is installed in this image
+# for runtime-env.sh/runner.js's own script spawns (see the Dockerfile's
+# own comment), all of which are pure-stdlib scripts under
+# runtime/scripts/*.py -- confirmed via `grep -rl "import xml\|ElementTree
+# \|expat\|sax"` across runtime/scripts/*.py and console/api/src: zero
+# matches. No code path in this image ever parses XML, let alone
+# attacker-influenced UTF-16 XML. Re-check on the next base-image bump or
+# apt index refresh that might carry a trixie-security fix.
+CVE-2026-93990  # libexpat1 -- XML injection via malformed UTF-16 surrogate pairs; unreachable, nothing here parses XML

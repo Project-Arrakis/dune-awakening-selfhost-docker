@@ -105,6 +105,8 @@ test("reports adapter health with isolated link-state writes", async () => {
     "/api/integrations/discord/status",
     "/api/integrations/discord/version",
     "/api/integrations/discord/world/atlas",
+    "/api/integrations/discord/write/execute",
+    "/api/integrations/discord/write/preview",
     "/api/integrations/discord/world/coriolis"
   ].sort());
   // ops/activity, ops/combat, ops/resources, ops/economy, ops/inventory,
@@ -249,6 +251,8 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/status",
     "/api/integrations/discord/version",
     "/api/integrations/discord/world/atlas",
+    "/api/integrations/discord/write/execute",
+    "/api/integrations/discord/write/preview",
     "/api/integrations/discord/world/coriolis"
   ].sort());
   // guild-character-grants/* (issue #696) is a deliberate, narrow
@@ -270,8 +274,21 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/guild-character-grants/disable",
     "/api/integrations/discord/guild-character-grants/default"
   ]);
+  // write/preview, write/execute (issue #215) are a second, deliberate
+  // exception -- unlike guild-character-grants, these genuinely ARE the
+  // write bridge's own destructive-action entry points; the name is
+  // accurate, not accidental. Their real security is enforced by the
+  // actor-signature + capability + per-action-tier + nonce stack
+  // (docs/rw-architecture.md sections 3.2/3.3a/3.8), never by keeping the
+  // route name innocuous -- allowlisted here for the same reason
+  // guild-character-grants is: a conscious, reviewed exception, not a
+  // silent bypass of what this lint exists to catch.
+  const WRITE_BRIDGE_ALLOWLIST = new Set([
+    "/api/integrations/discord/write/preview",
+    "/api/integrations/discord/write/execute"
+  ]);
   for (const route of routes) {
-    if (GUILD_CHARACTER_GRANTS_ALLOWLIST.has(route)) continue;
+    if (GUILD_CHARACTER_GRANTS_ALLOWLIST.has(route) || WRITE_BRIDGE_ALLOWLIST.has(route)) continue;
     assert.doesNotMatch(route, /write|execute|delete|restore|kick|grant|teleport|reset|admin/i);
   }
 });

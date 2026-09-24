@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { readPlayerAnnouncements } from "../../services/playerAnnouncements.js";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { audit } from "../../audit.js";
 import { parseBackupListRows } from "../../statusParsers.js";
 import {
@@ -55,6 +56,19 @@ import { cheaterTrackingProvider } from "./trustVettingProvider.js";
 import { buildDuneArgs, runDockerLogs, runDune, validateServiceName } from "../../runner.js";
 import { sanitizeDiscordValue } from "./sanitize.js";
 import { initializeDiscordAdapterSchema } from "./schema.js";
+import { WRITE_BRIDGE_SIGNED_ACTOR_FIELDS } from "./actorSignature.js";
+import { meetsMinTier } from "./writeActionMinTier.js";
+import { resolveWriteActionRoute } from "./writeActionRoutes.js";
+import { getWriteNonceStore } from "./writeBridgeState.js";
+import { callWriteBridgeInternalRoute } from "./writeBridgeInternalClient.js";
+
+export const WRITE_BRIDGE_SOCKET_FILENAME = "discord-write-bridge.sock";
+
+// Issue #1019: how long a dual-confirmation action's nonce stays valid after
+// its FIRST confirmation, waiting for a second, distinct admin -- longer
+// than the general single-confirmation TTL (60-90s) since coordinating a
+// second human is slower than one person clicking a button.
+const DUAL_CONFIRMATION_EXTENDED_TTL_SECONDS = 300;
 
 const INFRA_OPERATIONS = Object.freeze({
   SERVERS: { operation: "servers", timeoutMs: 15000, capability: DISCORD_CAPABILITIES.SERVICES_READ },
@@ -173,10 +187,18 @@ export async function handleDiscordAdapterRoute({
   // both repos -- tracked, not done here); until then, signed deployments
   // fall back to the pre-existing DISCORD_OWNER_ROLE_IDS role mapping,
   // exactly as they did before this PR.
-  async function readJsonWithActorSignature(request, { requireActorSignature = false } = {}) {
+  // [Layer 3 integration audit fix, CRITICAL] WRITE_BRIDGE_SIGNED_ACTOR_FIELDS
+  // includes "action" specifically so the write bridge's signature binds the
+  // actor to the SPECIFIC action being requested, not just the route (both
+  // write/preview and write/execute are the same one route for every
+  // action). body.action must be merged into the signed payload here,
+  // before verification, since it lives alongside `actor` in the body, not
+  // inside it.
+  async function readJsonWithActorSignature(request, { requireActorSignature = false, fields } = {}) {
     const body = await readJson(request);
     try {
-      verifyActorSignature({ actorPayload: body?.actor, headers: request.headers, config, route: path, required: requireActorSignature });
+      const actorPayload = fields?.includes("action") ? { ...body?.actor, action: body?.action } : body?.actor;
+      verifyActorSignature({ actorPayload, headers: request.headers, config, route: path, required: requireActorSignature, ...(fields ? { fields } : {}) });
     } catch (error) {
       // When a secret is configured: always throw (even for read routes).
       // When no secret: only throw for mutation routes (requireActorSignature).
@@ -707,11 +729,229 @@ export async function handleDiscordAdapterRoute({
       return json(res, 200, { ok: true, maps: output.split(/\r?\n/).filter(Boolean), output });
     }
 
+    if (path === DISCORD_ADAPTER_ROUTES.WRITE_PREVIEW && req.method === "POST") {
+      return await writePreviewRoute({ req, res, json, readJsonWithActorSignature, config });
+    }
+
+    if (path === DISCORD_ADAPTER_ROUTES.WRITE_EXECUTE && req.method === "POST") {
+      return await writeExecuteRoute({ req, res, json, readJsonWithActorSignature, config });
+    }
+
     throw policyError("not_found", "Discord adapter route not found.", 404);
   } catch (error) {
     const response = discordAdapterErrorResponse(error);
     return json(res, response.statusCode, response.body);
   }
+}
+
+// write/preview: validates actor + capability + per-action tier, mints a
+// single-use nonce binding this specific (actor, action, params), and
+// returns it plus a minimal preview. Never mutates anything -- safe to call
+// repeatedly (docs/rw-architecture.md section 3.5's "cheap to call
+// repeatedly" framing, section 3.8's Eviction policy note).
+async function writePreviewRoute({ req, res, json, readJsonWithActorSignature, config }) {
+  if (!discordWritesEnabled(config)) throw policyError("writes_disabled", "Write operations are not enabled.", 403);
+  const body = await readJsonWithActorSignature(req, { requireActorSignature: true, fields: WRITE_BRIDGE_SIGNED_ACTOR_FIELDS });
+  const actor = validateDiscordActor(body.actor);
+  const mapping = discordRoleMappingFromEnv();
+  requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.WRITE_BRIDGE_ACCESS);
+
+  const action = String(body.action || "");
+  let resolved;
+  try {
+    resolved = resolveWriteActionRoute(action, body.params);
+  } catch (error) {
+    throw policyError("invalid_parameters", error.message, 400);
+  }
+  if (!resolved) throw policyError("unknown_write_action", `Unknown write action: ${action}`, 400);
+
+  const actorTier = discordActorTier(actor, mapping);
+  if (!meetsMinTier(actorTier, action)) {
+    throw policyError("not_authorized", `Discord actor is not authorized for ${action}.`, 403);
+  }
+
+  const store = getWriteNonceStore();
+  // [Layer 3 integration audit fix, MEDIUM, issue #1038] store.create() used
+  // to be called unguarded here, while the resolveWriteActionRoute() call
+  // above it is wrapped. When an actor exceeds MAX_ENTRIES_PER_ACTOR (20
+  // pending previews), writeNonceStore throws a bare Error with no
+  // .code/.statusCode, which used to propagate uncaught into the generic
+  // adapter error handler -- a plain 500 `{code:"adapter_error"}`,
+  // indistinguishable from a real server bug to any monitoring that treats
+  // 5xx as an incident. This is a real, expected client condition (an actor
+  // spamming previews), so it gets the same distinguishable, documented
+  // 429 shape every other rate-limited path in this codebase already uses.
+  let created;
+  try {
+    created = store.create({ actorUserId: actor.userId, action, params: body.params || {} });
+  } catch (error) {
+    throw policyError("too_many_pending_confirmations", error.message, 429);
+  }
+  const { nonce, expiresAt } = created;
+
+  return json(res, 200, {
+    ok: true,
+    nonce,
+    expiresAt,
+    preview: { action, confirmPhrase: resolved.confirmPhrase }
+  });
+}
+
+// write/execute: consumes the nonce, re-verifies actor signature + capability
+// + tier (never trusts write/preview's own decision alone -- a fresh
+// interaction may have arrived with stale/tampered claims), then performs
+// the real mutation via Core's own internal loopback (Hop B, issue #215;
+// see docs/rw-architecture.md section 3.1-3.4 for the design). For a
+// dual-confirmation action, the nonce is peeked rather than eagerly consumed,
+// so a second, distinct actor can independently pass every gate below before
+// Hop B is ever reached -- see the requiresDualConfirmation branch further
+// down. NOTE (issue #1019, superseded): server.stop was this mechanism's
+// original and only user; it no longer sets the flag (see the note above its
+// WRITE_ACTION_ROUTES entry for why), so NO production action currently
+// requires dual confirmation. This dispatch logic is entirely generic --
+// driven only by the resolved route's own requiresDualConfirmation field,
+// never by an action name -- so it remains real, available infrastructure for
+// any future action, and stays exercised end-to-end by
+// writeBridge.integration.test.js via setRequiresDualConfirmationForTests().
+async function writeExecuteRoute({ req, res, json, readJsonWithActorSignature, config }) {
+  if (!discordWritesEnabled(config)) throw policyError("writes_disabled", "Write operations are not enabled.", 403);
+  const body = await readJsonWithActorSignature(req, { requireActorSignature: true, fields: WRITE_BRIDGE_SIGNED_ACTOR_FIELDS });
+  const actor = validateDiscordActor(body.actor);
+  const mapping = discordRoleMappingFromEnv();
+  requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.WRITE_BRIDGE_ACCESS);
+
+  const nonceValue = String(body.nonce || "");
+  if (!nonceValue) throw policyError("missing_nonce", "A nonce from write/preview is required.", 400);
+
+  const store = getWriteNonceStore();
+  // Non-destructive lookup: a dual-confirmation action's primary call must
+  // not consume the nonce (a second, different actor still needs it), so
+  // consumption is deferred until the point every gate has actually passed
+  // and Hop B is genuinely about to be invoked, for both single- and
+  // dual-confirmation actions alike.
+  const peeked = store.peek(nonceValue);
+  if (!peeked) throw policyError("nonce_not_found", "Confirmation expired or was already used. Please re-run the command.", 410);
+
+  const action = String(body.action || "");
+  if (action !== peeked.action) {
+    throw policyError("nonce_action_mismatch", "The action does not match what was previewed.", 409);
+  }
+
+  let resolved;
+  try {
+    resolved = resolveWriteActionRoute(action, peeked.params);
+  } catch (error) {
+    throw policyError("invalid_parameters", error.message, 400);
+  }
+  if (!resolved) throw policyError("unknown_write_action", `Unknown write action: ${action}`, 400);
+
+  // A nonce belongs to exactly the actor who requested the preview -- never
+  // to whoever happens to present it next (docs/rw-architecture.md section
+  // 3.2's exact-actor-binding requirement) -- UNLESS this is a
+  // dual-confirmation action's second call, where a DIFFERENT actor
+  // presenting the same nonce is the entire point. `secondConfirmationRequired`
+  // is only ever set by this function's own dual-confirmation branch below,
+  // never by write/preview, so it can't be forged by a client-supplied field.
+  const isDualConfirmSecondStep = resolved.requiresDualConfirmation && peeked.secondConfirmationRequired;
+  if (isDualConfirmSecondStep) {
+    if (peeked.actorUserId === actor.userId) {
+      throw policyError("second_confirmation_same_actor", "A second, different administrator must confirm this action. The admin who confirmed first cannot also provide the second confirmation.", 403);
+    }
+  } else if (peeked.actorUserId !== actor.userId) {
+    throw policyError("nonce_actor_mismatch", "This confirmation was not issued to you.", 403);
+  }
+
+  const actorTier = discordActorTier(actor, mapping);
+  if (!meetsMinTier(actorTier, action)) {
+    throw policyError("not_authorized", `Discord actor is not authorized for ${action}.`, 403);
+  }
+
+  // roleSnapshotAt freshness (docs/rw-architecture.md section 3.8): proves
+  // the actor's roleIds were re-derived from Discord at (or near) confirm
+  // time, not replayed from the original interaction's cached payload.
+  // Number.isSafeInteger check must run BEFORE the comparison -- a
+  // malformed value (NaN, string, undefined) makes Math.abs(now - NaN) also
+  // NaN, and `NaN > maxRoleAgeSeconds` is always false in JavaScript,
+  // silently PASSING instead of rejecting if this order were reversed.
+  const roleSnapshotAt = actor.roleSnapshotAt;
+  if (!Number.isSafeInteger(roleSnapshotAt) || roleSnapshotAt <= 0) {
+    throw policyError("invalid_actor_signature", "Discord actor role snapshot timestamp is invalid.", 403);
+  }
+  // Deliberately its own env var, not DUNE_DISCORD_ACTOR_SIGNATURE_MAX_SKEW_SECONDS
+  // (issue #1022, Security MEDIUM): that var bounds the generic HMAC-signature
+  // anti-replay window for every Discord adapter route, an unrelated property
+  // to "is this actor's re-derived role snapshot still current." Sharing one
+  // knob would let an operator widen the general replay window for an
+  // unrelated reason (e.g. bot/host clock drift) and silently widen the
+  // acceptance window for stale, possibly-since-revoked elevated roles on
+  // this codebase's highest-risk mutation path, with no separate control.
+  const maxRoleAgeSeconds = Number(process.env.DUNE_DISCORD_WRITE_BRIDGE_ROLE_MAX_AGE_SECONDS) || 30;
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowSeconds - roleSnapshotAt) > maxRoleAgeSeconds) {
+    throw policyError("stale_actor_signature", "Your role info expired. Please re-run the command.", 403);
+  }
+
+  // Dual-confirmation gate (issue #1019): a qualifying action's FIRST
+  // write/execute call, from any one authorized actor, marks the nonce
+  // pending a second confirmation and stops here -- Hop B is not reached,
+  // nothing has mutated. The nonce is deliberately NOT consumed, and its TTL
+  // is extended to give a second, distinct admin realistic time to act. The
+  // second call (isDualConfirmSecondStep, checked above) falls through to
+  // the real consume + Hop B dispatch below like any other action.
+  // "A qualifying action" is currently an empty set in production (server.stop
+  // no longer sets the flag -- see the route-table note); this branch is
+  // deliberately kept, generic, and tested rather than removed.
+  if (resolved.requiresDualConfirmation && !peeked.secondConfirmationRequired) {
+    const marked = store.markPendingSecondConfirmation(nonceValue, DUAL_CONFIRMATION_EXTENDED_TTL_SECONDS);
+    if (!marked) throw policyError("nonce_not_found", "Confirmation expired or was already used. Please re-run the command.", 410);
+    return json(res, 202, {
+      ok: true,
+      code: "second_confirmation_required",
+      nonce: nonceValue,
+      expiresAt: marked.expiresAt,
+      message: "A second, different administrator must confirm this action before it will run. Ask another owner-tier admin to confirm using this same reference."
+    });
+  }
+
+  // Real, final consumption -- for a single-confirmation action, this is its
+  // only call; for a dual-confirmation action, this is its second call. A
+  // failure here (already expired between the peek above and now) is
+  // possible but rare; report it the same way every other "gone" nonce is
+  // reported rather than as a 500.
+  const entry = store.consume(nonceValue);
+  if (!entry) throw policyError("nonce_not_found", "Confirmation expired or was already used. Please re-run the command.", 410);
+
+  // Hop B: the internal loopback that actually performs the mutation
+  // (docs/rw-architecture.md section 3.1-3.4). Reuses the real target route
+  // handler completely unchanged -- never reimplements mutation logic.
+  // Everything above this point is real, tested validation; nothing has
+  // mutated anything until this exact call.
+  const socketPath = join(config.generatedDir, WRITE_BRIDGE_SOCKET_FILENAME);
+  const requestBody = { ...(entry.params || {}) };
+  if (resolved.confirmPhrase) requestBody.confirmation = resolved.confirmPhrase;
+
+  let internalResponse;
+  try {
+    internalResponse = await callWriteBridgeInternalRoute({
+      socketPath,
+      method: resolved.method,
+      path: resolved.path,
+      action,
+      tier: actorTier,
+      discordUserId: actor.userId,
+      discordUsername: actor.username,
+      body: requestBody
+    });
+  } catch (error) {
+    // The socket subsystem itself is unreachable (disabled at startup --
+    // root-UID refusal, a live-listener collision, etc.) or the internal
+    // connection genuinely failed -- a distinct, honest 503, never a
+    // silent success and never a generic 500 that would hide which layer
+    // failed.
+    throw policyError("write_backend_unavailable", "Write execution backend is temporarily unavailable.", 503);
+  }
+
+  return json(res, internalResponse.statusCode, internalResponse.body ?? { ok: internalResponse.statusCode < 400 });
 }
 
 function cappedOutput(value, maxChars = 12000) {

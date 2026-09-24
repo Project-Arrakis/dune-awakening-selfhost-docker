@@ -658,6 +658,45 @@ export const COMMAND_METADATA = Object.freeze({
     description: "Show database status and health.",
     capability: DISCORD_CAPABILITIES.SERVICES_READ,
     params: []
+  },
+  // WRITE_PREVIEW / WRITE_EXECUTE (issue #215): unlike every other entry in
+  // this catalog, these are not themselves a user-facing slash-command
+  // group/subcommand a Discord admin types -- they are the internal API the
+  // bot's OWN dispatch layer calls on behalf of every real write command
+  // (kick, ban, restart, ...). Documented here anyway, under a dedicated
+  // "write" group, since this catalog's own stated job is to describe every
+  // real, live route on Core (matching the PLAYERS_ACCOUNTS_LINK precedent
+  // above, which is kept in the catalog despite having no live bot caller
+  // today) -- not to enumerate only end-user-typed commands.
+  [DISCORD_ADAPTER_ROUTES.WRITE_PREVIEW]: {
+    group: "write", subcommand: "preview",
+    description: "Internal: validate a write action and mint a single-use confirmation nonce. Never mutates game state.",
+    capability: DISCORD_CAPABILITIES.WRITE_BRIDGE_ACCESS,
+    requiresWritesEnabled: true,
+    params: [
+      { name: "action", type: "STRING", required: true, description: "The dot-namespaced write action, e.g. player.kick." },
+      { name: "params", type: "OBJECT", required: false, description: "Action-specific parameters (playerId, baseId, guildId, ...)." }
+      // idempotencyKey is NOT yet a real, read field -- the persisted
+      // idempotency cache (docs/rw-architecture.md section 3.8) is not
+      // implemented yet. Add it here only once write/execute actually
+      // reads and enforces it, matching this catalog's own "describe real
+      // code, not aspirational design" discipline.
+    ]
+  },
+  [DISCORD_ADAPTER_ROUTES.WRITE_EXECUTE]: {
+    group: "write", subcommand: "execute",
+    description: "Internal: consume a write/preview nonce and perform the real mutation.",
+    capability: DISCORD_CAPABILITIES.WRITE_BRIDGE_ACCESS,
+    requiresWritesEnabled: true,
+    params: [
+      { name: "nonce", type: "STRING", required: true, description: "The nonce returned by write/preview." },
+      { name: "action", type: "STRING", required: true, description: "Must match the action the nonce was issued for." }
+      // params is deliberately NOT read from this route's own request body
+      // -- write/execute uses the params captured in the nonce at preview
+      // time (docs/rw-architecture.md section 3.2's exact-match binding),
+      // never whatever a caller resends here. idempotencyKey: see the
+      // write/preview entry's own note above.
+    ]
   }
 });
 
