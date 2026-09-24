@@ -164,6 +164,9 @@ if (config.discordOAuthClientSecretEnvManaged) {
 if (config.discordBotHandoffSecretEnvManaged) {
   console.warn("Security notice: DISCORD_BOT_HANDOFF_SECRET is set as a plain environment variable, visible to any process on this host that can read this process's environment (ps, /proc/<pid>/environ). Prefer runtime/secrets/discord-bot-handoff-secret.txt instead.");
 }
+if (config.discordHostedBotOAuthClientSecretEnvManaged) {
+  console.warn("Security notice: DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET is set as a plain environment variable, visible to any process on this host that can read this process's environment (ps, /proc/<pid>/environ). Prefer runtime/secrets/discord-hosted-bot-oauth-client-secret.txt instead.");
+}
 // Discord setup took effect on this boot: drop the "restart pending" marker.
 if (config.discordOAuthConfigured) {
   try { const m = resolve(config.generatedDir, "discord-setup-pending-restart"); if (existsSync(m)) unlinkSync(m); } catch { /* ignore */ }
@@ -2361,6 +2364,18 @@ async function handleApi(req, res) {
     return json(res, 200, { ok: true });
   }
   if (path === "/api/settings/discord-bot/oauth-secret" && req.method === "POST") {
+    // Env-managed = read-only from Settings, same contract as
+    // discordOAuthClientSecretEnvManaged (Layer 3 audit finding, 2026-09-24):
+    // readInlineOrFile() gives DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET
+    // precedence over the file this route writes, so writing the file here
+    // used to silently do nothing useful -- the inline value stayed
+    // authoritative after the next restart, while this route still reported
+    // 200. Refuse outright instead of writing a file that would just be
+    // shadowed, mirroring saveOAuthClientSecret()'s own established fix for
+    // the identical bug class.
+    if (config.discordHostedBotOAuthClientSecretEnvManaged) {
+      return json(res, 400, { error: "The Discord Client Secret is managed by DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET. Update the environment value instead." });
+    }
     const body = await readJson(req);
     const secret = body.secret;
     if (!secret || String(secret).length < 20) {
