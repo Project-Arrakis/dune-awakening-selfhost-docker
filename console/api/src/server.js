@@ -467,7 +467,12 @@ process.on("unhandledRejection", (error) => {
 
 createServer(async (req, res) => {
   if (config.allowedIps.length) {
-    const remoteIp = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
+    // /code-review high finding (2026-09-24): this used to read the raw
+    // socket address directly, so ADMIN_ALLOWED_IPS was unusable behind the
+    // same reverse proxy CONSOLE_TRUSTED_PROXY_IPS exists to support --
+    // every client looked like the proxy's own IP. Now shares the identical
+    // trusted-proxy resolution the login rate limiter already uses.
+    const remoteIp = resolveClientIp(req, config.trustedProxyIps);
     if (!config.allowedIps.includes(remoteIp)) {
       res.writeHead(403, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "Access denied: IP not in ADMIN_ALLOWED_IPS" }));
@@ -1893,7 +1898,10 @@ async function addonBridgeRoute(req, res, path) {
     audit(config, req, "addons.bridge", { id, ok: false, reason: "Addon retired; use native Market Bot" });
     return json(res, 410, { error: "EDA Exchange Bot has been retired. Use Exchange > Market Bot in the console." });
   }
-  const clientIp = (req.socket.remoteAddress || "unknown").replace(/^::ffff:/, "");
+  // Same trusted-proxy resolution as the login limiter (/code-review high
+  // finding, 2026-09-24) -- otherwise every addon-bridge caller behind a
+  // reverse proxy shares one rate-limit bucket keyed to the proxy's own IP.
+  const clientIp = resolveClientIp(req, config.trustedProxyIps);
   const key = `${id}:${clientIp}`;
   const limit = bridgeRateLimiter.check(key);
   if (!limit.allowed) {
@@ -7242,11 +7250,14 @@ function mockCommand(operation) {
 }
 
 // Best-effort client address, IPv4-mapped IPv6 unwrapped. No X-Forwarded-For
-// handling, matching every other limiter here -- behind a reverse proxy this
-// records the proxy, not the caller. Per-key limits are unaffected: they key
-// on the key id, not on this.
+// handling (/code-review high finding, 2026-09-24: previously did not,
+// unlike the login limiter -- an operator behind a reverse proxy who set
+// CONSOLE_TRUSTED_PROXY_IPS to fix login rate-limiting still had every
+// API-key-auth-failure and every apiKeys.recordUse() audit entry attributed
+// to the proxy's own IP). Per-key limits are unaffected: they key on the key
+// id, not on this.
 function remoteIpOf(req) {
-  return (req?.socket?.remoteAddress || "").replace(/^::ffff:/, "") || null;
+  return resolveClientIp(req, config.trustedProxyIps) || null;
 }
 
 function loginRateLimitKey(req) {
