@@ -146,10 +146,26 @@ export async function handleDiscordAdapterRoute({
   // write bridge's write/preview and write/execute routes (issue #215),
   // which must never trust an actor's tier/roles without a verified
   // signature (see WRITE_BRIDGE_SIGNED_ACTOR_FIELDS in actorSignature.js).
+  //
+  // [Layer 3 integration audit fix, CRITICAL] WRITE_BRIDGE_SIGNED_ACTOR_FIELDS
+  // includes "action" specifically so the write bridge's signature binds the
+  // actor to the SPECIFIC action being requested, not just to the route (both
+  // write/preview and write/execute are the same one route for every action).
+  // Before this fix, a captured, legitimately-signed envelope from a real
+  // moderator+ actor could be replayed with a DIFFERENT action/params within
+  // the freshness window and still verify -- meetsMinTier would then
+  // evaluate the real actor's real tier against whatever action the replayed
+  // request now claimed, up to and including server.stop for an owner-tier
+  // envelope. body.action must be merged into the signed payload here,
+  // before verification, since it lives alongside `actor` in the body, not
+  // inside it -- and this repo's own bot-side counterpart (Project-Arrakis/
+  // mentat's actorSignature.js) must sign the identical shape or every real
+  // request fails verification (see that repo's own fix, same issue).
   async function readJsonWithActorSignature(request, { requireActorSignature = false, fields } = {}) {
     const body = await readJson(request);
     try {
-      verifyActorSignature({ actorPayload: body?.actor, headers: request.headers, config, route: path, required: requireActorSignature, ...(fields ? { fields } : {}) });
+      const actorPayload = fields?.includes("action") ? { ...body?.actor, action: body?.action } : body?.actor;
+      verifyActorSignature({ actorPayload, headers: request.headers, config, route: path, required: requireActorSignature, ...(fields ? { fields } : {}) });
     } catch (error) {
       // When a secret is configured: always throw (even for read routes).
       // When no secret: only throw for mutation routes (requireActorSignature).

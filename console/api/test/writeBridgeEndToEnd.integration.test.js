@@ -72,9 +72,12 @@ function actor(overrides = {}) {
   };
 }
 
-function signedHeaders(actorPayload, route) {
+// `action` must match the real request body's `action` field exactly (see
+// actorSignature.js's WRITE_BRIDGE_SIGNED_ACTOR_FIELDS) -- the signature
+// binds the specific action being requested, not just the actor+route.
+function signedHeaders(actorPayload, route, action) {
   const timestamp = Math.floor(Date.now() / 1000);
-  const { signature } = signActorPayload(actorPayload, ACTOR_SECRET, timestamp, route, WRITE_BRIDGE_SIGNED_ACTOR_FIELDS);
+  const { signature } = signActorPayload({ ...actorPayload, action }, ACTOR_SECRET, timestamp, route, WRITE_BRIDGE_SIGNED_ACTOR_FIELDS);
   return { [ACTOR_SIGNATURE_HEADER]: signature, [ACTOR_TIMESTAMP_HEADER]: String(timestamp) };
 }
 
@@ -149,7 +152,7 @@ async function withHopAServer(testConfig, fn) {
 async function writePreview(base, a, action, params) {
   const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
     method: "POST",
-    headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE) },
+    headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, action) },
     body: JSON.stringify({ actor: a, action, params })
   });
   return { status: response.status, body: await response.json() };
@@ -158,7 +161,7 @@ async function writePreview(base, a, action, params) {
 async function writeExecute(base, a, nonce, action, params) {
   const response = await fetch(`${base}${EXECUTE_ROUTE}`, {
     method: "POST",
-    headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE) },
+    headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE, action) },
     body: JSON.stringify({ actor: a, nonce, action, params })
   });
   return { status: response.status, body: await response.json() };
