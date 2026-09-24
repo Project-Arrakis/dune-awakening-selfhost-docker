@@ -184,3 +184,30 @@ test("resolveWriteBridgePrincipal: a syntactically valid tier below the action's
 // boot-time check specifically to keep it that way), so this exact branch
 // is defensive-only by design today, not independently unit-testable here
 // without mocking the imported module.
+
+// [Layer 3 integration audit fix] writeBridgeInternalClient.js's sender now
+// encodeURIComponent()'s this header so a real, non-Latin-1 Discord display
+// name can survive as an HTTP header value at all -- this is the receiving
+// half of that same fix, decoding it back to the real display name for
+// audit-log attribution.
+test("resolveWriteBridgePrincipal: a percent-encoded, non-Latin-1 username header decodes back to the real display name", () => {
+  const target = kickTarget();
+  const result = resolveWriteBridgePrincipal({
+    headers: validHeaders({ [WRITE_BRIDGE_ACTOR_USERNAME_HEADER]: encodeURIComponent("田中太郎") }),
+    method: target.method,
+    path: target.path,
+    viaWriteBridgeSocket: true
+  });
+  assert.equal(result.discordUsername, "田中太郎");
+});
+
+test("resolveWriteBridgePrincipal: a malformed percent-encoding in the username header falls back to the raw value rather than throwing", () => {
+  const target = kickTarget();
+  const result = resolveWriteBridgePrincipal({
+    headers: validHeaders({ [WRITE_BRIDGE_ACTOR_USERNAME_HEADER]: "50%" }),
+    method: target.method,
+    path: target.path,
+    viaWriteBridgeSocket: true
+  });
+  assert.equal(result.discordUsername, "50%");
+});

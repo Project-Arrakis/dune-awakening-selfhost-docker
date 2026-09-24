@@ -60,12 +60,23 @@ export function callWriteBridgeInternalRoute({
           [WRITE_BRIDGE_TIER_HEADER]: tier,
           [WRITE_BRIDGE_ACTOR_USER_ID_HEADER]: discordUserId,
           // discordUsername is HMAC-integrity-protected (part of the signed
-          // actor payload) but not shape-validated -- Discord display names
-          // are user-settable content. Node's http.request already throws on
-          // CR/LF in a header value, but relying on that as the only guard
-          // means a malformed username surfaces as an opaque connection-error 503 instead of an honest rejection
-          // at the point the bad value actually originated.
-          [WRITE_BRIDGE_ACTOR_USERNAME_HEADER]: (discordUsername || "").replace(/[\r\n]/g, "")
+          // actor payload) but is arbitrary Discord display-name content --
+          // real display names routinely contain characters outside Latin-1
+          // (CJK, Cyrillic, Arabic, emoji), not just adversarial input.
+          // Node's http.request throws synchronously (ERR_INVALID_CHAR) for
+          // any header value containing a UTF-16 code unit outside
+          // \t/\x20-\x7e/\x80-\xff -- stripping only CR/LF (the previous
+          // version of this line) still crashed for any such ordinary name,
+          // and did so AFTER writeExecuteRoute had already irreversibly
+          // consumed the nonce, turning a legitimate confirmed action into a
+          // spent confirmation and a confusing 503 write_backend_unavailable.
+          // encodeURIComponent() makes this representable in every case (it
+          // produces only ASCII output) and, as a side effect, can never
+          // itself contain a raw CR/LF, so the explicit strip is redundant
+          // and removed. The receiving end (writeBridgeCredential.js's
+          // resolveWriteBridgePrincipal) decodes it back to the real display
+          // name for audit-log attribution.
+          [WRITE_BRIDGE_ACTOR_USERNAME_HEADER]: encodeURIComponent(discordUsername || "")
         }
       },
       (res) => {

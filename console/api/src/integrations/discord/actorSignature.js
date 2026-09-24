@@ -69,13 +69,37 @@ const SIGNED_ACTOR_FIELDS = ["userId", "guildId", "channelId", "roleIds", "inter
 // verifyActorSignature() provides cannot distinguish "this signed envelope
 // authorizes player.warn" from "this signed envelope authorizes
 // server.stop." A captured, legitimately-signed envelope from a real
-// moderator+ actor could be replayed with a different action/params within
-// the freshness window and still verify, since nothing about the signed
-// payload changed. The route's caller (routes.js's readJsonWithActorSignature)
+// moderator+ actor could be replayed with a different action within the
+// freshness window and still verify, since nothing about the signed payload
+// changed. The route's caller (routes.js's readJsonWithActorSignature)
 // merges body.action into the signed actor payload before verification --
 // `action` cannot be read from actorPayload itself, since it is a sibling
 // of `actor` in the request body, not one of its fields.
-export const WRITE_BRIDGE_SIGNED_ACTOR_FIELDS = ["userId", "username", "roleIds", "guildId", "channelId", "roleSnapshotAt", "action"];
+//
+// [Layer 3 integration audit fix] `params` was ALSO missing, leaving the
+// exact same class of gap the `action` fix above already closed for the
+// action name, just one level down: write/preview's own handler
+// (routes.js's writePreviewRoute) mints a brand-new nonce binding whatever
+// `body.params` the request carries, using only the actor+action signature
+// to authorize doing so. Since params was never part of what the signature
+// covers, an attacker positioned to observe (not forge -- a MITM, a
+// compromised reverse proxy, a logging tap on the Hop A path) one
+// legitimately-signed write/preview envelope for, say,
+// `player.kick {playerId: "Alice"}` could replay it verbatim within the
+// freshness window with `params` substituted to `{playerId: "Bob"}` and
+// mint a fully valid, correctly-signed nonce to kick Bob instead --
+// something the real signer never asked for. (write/execute's own request
+// body params are never actually trusted for the dispatch -- it always uses
+// the nonce-stored params from the original write/preview call -- so this
+// gap was real specifically at write/preview's minting step, not at
+// execute time; `params` is still included here for both routes so the two
+// share one signed-field contract, per canonicalActorSignaturePayload's own
+// object-field handling below.) The route's caller (routes.js's
+// readJsonWithActorSignature) merges body.params into the signed actor
+// payload the same way it already does for `action`, for the same reason:
+// params is a sibling of `actor` in the request body, not one of its own
+// fields.
+export const WRITE_BRIDGE_SIGNED_ACTOR_FIELDS = ["userId", "username", "roleIds", "guildId", "channelId", "roleSnapshotAt", "action", "params"];
 
 export function actorSignatureSecret(config = {}) {
   const direct = process.env.DUNE_DISCORD_ACTOR_SECRET || config.discordActorSecret || "";
@@ -111,11 +135,38 @@ export function actorSignatureRequired(config = {}) {
 // window — see FINDING-LINK-1's Known Limitations for why a full nonce/
 // one-time-use scheme was not implemented here), but it eliminates
 // cross-route and cross-body-parameter forgery using a captured envelope.
+// Deep, key-sorted canonicalization for an object-valued signed field (used
+// by `params` below) -- plain `String(value)` on an object collapses every
+// distinct object to the literal string "[object Object]", which would make
+// signing an object field a complete no-op (every possible params payload
+// would canonicalize identically). Object keys are sorted recursively so
+// the same logical params object signs identically regardless of the
+// property insertion order the sender happened to use; array ELEMENT order
+// is preserved as-is (unlike the top-level roleIds field's own deliberate
+// sort-as-a-set behavior below), since a params array's order can be
+// semantically meaningful (e.g. an ordered list of ids) in a way roleIds's
+// unordered set is not.
+function canonicalizeValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalizeValue);
+  if (value && typeof value === "object") {
+    const sorted = {};
+    for (const key of Object.keys(value).sort()) sorted[key] = canonicalizeValue(value[key]);
+    return sorted;
+  }
+  return value;
+}
+
 export function canonicalActorSignaturePayload(actorPayload = {}, timestamp, route = "", fields = SIGNED_ACTOR_FIELDS) {
   const canonical = {};
   for (const key of fields) {
     const value = actorPayload?.[key];
-    canonical[key] = Array.isArray(value) ? [...value].map(String).sort() : String(value ?? "");
+    if (Array.isArray(value)) {
+      canonical[key] = [...value].map(String).sort();
+    } else if (value && typeof value === "object") {
+      canonical[key] = canonicalizeValue(value);
+    } else {
+      canonical[key] = String(value ?? "");
+    }
   }
   return `${timestamp}.${String(route)}.${JSON.stringify(canonical)}`;
 }

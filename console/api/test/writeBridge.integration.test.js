@@ -38,15 +38,16 @@ function actor(roleIds, overrides = {}) {
   };
 }
 
-// `action` (issue: signature must bind the specific action being requested,
-// not just the actor+route -- see actorSignature.js's WRITE_BRIDGE_SIGNED_ACTOR_FIELDS)
-// must match the real request body's `action` field exactly, or the real
-// route will reject with invalid_actor_signature -- mirroring exactly what
-// routes.js's readJsonWithActorSignature does server-side (merging body.action
-// into the signed payload before verification).
-function signedHeaders(actorPayload, route, action) {
+// `action` and `params` (signature must bind the specific action AND
+// parameters being requested, not just the actor+route -- see
+// actorSignature.js's WRITE_BRIDGE_SIGNED_ACTOR_FIELDS) must match the real
+// request body's own `action`/`params` fields exactly, or the real route
+// will reject with invalid_actor_signature -- mirroring exactly what
+// routes.js's readJsonWithActorSignature does server-side (merging
+// body.action/body.params into the signed payload before verification).
+function signedHeaders(actorPayload, route, action, params) {
   const timestamp = Math.floor(Date.now() / 1000);
-  const { signature } = signActorPayload({ ...actorPayload, action }, ACTOR_SECRET, timestamp, route, WRITE_BRIDGE_SIGNED_ACTOR_FIELDS);
+  const { signature } = signActorPayload({ ...actorPayload, action, params }, ACTOR_SECRET, timestamp, route, WRITE_BRIDGE_SIGNED_ACTOR_FIELDS);
   return { [ACTOR_SIGNATURE_HEADER]: signature, [ACTOR_TIMESTAMP_HEADER]: String(timestamp) };
 }
 
@@ -192,7 +193,7 @@ test("write/preview: moderator attempting an owner-tier action -> 403 not_author
     const a = actor(["role-moderator"]);
     const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.give-item") },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.give-item", { playerId: "Server#4242" }) },
       body: JSON.stringify({ actor: a, action: "player.give-item", params: { playerId: "Server#4242" } })
     });
     assert.equal(response.status, 403);
@@ -222,7 +223,7 @@ test("write/preview: owner attempting the same owner-tier action that rejected a
     const a = actor(["role-owner"]);
     const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.give-item") },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.give-item", { playerId: "Server#4242" }) },
       body: JSON.stringify({ actor: a, action: "player.give-item", params: { playerId: "Server#4242" } })
     });
     assert.equal(response.status, 200);
@@ -259,7 +260,7 @@ test("write/preview: path-traversal-shaped param is rejected with 400, never sil
     const a = actor(["role-admin"]);
     const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.kick") },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.kick", { playerId: ".." }) },
       body: JSON.stringify({ actor: a, action: "player.kick", params: { playerId: ".." } })
     });
     assert.equal(response.status, 400);
@@ -279,6 +280,33 @@ test("write/preview: unknown action -> 400 unknown_write_action, not a 500 or si
     assert.equal(response.status, 400);
     const body = await response.json();
     assert.equal(body.code, "unknown_write_action");
+  });
+});
+
+// [Layer 3 integration audit fix] Before this fix, WRITE_BRIDGE_SIGNED_ACTOR_FIELDS
+// covered actor identity + action but never `params` -- a real, signed
+// write/preview envelope could be replayed verbatim with attacker-substituted
+// params (still within the freshness window) and still verify, minting a
+// validly-signed nonce for a mutation TARGET the real signer never chose
+// (e.g. kicking a different player than the one actually named). This is
+// the real, end-to-end proof: sign a genuine envelope for one playerId, then
+// send it with a DIFFERENT playerId in the body -- this must now be rejected
+// as a signature mismatch, not silently accepted.
+test("write/preview: a validly-signed envelope cannot be replayed with substituted params -- proves params is bound by the signature, not just actor+action", async () => {
+  await withServer(testConfig, async (base) => {
+    const a = actor(["role-admin"]);
+    const genuineParams = { playerId: "Server#4242" };
+    const tamperedParams = { playerId: "SomeoneElse#9999" };
+    const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
+      method: "POST",
+      // Signed for the GENUINE params...
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, "player.kick", genuineParams) },
+      // ...but the actual request body claims DIFFERENT params.
+      body: JSON.stringify({ actor: a, action: "player.kick", params: tamperedParams })
+    });
+    assert.equal(response.status, 403);
+    const body = await response.json();
+    assert.equal(body.code, "invalid_actor_signature");
   });
 });
 
@@ -315,7 +343,7 @@ test("write/preview: an action missing its WRITE_ACTION_MIN_TIER entry returns a
 async function preview(base, a, action, params) {
   const response = await fetch(`${base}${PREVIEW_ROUTE}`, {
     method: "POST",
-    headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, action) },
+    headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, PREVIEW_ROUTE, action, params) },
     body: JSON.stringify({ actor: a, action, params })
   });
   assert.equal(response.status, 200, `preview failed: ${JSON.stringify(await response.clone().json())}`);
@@ -397,7 +425,7 @@ test("write/execute: action mismatch between preview and execute is rejected wit
 
     const response = await fetch(`${base}${EXECUTE_ROUTE}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE, "player.kick") },
+      headers: { authorization: `Bearer ${BOT_TOKEN}`, "content-type": "application/json", ...signedHeaders(a, EXECUTE_ROUTE, "player.kick", { playerId: "Server#4242" }) },
       body: JSON.stringify({ actor: a, nonce, action: "player.kick", params: { playerId: "Server#4242" } })
     });
     assert.equal(response.status, 409);
