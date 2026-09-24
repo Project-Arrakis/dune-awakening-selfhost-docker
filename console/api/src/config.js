@@ -229,13 +229,22 @@ export function loadConfig() {
   // purely to drive the boot-time warning below (env-var secrets are visible
   // via `ps`/`/proc/<pid>/environ`; `_FILE`/runtime/secrets/ is preferred).
   const discordBotHandoffSecretEnvManaged = Boolean(process.env.DISCORD_BOT_HANDOFF_SECRET);
-  // Layer 3 audit finding (2026-09-24): the hosted-bot OAuth client secret
-  // has the exact same readInlineOrFile() precedence as discordOAuthClientSecret
-  // above, but had no EnvManaged flag at all -- POST /api/settings/discord-bot/
-  // oauth-secret happily wrote a file that stayed silently shadowed by the env
-  // var, reporting 200 while doing nothing useful after the next restart.
-  // Mirrors discordOAuthClientSecretEnvManaged's own precedent exactly.
-  const discordHostedBotOAuthClientSecretEnvManaged = Boolean(process.env.DISCORD_HOSTED_BOT_OAUTH_CLIENT_SECRET);
+  // NOT an EnvManaged flag, deliberately -- reverted after a same-day self
+  // review found it was actively wrong for this specific secret, unlike its
+  // two siblings above. runtime/scripts/lib/console-secrets-env.sh's
+  // export_discord_hosted_bot_oauth_client_secret() re-exports THIS SECRET'S
+  // OWN FILE (the one POST /api/settings/discord-bot/oauth-secret writes) as
+  // this exact env var on every console restart/recreate -- the documented,
+  // sole intended path for this secret, unlike DISCORD_OAUTH_CLIENT_SECRET
+  // which genuinely supports direct .env configuration as a first-class
+  // alternative to the UI. An EnvManaged flag here can't tell "operator set a
+  // real env var" apart from "the shell auto-exported the file I'm trying to
+  // rotate right now" -- it would self-lock the Settings UI's rotate route
+  // permanently 400 after the very first successful UI-driven configuration,
+  // which is worse than the silent-no-op bug it was meant to fix (that bug
+  // requires an operator to bypass the UI and set the env var directly, a
+  // much rarer path for a secret this deployment model doesn't otherwise
+  // support setting that way).
   const oauthHomeGuildId = /^\d{17,19}$/.test(process.env.DISCORD_HOME_GUILD_ID || "") ? process.env.DISCORD_HOME_GUILD_ID : "";
   // Console-native role -> tier mapping (rfc-console-auth.md §2.1.1). Each key is
   // a comma-separated list of Discord role IDs; malformed entries are dropped,
@@ -307,7 +316,6 @@ export function loadConfig() {
     adminPasswordEnvManaged,
     discordOAuthClientSecretEnvManaged,
     discordBotHandoffSecretEnvManaged,
-    discordHostedBotOAuthClientSecretEnvManaged,
     // ---- Discord OAuth sign-in (Tier 1, rfc-console-auth.md §2.1 / §2.1.1) ----
     // "App configured" = the console can start an OAuth round-trip (setup mode
     // uses this); "configured" additionally has a home guild, i.e. sign-in can
