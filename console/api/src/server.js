@@ -29,7 +29,7 @@ import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatu
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishCarePackageWhisper, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, maintainCarePackageHistory, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm, streamRequestToFile } from "./httpSafety.js";
-import { buildMapStatusResponse, buildServerStatusResponse, parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
+import { buildMapStatusResponse, buildMapsListResponse, buildServerStatusResponse, parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
 import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon } from "./addons.js";
 import { createHardwareStatusProvider, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
@@ -96,6 +96,11 @@ import { SETUP_CONFIG_KEYS, validHostDatacenterId } from "./services/setupConfig
 const config = loadConfig();
 const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
 const readCommandCache = createReadCommandCache();
+// Status commands walk Docker, PostgreSQL, RabbitMQ, and logs. Keep a fresh
+// snapshot briefly, then serve that bounded snapshot while one shared refresh
+// runs in the background. This avoids repeating several seconds of identical
+// host work for every integration poll.
+const statusCommandCache = createReadCommandCache({ ttlMs: 5000, staleMs: 30000 });
 const CONSOLE_PROCESS_STARTED_AT = Date.now();
 let edaRetirement = { retired: false, addonRemoved: false, migrated: false, changed: false, backupDir: "", cleanupError: "" };
 try {
@@ -726,7 +731,7 @@ async function handleApi(req, res) {
   if (path === "/api/public-directory/status") return json(res, 200, publicDirectory.publicState());
   if (path.startsWith("/api/setup/tasks/")) return taskRoute(req, res, path);
 
-  if (path === "/api/server/status") return serverStatusRoute(res);
+  if (path === "/api/server/status") return serverStatusRoute(res, url);
   if (path === "/api/server/performance") return json(res, 200, await collectPerformanceSnapshot(config.repoRoot));
   if (path === "/api/server/readiness") return safeCommandJson(res, "readiness");
   if (path === "/api/server/ports") return commandJson(res, "ports");
@@ -1211,7 +1216,7 @@ async function handleApi(req, res) {
   if (path === "/api/care-package/enable" && req.method === "POST") return carePackageEnableRoute(req, res, true);
   if (path === "/api/care-package/disable" && req.method === "POST") return carePackageEnableRoute(req, res, false);
 
-  if (path === "/api/map/status") return mapStatusRoute(res);
+  if (path === "/api/map/status") return mapStatusRoute(res, url);
   if (path === "/api/map/capabilities") return dbJson(res, () => duneDb.liveMapCapabilities(db));
   if (path === "/api/map/teleport-player" && req.method === "POST") return liveMapTeleportPlayerRoute(req, res);
   if (path === "/api/map/partitions") return dbJson(res, () => duneDb.liveMapPartitions(db));
@@ -1227,7 +1232,7 @@ async function handleApi(req, res) {
   if (path === "/api/maps/settings" && req.method === "POST") return mapSettingsRoute(req, res);
   if (path === "/api/maps/runtime-settings" && req.method === "POST") return mapsRuntimeSettingsRoute(req, res);
   if (path === "/api/maps/runtime-settings") return json(res, 200, readMapsRuntimeSettings());
-  if (path === "/api/maps") return commandJson(res, "mapsList");
+  if (path === "/api/maps") return mapsListRoute(res, url);
   if (path === "/api/maps/mode") return commandJson(res, "mapsMode", { map: url.searchParams.get("map") || "" });
   if (path === "/api/maps/reconcile" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsReconcile", {}, "RECONCILE MAPS");
   if (path === "/api/maps/spawn" && req.method === "POST") return confirmedTask(req, res, "maps", "mapsSpawn", {}, "SPAWN MAP");
@@ -1749,6 +1754,13 @@ async function commandJson(res, operation, payload = {}) {
   return json(res, 200, { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code });
 }
 
+async function mapsListRoute(res, url) {
+  const result = config.mockMode
+    ? mockCommand("mapsList")
+    : await safeCommand("mapsList", {}, statusCommandCache);
+  return json(res, 200, buildMapsListResponse(result, { includeRaw: includeRawStatus(url) }));
+}
+
 async function clearAdminHistoryRoute(req, res) {
   const body = await readJson(req).catch(() => ({}));
   const historyDir = join(config.repoRoot, "runtime/generated");
@@ -2156,9 +2168,14 @@ async function backupAutoStatusRoute(res) {
   return json(res, 200, { ...result, status: parseBackupAutoStatus(result) });
 }
 
-async function serverStatusRoute(res) {
-  const result = config.mockMode ? mockCommand("status") : await safeCommand("status");
-  return json(res, 200, buildServerStatusResponse(result));
+function includeRawStatus(url) {
+  const value = String(url?.searchParams?.get("raw") ?? "").trim().toLowerCase();
+  return !["0", "false", "no"].includes(value);
+}
+
+async function serverStatusRoute(res, url) {
+  const result = config.mockMode ? mockCommand("status") : await safeCommand("status", {}, statusCommandCache);
+  return json(res, 200, buildServerStatusResponse(result, { includeRaw: includeRawStatus(url) }));
 }
 
 async function structuredVehiclesRoute(res) {
@@ -2171,7 +2188,7 @@ async function structuredVehiclesRoute(res) {
   });
 }
 
-async function mapStatusRoute(res) {
+async function mapStatusRoute(res, url) {
   const results = config.mockMode
     ? {
         maps: mockCommand("mapsList"),
@@ -2184,8 +2201,8 @@ async function mapStatusRoute(res) {
         ["services", "servers"],
         ["readiness", "readiness"],
         ["autoscaler", "autoscalerStatus"]
-      ].map(async ([key, operation]) => [key, await safeCommand(operation)])));
-  return json(res, 200, buildMapStatusResponse(results));
+      ].map(async ([key, operation]) => [key, await safeCommand(operation, {}, statusCommandCache)])));
+  return json(res, 200, buildMapStatusResponse(results, { includeRaw: includeRawStatus(url) }));
 }
 
 async function mapsSpicefieldUpdateRoute(req, res, path) {
@@ -2531,10 +2548,10 @@ async function marketItemsSaveRoute(req, res) {
   }
 }
 
-async function safeCommand(operation, payload = {}) {
+async function safeCommand(operation, payload = {}, cache = readCommandCache) {
   try {
     const args = buildDuneArgs(operation, payload);
-    const result = await readCommandCache.run(JSON.stringify(args), () => runDune(config, args));
+    const result = await cache.run(JSON.stringify(args), () => runDune(config, args));
     return { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code };
   } catch (error) {
     return { operation, stdout: redact(error.stdout || ""), stderr: redact(error.stderr || error?.message || "Unexpected error."), exitCode: error.code || 1 };

@@ -56,7 +56,7 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/server/status` | Structured server status and command diagnostics | None |
+| GET | `/api/server/status` | Structured server status and command diagnostics | `raw?` (`0` omits legacy command output) |
 | GET | `/api/server/performance` | Performance snapshot (CPU, memory, disk) | None |
 | GET | `/api/server/readiness` | Service readiness check | None |
 | GET | `/api/server/ports` | List service ports | None |
@@ -122,7 +122,7 @@ When the Restart Queue is enabled, the restart routes above (`/api/server/restar
 }
 ```
 
-Unavailable numeric and boolean values are `null`, and unavailable collections are empty arrays. `ok` reports whether the underlying status command completed successfully; health is reported separately in `data.summary.overall`. The legacy `operation`, `stdout`, `stderr`, and `exitCode` fields remain available for command diagnostics and backward compatibility.
+Unavailable numeric and boolean values are `null`, and unavailable collections are empty arrays. `ok` reports whether the underlying status command completed successfully; health is reported separately in `data.summary.overall`. The legacy `operation`, `stdout`, `stderr`, and `exitCode` fields remain available for command diagnostics and backward compatibility. Add `?raw=0` to omit those legacy fields and return only the compact structured response. Status snapshots are cached briefly and refreshed in the background so frequent integration polling does not repeatedly block on the same host checks.
 
 ---
 
@@ -676,8 +676,8 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/maps` | List all maps | None |
-| GET | `/api/map/status` | Get structured status of all maps | None |
+| GET | `/api/maps` | List all maps | `raw?` (`0` omits legacy command output) |
+| GET | `/api/map/status` | Get structured status of all maps | `raw?` (`0` omits legacy command output) |
 | GET | `/api/maps/mode` | Get map mode (static/dynamic) | `map?` (query param) |
 | POST | `/api/maps/mode` | Set map mode | `map`, `mode`, `confirmation: "SET MAP MODE"` |
 | POST | `/api/maps/settings` | Save map settings | `map`, `partitionId?`, `mode?`, `memory?`, `modeChanged`, `memoryChanged`, `confirmation: "SAVE MAP SETTINGS"` |
@@ -697,7 +697,7 @@ See [blueprints.md](blueprints.md) for the full import/export design.
 - `data.readiness`: overall readiness plus a `checks` array of `{ section, status, label }` objects.
 - `data.autoscaler`: the Autoscaler state, container name, and container status.
 
-The existing `maps`, `services`, `readiness`, and `autoscaler` command result objects remain available for backward compatibility. Each contains its raw `stdout`, `stderr`, and `exitCode`; new integrations should consume `data` instead.
+The existing `maps`, `services`, `readiness`, and `autoscaler` command result objects remain available for backward compatibility. Each contains its raw `stdout`, `stderr`, and `exitCode`; new integrations should consume `data` instead and use `?raw=0` for a smaller response. `GET /api/maps` follows the same contract: typed map rows are available under `data.maps`, while its legacy command fields remain present unless `?raw=0` is supplied.
 
 ### Memory Management
 
