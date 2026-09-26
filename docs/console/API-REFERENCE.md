@@ -329,7 +329,7 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 |--------|-------|-------------|------------|
 | GET | `/api/bases` | List bases (paginated) | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?` |
 | GET | `/api/bases/{baseId}/export` | Export base as blueprint | `baseId` |
-| POST | `/api/bases/{baseId}/refill-generators` | Refill all base generators (queued instead if the map isn't safely writable right now) | `baseId` |
+| POST | `/api/bases/{baseId}/refill-generators` | Refill all base generators and windtrap filters (queued instead if the map isn't safely writable right now). Windtrap filters keep their current tier, capped at 5. Returns "No generators, wind turbines or windtraps were found at this base" if none exist | `baseId` |
 | GET | `/api/bases/pending-refills` | List queued generator refills, grouped by restart target | None |
 | DELETE | `/api/bases/{baseId}/queued-refill` | Cancel a base's queued generator refill | `baseId` |
 | GET | `/api/bases/auto-refill` | Get per-base auto-refill enrollment state | None |
@@ -409,8 +409,8 @@ generator refill routes above. See [base-permissions.md](base-permissions.md).
 
 `GET /api/bases/{baseId}/inventory` covers storage containers plus refinery,
 fabricator, and other inventories (recycler, repair station, the base's own
-Sub-Fief console); generator and windtrap fuel belong to the refill and water
-routes above. Its `containers[].items[]` is merged per item template, not per
+Sub-Fief console); generator fuel and windtrap filters belong to the refill route
+above, and stored water belongs to the water route. Its `containers[].items[]` is merged per item template, not per
 slot — `GET /api/bases/{baseId}/containers/{placeableId}` is the per-slot view,
 fetched one container at a time because slots roughly triple the response.
 

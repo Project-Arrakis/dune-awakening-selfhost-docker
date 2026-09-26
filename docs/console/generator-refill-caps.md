@@ -17,10 +17,20 @@ for how those same generator types map to burn durations.
 | `spice` | Spice-infused Fuel Cell (`SpicedFuelCell`) | 499 | 1 | 499 |
 | `windTurbineOmni` | Low-grade Lubricant (`WindTurbineLubricant1`) | 100 | 5 | 499 |
 | `windTurbineDirectional` | Industrial-grade Lubricant (`WindTurbineLubricant2`) | 100 | 5 | 499 |
+| `windtrap` | Windtrap Filter (tier 1 or 2) | 5 | 1 | 5 |
+| `largeWindtrap` | Windtrap Filter (tier 3 or 4) | 5 | 1 | 5 |
 
 Turbines cap at 499 across 5 stacks (4x100 + 1x99) because the game's stack
 size for lubricant is 100, unlike the 499-cap Fuel Cell and Spice-infused
 Fuel Cell items.
+
+Windtrap filters cap at 5 — the game's inventory for a windtrap is 5 slots
+with max_item_volume 25, and each filter is volume 5, so 5 filters exactly
+fills the space. The refill only counts slots, so `GENERATOR_TYPES` sets
+`volumeCap: 5` on both types and an override's totalCap is clamped to it.
+The tier written is not configurable: a refill keeps the tier the windtrap
+already holds or burns, and only an empty, idle one gets the default
+(`WindTrapFilter2`, or `WindTrapFilter4` for a Large Windtrap).
 
 ## Overriding the defaults
 

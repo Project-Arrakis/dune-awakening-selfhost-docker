@@ -144,8 +144,8 @@ export type AutoRefillWaterState = {
 
 // Storage containers plus the refining, crafting, and other inventories
 // (recycler, repair station, the base's own Sub-Fief console) at a base.
-// Generator and windtrap fuel is deliberately absent -- the Power and Water
-// tabs own it.
+// Generator fuel and windtrap filters are deliberately absent -- the Power tab
+// owns them.
 export type BaseInventoryGroupKey = "storage" | "refining" | "crafting" | "other";
 
 export type BaseInventoryGroup = {

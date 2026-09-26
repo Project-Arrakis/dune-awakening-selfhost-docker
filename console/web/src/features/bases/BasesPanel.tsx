@@ -33,7 +33,7 @@ type BasesPanelProps = {
 type SharedWithEntry = { name: string; rank: number; label: string };
 
 type GeneratorEntry = {
-  type: "fuel" | "spice" | "windTurbineOmni" | "windTurbineDirectional";
+  type: "fuel" | "spice" | "windTurbineOmni" | "windTurbineDirectional" | "windtrap" | "largeWindtrap";
   name: string;
   fuelName: string;
   fuelCells: number;
@@ -231,6 +231,12 @@ function queueRestartTarget(partitionMap: string, partitionId: number, dimension
   return { kind: "respawn", partitionId, label: `Restart ${partitionMap}` };
 }
 
+// Windtraps ride along with generator refill (their filters burn like fuel), but
+// their cards and copy talk about filters rather than generators and fuel.
+function isWindtrapType(type: string) {
+  return type === "windtrap" || type === "largeWindtrap";
+}
+
 // Report what actually changed per device rather than a generic "Action
 // completed." — "nothing was added" is a meaningful outcome here, not a failure.
 function summarizeRefill(response: {
@@ -247,7 +253,8 @@ function summarizeRefill(response: {
     .map((device) => `${device.label}: +${device.added} ${device.fuelName}${device.added === 1 ? "" : "s"}${device.capped ? " (capped by inventory space)" : ""}`)
     .join(" · ");
   const skipped = result.devices.filter((device) => device.skipped).length;
-  return `Added ${result.totalAdded} fuel unit${result.totalAdded === 1 ? "" : "s"} across ${changed.length} device${changed.length === 1 ? "" : "s"}. ${detail}${skipped ? ` · ${skipped} skipped (no inventory)` : ""}`;
+  const unitName = changed.some((device) => isWindtrapType(device.type)) ? "fuel and filter unit" : "fuel unit";
+  return `Added ${result.totalAdded} ${unitName}${result.totalAdded === 1 ? "" : "s"} across ${changed.length} device${changed.length === 1 ? "" : "s"}. ${detail}${skipped ? ` · ${skipped} skipped (no inventory)` : ""}`;
 }
 
 // Mirrors summarizeRefill. No fuelName/capped/skipped -- water refill is a
@@ -643,8 +650,9 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   async function handleRefillGenerators(base: BaseRow) {
     const id = String(base.base_id);
     const count = Number(base.generatorCount) || 0;
+    const hasWindtraps = (base.generators ?? []).some((generator) => isWindtrapType(generator.type));
     const confirmed = await confirmAction(
-      `Refill ${count} power device${count === 1 ? "" : "s"} at "${base.name || `base ${id}`}" to full fuel?`,
+      `Refill ${count} power device${count === 1 ? "" : "s"} at "${base.name || `base ${id}`}" to full ${hasWindtraps ? "fuel and filters" : "fuel"}?`,
       {
         title: "Refill Generators",
         confirmLabel: "Refill",
@@ -1693,7 +1701,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           const renderPower = () => {
           if (!base.generatorDataAvailable) return <p className="muted">Generator data is currently unavailable.</p>;
           const generators = base.generators ?? [];
-          if (!generators.length) return <p className="muted">No generators built at this base.</p>;
+          if (!generators.length) return <p className="muted">No generators or windtraps built at this base.</p>;
           const autoRefillEntry = autoRefillBases.get(id);
           const savingAutoRefill = savingAutoRefillId === id;
           const lastChecked = autoRefillEntry?.lastCheckedAt ? formatAgo(autoRefillEntry.lastCheckedAt) : "";
@@ -1750,13 +1758,15 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                 {QUEUED_RESERVE_EXPLANATION}
               </p>
               <div className="bases-card-grid">
-              {generators.map((generator, index) => (
+              {generators.map((generator, index) => {
+                const windtrap = isWindtrapType(generator.type);
+                return (
                 <div className="bases-card" key={`${generator.type}-${index}`}>
                   <div className="bases-card-title">{generator.name}</div>
                   <dl className="bases-card-stats">
-                    <dt>Generators</dt>
+                    <dt>{windtrap ? "Windtraps" : "Generators"}</dt>
                     <dd>{generator.generatorCount.toLocaleString()}</dd>
-                    <dt>Fuel Queued</dt>
+                    <dt>{windtrap ? "Filters Queued" : "Fuel Queued"}</dt>
                     <dd>{generator.fuelCells.toLocaleString()} {generator.fuelName}{generator.fuelCells === 1 ? "" : "s"}</dd>
                     {!hasNoQueuedFuel(generator.unstockedCount, generator.generatorCount) ? (
                       <>
@@ -1766,13 +1776,14 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                     ) : null}
                     {generator.unstockedCount ? (
                       <>
-                        <dt>No Queued Fuel</dt>
+                        <dt>{windtrap ? "No Queued Filters" : "No Queued Fuel"}</dt>
                         <dd>{generator.unstockedCount.toLocaleString()} of {generator.generatorCount.toLocaleString()}</dd>
                       </>
                     ) : null}
                   </dl>
                 </div>
-              ))}
+                );
+              })}
               </div>
             </div>
           );

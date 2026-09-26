@@ -74,12 +74,13 @@ issue if you get stuck on one of those.
 Expanding a base row in the Bases panel gives you these tabs (plus a Land
 Claim Editor not covered here):
 
-- **Power** — refill generators/water up to a per-generator-type cap
+- **Power** — refill generators, wind turbines, and windtrap filters up to a per-device-type cap
   ([`docs/console/generator-refill-caps.md`](console/generator-refill-caps.md),
   [`docs/console/generator-fuel-burn-rates.md`](console/generator-fuel-burn-rates.md)).
+  Windtrap filters keep the tier currently in use (first accepted tier in inventory, else the burning tier, else the default).
   Refills are queued and applied on the next safe window — they do not
   necessarily take effect the instant you click.
-- **Water** — same refill mechanism as Power, for water-producing devices.
+- **Water** — restores stored water only, for cisterns and windtraps. Same refill mechanism as Power, queued to the next safe window.
 - **Inventory** — a read-only snapshot of everything stored at the base,
   with the ability to open a container and delete individual items. See
   [`docs/console/base-inventory.md`](console/base-inventory.md) for what
@@ -97,7 +98,7 @@ Claim Editor not covered here):
   live map is queued and written at that map's next restart. See
   [`docs/console/base-child-permissions.md`](console/base-child-permissions.md).
 
-**Auto-refill** is opt-in per base, enabled from the Power tab (generators)
+**Auto-refill** is opt-in per base, enabled from the Power tab (generators, wind turbines, and windtraps)
 and the Water tab (water storage). An enrolled base is scanned on a fixed
 interval and queued for a refill when its lowest device falls below a
 threshold; the refill itself goes through the same queue as a manual one, so

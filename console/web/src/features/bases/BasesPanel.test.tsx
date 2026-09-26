@@ -285,6 +285,41 @@ describe("BasesPanel generator details", () => {
     expect(screen.getByText("1 of 1")).toBeInTheDocument();
   });
 
+  it("shows windtraps in the Power tab with filter wording", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true },
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 3,
+      rows: [
+        {
+          ...commonRow,
+          base_id: "1010",
+          name: "Sietch Traps",
+          generatorDataAvailable: true,
+          generatorCount: 3,
+          generatorRuntimeSeconds: 3600,
+          generatorUnstockedCount: 1,
+          generatorAllUnstocked: false,
+          generators: [
+            { type: "fuel", name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuelCells: 1, generatorCount: 1, runtimeSeconds: 3600, unstockedCount: 0 },
+            { type: "windtrap", name: "Windtrap", fuelName: "Filter", fuelCells: 0, generatorCount: 1, runtimeSeconds: 0, unstockedCount: 1 },
+            { type: "largeWindtrap", name: "Large Windtrap", fuelName: "Filter", fuelCells: 4, generatorCount: 1, runtimeSeconds: 345600, unstockedCount: 0 }
+          ]
+        }
+      ]
+    });
+
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch Traps" }));
+
+    const card = (title: string) => screen.getByText(title, { selector: ".bases-card-title" }).closest(".bases-card");
+    expect(card("Windtrap")?.textContent).toContain("Windtraps1Filters Queued0 FiltersNo Queued Filters1 of 1");
+    expect(card("Large Windtrap")?.textContent).toContain("Windtraps1Filters Queued4 Filters");
+    expect(card("Fuel-Powered Generator")?.textContent).toContain("Generators1Fuel Queued1 Fuel Cell");
+  });
+
   it("reports when every generator has no queued fuel without claiming active burns stopped", async () => {
     vi.mocked(basesApi.list).mockResolvedValue({
       capabilities: { bases: true },

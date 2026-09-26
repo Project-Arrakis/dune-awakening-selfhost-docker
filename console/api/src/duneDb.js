@@ -9094,7 +9094,14 @@ const FUEL_BURN_SECONDS = {
   spicedfuelcell: 90 * 60,        // measured — confirmed 2026-07-26 after the
                                    // generator rolled to a fresh burn cycle
   windturbinelubricant1: 60 * 60, // measured across 6 turbines
-  windturbinelubricant2: 90 * 60  // measured across 2 turbines
+  windturbinelubricant2: 90 * 60, // measured across 2 turbines
+  // Windtrap filters, measured 2026-09-26: 1-2 on dune2 (9 windtraps), 2-4 on
+  // the kovalt dump (28 windtraps). Filters 1-2 burn in the regular Windtrap,
+  // 3-4 in the Large Windtrap; no windtrap was ever seen holding another tier.
+  windtrapfilter1: 3 * 60 * 60,
+  windtrapfilter2: 8 * 60 * 60,
+  windtrapfilter3: 12 * 60 * 60,
+  windtrapfilter4: 24 * 60 * 60
 };
 
 // Funcom's 1.4.10.2 hotfix applies a temporary 2x uptime multiplier to
@@ -9155,10 +9162,40 @@ const GENERATOR_TYPES = {
     fuels: ["windturbinelubricant2"],
     buildingTypes: ["windturbinedirectional_placeable"],
     refill: { templateId: "WindTurbineLubricant2", stackSize: 100, maxStacks: 5, totalCap: 499 }
+  },
+  // Windtraps burn filters exactly the way generators burn fuel (an
+  // FFuelPoweredPlaceableComponent plus filter rows in their first inventory),
+  // but accept more than one tier. `fuelTemplates` lists the cased ids of every
+  // accepted tier: a refill tops up whichever tier the windtrap already holds or
+  // is burning, and falls back to refill.templateId only when it has neither.
+  // The inventory is 5 slots / volume 25 and a filter is volume 5, so one stack
+  // of 5 fills it; `volumeCap` stops a cap override from exceeding that, since
+  // the refill itself only counts slots. The 2x uptime event never covered them.
+  windtrap: {
+    name: "Windtrap",
+    fuelName: "Filter",
+    fuels: ["windtrapfilter1", "windtrapfilter2"],
+    fuelTemplates: ["WindTrapFilter1", "WindTrapFilter2"],
+    fuelNames: { windtrapfilter1: "Makeshift Filter", windtrapfilter2: "Standard Filter" },
+    buildingTypes: ["windtrap_placeable"],
+    uptimeEvent: false,
+    volumeCap: 5,
+    refill: { templateId: "WindTrapFilter2", stackSize: 5, maxStacks: 1, totalCap: 5 }
+  },
+  largeWindtrap: {
+    name: "Large Windtrap",
+    fuelName: "Filter",
+    fuels: ["windtrapfilter3", "windtrapfilter4"],
+    fuelTemplates: ["WindTrapFilter3", "WindTrapFilter4"],
+    fuelNames: { windtrapfilter3: "Particulate Filter", windtrapfilter4: "Advanced Particulate Filter" },
+    buildingTypes: ["largewindtrap_placeable"],
+    uptimeEvent: false,
+    volumeCap: 5,
+    refill: { templateId: "WindTrapFilter4", stackSize: 5, maxStacks: 1, totalCap: 5 }
   }
 };
 
-const GENERATOR_TYPE_ORDER = ["fuel", "spice", "windTurbineOmni", "windTurbineDirectional"];
+const GENERATOR_TYPE_ORDER = ["fuel", "spice", "windTurbineOmni", "windTurbineDirectional", "windtrap", "largeWindtrap"];
 
 // Flattened (generator_type, template_id) pairs and (template_id, seconds) pairs,
 // shaped for unnest() so the query never interpolates a fuel name.
@@ -9169,6 +9206,11 @@ const GENERATOR_BUILDING_TYPE_PAIRS = GENERATOR_TYPE_ORDER.flatMap(
   (type) => GENERATOR_TYPES[type].buildingTypes.map((buildingType) => [type, buildingType])
 );
 const FUEL_TEMPLATE_IDS = Object.keys(FUEL_BURN_SECONDS);
+// Fuels whose device type sits outside the uptime event keep their measured
+// duration while the event multiplier applies to everything else.
+const UPTIME_EVENT_EXEMPT_FUELS = new Set(GENERATOR_TYPE_ORDER
+  .filter((type) => GENERATOR_TYPES[type].uptimeEvent === false)
+  .flatMap((type) => GENERATOR_TYPES[type].fuels));
 
 // Operators can retune refill caps per generator type without a rebuild, the
 // same way runtime/data/admin-items.json is layered over the shipped catalog.
@@ -9190,7 +9232,8 @@ function refillCaps(repoRoot) {
     merged.templateId = defaults.templateId;
     merged.stackSize = clampInt(merged.stackSize, defaults.stackSize, 1, 10000);
     merged.maxStacks = clampInt(merged.maxStacks, defaults.maxStacks, 1, 50);
-    merged.totalCap = clampInt(merged.totalCap, defaults.totalCap, 1, merged.stackSize * merged.maxStacks);
+    merged.totalCap = clampInt(merged.totalCap, defaults.totalCap, 1,
+      Math.min(merged.stackSize * merged.maxStacks, GENERATOR_TYPES[type].volumeCap || Number.MAX_SAFE_INTEGER));
     caps[type] = merged;
   }
   return caps;
@@ -9236,9 +9279,10 @@ export async function portalGeneratorFuel(db, baseIds, { now = new Date() } = {}
         -- SQL null, and reading that as a fuel id matched no inventory rows —
         -- reporting 0 runtime for generators holding hundreds of cells.
         --
-        -- Each generator type has one accepted consumable. Joining through
-        -- type_fuels guarantees that an incompatible lubricant placed in a
-        -- turbine's inventory contributes nothing to its queued reserve.
+        -- Generators and turbines accept one consumable, windtraps one of two
+        -- filter tiers. Joining through type_fuels guarantees that an
+        -- incompatible lubricant placed in a turbine's inventory contributes
+        -- nothing to its queued reserve.
         select sum(i.stack_size * fd.seconds)::numeric stocked_seconds,
                sum(i.stack_size)::int total_units
         from dune.inventories inv
@@ -9273,7 +9317,8 @@ export async function portalGeneratorFuel(db, baseIds, { now = new Date() } = {}
     from generator_runtime group by base_id, generator_type`, [
       baseIds,
       FUEL_TEMPLATE_IDS,
-      FUEL_TEMPLATE_IDS.map((template) => FUEL_BURN_SECONDS[template] * uptimePolicy.multiplier),
+      FUEL_TEMPLATE_IDS.map((template) =>
+        FUEL_BURN_SECONDS[template] * (UPTIME_EVENT_EXEMPT_FUELS.has(template) ? 1 : uptimePolicy.multiplier)),
       GENERATOR_TYPE_FUEL_PAIRS.map(([type]) => type),
       GENERATOR_TYPE_FUEL_PAIRS.map(([, template]) => template),
       GENERATOR_BUILDING_TYPE_PAIRS.map(([type]) => type),
@@ -11086,7 +11131,8 @@ export async function baseGeneratorFuelLevels(db, repoRoot, baseId) {
     // A device with no inventory row cannot hold fuel at all, so it reads as
     // empty -- the same case refillBaseGenerators reports as "no-inventory".
     const units = device.inventory_id
-      ? stocked.get(`${device.inventory_id}:${cap.templateId.toLowerCase()}`) || 0
+      ? GENERATOR_TYPES[device.generator_type].fuels
+        .reduce((sum, fuel) => sum + (stocked.get(`${device.inventory_id}:${fuel}`) || 0), 0)
       : 0;
     entries.push({
       placeableId: device.placeable_id,
@@ -11105,9 +11151,37 @@ export async function baseGeneratorFuelLevels(db, repoRoot, baseId) {
   };
 }
 
+const NO_POWER_DEVICES_MESSAGE = "No generators, wind turbines or windtraps were found at this base";
+
+// The cased template a refill writes for one device. Single-fuel types always
+// use refill.templateId. Multi-tier types (windtraps) keep the tier the player
+// chose: the first accepted tier already in the inventory, else the one it is
+// burning (an idle device reports the literal 'None', which matches nothing),
+// else the configured default.
+async function refillTemplateFor(tx, device, type, cap) {
+  if (!type.fuelTemplates) return cap.templateId;
+  const byLower = new Map(type.fuelTemplates.map((template) => [template.toLowerCase(), template]));
+  const stocked = await tx.query(`
+    select lower(template_id) as template_id
+    from dune.items
+    where inventory_id = $1 and lower(template_id) = any($2::text[])
+    order by position_index
+    limit 1`, [device.inventory_id, type.fuels]);
+  const held = byLower.get(stocked.rows[0]?.template_id);
+  if (held) return held;
+  const burning = await tx.query(`
+    select lower(fe.components->'FFuelPoweredPlaceableComponent'->1->'m_FuelBurningId'->>'Name') as template_id
+    from dune.actor_fgl_entities afe
+    join dune.fgl_entities fe on fe.entity_id = afe.entity_id
+    where afe.actor_id = $1 and fe.components ? 'FFuelPoweredPlaceableComponent'
+    limit 1`, [device.placeable_id]);
+  return byLower.get(burning.rows[0]?.template_id) || cap.templateId;
+}
+
 // Tops every power device at a base up to its configured cap in one
 // transaction: partial stacks are filled before new rows are created, so a
 // device never ends up with more rows than the game would have made itself.
+// Windtraps are power devices here too, so a queued refill covers their filters.
 export async function refillBaseGenerators(db, repoRoot, baseId) {
   await requireCapability(
     await supportsGeneratorRefill(db),
@@ -11119,7 +11193,7 @@ export async function refillBaseGenerators(db, repoRoot, baseId) {
   return db.transaction(async (tx) => {
     const itemColumns = await columnsFor(tx, "items");
     const devices = await baseGenerators(tx, target);
-    if (!devices.length) throw new Error("No generators or wind turbines were found at this base");
+    if (!devices.length) throw new Error(NO_POWER_DEVICES_MESSAGE);
 
     const refilled = [];
     for (const device of devices) {
@@ -11145,15 +11219,20 @@ export async function refillBaseGenerators(db, repoRoot, baseId) {
       // queue behind -- same technique as giveItemToStorage/giveItemToPlayer.
       await tx.query("select id from dune.inventories where id = $1 for update", [device.inventory_id]);
 
-      // Lock this device's fuel rows so a concurrent refill cannot double-fill it.
-      const existing = await tx.query(`
-        select id, stack_size, position_index
+      // Lock this device's fuel rows (every accepted tier) so a concurrent
+      // refill cannot double-fill it. Other accepted tiers count against the
+      // cap but are never topped up, so a refill never mixes tiers further.
+      const templateId = await refillTemplateFor(tx, device, type, cap);
+      const accepted = await tx.query(`
+        select id, stack_size, position_index, lower(template_id) as template_id
         from dune.items
-        where inventory_id = $1 and lower(template_id) = lower($2)
+        where inventory_id = $1 and lower(template_id) = any($2::text[])
         order by position_index
-        for update`, [device.inventory_id, cap.templateId]);
+        for update`, [device.inventory_id, type.fuels]);
+      const existing = { rows: (accepted.rows || []).filter((row) => row.template_id === templateId.toLowerCase()) };
+      if (type.fuelNames) summary.fuelName = type.fuelNames[templateId.toLowerCase()] || type.fuelName;
 
-      const before = existing.rows.reduce((sum, row) => sum + (Number(row.stack_size) || 0), 0);
+      const before = (accepted.rows || []).reduce((sum, row) => sum + (Number(row.stack_size) || 0), 0);
       let deficit = Math.max(0, cap.totalCap - before);
       if (deficit === 0) {
         refilled.push({ ...summary, before, after: before, added: 0, capped: false });
@@ -11184,7 +11263,7 @@ export async function refillBaseGenerators(db, repoRoot, baseId) {
         const size = Math.min(cap.stackSize, deficit);
         const insert = itemInsertShape(
           ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
-          [device.inventory_id, cap.templateId, size, 0, nextPosition, JSON.stringify({})],
+          [device.inventory_id, templateId, size, 0, nextPosition, JSON.stringify({})],
           itemColumns
         );
         await tx.query(`
@@ -11535,7 +11614,7 @@ function childAccessNoLongerApplicable(message) {
 }
 
 function refillNoLongerApplicable(message) {
-  return message === "No generators or wind turbines were found at this base"
+  return message === NO_POWER_DEVICES_MESSAGE
     || message === "No water storage was found at this base";
 }
 
@@ -12816,7 +12895,7 @@ export async function baseContainerSlots(db, baseId, placeableId) {
 
   // The claim-resolution CTEs are baseInventory's, narrowed to one placeable.
   // The inventory_types join is load-bearing, not tidiness: it is what keeps
-  // this off generator and windtrap fuel, which the Power and Water tabs own
+  // this off generator fuel and windtrap filters, which the Power tab owns
   // -- both carry max_item_count = 5, so the >= 0 filter admits them same as
   // any storage container, and only the allowlist join excludes them.
   // is_hologram/max_item_count >= 0 are kept for the other reason baseInventory
@@ -12956,8 +13035,8 @@ export async function baseContainerSlots(db, baseId, placeableId) {
 // scratch rather than trusting the placeable id the caller sent, and keeps
 // baseInventory's inventory_types join plus the is_hologram / max_item_count
 // filters: together they prove the item sits in an allowlisted container at the
-// requested base, which is what stops this reaching a generator or windtrap
-// fuel inventory that the Power and Water tabs own. Deliberately NOT the
+// requested base, which is what stops this reaching a generator fuel or windtrap
+// filter inventory that the Power tab owns. Deliberately NOT the
 // giveItemToStorage shape, which only checks that some inventory exists for an
 // actor and picks one arbitrarily.
 //
@@ -13187,8 +13266,8 @@ export async function addBaseContainerItem(db, baseId, placeableId, {
   return db.transaction(async (tx) => {
     // Ownership is re-proved from the base id, never trusted from the
     // placeable id the caller sent. The inventory_types join is what keeps
-    // this off generator and windtrap fuel inventories, which the Power and
-    // Water tabs own.
+    // this off generator fuel and windtrap filter inventories, which the Power tab
+    // owns.
     //
     // for update OF inv -- not a bare `for update`, since Postgres cannot lock
     // a CTE reference. The outer query re-joins dune.inventories purely to
