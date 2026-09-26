@@ -188,15 +188,37 @@ export const ROUTE_ACTIONS = {
   // --- Discord Bot Adapter Settings ---
   // GET uses updates:read, not settings:read -- audit finding #6 (LOW):
   // admin is denied settings:* (see the Deny wildcard in policy.js) but IS
-  // allowed updates:* (self-update already reaches this class of
-  // capability), and the POST routes below already use updates:apply --
-  // an admin who can mutate this feature's state must also be able to read
-  // it back first. updates:read requires zero DEFAULT_POLICIES changes,
+  // allowed updates:read (self-update already reaches this class of
+  // capability), so admin at least gets read-only visibility into this
+  // feature's state. updates:read requires zero DEFAULT_POLICIES changes,
   // matching this feature's existing pattern of reusing an existing
   // wildcard rather than editing policies.
+  //
+  // Upstream-port correction (tier1-upstream base, confirmed directly via
+  // `evaluate({tier:"admin"}, "updates:apply")` -> false): this comment
+  // previously went on to claim admin can also reach the POST routes below
+  // ("an admin who can mutate this feature's state must also be able to
+  // read it back first") on the premise that updates:apply is admin-
+  // reachable the same way updates:read/check/self-check are. That premise
+  // holds on fork main, but tier1-upstream's own policy.js lists
+  // updates:apply/fix/repair in CROWN_JEWEL_DENY_ACTIONS ("deploying /
+  // altering the running code" -- a real, deliberate, stricter posture
+  // already established there, not something this port should weaken --
+  // see oauthRoutes.integration.test.js's "admin-tier session gets a real
+  // 403..." test for the same conclusion reached independently). The net
+  // effect: on this branch, admin can see this feature's state (GET) but
+  // cannot change it (every POST route below is owner-only in practice,
+  // same as regenerate-token/disable/oauth-config/oauth-secret further
+  // down) -- there is currently no route in this file where a non-owner
+  // session can mutate Discord Bot settings. Reusing updates:apply here
+  // instead of a dedicated action name was still the right call: adding a
+  // new admin-reachable action would be widening a currently owner-only
+  // surface, which needs its own explicit design decision, not a side
+  // effect of a doc-accuracy fix.
   "GET /api/settings/discord-bot":              "updates:read",
   // Real UAT finding (2026-09-10): the 3-step wizard's early choice-persist
-  // -- no restart, so same non-destructive tier as enable/role-ids.
+  // -- no restart, so same tier as enable/role-ids (see the correction
+  // above: that tier is owner-only on this branch, not admin-reachable).
   "POST /api/settings/discord-bot/choice":      "updates:apply",
   "POST /api/settings/discord-bot/enable":      "updates:apply",
   "POST /api/settings/discord-bot/role-ids":    "updates:apply",
@@ -217,9 +239,18 @@ export const ROUTE_ACTIONS = {
   // Real UAT finding (2026-09-09): the hosted-bot connection's own,
   // independent Discord Application config -- see server.js's own comment
   // on these 2 routes for why they're separate from Settings -> Discord
-  // OAuth. Same tier as enable/role-ids/restart above, not owner-only:
-  // this is prerequisite setup, not a destructive/credential-invalidating
-  // action the way regenerate-token/disable are.
+  // OAuth. Originally mapped to updates:apply, same as enable/role-ids/
+  // restart above (this was "not owner-only: prerequisite setup, not a
+  // destructive/credential-invalidating action" on fork main, at the time
+  // #859 was found) -- but #859 itself is exactly why that no longer
+  // applies: substituting the Discord Application's own credentials IS a
+  // credential-invalidating action once you account for what an attacker
+  // does with it, so it was moved to its own owner-only settings:* action
+  // below rather than staying grouped with enable/role-ids/restart. (On
+  // this tier1-upstream-based branch, enable/role-ids/restart are now
+  // ALSO owner-only via CROWN_JEWEL_DENY_ACTIONS -- see the GET route's
+  // comment above -- so this pair is no longer the odd one out tier-wise
+  // either; #859's fix stands regardless of that separate fact.)
   // dune-awakening-selfhost-docker#859: these two routes replace the
   // hosted-bot Discord Application's Client ID/Secret/Redirect URI --
   // exactly the class of credential-replacement action every OTHER route
