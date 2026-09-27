@@ -4,7 +4,7 @@
 
 **Status:** Core-side implementation complete (write/preview + write/execute, the per-action tier/route tables, and the internal dispatch mechanism described below). Bot-side status (item autocomplete, per-group cooldowns, parameter validation) is unchanged from this document's original assessment and is tracked separately in the bot's own repository, not this one.
 
-**Note on this revision:** this document originally cited several issue numbers (`#215`-`#223`) as its own audit trail. Those numbers were local to the fork this feature was first prototyped on and were never resolvable here — this revision removes them and states the underlying reasoning inline instead, and replaces the original "Related Issues" table (Section 8) with a plain, numberless list of what each item actually means.
+**Note on this revision:** an earlier draft of this document tracked its own audit trail against a private issue tracker not reachable from here. This revision states the underlying reasoning inline instead, and replaces the original "Related Issues" table (Section 8) with a plain list of what each item actually means.
 
 ---
 
