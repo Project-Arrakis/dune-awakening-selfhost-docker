@@ -51,26 +51,21 @@ const SIGNED_ACTOR_FIELDS = ["userId", "guildId", "channelId", "roleIds", "inter
 // Independent field set for the Discord write bridge (docs/rw-architecture.md
 // section 3.8, issue #215). Deliberately NOT added to SIGNED_ACTOR_FIELDS above
 // -- that array is consumed by every existing actor-signed route (link, verify,
-// unlink, steam-link), and this codebase has an explicit, on-point precedent
-// (issue #691, referenced in policy.js's own comments) that expanding a shared
-// signed-field set requires a separate, coordinated, versioned rollout across
-// both repos, since Core and the bot ship on independent release trains.
-// write/preview and write/execute are brand-new routes with no existing wire
-// format to preserve, so they define their own set from inception instead:
-// adds `username` (a real actor field, not currently in the shared subset) and
-// `roleSnapshotAt` (when the bot re-derived actor.roleIds from Discord, closing
-// the gap where "actor signature + capability re-validated at both preview AND
-// execute" only proves the same functions ran twice, not that roleIds reflects
-// the actor's CURRENT roles rather than a value cached from the original
-// interaction); deliberately omits `interactionId` since the write bridge's own
-// 60s nonce/expiry already binds each request to one specific confirm-click,
-// making a separate per-interaction replay guard redundant here.
+// unlink, steam-link), and expanding a shared signed-field set consumed by
+// multiple already-shipped routes needs a separate, coordinated, versioned
+// rollout across both repos, since Core and the bot ship on independent
+// release trains. write/preview and write/execute are brand-new routes with
+// no existing wire format to preserve, so they define their own set from
+// inception instead: adds `username` (a real actor field, not currently in
+// the shared subset) and `roleSnapshotAt` (when the bot re-derived
+// actor.roleIds from Discord, closing the gap where "actor signature +
+// capability re-validated at both preview AND execute" only proves the same
+// functions ran twice, not that roleIds reflects the actor's CURRENT roles
+// rather than a value cached from the original interaction); deliberately
+// omits `interactionId` since the write bridge's own 60s nonce/expiry
+// already binds each request to one specific confirm-click, making a
+// separate per-interaction replay guard redundant here.
 //
-// Any FUTURE change to this array must follow the same coordinated,
-// versioned, Core/bot-synchronized rollout discipline #691 established for the
-// shared array above -- being independent from it exempts this array only from
-// needing that discipline retroactively for its one-time initial creation, not
-// from needing it for any later change.
 // [CRITICAL fix] `action` added: write/preview and write/execute are the
 // SAME route for every action -- without it in the signed payload, a
 // captured, legitimately-signed envelope from a real moderator+ actor could
@@ -82,7 +77,29 @@ const SIGNED_ACTOR_FIELDS = ["userId", "guildId", "channelId", "roleIds", "inter
 // body, not one of its fields. mentat's own actorSignature.js must sign the
 // identical shape or every real write-bridge request fails verification
 // (see that repo's own fix, same finding).
-export const WRITE_BRIDGE_SIGNED_ACTOR_FIELDS = ["userId", "username", "roleIds", "guildId", "channelId", "roleSnapshotAt", "action"];
+//
+// [CRITICAL fix, issue #1070] `params` was ALSO missing, leaving the exact
+// same class of gap the `action` fix above closed for the action name, just
+// one level down: write/preview's own handler (routes.js's
+// writePreviewRoute) mints a brand-new nonce binding whatever `body.params`
+// the request carries, using only the actor+action signature to authorize
+// doing so. Since params was never part of what the signature covers, an
+// attacker positioned to observe (not forge -- a MITM, a compromised
+// reverse proxy, a logging tap on the Hop A path) one legitimately-signed
+// write/preview envelope for, say, `player.kick {playerId: "Alice"}` could
+// replay it verbatim within the freshness window with `params` substituted
+// to `{playerId: "Bob"}` and mint a fully valid, correctly-signed nonce to
+// kick Bob instead -- something the real signer never asked for.
+// (write/execute's own request body params are never actually trusted for
+// the dispatch -- it always uses the nonce-stored params from the original
+// write/preview call -- so this gap was real specifically at write/preview's
+// minting step, not at execute time; `params` is still included here for
+// both routes so the two share one signed-field contract.) The route's
+// caller (routes.js's readJsonWithActorSignature) merges body.params into
+// the signed actor payload the same way it already does for `action`, for
+// the same reason: params is a sibling of `actor` in the request body, not
+// one of its own fields.
+export const WRITE_BRIDGE_SIGNED_ACTOR_FIELDS = ["userId", "username", "roleIds", "guildId", "channelId", "roleSnapshotAt", "action", "params"];
 
 export function actorSignatureSecret(config = {}) {
   const direct = process.env.DUNE_DISCORD_ACTOR_SECRET || config.discordActorSecret || "";
@@ -118,11 +135,38 @@ export function actorSignatureRequired(config = {}) {
 // window — see FINDING-LINK-1's Known Limitations for why a full nonce/
 // one-time-use scheme was not implemented here), but it eliminates
 // cross-route and cross-body-parameter forgery using a captured envelope.
+// Deep, key-sorted canonicalization for an object-valued signed field (used
+// by `params` above) -- plain `String(value)` on an object collapses every
+// distinct object to the literal string "[object Object]", which would make
+// signing an object field a complete no-op (every possible params payload
+// would canonicalize identically). Object keys are sorted recursively so
+// the same logical params object signs identically regardless of the
+// property insertion order the sender happened to use; array ELEMENT order
+// is preserved as-is (unlike the top-level roleIds field's own deliberate
+// sort-as-a-set behavior below), since a params array's order can be
+// semantically meaningful (e.g. an ordered list of ids) in a way roleIds's
+// unordered set is not.
+function canonicalizeValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalizeValue);
+  if (value && typeof value === "object") {
+    const sorted = {};
+    for (const key of Object.keys(value).sort()) sorted[key] = canonicalizeValue(value[key]);
+    return sorted;
+  }
+  return value;
+}
+
 export function canonicalActorSignaturePayload(actorPayload = {}, timestamp, route = "", fields = SIGNED_ACTOR_FIELDS) {
   const canonical = {};
   for (const key of fields) {
     const value = actorPayload?.[key];
-    canonical[key] = Array.isArray(value) ? [...value].map(String).sort() : String(value ?? "");
+    if (Array.isArray(value)) {
+      canonical[key] = [...value].map(String).sort();
+    } else if (value && typeof value === "object") {
+      canonical[key] = canonicalizeValue(value);
+    } else {
+      canonical[key] = String(value ?? "");
+    }
   }
   return `${timestamp}.${String(route)}.${JSON.stringify(canonical)}`;
 }

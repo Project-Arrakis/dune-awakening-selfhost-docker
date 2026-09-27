@@ -194,10 +194,15 @@ export async function handleDiscordAdapterRoute({
   // action). body.action must be merged into the signed payload here,
   // before verification, since it lives alongside `actor` in the body, not
   // inside it.
+  // [CRITICAL fix, issue #1070] Same reasoning applies to "params" -- see
+  // actorSignature.js's own comment on WRITE_BRIDGE_SIGNED_ACTOR_FIELDS for
+  // the replay-with-substituted-params gap this closes.
   async function readJsonWithActorSignature(request, { requireActorSignature = false, fields } = {}) {
     const body = await readJson(request);
     try {
-      const actorPayload = fields?.includes("action") ? { ...body?.actor, action: body?.action } : body?.actor;
+      const actorPayload = { ...body?.actor };
+      if (fields?.includes("action")) actorPayload.action = body?.action;
+      if (fields?.includes("params")) actorPayload.params = body?.params;
       verifyActorSignature({ actorPayload, headers: request.headers, config, route: path, required: requireActorSignature, ...(fields ? { fields } : {}) });
     } catch (error) {
       // When a secret is configured: always throw (even for read routes).
