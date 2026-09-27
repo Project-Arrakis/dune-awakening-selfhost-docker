@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import * as duneDb from "../duneDb.js";
 import { resolveMapCombatState } from "./mapCombatState.js";
 import { resolveCoriolisCycle } from "./coriolisSeed.js";
@@ -37,6 +38,27 @@ const ATLAS_MAPS = [
   { displayMap: "DeepDesert", combatMap: "DeepDesert_1" }
 ];
 
+// The real login password for a Survival_1 sietch (Bgd.ServerLoginPassword,
+// set via `dune sietches set-password`/`set-settings`). Every other reader
+// of this field in this codebase (the CLI's `list`/`show`, the web
+// console's MapsPanel SecretInput) is deliberately write-only and never
+// echoes the real value back -- this is the first read path for the actual
+// plaintext, added specifically so #the-atlas can show it to the
+// Naib/Fedaykin/Crysknife-Bearer-restricted channel players need it to
+// actually log into the sietch (mentat#376, dune-awakening-selfhost-docker#938).
+function sietchLoginPassword(config, partitionId) {
+  if (!config?.repoRoot) return null;
+  try {
+    const cfgPath = resolve(config.repoRoot, "runtime/generated/sietch-config.json");
+    if (!existsSync(cfgPath)) return null;
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+    const value = cfg?.partitions?.[String(partitionId)]?.password;
+    return value ? String(value) : null;
+  } catch {
+    return null;
+  }
+}
+
 function partitionRowsFromCombatResult(result) {
   if (result?.capabilities?.combatState === false || !Array.isArray(result?.rows)) return [];
   return result.rows.map((row) => ({
@@ -50,7 +72,7 @@ function partitionRowsFromCombatResult(result) {
   }));
 }
 
-async function sietchesForMap(config, displayMap, combatMap, db, mapCombatPartitionRows, resolveCombatState, resolveStorm, partitionModifiers) {
+async function sietchesForMap(config, displayMap, combatMap, db, mapCombatPartitionRows, resolveCombatState, resolveStorm, partitionModifiers, includePasswords) {
   const partitionResult = await mapCombatPartitionRows(db, combatMap).catch(() => ({ rows: [], capabilities: { combatState: false } }));
   const rows = partitionRowsFromCombatResult(partitionResult);
   if (rows.length === 0) return [];
@@ -63,6 +85,16 @@ async function sietchesForMap(config, displayMap, combatMap, db, mapCombatPartit
       serverDisplayName: partition.serverDisplayName,
       runtimeStatus: partition.runtimeStatus,
       combatState: partition.configuredState,
+      // [Security fix, real finding from automated PR review, 2026-09-27]
+      // ATLAS_READ is public tier (policy.js CAPABILITY_BY_TIER) -- ANY
+      // Discord actor who can reach this route gets this payload,
+      // regardless of which channel mentat happens to post it into. A
+      // Discord channel permission lock only restricts who can SEE the
+      // message mentat posts; it does nothing to the underlying API this
+      // route serves. loginPassword must never be included unless the
+      // CALLING ACTOR's own roles are independently verified here, not
+      // merely assumed safe because of an unrelated channel lock.
+      loginPassword: includePasswords ? sietchLoginPassword(config, partition.partitionId) : null,
       sandstormActive: sandstorm.active,
       sandstormLastStartAt: sandstorm.lastStartAt,
       // Real operator request (2026-09-18): show what's configured
@@ -85,7 +117,8 @@ export async function buildSietchAtlas(config, db, {
   resolveCycle = resolveCoriolisCycle,
   resolveStorm = resolveSandstormStatus,
   readModifiers = defaultReadModifiers,
-  maps = ATLAS_MAPS
+  maps = ATLAS_MAPS,
+  includePasswords = false
 } = {}) {
   let modifiersByScope;
   try {
@@ -96,7 +129,7 @@ export async function buildSietchAtlas(config, db, {
 
   const [coriolis, ...sietchesByMap] = await Promise.all([
     resolveCycle({ map: "HaggaBasin" }).catch(() => ({ seed: null, nextCycleAt: null })),
-    ...maps.map(({ displayMap, combatMap }) => sietchesForMap(config, displayMap, combatMap, db, mapCombatPartitionRows, resolveCombatState, resolveStorm, modifiersByScope.partitions))
+    ...maps.map(({ displayMap, combatMap }) => sietchesForMap(config, displayMap, combatMap, db, mapCombatPartitionRows, resolveCombatState, resolveStorm, modifiersByScope.partitions, includePasswords))
   ]);
 
   const sietches = {};

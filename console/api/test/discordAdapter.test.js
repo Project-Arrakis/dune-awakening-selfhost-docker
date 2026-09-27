@@ -880,6 +880,66 @@ test("world/atlas route is reachable at public tier and returns the built atlas"
   }
 });
 
+// [Security regression test, real finding from automated PR review,
+// 2026-09-27] ATLAS_READ is public tier — the route must never pass
+// includePasswords: true to the atlas builder unless the calling actor's
+// OWN roleIds are independently checked against DUNE_ATLAS_PASSWORD_ROLE_IDS.
+// A Discord channel's own permission lock has no bearing on this route.
+test("world/atlas route only requests real sietch passwords for an actor holding an allowlisted role", async () => {
+  const tokenFile = "/tmp/discord-adapter-atlas-password-test-token.txt";
+  writeFileSync(tokenFile, "server-test-token");
+  const testConfig = { discordBotApiTokenFile: tokenFile, discordAdapterEnabled: true, auditLog: "/tmp/discord-adapter-atlas-password-test-audit.jsonl", generatedDir: "/tmp/discord-adapter-atlas-password-test-generated" };
+  const db = { query: async () => ({ rows: [], rowCount: 0 }) };
+  const OLD_ROLE_IDS = process.env.DUNE_ATLAS_PASSWORD_ROLE_IDS;
+  process.env.DUNE_ATLAS_PASSWORD_ROLE_IDS = "role-naib,role-fedaykin";
+  const receivedIncludePasswords = [];
+  const sietchAtlasBuilder = async (_config, _db, options) => {
+    receivedIncludePasswords.push(options?.includePasswords);
+    return { coriolisSeed: null, coriolisNextCycleAt: null, sietches: { HaggaBasin: [], DeepDesert: [] } };
+  };
+
+  try {
+    await new Promise((resolve, reject) => {
+      const server = createServer(async (req, res) => {
+        const url = new URL(req.url || "/", "http://local");
+        const path = url.pathname;
+        const readJson = async () => {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          return Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+        };
+        const json = (r, code, body) => { r.writeHead(code, { "content-type": "application/json" }); r.end(JSON.stringify(body)); };
+        await handleDiscordAdapterRoute({ req, res, path, config: testConfig, readJson, json, db, sietchAtlasBuilder });
+      });
+      const auth = { authorization: "Bearer server-test-token" };
+      const route = "/api/integrations/discord/world/atlas";
+
+      server.listen(async () => {
+        try {
+          const base = `http://127.0.0.1:${server.address().port}`;
+
+          // No roles at all (public tier, the common case): must not
+          // request passwords.
+          await fetch(`${base}${route}`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor([]) }) });
+          // A role NOT on the allowlist: must not request passwords.
+          await fetch(`${base}${route}`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-houseless"]) }) });
+          // A role ON the allowlist: must request passwords.
+          await fetch(`${base}${route}`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ actor: actor(["role-naib"]) }) });
+
+          assert.deepEqual(receivedIncludePasswords, [false, false, true]);
+
+          server.close();
+          resolve();
+        } catch (e) { server.close(); reject(e); }
+      });
+    });
+  } finally {
+    try { unlinkSync(tokenFile); } catch {}
+    if (OLD_ROLE_IDS === undefined) delete process.env.DUNE_ATLAS_PASSWORD_ROLE_IDS;
+    else process.env.DUNE_ATLAS_PASSWORD_ROLE_IDS = OLD_ROLE_IDS;
+  }
+});
+
 // Actor signature enforcement — FINDING-LINK-1
 // (docs/security/discord-player-link-hardening.md): when
 // DUNE_DISCORD_ACTOR_SECRET is configured, the bearer token alone is no
