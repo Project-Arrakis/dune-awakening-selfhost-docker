@@ -13,7 +13,7 @@ import {
   selfCheckDiscordCapabilityPartition
 } from "../src/integrations/discord/policy.js";
 
-// [Layer 3 integration audit fix, issue #1037 -- fixed] requireExperimentalReadOnlyCapability()
+// requireExperimentalReadOnlyCapability()
 // used to be structurally a no-op: EXPERIMENTAL_READ_ONLY_CAPABILITIES was
 // defined as exactly "DISCORD_CAPABILITIES minus DISCORD_WRITE_CAPABILITIES",
 // so its own throw branch could never fire for any real capability -- a

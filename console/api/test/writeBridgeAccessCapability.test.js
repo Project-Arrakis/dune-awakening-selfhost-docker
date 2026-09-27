@@ -52,7 +52,7 @@ test("requireDiscordCapability passes for moderator+ for WRITE_BRIDGE_ACCESS", (
 
 // The claim "WRITE_BRIDGE_ACCESS alone does not grant any specific write
 // action -- that's writeActionMinTier.js's job" used to have a test here
-// (Layer 2 QA finding, issue #1023): its only assertion was byte-identical
+// (a QA review finding): its only assertion was byte-identical
 // to "requireDiscordCapability passes for moderator+" above and proved
 // nothing about the claim in its name. The real assertion already lives
 // where the comment always said it should: writeBridge.integration.test.js's

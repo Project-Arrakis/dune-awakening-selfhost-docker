@@ -37,7 +37,7 @@ export const DISCORD_WRITE_CAPABILITIES = Object.freeze(new Set([
   DISCORD_CAPABILITIES.WRITE_BRIDGE_ACCESS
 ]));
 
-// [Layer 3 integration audit fix, issue #1037] Deliberately an independent,
+// Deliberately an independent,
 // hand-maintained allowlist -- NOT "everything that isn't a write
 // capability," which is what this used to be (`new Set(Object.values(
 // DISCORD_CAPABILITIES).filter((c) => !DISCORD_WRITE_CAPABILITIES.has(c)))`).

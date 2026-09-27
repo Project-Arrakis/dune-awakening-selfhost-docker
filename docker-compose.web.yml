@@ -99,7 +99,7 @@ services:
       DISCORD_MODERATOR_ROLE_IDS: "${DISCORD_MODERATOR_ROLE_IDS:-}"
       DISCORD_ADMIN_ROLE_IDS: "${DISCORD_ADMIN_ROLE_IDS:-}"
       DISCORD_OWNER_ROLE_IDS: "${DISCORD_OWNER_ROLE_IDS:-}"
-      # Write bridge (issue #215): without these three, DUNE_DISCORD_WRITES_ENABLED=1
+      # Write bridge: without these three, DUNE_DISCORD_WRITES_ENABLED=1
       # and a configured DUNE_DISCORD_ACTOR_SECRET in .env have zero effect --
       # this file has no `env_file:` directive (see the note above), so a var
       # missing from this explicit map never reaches the container at all,

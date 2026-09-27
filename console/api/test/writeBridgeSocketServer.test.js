@@ -193,7 +193,7 @@ test("startWriteBridgeSocketServer: umask is restored to its original value afte
   }
 });
 
-// [Layer 3 integration audit fix, LOW, issue #1053] The test above only
+// The test above only
 // checks the END STATE (umask is back to normal once the whole async
 // function resolves) -- it would pass equally under the previous, buggy
 // version, which restored the umask only after awaiting the async

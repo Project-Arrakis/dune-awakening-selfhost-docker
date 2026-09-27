@@ -152,7 +152,7 @@ test("exposes only allowlisted adapter route names", () => {
     "/api/integrations/discord/write/execute",
     "/api/integrations/discord/write/preview"
   ].sort());
-  // write/preview, write/execute (issue #215) are a deliberate exception to
+  // write/preview, write/execute are a deliberate exception to
   // this naming lint -- these genuinely ARE the write bridge's own
   // destructive-action entry points; the name is accurate, not accidental.
   // Their real security is enforced by the actor-signature + capability +

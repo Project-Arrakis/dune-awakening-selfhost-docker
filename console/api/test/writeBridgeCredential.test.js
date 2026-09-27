@@ -157,7 +157,7 @@ test("resolveWriteBridgePrincipal: a tier meeting or exceeding the action's own 
   }
 });
 
-// [Layer 3 integration audit fix, HIGH, issue #1034] Before this fix,
+// Before this fix,
 // resolveWriteBridgePrincipal only checked the tier header was ONE OF the
 // three valid strings -- never that it met the specific action's own
 // declared minimum. A caller asserting "moderator" for player.kick (which
@@ -180,8 +180,8 @@ test("resolveWriteBridgePrincipal: a syntactically valid tier below the action's
 // catches that throw and returns null rather than propagating it (see the
 // try/catch around the meetsMinTier call above). There is currently no real
 // WRITE_ACTION_ROUTES entry without a matching WRITE_ACTION_MIN_TIER entry
-// to exercise that catch branch against live data (issue #1039 adds a
-// boot-time check specifically to keep it that way), so this exact branch
+// to exercise that catch branch against live data (a boot-time check
+// specifically keeps it that way), so this exact branch
 // is defensive-only by design today, not independently unit-testable here
 // without mocking the imported module.
 

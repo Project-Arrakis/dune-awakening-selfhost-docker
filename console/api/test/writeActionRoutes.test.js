@@ -19,7 +19,7 @@ test("selfCheckWriteActionRoutes: clean against real actions.js -- every entry r
   assert.deepEqual(problems, []);
 });
 
-// [Layer 3 integration audit fix, MEDIUM, issue #1039] Mutation-tested: a
+// Mutation-tested: a
 // WRITE_ACTION_ROUTES entry with no matching WRITE_ACTION_MIN_TIER entry
 // used to pass boot silently. Deletes and restores a real min-tier entry
 // (rather than adding a fake WRITE_ACTION_ROUTES entry) so this test can
@@ -45,8 +45,8 @@ test("checkConfirmPhrasesAgainstRealHandlers: clean -- the real carePackage.js h
   assert.deepEqual(problems, []);
 });
 
-test("checkConfirmPhrasesAgainstRealHandlers: regression proof -- catches issue #1018's exact shape (a missing confirmPhrase for a real-handler-checked action), independently of the hand-maintained completeness test", async () => {
-  // A routes table shaped exactly like #1018's real bug: carepackage.grant
+test("checkConfirmPhrasesAgainstRealHandlers: regression proof -- catches a missing confirmPhrase for a real-handler-checked action, independently of the hand-maintained completeness test", async () => {
+  // A routes table shaped exactly like a real, previously-shipped bug: carepackage.grant
   // declared with NO confirmPhrase, even though the real grantCarePackage()
   // handler unconditionally requires one. The injectable `routes` parameter
   // lets this test call the real checker against this broken shape without
@@ -107,7 +107,7 @@ test("validatePlayerId: accepts real Funcom-style ids", () => {
   assert.equal(validatePlayerId("5E121CE000000001"), "5E121CE000000001");
 });
 
-test("validatePlayerId: accepts underscore/colon/hyphen (issue #1051), still rejects dots", () => {
+test("validatePlayerId: accepts underscore/colon/hyphen, still rejects dots", () => {
   assert.equal(validatePlayerId("steam_76561198000000000"), "steam_76561198000000000");
   assert.equal(validatePlayerId("steam:76561198000000000"), "steam:76561198000000000");
   assert.equal(validatePlayerId("Server-4242"), "Server-4242");
@@ -169,7 +169,7 @@ test("WRITE_ACTION_ROUTES: every entry with a confirmPhrase matches the real doc
   for (const [action, phrase] of Object.entries(expected)) {
     assert.equal(WRITE_ACTION_ROUTES[action].confirmPhrase, phrase, `${action} confirmPhrase mismatch`);
   }
-  // Completeness, not just correctness (issue #1016): every action absent
+  // Completeness, not just correctness: every action absent
   // from `expected` above must have no confirmPhrase at all -- a table entry
   // silently missing a phrase its own real target route unconditionally
   // requires is exactly how carepackage.enable/disable/scan went undetected

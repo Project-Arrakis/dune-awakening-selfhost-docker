@@ -1,4 +1,4 @@
-// Live-process integration tests for the Discord write bridge (issue #215).
+// Live-process integration tests for the Discord write bridge.
 // Follows discordAdapter.test.js's established "mount handleDiscordAdapterRoute
 // on a real http.createServer and fetch it" pattern -- these tests exercise
 // the real route handlers, real bearer-token check, real actor-signature
@@ -230,7 +230,7 @@ test("write/preview: owner attempting the same owner-tier action that rejected a
   });
 });
 
-// [Layer 3 integration audit fix, MEDIUM, issue #1038] Exceeding
+// Exceeding
 // MAX_ENTRIES_PER_ACTOR (20) used to propagate writeNonceStore's bare Error
 // uncaught into the generic adapter error handler -- a plain 500
 // `{code:"adapter_error"}`, indistinguishable from a real server bug to any
@@ -310,9 +310,9 @@ test("write/preview: a validly-signed envelope cannot be replayed with substitut
   });
 });
 
-// [Layer 3 integration audit fix, MEDIUM, issue #1049] Before this fix, an
+// Before this fix, an
 // action present in WRITE_ACTION_ROUTES with no matching WRITE_ACTION_MIN_TIER
-// entry (the exact drift class issue #1039's boot-time check exists to catch,
+// entry (the exact drift class a boot-time check exists to catch,
 // but which only gates the Hop-B socket, never write/preview/write/execute's
 // own reachability) crashed with an uncaught 500. Deletes and restores a
 // real min-tier entry (rather than adding a fake WRITE_ACTION_ROUTES entry)
@@ -451,7 +451,7 @@ test("write/execute: stale roleSnapshotAt (older than the freshness window) is r
   });
 });
 
-// [Layer 3 integration audit fix, MEDIUM, issue #1052] DUNE_DISCORD_WRITE_BRIDGE_ROLE_MAX_AGE_SECONDS
+// DUNE_DISCORD_WRITE_BRIDGE_ROLE_MAX_AGE_SECONDS
 // used to be `Number(process.env.X) || 30` -- an out-of-range value (0, or a
 // huge number) was either silently reinterpreted as the default or accepted
 // unbounded. Setting it to a huge value here and confirming a genuinely
@@ -498,7 +498,7 @@ test("write/execute: malformed roleSnapshotAt (NaN-shaped) is rejected, never si
   });
 });
 
-// --- the generic dual-confirmation gate mechanism (issue #1019) ---
+// --- the generic dual-confirmation gate mechanism ---
 //
 // These tests exercise the REAL dual-confirmation state machine in routes.js
 // over real HTTP, exactly as they always have. What changed: they no longer
@@ -578,8 +578,8 @@ test("the dual-confirmation gate mechanism (test-only override): a second, DIFFE
   });
 });
 
-// [Layer 3 integration audit fix, MEDIUM, issue #1050, STRIDE Repudiation]
-// Before this fix, the real target handler's own audit() call recorded only
+// STRIDE Repudiation:
+// before this fix, the real target handler's own audit() call recorded only
 // the second confirmer -- the primary confirmer's identity was read for the
 // same-actor check and then discarded, so a two-person-approved destructive
 // action's audit trail showed only one of the two required approvers.

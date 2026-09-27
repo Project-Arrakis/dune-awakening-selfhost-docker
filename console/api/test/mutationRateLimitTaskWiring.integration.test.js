@@ -1,5 +1,5 @@
-// Real, spawned-process regression proof for the Layer 3 integration audit
-// fix (issue #1056): task() -- the single shared dispatch point behind
+// Real, spawned-process regression proof for a real, previously-shipped
+// fix: task() -- the single shared dispatch point behind
 // /api/server/stop|start|restart|restart-service, /api/updates/*,
 // /api/backups/*, and every route above it that calls task() directly --
 // never called applyMutationRateLimit, unlike the 40+ other mutation routes

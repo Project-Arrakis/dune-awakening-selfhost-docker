@@ -35,8 +35,8 @@ if ! run_output="$(docker run -d --rm \
   exit 1
 fi
 
-# [Real root cause found via the diagnostic hardening above, issue #1059]
-# A bare `pg_isready` loop races the official postgres image's own
+# Real root cause found via the diagnostic hardening above:
+# a bare `pg_isready` loop races the official postgres image's own
 # entrypoint: it briefly starts a TEMPORARY server during initdb, which
 # `pg_isready` cannot distinguish from the real, final server -- confirmed
 # directly, this exact race produced "psql: error: connection ... failed:

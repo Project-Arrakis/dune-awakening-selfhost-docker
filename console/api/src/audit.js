@@ -45,7 +45,7 @@ export function getBridgeRequestSummary(now = Date.now()) {
 export function principalOf(session) {
   if (!session) return null;
   if (session.apiKeyId) return { type: "api-key", id: session.apiKeyId };
-  // [Layer 3 integration audit fix, HIGH, issue #1041, STRIDE Repudiation]
+  // STRIDE Repudiation:
   // resolveWriteBridgePrincipal() (writeBridgeCredential.js) sets
   // source:"discord-write-bridge" specifically so a write-bridge-triggered
   // mutation can be told apart from a real interactive session -- before

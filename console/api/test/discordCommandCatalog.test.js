@@ -115,7 +115,7 @@ test("every catalog route entry's route is a real member of DISCORD_ADAPTER_ROUT
   }
 });
 
-test("broadcast and the write bridge (issue #215) are the only route entries requiring DUNE_DISCORD_WRITES_ENABLED", () => {
+test("broadcast and the write bridge are the only route entries requiring DUNE_DISCORD_WRITES_ENABLED", () => {
   const catalog = buildCommandCatalog();
   const writeGated = [];
   for (const entry of flattenRoutes(catalog)) {
@@ -290,7 +290,7 @@ function extractBodyFieldsForRoute(routeConstantName) {
   let match;
   while ((match = fieldRegex.exec(block)) !== null) fields.add(match[1]);
 
-  // Some routes (write/preview, write/execute, issue #215) delegate their
+  // Some routes (write/preview, write/execute) delegate their
   // entire body to a single named handler function instead of inlining it
   // in the dispatch block itself, since those handlers are substantially
   // larger than every other route's inline body. When the block's only

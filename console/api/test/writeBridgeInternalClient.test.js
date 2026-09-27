@@ -1,5 +1,5 @@
-// Dedicated tests for writeBridgeInternalClient.js (issue #215's Hop B HTTP
-// client). Flagged as a real gap by the Layer 2 QA hat (issue #1023): this
+// Dedicated tests for writeBridgeInternalClient.js (the write bridge's Hop B HTTP
+// client). Flagged as a real gap by a QA review pass: this
 // module had zero tests of its own before this file, despite an injectable
 // `requestImpl` clearly built for isolated testing, and despite being the
 // one piece every one of the 25 write actions' real dispatch depends on.
@@ -286,7 +286,7 @@ test("callWriteBridgeInternalRoute: request options (socketPath, path, method) a
   assert.equal(capturedOptions.method, "POST");
 });
 
-// --- issue #1033: Hop B must not hang forever after the nonce is consumed ---
+// --- Hop B must not hang forever after the nonce is consumed ---
 
 test("callWriteBridgeInternalRoute: a request that never responds is rejected via req.setTimeout, and the request is destroyed", async () => {
   let timeoutCallback = null;

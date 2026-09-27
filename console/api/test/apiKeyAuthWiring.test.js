@@ -138,12 +138,12 @@ test("the session is the bearer's when present, otherwise the cookie's", () => {
   assert.match(body, /if \(!session\) return;/);
 });
 
-test("a write-bridge principal reaches req.authSession, so audit()'s principalOf() attributes write-bridge mutations to the real Discord actor (Layer 2 QA finding, issue #1023)", () => {
+test("a write-bridge principal reaches req.authSession, so audit()'s principalOf() attributes write-bridge mutations to the real Discord actor (found during a QA review pass)", () => {
   // req._writeBridgePrincipal only ever has a non-null value for a request
   // that arrived over the write-bridge Unix socket and passed every real
   // check requestHandler runs before handleApi is even called (see the
-  // GATE comment above) -- this assertion is what actually makes issue
-  // #1010's fix (userId: discordUserId on that principal) reach the real
+  // GATE comment above) -- this assertion is what actually makes the
+  // fix (userId: discordUserId on that principal) reach the real
   // audit log, not just the object writeBridgeCredential.js constructs.
   const gateAt = at(GATE);
   const sessionAssignAt = at("req.authSession = session;");
@@ -290,7 +290,7 @@ test("the throttle-notice map cannot grow without bound", () => {
   assert.match(source, /apiKeyAuthThrottleNotices\.delete\(key\)/);
 });
 
-test("the write-bridge socket's requestListener forwards its own opts argument rather than re-hardcoding viaWriteBridgeSocket a second time (issue #1024)", () => {
+test("the write-bridge socket's requestListener forwards its own opts argument rather than re-hardcoding viaWriteBridgeSocket a second time", () => {
   // Before this fix, this exact closure ignored its own third argument and
   // hardcoded { viaWriteBridgeSocket: true } independently of
   // writeBridgeSocketServer.js's own call site -- illusory defense-in-depth,

@@ -124,7 +124,7 @@ test("constantTimeHexEqual: exported, length-guarded before timingSafeEqual (nev
   assert.doesNotThrow(() => constantTimeHexEqual("a", "abcdef"));
 });
 
-// [Layer 3 integration audit fix, MEDIUM, issue #1052] Before this fix, "0"
+// Before this fix, "0"
 // was silently reinterpreted as "use the 30s default" purely by accident of
 // `Number("0") || 30`'s falsy-OR coercion, indistinguishable from any other
 // invalid input landing on the default -- not a deliberate bounds decision.

@@ -1,4 +1,4 @@
-// Module-level singleton state for the Discord write bridge (issue #215).
+// Module-level singleton state for the Discord write bridge.
 // routes.js's handleDiscordAdapterRoute() is otherwise a pure per-request
 // function -- this is the one piece of real, in-process state the write
 // bridge needs (the nonce store), held here rather than inline in routes.js

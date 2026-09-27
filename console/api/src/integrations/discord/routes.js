@@ -158,11 +158,11 @@ export async function handleDiscordAdapterRoute({
   // request now claimed, up to and including server.stop for an owner-tier
   // envelope. body.action must be merged into the signed payload here,
   // before verification, since it lives alongside `actor` in the body, not
-  // inside it -- and this repo's own bot-side counterpart (Project-Arrakis/
-  // mentat's actorSignature.js) must sign the identical shape or every real
-  // request fails verification (see that repo's own fix, same issue).
+  // inside it -- and this repo's own bot-side counterpart (the Discord
+  // bot's own actorSignature.js) must sign the identical shape or every
+  // real request fails verification.
   //
-  // [Layer 3 integration audit fix] Same reasoning, one level down: "params"
+  // Same reasoning, one level down: "params"
   // is ALSO merged in here, for the same structural reason (it's a sibling
   // of `actor` in the request body, not one of its own fields) and to close
   // the same class of gap -- see WRITE_BRIDGE_SIGNED_ACTOR_FIELDS's own

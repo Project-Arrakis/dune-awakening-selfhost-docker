@@ -387,7 +387,7 @@ createServer((req, res) => {
     initializeDiscordAdapterSchema(db).catch((error) => {
       console.warn(`Discord adapter schema initialization failed: ${redact(error?.message || "Unexpected error.")}`);
     });
-    // Boot-time capability-taxonomy consistency check (issue #1037): every
+    // Boot-time capability-taxonomy consistency check: every
     // DISCORD_CAPABILITIES entry must land in exactly one of
     // {EXPERIMENTAL_READ_ONLY_CAPABILITIES, DISCORD_WRITE_CAPABILITIES}.
     // Warn-only, not fatal -- a violation here means a specific capability's

@@ -1,4 +1,4 @@
-// Actor signature verification for the Discord write bridge (issue #215).
+// Actor signature verification for the Discord write bridge.
 //
 // Problem: normalizeDiscordActor() (policy.js) trusts actor.userId,
 // actor.roleIds, actor.guildId, etc. verbatim from the request body. The
@@ -26,7 +26,7 @@ const DEFAULT_MAX_SKEW_SECONDS = 30;
 const SIGNATURE_HEADER = "x-dune-actor-signature";
 const TIMESTAMP_HEADER = "x-dune-actor-timestamp";
 
-// [Layer 3 integration audit fix, MEDIUM, issue #1052] Was
+// Was
 // `Number(process.env.X) || DEFAULT_MAX_SKEW_SECONDS` -- silently treated an
 // explicit "0" as "use the 30s default" (an operator asking for zero replay
 // tolerance got the default instead, via JS's `||` coercion quirk, not a
@@ -53,7 +53,7 @@ function boundedMaxSkewSeconds() {
 const SIGNED_ACTOR_FIELDS = ["userId", "guildId", "channelId", "roleIds", "interactionId"];
 
 // Field set for the Discord write bridge's write/preview and write/execute
-// routes (issue #215): adds `username` (a real actor field) and
+// routes: adds `username` (a real actor field) and
 // `roleSnapshotAt` (when the bot re-derived actor.roleIds from Discord --
 // closes the gap where "actor signature + capability re-validated at both
 // preview AND execute" only proves the same functions ran twice, not that
