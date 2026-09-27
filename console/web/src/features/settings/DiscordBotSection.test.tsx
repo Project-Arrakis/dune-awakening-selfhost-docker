@@ -259,6 +259,18 @@ describe("DiscordBotSection", () => {
     expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
   });
 
+  // Maintainer review finding (upstream PR #215): the error region had no
+  // accessible-alert markup at all -- a screen reader user was never told
+  // this error appeared. `getByRole("alert")` only finds an element if it
+  // genuinely carries `role="alert"` (or an implicit ARIA alert role), so
+  // this fails if that markup regresses, unlike a plain text-content query.
+  it("marks the initial-load failure as an accessible alert (screen readers must be told it appeared)", async () => {
+    mockApi.mockRejectedValue(new Error("network down"));
+    render(<DiscordBotSection />);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Could not load Discord Bot settings/i);
+  });
+
   it("points the OAuth disambiguation note in the correct direction (finding 6)", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     render(<DiscordBotSection />);
