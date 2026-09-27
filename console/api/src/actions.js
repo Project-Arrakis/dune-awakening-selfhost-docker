@@ -74,6 +74,7 @@ export const ROUTE_ACTIONS = {
   // --- Server ---
   "GET /api/server/status":                    "server:read",
   "GET /api/server/performance":               "server:read",
+  "GET /api/server/restart-history":           "server:read",
   "GET /api/server/readiness":                 "server:read",
   "GET /api/server/ports":                     "server:read",
   "GET /api/server/services":                  "server:read",

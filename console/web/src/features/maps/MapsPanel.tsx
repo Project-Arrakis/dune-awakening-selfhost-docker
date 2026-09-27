@@ -3,7 +3,7 @@ import { AlertTriangle, ChevronDown, ChevronUp, Download, Grid2X2, Info, List, L
 import { mapsApi, type ChoamTransform, type ChoamCaptureBaseline, type ActiveSpicefieldRow, type ChoamCapturedPlacement, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
 import { playersApi } from "../../api/players";
 import { runGatedRestart, type RestartGate, type RestartGateChoice } from "../server/restartQueueGuard";
-import { serverApi, type RestartQueueTarget } from "../../api/server";
+import { serverApi, type RestartHistoryResponse, type RestartHistoryRow, type RestartQueueTarget } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
 import { SecretInput } from "../../components/SecretInput";
 import { InfoTooltip, KeyValueGrid, StatusPill, TechnicalDetails } from "../../components/common/DisplayPrimitives";
@@ -239,6 +239,26 @@ function formatBytes(value: number) {
 function formatGiB(value: number) {
   const amount = Number.isFinite(value) && value > 0 ? value / (1024 ** 3) : 0;
   return `${amount.toFixed(1)} GB`;
+}
+
+export function latestSuccessfulMapRestart(history: RestartHistoryResponse | null, map: string, partitionId = "", includeMapWide = false): RestartHistoryRow | null {
+  if (!history) return null;
+  const normalizedMap = String(map || "").trim().toLowerCase();
+  const normalizedPartition = String(partitionId || "").trim();
+  return history.rows.find((row) => row.scope === "map" && row.result === "Succeeded" && (
+    (normalizedPartition && row.partitionId === normalizedPartition)
+    || ((!normalizedPartition || includeMapWide) && !row.partitionId && String(row.map || "").trim().toLowerCase() === normalizedMap)
+  )) || null;
+}
+
+function mapRestartReading(history: RestartHistoryResponse | null, map: string, partitionId = "", includeMapWide = false) {
+  if (!history) return "Loading...";
+  const row = latestSuccessfulMapRestart(history, map, partitionId, includeMapWide);
+  if (!row) return "Not Recorded Yet";
+  const date = new Date(row.finishedAt);
+  return Number.isFinite(date.getTime())
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date)
+    : "Unknown";
 }
 
 function escapeRegExp(value: string) {
@@ -485,6 +505,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [sietchPasswordTouched, setSietchPasswordTouched] = useState<Record<string, boolean>>({});
   const [selectedMapName, setSelectedMapName] = useState("");
   const [selectedPartitionId, setSelectedPartitionId] = useState("");
+  const [restartHistory, setRestartHistory] = useState<RestartHistoryResponse | null>(null);
   const [mapSort, setMapSort] = useState<MapSortState>({ column: null, direction: "asc" });
   const [engineMapName, setEngineMapName] = useState("__global__");
   const [enginePartitionId, setEnginePartitionId] = useState("");
@@ -1238,6 +1259,13 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     void loadCombatState("Survival_1").catch(() => {});
     void refreshDeferredRestartPending();
   }, []);
+  useEffect(() => {
+    let active = true;
+    serverApi.restartHistory().then((result) => {
+      if (active) setRestartHistory(result);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [mapsResult?.status]);
   useEffect(() => {
     const persisted = loadPersistedMapsTask();
     if (!persisted?.taskId || persisted.result?.status !== "running") return;
@@ -2343,6 +2371,11 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
         const primarySietchCombatRow = isSurvivalRow && primarySurvivalSietch
           ? combatStateByMap["Survival_1"]?.partitions.find((partition) => partition.partitionId === primarySurvivalSietch.partitionId) || null
           : null;
+        const primaryPartitionId = isSurvivalRow
+          ? String(primarySurvivalSietch?.partitionId || "")
+          : isDeepDesertRow
+            ? String(primaryDeepDesertPartition?.partitionId || "")
+            : String(row.partitionId || row.partition || "");
         const baseStatus = isDeepDesertRow && primaryDeepDesertPartition ? partitionStatusById.get(String(primaryDeepDesertPartition.partitionId || "")) || String(primaryDeepDesertPartition.status || row.status || "Not Available")
           : isSurvivalRow && primarySurvivalSietch ? readinessStatusByPartitionId.get(primarySurvivalSietch.partitionId) || partitionStatusById.get(primarySurvivalSietch.partitionId) || String(row.status || "Not Available") : String(row.status || "Not Available");
         const displayStatus = isSurvivalRow && /^Ready$/i.test(baseStatus) ? "Ready" : statusWithLiveMemory(baseStatus, memoryRow, row.mode);
@@ -2362,7 +2395,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
           {isSelected && <tr className="inline-edit-row" key={`${rowName}-edit`}><td colSpan={5}>
             <section className="inline-edit-panel">
               <div className="panel-title"><h4>Edit {isDeepDesertRow && primaryDeepDesertName ? primaryDeepDesertName : rowName}</h4></div>
-              <KeyValueGrid items={[["Status", displayStatus], ["Mode", row.mode], ["Memory", row.memory], ["Dimensions", row.dimensions], ...(isSurvivalRow && primarySurvivalSietch ? [["Password", primarySurvivalSietch.passwordSet ? "Set" : "Not Set"] as [string, unknown]] : [])]} />
+              <KeyValueGrid items={[["Status", displayStatus], ["Mode", row.mode], ["Memory", row.memory], ["Dimensions", row.dimensions], ["Last Restart", mapRestartReading(restartHistory, rowName, primaryPartitionId, true)], ...(isSurvivalRow && primarySurvivalSietch ? [["Password", primarySurvivalSietch.passwordSet ? "Set" : "Not Set"] as [string, unknown]] : [])]} />
               {requiresFreshProcess
                 ? <p className="muted">{rowName === "CB_Overland_S_06"
                   ? <>Smuggler&apos;s Run stays Dynamic so its instance is retired as soon as it becomes empty and the next visit starts with fresh vehicle permissions.</>
@@ -2447,7 +2480,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="DeepDesert_1" instanceName={childName} combatState={childCombatRow?.configuredState || "UNKNOWN"} combatRestartRequired={Boolean(childCombatRow?.configurationDrift)} /><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>{String(row.mode || "Dynamic")}</td><td><MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} swapEnabled={Boolean(memorySwap?.enabled)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {childName}</h4></div>
-                <KeyValueGrid items={[["Name", childName], ["Role", childCombatRow?.configuredState === "PVP" ? "PvP" : childCombatRow?.configuredState === "PVE" ? "PvE" : "Not Available"], ["Partition", deepRow.partitionId], ["Dimension", deepRow.dimension], ["Status", childStatus], ["Memory", deepMemory]]} />
+                <KeyValueGrid items={[["Name", childName], ["Role", childCombatRow?.configuredState === "PVP" ? "PvP" : childCombatRow?.configuredState === "PVE" ? "PvE" : "Not Available"], ["Partition", deepRow.partitionId], ["Dimension", deepRow.dimension], ["Status", childStatus], ["Memory", deepMemory], ["Last Restart", mapRestartReading(restartHistory, "DeepDesert_1", String(deepRow.partitionId || ""))]]} />
                 <div className="action-line">
                   <label className="memory-number-field">Memory<input type="number" min="0.01" step="0.01" inputMode="decimal" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
                   <span className="unit-label">GB</span>
@@ -2488,7 +2521,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
             return <Fragment key={`sietch-${sietch.partitionId}`}><tr className="sietch-child-row"><td><MapDisplayName mapId="Survival_1" sietch={sietch} draft={draft} combatState={childCombatRow?.configuredState || "UNKNOWN"} combatRestartRequired={Boolean(childCombatRow?.configurationDrift)} /><span className="sietch-child-meta">Partition {sietch.partitionId} / Dimension {sietch.dimension}{childCombatRow?.configurationDrift ? " / Restart required to apply saved PvP-PvE settings" : ""}</span></td><td><MapRuntimeStatus value={childStatus} /></td><td>Sietch</td><td>{sietch.active ? <MemoryUsageBar row={childMemoryRow} fallback={liveMemoryFallback(row)} configuredLimit={sietchMemory} swapEnabled={Boolean(memorySwap?.enabled)} /> : <span className="muted">Unallocated</span>}</td><td className="actions-column"><button className="stable-action-button" onClick={() => selectSietch(sietch)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
               {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
                 <div className="panel-title"><h4>Edit {sietch.displayName}</h4></div>
-                <KeyValueGrid items={[["Partition", sietch.partitionId], ["Dimension", sietch.dimension], ["Status", childStatus], ["Memory", sietchMemory], ["Password", sietch.passwordSet ? "Set" : "Not Set"]]} />
+                <KeyValueGrid items={[["Partition", sietch.partitionId], ["Dimension", sietch.dimension], ["Status", childStatus], ["Memory", sietchMemory], ["Last Restart", mapRestartReading(restartHistory, "Survival_1", sietch.partitionId)], ["Password", sietch.passwordSet ? "Set" : "Not Set"]]} />
                 <div className="action-line">
                   <label className="memory-number-field">Memory<input type="number" min="0.01" step="0.01" inputMode="decimal" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
                   <span className="unit-label">GB</span>

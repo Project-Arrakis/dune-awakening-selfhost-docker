@@ -33,7 +33,11 @@ vi.mock("../../api/setup", () => ({ setupApi: new Proxy({} as Record<string, unk
 // runGatedRestart reads the queue status and the pending-write queues before it
 // shows the dialog; none of them may reach the network from a component test.
 vi.mock("../../api/server", () => ({
-  serverApi: { restartQueue: vi.fn().mockResolvedValue(null), restart: vi.fn().mockResolvedValue({}) }
+  serverApi: {
+    restartQueue: vi.fn().mockResolvedValue(null),
+    restart: vi.fn().mockResolvedValue({}),
+    restartHistory: vi.fn().mockResolvedValue({ rows: [], lastBattlegroupRestart: null })
+  }
 }));
 vi.mock("../../api/bases", () => ({ basesApi: new Proxy({} as Record<string, unknown>, {
   get: (target, prop: string) => {

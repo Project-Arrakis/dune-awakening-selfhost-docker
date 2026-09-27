@@ -94,6 +94,7 @@ import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
 import { createScheduledMapMessageScheduler } from "./services/scheduledMapMessages.js";
 import { createQaUpdates } from "./services/qaUpdates.js";
 import { SETUP_CONFIG_KEYS, validHostDatacenterId } from "./services/setupConfig.js";
+import { readRestartHistory } from "./services/restartHistory.js";
 
 const config = loadConfig();
 const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
@@ -735,6 +736,7 @@ async function handleApi(req, res) {
 
   if (path === "/api/server/status") return serverStatusRoute(res, url);
   if (path === "/api/server/performance") return json(res, 200, await collectPerformanceSnapshot(config.repoRoot));
+  if (path === "/api/server/restart-history") return json(res, 200, readRestartHistory(config));
   if (path === "/api/server/readiness") return safeCommandJson(res, "readiness");
   if (path === "/api/server/ports") return commandJson(res, "ports");
   if (path === "/api/server/services") return commandJson(res, "services");
