@@ -243,6 +243,13 @@ export const ROUTE_ACTIONS = {
   // bases:mutate prefix rule, where it would resolve silently rather than
   // failing closed.
   "POST /api/bases/auto-refill/settings":      "bases:write-config",
+  // Base backups (the game's "pick up base" tool). Listing and exporting are
+  // reads, matching GET /api/bases/{id}/export. Import creates a whole base
+  // (actors, pieces, storage items) for a player, so it is its own action:
+  // no bases:read or bases:mutate grant should be read as consent to it.
+  // owner/admin grant bases:*, so they reach it; lower tiers do not.
+  "GET /api/base-backups":                     "bases:read",
+  "POST /api/base-backups/import":             "bases:import-backup",
 
   // --- Storage (read) ---
   "GET /api/storage":                          "storage:read",
@@ -492,6 +499,10 @@ export const REGEX_ACTIONS_BY_METHOD = {
 // the part that would distinguish them. Routes that need that distinction
 // go here instead, tested as a real regex before the prefix fallback.
 export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
+  // GET /api/base-backups/{id}/export -- a read, like the base-as-blueprint
+  // export. Anchored so nothing else under /api/base-backups/ resolves: that
+  // path has no prefix rule, so any other route there fails closed.
+  { method: "GET", pattern: /^\/api\/base-backups\/[^/]+\/export$/, action: "bases:read" },
   // Installing a public community Blueprint writes a Solido item and its
   // Blueprint rows for the selected player. Keep it under the existing
   // blueprint import permission, never the read-only /api/blueprints prefix.

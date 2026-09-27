@@ -1,0 +1,833 @@
+// Export/import of the game's own "pick up base" backups (dune.base_backups).
+//
+// A picked-up base is not serialized anywhere by the game: its actors, pieces,
+// placeables and storage stay in their tables, linked to a base_backups row
+// through base_backup_linked_actors. The game already knows how to move such
+// a backup between servers -- character transfer (dune.character_transfer_export
+// / _import) carries a character's base backups -- so this module reuses the
+// same _character_transfer_* helpers, scoped to one backup instead of one
+// character. Verified row-for-row against character_transfer_export and by a
+// typed round trip; see docs/console/base-backups.md.
+//
+// Two rules keep the data exact:
+// - Entries never pass through JavaScript numbers. Game payloads may carry
+//   64-bit integers that JSON.parse would round, so the export is rendered to
+//   text by Postgres and the import sends the uploaded text back as jsonb.
+//   JavaScript only parses the file to validate its structure.
+// - jsonb drops array lower bounds, and the game writes 0-based arrays (it
+//   hard-codes landclaim_original_global_location[0..2]). The export records
+//   each row's non-default bounds and the import restores them row by row.
+//
+// An import file is untrusted input: every reference must stay inside the
+// base (see ENTRY_REFS), and imported actors are forced into the backed-up
+// state with no partition, whatever the file says.
+
+import { resolvePlayerTarget, tableExists, UnsupportedCapabilityError } from "./duneDb.js";
+import { intParam } from "./db.js";
+import { clampInt } from "./jsonStore.js";
+import { redact } from "./redact.js";
+
+export const BASE_BACKUP_FORMAT = "dune-base-backup";
+export const BASE_BACKUP_FORMAT_VERSION = 1;
+
+// Server-side limit for each statement inside an export/import transaction.
+// The largest verified base (589 pieces, 199 items) takes ~1.6 s in total.
+// ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS overrides it (100 ms - 10 min).
+function statementTimeoutMs() {
+  // A blank value means unset; clampInt alone would read "" as 0 -> 100 ms.
+  return clampInt(process.env.ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS || undefined, 120000, 100, 600000);
+}
+const MAX_ENTRIES = 250000;
+
+const REQUIRED_TABLES = [
+  "actors", "fgl_entities", "actor_fgl_entities", "permission_actor", "permission_actor_rank",
+  "inventories", "items", "actor_inventories", "buildings", "building_instances", "placeables",
+  "totems", "base_backups", "base_backup_linked_actors", "landclaim_segments", "tax_invoice",
+  "sinkcharts", "building_blueprints", "building_blueprint_instances", "building_blueprint_placeables",
+  "building_blueprint_pentashields", "player_state", "applied_patches"
+];
+
+const REQUIRED_FUNCTIONS = [
+  "dune._character_transfer_create_data_table()",
+  "dune._character_transfer_top_level_export(dune._charactertransferentrykind,jsonb)",
+  "dune._character_transfer_top_level_import(dune._charactertransferentrykind,jsonb,bigint)",
+  "dune._character_transfer_replace_local_id_with_transfer_id_in_json(jsonb,text)",
+  "dune._character_transfer_replace_transfer_id_with_local_id_in_json(jsonb,text)",
+  "dune._character_transfer_data_table_load(jsonb)",
+  "dune._character_transfer_data_table_save()",
+  "dune._character_transfer_get_patches_checksum()"
+];
+
+// Entry kinds an export may contain, in the order the import inserts them
+// (the same dependency order as dune.character_transfer_import).
+const IMPORT_ORDER = [
+  { kind: "act", table: "actors", skipPlaceholder: true },
+  { kind: "fgl", table: "fgl_entities" },
+  { kind: "fgl", table: "actor_fgl_entities" },
+  { kind: "PermissionActor", table: "permission_actor" },
+  { kind: "PermissionActorRank", table: "permission_actor_rank" },
+  { kind: "inv", table: "inventories" },
+  { kind: "itm", table: "items" },
+  { kind: "ActorInventory", table: "actor_inventories" },
+  { kind: "Building", table: "buildings" },
+  { kind: "BuildingInstance", table: "building_instances" },
+  { kind: "Placeable", table: "placeables" },
+  { kind: "Totem", table: "totems" },
+  { kind: "BaseBackup", table: "base_backups" },
+  { kind: "BaseBackupLinkedActor", table: "base_backup_linked_actors" },
+  { kind: "LandclaimSegment", table: "landclaim_segments" },
+  { kind: "TaxInvoice", table: "tax_invoice" },
+  { kind: "Sinkchart", table: "sinkcharts" },
+  { kind: "bbp", table: "building_blueprints" },
+  { kind: "BuildingBlueprintInstance", table: "building_blueprint_instances" },
+  { kind: "BuildingBlueprintPlaceable", table: "building_blueprint_placeables" },
+  { kind: "BuildingBlueprintPentashield", table: "building_blueprint_pentashields" }
+];
+
+const ALLOWED_KINDS = new Set(IMPORT_ORDER.map((step) => step.kind));
+
+const STEP_LABELS = {
+  actors: "base actors",
+  fgl_entities: "entity components",
+  actor_fgl_entities: "entity links",
+  permission_actor: "permissions",
+  permission_actor_rank: "permission ranks",
+  inventories: "storage inventories",
+  items: "stored items",
+  actor_inventories: "inventory links",
+  buildings: "building actors",
+  building_instances: "building pieces",
+  placeables: "placeables",
+  totems: "totem",
+  base_backups: "backup record",
+  base_backup_linked_actors: "backup links",
+  landclaim_segments: "land claim segments",
+  tax_invoice: "tax invoices",
+  sinkcharts: "sinkcharts",
+  building_blueprints: "stored blueprints",
+  building_blueprint_instances: "stored blueprint pieces",
+  building_blueprint_placeables: "stored blueprint placeables",
+  building_blueprint_pentashields: "stored blueprint pentashields"
+};
+
+// Array lower bounds do not survive jsonb. The export stores a row's
+// non-default bounds under this key in its entry data (jsonb_populate_record
+// ignores unknown keys) and the import restores them before inserting.
+const ARRAY_BOUNDS_KEY = "__lb";
+
+// Base actors in the export table. $1 is the owner placeholder's transfer id:
+// the placeholder stands for the player, not for a base actor.
+const ACT_IDS = "(select id from pg_temp.export_data where kind = 'act' and transfer_id <> $1)";
+
+// Every reference column an entry kind carries (mirroring the game's
+// _character_transfer_get_filter) and what it may point at:
+//   "act"         a base actor in this file, never the owner placeholder
+//   "owner"       the owner placeholder (the receiving player), required
+//   "actOrOwner"  either of the above
+//   "absent"      must not be set (the export strips it)
+//   any kind      an entry of that kind in this file
+// A trailing "?" allows null. Without this a crafted file could hang rows off
+// the receiving player's own actor (an inventory of arbitrary items, say).
+const ENTRY_REFS = {
+  act: {},
+  fgl: { actor_id: "act" },
+  PermissionActor: { actor_id: "act" },
+  PermissionActorRank: { permission_actor_id: "act", player_id: "actOrOwner" },
+  inv: { actor_id: "act" },
+  itm: { inventory_id: "inv" },
+  ActorInventory: { inventory_id: "inv" },
+  Building: { id: "act" },
+  BuildingInstance: { building_id: "act", owner_entity_id: "fgl?" },
+  Placeable: { id: "act", owner_entity_id: "fgl?" },
+  Totem: { id: "act" },
+  BaseBackup: { player_id: "owner" },
+  BaseBackupLinkedActor: { id: "BaseBackup", actor_id: "act" },
+  LandclaimSegment: { totem_id: "act" },
+  TaxInvoice: { totem_id: "act" },
+  Sinkchart: { item_id: "itm" },
+  bbp: { item_id: "itm", player_id: "absent" },
+  BuildingBlueprintInstance: { building_blueprint_id: "bbp" },
+  BuildingBlueprintPlaceable: { building_blueprint_id: "bbp" },
+  BuildingBlueprintPentashield: { building_blueprint_id: "bbp" }
+};
+
+// Raw player-id columns the transfer filters copy verbatim. A source-server
+// player id means nothing (or someone else) on the target, so the import
+// points them at the receiving player.
+const PLAYER_ID_COLUMNS = {
+  base_backups: ["last_edited_by_player_id"],
+  placeables: ["last_placed_by_player_id"],
+  building_instances: ["last_placed_by_player_id"],
+  permission_actor: ["edited_by_player_id"]
+};
+
+// Caps for strings copied from an uploaded file into responses and the audit log.
+const MAX_ECHO_LENGTH = 200;
+const MAX_ERROR_LENGTH = 1000;
+function clip(value, max = MAX_ECHO_LENGTH) {
+  const text = value == null ? "" : String(value);
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
+export class BaseBackupError extends Error {
+  constructor(message, { statusCode = 400, code = "invalid", details = {} } = {}) {
+    super(message);
+    this.name = "BaseBackupError";
+    this.statusCode = statusCode;
+    this.code = code;
+    this.details = details;
+  }
+}
+
+export class BaseBackupTimeoutError extends BaseBackupError {
+  constructor({ operation, step, kind, elapsedMs, limitMs }) {
+    const seconds = (ms) => (ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1).replace(/\.0$/, "")}s`);
+    const outcome = operation === "import"
+      ? "Nothing was changed: the import was rolled back."
+      : "No file was produced.";
+    super(`Base backup ${operation} timed out after ${seconds(elapsedMs)} while ${step} (limit ${seconds(limitMs)}). ${outcome}`, {
+      statusCode: 504,
+      code: "timeout",
+      details: { operation, step, timeoutKind: kind, elapsedMs, limitMs }
+    });
+    this.name = "BaseBackupTimeoutError";
+  }
+}
+
+// Mirrors the pool's client-side query_timeout in db.js, for reporting only.
+// Maps an export/import failure to { status, body } for the HTTP routes.
+// Timeouts become 504 with the step that ran out of time; version refusals
+// 409 with both versions, so the UI can offer "Import Anyway".
+export function baseBackupHttpError(error) {
+  const message = clip(redact(error?.message || "Unexpected error."), MAX_ERROR_LENGTH);
+  if (error?.unsupported) return { status: 501, body: { supported: false, error: message } };
+  if (error instanceof BaseBackupError) {
+    return { status: error.statusCode || 400, body: { ok: false, code: error.code, error: message, ...error.details } };
+  }
+  if (error?.statusCode === 404) return { status: 404, body: { ok: false, code: "not_found", error: message } };
+  if (/^Invalid /.test(String(error?.message || ""))) return { status: 400, body: { ok: false, code: "invalid", error: message } };
+  return { status: 500, body: { ok: false, error: message } };
+}
+
+function clientQueryTimeoutMs() {
+  const value = Number(process.env.ADMIN_DB_QUERY_TIMEOUT_MS || 15000);
+  return Number.isFinite(value) && value > 0 ? value : 15000;
+}
+
+export function classifyTimeout(error) {
+  const message = String(error?.message || "");
+  if (error?.code === "57014" || /canceling statement due to statement timeout/i.test(message)) return "server_timeout";
+  if (/query read timeout/i.test(message)) return "client_timeout";
+  return null;
+}
+
+// Runs one export/import transaction, recording which step is executing so a
+// timeout can be reported precisely. db.transaction rethrows a plain Error,
+// so the classification has to be captured here, before that happens.
+async function runTracked(db, operation, fn) {
+  const state = { failure: null };
+  const step = (tx) => async (label, sql, params = []) => {
+    const started = Date.now();
+    try {
+      return await tx.query(sql, params);
+    } catch (error) {
+      const kind = classifyTimeout(error);
+      if (kind && !state.failure) {
+        state.failure = {
+          operation,
+          step: label,
+          kind,
+          elapsedMs: Date.now() - started,
+          limitMs: kind === "server_timeout" ? statementTimeoutMs() : clientQueryTimeoutMs()
+        };
+      }
+      throw error;
+    }
+  };
+  try {
+    return await db.transaction(async (tx) => fn(step(tx)));
+  } catch (error) {
+    if (state.failure) throw new BaseBackupTimeoutError(state.failure);
+    throw error;
+  }
+}
+
+async function functionExists(db, signature) {
+  const result = await db.query("select to_regprocedure($1) is not null as exists", [signature]);
+  return Boolean(result.rows[0]?.exists);
+}
+
+export async function baseBackupCapabilities(db) {
+  const [tables, functions] = await Promise.all([
+    Promise.all(REQUIRED_TABLES.map((table) => tableExists(db, table))),
+    Promise.all(REQUIRED_FUNCTIONS.map((signature) => functionExists(db, signature)))
+  ]);
+  const missing = [
+    ...REQUIRED_TABLES.filter((_, index) => !tables[index]).map((table) => `dune.${table}`),
+    ...REQUIRED_FUNCTIONS.filter((_, index) => !functions[index])
+  ];
+  // An older game build may lack an entry kind; that must read as unsupported,
+  // not fail mid-transaction on an enum cast.
+  const kinds = await db.query(`
+    select case when to_regtype('dune._charactertransferentrykind') is null then null
+                else (select array_agg(e::text) from unnest(enum_range(null::dune._charactertransferentrykind)) e) end as kinds`);
+  const available = new Set(kinds.rows[0]?.kinds || []);
+  for (const kind of ALLOWED_KINDS) {
+    if (!available.has(kind)) missing.push(`dune._charactertransferentrykind '${kind}'`);
+  }
+  return { supported: missing.length === 0, missing };
+}
+
+async function requireBaseBackupCapability(db) {
+  const capability = await baseBackupCapabilities(db);
+  if (!capability.supported) {
+    throw new UnsupportedCapabilityError("Base backup export/import is not supported by this game database", { missing: capability.missing });
+  }
+}
+
+function displayName(name, totemType) {
+  const trimmed = String(name || "").trim();
+  if (trimmed && !trimmed.startsWith("##")) return trimmed;
+  return totemType ? String(totemType).replace(/_Placeable$/, "").replace(/_/g, " ") : "Unnamed base";
+}
+
+function mapBackupRow(row) {
+  return {
+    id: Number(row.id),
+    ownerControllerId: row.owner_controller_id == null ? null : Number(row.owner_controller_id),
+    ownerPawnId: row.owner_pawn_id == null ? null : Number(row.owner_pawn_id),
+    ownerName: row.owner_name || "",
+    name: displayName(row.name, row.totem_type),
+    rawName: row.name || "",
+    map: row.map || "",
+    totemType: row.totem_type || "",
+    pieces: Number(row.pieces || 0),
+    placeables: Number(row.placeables || 0),
+    items: Number(row.items || 0)
+  };
+}
+
+const LIST_SQL = `
+  select bb.id,
+         bb.player_id as owner_controller_id,
+         ps.player_pawn_id as owner_pawn_id,
+         coalesce(ps.character_name, '') as owner_name,
+         coalesce(bb.base_backup_name, '') as name,
+         totem.map,
+         totem.totem_type,
+         (select count(*) from dune.building_instances bi
+            join dune.base_backup_linked_actors l on l.actor_id = bi.building_id
+           where l.id = bb.id) as pieces,
+         (select count(*) from dune.placeables p
+            join dune.base_backup_linked_actors l on l.actor_id = p.id
+           where l.id = bb.id) as placeables,
+         (select count(*) from dune.items it
+            join dune.inventories inv on inv.id = it.inventory_id
+            join dune.base_backup_linked_actors l on l.actor_id = inv.actor_id
+           where l.id = bb.id) as items
+  from dune.base_backups bb
+  left join dune.player_state ps on ps.player_controller_id = bb.player_id
+  left join lateral (
+    select a.map, p.building_type as totem_type
+    from dune.base_backup_linked_actors l
+    join dune.totems t on t.id = l.actor_id
+    join dune.actors a on a.id = t.id
+    left join dune.placeables p on p.id = t.id
+    where l.id = bb.id
+    limit 1
+  ) totem on true`;
+
+export async function listBaseBackups(db, { playerId = "" } = {}) {
+  const capability = await baseBackupCapabilities(db);
+  if (!capability.supported) {
+    return { supported: false, capabilities: { baseBackups: false }, missing: capability.missing, rows: [] };
+  }
+  let where = "";
+  const params = [];
+  if (playerId !== "" && playerId != null) {
+    const player = await resolvePlayerTarget(db, playerId);
+    params.push(player.controllerId);
+    where = "where bb.player_id = $1";
+  }
+  const result = await db.query(`${LIST_SQL} ${where} order by bb.id`, params);
+  return { supported: true, capabilities: { baseBackups: true }, rows: result.rows.map(mapBackupRow) };
+}
+
+async function getBaseBackupSummary(db, backupId) {
+  const result = await db.query(`${LIST_SQL} where bb.id = $1`, [backupId]);
+  if (!result.rows[0]) throw new BaseBackupError(`Base backup ${backupId} not found`, { statusCode: 404, code: "not_found" });
+  return mapBackupRow(result.rows[0]);
+}
+
+export async function serverGameVersion(db) {
+  const result = await db.query(`
+    select dune._character_transfer_get_patches_checksum() as checksum,
+           (select count(*)::int from dune.applied_patches) as patch_count,
+           (select coalesce(json_agg(name order by date desc), '[]'::json)
+              from (select name, date from dune.applied_patches order by date desc limit 5) latest) as latest`);
+  const row = result.rows[0] || {};
+  return {
+    patchesChecksum: row.checksum || "",
+    appliedPatchesCount: Number(row.patch_count || 0),
+    latestPatches: Array.isArray(row.latest) ? row.latest : []
+  };
+}
+
+// Column names/types of the game tables, read from the live catalog so new
+// columns (array or player-id) are handled without a code change.
+const COLUMNS_SQL = `
+  select c.relname as table_name, a.attname as column_name,
+         format_type(a.atttypid, a.atttypmod) as column_type, t.typcategory = 'A' as is_array
+  from pg_attribute a
+  join pg_class c on c.oid = a.attrelid
+  join pg_namespace n on n.oid = c.relnamespace
+  join pg_type t on t.oid = a.atttypid
+  where n.nspname = 'dune' and c.relname = any($1::text[]) and a.attnum > 0 and not a.attisdropped
+  order by c.relname, a.attnum`;
+
+function columnsByTable(rows) {
+  const byTable = new Map();
+  for (const row of rows) {
+    if (!byTable.has(row.table_name)) byTable.set(row.table_name, []);
+    byTable.get(row.table_name).push({ name: row.column_name, type: row.column_type, isArray: row.is_array === true });
+  }
+  return byTable;
+}
+
+const IMPORT_TABLES = [...new Set(IMPORT_ORDER.map((step) => step.table))];
+
+const IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
+// A one-dimensional array type name as rendered by format_type, e.g.
+// "real[]", "smallint[]", "dune.some_type[]". Interpolated into a cast, so it
+// is checked rather than trusted.
+const ARRAY_TYPE = /^(?:[a-z_][a-z0-9_]*\.)?[a-z_][a-z0-9_ ]*\[\]$/;
+function arrayTypeName(type) {
+  const value = String(type || "");
+  if (!ARRAY_TYPE.test(value)) throw new BaseBackupError(`Unexpected array column type ${value}`, { statusCode: 500, code: "internal" });
+  return value;
+}
+function quoteIdent(name) {
+  if (!IDENTIFIER.test(name)) throw new BaseBackupError(`Unexpected identifier ${name}`, { statusCode: 500, code: "internal" });
+  return `"${name}"`;
+}
+
+// `|| {"__lb": {"transform": 0}}` for a row whose arrays are not 1-based,
+// `|| {}` otherwise. 1 is what jsonb_populate_record produces anyway.
+function boundsExpression(table, columns) {
+  const arrays = (columns.get(table) || []).filter((column) => column.isArray);
+  if (!arrays.length) return "";
+  const pairs = arrays
+    .map((column) => `'${column.name}', nullif(array_lower(${quoteIdent(table)}.${quoteIdent(column.name)}, 1), 1)`)
+    .join(", ");
+  return ` || coalesce((select jsonb_build_object('${ARRAY_BOUNDS_KEY}', bounds)
+            from (select jsonb_strip_nulls(jsonb_build_object(${pairs})) as bounds) b
+            where bounds <> '{}'::jsonb), '{}'::jsonb)`;
+}
+
+// Export steps: [label, param, sql]. Each statement takes one parameter, $1:
+// "backup" (the backup id), "placeholder" (the owner placeholder's transfer
+// id) or none. /*BOUNDS*/ becomes that table's array-bounds expression.
+// Mirrors the base-backup sections of dune.character_transfer_export, scoped
+// to one backup, plus the permission rows it also carries for exported actors.
+const EXPORT_ACT = ACT_IDS;
+const EXPORT_STEPS = [
+  ["exporting base actors", "backup", `
+    insert into pg_temp.export_data(id, kind, data)
+    select id, 'act', dune._character_transfer_top_level_export('act', to_jsonb(actors) - 'partition_id')/*BOUNDS*/
+    from dune.actors where id in (select actor_id from dune.base_backup_linked_actors where id = $1)`],
+  ["exporting entity components", "placeholder", `
+    insert into pg_temp.export_data(id, kind, data)
+    select entity_id, 'fgl', dune._character_transfer_top_level_export('fgl', to_jsonb(fgl_entities) || to_jsonb(actor_fgl_entities))/*BOUNDS*/
+    from dune.actor_fgl_entities join dune.fgl_entities using (entity_id)
+    where actor_id in ${EXPORT_ACT}`],
+  ["exporting permissions", "placeholder", `
+    insert into pg_temp.export_data(id, kind, data)
+    select actor_id, 'PermissionActor', dune._character_transfer_top_level_export('PermissionActor', to_jsonb(permission_actor))/*BOUNDS*/
+    from dune.permission_actor where actor_id in ${EXPORT_ACT}`],
+  ["exporting permission ranks", "placeholder", `
+    insert into pg_temp.export_data(id, kind, data)
+    select permission_actor_id, 'PermissionActorRank', dune._character_transfer_top_level_export('PermissionActorRank', to_jsonb(permission_actor_rank))/*BOUNDS*/
+    from dune.permission_actor_rank
+    where permission_actor_id in ${EXPORT_ACT}
+      and player_id in (select id from pg_temp.export_data where kind = 'act')`],
+  ["exporting storage inventories", "placeholder", `
+    insert into pg_temp.export_data(id, kind, data)
+    select id, 'inv', dune._character_transfer_top_level_export('inv', to_jsonb(inventories))/*BOUNDS*/
+    from dune.inventories where actor_id in ${EXPORT_ACT}`],
+  ["exporting stored items", null, `
+    insert into pg_temp.export_data(id, kind, data)
+    select id, 'itm', dune._character_transfer_top_level_export('itm', to_jsonb(items))/*BOUNDS*/
+    from dune.items where inventory_id in (select id from pg_temp.export_data where kind = 'inv')`],
+  ["exporting inventory links", null, `
+    insert into pg_temp.export_data(id, kind, data)
+    select null, 'ActorInventory', dune._character_transfer_top_level_export('ActorInventory', to_jsonb(actor_inventories))/*BOUNDS*/
+    from dune.actor_inventories where inventory_id in (select id from pg_temp.export_data where kind = 'inv')`],
+  ["exporting building actors", "placeholder", `
+    insert into pg_temp.export_data(id, kind, data)
+    select null, 'Building', dune._character_transfer_top_level_export('Building', to_jsonb(buildings))/*BOUNDS*/
+    from dune.buildings where id in ${EXPORT_ACT}`],
+  ["exporting building pieces", "placeholder", `
+    insert into pg_temp.export_data(id, kind, data)
+    select null, 'BuildingInstance', dune._character_transfer_top_level_export('BuildingInstance', to_jsonb(building_instances))/*BOUNDS*/
+    from dune.building_instances where building_id in ${EXPORT_ACT}`],
+  ["exporting placeables", "placeholder", `
+    insert into pg_temp.export_data(id, kind, data)
+    select null, 'Placeable', dune._character_transfer_top_level_export('Placeable', to_jsonb(placeables))/*BOUNDS*/
+    from dune.placeables where id in ${EXPORT_ACT}`],
+  ["exporting totem", "placeholder", `
+    insert into pg_temp.export_data(id, kind, data)
+    select null, 'Totem', dune._character_transfer_top_level_export('Totem', to_jsonb(totems))/*BOUNDS*/
+    from dune.totems where id in ${EXPORT_ACT}`],
+  ["exporting backup record", "backup", `
+    insert into pg_temp.export_data(id, kind, data)
+    select id, 'BaseBackup', dune._character_transfer_top_level_export('BaseBackup', to_jsonb(base_backups))/*BOUNDS*/
+    from dune.base_backups where id = $1`],
+  ["exporting backup links", "backup", `
+    insert into pg_temp.export_data(id, kind, data)
+    select id, 'BaseBackupLinkedActor', dune._character_transfer_top_level_export('BaseBackupLinkedActor', to_jsonb(base_backup_linked_actors))/*BOUNDS*/
+    from dune.base_backup_linked_actors where id = $1`],
+  ["exporting land claim segments", "placeholder", `
+    insert into pg_temp.export_data(id, kind, data)
+    select null, 'LandclaimSegment', dune._character_transfer_top_level_export('LandclaimSegment', to_jsonb(landclaim_segments))/*BOUNDS*/
+    from dune.landclaim_segments where totem_id in ${EXPORT_ACT}`],
+  ["exporting tax invoices", "placeholder", `
+    insert into pg_temp.export_data(id, kind, data)
+    select id, 'TaxInvoice', dune._character_transfer_top_level_export('TaxInvoice', to_jsonb(tax_invoice))/*BOUNDS*/
+    from dune.tax_invoice where totem_id in ${EXPORT_ACT}`],
+  ["exporting sinkcharts", null, `
+    insert into pg_temp.export_data(id, kind, data)
+    select null, 'Sinkchart', dune._character_transfer_top_level_export('Sinkchart', to_jsonb(sinkcharts))/*BOUNDS*/
+    from dune.sinkcharts where item_id in (select id from pg_temp.export_data where kind = 'itm')`],
+  // A blueprint stored in a chest keeps its creator only on the source server.
+  ["exporting stored blueprints", null, `
+    insert into pg_temp.export_data(id, kind, data)
+    select id, 'bbp', dune._character_transfer_top_level_export('bbp', to_jsonb(building_blueprints) - 'player_id')/*BOUNDS*/
+    from dune.building_blueprints where item_id in (select id from pg_temp.export_data where kind = 'itm')`],
+  ["exporting stored blueprint pieces", null, `
+    insert into pg_temp.export_data(id, kind, data)
+    select null, 'BuildingBlueprintInstance', dune._character_transfer_top_level_export('BuildingBlueprintInstance', to_jsonb(building_blueprint_instances))/*BOUNDS*/
+    from dune.building_blueprint_instances where building_blueprint_id in (select id from pg_temp.export_data where kind = 'bbp')`],
+  ["exporting stored blueprint placeables", null, `
+    insert into pg_temp.export_data(id, kind, data)
+    select null, 'BuildingBlueprintPlaceable', dune._character_transfer_top_level_export('BuildingBlueprintPlaceable', to_jsonb(building_blueprint_placeables))/*BOUNDS*/
+    from dune.building_blueprint_placeables where building_blueprint_id in (select id from pg_temp.export_data where kind = 'bbp')`],
+  ["exporting stored blueprint pentashields", null, `
+    insert into pg_temp.export_data(id, kind, data)
+    select null, 'BuildingBlueprintPentashield', dune._character_transfer_top_level_export('BuildingBlueprintPentashield', to_jsonb(building_blueprint_pentashields))/*BOUNDS*/
+    from dune.building_blueprint_pentashields where building_blueprint_id in (select id from pg_temp.export_data where kind = 'bbp')`]
+];
+
+async function beginWork(run) {
+  await run("starting transaction", `set local statement_timeout = ${statementTimeoutMs()}`);
+  await run("starting transaction", "set local search_path = dune, public");
+  await run("preparing transfer table", "select dune._character_transfer_create_data_table()");
+}
+
+// Returns { text, summary }: `text` is the complete export file, produced by
+// Postgres so no payload value is ever parsed into a JavaScript number.
+export async function exportBaseBackup(db, backupId, versionInfo = {}) {
+  const id = intParam(backupId, "base backup id", 1);
+  await requireBaseBackupCapability(db);
+  const summary = await getBaseBackupSummary(db, id);
+  const game = await serverGameVersion(db);
+
+  const text = await runTracked(db, "export", async (run) => {
+    await run("starting transaction", "set transaction isolation level repeatable read");
+    await beginWork(run);
+    const owner = await run("reading backup owner", "select player_id from dune.base_backups where id = $1", [id]);
+    if (!owner.rows[0]) throw new Error(`Base backup ${id} no longer exists`);
+    // The owner is a placeholder: never shipped as row data, remapped to the
+    // receiving player on import.
+    const placeholder = await run("reading backup owner",
+      "insert into pg_temp.export_data(id, kind, data) values ($1, 'act', '{}'::jsonb) returning transfer_id",
+      [owner.rows[0].player_id]);
+    const placeholderTransferId = Number(placeholder.rows[0].transfer_id);
+
+    const columns = columnsByTable((await run("reading table columns", COLUMNS_SQL, [IMPORT_TABLES])).rows);
+    for (const [label, param, sql] of EXPORT_STEPS) {
+      const params = param === "backup" ? [id] : param === "placeholder" ? [placeholderTransferId] : [];
+      const table = sql.match(/to_jsonb\((\w+)\)/)[1];
+      await run(label, sql.replace("/*BOUNDS*/", boundsExpression(table, columns)), params);
+    }
+    await run("rewriting internal references",
+      "update pg_temp.export_data set data = dune._character_transfer_replace_local_id_with_transfer_id_in_json(data, '')");
+
+
+    const envelope = {
+      format: BASE_BACKUP_FORMAT,
+      version: BASE_BACKUP_FORMAT_VERSION,
+      exportedAt: new Date().toISOString(),
+      source: {
+        backupId: summary.id,
+        name: summary.name,
+        rawName: summary.rawName,
+        map: summary.map,
+        totemType: summary.totemType,
+        ownerName: summary.ownerName,
+        counts: { pieces: summary.pieces, placeables: summary.placeables, items: summary.items }
+      },
+      game: {
+        build: versionInfo.gameBuild || "",
+        steamBuildId: versionInfo.steamBuildId || null,
+        ...game
+      },
+      console: { version: versionInfo.consoleVersion || "", buildId: versionInfo.consoleBuildId || "" },
+      ownerPlaceholderTransferId: placeholderTransferId
+    };
+    // Postgres renders the whole file, entries included, as text.
+    const rendered = await run("writing export file",
+      "select jsonb_pretty($1::jsonb || jsonb_build_object('entries', coalesce(dune._character_transfer_data_table_save(), '[]'::jsonb))) as text",
+      [JSON.stringify(envelope)]);
+    return rendered.rows[0].text;
+  });
+
+  return { text, summary };
+}
+
+// Upgrades an older export to the current format. Version 1 is current.
+// A future upgrade that has to rewrite entries must do it in SQL (or on
+// lossless text), never through JSON.parse'd payload numbers.
+export function upgradeEnvelope(file) {
+  if (file.version === BASE_BACKUP_FORMAT_VERSION) return file;
+  throw new BaseBackupError(`Unsupported base backup file version ${file.version}`, { code: "unsupported_version" });
+}
+
+function transferIdOf(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+// Structural validation. Transfer ids are small sequential integers, so
+// reading them here is safe; payload values are never interpreted.
+export function validateBaseBackupFile(parsed) {
+  const invalid = (message) => new BaseBackupError(message, { code: "invalid_file" });
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw invalid("File is not a base backup export");
+  if (parsed.format !== BASE_BACKUP_FORMAT) throw invalid("File is not a base backup export (unknown format)");
+  const file = upgradeEnvelope(parsed);
+  const entries = file.entries;
+  if (!Array.isArray(entries) || entries.length === 0) throw invalid("Base backup file has no entries");
+  if (entries.length > MAX_ENTRIES) throw invalid(`Base backup file has too many entries (${entries.length})`);
+
+  const placeholder = transferIdOf(file.ownerPlaceholderTransferId);
+  if (!placeholder) throw invalid("Base backup file is missing its owner placeholder");
+
+  const seen = new Set();
+  const counts = {};
+  const actIds = new Set();
+  let backupTransferId = null;
+  let placeholderFound = false;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") throw invalid("Base backup file has a malformed entry");
+    const transferId = transferIdOf(entry.id);
+    if (!transferId) throw invalid("Base backup file has an entry without a valid id");
+    if (seen.has(transferId)) throw invalid(`Base backup file repeats entry id ${transferId}`);
+    seen.add(transferId);
+    if (!ALLOWED_KINDS.has(entry.kind)) throw invalid(`Base backup file contains an unsupported entry kind: ${String(entry.kind)}`);
+    if (!entry.data || typeof entry.data !== "object" || Array.isArray(entry.data)) throw invalid(`Base backup entry ${transferId} has no data`);
+    counts[entry.kind] = (counts[entry.kind] || 0) + 1;
+    if (entry.kind === "act") {
+      if (transferId === placeholder) placeholderFound = true;
+      else actIds.add(transferId);
+    }
+    if (entry.kind === "BaseBackup") backupTransferId = transferId;
+  }
+  if (!placeholderFound) throw invalid("Base backup file is missing its owner placeholder");
+  if (counts.BaseBackup !== 1) throw invalid("Base backup file must contain exactly one backup record");
+  if (!counts.Totem) throw invalid("Base backup file has no totem");
+
+  // Every reference must resolve inside the base (see ENTRY_REFS).
+  const idsByKind = new Map();
+  for (const entry of entries) {
+    const transferId = transferIdOf(entry.id);
+    if (entry.kind === "act" && transferId === placeholder) continue;
+    if (!idsByKind.has(entry.kind)) idsByKind.set(entry.kind, new Set());
+    idsByKind.get(entry.kind).add(transferId);
+  }
+  const linked = new Set();
+  for (const entry of entries) {
+    if (entry.kind === "act" && transferIdOf(entry.id) === placeholder) {
+      if (Object.keys(entry.data).length) throw invalid("Base backup file's owner placeholder carries data");
+      continue;
+    }
+    for (const [key, rule] of Object.entries(ENTRY_REFS[entry.kind])) {
+      const raw = entry.data[key];
+      const target = rule.replace(/\?$/, "");
+      const where = `${entry.kind} ${transferIdOf(entry.id)} ${key}`;
+      if (target === "absent") {
+        if (raw != null) throw invalid(`Base backup file sets ${where}, which an export never carries`);
+        continue;
+      }
+      if (raw == null) {
+        if (rule.endsWith("?")) continue;
+        throw invalid(`Base backup file is missing ${where}`);
+      }
+      const ref = transferIdOf(raw);
+      const isOwner = ref === placeholder;
+      const isAct = ref != null && (idsByKind.get("act")?.has(ref) || false);
+      const ok = target === "owner" ? isOwner
+        : target === "actOrOwner" ? isOwner || isAct
+          : target === "act" ? isAct
+            : ref != null && (idsByKind.get(target)?.has(ref) || false);
+      if (!ok) {
+        throw invalid(isOwner
+          ? `Base backup file points ${where} at the receiving player, which only the backup owner may do`
+          : `Base backup file points ${where} outside the base`);
+      }
+    }
+    if (entry.kind === "BaseBackupLinkedActor") linked.add(transferIdOf(entry.data.actor_id));
+  }
+  for (const actorId of actIds) {
+    if (!linked.has(actorId)) throw invalid("Base backup file contains an actor that is not part of the backup");
+  }
+
+  return {
+    file,
+    placeholderTransferId: placeholder,
+    counts
+  };
+}
+
+// Parses the uploaded bytes for validation only. The same text is what gets
+// sent to Postgres.
+export function parseBaseBackupFile(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // Worded to avoid the web client's generic "invalid JSON" rewrite, which
+    // would blame the console's own saved data instead of the chosen file.
+    throw new BaseBackupError("The selected file could not be read as JSON.", { code: "invalid_file" });
+  }
+  return validateBaseBackupFile(parsed);
+}
+
+export function versionComparison(fileGame = {}, serverGame = {}, serverBuild = "") {
+  // File values are untrusted and end up in the response and audit log.
+  const file = {
+    build: clip(fileGame?.build, 64),
+    steamBuildId: fileGame?.steamBuildId == null ? null : clip(fileGame.steamBuildId, 64),
+    patchesChecksum: clip(fileGame?.patchesChecksum, 64),
+    appliedPatchesCount: Number.isFinite(Number(fileGame?.appliedPatchesCount)) ? Number(fileGame.appliedPatchesCount) : 0
+  };
+  const server = {
+    build: String(serverBuild || ""),
+    patchesChecksum: String(serverGame.patchesChecksum || ""),
+    appliedPatchesCount: Number(serverGame.appliedPatchesCount || 0)
+  };
+  return { mismatch: !file.patchesChecksum || file.patchesChecksum !== server.patchesChecksum, file, server };
+}
+
+export async function importBaseBackup(db, playerPawnId, fileText, { allowVersionMismatch = false, serverBuild = "" } = {}) {
+  const text = Buffer.isBuffer(fileText) ? fileText.toString("utf8") : String(fileText ?? "");
+  const { file, placeholderTransferId, counts } = parseBaseBackupFile(text);
+  await requireBaseBackupCapability(db);
+
+  const player = await resolvePlayerTarget(db, playerPawnId);
+  if (!player.controllerId) throw new BaseBackupError("Target player has no player controller", { statusCode: 409, code: "invalid_target" });
+
+  const version = versionComparison(file.game, await serverGameVersion(db), serverBuild);
+  if (version.mismatch && !allowVersionMismatch) {
+    throw new BaseBackupError("This base backup was exported from a different game version.", {
+      statusCode: 409,
+      code: "version_mismatch",
+      details: { file: version.file, server: version.server }
+    });
+  }
+
+  // Live columns of every target table; names and array types are checked
+  // before they are interpolated into SQL.
+  const columns = columnsByTable((await db.query(COLUMNS_SQL, [IMPORT_TABLES])).rows);
+  for (const list of columns.values()) {
+    for (const column of list) {
+      quoteIdent(column.name);
+      if (column.isArray) arrayTypeName(column.type);
+    }
+  }
+
+  const result = await runTracked(db, "import", async (run) => {
+    await beginWork(run);
+    await run("loading the file",
+      `select dune._character_transfer_data_table_load(
+         (select coalesce(jsonb_agg(entry), '[]'::jsonb)
+            from jsonb_array_elements($1::jsonb -> 'entries') entry
+           where (entry ->> 'id')::bigint <> $2))`,
+      [text, placeholderTransferId]);
+    await run("mapping the owner to the receiving player",
+      "insert into pg_temp.export_data(id, transfer_id, kind, data) values ($1, $2, 'act', '{}'::jsonb)",
+      [player.controllerId, placeholderTransferId]);
+    await run("rewriting internal references",
+      "update pg_temp.export_data set data = dune._character_transfer_replace_transfer_id_with_local_id_in_json(data, '')");
+
+    // Each table's rows are staged first, so every per-row fix happens before
+    // anything reaches a game table: array bounds, the backed-up actor state,
+    // and source-server player ids.
+    const staged = "pg_temp.base_backup_import_rows";
+    for (const { kind, table, skipPlaceholder } of IMPORT_ORDER) {
+      const label = `inserting ${STEP_LABELS[table]}`;
+      const tableColumns = columns.get(table) || [];
+      const has = (name) => tableColumns.some((column) => column.name === name);
+      await run(label, `drop table if exists ${staged}`);
+      await run(label, `
+        create temp table base_backup_import_rows on commit drop as
+        select jsonb_populate_record(null::dune.${table}, dune._character_transfer_top_level_import(kind, data, id)) as r,
+               data -> '${ARRAY_BOUNDS_KEY}' as lb
+        from pg_temp.export_data where kind = $1 ${skipPlaceholder ? "and transfer_id <> $2" : ""}`,
+        skipPlaceholder ? [kind, placeholderTransferId] : [kind]);
+
+      for (const column of tableColumns.filter((c) => c.isArray)) {
+        const col = quoteIdent(column.name);
+        await run(label, `
+          update ${staged}
+          set r.${col} = ('[' || (lb ->> $1) || ':' || ((lb ->> $1)::int + cardinality((r).${col}) - 1) || ']=' || ((r).${col})::text)::${arrayTypeName(column.type)}
+          where lb ? $1 and (lb ->> $1) in ('0', '1') and cardinality((r).${col}) > 0`, [column.name]);
+      }
+
+      const fixes = [];
+      // An imported base belongs to no map partition until the player
+      // redeploys it, whatever the file says.
+      if (table === "actors" && has("partition_id")) fixes.push("r.partition_id = null");
+      if (table === "actors" && has("state")) fixes.push("r.state = 'BaseBackup'");
+      if (table === "buildings" && has("owner_id")) fixes.push("r.owner_id = null");
+      for (const column of PLAYER_ID_COLUMNS[table] || []) {
+        if (!has(column)) continue;
+        const col = quoteIdent(column);
+        fixes.push(`r.${col} = case when coalesce((r).${col}, 0) <> 0 then $1::bigint else (r).${col} end`);
+      }
+      if (fixes.length) {
+        const usesPlayer = fixes.some((fix) => fix.includes("$1"));
+        await run(label, `update ${staged} set ${fixes.join(", ")}`, usesPlayer ? [player.controllerId] : []);
+      }
+
+      await run(label, `insert into dune.${table} select (r).* from ${staged}`);
+    }
+
+    const created = await run("reading the new backup", "select id from pg_temp.export_data where kind = 'BaseBackup'");
+    return { backupId: Number(created.rows[0].id) };
+  });
+
+  const warnings = [];
+  if (String(player.onlineStatus).toLowerCase() === "online") {
+    // Confirmed in-game: a running session never picks up an imported backup.
+    warnings.push("The receiving player is online. They must log out and back in before the backup appears in their base backup tool.");
+  }
+  if (version.mismatch) {
+    warnings.push("Imported despite a game version mismatch between the file and this server.");
+  }
+  return {
+    ok: true,
+    backupId: result.backupId,
+    name: clip(file.source?.name),
+    playerPawnId: player.actorId,
+    playerControllerId: player.controllerId,
+    online: String(player.onlineStatus).toLowerCase() === "online",
+    counts: {
+      actors: (counts.act || 1) - 1,
+      pieces: counts.BuildingInstance || 0,
+      placeables: counts.Placeable || 0,
+      items: counts.itm || 0
+    },
+    version,
+    warnings,
+    warning: warnings.join(" ") || undefined
+  };
+}

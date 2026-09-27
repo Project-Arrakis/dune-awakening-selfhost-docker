@@ -127,8 +127,11 @@ Add and remove stay one action deliberately: two directions of the same roster k
 | `bases:give-item` | give-item, give-items |
 | `bases:fill-item` | fill an existing stack to its cap |
 | `bases:write-config` | the auto-refill thresholds and scan intervals |
+| `bases:import-backup` | import a base backup file as a new backup for a player |
 
 `bases:write-config` is the consent case rather than the blast-radius one: every other action here acts on one base and is reversible on that base, whereas the thresholds and intervals govern the automation for *every* enrolled base at once. An operator granted `bases:mutate` agreed to enroll bases, not to retune the policy behind all of them. It follows the per-feature settings convention (`exchange:write-config`, `maps:write-config`). Shipped defaults are unchanged: `owner` (`*`) and `admin` (`bases:*`) reach it, and `moderator`/`player`/`observer` keep `bases:read` only, so they can read the settings but not save them.
+
+`bases:import-backup` is a consent action: import creates a whole base (actors, pieces, stored items) for a player, so no `bases:read` or `bases:mutate` grant is read as consent to it; owner (`*`) and admin (`bases:*`) reach it, moderator/player/observer do not. Listing and exporting base backups stay under `bases:read`.
 
 `blueprints:mutate` and `addons:mutate` were split on the same grounds.
 

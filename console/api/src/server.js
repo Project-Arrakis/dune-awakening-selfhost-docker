@@ -61,6 +61,8 @@ import { liveMapPoi } from "./services/liveMapPoi.js";
 import { deliverMapChatToRecipients } from "./services/mapChatDelivery.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
+import { BaseBackupError, baseBackupHttpError, exportBaseBackup, importBaseBackup, listBaseBackups } from "./baseBackups.js";
+import { readSteamBuildId } from "./services/steamBuild.js";
 import { getCommunityBlueprint, getCommunityBlueprintPreview, listCommunityBlueprints } from "./services/blueprintCatalog.js";
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
@@ -68,7 +70,7 @@ import { grantAddonItem } from "./addonItemGrants.js";
 import { deleteAddonData, listAddonData, readAddonData, writeAddonData } from "./addonDataStore.js";
 import { createAddonDeliveryService, deferAddonDelivery } from "./addonDeliveries.js";
 import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, refreshBuybackLog, readBuybackLog, clearBuybackLog, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
-import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
+import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings, readGameBuild } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals, setChoamTerminalPosition, clearChoamTerminalPosition, derivePlacementFromPlayer, evaluateCaptureFreshness } from "./services/choamTerminals.js";
 import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
 import { ensureExchangeHistory, listExchangeTransactions } from "./services/exchangeHistory.js";
@@ -1203,6 +1205,9 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/blueprints\/([^/]+)\/export$/) && req.method === "GET") return blueprintExportRoute(req, res, path);
   if (path === "/api/blueprints/import" && req.method === "POST") return blueprintImportRoute(req, res);
   if (path.match(/^\/api\/blueprints\/([^/]+)$/) && req.method === "DELETE") return blueprintsDeleteRoute(req, res, path);
+  if (path === "/api/base-backups" && req.method === "GET") return baseBackupListRoute(res, url);
+  if (path.match(/^\/api\/base-backups\/[^/]+\/export$/) && req.method === "GET") return baseBackupExportRoute(req, res, path);
+  if (path === "/api/base-backups/import" && req.method === "POST") return baseBackupImportRoute(req, res);
   if (path === "/api/care-package/capabilities") return json(res, 200, carePackageCapabilities());
   if (path === "/api/care-package/config" && req.method === "POST") return carePackageConfigRoute(req, res);
   if (path === "/api/care-package/config") return json(res, 200, carePackageConfig(config));
@@ -5483,6 +5488,77 @@ async function blueprintImportRoute(req, res) {
   } catch (error) {
     if (error.unsupported) return json(res, 501, { supported: false, error: redact(error?.message || "Unexpected error.") });
     return json(res, 500, { ok: false, error: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+// Base backups: the game's own "pick up base" backups (see baseBackups.js).
+function baseBackupErrorResponse(res, error) {
+  const { status, body } = baseBackupHttpError(error);
+  return json(res, status, body);
+}
+
+async function baseBackupListRoute(res, url) {
+  try {
+    return json(res, 200, await listBaseBackups(db, { playerId: url.searchParams.get("playerId") || "" }));
+  } catch (error) {
+    return baseBackupErrorResponse(res, error);
+  }
+}
+
+function attachmentName(value) {
+  return String(value || "").replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80);
+}
+
+async function baseBackupExportRoute(req, res, path) {
+  const backupId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(backupId) || backupId < 1) return json(res, 400, { ok: false, code: "invalid", error: "Invalid base backup ID" });
+  try {
+    const { text, summary } = await exportBaseBackup(db, backupId, {
+      gameBuild: readGameBuild(config.repoRoot),
+      steamBuildId: await readSteamBuildId({ repoRoot: config.repoRoot }),
+      consoleVersion: config.version,
+      consoleBuildId: publicConfig(config).buildId
+    });
+    const stem = [attachmentName(summary.ownerName), attachmentName(summary.name)].filter(Boolean).join("_") || "base";
+    res.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "content-disposition": `attachment; filename="${stem}_base-backup_${backupId}.json"`
+    });
+    return res.end(text);
+  } catch (error) {
+    return baseBackupErrorResponse(res, error);
+  }
+}
+
+async function baseBackupImportRoute(req, res) {
+  let playerPawnId = null;
+  try {
+    const { fields, files } = await readMultipartForm(req, 32 << 20);
+    playerPawnId = Number(String(fields.player_id || ""));
+    if (!Number.isInteger(playerPawnId) || playerPawnId < 1) return json(res, 400, { ok: false, code: "invalid", error: "Invalid player_id" });
+    const fileEntry = Array.isArray(files) ? files.find((f) => f.fieldName === "file" && f.fileName) : files;
+    if (!fileEntry?.content) return json(res, 400, { ok: false, code: "invalid", error: "Base backup file required" });
+    const allowVersionMismatch = ["1", "true", "yes"].includes(String(fields.allow_version_mismatch || "").toLowerCase());
+    const result = await importBaseBackup(db, playerPawnId, fileEntry.content, {
+      allowVersionMismatch,
+      serverBuild: readGameBuild(config.repoRoot)
+    });
+    audit(config, req, "base-backups.import", { playerPawnId, fileName: String(fileEntry.fileName || "").slice(0, 200), result });
+    return json(res, 200, result);
+  } catch (error) {
+    // A file that fails validation never reached the database; everything
+    // else (timeouts, version refusals, database errors) is worth a trail.
+    if (!(error instanceof BaseBackupError && error.code === "invalid_file")) {
+      audit(config, req, "base-backups.import", {
+        playerPawnId,
+        result: error?.code === "timeout" ? "timeout" : "failed",
+        code: error?.code || null,
+        step: error?.details?.step || null,
+        // Game-function errors can echo a whole row of the uploaded file.
+        error: redact(error?.message || "").slice(0, 1000)
+      });
+    }
+    return baseBackupErrorResponse(res, error);
   }
 }
 

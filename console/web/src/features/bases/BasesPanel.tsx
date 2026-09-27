@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Boxes, ChevronDown, ChevronUp, Download, Droplet, Fuel, Grid3X3, KeyRound, Lock, Settings, Trash2, Users, X, Zap } from "lucide-react";
 import { BaseInventoryTab } from "./BaseInventoryTab";
 import { BaseChildPermissionsTab } from "./BaseChildPermissionsTab";
@@ -28,6 +28,8 @@ type BasesPanelProps = {
   playerId?: string;
   playerName?: string;
   embedded?: boolean;
+  // The Bases page's "Bases | Base Backups" toggle (BasesPage), in the title.
+  viewSwitch?: ReactNode;
 };
 
 type SharedWithEntry = { name: string; rank: number; label: string };
@@ -350,7 +352,7 @@ function renderBaseCell(row: Record<string, unknown>, column: string, instanceNa
   );
 }
 
-export function BasesPanel({ onError, confirmAction, restartGate, formatMutationResult, focusRequest, playerId = "", playerName = "", embedded = false }: BasesPanelProps) {
+export function BasesPanel({ onError, confirmAction, restartGate, formatMutationResult, focusRequest, playerId = "", playerName = "", embedded = false, viewSwitch }: BasesPanelProps) {
   const scope = playerId ? `player:${playerId}` : "all";
   const initialCache = basesCache?.scope === scope ? basesCache : null;
   const [q, setQ] = useState(() => initialCache?.q ?? "");
@@ -1177,7 +1179,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
 
   if (loading) {
     return <section className={panelClassName}>
-      <div className="panel-title"><PanelHeading>Bases</PanelHeading></div>
+      <div className="panel-title"><PanelHeading>Bases</PanelHeading>{viewSwitch}</div>
       <div className="loading-panel">
         <span className="spinner" aria-hidden="true" />
         <strong className="loading-dots">Loading Bases</strong>
@@ -1345,6 +1347,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           <PanelHeading>Bases</PanelHeading>
           {playerId && <p className="playerAdmin_note">Bases owned by or shared with {playerName}. Expand a row to use the same tools available on the main Bases page.</p>}
         </div>
+        {viewSwitch}
         <div className="action-row">
           {/* Hidden in the per-player embed -- that view is one player's lens
               and these settings are global -- and hidden without a refill

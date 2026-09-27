@@ -200,13 +200,14 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
 }
 .confirm-modal-title h3 { margin: 0; font-size: 18px; }
 .confirm-modal p { margin: 0; color: #e9dcc8; line-height: 1.45; overflow-wrap: anywhere; }
-.confirm-modal-details { display: grid; gap: 8px; margin: 0; }
-.confirm-modal-details div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; align-items: center; }
-/* min-width/overflow-wrap: the label column is a fixed 92px so labels line up
-   across rows (each row is its own grid, so the track cannot size to content).
-   Without these a long label -- a base piece name like
-   BloodWaterExtractionAdvanced -- overflows its track and collides with the
-   value beside it instead of wrapping inside it. */
+/* One grid for the whole list (rows are display: contents), so the label
+   column sizes to the widest label -- short labels no longer wrap beside an
+   empty value column -- while every row still shares the same track. The
+   track is capped at 60% of the dialog; min-width/overflow-wrap below keep a
+   long unbreakable label (a base piece name like BloodWaterExtractionAdvanced)
+   wrapping inside it instead of colliding with the value. */
+.confirm-modal-details { display: grid; grid-template-columns: fit-content(60%) minmax(0, 1fr); column-gap: 14px; row-gap: 8px; align-items: center; margin: 0; }
+.confirm-modal-details div { display: contents; }
 .confirm-modal-details dt { color: var(--muted); font-size: 12px; text-transform: uppercase; min-width: 0; overflow-wrap: anywhere; }
 .confirm-modal-details dd { margin: 0; overflow-wrap: anywhere; font-weight: 800; }
 .confirm-modal-details dd.accent { color: var(--title); }
@@ -1848,6 +1849,23 @@ body.debug .technical-details { display: block; }
 .blueprints-panel .home-task-result { margin: 0; }
 .blueprint-import-row { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
 .blueprint-import-row > button { width: auto; min-height: 40px; }
+/* Base Backups view (features/bases/BaseBackupsView.tsx) reuses the blueprint import row. */
+.base-backups-view > .result-panel { margin: 0 0 16px; }
+.base-backups-view > .base-backup-target { margin: 12px 0; }
+.base-backup-target .bases-permissions-candidates { margin-top: 8px; }
+/* Line the receiver search up with the file row above: same field sizing and gap. */
+.base-backup-target .bases-permissions-search-row { gap: 10px; }
+.base-backup-target .bases-permissions-search-row > input { flex: 1 1 360px; max-width: 560px; min-width: min(100%, 260px); width: auto; }
+.base-backup-target .bases-permissions-search-row > button { width: auto; min-height: 40px; }
+/* The shared blueprint file control is 40px; inputs and buttons here are 43px. */
+.base-backups-view .blueprint-file-control { min-height: 43px; }
+.base-backup-target-chosen { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0; }
+.base-backup-target-chosen > button { width: auto; }
+/* A timeout result must stay readable: cancel .home-task-result's 10 s fade
+   (0-3-0 beats its 0-2-0), show its details, and keep Dismiss compact. */
+.base-backups-view .home-task-result.result-persistent { animation: none; opacity: 1; transform: none; }
+.technical-details.base-backup-result-details { display: block; }
+.base-backups-view .result-panel > button { justify-self: start; width: auto; }
 .blueprint-file-field { display: grid; gap: 5px; flex: 1 1 360px; max-width: 560px; min-width: min(100%, 260px); color: var(--muted-warm); font-size: 15px; line-height: 1.35; cursor: pointer; }
 .blueprint-file-field > input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .blueprint-file-control { min-height: 40px; display: flex; align-items: center; gap: 9px; min-width: 0; padding: 8px 11px; border: 1px solid var(--border-strong); border-radius: 6px; background: #17191b; color: #e8dcc4; }
@@ -7104,7 +7122,8 @@ td :where(.service-actions, .action-row, .map-action-buttons) { max-width: 100%;
   .sidebar-nav.mobile-open .sidebar-nav-heading { grid-column: 1 / -1; }
   .topbar .topbar-links { grid-template-columns: 1fr; }
   .community-button, .listing-claim-badge { grid-column: auto; }
-  .confirm-modal-details div { grid-template-columns: 1fr; gap: 3px; }
+  .confirm-modal-details { grid-template-columns: 1fr; row-gap: 3px; }
+  .confirm-modal-details div + div dt { margin-top: 5px; }
   /* Excludes the grouped (4-button/quaternary) layout below -- its own rule
      right after this one handles it. A bare .confirm-modal-actions selector
      here would win (same specificity, later in source) over

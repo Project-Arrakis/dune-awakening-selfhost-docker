@@ -357,6 +357,13 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 | DELETE | `/api/bases/{baseId}` | Permanently delete a base and everything on it (queued instead if the map isn't safely writable right now); takes a full-database safety backup first. Requires `{ confirmation: "DELETE BASE" }` | `baseId` |
 | GET | `/api/bases/pending-deletes` | List queued base deletes, grouped by restart target | None |
 | DELETE | `/api/bases/{baseId}/queued-delete` | Cancel a base's queued delete | `baseId` |
+| GET | `/api/base-backups` | List the game's base backups (picked-up bases) optionally for one player; includes a `supported` flag and `missing[]` when schema support is incomplete | `playerId?` (player pawn id, to list one player's backups); returns 404 if playerId is not a player |
+| GET | `/api/base-backups/{backupId}/export` | Download one base backup as a JSON file (attachment named `<owner>_<backup>_base-backup_<id>.json`) | `backupId`; 400 bad id, 404 unknown backup, 501 unsupported, 504 timeout |
+| POST | `/api/base-backups/import` | Import a base backup file as a new backup for a player | Multipart form: `player_id` (pawn id), `file`, optional `allow_version_mismatch=1`; 400 invalid_file / invalid player_id / unsupported_version, 404 player not found, 409 version_mismatch or invalid_target (player has no controller), 501 unsupported, 504 timeout |
+
+Base backups are the backups created when a player picks up a base with the
+game's own tool. See [Base backups](base-backups.md#export-and-import) for
+import/export details.
 
 `GET /api/bases` excludes a base that has been picked up via the game's own
 base-backup tool (unclaimed and registered in `dune.base_backup_linked_actors`
