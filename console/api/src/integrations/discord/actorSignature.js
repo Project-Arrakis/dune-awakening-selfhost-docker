@@ -149,7 +149,20 @@ export function actorSignatureRequired(config = {}) {
 function canonicalizeValue(value) {
   if (Array.isArray(value)) return value.map(canonicalizeValue);
   if (value && typeof value === "object") {
-    const sorted = {};
+    // [CRITICAL fix, issue #1073] `sorted` must NOT be a plain `{}` --
+    // JSON.parse creates a "__proto__" key as a real OWN enumerable
+    // property (it uses CreateDataProperty, not [[Set]]), so a params
+    // object with a literal "__proto__" key genuinely has it in
+    // Object.keys(value). But a plain object literal inherits
+    // Object.prototype's own "__proto__" ACCESSOR, so `sorted[key] = ...`
+    // for that one key invoked the inherited setter instead of creating an
+    // own property -- silently dropping that key (and its whole subtree)
+    // from the canonical string that gets signed, while it remained a real
+    // own property everywhere else params was read (body.params, the
+    // nonce store, etc.). Object.create(null) has no prototype at all, so
+    // every key -- including "__proto__" -- is an ordinary own-property
+    // assignment here, at every nesting depth via this same recursive call.
+    const sorted = Object.create(null);
     for (const key of Object.keys(value).sort()) sorted[key] = canonicalizeValue(value[key]);
     return sorted;
   }

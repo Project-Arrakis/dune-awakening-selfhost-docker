@@ -123,3 +123,23 @@ test("constantTimeHexEqual: exported, length-guarded before timingSafeEqual (nev
   assert.equal(constantTimeHexEqual("", ""), false);
   assert.doesNotThrow(() => constantTimeHexEqual("a", "abcdef"));
 });
+
+// [CRITICAL fix, issue #1073] JSON.parse creates a "__proto__" key as a
+// real OWN enumerable property (CreateDataProperty, not [[Set]]), so a
+// params object with a literal "__proto__" key genuinely has it in
+// Object.keys(). A plain object literal used as the canonicalization
+// accumulator would silently drop that one key (it inherits
+// Object.prototype's own "__proto__" ACCESSOR, so the assignment invokes
+// the inherited setter instead of creating an own property) -- weakening
+// the params-binding fix (#1070) for that one reserved key name. Real,
+// end-to-end proof: two params objects differing ONLY by an added
+// "__proto__" subtree must sign differently.
+test("canonicalActorSignaturePayload: a params key literally named \"__proto__\" is NOT silently dropped from the signed canonical form", () => {
+  const base = { userId: "111", username: "Alice", roleIds: ["mod"], guildId: "g1", channelId: "c1", roleSnapshotAt: 1700000000, action: "player.kick" };
+  const withoutProto = { ...base, params: JSON.parse('{"playerId":"Alice"}') };
+  const withProto = { ...base, params: JSON.parse('{"playerId":"Alice","__proto__":{"admin":true}}') };
+  const sigWithout = canonicalActorSignaturePayload(withoutProto, 1700000000, "/api/integrations/discord/write/preview", WRITE_BRIDGE_SIGNED_ACTOR_FIELDS);
+  const sigWith = canonicalActorSignaturePayload(withProto, 1700000000, "/api/integrations/discord/write/preview", WRITE_BRIDGE_SIGNED_ACTOR_FIELDS);
+  assert.notEqual(sigWithout, sigWith, "adding a __proto__ subtree to params must change the canonical signed string");
+  assert.match(sigWith, /__proto__/, "the canonical string must literally contain the __proto__ key, not silently omit it");
+});
