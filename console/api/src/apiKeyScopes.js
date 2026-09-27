@@ -42,18 +42,19 @@ export const KEY_WRITE_DENIED_NAMESPACES = new Set(["updates", "addons"]);
 // policy.js.
 //
 // bases:import-backup creates a whole base -- actors, pieces and every stored
-// item in it -- from an uploaded file, and bases:edit-backup can hand an
-// existing one to another player. bases:export-backup downloads a whole base,
-// every stored item included, as a file that imports anywhere. A key stored
-// as { "bases": "write" } was granted for per-base knobs; it must not gain
-// any of these on upgrade.
+// item in it -- from an uploaded file, bases:edit-backup can hand an existing
+// one to another player, bases:export-backup downloads it for import anywhere,
+// and bases:delete-backup irreversibly removes the backup and everything in it.
+// A key stored as { "bases": "write" } was granted for per-base knobs; it must
+// not gain any of these on upgrade.
 export const LEVEL_EXCLUDED_ACTIONS = new Set([
   "backups:download-system",
   "backups:import-system",
   "backups:restore-system",
   "bases:import-backup",
   "bases:edit-backup",
-  "bases:export-backup"
+  "bases:export-backup",
+  "bases:delete-backup"
 ]);
 
 // POST-shaped but read-only in effect, so reachable by a "read" grant. Keep

@@ -1095,7 +1095,7 @@ export async function updateBaseBackup(db, backupId, { ownerPlayerId, name, map 
       for update of bb`, [id]);
     const row = current.rows[0];
     if (!row) return { missing: true };
-    if (String(row.owner_status).toLowerCase() === "online") return { ownerOnline: true, ownerName: row.owner_name };
+    if (String(row.owner_status).toLowerCase() !== "offline") return { ownerOnline: true, ownerName: row.owner_name };
 
     const ownerChanged = Boolean(newOwner) && Number(row.player_id) !== newOwner.controllerId;
     const nameChanged = newName !== null && newName !== row.name;
@@ -1135,7 +1135,7 @@ export async function updateBaseBackup(db, backupId, { ownerPlayerId, name, map 
   if (result.unchanged) throw new BaseBackupError("Nothing to change: the backup already has that owner, name and map.", { code: "no_change" });
 
   const warnings = [];
-  if (result.owner && String(newOwner.onlineStatus).toLowerCase() === "online") {
+  if (result.owner && String(newOwner.onlineStatus).toLowerCase() !== "offline") {
     warnings.push("The new owner is online. They must log out and back in before the backup appears in their base backup tool.");
   }
   return {
@@ -1162,7 +1162,7 @@ function deleteBlockedError(row, id) {
   if (!row) {
     return new BaseBackupError(`Base backup ${id} no longer exists. It may have been redeployed or recycled in-game.`, { statusCode: 404, code: "not_found" });
   }
-  if (String(row.owner_status || "").toLowerCase() === "online") {
+  if (String(row.owner_status || "").toLowerCase() !== "offline") {
     return new BaseBackupError(`${row.owner_name || "The backup's owner"} is online. They must log out before this backup can be deleted.`, {
       statusCode: 409, code: "owner_online", details: { ownerName: clip(row.owner_name) }
     });

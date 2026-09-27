@@ -494,6 +494,23 @@ test("deleteBaseBackup refuses while the owner is online, and for a backup that 
   assert.equal(precheck.calls.transaction, 0);
 });
 
+test("backup changes wait for every non-offline owner state", async () => {
+  for (const owner_status of ["LoggingIn", "LoggingOut"]) {
+    const edit = fakeDb({ lockRow: { owner_name: "Owner One", owner_status } });
+    await assert.rejects(updateBaseBackup(edit, 3, { name: "New Name" }), (error) => {
+      assert.equal(error.code, "owner_online");
+      return true;
+    });
+
+    const deletion = fakeDb({ lockRow: { owner_name: "Owner One", owner_status } });
+    await assert.rejects(deleteBaseBackup(deletion, 3), (error) => {
+      assert.equal(error.code, "owner_online");
+      return true;
+    });
+    assert.equal(deletion.calls.txSql.some((sql) => sql.includes("base_backup_delete")), false);
+  }
+});
+
 test("deleting needs the game's base_backup_delete function", async () => {
   await assert.rejects(deleteBaseBackup(fakeDb({ missingFunction: "dune.base_backup_delete(bigint)" }), 3), (error) => {
     assert.equal(error.unsupported, true);
@@ -507,6 +524,8 @@ test("deleting a backup is its own admin-only action", () => {
   assert.equal(actionForRoute("/api/base-backups/import", "DELETE"), null);
   for (const tier of ["owner", "admin"]) assert.equal(evaluate({ tier }, "bases:delete-backup"), true);
   for (const tier of ["moderator", "player", "observer"]) assert.equal(evaluate({ tier }, "bases:delete-backup"), false);
+  assert.equal(scopeAllowsAction("bases", "write", "bases:delete-backup"), false);
+  assert.equal(scopeAllowsAction("bases", ["bases:delete-backup"], "bases:delete-backup"), true);
 });
 
 test("exportLiveBase only reads: every write goes to its own temp tables", async () => {
