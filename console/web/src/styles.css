@@ -1568,6 +1568,7 @@ body.debug .technical-details { display: block; }
   min-width: 150px;
   padding-right: 38px;
 }
+.players-inactive-filter select { width: 160px; min-width: 160px; }
 .players-search-row, .guilds-search-row, .bases-search-row { flex-wrap: nowrap; }
 .players-search-row input, .guilds-search-row input, .bases-search-row input { width: auto; min-width: 0; flex: 1 1 auto; }
 .players-search-row button, .guilds-search-row button, .bases-search-row button { width: auto; flex: 0 0 auto; }

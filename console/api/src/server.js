@@ -95,6 +95,7 @@ import { createScheduledMapMessageScheduler } from "./services/scheduledMapMessa
 import { createQaUpdates } from "./services/qaUpdates.js";
 import { SETUP_CONFIG_KEYS, validHostDatacenterId } from "./services/setupConfig.js";
 import { readRestartHistory } from "./services/restartHistory.js";
+import { playerListSettingsView, resolvePlayerInactiveWeeks, savePlayerListSettings } from "./services/playerListSettings.js";
 
 const config = loadConfig();
 const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
@@ -967,6 +968,17 @@ async function handleApi(req, res) {
     });
   }
 
+  if (path === "/api/players/list-settings" && req.method === "GET") {
+    return json(res, 200, {
+      ...playerListSettingsView(config.repoRoot),
+      canConfigure: evaluate(session, "players:configure-list")
+    });
+  }
+  if (path === "/api/players/list-settings" && req.method === "POST") {
+    const result = savePlayerListSettings(config.repoRoot, await readJson(req));
+    audit(config, req, "players.list-settings-updated", { inactiveWeeks: result.settings.inactiveWeeks, source: result.source });
+    return json(res, 200, result);
+  }
   if (path === "/api/players") return dbJson(res, () => duneDb.listPlayers(db, {
     q: url.searchParams.get("q") || "",
     page: url.searchParams.get("page") || 0,
@@ -974,6 +986,7 @@ async function handleApi(req, res) {
     status: url.searchParams.get("status") || "all",
     sortColumn: url.searchParams.get("sortColumn") || "character_name",
     sortDirection: url.searchParams.get("sortDirection") || "asc",
+    inactiveWeeks: url.searchParams.get("recentOnly") === "1" ? resolvePlayerInactiveWeeks(config.repoRoot) : null,
     bannedFlsIds: bannedFlsIds(config.repoRoot)
   }));
   if (path === "/api/players/online") return dbJson(res, () => duneDb.listPlayers(db, {

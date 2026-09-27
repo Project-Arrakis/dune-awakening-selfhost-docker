@@ -1619,12 +1619,15 @@ const INTERNAL_GM_PLAYER_PAWN_ID = FUNCOM_GM_PERSONA.playerPawnId;
 // "Server".
 const SYSTEM_PERSONA_PAWN_IDS = [FUNCOM_GM_PERSONA, CARE_PACKAGE_SERVER_PERSONA, MESSAGE_OF_THE_DAY_PERSONA].map((persona) => persona.playerPawnId);
 
-export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true, bannedFlsIds = [] } = {}) {
+export async function listPlayers(db, { status = "all", q = "", page = 0, pageSize = 50, sortColumn = "character_name", sortDirection = "asc", includeTotals = true, inactiveWeeks = null, bannedFlsIds = [] } = {}) {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "player_state"))) {
     return { ...unsupported("players", ["dune.actors", "dune.player_state"]), totalCount: 0, totalPlayers: 0 };
   }
   const safePageSize = intParam(pageSize, "pageSize", 1, 200);
   const safePage = intParam(page, "page", 0);
+  const safeInactiveWeeks = inactiveWeeks === null || inactiveWeeks === undefined
+    ? null
+    : intParam(inactiveWeeks, "inactiveWeeks", 1, 8);
   const offset = safePage * safePageSize;
   const safeSortColumn = Object.hasOwn(PLAYER_SORT_COLUMNS, sortColumn) ? sortColumn : "character_name";
   const safeSortDirection = String(sortDirection).toLowerCase() === "desc" ? "desc" : "asc";
@@ -1737,6 +1740,22 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     if (status === "offline") where += ` and not (${bannedExpression}) and coalesce(ps.online_status::text, '') <> 'Online'`;
   }
   if (status === "banned") where += ` and (${bannedExpression})`;
+  // This is deliberately opt-in for the Players page instead of changing the
+  // shared player API contract. Internal scanners, addon integrations and
+  // administrative player pickers still receive every player unless their
+  // caller explicitly requests the recent-player view. Online players always
+  // remain visible. An offline row with no usable activity timestamp is
+  // treated as inactive, which keeps abandoned character-creation records from
+  // permanently occupying the Active Players table.
+  if (safeInactiveWeeks !== null && status !== "banned") {
+    values.push(safeInactiveWeeks);
+    const inactiveWeeksParameter = values.length;
+    where += ` and (${hasOnlineStatus ? "coalesce(ps.online_status::text, '') = 'Online' or " : ""}(
+      nullif(trim(coalesce(${lastSeenSelect}, '')), '') is not null
+      and nullif(trim(coalesce(${lastSeenSelect}, '')), '')::timestamp with time zone
+          >= current_timestamp - ($${inactiveWeeksParameter}::int * interval '1 week')
+    ))`;
+  }
   if (q) {
     values.push(`%${q}%`);
     const fuzzySearchParameter = values.length;
@@ -1840,7 +1859,14 @@ export async function listPlayers(db, { status = "all", q = "", page = 0, pageSi
     from player_rows`) : null;
 
   return {
-    capabilities: { players: true, status, statusFilterApplied: hasOnlineStatus, banFilterApplied: true },
+    capabilities: {
+      players: true,
+      status,
+      statusFilterApplied: hasOnlineStatus,
+      banFilterApplied: true,
+      inactiveFilterApplied: safeInactiveWeeks !== null && status !== "banned",
+      inactiveWeeks: safeInactiveWeeks
+    },
     totalCount: result.rows[0] ? Number(result.rows[0].total_count) : 0,
     totalPlayers: totalsResult ? (totalsResult.rows[0] ? Number(totalsResult.rows[0].total_players) : 0) : undefined,
     rows: result.rows

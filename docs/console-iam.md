@@ -95,6 +95,7 @@ Updates that remove the owner's `settings:write` access are rejected so the loca
 | Action | Covers |
 |---|---|
 | `players:moderate` | kick, ban, unban |
+| `players:configure-list` | change the inactive-player visibility threshold |
 | `players:teleport` | teleport |
 | `players:give-item` | give-item(s), give-item-id, augment-item, spawn-vehicle |
 | `players:grant` | currency, XP, intel, faction reputation, faction, skill points/module, building & customization & recipe & research unlocks, specialization XP/grant-max/keystones, journey & tutorial completion |

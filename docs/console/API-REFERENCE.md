@@ -208,7 +208,9 @@ them.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/players` | List players (paginated) | `q?`, `page?`, `pageSize?`, `status?` (`all`, `online`, `offline`, or `banned`), `sortColumn?`, `sortDirection?` |
+| GET | `/api/players` | List players (paginated). Set `recentOnly=1` to keep online players and hide offline players beyond the configured inactivity threshold. | `q?`, `page?`, `pageSize?`, `status?` (`all`, `online`, `offline`, or `banned`), `sortColumn?`, `sortDirection?`, `recentOnly?` |
+| GET | `/api/players/list-settings` | Read the Active Players visibility threshold (`null`/Never by default) and whether the current session may change it | None |
+| POST | `/api/players/list-settings` | Change the inactivity threshold; `null` means Never | `inactiveWeeks` (whole number from 1 to 8, or `null`) |
 | GET | `/api/players/online` | List currently online players | `page?`, `pageSize?` |
 | GET | `/api/players/search` | Search players by name/ID | `q` (required, query param) |
 | GET | `/api/players/deleted-characters` | List deleted characters holding bases or vehicles, plus unattributed orphaned assets. See [deleted-characters.md](deleted-characters.md) | None |

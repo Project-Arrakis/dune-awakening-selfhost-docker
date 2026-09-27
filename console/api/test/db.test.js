@@ -1794,6 +1794,51 @@ test("players sorted by last online rank current players ahead of stored timesta
   assert.match(playerQuery.text, /order by case when actual_online_status = 'Online' then 0 else 1 end asc, last_seen desc, actor_id desc/);
 });
 
+test("recent players filter keeps online players and hides stale or timestamp-less offline rows", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        return { rows: ["online_status", "last_avatar_activity"].map((column_name) => ({ column_name })) };
+      }
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 12 }] };
+      return { rows: [{ actor_id: 82, total_count: 4 }] };
+    }
+  };
+
+  const result = await listPlayers(db, { inactiveWeeks: 2 });
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+
+  assert.match(playerQuery.text, /coalesce\(ps\.online_status::text, ''\) = 'Online' or/);
+  assert.match(playerQuery.text, /ps\."last_avatar_activity"::text/);
+  assert.match(playerQuery.text, /current_timestamp - \(\$2::int \* interval '1 week'\)/);
+  assert.deepEqual(playerQuery.values.slice(0, 2), [[], 2]);
+  assert.equal(result.capabilities.inactiveFilterApplied, true);
+  assert.equal(result.capabilities.inactiveWeeks, 2);
+  assert.equal(result.totalPlayers, 12, "the all-time total remains available separately from the visible rows");
+});
+
+test("the explicit banned view is never hidden by the inactivity threshold", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "online_status" }] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 1 }] };
+      return { rows: [{ actor_id: 82, total_count: 1 }] };
+    }
+  };
+
+  const result = await listPlayers(db, { status: "banned", inactiveWeeks: 2, bannedFlsIds: ["254a06043e9f0b16"] });
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+
+  assert.doesNotMatch(playerQuery.text, /interval '1 week'/);
+  assert.equal(result.capabilities.inactiveFilterApplied, false);
+});
+
 test("players query resolves the game map partition used by configured Sietch names", async () => {
   const calls = [];
   const db = {

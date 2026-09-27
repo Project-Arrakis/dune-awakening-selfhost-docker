@@ -177,9 +177,11 @@ export const ROUTE_ACTIONS = {
 
   // --- Players (read) ---
   "GET /api/players":                          "players:read",
+  "GET /api/players/list-settings":            "players:read",
   "GET /api/players/online":                   "players:read",
   "GET /api/players/search":                   "players:read",
   "GET /api/players/deleted-characters":       "players:read",
+  "POST /api/players/list-settings":           "players:configure-list",
 
   // --- Vehicles ---
   "GET /api/vehicles":                         "vehicles:read",
