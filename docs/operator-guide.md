@@ -102,7 +102,12 @@ Claim Editor not covered here):
 and the Water tab (water storage). An enrolled base is scanned on a fixed
 interval and queued for a refill when its lowest device falls below a
 threshold; the refill itself goes through the same queue as a manual one, so
-it applies at the next safe window rather than immediately. The two
+it applies at the next safe window rather than immediately. Windtraps are
+scanned with the generators but against their own threshold: a windtrap holds
+only 5 filters, so it reads in 20% steps, and one windtrap below its threshold
+queues a refill for the whole base, generators included. Bases already
+enrolled before windtraps were added are covered automatically — there is no
+separate opt-in. The two
 subsystems are independent — separate enrollment lists, separate schedules —
 so enrolling a base in one does not enroll it in the other.
 
@@ -115,13 +120,14 @@ game data is touched.
 | Setting | Default | Range |
 |---|---:|---|
 | Generators — queue a refill below | 50 | 1-99 % |
+| Windtraps — queue a refill below | 40 (1 filter left) | 1-99 % |
 | Generators — check every | 24 | 1-168 h |
 | Water — queue a refill below | 50 | 1-99 % |
 | Water — check every | 24 | 1-168 h |
 
 Each field has a **Reset**, which clears the console override and falls back to
 the environment variable (`ADMIN_AUTO_REFILL_THRESHOLD_PERCENT`,
-`ADMIN_AUTO_REFILL_INTERVAL_HOURS`, `ADMIN_AUTO_REFILL_WATER_THRESHOLD_PERCENT`,
+`ADMIN_AUTO_REFILL_WINDTRAP_THRESHOLD_PERCENT`, `ADMIN_AUTO_REFILL_INTERVAL_HOURS`, `ADMIN_AUTO_REFILL_WATER_THRESHOLD_PERCENT`,
 `ADMIN_AUTO_REFILL_WATER_INTERVAL_HOURS`) if one is set, or the default above.
 The precedence is settings page, then environment variable, then default. An
 unparseable environment variable falls back to the default rather than failing

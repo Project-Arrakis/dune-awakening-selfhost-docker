@@ -32,6 +32,16 @@ The tier written is not configurable: a refill keeps the tier the windtrap
 already holds or burns, and only an empty, idle one gets the default
 (`WindTrapFilter2`, or `WindTrapFilter4` for a Large Windtrap).
 
+Windtraps are refilled with the generators and get their own Power-tab cards,
+but they are kept out of the base-level generator totals (`generatorCount`,
+the lowest queued reserve, and the "no generators have queued fuel" alert).
+The base list reports them separately as `windtrapCount`. A filter reserve says
+nothing about power, and a 5-filter windtrap would otherwise become every
+base's lowest reserve.
+
+Holograms (placed but unbuilt pieces, `placeables.is_hologram`) are never
+counted or refilled, for generators and windtraps alike.
+
 ## Overriding the defaults
 
 Operators can retune caps without a rebuild by creating
@@ -67,7 +77,7 @@ can't request an oversized insert:
 |---|---:|---:|
 | `stackSize` | 1 | 10000 |
 | `maxStacks` | 1 | 50 |
-| `totalCap` | 1 | `stackSize * maxStacks` (post-clamp) |
+| `totalCap` | 1 | `stackSize * maxStacks` (post-clamp), and never above `volumeCap` (5 for windtraps) |
 
 A non-numeric or out-of-range value falls back to that type's default rather
 than erroring the whole request. An unreadable or invalid JSON file is logged

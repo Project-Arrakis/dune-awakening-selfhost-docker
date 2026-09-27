@@ -116,7 +116,7 @@ Updates that remove the owner's `settings:write` access are rejected so the loca
 
 Add and remove stay one action deliberately: two directions of the same roster knob. Both `DELETE` patterns are anchored regexes rather than prefix rules, because `/api/guilds/{id}` and `/api/guilds/{id}/members/{playerId}` share a prefix and the variable segment comes before the part that distinguishes them — the same reason `bases:delete` needs a real regex.
 
-`bases:mutate` keeps the per-base knobs — refills, permissions, custodian, auto-refill enrollment, queue cancellations — and everything below was carved out of it for consequence or consent. Unlike the namespaces above, `bases:mutate` still exists and is still the bucket most base routes resolve to.
+`bases:mutate` keeps the per-base knobs — refills (generator fuel and, since windtraps joined the generator refill, windtrap filters too), permissions, custodian, auto-refill enrollment, queue cancellations — and everything below was carved out of it for consequence or consent. Unlike the namespaces above, `bases:mutate` still exists and is still the bucket most base routes resolve to.
 
 | Action | Covers |
 |---|---|
