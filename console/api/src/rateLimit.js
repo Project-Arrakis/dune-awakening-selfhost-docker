@@ -1,9 +1,23 @@
+// Bounds in-memory rate-limit maps so a flood of unique keys (rotating IPs,
+// random identifiers) cannot grow the Map without limit and exhaust memory.
+// Evicts the oldest tracked key (Map iteration order == insertion order),
+// never the shared global counter key.
+function evictOldestIfFull(map, maxEntries, protectedKey) {
+  if (map.size < maxEntries) return;
+  for (const key of map.keys()) {
+    if (key === protectedKey) continue;
+    map.delete(key);
+    return;
+  }
+}
+
 export function createLoginRateLimiter(options = {}) {
   const {
     maxAttempts = 8,
     globalMaxAttempts = 32,
     windowMs = 15 * 60 * 1000,
     blockMs = 15 * 60 * 1000,
+    maxTrackedKeys = 5000,
     now = () => Date.now()
   } = options;
   const attempts = new Map();
@@ -46,6 +60,7 @@ export function createLoginRateLimiter(options = {}) {
       ? { count: 1, firstAttemptAt: timestamp, blockedUntil: 0 }
       : { ...current, count: current.count + 1 };
     if (next.count >= limit) next.blockedUntil = timestamp + blockMs;
+    if (!attempts.has(key)) evictOldestIfFull(attempts, maxTrackedKeys, globalKey);
     attempts.set(key, next);
   }
 
@@ -57,6 +72,7 @@ export function createMutationRateLimiter(options = {}) {
     maxRequests = 20,
     globalMaxRequests = 200,
     windowMs = 60 * 1000,
+    maxTrackedKeys = 5000,
     now = () => Date.now()
   } = options;
   const requests = new Map();
@@ -98,6 +114,7 @@ export function createMutationRateLimiter(options = {}) {
     const next = current
       ? { ...current, count: current.count + 1 }
       : { count: 1, firstRequestAt: timestamp };
+    if (!current) evictOldestIfFull(requests, maxTrackedKeys, globalKey);
     requests.set(key, next);
   }
 
@@ -125,6 +142,7 @@ export function createApiKeyRateLimiter(options = {}) {
     // failing open on the one control that bounds an automated caller.
     fallbackMaxRequests = 60,
     windowMs = 60 * 1000,
+    maxTrackedKeys = 5000,
     now = () => Date.now()
   } = options;
   const requests = new Map();
@@ -178,6 +196,7 @@ export function createApiKeyRateLimiter(options = {}) {
 
   function increment(key, timestamp) {
     const current = activeRequest(key, timestamp);
+    if (!current) evictOldestIfFull(requests, maxTrackedKeys, globalKey);
     requests.set(key, current ? { ...current, count: current.count + 1 } : { count: 1, firstRequestAt: timestamp });
   }
 
