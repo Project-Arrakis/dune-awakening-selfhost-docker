@@ -6,6 +6,7 @@ import { BaseLandClaimTab } from "./BaseLandClaimTab";
 import { BasePermissionsTab } from "./BasePermissionsTab";
 import { BaseWaterTab } from "./BaseWaterTab";
 import { AutoRefillSettingsOverlay } from "./AutoRefillSettingsOverlay";
+import { DownloadBaseDialog, type DownloadBaseTarget } from "./DownloadBaseDialog";
 import { basesApi, type AutoRefillBase, type AutoRefillWaterBase, type RefillDeviceResult, type RefillWaterDeviceResult } from "../../api/bases";
 import { friendlyMapName } from "../maps/mapNames";
 import { mapsApi } from "../../api/maps";
@@ -13,7 +14,6 @@ import { cachedInstanceNames, resolveInstanceNames } from "../maps/instanceNames
 import { InfoTooltip } from "../../components/common/DisplayPrimitives";
 import { serverApi } from "../../api/server";
 import { setupApi, type Task } from "../../api/setup";
-import { apiDownload } from "../../api/client";
 import { DataTable, type SortDirection } from "../../components/common/DataTable";
 import { QueueBadges, queueCountsSummary, queueCountsTotal, type QueueCounts } from "../../components/common/QueueBadges";
 import { childAccessPieceCountForPartition, pendingRefillCountForPartition, usePendingBaseDeletes, usePendingChildAccess, usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
@@ -377,7 +377,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   const [totalPieces, setTotalPieces] = useState(() => initialCache?.totalPieces ?? 0);
   const [totalPlaceables, setTotalPlaceables] = useState(() => initialCache?.totalPlaceables ?? 0);
   const [loading, setLoading] = useState(() => initialCache === null);
-  const [downloadingId, setDownloadingId] = useState("");
+  const [downloadTarget, setDownloadTarget] = useState<DownloadBaseTarget | null>(null);
   const [refillingId, setRefillingId] = useState("");
   const [refillResult, setRefillResult] = useState(() => readCachedRefillStatus().text);
   // Drives the status line's styling: "running" keeps it on screen with a
@@ -620,27 +620,6 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
     const timer = window.setTimeout(() => writeRefillStatus("", ""), REFILL_STATUS_TTL_MS);
     return () => window.clearTimeout(timer);
   }, [refillStatus, refillResult]);
-
-  async function handleDownloadBlueprint(row: BaseRow) {
-    const id = String(row.base_id);
-    setDownloadingId(id);
-    try {
-      const response = await apiDownload(`/api/bases/${encodeURIComponent(id)}/export`);
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      const responseFilename = response.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1];
-      anchor.download = responseFilename
-        || `${String(row.owner_name || "unknown_player").replace(/[^a-zA-Z0-9_-]/g, "_")}_base_${id}.json`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      onError(errorText(error));
-    } finally {
-      setDownloadingId("");
-    }
-  }
 
   async function handleRefillGenerators(base: BaseRow) {
     const id = String(base.base_id);
@@ -1548,7 +1527,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                   disabled={deletePending || !canRefillWater || refillingWaterId === id}
                   onClick={(event) => { event.stopPropagation(); void handleRefillWater(base); }}
                 ><Droplet size={16} /></button>}
-            <button className="icon-toggle-button" title="Download Base as Blueprint" aria-label="Download Base as Blueprint" disabled={downloadingId === id} onClick={(event) => { event.stopPropagation(); void handleDownloadBlueprint(base); }}><Download size={16} /></button>
+            <button className="icon-toggle-button" title="Download Base" aria-label="Download Base" onClick={(event) => { event.stopPropagation(); setDownloadTarget({ id, name: String(base.name || ""), ownerName: String(base.owner_name || "") }); }}><Download size={16} /></button>
             {canDeleteBase && (deletePending
               ? <span className="bases-queued-delete" title="Delete queued — applies when this map next restarts or stops">
                   <Trash2 size={16} aria-label="Delete queued for this base" />
@@ -1889,6 +1868,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         onSaved={() => { void refreshAutoRefill(); void refreshAutoRefillWater(); }}
         onError={onError}
       />}
+      {downloadTarget && <DownloadBaseDialog base={downloadTarget} onClose={() => setDownloadTarget(null)} />}
     </section>
   );
 }

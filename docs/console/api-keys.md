@@ -97,7 +97,7 @@ namespace" rule, so Create stays disabled until something is selected.
 | Namespace | Read grants | Read+write additionally grants |
 |---|---|---|
 | `players` | `players:read` | `delete-item`, `edit-item`, `give-item`, `grant`, `kick-all`, `moderate`, `recover`, `repair`, `reset`, `teleport`, `unclassified` |
-| `bases` | `bases:read` | `add-item`, `bulk-delete-items`, `delete`, `delete-item`, `fill-item`, `give-item`, `delete-backup`, `edit-backup`, `import-backup`, `mutate`, `write-config` |
+| `bases` | `bases:read` | `add-item`, `bulk-delete-items`, `delete`, `delete-item`, `fill-item`, `give-item`, `delete-backup`, `edit-backup`, `export-backup`, `import-backup`, `mutate`, `write-config` |
 | `vehicles` | `vehicles:read` | `bulk-delete-items`, `delete`, `delete-item`, `mutate` |
 | `guilds` | `guilds:read` | `disband`, `membership`, `rank`, `unclassified` |
 | `storage` | `storage:read` | `mutate` |
@@ -142,7 +142,7 @@ runs a grant cycle. The verb-shaped name is not the test; what the route does is
 ### Actions no level ever grants
 
 `backups:download-system`, `backups:import-system`, `backups:restore-system`,
-`bases:import-backup` and `bases:edit-backup` are reachable **only** by naming them in a
+`bases:import-backup`, `bases:edit-backup` and `bases:export-backup` are reachable **only** by naming them in a
 key's explicit action list. A key stored as `{"backups": "write"}` or `{"bases": "write"}` does not get them.
 
 Levels otherwise auto-cover actions added later, so a key keeps working as routes are
@@ -157,9 +157,11 @@ nothing for the operator to review.
 `create-system` and `delete-system` are not excluded: neither reads an archive back nor
 writes one into the host.
 
-`bases:import-backup` and `bases:edit-backup` are excluded on the same grounds: one creates
-a whole base, with every item stored in it, from an uploaded file; the other can hand an
-existing picked-up base to another player or move it to another map. A `bases: write` key was minted for per-base
+`bases:import-backup`, `bases:edit-backup` and `bases:export-backup` are excluded on the
+same grounds. Import creates a whole base, with every item stored in it, from an uploaded
+file. Edit can hand an existing picked-up base to another player or move it to another map.
+Export downloads a whole base, every stored item included, as a file that imports on any
+server. A `bases: write` key was minted for per-base
 knobs (refills, permissions), not for that.
 
 The `admin` tier is denied the three `backups` actions above for the same reason — see

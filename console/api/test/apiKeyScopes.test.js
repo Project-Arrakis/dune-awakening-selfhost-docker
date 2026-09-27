@@ -466,10 +466,13 @@ test("a stored write level does not reach the whole-host backup actions", () => 
   }
 });
 
-test("a stored bases write level does not reach base-backup import", () => {
-  assert.equal(scopeAllowsAction("bases", "write", "bases:import-backup"), false);
-  assert.equal(scopeAllowsAction("bases", ["bases:import-backup"], "bases:import-backup"), true);
-  // Listing and exporting stay under bases:read.
+test("a stored bases write level does not reach base-backup import or export", () => {
+  for (const action of ["bases:import-backup", "bases:export-backup"]) {
+    assert.equal(scopeAllowsAction("bases", "write", action), false, `write must not cover ${action}`);
+    assert.equal(scopeAllowsAction("bases", "read", action), false, `read must not cover ${action}`);
+    assert.equal(scopeAllowsAction("bases", [action], action), true);
+  }
+  // Listing stays under bases:read.
   assert.equal(scopeAllowsAction("bases", "read", "bases:read"), true);
 });
 

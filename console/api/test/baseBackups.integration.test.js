@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deleteBaseBackup, exportBaseBackup, importBaseBackup, updateBaseBackup, BaseBackupError, BaseBackupTimeoutError } from "../src/baseBackups.js";
+import {
+  deleteBaseBackup, exportBaseBackup, exportLiveBase, importBaseBackup, listBaseBackups, updateBaseBackup, BaseBackupError, BaseBackupTimeoutError
+} from "../src/baseBackups.js";
 import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 import {
-  BASE_BACKUP_SCHEMA, TRANSFER_HELPER_STUBS, BASE_BACKUP_SEED, SOURCE, TARGET, BIG_INT_TEXT
+  BASE_BACKUP_SCHEMA, TRANSFER_HELPER_STUBS, BASE_BACKUP_SEED, SOURCE, TARGET, BIG_INT_TEXT, LIVE
 } from "../test-support/baseBackupFixture.js";
 
 // Real PostgreSQL: the guarantees under test are the database's -- foreign
@@ -385,5 +387,75 @@ test("real PostgreSQL: deleting the original leaves an imported copy intact", as
       select count(*)::int as n from dune.items it join dune.inventories inv on inv.id = it.inventory_id
       join dune.base_backup_linked_actors l on l.actor_id = inv.actor_id where l.id = $1`, [copy.backupId])).rows[0].n;
     assert.equal(items, 2);
+  });
+});
+
+// Every row of every table an export reads, so "read-only" is checked, not assumed.
+async function databaseFingerprint(pool) {
+  const tables = ["actors", "fgl_entities", "actor_fgl_entities", "permission_actor", "permission_actor_rank", "inventories",
+    "items", "actor_inventories", "buildings", "building_instances", "placeables", "totems", "base_backups",
+    "base_backup_linked_actors", "landclaim_segments", "tax_invoice", "sinkcharts", "building_blueprints"];
+  const parts = [];
+  for (const table of tables) {
+    parts.push((await pool.query(`select md5(coalesce(string_agg(x::text, '|' order by x::text), '')) as h from dune.${table} x`)).rows[0].h);
+  }
+  return parts.join(" ");
+}
+
+test("real PostgreSQL: a live base exports as the backup a pickup would make, and changes nothing", async (t) => {
+  await withDatabase(t, async (pool, db) => {
+    const before = await databaseFingerprint(pool);
+    const { text, summary } = await exportLiveBase(db, LIVE.building, { gameBuild: "2036754", consoleVersion: "test" });
+    assert.equal(await databaseFingerprint(pool), before, "the live export wrote to the database");
+    assert.deepEqual({ name: summary.name, ownerName: summary.ownerName, map: summary.map }, { name: "Live Base", ownerName: "Owner", map: "HaggaBasin" });
+
+    const file = JSON.parse(text);
+    assert.deepEqual({ kind: file.source.kind, baseId: file.source.baseId, backupId: file.source.backupId },
+      { kind: "live-base", baseId: LIVE.building, backupId: null });
+    assert.deepEqual(file.source.counts, { pieces: 2, placeables: 3, items: 1 });
+    const kinds = {};
+    for (const entry of file.entries) kinds[entry.kind] = (kinds[entry.kind] || 0) + 1;
+    // 4 actors + the owner placeholder; the lamp stays behind.
+    assert.equal(kinds.act, 5);
+    // The totem's two entities and the door's; not the building actor's.
+    assert.equal(kinds.fgl, 3);
+    // The door's permissions only, and only its rank for the owner.
+    assert.equal(kinds.PermissionActor, 1);
+    assert.equal(kinds.PermissionActorRank, 1);
+    assert.equal(kinds.TaxInvoice, undefined);
+    assert.equal(kinds.BaseBackup, 1);
+    assert.equal(kinds.BaseBackupLinkedActor, 4);
+    const record = file.entries.find((entry) => entry.kind === "BaseBackup").data;
+    assert.deepEqual(record, { player_id: file.ownerPlaceholderTransferId, base_backup_name: "Live Base", last_edited_by_player_id: 0 });
+    const building = file.entries.find((entry) => entry.kind === "act" && entry.data.class === "BP_DuneBuildingBase_C").data;
+    assert.deepEqual({ properties: building.properties, gas: building.gas_attributes, serial: building.serial },
+      { properties: {}, gas: {}, serial: 0 });
+    // Every actor in the state a pickup leaves it in.
+    const states = file.entries.filter((entry) => entry.kind === "act" && entry.id !== file.ownerPlaceholderTransferId).map((entry) => entry.data.state);
+    assert.deepEqual([...new Set(states)], ["BaseBackup"]);
+
+    const imported = await importBaseBackup(db, TARGET.pawn, text, { serverBuild: "2036754" });
+    const listed = (await listBaseBackups(db, { playerId: TARGET.pawn })).rows.find((row) => row.id === imported.backupId);
+    assert.deepEqual({ name: listed.name, map: listed.map, pieces: listed.pieces, placeables: listed.placeables, items: listed.items },
+      { name: "Live Base", map: "HaggaBasin", pieces: 2, placeables: 3, items: 1 });
+    const actors = await linkedActors(pool, imported.backupId);
+    assert.deepEqual(actors.map((actor) => actor.class).sort(), ["BP_Door_C", "BP_DuneBuildingBase_C", "BP_StorageContainer_C", "BP_Totem_Small_C"]);
+    for (const actor of actors) assert.deepEqual({ partition: actor.partition_id, state: actor.state }, { partition: null, state: "BaseBackup" });
+    // The totem's 0-based land claim location survives, as for a backup.
+    const location = (await pool.query(`
+      select array_lower(t.landclaim_original_global_location, 1) as lb from dune.totems t
+      join dune.base_backup_linked_actors l on l.actor_id = t.id where l.id = $1`, [imported.backupId])).rows[0].lb;
+    assert.equal(location, 0);
+  });
+});
+
+test("real PostgreSQL: a live base export refuses a picked-up base, an unknown base and an ownerless one", async (t) => {
+  await withDatabase(t, async (pool, db) => {
+    await assert.rejects(exportLiveBase(db, SOURCE.building), (error) => error.statusCode === 409 && error.code === "picked_up");
+    await assert.rejects(exportLiveBase(db, 424242), (error) => error.statusCode === 404);
+    // Only a co-owner left: the game's owner is rank 1, so this has none.
+    await pool.query("delete from dune.permission_actor_rank where permission_actor_id = $1 and rank = 1", [LIVE.totem]);
+    assert.equal((await pool.query("select count(*)::int as n from dune.permission_actor_rank where permission_actor_id = $1", [LIVE.totem])).rows[0].n, 1);
+    await assert.rejects(exportLiveBase(db, LIVE.building), (error) => error.statusCode === 409 && error.code === "no_owner");
   });
 });

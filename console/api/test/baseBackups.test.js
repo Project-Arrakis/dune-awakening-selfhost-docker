@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   BASE_BACKUP_NAME_MAX, BaseBackupError, BaseBackupTimeoutError, baseBackupHttpError, classifyTimeout, importBaseBackup,
   listBaseBackups, parseBaseBackupFile, updateBaseBackup, validateBaseBackupFile, validateBaseBackupName, versionComparison,
-  checkBaseBackupDeletable, deleteBaseBackup
+  checkBaseBackupDeletable, deleteBaseBackup, exportLiveBase
 } from "../src/baseBackups.js";
 import { scopeAllowsAction } from "../src/apiKeyScopes.js";
 import { parseAppManifestBuildId, readSteamBuildId, steamAppId } from "../src/services/steamBuild.js";
@@ -168,6 +168,10 @@ function fakeDb({
   lockRow = { player_id: 10, name: "Old Name", owner_name: "Owner One", owner_status: "Offline", map: "DeepDesert" },
   maps = ["DeepDesert", "HaggaBasin"],
   leftAfterDelete = { backups: 0, links: 0 },
+  // The live base a Bases row resolves to; null means none.
+  liveBase = { totem_id: 200, entity_id: 6001, owner_id: 10, name: "Live Base", state: "Default", map: "HaggaBasin", totem_type: "Totem_Small_Placeable", owner_name: "Owner One" },
+  // The same base as seen inside the export's snapshot, if it changed since.
+  liveBaseInSnapshot = liveBase,
   columnRows = [
     { table_name: "building_instances", column_name: "transform", column_type: "real[]", is_array: true },
     { table_name: "building_instances", column_name: "last_placed_by_player_id", column_type: "bigint", is_array: false },
@@ -175,7 +179,7 @@ function fakeDb({
     { table_name: "actors", column_name: "state", column_type: "text", is_array: false }
   ]
 } = {}) {
-  const calls = { transaction: 0, txSql: [] };
+  const calls = { transaction: 0, txSql: [], txParams: [] };
   const db = {
     calls,
     async query(sql, params = []) {
@@ -192,19 +196,25 @@ function fakeDb({
         return { rows: lockRow ? [lockRow] : [] };
       }
       if (sql.includes("totem on true")) return { rows: [SUMMARY_ROW] };
+      if (sql.includes("with base as")) return { rows: liveBase ? [liveBase] : [] };
       return { rows: [] };
     },
     async transaction(fn) {
       calls.transaction++;
       const tx = {
-        async query(sql) {
+        async query(sql, params = []) {
           calls.txSql.push(sql);
+          calls.txParams.push(params);
           if (failOn && failOn(sql)) throw failWith;
           if (sql.includes("where kind = 'BaseBackup'")) return { rows: [{ id: 77 }] };
           if (sql.includes("for update of bb")) return { rows: lockRow ? [lockRow] : [] };
           if (sql.includes("update dune.actors a set map")) return { rows: [], rowCount: 9 };
           if (sql.includes("totem on true")) return { rows: [SUMMARY_ROW] };
           if (sql.includes("as links")) return { rows: [leftAfterDelete] };
+          if (sql.includes("returning transfer_id")) return { rows: [{ transfer_id: 1 }] };
+          if (sql.includes("select totem_id, owner_id, state from pg_temp.live_base")) return { rows: liveBaseInSnapshot ? [liveBaseInSnapshot] : [] };
+          if (sql.includes("counting") || sql.includes("filter (where kind = 'BuildingInstance')")) return { rows: [{ pieces: 2, placeables: 3, items: 1 }] };
+          if (sql.includes("jsonb_pretty")) return { rows: [{ text: "{}" }] };
           return { rows: [] };
         }
       };
@@ -332,7 +342,7 @@ test("steam build id is read from the appmanifest and fails soft to null", async
 
 test("base backup routes resolve to their own actions, and import is admin-only by default", () => {
   assert.equal(actionForRoute("/api/base-backups", "GET"), "bases:read");
-  assert.equal(actionForRoute("/api/base-backups/7/export", "GET"), "bases:read");
+  assert.equal(actionForRoute("/api/base-backups/7/export", "GET"), "bases:export-backup");
   assert.equal(actionForRoute("/api/base-backups/import", "POST"), "bases:import-backup");
   // Nothing else under the path resolves, so it fails closed.
   assert.equal(actionForRoute("/api/base-backups/7/items", "DELETE"), null);
@@ -497,4 +507,84 @@ test("deleting a backup is its own admin-only action", () => {
   assert.equal(actionForRoute("/api/base-backups/import", "DELETE"), null);
   for (const tier of ["owner", "admin"]) assert.equal(evaluate({ tier }, "bases:delete-backup"), true);
   for (const tier of ["moderator", "player", "observer"]) assert.equal(evaluate({ tier }, "bases:delete-backup"), false);
+});
+
+test("exportLiveBase only reads: every write goes to its own temp tables", async () => {
+  const db = fakeDb();
+  const { summary } = await exportLiveBase(db, 201, { gameBuild: "1" });
+  assert.equal(summary.name, "Live Base");
+  const writes = db.calls.txSql.filter((sql) => /\b(insert\s+into|update|delete\s+from|truncate)\s+(?!pg_temp\.)/i.test(sql));
+  assert.deepEqual(writes, []);
+  assert.equal(db.calls.txSql.some((sql) => /for\s+(update|share)/i.test(sql)), false);
+  assert.match(db.calls.txSql[0], /repeatable read/);
+});
+
+test("exportLiveBase exports what a pickup would take, not the live base's extras", async () => {
+  const db = fakeDb();
+  await exportLiveBase(db, 201);
+  const step = (kind) => db.calls.txSql.filter((sql) => sql.includes(`'${kind}', dune._character_transfer_top_level_export`));
+  // The totem's own permissions and invoices are destroyed by a pickup.
+  assert.equal(step("TaxInvoice").length, 0);
+  assert.match(step("PermissionActor")[0], /actor_id <> \(select totem_id from pg_temp\.live_base\)/);
+  assert.match(step("PermissionActorRank")[0], /permission_actor_id <> \(select totem_id from pg_temp\.live_base\)/);
+  // The owner is the game's rank-1 owner, and the totem choice is stable.
+  const findTotem = db.calls.txSql.find((sql) => sql.includes("create temporary table live_base on commit drop"));
+  assert.match(findTotem, /par\.rank = 1/);
+  assert.match(findTotem, /order by t\.id\s+limit 1/);
+  // Every actor as a pickup leaves it.
+  assert.match(step("act")[0], /jsonb_build_object\('state', 'BaseBackup'\)/);
+  // Only the pieces the totem owns; building actors fresh, with no entity.
+  assert.match(step("BuildingInstance")[0], /owner_entity_id = \(select entity_id from pg_temp\.live_base\)/);
+  assert.match(step("act")[0], /'properties', '\{\}'::jsonb/);
+  assert.match(step("fgl")[0], /actor_id not in \(select b\.id from dune\.buildings b\)/);
+  // The backup record and links are built from the live base.
+  assert.match(step("BaseBackup")[0], /'last_edited_by_player_id', 0/);
+  assert.equal(step("BaseBackupLinkedActor").length, 1);
+  // The owner placeholder is the owner's own id; the file says what it is.
+  const placeholderIndex = db.calls.txSql.findIndex((sql) => sql.includes("returning transfer_id"));
+  assert.deepEqual(db.calls.txParams[placeholderIndex], [10]);
+  const envelope = JSON.parse(db.calls.txParams.at(-1)[0]);
+  assert.deepEqual({ kind: envelope.source.kind, baseId: envelope.source.baseId, backupId: envelope.source.backupId, counts: envelope.source.counts },
+    { kind: "live-base", baseId: 201, backupId: null, counts: { pieces: 2, placeables: 3, items: 1 } });
+});
+
+test("exportLiveBase refuses a picked-up, unknown or ownerless base before the export starts", async () => {
+  const pickedUp = fakeDb({ liveBase: { totem_id: 200, owner_id: 10, state: "BaseBackup" } });
+  await assert.rejects(exportLiveBase(pickedUp, 201), (error) => {
+    assert.equal(baseBackupHttpError(error).status, 409);
+    assert.equal(error.code, "picked_up");
+    assert.match(error.message, /Export it from Base Backups instead/);
+    return true;
+  });
+  const ownerless = fakeDb({ liveBase: { totem_id: 200, owner_id: null, state: "Default" } });
+  await assert.rejects(exportLiveBase(ownerless, 201), (error) => error.code === "no_owner" && /as a blueprint instead/.test(error.message));
+  const missing = fakeDb({ liveBase: null });
+  await assert.rejects(exportLiveBase(missing, 201), (error) => baseBackupHttpError(error).status === 404);
+  for (const db of [pickedUp, ownerless, missing]) assert.equal(db.calls.transaction, 0);
+});
+
+test("exportLiveBase refuses a base that was picked up after the pre-check, with the same 409", async () => {
+  const db = fakeDb({ liveBaseInSnapshot: { totem_id: 200, owner_id: 10, state: "BaseBackup" } });
+  await assert.rejects(exportLiveBase(db, 201), (error) => {
+    assert.equal(baseBackupHttpError(error).status, 409);
+    assert.equal(error.code, "picked_up");
+    return true;
+  });
+  // The export stopped before collecting anything.
+  assert.equal(db.calls.txSql.some((sql) => sql.includes("create temporary table live_base_actors")), false);
+});
+
+test("downloading a base backup file, live or picked up, is its own admin-only action", () => {
+  assert.equal(actionForRoute("/api/bases/201/export-backup", "GET"), "bases:export-backup");
+  assert.equal(actionForRoute("/api/bases/abc/export-backup", "GET"), "bases:export-backup");
+  assert.equal(actionForRoute("/api/base-backups/7/export", "GET"), "bases:export-backup");
+  // The blueprint download stays a read.
+  assert.equal(actionForRoute("/api/bases/201/export", "GET"), "bases:read");
+  for (const tier of ["owner", "admin"]) assert.equal(evaluate({ tier }, "bases:export-backup"), true);
+  for (const tier of ["moderator", "player", "observer"]) {
+    assert.equal(evaluate({ tier }, "bases:export-backup"), false, `${tier} must not download base backups`);
+  }
+  // A hand-authored policy granting bases:read is not consent to it.
+  const policies = { moderator: { version: 1, tier: "moderator", statements: [{ Effect: "Allow", Action: ["bases:read"] }] } };
+  assert.equal(evaluate({ tier: "moderator" }, "bases:export-backup", policies), false);
 });

@@ -20,6 +20,9 @@ create type dune.vector as (x double precision, y double precision, z double pre
 create type dune.quaternion as (x double precision, y double precision, z double precision, w double precision);
 create type dune.transform as (location dune.vector, rotation dune.quaternion);
 
+create type dune.actorstate as enum (
+  'Default', 'Travel', 'VehicleBackup', 'AbortedAuthorityTransfer', 'VehicleRecovery', 'BaseBackup', 'SimulatedLandsraadActor'
+);
 create table dune.actors (
   id bigserial primary key check (id > 0),
   class text,
@@ -27,10 +30,11 @@ create table dune.actors (
   transform dune.transform,
   partition_id bigint,
   dimension_index integer not null default 0,
+  gas_attributes jsonb not null default '{}',
   properties jsonb not null default '{}',
   owner_account_id bigint,
   serial bigint not null default 0,
-  state text not null default 'Default'
+  state dune.actorstate not null default 'Default'
 );
 create table dune.fgl_entities (
   entity_id bigint primary key check (entity_id <> 0),
@@ -84,18 +88,25 @@ create table dune.buildings (
   owner_id bigint
 );
 create table dune.building_instances (
-  building_id bigint references dune.actors(id) on delete cascade,
-  instance_id integer,
-  building_type text,
+  building_id bigint not null references dune.actors(id) on delete cascade,
+  instance_id integer not null,
+  building_type text not null,
   transform real[],
   owner_entity_id bigint references dune.fgl_entities(entity_id) on delete set null,
+  building_flags integer,
+  health real not null,
+  shelter smallint not null,
+  sand_buildup smallint not null default 0,
   last_placed_by_player_id bigint not null default 0,
   unique (building_id, instance_id)
 );
 create table dune.placeables (
   id bigint primary key references dune.actors(id) on delete cascade,
-  building_type text,
   owner_entity_id bigint references dune.fgl_entities(entity_id) on delete set null,
+  health real,
+  building_type text,
+  has_hit_ground boolean not null default false,
+  has_buildable_support boolean not null default false,
   is_hologram boolean not null default false,
   last_placed_by_player_id bigint not null default 0
 );
@@ -375,6 +386,9 @@ $$;
 // integer in item stats, embedded "!!act#" references, and raw player ids.
 export const SOURCE = { controller: 10, pawn: 11, backup: 1, totem: 100, building: 101, chest: 102 };
 export const TARGET = { controller: 20, pawn: 21 };
+// A live (not picked-up) base owned by the source player: totem 200, a
+// building actor (201, the Bases row id) and a door, a lamp and a chest.
+export const LIVE = { totem: 200, building: 201, door: 202, lamp: 203, chest: 204 };
 export const BIG_INT_TEXT = "9007199254740993"; // 2^53 + 1: JSON.parse would round it
 
 export const BASE_BACKUP_SEED = `
@@ -398,10 +412,10 @@ insert into dune.actor_fgl_entities (actor_id, entity_id, slot_name) values
   (100, 5001, 'Actor'), (100, 5002, 'ContainerInventory'), (102, 5003, 'Actor');
 
 insert into dune.buildings (id, owner_id) values (101, null);
-insert into dune.building_instances (building_id, instance_id, building_type, transform, owner_entity_id, last_placed_by_player_id) values
-  (101, 0, 'MTX_Smug_Foundation', '[0:6]={161485.88,1036197.1,24474.97,0,0,-0.34202015,0.9396926}', 5001, 10),
-  (101, 1, 'MTX_Smug_Wall', '[0:6]={161485.88,1036197.1,24474.97,0.18257418,-0.36514837,0.5477226,0.73029673}', 5001, 10),
-  (101, 2, 'MTX_Smug_Rooftop_01', '[0:6]={1e-07,3.4028235e+38,-0.000123,0,0.70710677,-0.70710677,0}', 5001, 0);
+insert into dune.building_instances (building_id, instance_id, building_type, transform, owner_entity_id, health, shelter, last_placed_by_player_id) values
+  (101, 0, 'MTX_Smug_Foundation', '[0:6]={161485.88,1036197.1,24474.97,0,0,-0.34202015,0.9396926}', 5001, 1500, 0, 10),
+  (101, 1, 'MTX_Smug_Wall', '[0:6]={161485.88,1036197.1,24474.97,0.18257418,-0.36514837,0.5477226,0.73029673}', 5001, 800, 1, 10),
+  (101, 2, 'MTX_Smug_Rooftop_01', '[0:6]={1e-07,3.4028235e+38,-0.000123,0,0.70710677,-0.70710677,0}', 5001, 800, 2, 0);
 
 insert into dune.placeables (id, building_type, owner_entity_id, last_placed_by_player_id) values
   (100, 'Totem_Small_Placeable', 5001, 10),
@@ -433,6 +447,46 @@ insert into dune.permission_actor (actor_id, actor_name) values (999, 'Unrelated
 -- A live claim on another map, which makes HaggaBasin a map bases can be built on.
 insert into dune.actors (id, class, map, partition_id) values (998, 'BP_Totem_C', 'HaggaBasin', 7);
 insert into dune.totems (id) values (998);
+
+-- A live base, as the game keeps one before it is picked up. What a pickup
+-- would not take: the unowned piece, the lamp (no buildable support), the
+-- totem's own permissions and invoice, and the building actor's entity and
+-- properties (a pickup makes a fresh building actor).
+insert into dune.actors (id, class, map, transform, partition_id, serial, properties, state) values
+  (200, 'BP_Totem_Small_C', 'HaggaBasin', row(row(1000, 2000, 300), row(0, 0, 0, 1))::dune.transform, 7, 5, '{"Totem": 1}', 'Default'),
+  (201, 'BP_DuneBuildingBase_C', 'HaggaBasin', row(row(1000, 2000, 300), row(0, 0, 0, 1))::dune.transform, 7, 9, '{"DamageableActorComponent": {}}', 'Default'),
+  (202, 'BP_Door_C', 'HaggaBasin', row(row(1010, 2000, 300), row(0, 0, 0, 1))::dune.transform, 7, 4, '{}', 'Default'),
+  (203, 'BP_Lamp_C', 'HaggaBasin', row(row(1020, 2000, 300), row(0, 0, 0, 1))::dune.transform, 7, 2, '{}', 'Default'),
+  (204, 'BP_StorageContainer_C', 'HaggaBasin', row(row(1030, 2000, 300), row(0, 0, 0, 1))::dune.transform, 7, 3, '{}', 'Default');
+insert into dune.fgl_entities (entity_id, components) values
+  (6001, '{"FTotemLandclaimComponent": [0, {"m_OwnerActor": "!!act#200"}]}'),
+  (6002, '{"FContainer": [0, {}]}'),
+  (6003, '{"FHealthComponent": [0, {"m_CurrentHealth": 0.0}]}'),
+  (6004, '{"FDoorComponent": [0, {"m_Totem": "!!act#200"}]}');
+insert into dune.actor_fgl_entities (actor_id, entity_id, slot_name) values
+  (200, 6001, 'Actor'), (200, 6002, 'ContainerInventory'), (201, 6003, 'Actor'), (202, 6004, 'Actor');
+insert into dune.buildings (id, owner_id) values (201, null);
+update dune.actors set gas_attributes = '{"Stale": 1}' where id = 201;
+insert into dune.building_instances (building_id, instance_id, building_type, transform, owner_entity_id, health, shelter, last_placed_by_player_id) values
+  (201, 0, 'Hark_Foundation', '[0:6]={1000,2000,300,0,0,0,1}', 6001, 1500, 0, 10),
+  (201, 1, 'Hark_Wall', '[0:6]={1000,2100,300,0,0,0.70710677,0.70710677}', 6001, 800, 1, 10),
+  (201, 2, 'Hark_Wall', '[0:6]={1000,2200,300,0,0,0,1}', null, 800, 1, 0);
+insert into dune.placeables (id, building_type, owner_entity_id, has_buildable_support, last_placed_by_player_id) values
+  (200, 'Totem_Small_Placeable', 6001, true, 10),
+  (202, 'Door_Placeable', 6001, true, 10),
+  (203, 'Lamp_Placeable', 6001, false, 10),
+  (204, 'StorageContainer_Placeable', 6001, true, 10);
+insert into dune.totems (id, landclaim_original_global_location, landclaim_original_global_yaw_rotation, landclaim_vertical_level) values
+  (200, '[0:2]={1000,2000,300}', 90, 0);
+insert into dune.landclaim_segments (totem_id, grid_location_x, grid_location_y) values (200, 5, 5);
+insert into dune.permission_actor (actor_id, actor_name, access_level, edited_by_player_id) values
+  (200, 'Live Base', 5, 10), (202, 'Door', 3, 10);
+insert into dune.permission_actor_rank (permission_actor_id, player_id, rank) values
+  (200, 10, 1), (200, 20, 3), (202, 10, 1), (202, 20, 3);
+insert into dune.tax_invoice (totem_id, amount) values (200, 50);
+insert into dune.inventories (id, actor_id, inventory_type, max_item_count) values (910, 204, 0, 40);
+insert into dune.items (id, inventory_id, stack_size, position_index, template_id, stats) values
+  (810, 910, 3, 0, 'Water_Item', '{"Ref": "!!act#204"}');
 
 select setval('dune.actors_id_seq', 5000);
 select setval('dune.inventories_id_seq', 5000);

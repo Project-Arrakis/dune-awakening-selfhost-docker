@@ -166,6 +166,45 @@ and bases whose stored blueprints mix 0-based and 1-based rows. Rotation/positio
 values round-trip bit-exact; the only difference is -0 becoming +0, which is the
 same rotation.
 
+### Downloading a live base as a base backup
+
+On the Bases page, each base's **Download Base** button opens a choice:
+
+- **Blueprint**: the layout only, as before.
+- **Base Backup**: the whole base in the same file format as an exported backup,
+  importable from Base Backups for any player.
+
+The base doesn't need to be picked up first, and nothing about it changes. The
+export only reads, in one repeatable-read snapshot, and its only writes go to
+temporary tables. The file reflects the base as of the map server's last save.
+
+It contains what the game's pickup (`base_backup_save_from_totem`) would take:
+
+- the totem;
+- the placeables the totem owns that have buildable support;
+- the building pieces the totem owns.
+
+It leaves out what a pickup destroys or leaves behind:
+
+- the totem's own permission rows and tax invoices;
+- owned placeables with no buildable support.
+
+Every actor is exported in the `BaseBackup` state a pickup leaves it in.
+Building actors are exported the way a pickup recreates them. They keep their
+class, map, transform and dimension, and get default properties and no entity:
+the live entity holds only transient health and weather state. The backup record
+is built from the totem: its name comes from the totem's permission actor, and
+its owner is the totem's rank-1 member, which is how the game defines the owner.
+A base with only co-owners has no owner.
+
+This was verified against a copy of a live server. For each of 9 owned bases, the
+live export matched the game's own pickup followed by a backup export, entry for
+entry. The database was unchanged afterwards.
+
+An ownerless base is refused (download it as a blueprint instead). A picked-up base
+is refused too: export it from Base Backups. Both checks run again inside the
+export's snapshot, so a base picked up mid-export gets the same 409.
+
 **Version info recorded in every file (top-level fields):**
 
 - format: `"dune-base-backup"`
@@ -173,7 +212,7 @@ same rotation.
 - game: `{ build, steamBuildId, patchesChecksum, appliedPatchesCount, latestPatches[] }`
 - console: `{ version, buildId }`
 - exportedAt
-- source: `{ backupId, name, rawName, map, totemType, ownerName, counts }`
+- source: `{ backupId, name, rawName, map, totemType, ownerName, counts }`; a live-base export adds `kind: "live-base"` and `baseId`, with `backupId: null`
 - ownerPlaceholderTransferId
 - entries
 
@@ -193,11 +232,18 @@ an "Import Timed Out"/"Export Timed Out" panel with those details as visible tex
 that stays until dismissed. The largest measured base (589 pieces, 199 items)
 exported in about 1.6 s and imported in about 0.8 s.
 
-**Permissions:** listing and export use `bases:read` (like the existing
-export-as-blueprint); import is its own action `bases:import-backup`, which
-owner/admin reach via `bases:*` and lower tiers do not. API keys: `bases:import-backup`
-is in `LEVEL_EXCLUDED_ACTIONS`, so a key stored as `{"bases":"write"}` does NOT get it;
-it must be named explicitly.
+**Permissions:**
+- Listing uses `bases:read`.
+- Downloading a base backup file is its own action, `bases:export-backup`. It covers
+  both an existing backup and a live base's Base Backup download. The file carries
+  every item stored in the base and imports as a whole base on any server, so no
+  `bases:read` grant covers it. The blueprint download stays `bases:read`.
+- Import is its own action, `bases:import-backup`.
+- Owner and admin reach both through `bases:*`; lower tiers don't.
+- Both actions are in `LEVEL_EXCLUDED_ACTIONS`, so a key stored as
+  `{"bases":"write"}` doesn't get them; they must be named explicitly.
+- Both downloads are rate limited (as admin changes are) and audited as
+  `base-backups.export`.
 
 **Known game bug noted during this work:** Funcom's `dune.base_backup_save_from_totem`
 picks the totem's FGL entity without filtering `slot_name`; totems have `"Actor"`

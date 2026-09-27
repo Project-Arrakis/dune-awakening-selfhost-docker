@@ -61,7 +61,7 @@ import { liveMapPoi } from "./services/liveMapPoi.js";
 import { deliverMapChatToRecipients } from "./services/mapChatDelivery.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
-import { BaseBackupError, baseBackupHttpError, checkBaseBackupDeletable, deleteBaseBackup, exportBaseBackup, importBaseBackup, listBaseBackups, updateBaseBackup } from "./baseBackups.js";
+import { BaseBackupError, baseBackupHttpError, checkBaseBackupDeletable, deleteBaseBackup, exportBaseBackup, exportLiveBase, importBaseBackup, listBaseBackups, updateBaseBackup } from "./baseBackups.js";
 import { readSteamBuildId } from "./services/steamBuild.js";
 import { getCommunityBlueprint, getCommunityBlueprintPreview, listCommunityBlueprints } from "./services/blueprintCatalog.js";
 import { createZipArchive } from "./services/zipArchive.js";
@@ -1013,6 +1013,7 @@ async function handleApi(req, res) {
   if (path === "/api/bases/pending-deletes") return pendingBaseDeletesRoute(res);
   if (path === "/api/bases/pending-child-access") return pendingChildAccessRoute(res);
   if (path.match(/^\/api\/bases\/[^/]+\/export$/) && req.method === "GET") return baseBlueprintDownloadRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/export-backup$/) && req.method === "GET") return liveBaseBackupExportRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-generators$/) && req.method === "POST") return baseRefillGeneratorsRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-refill$/) && req.method === "DELETE") return baseCancelQueuedRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill$/) && req.method === "POST") return baseAutoRefillToggleRoute(req, res, path);
@@ -5511,25 +5512,43 @@ function attachmentName(value) {
   return String(value || "").replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80);
 }
 
-async function baseBackupExportRoute(req, res, path) {
-  const backupId = Number(decodeURIComponent(path.split("/")[3]));
-  if (!Number.isInteger(backupId) || backupId < 1) return json(res, 400, { ok: false, code: "invalid", error: "Invalid base backup ID" });
+// Sends a base backup file. `exporter(versionInfo)` returns { text, summary }.
+// Rate limited (each export is a ~20-statement snapshot that holds a pool
+// connection for a second or two) and audited: the file carries every item
+// stored in the base.
+async function sendBaseBackupFile(req, res, exporter, suffix, auditDetail) {
+  if (!applyMutationRateLimit(req, res, "base-backups.export")) return;
   try {
-    const { text, summary } = await exportBaseBackup(db, backupId, {
+    const { text, summary } = await exporter({
       gameBuild: readGameBuild(config.repoRoot),
       steamBuildId: await readSteamBuildId({ repoRoot: config.repoRoot }),
       consoleVersion: config.version,
       consoleBuildId: publicConfig(config).buildId
     });
     const stem = [attachmentName(summary.ownerName), attachmentName(summary.name)].filter(Boolean).join("_") || "base";
+    audit(config, req, "base-backups.export", { ...auditDetail, name: summary.name, ownerName: summary.ownerName, result: "ok" });
     res.writeHead(200, {
       "content-type": "application/json; charset=utf-8",
-      "content-disposition": `attachment; filename="${stem}_base-backup_${backupId}.json"`
+      "content-disposition": `attachment; filename="${stem}_base-backup_${suffix}.json"`
     });
     return res.end(text);
   } catch (error) {
+    audit(config, req, "base-backups.export", { ...auditDetail, result: "failed", code: error?.code || "error" });
     return baseBackupErrorResponse(res, error);
   }
+}
+
+async function baseBackupExportRoute(req, res, path) {
+  const backupId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(backupId) || backupId < 1) return json(res, 400, { ok: false, code: "invalid", error: "Invalid base backup ID" });
+  return sendBaseBackupFile(req, res, (versionInfo) => exportBaseBackup(db, backupId, versionInfo), backupId, { backupId });
+}
+
+// A live base (a Bases row) downloaded as a base backup file. Read-only.
+async function liveBaseBackupExportRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(baseId) || baseId < 1) return json(res, 400, { ok: false, code: "invalid", error: "Invalid base ID" });
+  return sendBaseBackupFile(req, res, (versionInfo) => exportLiveBase(db, baseId, versionInfo), `live_${baseId}`, { baseId, source: "live-base" });
 }
 
 async function baseBackupImportRoute(req, res) {

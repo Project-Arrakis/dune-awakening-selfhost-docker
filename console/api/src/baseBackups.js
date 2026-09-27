@@ -518,55 +518,135 @@ const EXPORT_STEPS = [
     from dune.building_blueprint_pentashields where building_blueprint_id in (select id from pg_temp.export_data where kind = 'bbp')`]
 ];
 
+// A live (not picked-up) base: the actors the game's pickup would take
+// (dune.base_backup_save_from_totem), read from pg_temp.live_base and
+// pg_temp.live_base_actors. Differences from a backup export, as overrides of
+// the steps above (null drops a step):
+// - every actor in the state a pickup leaves it in, 'BaseBackup';
+// - building actors as the fresh copies a pickup makes: class, map,
+//   transform and dimension only, with no entity (the old one holds only
+//   transient health/weather state; picked-up backups never have one);
+// - only the pieces the totem owns (a pickup moves exactly those);
+// - none of the totem's own permission rows or invoices (a pickup destroys
+//   them: permission_actor_destroy, taxation_remove_invoices_from_totem);
+// - the backup record and its links do not exist yet and are built here,
+//   with the totem id as the record's local id.
+const LIVE_BASE = "(select totem_id from pg_temp.live_base)";
+const LIVE_STEP_OVERRIDES = {
+  "exporting base actors": [null, `
+    insert into pg_temp.export_data(id, kind, data)
+    select id, 'act', dune._character_transfer_top_level_export('act', to_jsonb(actors) - 'partition_id'
+      || jsonb_build_object('state', 'BaseBackup')
+      || case when id in (select b.id from dune.buildings b) then jsonb_build_object(
+           'gas_attributes', '{}'::jsonb, 'properties', '{}'::jsonb, 'owner_account_id', null, 'serial', 0)
+         else '{}'::jsonb end)/*BOUNDS*/
+    from dune.actors where id in (select actor_id from pg_temp.live_base_actors)`],
+  "exporting entity components": ["placeholder", `
+    insert into pg_temp.export_data(id, kind, data)
+    select entity_id, 'fgl', dune._character_transfer_top_level_export('fgl', to_jsonb(fgl_entities) || to_jsonb(actor_fgl_entities))/*BOUNDS*/
+    from dune.actor_fgl_entities join dune.fgl_entities using (entity_id)
+    where actor_id in ${EXPORT_ACT} and actor_id not in (select b.id from dune.buildings b)`],
+  "exporting permissions": ["placeholder", `
+    insert into pg_temp.export_data(id, kind, data)
+    select actor_id, 'PermissionActor', dune._character_transfer_top_level_export('PermissionActor', to_jsonb(permission_actor))/*BOUNDS*/
+    from dune.permission_actor where actor_id in ${EXPORT_ACT} and actor_id <> ${LIVE_BASE}`],
+  "exporting permission ranks": ["placeholder", `
+    insert into pg_temp.export_data(id, kind, data)
+    select permission_actor_id, 'PermissionActorRank', dune._character_transfer_top_level_export('PermissionActorRank', to_jsonb(permission_actor_rank))/*BOUNDS*/
+    from dune.permission_actor_rank
+    where permission_actor_id in ${EXPORT_ACT} and permission_actor_id <> ${LIVE_BASE}
+      and player_id in (select id from pg_temp.export_data where kind = 'act')`],
+  "exporting building pieces": ["placeholder", `
+    insert into pg_temp.export_data(id, kind, data)
+    select null, 'BuildingInstance', dune._character_transfer_top_level_export('BuildingInstance', to_jsonb(building_instances))/*BOUNDS*/
+    from dune.building_instances
+    where building_id in ${EXPORT_ACT} and owner_entity_id = (select entity_id from pg_temp.live_base)`],
+  "exporting backup record": [null, `
+    insert into pg_temp.export_data(id, kind, data)
+    select totem_id, 'BaseBackup', dune._character_transfer_top_level_export('BaseBackup', jsonb_build_object(
+      'id', totem_id, 'player_id', owner_id, 'base_backup_name', name, 'last_edited_by_player_id', 0))
+    from pg_temp.live_base`],
+  "exporting backup links": [null, `
+    insert into pg_temp.export_data(id, kind, data)
+    select lb.totem_id, 'BaseBackupLinkedActor', dune._character_transfer_top_level_export('BaseBackupLinkedActor',
+      jsonb_build_object('id', lb.totem_id, 'actor_id', la.actor_id))
+    from pg_temp.live_base lb cross join pg_temp.live_base_actors la order by la.actor_id`],
+  "exporting tax invoices": null
+};
+const LIVE_EXPORT_STEPS = EXPORT_STEPS.flatMap(([label, param, sql]) => {
+  if (!(label in LIVE_STEP_OVERRIDES)) return [[label, param, sql]];
+  const override = LIVE_STEP_OVERRIDES[label];
+  return override ? [[label, ...override]] : [];
+});
+
+// The base's totem, found as exportBaseAsBlueprint finds it: through the
+// entity that owns the base's pieces. The 'Actor' slot only: a totem also has
+// a ContainerInventory entity (the game's save_from_totem misses this filter).
+// The owner is the rank-1 member, as the game defines it
+// (base_backup_find_totems_from_player_owner); co-owners never stand in.
+// Ordered, so the pre-check and the export always resolve the same totem.
+const LIVE_BASE_SQL = `
+  select t.id as totem_id, afe.entity_id,
+         (select par.player_id from dune.permission_actor_rank par
+           where par.permission_actor_id = t.id and par.rank = 1 order by par.player_id limit 1) as owner_id,
+         coalesce((select pa.actor_name from dune.permission_actor pa where pa.actor_id = t.id), '') as name,
+         a.state::text as state
+  from dune.building_instances bi
+  join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id and afe.slot_name = 'Actor'
+  join dune.totems t on t.id = afe.actor_id
+  join dune.actors a on a.id = t.id
+  where bi.building_id = $1
+  order by t.id
+  limit 1`;
+
+// The same set base_backup_save_from_totem links: the totem, the placeables it
+// owns that stand on the base, and the building actors holding its pieces.
+const LIVE_ACTORS_SQL = `
+  create temporary table live_base_actors on commit drop as
+  select totem_id as actor_id from pg_temp.live_base
+  union
+  select p.id from dune.placeables p join pg_temp.live_base lb on p.owner_entity_id = lb.entity_id
+   where p.has_buildable_support
+  union
+  select bi.building_id from dune.building_instances bi join pg_temp.live_base lb on bi.owner_entity_id = lb.entity_id`;
+
 async function beginWork(run) {
   await run("starting transaction", `set local statement_timeout = ${statementTimeoutMs()}`);
   await run("starting transaction", "set local search_path = dune, public");
   await run("preparing transfer table", "select dune._character_transfer_create_data_table()");
 }
 
-// Returns { text, summary }: `text` is the complete export file, produced by
-// Postgres so no payload value is ever parsed into a JavaScript number.
-export async function exportBaseBackup(db, backupId, versionInfo = {}) {
-  const id = intParam(backupId, "base backup id", 1);
-  await requireBaseBackupCapability(db);
-  const summary = await getBaseBackupSummary(db, id);
+// Runs the export steps in one repeatable-read snapshot and renders the file.
+// `prepare(run)` sets the scope up and returns the owner's local id (the
+// placeholder); `source(run)` describes what was exported.
+async function renderExport(db, versionInfo, steps, params, prepare, source) {
   const game = await serverGameVersion(db);
-
-  const text = await runTracked(db, "export", async (run) => {
+  return runTracked(db, "export", async (run) => {
     await run("starting transaction", "set transaction isolation level repeatable read");
     await beginWork(run);
-    const owner = await run("reading backup owner", "select player_id from dune.base_backups where id = $1", [id]);
-    if (!owner.rows[0]) throw new Error(`Base backup ${id} no longer exists`);
+    const ownerId = await prepare(run);
     // The owner is a placeholder: never shipped as row data, remapped to the
     // receiving player on import.
     const placeholder = await run("reading backup owner",
       "insert into pg_temp.export_data(id, kind, data) values ($1, 'act', '{}'::jsonb) returning transfer_id",
-      [owner.rows[0].player_id]);
+      [ownerId]);
     const placeholderTransferId = Number(placeholder.rows[0].transfer_id);
 
     const columns = columnsByTable((await run("reading table columns", COLUMNS_SQL, [IMPORT_TABLES])).rows);
-    for (const [label, param, sql] of EXPORT_STEPS) {
-      const params = param === "backup" ? [id] : param === "placeholder" ? [placeholderTransferId] : [];
-      const table = sql.match(/to_jsonb\((\w+)\)/)[1];
-      await run(label, sql.replace("/*BOUNDS*/", boundsExpression(table, columns)), params);
+    for (const [label, param, sql] of steps) {
+      const values = param === "placeholder" ? [placeholderTransferId] : param ? [params[param]] : [];
+      // A built record (jsonb_build_object) has no table and no arrays.
+      const table = sql.match(/to_jsonb\((\w+)\)/)?.[1];
+      await run(label, sql.replace("/*BOUNDS*/", table ? boundsExpression(table, columns) : ""), values);
     }
     await run("rewriting internal references",
       "update pg_temp.export_data set data = dune._character_transfer_replace_local_id_with_transfer_id_in_json(data, '')");
-
 
     const envelope = {
       format: BASE_BACKUP_FORMAT,
       version: BASE_BACKUP_FORMAT_VERSION,
       exportedAt: new Date().toISOString(),
-      source: {
-        backupId: summary.id,
-        name: summary.name,
-        rawName: summary.rawName,
-        map: summary.map,
-        totemType: summary.totemType,
-        ownerName: summary.ownerName,
-        counts: { pieces: summary.pieces, placeables: summary.placeables, items: summary.items }
-      },
+      source: await source(run),
       game: {
         build: versionInfo.gameBuild || "",
         steamBuildId: versionInfo.steamBuildId || null,
@@ -581,7 +661,114 @@ export async function exportBaseBackup(db, backupId, versionInfo = {}) {
       [JSON.stringify(envelope)]);
     return rendered.rows[0].text;
   });
+}
 
+// Returns { text, summary }: `text` is the complete export file, produced by
+// Postgres so no payload value is ever parsed into a JavaScript number.
+export async function exportBaseBackup(db, backupId, versionInfo = {}) {
+  const id = intParam(backupId, "base backup id", 1);
+  await requireBaseBackupCapability(db);
+  const summary = await getBaseBackupSummary(db, id);
+  const text = await renderExport(db, versionInfo, EXPORT_STEPS, { backup: id }, async (run) => {
+    const owner = await run("reading backup owner", "select player_id from dune.base_backups where id = $1", [id]);
+    if (!owner.rows[0]) throw new Error(`Base backup ${id} no longer exists`);
+    return owner.rows[0].player_id;
+  }, async () => ({
+    backupId: summary.id,
+    name: summary.name,
+    rawName: summary.rawName,
+    map: summary.map,
+    totemType: summary.totemType,
+    ownerName: summary.ownerName,
+    counts: { pieces: summary.pieces, placeables: summary.placeables, items: summary.items }
+  }));
+  return { text, summary };
+}
+
+// Why a base cannot be exported as a backup, or null when it can.
+function liveBaseRefusal(baseId, row) {
+  if (!row) return new BaseBackupError(`Base ${baseId} not found, or it has no totem`, { statusCode: 404, code: "not_found" });
+  if (row.state === "BaseBackup") {
+    return new BaseBackupError("This base has been picked up with the base backup tool. Export it from Base Backups instead.",
+      { statusCode: 409, code: "picked_up" });
+  }
+  if (row.owner_id == null) {
+    return new BaseBackupError("This base has no owner, so it cannot be saved as a base backup. Download it as a blueprint instead.",
+      { statusCode: 409, code: "no_owner" });
+  }
+  return null;
+}
+
+// Resolves a Bases row (a building actor id) to its totem, refusing what
+// cannot become a backup. Runs before the export transaction so the refusal
+// keeps its status code.
+async function liveBaseSummary(db, baseId) {
+  const result = await db.query(`
+    with base as (${LIVE_BASE_SQL})
+    select base.*, a.map, p.building_type as totem_type, coalesce(ps.character_name, '') as owner_name
+    from base
+    join dune.actors a on a.id = base.totem_id
+    left join dune.placeables p on p.id = base.totem_id
+    left join dune.player_state ps on ps.player_controller_id = base.owner_id`, [baseId]);
+  const row = result.rows[0];
+  const refusal = liveBaseRefusal(baseId, row);
+  if (refusal) throw refusal;
+  return {
+    baseId,
+    totemId: Number(row.totem_id),
+    name: displayName(row.name, row.totem_type),
+    rawName: row.name || "",
+    map: row.map || "",
+    totemType: row.totem_type || "",
+    ownerName: row.owner_name || ""
+  };
+}
+
+// Exports a live base, one that has not been picked up, as the same file a
+// pickup followed by a backup export would give. Read-only: the base and
+// everything in it are left exactly as they are.
+export async function exportLiveBase(db, baseId, versionInfo = {}) {
+  const id = intParam(baseId, "base id", 1);
+  await requireBaseBackupCapability(db);
+  const summary = await liveBaseSummary(db, id);
+  // Checked again inside the snapshot: the base may have been picked up (or
+  // lost its owner) since the pre-check. db.transaction drops custom error
+  // properties, so the refusal is carried out here and rethrown with them.
+  let refusal = null;
+  const renderLive = () => renderExport(db, versionInfo, LIVE_EXPORT_STEPS, {}, async (run) => {
+    await run("finding the base's totem", `create temporary table live_base on commit drop as ${LIVE_BASE_SQL}`, [id]);
+    const base = await run("finding the base's totem", "select totem_id, owner_id, state from pg_temp.live_base");
+    const row = base.rows[0];
+    refusal = liveBaseRefusal(id, row);
+    if (refusal) throw new Error(refusal.message);
+    await run("collecting the base's actors", LIVE_ACTORS_SQL);
+    return row.owner_id;
+  }, async (run) => {
+    const counts = (await run("counting exported rows", `
+      select count(*) filter (where kind = 'BuildingInstance')::int as pieces,
+             count(*) filter (where kind = 'Placeable')::int as placeables,
+             count(*) filter (where kind = 'itm')::int as items
+      from pg_temp.export_data`)).rows[0];
+    Object.assign(summary, counts);
+    return {
+      kind: "live-base",
+      baseId: id,
+      backupId: null,
+      name: summary.name,
+      rawName: summary.rawName,
+      map: summary.map,
+      totemType: summary.totemType,
+      ownerName: summary.ownerName,
+      counts: { pieces: counts.pieces, placeables: counts.placeables, items: counts.items }
+    };
+  });
+  let text;
+  try {
+    text = await renderLive();
+  } catch (error) {
+    if (refusal) throw refusal;
+    throw error;
+  }
   return { text, summary };
 }
 

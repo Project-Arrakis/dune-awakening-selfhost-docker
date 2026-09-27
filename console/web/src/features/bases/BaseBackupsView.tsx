@@ -4,6 +4,7 @@ import { ApiError } from "../../api/client";
 import { baseBackupsApi, type BaseBackupFailureBody, type BaseBackupRow, type BaseBackupVersion } from "../../api/baseBackups";
 import { playersApi } from "../../api/players";
 import { SegmentedControl } from "../../components/common/SegmentedControl";
+import { saveDownload } from "./saveDownload";
 import { DataTable, useSortableRows } from "../../components/common/DataTable";
 import { TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { formatUiSentence } from "../../lib/display";
@@ -157,18 +158,6 @@ function PlayerPicker({ label, chooseLabel, disabled, onChoose, onFailure }: {
   </div>;
 }
 
-async function saveDownload(response: Response, fallbackName: string) {
-  const disposition = response.headers.get("content-disposition") || "";
-  const filename = disposition.match(/filename="([^"]+)"/)?.[1] || fallbackName;
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
-
 export function BaseBackupsView({ onError, confirmAction, playerId = "", playerName = "", playerOnline = false, embedded = false, viewSwitch }: BaseBackupsViewProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [rows, setRows] = useState<BaseBackupRow[]>([]);
@@ -310,8 +299,10 @@ export function BaseBackupsView({ onError, confirmAction, playerId = "", playerN
   // lower row can start out of sight.
   const editPanelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    // The whole row, so the cell's padding is in view too.
-    if (editing) editPanelRef.current?.closest("tr")?.scrollIntoView?.({ block: "nearest" });
+    // The whole row, so the cell's padding is in view too; inline "start"
+    // brings a sideways-scrolled table (phones) back to its left edge, where
+    // the panel sits.
+    if (editing) editPanelRef.current?.closest("tr")?.scrollIntoView?.({ block: "nearest", inline: "start" });
   }, [editing?.id]);
 
   function cancelEdit() {
@@ -535,6 +526,7 @@ export function BaseBackupsView({ onError, confirmAction, playerId = "", playerN
         columns={columns}
         columnLabels={{ ownerName: "Owner", name: "Backup" }}
         tableClassName="base-backups-table"
+        wrapClassName="base-backups-table-wrap"
         actionClassName="actions-column"
         renderCell={(row, column) => {
           const backup = row as unknown as BaseBackupRow;

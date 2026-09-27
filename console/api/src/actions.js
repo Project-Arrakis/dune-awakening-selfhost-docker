@@ -499,10 +499,16 @@ export const REGEX_ACTIONS_BY_METHOD = {
 // the part that would distinguish them. Routes that need that distinction
 // go here instead, tested as a real regex before the prefix fallback.
 export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
-  // GET /api/base-backups/{id}/export -- a read, like the base-as-blueprint
-  // export. Anchored so nothing else under /api/base-backups/ resolves: that
-  // path has no prefix rule, so any other route there fails closed.
-  { method: "GET", pattern: /^\/api\/base-backups\/[^/]+\/export$/, action: "bases:read" },
+  // GET /api/base-backups/{id}/export -- the backup as a file (see
+  // bases:export-backup below). Anchored so nothing else under
+  // /api/base-backups/ resolves: that path has no prefix rule, so any other
+  // route there fails closed.
+  { method: "GET", pattern: /^\/api\/base-backups\/[^/]+\/export$/, action: "bases:export-backup" },
+  // GET /api/bases/{id}/export-backup -- a live base as a base backup file.
+  // Same action as the backup export above: either file carries every item
+  // stored in the base and imports as a whole base elsewhere, so neither is a
+  // plain bases:read. Anchored ahead of the "/api/bases/" read prefix.
+  { method: "GET", pattern: /^\/api\/bases\/[^/]+\/export-backup$/, action: "bases:export-backup" },
   // PUT /api/base-backups/{id} -- reassign and/or rename a picked-up base.
   // Handing a player a whole base (with its stored items) is the same consent
   // case as import, so it is its own action rather than bases:mutate.

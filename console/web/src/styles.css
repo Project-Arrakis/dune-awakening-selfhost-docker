@@ -192,6 +192,19 @@ h1, h2, h3, h4, h5 { color: var(--title); line-height: 1.2; letter-spacing: 0; }
 }
 .confirm-modal.danger { border-color: var(--danger-strong); }
 .confirm-modal.confirm-modal-wide { width: min(560px, calc(100vw - 32px)); }
+/* Download Base: one row per format, its button on the right (below on phones). */
+.download-base-options { display: grid; gap: 10px; }
+.download-base-option { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px; border: 1px solid var(--border-strong); border-radius: 8px; }
+/* .confirm-modal prefix: .confirm-modal p has the same specificity and comes later. */
+.confirm-modal .download-base-option p { margin: 4px 0 0; color: var(--muted-warm); line-height: 1.4; }
+/* Wider than the 560px wide modal, so the descriptions beside the buttons wrap to fewer lines. */
+.confirm-modal.download-base-modal { width: min(640px, calc(100vw - 32px)); }
+/* One width for both buttons, so the two descriptions line up. */
+.download-base-option > button { flex: none; width: 224px; min-height: 40px; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+@media (max-width: 520px) {
+  .download-base-option { flex-direction: column; align-items: stretch; }
+  .download-base-option > button { width: auto; }
+}
 .confirm-modal-title {
   display: flex;
   align-items: center;
@@ -1868,6 +1881,11 @@ body.debug .technical-details { display: block; }
 /* Edit owner/name/map panel, in an expanded row under the edited backup. */
 /* Undo the global td nowrap/ellipsis/360px cap inside the expanded row. */
 .base-backups-table td.expanded-row-cell { max-width: none; white-space: normal; overflow: visible; }
+/* On a phone the table is wider than its scroll box and the expanded cell spans
+   the whole table, so size the panel to the visible box (cqw of the wrap), not
+   the table, and keep it at the box's left edge. */
+.base-backups-table-wrap { container-type: inline-size; }
+.base-backups-table td.expanded-row-cell > .base-backup-edit { position: sticky; left: 12px; width: calc(100cqw - 24px); box-sizing: border-box; }
 .base-backup-edit { display: grid; gap: 10px; }
 .base-backup-edit .base-backup-edit-field { width: min(560px, 100%); }
 .base-backup-edit-field { display: grid; gap: 5px; color: var(--muted-warm); }

@@ -86,6 +86,9 @@ export const baseBackupsApi = {
     api<BaseBackupList>(`/api/base-backups${playerId ? `?playerId=${encodeURIComponent(playerId)}` : ""}`),
   download: (backupId: number) =>
     apiDownload(`/api/base-backups/${encodeURIComponent(String(backupId))}/export`),
+  // A live base (a Bases row id) as a base backup file. Read-only on the server.
+  downloadLiveBase: (baseId: string) =>
+    apiDownload(`/api/bases/${encodeURIComponent(baseId)}/export-backup`),
   importFile: (file: File, playerPawnId: string, allowVersionMismatch = false) => {
     const form = new FormData();
     form.append("file", file);
