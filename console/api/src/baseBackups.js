@@ -182,9 +182,9 @@ export class BaseBackupError extends Error {
 export class BaseBackupTimeoutError extends BaseBackupError {
   constructor({ operation, step, kind, elapsedMs, limitMs }) {
     const seconds = (ms) => (ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1).replace(/\.0$/, "")}s`);
-    const outcome = operation === "import"
-      ? "Nothing was changed: the import was rolled back."
-      : "No file was produced.";
+    const outcome = operation === "export"
+      ? "No file was produced."
+      : `Nothing was changed: the ${operation} was rolled back.`;
     super(`Base backup ${operation} timed out after ${seconds(elapsedMs)} while ${step} (limit ${seconds(limitMs)}). ${outcome}`, {
       statusCode: 504,
       code: "timeout",
@@ -350,7 +350,8 @@ export async function listBaseBackups(db, { playerId = "" } = {}) {
     where = "where bb.player_id = $1";
   }
   const result = await db.query(`${LIST_SQL} ${where} order by bb.id`, params);
-  return { supported: true, capabilities: { baseBackups: true }, rows: result.rows.map(mapBackupRow) };
+  const maps = await buildableMaps((sql, values) => db.query(sql, values));
+  return { supported: true, capabilities: { baseBackups: true }, rows: result.rows.map(mapBackupRow), maps };
 }
 
 async function getBaseBackupSummary(db, backupId) {
@@ -829,5 +830,212 @@ export async function importBaseBackup(db, playerPawnId, fileText, { allowVersio
     version,
     warnings,
     warning: warnings.join(" ") || undefined
+  };
+}
+
+// Maps a backup may be moved to: those where a claim totem has actually been
+// placed on this server. Social hubs and dungeons never allow building, so an
+// open list would let an admin strand a base on a map it cannot be placed on.
+export async function buildableMaps(query) {
+  const result = await query(`
+    select distinct a.map from dune.totems t join dune.actors a on a.id = t.id
+    where a.map is not null and a.map <> '' order by a.map`);
+  return result.rows.map((row) => row.map);
+}
+
+// Longest real claim name seen on a live server; the game's own limit is not
+// known, so stay inside what it has demonstrably stored and displayed.
+export const BASE_BACKUP_NAME_MAX = 23;
+
+export function validateBaseBackupName(value) {
+  const name = String(value ?? "").trim();
+  const invalid = (message) => new BaseBackupError(message, { code: "invalid_name" });
+  if (!name) throw invalid("Backup name cannot be empty.");
+  if (name.length > BASE_BACKUP_NAME_MAX) throw invalid(`Backup name can be at most ${BASE_BACKUP_NAME_MAX} characters.`);
+  // "##..." is the game's own placeholder for an unnamed claim.
+  if (name.startsWith("##")) throw invalid("Backup name cannot start with ##.");
+  if (/[\u0000-\u001f\u007f]/.test(name)) throw invalid("Backup name cannot contain control characters.");
+  return name;
+}
+
+// Reassigns a backup to another player, renames it and/or moves it to another
+// map. The game only lets a backup be placed on the map it was saved on --
+// base_backup_get_available_backups reports the totem actor's map -- so a move
+// rewrites every linked actor's map, and clears its partition: a partition
+// belongs to the old map, and imported backups (no partition) are proven to
+// redeploy. Redeploying overwrites map, partition and dimension with the
+// placing player's anyway (base_backup_finish_placing). The in-game tool
+// caches its backup list per session, so the current owner must be offline:
+// otherwise they could redeploy from the stale list after the reassign, and
+// base_backup_finish_placing would take the map and partition from the new
+// owner. The new owner only needs to relog to see it.
+export async function updateBaseBackup(db, backupId, { ownerPlayerId, name, map } = {}) {
+  const id = intParam(backupId, "base backup id", 1);
+  const wantsOwner = ownerPlayerId !== undefined && ownerPlayerId !== null && ownerPlayerId !== "";
+  const wantsName = name !== undefined && name !== null;
+  const wantsMap = map !== undefined && map !== null && map !== "";
+  if (!wantsOwner && !wantsName && !wantsMap) throw new BaseBackupError("Nothing to change.", { code: "no_change" });
+  const newName = wantsName ? validateBaseBackupName(name) : null;
+  await requireBaseBackupCapability(db);
+  let newMap = null;
+  if (wantsMap) {
+    const allowed = await buildableMaps((sql, values) => db.query(sql, values));
+    newMap = String(map);
+    if (!allowed.includes(newMap)) {
+      throw new BaseBackupError(`A backup can only be moved to a map where bases are built: ${allowed.join(", ") || "none found"}.`, {
+        code: "invalid_map", details: { maps: allowed }
+      });
+    }
+  }
+  const newOwner = wantsOwner ? await resolvePlayerTarget(db, ownerPlayerId) : null;
+  if (newOwner && !newOwner.controllerId) {
+    throw new BaseBackupError("That player has no player controller.", { statusCode: 409, code: "invalid_target" });
+  }
+
+  const result = await runTracked(db, "edit", async (run) => {
+    await run("starting transaction", `set local statement_timeout = ${statementTimeoutMs()}`);
+    const current = await run("locking the backup", `
+      select bb.player_id, coalesce(bb.base_backup_name, '') as name,
+             coalesce(ps.character_name, '') as owner_name,
+             coalesce(ps.online_status::text, 'Offline') as owner_status,
+             (select a.map from dune.base_backup_linked_actors l
+                join dune.totems t on t.id = l.actor_id
+                join dune.actors a on a.id = t.id
+              where l.id = bb.id limit 1) as map
+      from dune.base_backups bb
+      left join dune.player_state ps on ps.player_controller_id = bb.player_id
+      where bb.id = $1
+      for update of bb`, [id]);
+    const row = current.rows[0];
+    if (!row) return { missing: true };
+    if (String(row.owner_status).toLowerCase() === "online") return { ownerOnline: true, ownerName: row.owner_name };
+
+    const ownerChanged = Boolean(newOwner) && Number(row.player_id) !== newOwner.controllerId;
+    const nameChanged = newName !== null && newName !== row.name;
+    const mapChanged = newMap !== null && newMap !== row.map;
+    if (!ownerChanged && !nameChanged && !mapChanged) return { unchanged: true };
+
+    let movedActors = 0;
+    if (mapChanged) {
+      // Lock the actors too: a redeploy in flight rewrites them.
+      const moved = await run("moving the base to the new map", `
+        update dune.actors a set map = $2, partition_id = null
+        where a.id in (select actor_id from dune.base_backup_linked_actors where id = $1)`, [id, newMap]);
+      movedActors = Number(moved.rowCount || 0);
+    }
+
+    await run("saving the backup", `
+      update dune.base_backups
+      set player_id = case when $2 then $3::bigint else player_id end,
+          last_edited_by_player_id = case when $2 then $3::bigint else last_edited_by_player_id end,
+          base_backup_name = case when $4 then $5::text else base_backup_name end
+      where id = $1`, [id, ownerChanged, ownerChanged ? newOwner.controllerId : null, nameChanged, newName]);
+    return {
+      owner: ownerChanged ? { from: Number(row.player_id), fromName: row.owner_name, to: newOwner.controllerId } : null,
+      name: nameChanged ? { from: row.name, to: newName } : null,
+      map: mapChanged ? { from: row.map || "", to: newMap, actors: movedActors } : null
+    };
+  });
+
+  if (result.missing) {
+    throw new BaseBackupError(`Base backup ${id} no longer exists. It may have been redeployed or recycled in-game.`, { statusCode: 404, code: "not_found" });
+  }
+  if (result.ownerOnline) {
+    throw new BaseBackupError(`${result.ownerName || "The backup's owner"} is online. They must log out before this backup can be changed.`, {
+      statusCode: 409, code: "owner_online", details: { ownerName: clip(result.ownerName) }
+    });
+  }
+  if (result.unchanged) throw new BaseBackupError("Nothing to change: the backup already has that owner, name and map.", { code: "no_change" });
+
+  const warnings = [];
+  if (result.owner && String(newOwner.onlineStatus).toLowerCase() === "online") {
+    warnings.push("The new owner is online. They must log out and back in before the backup appears in their base backup tool.");
+  }
+  return {
+    ok: true,
+    backupId: id,
+    owner: result.owner,
+    name: result.name,
+    map: result.map,
+    warnings,
+    warning: warnings.join(" ") || undefined
+  };
+}
+
+const DELETE_FUNCTION = "dune.base_backup_delete(bigint)";
+
+async function requireDeleteCapability(db) {
+  await requireBaseBackupCapability(db);
+  if (!(await functionExists(db, DELETE_FUNCTION))) {
+    throw new UnsupportedCapabilityError("Deleting base backups needs the game's dune.base_backup_delete function", { missing: [DELETE_FUNCTION] });
+  }
+}
+
+function deleteBlockedError(row, id) {
+  if (!row) {
+    return new BaseBackupError(`Base backup ${id} no longer exists. It may have been redeployed or recycled in-game.`, { statusCode: 404, code: "not_found" });
+  }
+  if (String(row.owner_status || "").toLowerCase() === "online") {
+    return new BaseBackupError(`${row.owner_name || "The backup's owner"} is online. They must log out before this backup can be deleted.`, {
+      statusCode: 409, code: "owner_online", details: { ownerName: clip(row.owner_name) }
+    });
+  }
+  return null;
+}
+
+const OWNER_STATUS_SQL = `
+  select coalesce(ps.character_name, '') as owner_name,
+         coalesce(ps.online_status::text, 'Offline') as owner_status
+  from dune.base_backups bb
+  left join dune.player_state ps on ps.player_controller_id = bb.player_id
+  where bb.id = $1`;
+
+// Cheap, non-locking check the route runs before its (slow) safety database
+// backup, so an obviously blocked delete fails fast. deleteBaseBackup checks
+// again under a row lock.
+export async function checkBaseBackupDeletable(db, backupId) {
+  const id = intParam(backupId, "base backup id", 1);
+  await requireDeleteCapability(db);
+  const current = await db.query(OWNER_STATUS_SQL, [id]);
+  const blocked = deleteBlockedError(current.rows[0], id);
+  if (blocked) throw blocked;
+  return getBaseBackupSummary(db, id);
+}
+
+// Permanently deletes a picked-up base: every linked actor (and through the
+// foreign keys its pieces, placeables, totem, storage and items) and the
+// backup row, using the game's own dune.base_backup_delete. The current owner
+// must be offline -- a stale in-game list could otherwise try to redeploy a
+// backup that is gone. The caller takes a safety database backup first.
+export async function deleteBaseBackup(db, backupId) {
+  const id = intParam(backupId, "base backup id", 1);
+  await requireDeleteCapability(db);
+
+  const result = await runTracked(db, "delete", async (run) => {
+    await run("starting transaction", `set local statement_timeout = ${statementTimeoutMs()}`);
+    const current = await run("locking the backup", `${OWNER_STATUS_SQL} for update of bb`, [id]);
+    const blocked = deleteBlockedError(current.rows[0], id);
+    if (blocked) return { blocked };
+    const summary = await run("reading the backup", `${LIST_SQL} where bb.id = $1`, [id]);
+    await run("deleting the backup", "select dune.base_backup_delete($1)", [id]);
+    const left = await run("checking the delete", `
+      select (select count(*) from dune.base_backups where id = $1)::int as backups,
+             (select count(*) from dune.base_backup_linked_actors where id = $1)::int as links`, [id]);
+    if (left.rows[0].backups || left.rows[0].links) {
+      // Rolls the whole delete back: never leave half a backup behind.
+      throw new Error(`Base backup ${id} was not fully deleted; nothing was changed.`);
+    }
+    return { summary: mapBackupRow(summary.rows[0]) };
+  });
+
+  if (result.blocked) throw result.blocked;
+  const { summary } = result;
+  return {
+    ok: true,
+    backupId: id,
+    name: summary.name,
+    ownerName: summary.ownerName,
+    map: summary.map,
+    counts: { pieces: summary.pieces, placeables: summary.placeables, items: summary.items }
   };
 }

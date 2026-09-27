@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client";
 import { baseBackupsApi } from "../../api/baseBackups";
@@ -6,7 +6,7 @@ import { playersApi } from "../../api/players";
 import { BaseBackupsView } from "./BaseBackupsView";
 
 vi.mock("../../api/baseBackups", () => ({
-  baseBackupsApi: { list: vi.fn(), download: vi.fn(), importFile: vi.fn() }
+  baseBackupsApi: { list: vi.fn(), download: vi.fn(), importFile: vi.fn(), update: vi.fn(), remove: vi.fn() }
 }));
 vi.mock("../../api/players", () => ({ playersApi: { list: vi.fn() } }));
 
@@ -64,7 +64,7 @@ async function pickReceiver() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(baseBackupsApi.list).mockResolvedValue({ supported: true, rows: [backup] });
+  vi.mocked(baseBackupsApi.list).mockResolvedValue({ supported: true, rows: [backup], maps: ["DeepDesert", "HaggaBasin"] });
   vi.mocked(playersApi.list).mockResolvedValue({
     rows: [{ actor_id: 38, character_name: "Receiver Two", online_status: "Offline" }],
     totalCount: 1, totalPlayers: 1, capabilities: {}
@@ -210,5 +210,142 @@ describe("BaseBackupsView", () => {
     render(<BaseBackupsView onError={vi.fn()} confirmAction={vi.fn()} />);
     expect(await screen.findByText("Base Backups Unavailable")).toBeInTheDocument();
     expect(screen.queryByLabelText("Base backup file")).not.toBeInTheDocument();
+  });
+
+  describe("editing owner and name", () => {
+    async function openEditor() {
+      render(<BaseBackupsView onError={vi.fn()} confirmAction={confirm} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Edit Test Base" }));
+      return screen.getByRole("group", { name: "Edit Test Base" });
+    }
+    let confirm = vi.fn();
+    beforeEach(() => {
+      confirm = vi.fn().mockResolvedValue(true);
+    });
+
+    it("renames a backup after confirmation, with Save gated on a real change", async () => {
+      vi.mocked(baseBackupsApi.update).mockResolvedValue({ ok: true, backupId: 3, owner: null, name: { from: "Test Base", to: "North Wall" }, map: null, warnings: [] });
+      const panel = await openEditor();
+      const save = within(panel).getByRole("button", { name: "Save" });
+      expect(save).toBeDisabled();
+      const nameInput = within(panel).getByLabelText("Backup name");
+      expect(nameInput).toHaveValue("Test Base");
+      fireEvent.change(nameInput, { target: { value: "  North Wall " } });
+      expect(save).toBeEnabled();
+      fireEvent.click(save);
+      await waitFor(() => expect(baseBackupsApi.update).toHaveBeenCalledWith(3, { name: "North Wall" }));
+      expect(confirm).toHaveBeenCalledWith(expect.stringContaining('rename it to "North Wall"'), expect.objectContaining({ title: "Edit Base Backup" }));
+      expect(await screen.findByText("Base Backup Updated")).toBeInTheDocument();
+      expect(screen.getByText(/Renamed from "Test Base" to "North Wall"/)).toBeInTheDocument();
+      expect(screen.queryByRole("group", { name: "Edit Test Base" })).not.toBeInTheDocument();
+    });
+
+    it("enforces the game-safe name rules before anything is sent", async () => {
+      const panel = await openEditor();
+      const nameInput = within(panel).getByLabelText("Backup name");
+      const save = within(panel).getByRole("button", { name: "Save" });
+      fireEvent.change(nameInput, { target: { value: "##Totem_Placeable" } });
+      expect(within(panel).getByText("Backup name cannot start with ##.")).toBeInTheDocument();
+      expect(save).toBeDisabled();
+      fireEvent.change(nameInput, { target: { value: "   " } });
+      expect(within(panel).getByText("Backup name cannot be empty.")).toBeInTheDocument();
+      expect(save).toBeDisabled();
+      expect(baseBackupsApi.update).not.toHaveBeenCalled();
+    });
+
+    it("reassigns through its own player search and warns when the new owner is online", async () => {
+      vi.mocked(playersApi.list).mockResolvedValue({
+        rows: [{ actor_id: 38, character_name: "Receiver Two", online_status: "Online" }],
+        totalCount: 1, totalPlayers: 1, capabilities: {}
+      });
+      vi.mocked(baseBackupsApi.update).mockResolvedValue({
+        ok: true, backupId: 3, owner: { from: 4, fromName: "Owner One", to: 36 }, name: null, map: null,
+        warnings: ["The new owner is online. They must log out and back in before the backup appears in their base backup tool."]
+      });
+      const panel = await openEditor();
+      fireEvent.change(within(panel).getByLabelText("Search for the new owner"), { target: { value: "Rec" } });
+      fireEvent.click(within(panel).getByRole("button", { name: "Search" }));
+      fireEvent.click(await within(panel).findByRole("button", { name: "Make Receiver Two the owner" }));
+      expect(within(panel).getByText(/was Owner One/)).toBeInTheDocument();
+      fireEvent.click(within(panel).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(baseBackupsApi.update).toHaveBeenCalledWith(3, { ownerPlayerId: "38" }));
+      expect(confirm.mock.calls[0][1]).toMatchObject({ warning: expect.stringMatching(/Receiver Two is online and must log out and back in/) });
+      expect(await screen.findByText(/Owner changed from Owner One to Receiver Two/)).toBeInTheDocument();
+      const warning = screen.getByText(/new owner is online/);
+      expect(warning.closest(".result-panel")).toHaveClass("result-persistent");
+    });
+
+    it("moves a backup to another map, warning where it can then be placed", async () => {
+      vi.mocked(baseBackupsApi.update).mockResolvedValue({
+        ok: true, backupId: 3, owner: null, name: null, map: { from: "DeepDesert", to: "HaggaBasin", actors: 9 }, warnings: []
+      });
+      const panel = await openEditor();
+      expect(within(panel).getByRole("radio", { name: "Deep Desert" })).toBeChecked();
+      fireEvent.click(within(panel).getByRole("radio", { name: "Hagga Basin" }));
+      fireEvent.click(within(panel).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(baseBackupsApi.update).toHaveBeenCalledWith(3, { map: "HaggaBasin" }));
+      expect(confirm).toHaveBeenCalledWith(expect.stringContaining("move it to Hagga Basin"),
+        expect.objectContaining({ warning: expect.stringMatching(/only be redeployed on Hagga Basin, not on Deep Desert/) }));
+      expect(await screen.findByText(/Moved from Deep Desert to Hagga Basin/)).toBeInTheDocument();
+    });
+
+    it("explains that the current owner has to log out", async () => {
+      vi.mocked(baseBackupsApi.update).mockRejectedValue(new ApiError("Owner One is online. They must log out before this backup can be changed.", 409, { code: "owner_online" }));
+      const panel = await openEditor();
+      fireEvent.change(within(panel).getByLabelText("Backup name"), { target: { value: "North Wall" } });
+      fireEvent.click(within(panel).getByRole("button", { name: "Save" }));
+      expect(await screen.findByText("Owner Is Online")).toBeInTheDocument();
+      expect(screen.getByText(/must log out before this backup can be changed/)).toBeInTheDocument();
+      // The form stays open so the change can be retried once they log out.
+      expect(screen.getByRole("group", { name: "Edit Test Base" })).toBeInTheDocument();
+    });
+
+    it("reloads the list when the backup was redeployed meanwhile", async () => {
+      vi.mocked(baseBackupsApi.update).mockRejectedValue(new ApiError("Base backup 3 no longer exists.", 404, { code: "not_found" }));
+      const panel = await openEditor();
+      fireEvent.change(within(panel).getByLabelText("Backup name"), { target: { value: "North Wall" } });
+      fireEvent.click(within(panel).getByRole("button", { name: "Save" }));
+      expect(await screen.findByText("Backup No Longer Exists")).toBeInTheDocument();
+      await waitFor(() => expect(baseBackupsApi.list).toHaveBeenCalledTimes(2));
+    });
+  });
+
+  describe("deleting", () => {
+    it("deletes after a danger confirmation that lists what will be destroyed", async () => {
+      vi.mocked(baseBackupsApi.remove).mockResolvedValue({
+        ok: true, backupId: 3, name: "Test Base", ownerName: "Owner One", map: "DeepDesert",
+        counts: { pieces: 24, placeables: 8, items: 13 }, backupCreated: true
+      });
+      const confirmAction = vi.fn().mockResolvedValue(true);
+      render(<BaseBackupsView onError={vi.fn()} confirmAction={confirmAction} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Delete Test Base" }));
+      await waitFor(() => expect(baseBackupsApi.remove).toHaveBeenCalledWith(3));
+      const [message, options] = confirmAction.mock.calls[0];
+      expect(message).toMatch(/permanently deletes the base and everything stored in it/);
+      expect(options).toMatchObject({ title: "Delete Base Backup", confirmLabel: "Delete", danger: true });
+      expect(options.warning).toMatch(/full database backup is taken automatically/);
+      expect(options.details).toEqual(expect.arrayContaining([
+        expect.objectContaining({ label: "Stored Items", value: "13" }),
+        expect.objectContaining({ label: "Map", value: "Deep Desert" })
+      ]));
+      expect(await screen.findByText("Base Backup Deleted")).toBeInTheDocument();
+      expect(screen.getByText(/A full database backup was taken first/)).toBeInTheDocument();
+      expect(baseBackupsApi.list).toHaveBeenCalledTimes(2);
+    });
+
+    it("does nothing when the confirmation is declined", async () => {
+      render(<BaseBackupsView onError={vi.fn()} confirmAction={vi.fn().mockResolvedValue(false)} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Delete Test Base" }));
+      await waitFor(() => expect(baseBackupsApi.list).toHaveBeenCalledTimes(1));
+      expect(baseBackupsApi.remove).not.toHaveBeenCalled();
+    });
+
+    it("says the owner must log out when they are online", async () => {
+      vi.mocked(baseBackupsApi.remove).mockRejectedValue(new ApiError("Owner One is online. They must log out before this backup can be deleted.", 409, { code: "owner_online" }));
+      render(<BaseBackupsView onError={vi.fn()} confirmAction={vi.fn().mockResolvedValue(true)} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Delete Test Base" }));
+      expect(await screen.findByText("Owner Is Online")).toBeInTheDocument();
+      expect(screen.getByText(/must log out before this backup can be deleted/)).toBeInTheDocument();
+    });
   });
 });

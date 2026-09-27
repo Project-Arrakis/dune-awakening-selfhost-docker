@@ -218,6 +218,52 @@ redeploys), buildings.owner_id is cleared, and non-zero raw player ids
 return **400** code `"invalid_file"`. The capability probe also checks that the
 game's `_charactertransferentrykind` enum has every entry kind used.
 
+**Editing owner, name and map:** each row on the Base Backups view (and in a player's
+Bases tab) has an Edit button: rename the backup, reassign it to another player through the
+same Search/Clear player search, move it to another map, or any combination. `PUT /api/base-backups/{id}` changes
+`base_backups.player_id` (the game's backup tool lists a player's backups by exactly that)
+and `base_backups.base_backup_name`; a reassign also sets `last_edited_by_player_id` to the
+new owner, as an import does. A rename or reassign does not touch the base itself.
+
+- The **current owner must be offline** (409 `owner_online` otherwise). The in-game tool
+  caches its backup list per session, and a redeploy from that stale list after a reassign
+  would take its map and partition from the new owner (`base_backup_finish_placing` reads
+  them from `base_backups.player_id`). The new owner only needs to log out and back in.
+- Names are 1-23 characters (the longest claim name seen on a live server; the game's own
+  limit is unknown), may not start with `##` (the game's placeholder for an unnamed
+  claim) and may not contain control characters.
+- The row is locked for the change; if the backup was redeployed or recycled in-game
+  meanwhile, the request is a 404 and nothing is written.
+- **Moving to another map.** The game only lets a backup be redeployed on the map it was
+  saved on, which it reads from the totem actor's `actors.map`
+  (`base_backup_get_available_backups`). A move therefore rewrites `map` on every actor
+  linked to the backup and clears their `partition_id`, since a partition belongs to the old
+  map. Imported backups have no partition either, and they redeploy normally. Redeploying
+  overwrites map, partition and dimension with the placing player's anyway
+  (`base_backup_finish_placing`). Only maps where a claim totem has actually been placed on
+  this server are offered (400 `invalid_map` otherwise), since social hubs and dungeons
+  never allow building. The list response carries them as `maps`.
+- Permission: `bases:edit-backup` (owner/admin via `bases:*`), excluded from API-key
+  levels like import. Every change is audit-logged as `base-backups.edit` with the before
+  and after values.
+
+**Deleting a backup:** each row also has a Delete button. It permanently deletes the base
+and everything stored in it, using the game's own `dune.base_backup_delete`. That function
+deletes every actor linked to the backup (the foreign keys take the pieces, placeables,
+totem, land claim, storage and items with them), then the backup row.
+
+- Same bar as deleting a live base: `DELETE /api/base-backups/{id}` requires
+  `{ confirmation: "DELETE BACKUP" }`, and a **full database backup is taken first**. If
+  that backup fails, nothing is deleted.
+- The current owner must be offline (409 `owner_online`). A stale in-game list could
+  otherwise try to redeploy a backup that no longer exists. That is checked once before
+  the safety backup, so a blocked delete fails fast, and again under the row lock.
+- In one transaction, the delete verifies that the backup row and all its links are gone;
+  otherwise it rolls back. A backup redeployed meanwhile is a 404.
+- An imported copy is independent: deleting the original leaves it intact.
+- Permission: `bases:delete-backup` (owner/admin via `bases:*`), audit-logged as
+  `base-backups.delete`.
+
 **CI coverage:** `console/api/test/baseBackups.test.js` (mocked) and
 `console/api/test/baseBackups.integration.test.js` (real PostgreSQL with
 hand-written stand-ins for the Funcom helpers in

@@ -5,9 +5,11 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  BaseBackupError, BaseBackupTimeoutError, baseBackupHttpError, classifyTimeout, importBaseBackup,
-  listBaseBackups, parseBaseBackupFile, validateBaseBackupFile, versionComparison
+  BASE_BACKUP_NAME_MAX, BaseBackupError, BaseBackupTimeoutError, baseBackupHttpError, classifyTimeout, importBaseBackup,
+  listBaseBackups, parseBaseBackupFile, updateBaseBackup, validateBaseBackupFile, validateBaseBackupName, versionComparison,
+  checkBaseBackupDeletable, deleteBaseBackup
 } from "../src/baseBackups.js";
+import { scopeAllowsAction } from "../src/apiKeyScopes.js";
 import { parseAppManifestBuildId, readSteamBuildId, steamAppId } from "../src/services/steamBuild.js";
 import { actionForRoute } from "../src/actions.js";
 import { evaluate } from "../src/policy.js";
@@ -151,12 +153,21 @@ test("baseBackupHttpError maps failures to the statuses and bodies the UI reads"
 // A fake db shaped like db.js: its transaction() rethrows a plain Error with
 // only the message, exactly as db.js does, so the timeout classification is
 // tested through the same information loss production has.
+const SUMMARY_ROW = {
+  id: 3, owner_controller_id: 10, owner_pawn_id: 11, owner_name: "Owner One", name: "Old Name",
+  map: "DeepDesert", totem_type: "Totem_Small_Placeable", pieces: 24, placeables: 8, items: 13
+};
+
 const ALL_KINDS = ["act", "fgl", "inv", "itm", "bbp", "PermissionActor", "PermissionActorRank", "ActorInventory", "Building",
   "BuildingInstance", "Placeable", "Totem", "BaseBackup", "BaseBackupLinkedActor", "LandclaimSegment", "TaxInvoice", "Sinkchart",
   "BuildingBlueprintInstance", "BuildingBlueprintPlaceable", "BuildingBlueprintPentashield"];
 
 function fakeDb({
   online = false, failOn = null, failWith = null, missingFunction = null, kinds = ALL_KINDS,
+  // The row the edit transaction locks; null means the backup is gone.
+  lockRow = { player_id: 10, name: "Old Name", owner_name: "Owner One", owner_status: "Offline", map: "DeepDesert" },
+  maps = ["DeepDesert", "HaggaBasin"],
+  leftAfterDelete = { backups: 0, links: 0 },
   columnRows = [
     { table_name: "building_instances", column_name: "transform", column_type: "real[]", is_array: true },
     { table_name: "building_instances", column_name: "last_placed_by_player_id", column_type: "bigint", is_array: false },
@@ -176,6 +187,11 @@ function fakeDb({
       }
       if (sql.includes("_get_patches_checksum")) return { rows: [{ checksum: "abc", patch_count: 3, latest: ["P3"] }] };
       if (sql.includes("from pg_attribute")) return { rows: columnRows };
+      if (sql.includes("select distinct a.map")) return { rows: maps.map((map) => ({ map })) };
+      if (sql.includes("coalesce(ps.online_status::text, 'Offline') as owner_status") && !sql.includes("for update")) {
+        return { rows: lockRow ? [lockRow] : [] };
+      }
+      if (sql.includes("totem on true")) return { rows: [SUMMARY_ROW] };
       return { rows: [] };
     },
     async transaction(fn) {
@@ -185,6 +201,10 @@ function fakeDb({
           calls.txSql.push(sql);
           if (failOn && failOn(sql)) throw failWith;
           if (sql.includes("where kind = 'BaseBackup'")) return { rows: [{ id: 77 }] };
+          if (sql.includes("for update of bb")) return { rows: lockRow ? [lockRow] : [] };
+          if (sql.includes("update dune.actors a set map")) return { rows: [], rowCount: 9 };
+          if (sql.includes("totem on true")) return { rows: [SUMMARY_ROW] };
+          if (sql.includes("as links")) return { rows: [leftAfterDelete] };
           return { rows: [] };
         }
       };
@@ -315,7 +335,7 @@ test("base backup routes resolve to their own actions, and import is admin-only 
   assert.equal(actionForRoute("/api/base-backups/7/export", "GET"), "bases:read");
   assert.equal(actionForRoute("/api/base-backups/import", "POST"), "bases:import-backup");
   // Nothing else under the path resolves, so it fails closed.
-  assert.equal(actionForRoute("/api/base-backups/7", "DELETE"), null);
+  assert.equal(actionForRoute("/api/base-backups/7/items", "DELETE"), null);
   assert.equal(actionForRoute("/api/base-backups/7/export", "POST"), null);
   for (const tier of ["owner", "admin"]) assert.equal(evaluate({ tier }, "bases:import-backup"), true);
   for (const tier of ["moderator", "player", "observer"]) {
@@ -335,4 +355,146 @@ test("the documented base backup statement timeout reaches the console container
   const envExample = readFileSync(resolve(repoRoot, ".env.example"), "utf8");
   assert.match(compose, /^\s+ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS:\s+"\$\{ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS:-120000\}"$/m);
   assert.match(envExample, /^ADMIN_BASE_BACKUP_STATEMENT_TIMEOUT_MS=120000$/m);
+});
+
+test("validateBaseBackupName trims and enforces the game-safe rules", () => {
+  assert.equal(validateBaseBackupName("  North Wall  "), "North Wall");
+  assert.equal(validateBaseBackupName("x".repeat(BASE_BACKUP_NAME_MAX)).length, BASE_BACKUP_NAME_MAX);
+  for (const [value, pattern] of [
+    ["", /cannot be empty/],
+    ["   ", /cannot be empty/],
+    ["x".repeat(BASE_BACKUP_NAME_MAX + 1), /at most 23/],
+    ["##Totem_Placeable", /cannot start with ##/],
+    ["bad\nname", /control characters/]
+  ]) {
+    assert.throws(() => validateBaseBackupName(value), (error) => {
+      assert.equal(error.code, "invalid_name");
+      assert.equal(error.statusCode, 400);
+      assert.match(error.message, pattern);
+      return true;
+    });
+  }
+});
+
+test("updateBaseBackup renames and reassigns in one locked statement", async () => {
+  const db = fakeDb();
+  const result = await updateBaseBackup(db, 3, { ownerPlayerId: 21, name: "New Name" });
+  assert.deepEqual(result.owner, { from: 10, fromName: "Owner One", to: 20 });
+  assert.deepEqual(result.name, { from: "Old Name", to: "New Name" });
+  assert.deepEqual(result.warnings, []);
+  assert.ok(db.calls.txSql.some((sql) => sql.includes("for update of bb")), "the backup row is locked first");
+  assert.ok(db.calls.txSql.some((sql) => sql.includes("update dune.base_backups")));
+});
+
+test("updateBaseBackup warns that an online new owner must relog", async () => {
+  const result = await updateBaseBackup(fakeDb({ online: true }), 3, { ownerPlayerId: 21 });
+  assert.match(result.warning, /new owner is online.*log out and back in/);
+});
+
+test("updateBaseBackup refuses while the current owner is online, and writes nothing", async () => {
+  const db = fakeDb({ lockRow: { player_id: 10, name: "Old Name", owner_name: "Owner One", owner_status: "Online" } });
+  await assert.rejects(updateBaseBackup(db, 3, { name: "New Name" }), (error) => {
+    assert.equal(error.statusCode, 409);
+    assert.equal(error.code, "owner_online");
+    assert.match(error.message, /Owner One is online\. They must log out/);
+    return true;
+  });
+  assert.equal(db.calls.txSql.some((sql) => sql.includes("update dune.base_backups")), false);
+});
+
+test("updateBaseBackup reports a backup that was redeployed meanwhile as 404", async () => {
+  await assert.rejects(updateBaseBackup(fakeDb({ lockRow: null }), 3, { name: "New Name" }), (error) => {
+    assert.equal(error.statusCode, 404);
+    assert.match(error.message, /no longer exists.*redeployed or recycled/);
+    return true;
+  });
+});
+
+test("updateBaseBackup needs a real change", async () => {
+  await assert.rejects(updateBaseBackup(fakeDb(), 3, {}), (error) => error.code === "no_change");
+  await assert.rejects(updateBaseBackup(fakeDb(), 3, { name: "Old Name" }), (error) => {
+    assert.equal(error.code, "no_change");
+    assert.equal(error.statusCode, 400);
+    return true;
+  });
+});
+
+test("base backup editing is admin-only and not carried by a bases write key", () => {
+  assert.equal(actionForRoute("/api/base-backups/7", "PUT"), "bases:edit-backup");
+  assert.equal(actionForRoute("/api/base-backups/import", "PUT"), null);
+  for (const tier of ["owner", "admin"]) assert.equal(evaluate({ tier }, "bases:edit-backup"), true);
+  for (const tier of ["moderator", "player", "observer"]) assert.equal(evaluate({ tier }, "bases:edit-backup"), false);
+  assert.equal(scopeAllowsAction("bases", "write", "bases:edit-backup"), false);
+  assert.equal(scopeAllowsAction("bases", ["bases:edit-backup"], "bases:edit-backup"), true);
+});
+
+test("updateBaseBackup moves a backup to another buildable map, clearing its partition", async () => {
+  const db = fakeDb();
+  const result = await updateBaseBackup(db, 3, { map: "HaggaBasin" });
+  assert.deepEqual(result.map, { from: "DeepDesert", to: "HaggaBasin", actors: 9 });
+  const move = db.calls.txSql.find((sql) => sql.includes("update dune.actors a set map"));
+  assert.ok(move, "every linked actor is moved");
+  assert.match(move, /partition_id = null/);
+  assert.match(move, /base_backup_linked_actors where id = \$1/);
+});
+
+test("updateBaseBackup refuses a map no base can be built on, before any write", async () => {
+  const db = fakeDb();
+  await assert.rejects(updateBaseBackup(db, 3, { map: "Arrakeen" }), (error) => {
+    assert.equal(error.code, "invalid_map");
+    assert.equal(error.statusCode, 400);
+    assert.deepEqual(error.details.maps, ["DeepDesert", "HaggaBasin"]);
+    return true;
+  });
+  assert.equal(db.calls.transaction, 0);
+  // The same map is not a change.
+  await assert.rejects(updateBaseBackup(fakeDb(), 3, { map: "DeepDesert" }), (error) => error.code === "no_change");
+});
+
+test("deleteBaseBackup deletes through the game's own function and reports what went", async () => {
+  const db = fakeDb();
+  const result = await deleteBaseBackup(db, 3);
+  assert.deepEqual(result, {
+    ok: true, backupId: 3, name: "Old Name", ownerName: "Owner One", map: "DeepDesert",
+    counts: { pieces: 24, placeables: 8, items: 13 }
+  });
+  const order = db.calls.txSql.map((sql) => (sql.includes("for update of bb") ? "lock"
+    : sql.includes("base_backup_delete") ? "delete" : sql.includes("as links") ? "verify" : null)).filter(Boolean);
+  assert.deepEqual(order, ["lock", "delete", "verify"]);
+});
+
+test("deleteBaseBackup rolls back if anything of the backup is left behind", async () => {
+  await assert.rejects(deleteBaseBackup(fakeDb({ leftAfterDelete: { backups: 0, links: 2 } }), 3), /was not fully deleted; nothing was changed/);
+});
+
+test("deleteBaseBackup refuses while the owner is online, and for a backup that is gone", async () => {
+  const online = fakeDb({ lockRow: { owner_name: "Owner One", owner_status: "Online" } });
+  await assert.rejects(deleteBaseBackup(online, 3), (error) => {
+    assert.equal(error.statusCode, 409);
+    assert.equal(error.code, "owner_online");
+    assert.match(error.message, /must log out before this backup can be deleted/);
+    return true;
+  });
+  assert.equal(online.calls.txSql.some((sql) => sql.includes("base_backup_delete")), false);
+  await assert.rejects(deleteBaseBackup(fakeDb({ lockRow: null }), 3), (error) => error.statusCode === 404);
+  // The route's fast pre-check, run before the safety backup, says the same
+  // without opening a transaction.
+  const precheck = fakeDb({ lockRow: { owner_name: "Owner One", owner_status: "Online" } });
+  await assert.rejects(checkBaseBackupDeletable(precheck, 3), (error) => error.code === "owner_online");
+  assert.equal(precheck.calls.transaction, 0);
+});
+
+test("deleting needs the game's base_backup_delete function", async () => {
+  await assert.rejects(deleteBaseBackup(fakeDb({ missingFunction: "dune.base_backup_delete(bigint)" }), 3), (error) => {
+    assert.equal(error.unsupported, true);
+    assert.equal(baseBackupHttpError(error).status, 501);
+    return true;
+  });
+});
+
+test("deleting a backup is its own admin-only action", () => {
+  assert.equal(actionForRoute("/api/base-backups/7", "DELETE"), "bases:delete-backup");
+  assert.equal(actionForRoute("/api/base-backups/import", "DELETE"), null);
+  for (const tier of ["owner", "admin"]) assert.equal(evaluate({ tier }, "bases:delete-backup"), true);
+  for (const tier of ["moderator", "player", "observer"]) assert.equal(evaluate({ tier }, "bases:delete-backup"), false);
 });

@@ -1852,13 +1852,27 @@ body.debug .technical-details { display: block; }
 /* Base Backups view (features/bases/BaseBackupsView.tsx) reuses the blueprint import row. */
 .base-backups-view > .result-panel { margin: 0 0 16px; }
 .base-backups-view > .base-backup-target { margin: 12px 0; }
-.base-backup-target .bases-permissions-candidates { margin-top: 8px; }
+.base-backup-player-picker .bases-permissions-candidates { margin-top: 8px; }
 /* Line the receiver search up with the file row above: same field sizing and gap. */
-.base-backup-target .bases-permissions-search-row { gap: 10px; }
-.base-backup-target .bases-permissions-search-row > input { flex: 1 1 360px; max-width: 560px; min-width: min(100%, 260px); width: auto; }
-.base-backup-target .bases-permissions-search-row > button { width: auto; min-height: 40px; }
+.base-backup-player-picker .bases-permissions-search-row { gap: 10px; }
+/* Every field in this view gets the same width, so the rows line up at any
+   width: 560px, or what is left after the widest button group (~320px). */
+.base-backups-view .base-backup-import-row > .blueprint-file-field,
+/* .base-backups-view prefix: .action-row > input:not([type=checkbox]) is the same
+   specificity without it, and comes later. */
+.base-backups-view .base-backup-player-picker .bases-permissions-search-row > input,
+.base-backups-view .base-backup-edit-field { flex: 0 0 auto; width: min(560px, calc(100% - 320px)); min-width: min(100%, 260px); max-width: none; }
+.base-backup-player-picker .bases-permissions-search-row > button { width: auto; min-height: 40px; }
 /* The shared blueprint file control is 40px; inputs and buttons here are 43px. */
 .base-backups-view .blueprint-file-control { min-height: 43px; }
+/* Edit owner/name panel, between the import controls and the table. */
+.base-backups-view > .base-backup-edit { display: grid; gap: 10px; margin: 0 0 12px; padding: 14px; border: 1px solid var(--border-strong); border-radius: 8px; }
+.base-backup-edit-field { display: grid; gap: 5px; color: var(--muted-warm); }
+.base-backup-edit-problem { margin: 0; color: var(--danger-text); }
+.base-backup-edit-map { display: grid; gap: 5px; justify-items: start; color: var(--muted-warm); }
+.base-backup-edit > .action-help-note { margin: 0; }
+.base-backup-edit-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.base-backup-edit-actions > button { width: auto; min-height: 40px; }
 .base-backup-target-chosen { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0; }
 .base-backup-target-chosen > button { width: auto; }
 /* A timeout result must stay readable: cancel .home-task-result's 10 s fade

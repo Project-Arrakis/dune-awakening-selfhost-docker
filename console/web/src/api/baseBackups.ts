@@ -22,6 +22,8 @@ export type BaseBackupList = {
   capabilities?: Record<string, unknown>;
   rows: BaseBackupRow[];
   missing?: string[];
+  // Maps a backup may be moved to (where bases are built on this server).
+  maps?: string[];
 };
 
 export type BaseBackupVersion = {
@@ -59,6 +61,26 @@ export type BaseBackupFailureBody = {
   server?: BaseBackupVersion;
 };
 
+export type BaseBackupUpdateResult = {
+  ok: true;
+  backupId: number;
+  owner: { from: number; fromName: string; to: number } | null;
+  name: { from: string; to: string } | null;
+  map: { from: string; to: string; actors: number } | null;
+  warnings: string[];
+  warning?: string;
+};
+
+export type BaseBackupDeleteResult = {
+  ok: true;
+  backupId: number;
+  name: string;
+  ownerName: string;
+  map: string;
+  counts: { pieces: number; placeables: number; items: number };
+  backupCreated: boolean;
+};
+
 export const baseBackupsApi = {
   list: (playerId = "") =>
     api<BaseBackupList>(`/api/base-backups${playerId ? `?playerId=${encodeURIComponent(playerId)}` : ""}`),
@@ -70,5 +92,19 @@ export const baseBackupsApi = {
     form.append("player_id", playerPawnId);
     if (allowVersionMismatch) form.append("allow_version_mismatch", "1");
     return api<BaseBackupImportResult>("/api/base-backups/import", { method: "POST", body: form });
-  }
+  },
+  // Reassign (player pawn id), rename and/or move to another map. The current
+  // owner must be offline.
+  update: (backupId: number, change: { ownerPlayerId?: string; name?: string; map?: string }) =>
+    api<BaseBackupUpdateResult>(`/api/base-backups/${encodeURIComponent(String(backupId))}`, {
+      method: "PUT",
+      body: JSON.stringify(change)
+    }),
+  // Permanent. The server takes a full database backup first and refuses while
+  // the owner is online; the phrase is the server-side confirmation gate.
+  remove: (backupId: number) =>
+    api<BaseBackupDeleteResult>(`/api/base-backups/${encodeURIComponent(String(backupId))}`, {
+      method: "DELETE",
+      body: JSON.stringify({ confirmation: "DELETE BACKUP" })
+    })
 };

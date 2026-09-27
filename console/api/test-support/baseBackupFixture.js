@@ -354,6 +354,15 @@ begin
   return (select jsonb_agg(jsonb_build_object('id', transfer_id, 'kind', kind, 'data', data) order by transfer_id) from pg_temp.export_data);
 end $$;
 
+-- The game's own definition, verbatim in effect: delete the linked actors
+-- (the foreign keys take their pieces, placeables, storage and items) and the
+-- backup row.
+create function dune.base_backup_delete(in_base_backup_id bigint) returns void language sql as $$
+  delete from dune.actors a where a.id in (
+    select bbla.actor_id from dune.base_backup_linked_actors bbla where bbla.id = in_base_backup_id);
+  delete from dune.base_backups where id = in_base_backup_id;
+$$;
+
 create function dune._character_transfer_get_patches_checksum() returns text language sql as $$
   select md5(coalesce(string_agg(name, ',' order by name), '')) from dune.applied_patches;
 $$;
@@ -421,6 +430,9 @@ insert into dune.base_backup_linked_actors (id, actor_id) values (1, 100), (1, 1
 -- An unrelated claimed actor that must never be exported.
 insert into dune.actors (id, class, map) values (999, 'BP_Other_C', 'HaggaBasin');
 insert into dune.permission_actor (actor_id, actor_name) values (999, 'Unrelated');
+-- A live claim on another map, which makes HaggaBasin a map bases can be built on.
+insert into dune.actors (id, class, map, partition_id) values (998, 'BP_Totem_C', 'HaggaBasin', 7);
+insert into dune.totems (id) values (998);
 
 select setval('dune.actors_id_seq', 5000);
 select setval('dune.inventories_id_seq', 5000);

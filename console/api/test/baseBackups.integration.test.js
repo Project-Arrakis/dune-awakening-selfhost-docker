@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { exportBaseBackup, importBaseBackup, BaseBackupError, BaseBackupTimeoutError } from "../src/baseBackups.js";
+import { deleteBaseBackup, exportBaseBackup, importBaseBackup, updateBaseBackup, BaseBackupError, BaseBackupTimeoutError } from "../src/baseBackups.js";
 import { pgTransactionalDb, withIsolatedDatabase } from "../test-support/pgIntegrationDb.js";
 import {
   BASE_BACKUP_SCHEMA, TRANSFER_HELPER_STUBS, BASE_BACKUP_SEED, SOURCE, TARGET, BIG_INT_TEXT
@@ -281,5 +281,109 @@ test("real PostgreSQL: a file that hangs rows off the receiving player is refuse
     });
     const after = (await pool.query("select (select count(*) from dune.inventories)::int as inv, (select count(*) from dune.base_backups)::int as bb")).rows[0];
     assert.deepEqual(after, before);
+  });
+});
+
+test("real PostgreSQL: a backup can be reassigned and renamed while its owner is offline", async (t) => {
+  await withDatabase(t, async (pool, db) => {
+    const result = await updateBaseBackup(db, SOURCE.backup, { ownerPlayerId: TARGET.pawn, name: "  Moved Base  " });
+    assert.deepEqual(result.owner, { from: SOURCE.controller, fromName: "Owner", to: TARGET.controller });
+    assert.deepEqual(result.name, { from: "Test Base", to: "Moved Base" });
+    const row = (await pool.query("select player_id, base_backup_name, last_edited_by_player_id from dune.base_backups where id = $1", [SOURCE.backup])).rows[0];
+    assert.deepEqual(
+      { player: Number(row.player_id), name: row.base_backup_name, edited: Number(row.last_edited_by_player_id) },
+      { player: TARGET.controller, name: "Moved Base", edited: TARGET.controller });
+    // The base itself is untouched: same linked actors, still backed up.
+    assert.equal((await linkedActors(pool, SOURCE.backup)).length, 3);
+
+    // A rename alone leaves the owner (and last-edited) as they are.
+    await updateBaseBackup(db, SOURCE.backup, { name: "Renamed Again" });
+    const renamed = (await pool.query("select player_id, base_backup_name from dune.base_backups where id = $1", [SOURCE.backup])).rows[0];
+    assert.deepEqual({ player: Number(renamed.player_id), name: renamed.base_backup_name }, { player: TARGET.controller, name: "Renamed Again" });
+  });
+});
+
+test("real PostgreSQL: editing is refused while the current owner is online, and nothing changes", async (t) => {
+  await withDatabase(t, async (pool, db) => {
+    await pool.query("update dune.player_state set online_status = 'Online' where player_controller_id = $1", [SOURCE.controller]);
+    await assert.rejects(updateBaseBackup(db, SOURCE.backup, { ownerPlayerId: TARGET.pawn, name: "Nope" }), (error) => {
+      assert.ok(error instanceof BaseBackupError);
+      assert.equal(error.statusCode, 409);
+      assert.equal(error.code, "owner_online");
+      return true;
+    });
+    const row = (await pool.query("select player_id, base_backup_name from dune.base_backups where id = $1", [SOURCE.backup])).rows[0];
+    assert.deepEqual({ player: Number(row.player_id), name: row.base_backup_name }, { player: SOURCE.controller, name: "Test Base" });
+  });
+});
+
+test("real PostgreSQL: editing a backup that no longer exists is a 404", async (t) => {
+  await withDatabase(t, async (pool, db) => {
+    await pool.query("delete from dune.base_backups where id = $1", [SOURCE.backup]);
+    await assert.rejects(updateBaseBackup(db, SOURCE.backup, { name: "Gone" }), (error) => error.statusCode === 404 && error.code === "not_found");
+  });
+});
+
+test("real PostgreSQL: a backup can be moved to another map where bases are built", async (t) => {
+  await withDatabase(t, async (pool, db) => {
+    const { listBaseBackups } = await import("../src/baseBackups.js");
+    assert.deepEqual((await listBaseBackups(db)).maps, ["DeepDesert", "HaggaBasin"]);
+
+    await assert.rejects(updateBaseBackup(db, SOURCE.backup, { map: "Arrakeen" }), (error) => error.code === "invalid_map");
+
+    const result = await updateBaseBackup(db, SOURCE.backup, { map: "HaggaBasin" });
+    assert.deepEqual(result.map, { from: "DeepDesert", to: "HaggaBasin", actors: 3 });
+    const actors = await pool.query(`
+      select a.map, a.partition_id, a.state from dune.actors a
+      join dune.base_backup_linked_actors l on l.actor_id = a.id where l.id = $1`, [SOURCE.backup]);
+    assert.equal(actors.rows.length, 3);
+    for (const actor of actors.rows) assert.deepEqual(actor, { map: "HaggaBasin", partition_id: null, state: "BaseBackup" });
+    // Only the backup's own actors moved: the live claim keeps its map and partition.
+    const other = (await pool.query("select map, partition_id from dune.actors where id = 998")).rows[0];
+    assert.deepEqual({ map: other.map, partition: Number(other.partition_id) }, { map: "HaggaBasin", partition: 7 });
+    const listed = (await listBaseBackups(db)).rows.find((row) => row.id === SOURCE.backup);
+    assert.equal(listed.map, "HaggaBasin");
+  });
+});
+
+test("real PostgreSQL: deleting a backup removes the base and everything stored in it, nothing else", async (t) => {
+  await withDatabase(t, async (pool, db) => {
+    const result = await deleteBaseBackup(db, SOURCE.backup);
+    assert.deepEqual(result.counts, { pieces: 3, placeables: 2, items: 2 });
+    assert.equal(result.name, "Test Base");
+    const left = (await pool.query(`
+      select (select count(*) from dune.base_backups where id = $1)::int as backups,
+             (select count(*) from dune.actors where id = any($2::bigint[]))::int as actors,
+             (select count(*) from dune.building_instances where building_id = $3)::int as pieces,
+             (select count(*) from dune.items where id in (800, 801))::int as items,
+             (select count(*) from dune.inventories where id = 900)::int as inventories,
+             (select count(*) from dune.sinkcharts)::int as sinkcharts,
+             (select count(*) from dune.building_blueprints where id = 300)::int as blueprints,
+             (select count(*) from dune.landclaim_segments where totem_id = $4)::int as segments`,
+      [SOURCE.backup, [SOURCE.totem, SOURCE.building, SOURCE.chest], SOURCE.building, SOURCE.totem])).rows[0];
+    assert.deepEqual(left, { backups: 0, actors: 0, pieces: 0, items: 0, inventories: 0, sinkcharts: 0, blueprints: 0, segments: 0 });
+    // Players, the live claim and unrelated actors are untouched.
+    const kept = (await pool.query("select count(*)::int as n from dune.actors where id in (10, 11, 20, 21, 998, 999)")).rows[0].n;
+    assert.equal(kept, 6);
+  });
+});
+
+test("real PostgreSQL: a backup is not deleted while its owner is online", async (t) => {
+  await withDatabase(t, async (pool, db) => {
+    await pool.query("update dune.player_state set online_status = 'Online' where player_controller_id = $1", [SOURCE.controller]);
+    await assert.rejects(deleteBaseBackup(db, SOURCE.backup), (error) => error.code === "owner_online");
+    assert.equal((await linkedActors(pool, SOURCE.backup)).length, 3);
+  });
+});
+
+test("real PostgreSQL: deleting the original leaves an imported copy intact", async (t) => {
+  await withDatabase(t, async (pool, db) => {
+    const copy = await importBaseBackup(db, TARGET.pawn, await exportText(db), { serverBuild: "2036754" });
+    await deleteBaseBackup(db, SOURCE.backup);
+    assert.equal((await linkedActors(pool, copy.backupId)).length, 3);
+    const items = (await pool.query(`
+      select count(*)::int as n from dune.items it join dune.inventories inv on inv.id = it.inventory_id
+      join dune.base_backup_linked_actors l on l.actor_id = inv.actor_id where l.id = $1`, [copy.backupId])).rows[0].n;
+    assert.equal(items, 2);
   });
 });

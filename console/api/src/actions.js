@@ -503,6 +503,13 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // export. Anchored so nothing else under /api/base-backups/ resolves: that
   // path has no prefix rule, so any other route there fails closed.
   { method: "GET", pattern: /^\/api\/base-backups\/[^/]+\/export$/, action: "bases:read" },
+  // PUT /api/base-backups/{id} -- reassign and/or rename a picked-up base.
+  // Handing a player a whole base (with its stored items) is the same consent
+  // case as import, so it is its own action rather than bases:mutate.
+  { method: "PUT", pattern: /^\/api\/base-backups\/\d+$/, action: "bases:edit-backup" },
+  // DELETE /api/base-backups/{id} -- permanently deletes a picked-up base and
+  // its stored items. Its own action, like bases:delete for a live base.
+  { method: "DELETE", pattern: /^\/api\/base-backups\/\d+$/, action: "bases:delete-backup" },
   // Installing a public community Blueprint writes a Solido item and its
   // Blueprint rows for the selected player. Keep it under the existing
   // blueprint import permission, never the read-only /api/blueprints prefix.

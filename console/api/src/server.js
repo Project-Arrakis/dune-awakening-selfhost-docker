@@ -61,7 +61,7 @@ import { liveMapPoi } from "./services/liveMapPoi.js";
 import { deliverMapChatToRecipients } from "./services/mapChatDelivery.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
-import { BaseBackupError, baseBackupHttpError, exportBaseBackup, importBaseBackup, listBaseBackups } from "./baseBackups.js";
+import { BaseBackupError, baseBackupHttpError, checkBaseBackupDeletable, deleteBaseBackup, exportBaseBackup, importBaseBackup, listBaseBackups, updateBaseBackup } from "./baseBackups.js";
 import { readSteamBuildId } from "./services/steamBuild.js";
 import { getCommunityBlueprint, getCommunityBlueprintPreview, listCommunityBlueprints } from "./services/blueprintCatalog.js";
 import { createZipArchive } from "./services/zipArchive.js";
@@ -1208,6 +1208,8 @@ async function handleApi(req, res) {
   if (path === "/api/base-backups" && req.method === "GET") return baseBackupListRoute(res, url);
   if (path.match(/^\/api\/base-backups\/[^/]+\/export$/) && req.method === "GET") return baseBackupExportRoute(req, res, path);
   if (path === "/api/base-backups/import" && req.method === "POST") return baseBackupImportRoute(req, res);
+  if (path.match(/^\/api\/base-backups\/[^/]+$/) && req.method === "PUT") return baseBackupUpdateRoute(req, res, path);
+  if (path.match(/^\/api\/base-backups\/[^/]+$/) && req.method === "DELETE") return baseBackupDeleteRoute(req, res, path);
   if (path === "/api/care-package/capabilities") return json(res, 200, carePackageCapabilities());
   if (path === "/api/care-package/config" && req.method === "POST") return carePackageConfigRoute(req, res);
   if (path === "/api/care-package/config") return json(res, 200, carePackageConfig(config));
@@ -5558,6 +5560,68 @@ async function baseBackupImportRoute(req, res) {
         error: redact(error?.message || "").slice(0, 1000)
       });
     }
+    return baseBackupErrorResponse(res, error);
+  }
+}
+
+// Reassign and/or rename a picked-up base. Not directDbMutation: that wrapper
+// turns every failure into a 400, and the UI needs 404 (redeployed meanwhile)
+// and 409 (owner online) to say what happened.
+async function baseBackupUpdateRoute(req, res, path) {
+  const backupId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(backupId) || backupId < 1) return json(res, 400, { ok: false, code: "invalid", error: "Invalid base backup ID" });
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "base-backups.edit")) return;
+  const change = { ownerPlayerId: body.ownerPlayerId, name: body.name, map: body.map };
+  try {
+    const result = await updateBaseBackup(db, backupId, change);
+    audit(config, req, "base-backups.edit", { backupId, result });
+    return json(res, 200, result);
+  } catch (error) {
+    if (!(error instanceof BaseBackupError && ["invalid_name", "invalid_map", "no_change"].includes(error.code))) {
+      audit(config, req, "base-backups.edit", {
+        backupId,
+        requested: {
+          ownerPlayerId: change.ownerPlayerId ?? null,
+          name: change.name == null ? null : String(change.name).slice(0, 200),
+          map: change.map == null ? null : String(change.map).slice(0, 64)
+        },
+        result: error?.code === "timeout" ? "timeout" : "failed",
+        code: error?.code || null,
+        error: redact(error?.message || "").slice(0, 1000)
+      });
+    }
+    return baseBackupErrorResponse(res, error);
+  }
+}
+
+// Permanently delete a picked-up base and everything stored in it. Same bar as
+// deleting a live base: a confirmation phrase, and a mandatory full-database
+// safety backup before any delete SQL runs -- if the backup fails, nothing is
+// deleted.
+async function baseBackupDeleteRoute(req, res, path) {
+  const backupId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(backupId) || backupId < 1) return json(res, 400, { ok: false, code: "invalid", error: "Invalid base backup ID" });
+  const body = await readJson(req);
+  if (body.confirmation !== "DELETE BACKUP") {
+    return json(res, 400, { ok: false, code: "confirmation_required", error: "Confirmation phrase required: DELETE BACKUP" });
+  }
+  if (!applyMutationRateLimit(req, res, "base-backups.delete")) return;
+  if (config.mockMode) return json(res, 200, { ok: true, mock: true, backupId });
+  try {
+    // Fail fast (owner online, already gone) before the slow safety backup.
+    await checkBaseBackupDeletable(db, backupId);
+    await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-backup-delete" } });
+    const result = await deleteBaseBackup(db, backupId);
+    audit(config, req, "base-backups.delete", { backupId, backupCreated: true, result });
+    return json(res, 200, { ...result, backupCreated: true });
+  } catch (error) {
+    audit(config, req, "base-backups.delete", {
+      backupId,
+      result: error?.code === "timeout" ? "timeout" : "failed",
+      code: error?.code || null,
+      error: redact(error?.message || "").slice(0, 1000)
+    });
     return baseBackupErrorResponse(res, error);
   }
 }

@@ -1,8 +1,9 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Download, FileJson, FolderOpen, Upload } from "lucide-react";
+import { AlertTriangle, Download, FileJson, FolderOpen, Pencil, Trash2, Upload } from "lucide-react";
 import { ApiError } from "../../api/client";
 import { baseBackupsApi, type BaseBackupFailureBody, type BaseBackupRow, type BaseBackupVersion } from "../../api/baseBackups";
 import { playersApi } from "../../api/players";
+import { SegmentedControl } from "../../components/common/SegmentedControl";
 import { DataTable, useSortableRows } from "../../components/common/DataTable";
 import { TechnicalDetails } from "../../components/common/DisplayPrimitives";
 import { formatUiSentence } from "../../lib/display";
@@ -61,11 +62,13 @@ function mapLabel(map: string) {
   return map ? map.replace(/([a-z])([A-Z])/g, "$1 $2") : "—";
 }
 
-function timeoutResult(operation: "export" | "import", error: unknown): ViewResult {
+const TIMEOUT_TITLES = { export: "Export Timed Out", import: "Import Timed Out", edit: "Update Timed Out", delete: "Delete Timed Out" };
+
+function timeoutResult(operation: keyof typeof TIMEOUT_TITLES, error: unknown): ViewResult {
   const body = failureBody(error);
   return {
     status: "failed",
-    title: operation === "import" ? "Import Timed Out" : "Export Timed Out",
+    title: TIMEOUT_TITLES[operation],
     message: body.error || errorText(error),
     details: [
       `Step: ${body.step || "unknown"}`,
@@ -86,6 +89,74 @@ function versionDetails(file?: BaseBackupVersion, server?: BaseBackupVersion) {
   ];
 }
 
+// Mirrors validateBaseBackupName in console/api/src/baseBackups.js.
+export const BACKUP_NAME_MAX = 23;
+function backupNameProblem(name: string) {
+  if (!name) return "Backup name cannot be empty.";
+  if (name.length > BACKUP_NAME_MAX) return `Backup name can be at most ${BACKUP_NAME_MAX} characters.`;
+  if (name.startsWith("##")) return "Backup name cannot start with ##.";
+  if (/[\u0000-\u001f\u007f]/.test(name)) return "Backup name cannot contain control characters.";
+  return "";
+}
+
+// Explicit Search/Clear player search (never search-as-you-type: it queries
+// the server), shared by the import receiver and the edit owner.
+function PlayerPicker({ label, chooseLabel, disabled, onChoose, onFailure }: {
+  label: string;
+  chooseLabel: (name: string) => string;
+  disabled: boolean;
+  onChoose: (player: ImportTarget) => void;
+  onFailure: (message: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [searched, setSearched] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [candidates, setCandidates] = useState<ImportTarget[]>([]);
+
+  async function submit() {
+    setSearching(true);
+    try {
+      const response = await playersApi.list({ q: query, pageSize: 25 });
+      setCandidates((response.rows || []).map((row) => {
+        const pawnId = String(row.actor_id ?? row.player_pawn_id ?? "");
+        return {
+          pawnId,
+          name: String(row.character_name || `Player ${pawnId}`),
+          online: String(row.online_status || "").toLowerCase() === "online"
+        };
+      }).filter((candidate) => candidate.pawnId));
+      setSearched(true);
+    } catch (error) {
+      onFailure(errorText(error));
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function clear() {
+    setQuery("");
+    setCandidates([]);
+    setSearched(false);
+  }
+
+  return <div className="base-backup-player-picker">
+    <div className="action-row bases-permissions-search-row">
+      <input value={query} placeholder={label} aria-label={label} disabled={disabled}
+        onChange={(event) => setQuery(event.target.value)}
+        onKeyDown={(event) => { if (event.key === "Enter") void submit(); }} />
+      <button disabled={searching || disabled} onClick={() => void submit()}>Search</button>
+      <button disabled={!query && !searched} onClick={clear}>Clear</button>
+    </div>
+    {searched && !candidates.length && <p className="muted">No players matched that search.</p>}
+    {candidates.length > 0 && <ul className="bases-permissions-candidates">
+      {candidates.map((candidate) => <li key={candidate.pawnId}>
+        <span>{candidate.name}{candidate.online ? " (online)" : ""}</span>
+        <button type="button" disabled={disabled} onClick={() => { onChoose(candidate); clear(); }} aria-label={chooseLabel(candidate.name)}>Choose</button>
+      </li>)}
+    </ul>}
+  </div>;
+}
+
 async function saveDownload(response: Response, fallbackName: string) {
   const disposition = response.headers.get("content-disposition") || "";
   const filename = disposition.match(/filename="([^"]+)"/)?.[1] || fallbackName;
@@ -103,6 +174,7 @@ export function BaseBackupsView({ onError, confirmAction, playerId = "", playerN
   const [rows, setRows] = useState<BaseBackupRow[]>([]);
   const [supported, setSupported] = useState(true);
   const [missing, setMissing] = useState<string[]>([]);
+  const [maps, setMaps] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [exportingId, setExportingId] = useState<number | null>(null);
   const [importing, setImporting] = useState(false);
@@ -111,10 +183,13 @@ export function BaseBackupsView({ onError, confirmAction, playerId = "", playerN
   const [fileInputKey, setFileInputKey] = useState(0);
   // Server-wide view only: the receiving player is picked by search.
   const [target, setTarget] = useState<ImportTarget | null>(null);
-  const [query, setQuery] = useState("");
-  const [searched, setSearched] = useState(false);
-  const [searching, setSearching] = useState(false);
-  const [candidates, setCandidates] = useState<ImportTarget[]>([]);
+  // Editing one backup's owner and/or name.
+  const [editing, setEditing] = useState<BaseBackupRow | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editOwner, setEditOwner] = useState<ImportTarget | null>(null);
+  const [editMap, setEditMap] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   useEffect(() => { void load(); }, [playerId]);
 
@@ -135,6 +210,7 @@ export function BaseBackupsView({ onError, confirmAction, playerId = "", playerN
       const response = await baseBackupsApi.list(playerId);
       setSupported(response.supported !== false);
       setMissing(response.missing || []);
+      setMaps(response.maps || []);
       setRows(response.rows || []);
     } catch (error) {
       showResult({ status: "failed", title: "Base Backups Could Not Be Loaded", message: errorText(error) });
@@ -218,39 +294,137 @@ export function BaseBackupsView({ onError, confirmAction, playerId = "", playerN
     }
   }
 
-  // Explicit submit, never search-as-you-type: this queries the server.
-  async function submitSearch() {
-    setSearching(true);
+  function searchFailed(message: string) {
+    showResult({ status: "failed", title: "Player Search Failed", message });
+  }
+
+  function startEdit(row: BaseBackupRow) {
+    setEditing(row);
+    // The game's "##..." placeholder is not a name worth prefilling.
+    setEditName(row.rawName.startsWith("##") ? "" : row.rawName);
+    setEditOwner(null);
+    setEditMap(row.map);
+  }
+
+  function cancelEdit() {
+    setEditing(null);
+    setEditOwner(null);
+  }
+
+  const trimmedEditName = editName.trim();
+  const unnamedBackup = Boolean(editing?.rawName.startsWith("##"));
+  // An unnamed backup may keep its placeholder; a named one cannot be blanked.
+  const nameProblem = editing && !(unnamedBackup && !trimmedEditName) ? backupNameProblem(trimmedEditName) : "";
+  const nameChanged = Boolean(editing) && trimmedEditName !== "" && trimmedEditName !== editing?.rawName;
+  const ownerChanged = Boolean(editing && editOwner && editOwner.pawnId !== String(editing.ownerPawnId ?? ""));
+  const mapChanged = Boolean(editing) && editMap !== "" && editMap !== editing?.map;
+  const canSave = Boolean(editing) && !nameProblem && (nameChanged || ownerChanged || mapChanged) && !saving;
+  // The backup's own map is always offered, even if no live claim is on it now.
+  const mapOptions = [...new Set([...(editing?.map ? [editing.map] : []), ...maps])]
+    .map((map) => ({ value: map, label: mapLabel(map) }));
+
+  async function saveEdit() {
+    if (!editing || !canSave) return;
+    const changes = [
+      ownerChanged && editOwner ? `give it to ${editOwner.name}` : "",
+      nameChanged ? `rename it to "${trimmedEditName}"` : "",
+      mapChanged ? `move it to ${mapLabel(editMap)}` : ""
+    ].filter(Boolean).join(" and ");
+    const warnings = [
+      mapChanged ? `After the move it can only be redeployed on ${mapLabel(editMap)}, not on ${mapLabel(editing.map)}.` : "",
+      ownerChanged && editOwner?.online
+        ? `${editOwner.name} is online and must log out and back in before the backup appears in their base backup tool.`
+        : ""
+    ].filter(Boolean);
+    const confirmed = await confirmAction(`Change ${editing.name}: ${changes}?`, {
+      title: "Edit Base Backup",
+      confirmLabel: "Save",
+      warning: warnings.length ? warnings.join(" ") : undefined
+    });
+    if (!confirmed) return;
+    setSaving(true);
     try {
-      const response = await playersApi.list({ q: query, pageSize: 25 });
-      setCandidates((response.rows || []).map((row) => {
-        const pawnId = String(row.actor_id ?? row.player_pawn_id ?? "");
-        return {
-          pawnId,
-          name: String(row.character_name || `Player ${pawnId}`),
-          online: String(row.online_status || "").toLowerCase() === "online"
-        };
-      }).filter((candidate) => candidate.pawnId));
-      setSearched(true);
+      const response = await baseBackupsApi.update(editing.id, {
+        ...(ownerChanged && editOwner ? { ownerPlayerId: editOwner.pawnId } : {}),
+        ...(nameChanged ? { name: trimmedEditName } : {}),
+        ...(mapChanged ? { map: editMap } : {})
+      });
+      const parts = [
+        response.owner ? `Owner changed from ${response.owner.fromName || editing.ownerName || "the previous owner"} to ${editOwner?.name || "the new owner"}.` : "",
+        response.name ? `Renamed from "${response.name.from || editing.name}" to "${response.name.to}".` : "",
+        response.map ? `Moved from ${mapLabel(response.map.from)} to ${mapLabel(response.map.to)}.` : ""
+      ].filter(Boolean);
+      cancelEdit();
+      showResult({
+        status: "succeeded",
+        title: "Base Backup Updated",
+        message: parts.join(" "),
+        warnings: response.warnings?.length ? response.warnings : undefined,
+        persistent: Boolean(response.warnings?.length)
+      });
+      await load();
     } catch (error) {
-      showResult({ status: "failed", title: "Player Search Failed", message: errorText(error) });
+      const body = failureBody(error);
+      if (body.code === "owner_online") {
+        showResult({ status: "failed", title: "Owner Is Online", message: errorText(error), persistent: true });
+      } else if (error instanceof ApiError && error.status === 404) {
+        cancelEdit();
+        showResult({ status: "failed", title: "Backup No Longer Exists", message: errorText(error) });
+        await load();
+      } else if (body.code === "timeout") {
+        showResult(timeoutResult("edit", error));
+      } else {
+        showResult({ status: "failed", title: "Base Backup Update Failed", message: errorText(error) });
+      }
     } finally {
-      setSearching(false);
+      setSaving(false);
     }
   }
 
-  function clearSearch() {
-    setQuery("");
-    setCandidates([]);
-    setSearched(false);
+  async function handleDelete(row: BaseBackupRow) {
+    const confirmed = await confirmAction(
+      `Delete the base backup "${row.name}"${row.ownerName ? ` of ${row.ownerName}` : ""}? This permanently deletes the base and everything stored in it; it can no longer be redeployed.`,
+      {
+        title: "Delete Base Backup",
+        confirmLabel: "Delete",
+        danger: true,
+        details: [
+          { label: "Building Pieces", value: row.pieces.toLocaleString(), tone: "danger" },
+          { label: "Placeables", value: row.placeables.toLocaleString(), tone: "danger" },
+          { label: "Stored Items", value: row.items.toLocaleString(), tone: "danger" },
+          { label: "Map", value: mapLabel(row.map) }
+        ],
+        warning: "A full database backup is taken automatically before anything is deleted. Export this backup first if you might want to import it again. The owner must be offline."
+      });
+    if (!confirmed) return;
+    setDeletingId(row.id);
+    try {
+      const response = await baseBackupsApi.remove(row.id);
+      if (editing?.id === row.id) cancelEdit();
+      showResult({
+        status: "succeeded",
+        title: "Base Backup Deleted",
+        message: `"${response.name || row.name}" was permanently deleted: ${response.counts.pieces} pieces, ${response.counts.placeables} placeables and ${response.counts.items} stored items. A full database backup was taken first.`
+      });
+      await load();
+    } catch (error) {
+      const body = failureBody(error);
+      if (body.code === "owner_online") {
+        showResult({ status: "failed", title: "Owner Is Online", message: errorText(error), persistent: true });
+      } else if (error instanceof ApiError && error.status === 404) {
+        showResult({ status: "failed", title: "Backup No Longer Exists", message: errorText(error) });
+        await load();
+      } else if (body.code === "timeout") {
+        showResult(timeoutResult("delete", error));
+      } else {
+        showResult({ status: "failed", title: "Base Backup Delete Failed", message: errorText(error), persistent: true });
+      }
+    } finally {
+      setDeletingId(null);
+    }
   }
 
-  function chooseTarget(candidate: ImportTarget) {
-    setTarget(candidate);
-    clearSearch();
-  }
-
-  const busy = importing || exportingId !== null;
+  const busy = importing || saving || exportingId !== null || deletingId !== null;
   const sort = useSortableRows(rows as unknown as Record<string, unknown>[]);
   const columns = embedded
     ? ["name", "map", "pieces", "placeables", "items"]
@@ -311,22 +485,35 @@ export function BaseBackupsView({ onError, confirmAction, playerId = "", playerN
         {target ? <p className="base-backup-target-chosen">
           <span>Importing to <strong>{target.name}</strong>{target.online ? " (online)" : ""}</span>
           <button type="button" disabled={busy} onClick={() => setTarget(null)}>Change</button>
-        </p> : <>
-          <div className="action-row bases-permissions-search-row">
-            <input value={query} placeholder="Search for the receiving player" aria-label="Search for the receiving player" disabled={busy}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => { if (event.key === "Enter") void submitSearch(); }} />
-            <button disabled={searching || busy} onClick={() => void submitSearch()}>Search</button>
-            <button disabled={!query && !searched} onClick={clearSearch}>Clear</button>
-          </div>
-          {searched && !candidates.length && <p className="muted">No players matched that search.</p>}
-          {candidates.length > 0 && <ul className="bases-permissions-candidates">
-            {candidates.map((candidate) => <li key={candidate.pawnId}>
-              <span>{candidate.name}{candidate.online ? " (online)" : ""}</span>
-              <button type="button" onClick={() => chooseTarget(candidate)} aria-label={`Import to ${candidate.name}`}>Choose</button>
-            </li>)}
-          </ul>}
-        </>}
+        </p> : <PlayerPicker label="Search for the receiving player" chooseLabel={(name) => `Import to ${name}`}
+          disabled={busy} onChoose={setTarget} onFailure={searchFailed} />}
+      </div>}
+
+      {editing && <div className="base-backup-edit" role="group" aria-label={`Edit ${editing.name}`}>
+        <strong>Edit {editing.name}</strong>
+        <label className="base-backup-edit-field">
+          <span>Backup name</span>
+          <input value={editName} maxLength={BACKUP_NAME_MAX} disabled={saving} aria-label="Backup name"
+            placeholder={unnamedBackup ? `Unnamed (${editing.name})` : ""}
+            onChange={(event) => setEditName(event.target.value)} />
+        </label>
+        {nameProblem && <p className="base-backup-edit-problem">{nameProblem}</p>}
+        <p className="base-backup-target-chosen">
+          <span>Owner: <strong>{editOwner ? editOwner.name : editing.ownerName || "Unknown"}</strong>{editOwner ? ` (was ${editing.ownerName || "unknown"})` : ""}</span>
+          {editOwner && <button type="button" disabled={saving} onClick={() => setEditOwner(null)}>Keep current owner</button>}
+        </p>
+        <PlayerPicker label="Search for the new owner" chooseLabel={(name) => `Make ${name} the owner`}
+          disabled={saving} onChoose={setEditOwner} onFailure={searchFailed} />
+        {mapOptions.length > 0 && <div className="base-backup-edit-map">
+          <span>Map</span>
+          <SegmentedControl name={`base-backup-map-${editing.id}`} ariaLabel="Map" value={editMap}
+            options={mapOptions.map((option) => ({ ...option, disabled: saving }))} onChange={setEditMap} />
+        </div>}
+        <p className="action-help-note">The current owner must be offline to change a backup. The game only lets a backup be redeployed on the map it was saved on, so moving it to another map changes where it can be placed.</p>
+        <div className="base-backup-edit-actions">
+          <button disabled={!canSave} onClick={() => void saveEdit()}>{saving ? "Saving..." : "Save"}</button>
+          <button type="button" disabled={saving} onClick={cancelEdit}>Cancel</button>
+        </div>
       </div>}
 
       <p className="action-help-note">
@@ -351,7 +538,9 @@ export function BaseBackupsView({ onError, confirmAction, playerId = "", playerN
         action={(row) => {
           const backup = row as unknown as BaseBackupRow;
           return <span className="icon-toggle-group">
+            <button className="icon-toggle-button" title="Edit owner or name" aria-label={`Edit ${backup.name}`} disabled={busy} onClick={(event) => { event.stopPropagation(); startEdit(backup); }}><Pencil size={16} /></button>
             <button className="icon-toggle-button success" title="Export base backup" aria-label={`Export ${backup.name}`} disabled={busy} onClick={(event) => { event.stopPropagation(); void handleExport(backup); }}><Download size={16} /></button>
+            <button className="icon-toggle-button danger" title="Delete base backup" aria-label={`Delete ${backup.name}`} disabled={busy} onClick={(event) => { event.stopPropagation(); void handleDelete(backup); }}><Trash2 size={16} /></button>
           </span>;
         }}
         sortColumn={sort.sortColumn}
