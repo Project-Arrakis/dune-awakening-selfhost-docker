@@ -158,6 +158,59 @@ actor-signed and still flows through the same `audit()` call every other
 write action uses — fully visible in the same audit trail, distinguishable
 from a human action only by `actorId` being the fixed system identity.
 
+### 4.3 Admin-assisted linking (for players who decline self-serve verification)
+
+Added after further discussion with the operator (2026-09-27): some players
+won't want to run `/dune player link` + `/dune data verify` (or can't — a
+character with no Steam ID that's rarely online would need to catch the
+5-minute whisper window). Rather than let them go permanently unlinked and
+permanently constrained, add a second, deliberately separate path: a
+designated channel where a player posts their character name, and a
+moderator manually vouches for the link.
+
+**Kept as two distinct commands, not merged into one.** `/dune player
+link` (self-serve, cryptographically proven via whisper/Steam) and a new
+`/dune player admin-link` (moderator-vouched, no independent proof) stay
+separate rather than being combined into a single "register" command that
+behaves differently depending on who invokes it. The two paths have
+genuinely different trust levels, and collapsing them into one command
+would blur that distinction in both the command surface and the audit
+trail. A moderator or player looking at what happened later should be able
+to tell at a glance which kind of link any given character has.
+
+**New write action:** `player.admin-link`, params `{ targetDiscordUserId,
+characterName }`. Runs the exact same uniqueness/conflict checks
+`linkPlayerProvider` already enforces (reject a different character if the
+target Discord user is already linked elsewhere; idempotent re-link to the
+same character succeeds) and writes directly via the existing
+`discordPlayerLink` path — it simply skips the whisper/Steam verification
+step. This is not a new linking mechanism, just a second entry point into
+the one that already exists.
+
+**Tier:** `WRITE_ACTION_MIN_TIER["player.admin-link"] = "moderator"` —
+matching the operator's own "admin/mod" framing, the same bar as
+`player.warn`.
+
+**Trust tradeoff, stated explicitly:** this path has no independent proof
+of ownership at all — the moderator's own judgment call *is* the entire
+security boundary, exactly as it already is for `player.warn`/`kick`/`ban`
+today (no existing action in this bridge has independent proof either;
+they all trust the acting moderator's judgment). What makes this
+worth flagging specifically is that a bad admin-link doesn't just misjudge
+a punishment, it can hand full playing capacity to someone who isn't
+actually the character they claimed — worth a line in the moderator-facing
+documentation for this feature, not a technical control.
+
+**Audit:** the same `audit()` call every write action already gets, with
+`actorId` recording which moderator performed the link — this is the paper
+trail if a bad admin-link is ever disputed later.
+
+**Channel process:** pure manual for v1 — a designated channel, players
+post their character name, a moderator reads it and runs the command by
+hand. No bot listener, no auto-suggestion, no other automation. This can
+be revisited as a fast-follow if it turns out to create real moderator
+toil, but is out of scope for a first version.
+
 ## 5. Edge cases
 
 - **Character exists but has no `dune.inventories` row yet** (e.g. brand
