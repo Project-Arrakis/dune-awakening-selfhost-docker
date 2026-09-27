@@ -12,8 +12,6 @@ vi.mock("../../api/client", () => ({
 
 const mockApi = vi.mocked(api);
 const mockPost = vi.mocked(post);
-const TASK_KEY = "arrakis.discordAdapterEnableTask";
-const POLL_DEADLINE_KEY = "arrakis.discordAdapterEnableTaskDeadline";
 const CONFIRMATION_POLL_KEY = "arrakis.discordAutoInviteConfirmationPoll";
 
 // Final integration review (CRITICAL): seeds the owned-guilds list the way
@@ -137,16 +135,15 @@ describe("DiscordBotSection", () => {
       tokenConfigured: true,
       deploymentChoice: null
     } as never);
-    mockPost.mockResolvedValue({ task: { id: "task-1", state: "running" } } as never);
+    mockPost.mockResolvedValue({ ok: true } as never);
     render(<DiscordBotSection />);
     await screen.findByText(/Enabled/i);
     expect(screen.getByText(/Which are you using/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Hosted bot$/i }));
     fireEvent.click(screen.getByRole("button", { name: /Save Role IDs/i }));
-    await screen.findByText(/restart to apply this change/i);
+    await screen.findByText(/This takes effect immediately/i);
     fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
       "/api/settings/discord-bot/role-ids",
       expect.objectContaining({ deploymentChoice: "hosted" })
@@ -241,115 +238,6 @@ describe("DiscordBotSection", () => {
     expect(screen.getByRole("button", { name: /Connect to hosted bot/i })).toBeInTheDocument();
   });
 
-  it("recovers a persisted in-flight enable across a reload: shows the enabling/restarting UI immediately (not the live-fetched Disabled state) and polls stack-progress -- reproduces the mount-time race fixed in this component (audit finding #9)", async () => {
-    const persistedTask = {
-      id: "task-recover-1",
-      type: "discordAdapterApply",
-      operation: "enable",
-      status: "running",
-      currentStep: "Restarting console",
-      progressMessage: "",
-      logLines: [],
-      warnings: [],
-      startedAt: new Date().toISOString(),
-      finishedAt: null,
-      errorMessage: null
-    };
-    window.localStorage.setItem(TASK_KEY, JSON.stringify(persistedTask));
-
-    mockApi.mockImplementation((path: string) => {
-      if (path.startsWith("/api/updates/stack-progress")) {
-        return Promise.resolve({ runId: persistedTask.id, state: "running", stage: "Restarting", percent: 50, message: "" } as never);
-      }
-      // If this were ever called on mount, the live GET reports Disabled --
-      // proving the enabling UI asserted below came from the persisted task
-      // being seeded synchronously, not from this call racing it.
-      return Promise.resolve({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
-    });
-
-    vi.useFakeTimers();
-    render(<DiscordBotSection />);
-
-    // Must be showing the enabling/restarting UI on the very first render --
-    // no Disabled hosted/self-hosted picker, even before any promise settles.
-    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
-    expect(screen.queryByText(/Which are you using/i)).toBeNull();
-
-    // Confirm polling actually started against the persisted task's runId,
-    // and -- the actual symptom of the race this test guards against -- that
-    // the enabling UI is STILL showing afterward, not silently reverted to
-    // the Disabled hosted/self-hosted picker by a stray initial-GET response
-    // racing the persisted-task recovery.
-    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    expect(mockApi).toHaveBeenCalledWith(expect.stringContaining("/api/updates/stack-progress?runId=task-recover-1"), expect.anything());
-    expect(screen.queryByText(/Which are you using/i)).toBeNull();
-    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
-  });
-
-  it("shows a Retry action when the applied recreate reports a failed health check, not a dead end", async () => {
-    mockApi.mockImplementation((path: string) => {
-      if (path === "/api/settings/discord-bot") {
-        return Promise.resolve({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
-      }
-      return Promise.resolve({ runId: "test-run", state: "succeeded", stage: "complete", percent: 100, message: "", discordHealthOk: false } as never);
-    });
-    mockPost.mockResolvedValue({ task: { id: "test-run", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null } } as never);
-
-    render(<DiscordBotSection />);
-    await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
-    await screen.findByText(/Configure roles/i);
-    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
-    await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
-    fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
-    await screen.findByText(/will restart to apply this change/i);
-    fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
-
-    await waitFor(() => expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument(), { timeout: 5000 });
-  });
-
-  // Finding 4 (final review): the one-time revealed token must not be lost
-  // when Enable succeeds but the post-recreate health check fails. Before
-  // this fix, the token block only rendered inside phase === "enabled" --
-  // a transition to phase === "failed" left it permanently unreachable
-  // (Regenerate Token is owner-only, the token is never persisted, and a
-  // reload discards it), so a non-owner admin could be left with the
-  // adapter enabled and literally no one holding the token.
-  it("keeps the one-time revealed token visible and copyable after Enable succeeds but the post-recreate health check fails (finding 4)", async () => {
-    mockApi.mockImplementation((path: string) => {
-      if (path === "/api/settings/discord-bot") {
-        return Promise.resolve({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
-      }
-      return Promise.resolve({ runId: "test-run", state: "succeeded", stage: "complete", percent: 100, message: "", discordHealthOk: false } as never);
-    });
-    mockPost.mockResolvedValue({
-      task: { id: "test-run", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null },
-      token: "freshly-minted-token-shown-once"
-    } as never);
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, { clipboard: { writeText } });
-
-    render(<DiscordBotSection />);
-    await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
-    await screen.findByText(/Configure roles/i);
-    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
-    await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
-    fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
-    await screen.findByText(/will restart to apply this change/i);
-    fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
-
-    await waitFor(() => expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument(), { timeout: 5000 });
-
-    // The token must still be visible and copyable in the resulting
-    // "failed"-phase render, not silently dropped.
-    expect(screen.getByDisplayValue("freshly-minted-token-shown-once")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /^Copy$/i }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("freshly-minted-token-shown-once"));
-  });
-
   it("persists the hosted/self-hosted choice to localStorage so the hosted-bot connect affordance survives a reload (finding 1)", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     const { unmount } = render(<DiscordBotSection />);
@@ -371,173 +259,6 @@ describe("DiscordBotSection", () => {
     expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
   });
 
-  it("never lets the initial-mount-load failure handling interfere with a persisted in-flight task's recovery, even when the status poll itself fails transiently (finding 2 non-interference)", async () => {
-    const persistedTask = {
-      id: "task-recover-2",
-      type: "discordAdapterApply",
-      operation: "enable",
-      status: "running",
-      currentStep: "Restarting console",
-      progressMessage: "",
-      logLines: [],
-      warnings: [],
-      startedAt: new Date().toISOString(),
-      finishedAt: null,
-      errorMessage: null
-    };
-    window.localStorage.setItem(TASK_KEY, JSON.stringify(persistedTask));
-
-    // Both getState() (which the mount effect deliberately skips calling
-    // when a persisted task exists) and stack-progress reject here -- if
-    // finding #2's initial-mount-load failure handling were not correctly
-    // scoped to skip when runId is already set, or if a transient
-    // stack-progress failure incorrectly flipped phase to "failed", the
-    // enabling/restarting UI below would disappear.
-    mockApi.mockRejectedValue(new Error("network down"));
-
-    vi.useFakeTimers();
-    render(<DiscordBotSection />);
-
-    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
-
-    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-
-    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Retry/i })).toBeNull();
-  });
-
-  // dune-awakening-selfhost-docker#872 (automated review finding on
-  // already-merged #748): if the backend task fails before ever writing a
-  // status file, stackProgress() keeps returning state:"pending" forever
-  // -- this used to leave phase stuck on "enabling" permanently, with no
-  // error and no way forward. The polling effect must eventually give up
-  // and transition to "failed" with a real error, not hang indefinitely.
-  it("gives up and shows a real error after the backend task never resolves (stuck at state:\"pending\" forever)", async () => {
-    const persistedTask = {
-      id: "task-stuck",
-      type: "discordAdapterApply",
-      operation: "enable",
-      status: "running",
-      currentStep: "Restarting console",
-      progressMessage: "",
-      logLines: [],
-      warnings: [],
-      startedAt: new Date().toISOString(),
-      finishedAt: null,
-      errorMessage: null
-    };
-    window.localStorage.setItem(TASK_KEY, JSON.stringify(persistedTask));
-    mockApi.mockResolvedValue({ runId: "task-stuck", state: "pending", stage: "launching", percent: 0, message: "" } as never);
-
-    vi.useFakeTimers();
-    render(<DiscordBotSection />);
-    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
-
-    // 89 attempts (all still "pending") must NOT give up yet.
-    for (let i = 0; i < 89; i += 1) {
-      // eslint-disable-next-line no-await-in-loop -- each tick must
-      // complete (including its own microtask/state-update chain) before
-      // the next one advances, matching how the real setInterval fires.
-      await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    }
-    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Retry/i })).toBeNull();
-
-    // The 90th attempt must finally give up with a real, actionable error.
-    // A synchronous query, not findByRole/waitFor -- those poll with real
-    // timers internally and would hang forever while fake timers are
-    // active with nothing left to advance them.
-    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
-    expect(screen.getByText(/taking much longer than expected/i)).toBeInTheDocument();
-  }, 20000);
-
-  // GitHub automated-review finding on this PR's own first remediation
-  // attempt (dune-awakening-selfhost-docker#872): the poll timeout must
-  // survive this component unmounting/remounting (e.g. the "Discord Bot"
-  // accordion in SettingsPanel.tsx being collapsed and reopened while a
-  // task is stuck enabling), not re-arm a fresh budget every time.
-  it("does not re-arm the poll timeout when the component unmounts and remounts mid-poll (accordion collapse/reopen)", async () => {
-    const persistedTask = {
-      id: "task-stuck-remount",
-      type: "discordAdapterApply",
-      operation: "enable",
-      status: "running",
-      currentStep: "Restarting console",
-      progressMessage: "",
-      logLines: [],
-      warnings: [],
-      startedAt: new Date().toISOString(),
-      finishedAt: null,
-      errorMessage: null
-    };
-    window.localStorage.setItem(TASK_KEY, JSON.stringify(persistedTask));
-    mockApi.mockResolvedValue({ runId: "task-stuck-remount", state: "pending", stage: "launching", percent: 0, message: "" } as never);
-
-    vi.useFakeTimers();
-    const { unmount } = render(<DiscordBotSection />);
-    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
-
-    // Consume most of the 3-minute budget (88 of the 90 ticks a fresh
-    // mount would allow) before simulating the accordion being toggled.
-    for (let i = 0; i < 88; i += 1) {
-      // eslint-disable-next-line no-await-in-loop -- see the sibling test
-      // above for why each tick must fully settle before the next.
-      await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    }
-    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
-
-    // Simulate collapsing and reopening the "Discord Bot" accordion:
-    // SettingsPanel.tsx conditionally renders this component, so this is a
-    // genuine unmount + fresh mount, not just a re-render.
-    unmount();
-    render(<DiscordBotSection />);
-    expect(screen.getByText(/Applying settings and restarting the console/i)).toBeInTheDocument();
-
-    // Only 2 ticks worth of budget should remain -- if the remount had
-    // reset the timeout (the bug), this would still be "enabling" here.
-    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument();
-    expect(screen.getByText(/taking much longer than expected/i)).toBeInTheDocument();
-  }, 20000);
-
-  it("does not clobber typed role IDs when Retry is clicked after a failed enable task (finding 4)", async () => {
-    mockApi.mockImplementation((path: string) => {
-      if (path === "/api/settings/discord-bot") {
-        return Promise.resolve({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
-      }
-      return Promise.resolve({ runId: "test-run", state: "failed", stage: "failed", percent: 100, message: "boom" } as never);
-    });
-    mockPost.mockResolvedValue({
-      task: { id: "test-run", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null },
-      token: "abc"
-    } as never);
-
-    render(<DiscordBotSection />);
-    await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
-    await screen.findByText(/Configure roles/i);
-    fireEvent.change(screen.getByLabelText(/Player role IDs/i), { target: { value: "999999999999999999" } });
-    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
-    await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
-    fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
-    await screen.findByText(/will restart to apply this change/i);
-    fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
-
-    await waitFor(() => expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument(), { timeout: 5000 });
-    fireEvent.click(screen.getByRole("button", { name: /Retry/i }));
-
-    // Retry now always resets to wizard step 1 (real UAT finding -- no
-    // silent skip, ever), but the CHOICE itself is preserved and already
-    // highlighted, so getting back to step 2 to see the preserved role ID
-    // is just re-confirming the same choice, not re-deciding it.
-    await waitFor(() => expect(screen.getByRole("button", { name: /^Self-hosting$/i })).toHaveAttribute("aria-pressed", "true"));
-    fireEvent.click(screen.getByRole("button", { name: /^Self-hosting$/i }));
-    await waitFor(() => expect(screen.getByDisplayValue("999999999999999999")).toBeInTheDocument());
-  });
-
   it("points the OAuth disambiguation note in the correct direction (finding 6)", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     render(<DiscordBotSection />);
@@ -545,19 +266,16 @@ describe("DiscordBotSection", () => {
     expect(screen.queryByText(/see discord oauth below/i)).toBeNull();
   });
 
-  it("asks for confirmation before Save Role IDs restarts the console (finding 3)", async () => {
+  it("asks for confirmation before Save Role IDs applies the change (finding 3)", async () => {
     mockApi.mockResolvedValue({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true } as never);
-    mockPost.mockResolvedValue({
-      task: { id: "role-task", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null }
-    } as never);
+    mockPost.mockResolvedValue({ ok: true } as never);
 
     render(<DiscordBotSection />);
     await screen.findByText(/Enabled/i);
     fireEvent.click(screen.getByRole("button", { name: /Save Role IDs/i }));
-    await screen.findByText(/restart/i);
+    await screen.findByText(/This takes effect immediately/i);
     expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/role-ids", expect.anything());
     fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/role-ids", expect.anything()));
     // Save Role IDs must call updateRoleIds (/role-ids), never enable
     // (/enable) -- sharing the enable path here would silently rotate the
@@ -577,7 +295,7 @@ describe("DiscordBotSection", () => {
 
     const enableButton = await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
     fireEvent.click(enableButton);
-    await screen.findByText(/will restart to apply this change/i);
+    await screen.findByText(/This lets the configured Discord roles/i);
     expect(enableButton).toBeDisabled();
   });
 
@@ -588,7 +306,7 @@ describe("DiscordBotSection", () => {
     const saveButton = screen.getByRole("button", { name: /Save Role IDs/i });
     const regenButton = screen.getByRole("button", { name: /Regenerate Token/i });
     fireEvent.click(saveButton);
-    await screen.findByText(/restart/i);
+    await screen.findByText(/This takes effect immediately/i);
     expect(saveButton).toBeDisabled();
     expect(regenButton).toBeDisabled();
   });
@@ -603,7 +321,7 @@ describe("DiscordBotSection", () => {
 
     const enableButton = await screen.findByRole("button", { name: /Enable Discord Bot Integration/i });
     fireEvent.click(enableButton);
-    await screen.findByText(/will restart to apply this change/i);
+    await screen.findByText(/This lets the configured Discord roles/i);
     expect(enableButton).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
@@ -862,7 +580,7 @@ describe("DiscordBotSection", () => {
   // The identical countdown mechanism on Save Role IDs (no token to show
   // first, so no reordering needed there) is already exercised by the
   // "Restart Now" click threaded through the existing role-ids tests above.
-  it("reveals the token immediately after confirming Enable, before the restart countdown even starts", async () => {
+  it("reveals the token immediately after confirming Enable", async () => {
     mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
     mockPost.mockResolvedValue({ token: "abc" } as never);
     render(<DiscordBotSection />);
@@ -871,74 +589,11 @@ describe("DiscordBotSection", () => {
     await screen.findByText(/Configure roles/i);
     fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
     fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
-    await screen.findByText(/will restart to apply this change/i);
+    await screen.findByText(/This lets the configured Discord roles/i);
     fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
 
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/enable", expect.anything()));
     expect(await screen.findByDisplayValue("abc")).toBeInTheDocument();
-  });
-
-  it("pauses with a restart countdown notice after the token is shown, and does not trigger the restart until the countdown resolves", async () => {
-    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
-    mockPost.mockResolvedValue({ task: { id: "t1", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null }, token: "abc" } as never);
-    render(<DiscordBotSection />);
-    await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
-    await screen.findByText(/Configure roles/i);
-    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
-    await screen.findByText(/will restart to apply this change/i);
-    fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
-
-    await screen.findByRole("button", { name: /^Restart Now$/i });
-    expect(screen.getByText(/Restarting the console in/i)).toBeInTheDocument();
-    expect(screen.getByDisplayValue("abc")).toBeInTheDocument();
-    expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/restart", expect.anything());
-  });
-
-  it("automatically proceeds with the restart once the countdown reaches zero, with no click required", async () => {
-    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
-    mockPost.mockResolvedValue({ task: { id: "t1", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null }, token: "abc" } as never);
-    // Fake timers throughout, and plain getBy*/act flushes instead of
-    // findBy*/waitFor: the latter poll on a real setInterval, which never
-    // fires once fake timers are active unless the clock is advanced by
-    // hand -- the DOM updates here all come from resolved mock promises
-    // (microtasks), not timers, so a manual act-flush is enough.
-    vi.useFakeTimers();
-    render(<DiscordBotSection />);
-    await act(async () => { await Promise.resolve(); });
-    expect(screen.getByText(/Which are you using/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
-    expect(screen.getByText(/Configure roles/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
-    expect(screen.getByText(/will restart to apply this change/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /^Enable$/i }));
-    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-    expect(screen.getByText(/Restarting the console in/i)).toBeInTheDocument();
-    expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/restart", expect.anything());
-
-    for (let i = 0; i < 10; i++) {
-      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
-    }
-    expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/restart", {});
-  });
-
-  it("clicking Restart Now skips the wait and proceeds immediately", async () => {
-    mockApi.mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false } as never);
-    mockPost.mockResolvedValue({ task: { id: "t1", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null }, token: "abc" } as never);
-    render(<DiscordBotSection />);
-    await screen.findByText(/Which are you using/i);
-    fireEvent.click(screen.getByRole("button", { name: /Self-hosting/i }));
-    await screen.findByText(/Configure roles/i);
-    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /Enable Discord Bot Integration/i }));
-    await screen.findByText(/will restart to apply this change/i);
-    fireEvent.click(await screen.findByRole("button", { name: /^Enable$/i }));
-
-    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
-    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/restart", {}));
-    expect(screen.queryByRole("button", { name: /^Restart Now$/i })).toBeNull();
   });
 
   // Real UAT finding (2026-09-09): "I see no path to remove the bot" -- this
@@ -959,16 +614,11 @@ describe("DiscordBotSection", () => {
     expect(mockPost).not.toHaveBeenCalled();
   });
 
-  it("disabling persists first, then pauses for the restart countdown before calling /restart, and lands back on a fresh wizard", async () => {
+  it("disabling applies immediately and lands back on a fresh wizard", async () => {
     mockApi
       .mockResolvedValueOnce({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never)
-      .mockImplementation((path: string) => {
-        if (path.startsWith("/api/updates/stack-progress")) {
-          return Promise.resolve({ runId: "disable-task", state: "succeeded", stage: "complete", percent: 100, message: "", discordHealthOk: true } as never);
-        }
-        return Promise.resolve({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false, deploymentChoice: null } as never);
-      });
-    mockPost.mockResolvedValue({ ok: true, task: { id: "disable-task", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null } } as never);
+      .mockResolvedValue({ enabled: false, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: false, deploymentChoice: null } as never);
+    mockPost.mockResolvedValue({ ok: true } as never);
 
     render(<DiscordBotSection />);
     await screen.findByText(/Enabled/i);
@@ -977,44 +627,9 @@ describe("DiscordBotSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Disable$/i }));
 
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/disable", {}));
-    await screen.findByRole("button", { name: /^Restart Now$/i });
-    expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/restart", {});
-
-    fireEvent.click(screen.getByRole("button", { name: /^Restart Now$/i }));
-    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/restart", {}));
 
     await waitFor(() => expect(screen.getByText(/Which are you using/i)).toBeInTheDocument(), { timeout: 5000 });
     expect(screen.queryByText(/Enable Discord Bot Integration/i)).toBeNull();
-  });
-
-  // dune-awakening-selfhost-docker#870 (automated review finding on #801,
-  // real/normal severity): disable() already wiped the adapter token
-  // server-side (its own confirm dialog says "cannot be undone") by the
-  // time the restart countdown even starts -- if the component unmounts
-  // mid-countdown (e.g. the operator collapses the Settings accordion
-  // that conditionally renders this component), restart() must still
-  // eventually fire. Before the fix, the countdown's own Promise never
-  // resolved on unmount, so restart() was silently never called and the
-  // "invalidated" token's bot process kept running indefinitely.
-  it("still calls /restart after Disable, even if the component unmounts mid-countdown", async () => {
-    mockApi.mockResolvedValueOnce({ enabled: true, roleIds: { player: [], moderator: [], admin: [] }, tokenConfigured: true, deploymentChoice: "hosted" } as never);
-    mockPost.mockResolvedValue({ ok: true, task: { id: "disable-task", type: "settings", operation: "discordAdapterApply", status: "queued", currentStep: "", progressMessage: "", logLines: [], warnings: [], startedAt: "", finishedAt: null, errorMessage: null } } as never);
-
-    const { unmount } = render(<DiscordBotSection />);
-    await screen.findByText(/Enabled/i);
-    fireEvent.click(screen.getByRole("button", { name: /Disable Discord Bot Integration/i }));
-    await screen.findByText(/you'll go through setup again to re-enable it/i);
-    fireEvent.click(screen.getByRole("button", { name: /^Disable$/i }));
-
-    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/disable", {}));
-    await screen.findByRole("button", { name: /^Restart Now$/i });
-    expect(mockPost).not.toHaveBeenCalledWith("/api/settings/discord-bot/restart", {});
-
-    // Simulates collapsing the Settings accordion mid-countdown -- the
-    // async handleDisable() keeps running after this (it's not tied to
-    // the component's own lifecycle), so /restart must still land.
-    unmount();
-    await waitFor(() => expect(mockPost).toHaveBeenCalledWith("/api/settings/discord-bot/restart", {}));
   });
 
   // Real UAT finding (2026-09-09): "why can't we add [inviting the bot] to
@@ -1568,7 +1183,7 @@ describe("DiscordBotSection", () => {
       "/api/settings/discord-bot/oauth-secret",
       { secret: "a-real-looking-client-secret-value" }
     ));
-    await screen.findByText(/Restart the console/i);
+    await screen.findByText(/^Saved\.$/i);
     // The secret field clears after a successful save -- it's never
     // echoed back, so nothing should linger in the input either.
     expect(screen.queryByDisplayValue("a-real-looking-client-secret-value")).toBeNull();
@@ -1627,15 +1242,14 @@ describe("DiscordBotSection", () => {
     fireEvent.change(screen.getByLabelText(/Player role IDs/i), { target: { value: "222222222222222222" } });
     fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
 
-    // Step 3 for the hosted path: "Save & Restart" (updateRoleIds), not
+    // Step 3 for the hosted path: "Save Role IDs" (updateRoleIds), not
     // "Enable Discord Bot Integration" -- the adapter was already silently
     // enabled back in step 1.
-    const finishButton = await screen.findByRole("button", { name: /^Save & Restart$/i });
+    const finishButton = await screen.findByRole("button", { name: /^Save Role IDs$/i });
     expect(screen.queryByRole("button", { name: /Enable Discord Bot Integration/i })).toBeNull();
     fireEvent.click(finishButton);
-    await screen.findByText(/restart to apply this change/i);
+    await screen.findByText(/This takes effect immediately/i);
     fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /^Restart Now$/i }));
 
     await waitFor(() => expect(mockPost).toHaveBeenCalledWith(
       "/api/settings/discord-bot/role-ids",

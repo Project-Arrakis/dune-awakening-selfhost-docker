@@ -26,17 +26,18 @@ trap cleanup EXIT
 fake_bin="$test_root/bin"
 mkdir -p "$fake_bin"
 
-# Finding 4 (MEDIUM, Layer 3 test-coverage audit): both `self-update.sh
-# apply-discord-adapter-env` and `install|apply` call the same
-# acquire_self_update_lock() (a non-blocking `flock -n 9` on
-# runtime/generated/self-update.lock, exits 75 with "Another console update
-# is already running." on contention). The lock check happens BEFORE any
-# docker invocation (see the cmd dispatch for apply-discord-adapter-env in
-# self-update.sh: acquire_self_update_lock runs first, docker access/recreate
-# only after), so this fake `docker` must never be invoked at all if the lock
-# gate is working -- same "the fake for the thing that must never run just
-# fails loudly" technique test-discord-adapter-recreate-failure.sh already
-# uses for `curl`.
+# Finding 4 (MEDIUM, Layer 3 test-coverage audit): `self-update.sh
+# install|apply` calls acquire_self_update_lock() (a non-blocking
+# `flock -n 9` on runtime/generated/self-update.lock, exits 75 with
+# "Another console update is already running." on contention) as the very
+# first thing inside its case branch, before any docker invocation or
+# release/tag resolution. This fake `docker` must never be invoked at all
+# if the lock gate is working -- same "the fake for the thing that must
+# never run just fails loudly" technique test-discord-adapter-recreate-
+# failure.sh (removed alongside recreate_discord_adapter_env() itself,
+# upstream PR #215) used for `curl`. A deliberately fake, non-"latest" tag
+# is passed so a regression in the lock check would fail fast on an
+# unresolvable tag rather than actually attempting a real network fetch.
 cat > "$fake_bin/docker" <<'SH'
 #!/bin/sh
 echo "docker should not have been invoked -- the self-update lock must be checked first" >&2
@@ -56,8 +57,8 @@ lock_file="$fresh_root/runtime/generated/self-update.lock"
 mkdir -p "$(dirname "$lock_file")"
 
 # Pre-acquire the lock in a backgrounded subshell and hold it open for the
-# duration of this test, simulating a concurrent self-update (or a
-# concurrent apply-discord-adapter-env) already in flight.
+# duration of this test, simulating a concurrent self-update already in
+# flight.
 acquired_marker="$test_root/lock-acquired"
 (
   exec 9>"$lock_file"
@@ -83,13 +84,13 @@ done
 run_id="44444444-4444-4444-8444-444444444444"
 rc=0
 env PATH="$fake_bin:$PATH" \
-  DUNE_COMPOSE_PROJECT_NAME=test-discord-adapter-lock-contention \
+  DUNE_COMPOSE_PROJECT_NAME=test-self-update-lock-contention \
   DUNE_SELF_UPDATE_RUN_ID="$run_id" \
-  "$fresh_root/runtime/scripts/self-update.sh" apply-discord-adapter-env redblink-dune-docker-console \
+  "$fresh_root/runtime/scripts/self-update.sh" install "v0.0.0-lock-contention-test-fake-tag" \
   >"$test_root/out.log" 2>"$test_root/err.log" || rc=$?
 
 [ "$rc" -eq 75 ] \
-  || fail "apply-discord-adapter-env exited $rc while the self-update lock was held elsewhere -- expected exit 75 (got stderr: $(cat "$test_root/err.log"))"
+  || fail "install exited $rc while the self-update lock was held elsewhere -- expected exit 75 (got stderr: $(cat "$test_root/err.log"))"
 
 grep -qF 'Another console update is already running.' "$test_root/err.log" \
   || fail "stderr did not contain the expected lock-contention message (got: $(cat "$test_root/err.log"))"
@@ -106,4 +107,4 @@ grep -qx 'stage=busy' "$status_file" \
 grep -q '^message=.*already running' "$status_file" \
   || fail "status file's message does not describe the lock contention (got: $(grep '^message=' "$status_file" || echo 'MISSING'))"
 
-echo "OK: apply-discord-adapter-env fails closed (exit 75, state=failed, no false success) when another self-update already holds the lock, without ever invoking docker"
+echo "OK: install fails closed (exit 75, state=failed, no false success) when another self-update already holds the lock, without ever invoking docker"

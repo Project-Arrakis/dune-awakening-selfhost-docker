@@ -1,5 +1,4 @@
 import { api, post } from "./client";
-import type { Task } from "./setup";
 
 export type DiscordBotSettingsState = {
   enabled: boolean;
@@ -53,13 +52,20 @@ export const discordAdapterSettingsApi = {
   // which only sets `responseBody.token` when `result.tokenMinted`).
   enable: (roleIds: { playerRoleIds: string; moderatorRoleIds: string; adminRoleIds: string; deploymentChoice?: "hosted" | "self-hosted" | null }) =>
     post<{ token?: string }>("/api/settings/discord-bot/enable", roleIds),
+  // Maintainer review finding (upstream PR #215): used to return a queued
+  // container-recreate task -- now applies immediately (the role IDs are
+  // mirrored straight into the running process), so this just returns ok.
   updateRoleIds: (roleIds: { playerRoleIds: string; moderatorRoleIds: string; adminRoleIds: string; deploymentChoice?: "hosted" | "self-hosted" | null }) =>
-    post<{ task: Task }>("/api/settings/discord-bot/role-ids", roleIds),
+    post<{ ok: boolean }>("/api/settings/discord-bot/role-ids", roleIds),
   regenerateToken: () => post<{ ok: boolean; token: string }>("/api/settings/discord-bot/regenerate-token", {}),
-  // Triggers the actual console restart that applies whatever /enable or
-  // /role-ids just persisted -- see those handlers' own comments in
-  // server.js for why this is now a separate call.
-  restart: () => post<{ task: Task }>("/api/settings/discord-bot/restart", {}),
+  // Maintainer review finding (upstream PR #215): this used to trigger an
+  // actual console restart that applied whatever /enable or /role-ids just
+  // persisted -- removed, since those routes already mirror every setting
+  // they touch straight into the running process (process.env/config), so
+  // the change is already live by the time this is called. The server-side
+  // route is kept as a pure confirmation no-op (still audited) rather than
+  // removed outright, so this call still has something real to reach.
+  restart: () => post<{ ok: boolean; applied?: boolean }>("/api/settings/discord-bot/restart", {}),
   // Real UAT finding (2026-09-09, "I see no path to remove the bot"):
   // resets the adapter back to "never configured" (see
   // disableDiscordBotAdapter()'s own comment in adapterSettings.js for
