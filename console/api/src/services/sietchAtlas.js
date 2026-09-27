@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import * as duneDb from "../duneDb.js";
 import { resolveMapCombatState } from "./mapCombatState.js";
 import { resolveCoriolisCycle } from "./coriolisSeed.js";
@@ -37,6 +38,27 @@ const ATLAS_MAPS = [
   { displayMap: "DeepDesert", combatMap: "DeepDesert_1" }
 ];
 
+// The real login password for a Survival_1 sietch (Bgd.ServerLoginPassword,
+// set via `dune sietches set-password`/`set-settings`). Every other reader
+// of this field in this codebase (the CLI's `list`/`show`, the web
+// console's MapsPanel SecretInput) is deliberately write-only and never
+// echoes the real value back -- this is the first read path for the actual
+// plaintext, added specifically so #the-atlas can show it to the
+// Naib/Fedaykin/Crysknife-Bearer-restricted channel players need it to
+// actually log into the sietch (mentat#376, dune-awakening-selfhost-docker#938).
+function sietchLoginPassword(config, partitionId) {
+  if (!config?.repoRoot) return null;
+  try {
+    const cfgPath = resolve(config.repoRoot, "runtime/generated/sietch-config.json");
+    if (!existsSync(cfgPath)) return null;
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+    const value = cfg?.partitions?.[String(partitionId)]?.password;
+    return value ? String(value) : null;
+  } catch {
+    return null;
+  }
+}
+
 function partitionRowsFromCombatResult(result) {
   if (result?.capabilities?.combatState === false || !Array.isArray(result?.rows)) return [];
   return result.rows.map((row) => ({
@@ -63,6 +85,7 @@ async function sietchesForMap(config, displayMap, combatMap, db, mapCombatPartit
       serverDisplayName: partition.serverDisplayName,
       runtimeStatus: partition.runtimeStatus,
       combatState: partition.configuredState,
+      loginPassword: sietchLoginPassword(config, partition.partitionId),
       sandstormActive: sandstorm.active,
       sandstormLastStartAt: sandstorm.lastStartAt,
       // Real operator request (2026-09-18): show what's configured
