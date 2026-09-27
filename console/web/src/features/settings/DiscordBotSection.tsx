@@ -1159,7 +1159,14 @@ export function DiscordBotSection() {
   return (
     <div className="playerAdmin_toggleBody">
       <p className="muted">For bot commands and in-game data access — not console admin sign-in, see the Discord OAuth section above.</p>
-      {error && <div className="confirm-modal-warning">{error}</div>}
+      {/* Maintainer review finding (upstream PR #215): this error region --
+          including the initial-mount "Could not load Discord Bot settings"
+          failure -- had no accessible-alert markup, unlike every sibling
+          error display elsewhere in this codebase (BasePermissionsTab,
+          VehiclePermissionsTab, ServerHostnameSetting, BasesPanel all use
+          role="alert" for their own error text). A screen reader user would
+          never be told this error appeared at all. */}
+      {error && <div className="confirm-modal-warning" role="alert">{error}</div>}
 
       {/* Finding 4 (final review): hoisted above the phase-specific
           branches below so it renders whenever a token was just revealed,
