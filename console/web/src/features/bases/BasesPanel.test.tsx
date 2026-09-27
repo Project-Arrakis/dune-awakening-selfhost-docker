@@ -135,7 +135,16 @@ describe("BasesPanel player scope", () => {
     expect(screen.queryByPlaceholderText("Search ID, name, type, or owner")).not.toBeInTheDocument();
     expect(document.querySelector(".player-bases-panel .bases-table")).toBeInTheDocument();
     expect(screen.getByText("Owned Home").closest("td")).toHaveAttribute("data-label", "Base Name");
-    expect(screen.getAllByRole("button", { name: /Download Base as Blueprint/ })[0].closest("td")).toHaveAttribute("data-label", "Actions");
+    const download = screen.getAllByRole("button", { name: "Download Base" })[0];
+    expect(download.closest("td")).toHaveAttribute("data-label", "Actions");
+    // Opens the format choice for that base rather than downloading.
+    fireEvent.click(download);
+    const dialog = screen.getByRole("dialog", { name: "Download Base" });
+    expect(dialog).toHaveTextContent("Owned Home");
+    expect(within(dialog).getByRole("button", { name: /Download Blueprint/ })).toBeEnabled();
+    expect(within(dialog).getByRole("button", { name: /Download Base Backup/ })).toBeEnabled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Download Base" })).not.toBeInTheDocument();
   });
 });
 
