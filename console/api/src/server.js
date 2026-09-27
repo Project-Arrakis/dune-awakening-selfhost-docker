@@ -2283,15 +2283,22 @@ async function handleApi(req, res) {
     if (result.tokenMinted) responseBody.token = result.token;
     return json(res, 200, responseBody);
   }
-  // Real UAT finding (2026-09-09): split out of /enable and /role-ids above
-  // so the frontend can reveal a freshly-minted token (or just acknowledge
-  // a role-ID save) before triggering the actual restart, instead of the
-  // restart firing in the same request that persists the change. Takes no
-  // body -- the discordAdapterApply task re-reads whatever is currently in
-  // .env, which the preceding /enable or /role-ids call already wrote.
+  // Maintainer review finding (upstream PR #215): this route used to queue
+  // a container recreate (discordAdapterApply) -- but /enable and
+  // /role-ids already mirror every setting they touch straight into the
+  // running process's own process.env/config (see updateDiscordBotRoleIds's
+  // and the oauth-config/oauth-secret routes' own comments), so by the time
+  // this route is called, the change is already live. A container recreate
+  // never actually made these settings take effect any faster, and a real
+  // Docker Compose reproduction showed `--force-recreate` is not the atomic
+  // swap this route used to assume -- a failed recreate could leave the
+  // console down entirely. Kept as a route (rather than removed outright)
+  // so the frontend's existing "apply" step still has something to call
+  // and audit, but it is now a confirmation no-op: nothing to queue,
+  // nothing to poll, nothing that can leave the console unreachable.
   if (path === "/api/settings/discord-bot/restart" && req.method === "POST") {
     audit(config, req, "settings.discord-bot.restart", {});
-    return json(res, 202, { task: tasks.create("settings", "discordAdapterApply", {}) });
+    return json(res, 200, { ok: true, applied: true });
   }
   if (path === "/api/settings/discord-bot/role-ids" && req.method === "POST") {
     const body = normalizeSettingsBody(await readJson(req));
@@ -2315,7 +2322,13 @@ async function handleApi(req, res) {
 
     await updateDiscordBotRoleIds(config, { player: player.roleIds, moderator: moderator.roleIds, admin: admin.roleIds }, { deploymentChoice: body.deploymentChoice });
     audit(config, req, "settings.discord-bot.role-ids-updated", { playerCount: player.roleIds.length, moderatorCount: moderator.roleIds.length, adminCount: admin.roleIds.length });
-    return json(res, 202, { task: tasks.create("settings", "discordAdapterApply", {}) });
+    // Maintainer review finding (upstream PR #215): updateDiscordBotRoleIds()
+    // already mirrors these role IDs into the running process's own
+    // process.env (see its own comment) -- no container recreate was ever
+    // needed to make this take effect, only to make a GET of the settings
+    // state in a DIFFERENT process reflect it, which a live-running
+    // single-instance console never has. No task to queue.
+    return json(res, 200, { ok: true });
   }
   if (path === "/api/settings/discord-bot/regenerate-token" && req.method === "POST") {
     const { token } = await regenerateDiscordBotToken(config);
@@ -2355,8 +2368,27 @@ async function handleApi(req, res) {
     if (body.redirectUri !== undefined && body.redirectUri !== "" && !/^https?:\/\/.+/.test(String(body.redirectUri))) {
       return json(res, 400, { error: "Redirect URI must be a valid URL" });
     }
-    if (body.clientId !== undefined) updateEnvFileValue("DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID", String(body.clientId));
-    if (body.redirectUri !== undefined) updateEnvFileValue("DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI", String(body.redirectUri));
+    // Maintainer review finding (upstream PR #215): unlike every other
+    // Discord Bot setting in this route group (enable/role-ids/token all
+    // mirror straight into process.env, so the ALREADY-RUNNING process
+    // picks them up with no restart), these two routes only persisted to
+    // disk -- config.discordHostedBotOAuthClientId/RedirectUri/ClientSecret
+    // are read once at boot into the long-lived `config` object and were
+    // never updated again, so a save here had no live effect until a real
+    // process restart re-ran loadConfig(). Mirroring directly into `config`
+    // here closes that gap the same way process.env[...] already does for
+    // the token/role-id settings, and is what makes it safe to apply these
+    // settings without a container recreate at all (see the removed
+    // recreate_discord_adapter_env() for the full history of why a
+    // recreate was never actually the right fix).
+    if (body.clientId !== undefined) {
+      updateEnvFileValue("DISCORD_HOSTED_BOT_OAUTH_CLIENT_ID", String(body.clientId));
+      config.discordHostedBotOAuthClientId = String(body.clientId);
+    }
+    if (body.redirectUri !== undefined) {
+      updateEnvFileValue("DISCORD_HOSTED_BOT_OAUTH_REDIRECT_URI", String(body.redirectUri));
+      config.discordHostedBotOAuthRedirectUri = String(body.redirectUri);
+    }
     audit(config, req, "settings.discord-bot.oauth-config-updated", {});
     return json(res, 200, { ok: true });
   }
@@ -2388,6 +2420,12 @@ async function handleApi(req, res) {
     } catch {
       return json(res, 500, { error: "Failed to save client secret." });
     }
+    // Maintainer review finding (upstream PR #215): mirror into the live
+    // `config` object immediately, same reasoning as the sibling
+    // oauth-config route above -- this is what the shell-level
+    // export_discord_hosted_bot_oauth_client_secret() re-export normally
+    // does, but only on a restart/recreate this flow no longer performs.
+    config.discordHostedBotOAuthClientSecret = String(secret).trim();
     audit(config, req, "settings.discord-bot.oauth-secret-updated", { secret: "<redacted>" });
     return json(res, 200, { ok: true });
   }

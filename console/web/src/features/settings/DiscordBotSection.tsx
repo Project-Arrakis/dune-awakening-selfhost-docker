@@ -1,70 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { discordAdapterSettingsApi, type DiscordBotSettingsState } from "../../api/discordAdapterSettings";
 import { discordHostedBotApi, type OwnedDiscordGuild } from "../../api/discordHostedBotApi";
-import { updatesApi } from "../../api/updates";
-import { persistUpdateTask, loadPersistedUpdateTask } from "../updates/updateUtils";
 import { ConfirmDialog, type ConfirmDialogRequest, type ConfirmDialogOutcome } from "../../components/common/ConfirmDialog";
 import { copyText } from "../../lib/clipboard";
 import { SecretInput } from "../../components/SecretInput";
 
-const TASK_KEY = "arrakis.discordAdapterEnableTask";
-// GitHub automated-review finding on this PR's own first remediation
-// attempt (dune-awakening-selfhost-docker#872): an in-memory `attempts`
-// counter inside the polling effect bounds per-*mount*, not per-task --
-// SettingsPanel.tsx renders this component conditionally
-// (`{discordBotOpen && <DiscordBotSection />}`), so collapsing/re-expanding
-// that accordion while phase is "enabling" unmounts/remounts this
-// component, tearing down and recreating the effect with attempts reset to
-// 0. runId/phase resume correctly from TASK_KEY, but the timeout budget
-// re-arms in full every time -- a genuinely stuck task (the exact case this
-// fix targets) could be kept hung forever by anyone toggling that section.
-// Fixed by persisting the deadline itself (a wall-clock timestamp), not an
-// in-memory tick count -- surviving remounts the same way runId/phase
-// already do.
-const POLL_DEADLINE_KEY = "arrakis.discordAdapterEnableTaskDeadline";
 const CHOICE_KEY = "arrakis.discordAdapterChoice";
-const POLL_INTERVAL_MS = 2000;
-// dune-awakening-selfhost-docker#872 (automated review finding on
-// already-merged #748): the enable/save-role-ids polling effect below
-// only ever branched on state === "succeeded"/"failed" from
-// updatesApi.stackProgress(), with no bound -- if runDiscordAdapterApplyTask
-// throws before its shell helper ever writes a status file (a real,
-// reachable path: cleanupStaleSelfUpdateHelpers's own "already running"
-// contention error, or a docker command rejection), readSelfUpdateStatus's
-// ENOENT branch returns {state:"pending"} with HTTP 200 forever, and this
-// effect's own catch block swallows transient fetch errors as "keep
-// polling" -- so the UI was stuck on phase === "enabling" permanently,
-// with no error and no way forward except manually clearing localStorage.
-// 3 minutes is generous for a real discordAdapterApply restart (which
-// normally completes in well under a minute) while still bounding the wait
-// to something finite.
-const POLL_TIMEOUT_BUDGET_MS = 3 * 60 * 1000;
-
-function persistPollDeadline(deadline: number | null) {
-  if (typeof window === "undefined") return;
-  try {
-    if (deadline === null) window.localStorage.removeItem(POLL_DEADLINE_KEY);
-    else window.localStorage.setItem(POLL_DEADLINE_KEY, String(deadline));
-  } catch {
-    // The visible page state still works if localStorage is unavailable --
-    // the in-effect fallback below covers this case too.
-  }
-}
-
-function loadPollDeadline(): number | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(POLL_DEADLINE_KEY);
-    const parsed = raw ? Number(raw) : NaN;
-    return Number.isFinite(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
 
 // Round 4 (dune-awakening-selfhost-docker#876, design doc §13, issue #880):
-// the confirmation-status poll needs its own persisted state, mirroring
-// POLL_DEADLINE_KEY's own pattern above -- without this, collapsing the
+// the confirmation-status poll needs its own persisted state -- without
+// this, collapsing the
 // settings accordion (a genuine unmount, per SettingsPanel.tsx's
 // `{discordBotOpen && <DiscordBotSection />}`) or a page reload during the
 // up-to-~20-minute owner-confirmation wait would silently revert to
@@ -102,15 +47,6 @@ function loadConfirmationPoll(): { confirmationId: string; deadline: number } | 
 // post-resolution grace window (mentat#356) -- see design doc §13.3.
 const CONFIRMATION_POLL_INTERVAL_MS = 10 * 1000;
 const CONFIRMATION_POLL_BUDGET_MS = 20 * 60 * 1000;
-// Real UAT finding: the existing "this will restart the console" confirm
-// dialog is a single click, and the moment it's confirmed the actual
-// restart fires immediately with no further warning -- it felt abrupt and
-// uncontrolled. Mirrors this codebase's own game-server restart queue
-// pattern (AdminToolsPanel's "Restart Now" button skipping a countdown),
-// scaled down for a console self-restart: a short, visible countdown with
-// an explicit "Restart Now" to skip the wait, rather than either an
-// instant restart or a mandatory full wait.
-const RESTART_COUNTDOWN_SECONDS = 10;
 // Real UAT finding (2026-09-09): nothing in this wizard ever told the
 // operator that inviting the hosted bot (Sahir Venn) to their own Discord
 // server is a separate, required, external step -- "Connect to hosted
@@ -176,7 +112,7 @@ function openBotInviteWindow(clientId: string, onClosed: () => void) {
 }
 
 type Choice = "hosted" | "self-hosted" | null;
-type Phase = "loading" | "disabled" | "enabling" | "enabled" | "failed";
+type Phase = "loading" | "disabled" | "enabled" | "failed";
 // The first-time setup wizard's own step, independent of Phase above.
 // Only meaningful while phase === "disabled" -- once genuinely enabled,
 // the operator is in the ongoing-management view (existing Save Role
@@ -188,11 +124,8 @@ type Phase = "loading" | "disabled" | "enabling" | "enabled" | "failed";
 // showing everything at once with no context.
 type WizardStep = 1 | 2 | 3;
 
-// Same shape as loadPersistedUpdateTask/persistUpdateTask in updateUtils.ts
-// (typeof-window guard, try/catch around localStorage access), just for a
-// plain string value instead of a Task -- there's no shared helper for that
-// shape, so this is a small, deliberately parallel pair rather than forcing
-// `choice` through the Task-specific helpers.
+// Small localStorage read/write pair (typeof-window guard, try/catch
+// around localStorage access) for a plain string value.
 function loadPersistedChoice(): Choice {
   if (typeof window === "undefined") return null;
   try {
@@ -215,24 +148,13 @@ function persistChoice(value: Choice) {
 
 export function DiscordBotSection() {
   const [state, setState] = useState<DiscordBotSettingsState | null>(null);
-  // Seed runId/phase synchronously from localStorage, the same way
-  // UpdatesPanel.tsx's gameUpdateTask/stackUpdateTask state does
-  // (`useState<Task | null>(() => loadPersistedUpdateTask(...))`), instead of
-  // setting them from inside the mount effect below. This closes a real
-  // mount-time race (Layer 2 review finding, 2026-09-08): refresh() suspends
-  // at its first await, yields back to the effect body, and its continuation
-  // used to land *after* the effect body had already set phase="enabling",
-  // unconditionally overwriting it with whatever the live GET reported at
-  // that instant -- silently dropping reload-recovery (audit finding #9)
-  // whenever the initial GET happened to succeed before the persisted task
-  // finished. Seeding here means a persisted in-flight task is already
-  // reflected in state before refresh() is even called (see the mount
-  // effect below, which now skips refresh() entirely when runId is already
-  // set on the first render).
-  const [runId, setRunId] = useState<string | null>(() => loadPersistedUpdateTask(TASK_KEY)?.id ?? null);
-  const [phase, setPhase] = useState<Phase>(() => (loadPersistedUpdateTask(TASK_KEY)?.id ? "enabling" : "loading"));
-  // Seeded synchronously from localStorage, same convention as runId/phase
-  // above -- otherwise the hosted/self-hosted token-destination instructions
+  // Maintainer review finding (upstream PR #215): enable/role-ids/disable
+  // no longer queue a container-recreate task -- they apply immediately,
+  // so there is no in-flight task to seed/resume across a reload anymore.
+  // phase now only ever needs "loading" as its initial value; refresh()
+  // (below) sets it to "enabled"/"disabled" once the real state is known.
+  const [phase, setPhase] = useState<Phase>("loading");
+  // Seeded synchronously from localStorage -- otherwise the hosted/self-hosted token-destination instructions
   // (gated on `choice`) would vanish on every visit after the very first
   // Enable, since the backend's getState() never returns this (finding #1,
   // Layer 3 review).
@@ -359,20 +281,6 @@ export function DiscordBotSection() {
   // just gates step 1's Discord-connection UI behind that finishing,
   // instead of asking the operator to click a separate "Enable" first.
   const [silentEnabling, setSilentEnabling] = useState(false);
-  // Real UAT finding (2026-09-09): handleEnable()/handleUpdateRoleIds()
-  // used to fire their restart-triggering API call the instant the
-  // ConfirmDialog above was confirmed, with no further warning -- the
-  // console just went unreachable a moment later with no acknowledgement.
-  // waitForRestartCountdown() adds a visible pause between confirmation
-  // and the actual restart: a countdown notice with a "Restart Now"
-  // button to skip the wait. It resolves either when the countdown
-  // reaches zero (the ticking effect below) or when the operator clicks
-  // "Restart Now" (finishRestartCountdown()), whichever comes first. The
-  // resolver is stashed in a ref rather than state since it's a function,
-  // not a value the render needs to read.
-  const restartCountdownResolveRef = useRef<(() => void) | null>(null);
-  const [restartCountdownSeconds, setRestartCountdownSeconds] = useState<number | null>(null);
-
   // Phase 6 (dune-awakening-selfhost-docker#832/#865): the fully-automated
   // auto-invite flow, shipped ALONGSIDE renderHostedBotConnection() below
   // (unchanged, not modified), per the design doc's §9 Option B rollout --
@@ -395,7 +303,7 @@ export function DiscordBotSection() {
   //   reloads or starts over.
   // "failed": the popup reported ok:false, with a reason code to explain.
   // Round 4 (issue #880): seeded from the persisted confirmation-status
-  // poll, the same way runId/phase above are seeded from TASK_KEY --
+  // poll --
   // without this, autoInviteStatus always starts "idle" on a fresh mount
   // regardless of a still-valid, in-progress poll in localStorage, so a
   // reload or accordion collapse/reopen would never resume polling at all.
@@ -458,8 +366,7 @@ export function DiscordBotSection() {
   // registration and is waiting on the owner's Discord confirmation --
   // for as long as this is true. The adapter token this component just
   // sent to mentat as part of that request must not be invalidated (by
-  // Regenerate Token or Disable) or have the console restarted out from
-  // under it (by Save Role IDs) while it's still relying on that exact
+  // Regenerate Token or Disable) while it's still relying on that exact
   // token/liveness -- mentat's own pending records hold a COPY of the
   // token captured at staging time, so regenerating it afterward silently
   // desyncs mentat's copy from Core's real, live value. Also applied to
@@ -666,55 +573,6 @@ export function DiscordBotSection() {
     }
   }
 
-  function waitForRestartCountdown(seconds: number) {
-    return new Promise<void>((resolve) => {
-      restartCountdownResolveRef.current = resolve;
-      setRestartCountdownSeconds(seconds);
-    });
-  }
-
-  function finishRestartCountdown() {
-    restartCountdownResolveRef.current?.();
-    restartCountdownResolveRef.current = null;
-    setRestartCountdownSeconds(null);
-  }
-
-  useEffect(() => {
-    if (restartCountdownSeconds === null) return;
-    if (restartCountdownSeconds <= 0) {
-      finishRestartCountdown();
-      return;
-    }
-    const timer = setTimeout(() => {
-      setRestartCountdownSeconds((seconds) => (seconds === null ? null : seconds - 1));
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [restartCountdownSeconds]);
-
-  // dune-awakening-selfhost-docker#870 (automated review finding on #801,
-  // real/normal severity): if this component unmounts while a restart
-  // countdown is in flight -- e.g. the operator collapses the Settings
-  // accordion that conditionally renders DiscordBotSection -- the ticking
-  // effect's own cleanup above only clears its setTimeout; it never
-  // resolves the Promise waitForRestartCountdown() handed back to
-  // handleDisable()/handleEnable()/handleUpdateRoleIds(). Those handlers
-  // keep running after unmount (an already-invoked async function is not
-  // tied to component lifecycle), but with the Promise never settling
-  // they never reach their own restart() call. For Disable specifically
-  // this is a real security gap, not just a stuck spinner: disable()
-  // already wiped the adapter token server-side (its own confirm dialog
-  // says "cannot be undone"), but the restart that's supposed to make
-  // that live never fires, so the "invalidated" token's bot process keeps
-  // running indefinitely. A mount-once effect whose cleanup only runs on
-  // true unmount guarantees the countdown always resolves, regardless of
-  // which handler is waiting on it.
-  useEffect(() => {
-    return () => {
-      restartCountdownResolveRef.current?.();
-      restartCountdownResolveRef.current = null;
-    };
-  }, []);
-
   function updateChoice(value: Choice) {
     setChoice(value);
     persistChoice(value);
@@ -888,113 +746,14 @@ export function DiscordBotSection() {
   }
 
   useEffect(() => {
-    // A persisted in-flight task is already reflected in phase/runId via the
-    // useState initializers above -- don't call refresh() here too, or its
-    // async continuation would overwrite "enabling" with a stale
-    // disabled/enabled snapshot the moment the initial GET resolves (see the
-    // comment on the runId/phase state above). The polling effect below owns
-    // this task from here: only its own completion handler clears the
-    // persisted entry and calls refresh().
-    if (!runId) {
-      refresh().catch(() => {
-        setError("Could not load Discord Bot settings.");
-        // Without this, phase stays stuck at "loading" forever -- there is
-        // no render branch for it and no way forward short of a full page
-        // reload (finding #2, Layer 3 review). Scoped to this specific
-        // initial-mount-load failure only: the persisted-in-flight-task
-        // recovery path above skips this call entirely (runId is already
-        // set), so it can never be overridden to "failed" by this catch.
-        setPhase("failed");
-      });
-    }
+    refresh().catch(() => {
+      setError("Could not load Discord Bot settings.");
+      // Without this, phase stays stuck at "loading" forever -- there is
+      // no render branch for it and no way forward short of a full page
+      // reload (finding #2, Layer 3 review).
+      setPhase("failed");
+    });
   }, []);
-
-  useEffect(() => {
-    if (phase !== "enabling" || !runId) return undefined;
-    // A deadline may already be persisted (a task started before this
-    // component last mounted, or before a page reload). If not -- a fresh
-    // task, or one persisted by an older build that predates this fix --
-    // start a fresh budget from now rather than treating it as already
-    // expired.
-    let deadline = loadPollDeadline();
-    if (deadline === null) {
-      deadline = Date.now() + POLL_TIMEOUT_BUDGET_MS;
-      persistPollDeadline(deadline);
-    }
-    // Code-review finding on the timeout fix above (dune-awakening-selfhost-docker#872
-    // fix PR): stackProgress() can occasionally take longer than
-    // POLL_INTERVAL_MS to resolve (the console is "briefly unreachable"
-    // during a real recreate, per the catch block below). Without a guard,
-    // an overlapping tick could still be in flight when a later tick hits
-    // the deadline and sets phase "failed" -- if the slow call then
-    // resolves "succeeded" afterward, whichever setState lands last wins,
-    // silently overwriting the other outcome. `stopped` is checked
-    // immediately after every await so a call whose result is already moot
-    // never applies it; `inFlight` skips starting an overlapping tick at all.
-    let stopped = false;
-    let inFlight = false;
-    const interval = setInterval(async () => {
-      if (stopped || inFlight) return;
-      inFlight = true;
-      try {
-        const progress = await updatesApi.stackProgress(runId);
-        if (stopped) return;
-        if (progress.state === "succeeded") {
-          stopped = true;
-          clearInterval(interval);
-          persistUpdateTask(TASK_KEY, null);
-          persistPollDeadline(null);
-          setRunId(null);
-          if (progress.discordHealthOk === false) {
-            setPhase("failed");
-            setError("The console restarted, but the Discord adapter did not respond to a health check. Check the console's logs.");
-          } else {
-            await refresh();
-          }
-          return;
-        } else if (progress.state === "failed") {
-          stopped = true;
-          clearInterval(interval);
-          persistUpdateTask(TASK_KEY, null);
-          persistPollDeadline(null);
-          setRunId(null);
-          setPhase("failed");
-          setError(progress.message || "Applying Discord Bot settings failed.");
-          return;
-        }
-      } catch {
-        // The console is mid-recreate and briefly unreachable -- keep polling.
-      } finally {
-        inFlight = false;
-      }
-      if (stopped) return;
-      // dune-awakening-selfhost-docker#872 (automated review finding on
-      // already-merged #748): if runDiscordAdapterApplyTask throws before
-      // its shell helper ever writes a status file (e.g.
-      // cleanupStaleSelfUpdateHelpers's own "already running" contention
-      // error, or a docker command rejection), stackProgress() keeps
-      // returning state:"pending" forever, and a transient fetch error
-      // above is deliberately swallowed as "keep polling" -- neither path
-      // ever reached the succeeded/failed branches above to clear this
-      // interval. Without a bound, this left phase stuck on "enabling"
-      // permanently, with no error and no way forward except manually
-      // clearing localStorage. Checked against the persisted `deadline`
-      // (wall-clock, see POLL_DEADLINE_KEY's comment above) rather than an
-      // in-memory tick count, so the budget survives this component
-      // unmounting/remounting (e.g. the Discord Bot accordion being
-      // collapsed and reopened) instead of re-arming every time.
-      if (Date.now() >= deadline) {
-        stopped = true;
-        clearInterval(interval);
-        persistUpdateTask(TASK_KEY, null);
-        persistPollDeadline(null);
-        setRunId(null);
-        setPhase("failed");
-        setError("Applying Discord Bot settings is taking much longer than expected. Check the console's logs, then Retry.");
-      }
-    }, POLL_INTERVAL_MS);
-    return () => { stopped = true; clearInterval(interval); };
-  }, [phase, runId]);
 
   async function handleEnable() {
     // In-flight guard (finding #5, Layer 3 review): a rapid double-click
@@ -1009,7 +768,7 @@ export function DiscordBotSection() {
       const outcome = await new Promise<ConfirmDialogOutcome>((resolve) => {
         setConfirmRequest({
           title: "Enable Discord Bot Integration",
-          message: "The console will restart to apply this change. It will be briefly unreachable.",
+          message: "This lets the configured Discord roles issue bot commands against this console.",
           confirmLabel: "Enable",
           cancelLabel: "Cancel",
           danger: false,
@@ -1019,13 +778,10 @@ export function DiscordBotSection() {
       setConfirmRequest(null);
       if (outcome !== "confirm") return;
 
-      // Real UAT finding (2026-09-09): persist config and reveal the
-      // one-time token FIRST -- before the restart countdown, not after --
-      // so the operator actually has a window to copy it while the console
-      // is still fully reachable. enable() no longer triggers the restart
-      // itself (see its own comment in discordAdapterSettings.ts); restart()
-      // below is the explicit, separate call for that, made only once the
-      // countdown resolves (by timeout or "Restart Now").
+      // Maintainer review finding (upstream PR #215): enable() already
+      // mirrors every setting it touches straight into the running
+      // process -- there is no separate restart step anymore, so the
+      // change is live the moment this call returns.
       const { token } = await discordAdapterSettingsApi.enable({
         playerRoleIds,
         moderatorRoleIds,
@@ -1041,13 +797,7 @@ export function DiscordBotSection() {
         setTokenCopyResult("");
       }
 
-      await waitForRestartCountdown(RESTART_COUNTDOWN_SECONDS);
-
-      const { task } = await discordAdapterSettingsApi.restart();
-      persistUpdateTask(TASK_KEY, task);
-      persistPollDeadline(Date.now() + POLL_TIMEOUT_BUDGET_MS);
-      setRunId(task.id);
-      setPhase("enabling");
+      await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1058,11 +808,7 @@ export function DiscordBotSection() {
   // Save Role IDs, for an already-enabled adapter: a distinct handler and
   // route from handleEnable/enable() above -- see updateDiscordBotRoleIds()
   // in Task 8 for why sharing the enable path here would be a real bug
-  // (silently rotating the live token on every role-ID edit). Now routed
-  // through the same restart-warning ConfirmDialog Enable already uses
-  // (finding #3, Layer 3 review) -- this also recreates/restarts the
-  // console exactly like Enable does, and previously did so with zero
-  // warning.
+  // (silently rotating the live token on every role-ID edit).
   async function handleUpdateRoleIds() {
     if (submitting) return;
     setSubmitting(true);
@@ -1071,7 +817,7 @@ export function DiscordBotSection() {
       const outcome = await new Promise<ConfirmDialogOutcome>((resolve) => {
         setConfirmRequest({
           title: "Save Discord Bot Role IDs",
-          message: "The console will restart to apply this change. It will be briefly unreachable.",
+          message: "This takes effect immediately for new bot commands.",
           confirmLabel: "Save",
           cancelLabel: "Cancel",
           danger: false,
@@ -1081,18 +827,17 @@ export function DiscordBotSection() {
       setConfirmRequest(null);
       if (outcome !== "confirm") return;
 
-      await waitForRestartCountdown(RESTART_COUNTDOWN_SECONDS);
-
-      const { task } = await discordAdapterSettingsApi.updateRoleIds({
+      // Maintainer review finding (upstream PR #215): role-ID changes
+      // already mirror straight into the running process -- no restart
+      // needed, the change is live the moment this call returns.
+      await discordAdapterSettingsApi.updateRoleIds({
         playerRoleIds,
         moderatorRoleIds,
         adminRoleIds,
         deploymentChoice: choice
       });
-      persistUpdateTask(TASK_KEY, task);
-      persistPollDeadline(Date.now() + POLL_TIMEOUT_BUDGET_MS);
-      setRunId(task.id);
-      setPhase("enabling");
+
+      await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1102,11 +847,7 @@ export function DiscordBotSection() {
 
   // Real UAT finding (2026-09-09): "I see no path to remove the bot" --
   // this feature shipped Enable/Save Role IDs/Regenerate Token but no way
-  // back to "never configured." Same countdown-before-restart pattern as
-  // handleUpdateRoleIds() above (no token to reveal here, so no need for
-  // Enable's reveal-before-restart split) -- disable() persists the reset,
-  // then restart() (the same shared trigger Enable now uses) actually
-  // recreates the console once the operator has acknowledged it.
+  // back to "never configured."
   async function handleDisable() {
     if (submitting) return;
     setSubmitting(true);
@@ -1115,7 +856,7 @@ export function DiscordBotSection() {
       const outcome = await new Promise<ConfirmDialogOutcome>((resolve) => {
         setConfirmRequest({
           title: "Disable Discord Bot Integration",
-          message: "This invalidates the current adapter token and clears your saved role mappings and hosted/self-hosted choice -- you'll go through setup again to re-enable it. The console will restart to apply this change. This cannot be undone.",
+          message: "This invalidates the current adapter token and clears your saved role mappings and hosted/self-hosted choice -- you'll go through setup again to re-enable it. This cannot be undone.",
           confirmLabel: "Disable",
           cancelLabel: "Cancel",
           danger: true,
@@ -1137,13 +878,7 @@ export function DiscordBotSection() {
       // never-configured.
       updateChoice(null);
 
-      await waitForRestartCountdown(RESTART_COUNTDOWN_SECONDS);
-
-      const { task } = await discordAdapterSettingsApi.restart();
-      persistUpdateTask(TASK_KEY, task);
-      persistPollDeadline(Date.now() + POLL_TIMEOUT_BUDGET_MS);
-      setRunId(task.id);
-      setPhase("enabling");
+      await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1153,12 +888,11 @@ export function DiscordBotSection() {
 
   // Real UAT finding (2026-09-09): "we have OAuth without bot and bot
   // without OAuth" -- the hosted-bot connection's own, independent Discord
-  // Application config, deliberately not routed through the restart-
-  // countdown machinery above: this only takes effect after a restart
-  // regardless (same convention as Settings -> Discord OAuth's own save
-  // flow), but there's no live secret to reveal and no immediate outage to
-  // warn about from this call alone -- the operator triggers the actual
-  // restart separately, whenever they next Enable/Save Role IDs/Disable.
+  // Application config. Maintainer review finding (upstream PR #215): the
+  // oauth-config/oauth-secret routes now mirror straight into the running
+  // process's own config object (see server.js's own comment on those
+  // routes) -- no restart needed, this takes effect immediately, the same
+  // way Enable/Save Role IDs/Disable already did.
   async function handleSaveOAuthConfig() {
     setOAuthSaving(true);
     setOAuthSaveResult("");
@@ -1169,7 +903,7 @@ export function DiscordBotSection() {
         await discordAdapterSettingsApi.saveOAuthSecret(oauthSecret);
         setOAuthSecret("");
       }
-      setOAuthSaveResult("Saved. Restart the console (Enable, Save Role IDs, or Disable will trigger one) for this to take effect.");
+      setOAuthSaveResult("Saved.");
       await refresh({ preserveInputs: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1448,19 +1182,6 @@ export function DiscordBotSection() {
         </div>
       )}
 
-      {/* Hoisted for the same reason as revealedToken above -- this must
-          render regardless of which phase-specific branch is active,
-          since handleUpdateRoleIds() fires from phase === "enabled" while
-          handleEnable() fires from phase === "disabled". */}
-      {restartCountdownSeconds !== null && (
-        <div className="settings-restart-countdown" role="status">
-          <p>
-            Restarting the console in <strong>{restartCountdownSeconds}s</strong> to apply this change. It will be briefly unreachable.
-          </p>
-          <button type="button" onClick={finishRestartCountdown}>Restart Now</button>
-        </div>
-      )}
-
       {phase === "disabled" && (
         <div className="settings-wizard">
           <p className="settings-wizard-step-indicator">Step {wizardStep} of 3</p>
@@ -1594,23 +1315,23 @@ export function DiscordBotSection() {
 
           {wizardStep === 3 && choice === "hosted" && (
             <div className="settings-wizard-step">
-              <p>Restart</p>
+              <p>Save</p>
               {/* Independent UI/UX review (LOW L2): nothing on screen told
                   the operator why this step is worded differently from
                   the self-hosted path's "Enable Discord Bot Integration"
                   below -- the asymmetry could read as inconsistency
                   rather than the deliberate difference it is (the adapter
                   was already silently enabled back in step 1). */}
-              <p className="muted">Your adapter and Discord connection were already set up in step 1 -- this just saves your role mappings and briefly restarts the console to apply them.</p>
+              <p className="muted">Your adapter and Discord connection were already set up in step 1 -- this just saves your role mappings, effective immediately.</p>
               <button onClick={() => setWizardStep(2)}>Back</button>
-              <button disabled={submitting} onClick={() => { void handleUpdateRoleIds(); }}>Save &amp; Restart</button>
+              <button disabled={submitting} onClick={() => { void handleUpdateRoleIds(); }}>Save Role IDs</button>
             </div>
           )}
 
           {wizardStep === 3 && choice !== "hosted" && (
             <div className="settings-wizard-step">
-              <p>Restart</p>
-              <p className="muted">This generates a secure adapter token for your own bot to use and briefly restarts the console to apply it.</p>
+              <p>Enable</p>
+              <p className="muted">This generates a secure adapter token for your own bot to use, effective immediately.</p>
               <button onClick={() => setWizardStep(2)}>Back</button>
               <button disabled={!choice || submitting} onClick={() => { void handleEnable(); }}>Enable Discord Bot Integration</button>
             </div>
@@ -1618,7 +1339,6 @@ export function DiscordBotSection() {
         </div>
       )}
 
-      {phase === "enabling" && <p>Applying settings and restarting the console…</p>}
 
       {/* On a failed-attempt Retry (task/enable failure), state is already
           non-null from an earlier successful load -- preserve whatever the

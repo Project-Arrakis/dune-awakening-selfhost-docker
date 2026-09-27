@@ -181,9 +181,9 @@ test("an authenticated owner session can read, enable, update role IDs, and rege
       csrf: session.csrf,
       body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "222222222222222222", adminRoleIds: "" }
     });
-    assert.equal(roleIds.status, 202);
+    assert.equal(roleIds.status, 200, "role-ids updates apply immediately -- no task to queue");
     const roleIdsBody = await roleIds.json();
-    assert.ok(roleIdsBody.task, "the response must include the queued task");
+    assert.equal(roleIdsBody.task, undefined, "role-ids no longer queues a task -- the change is already live via process.env mirroring");
     assert.equal(roleIdsBody.token, undefined, "role-ids updates must never carry a token field");
 
     const afterRoleIds = await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie });
@@ -239,7 +239,7 @@ test("POST /enable and /role-ids preserve a tier's existing role IDs when that f
       csrf: session.csrf,
       body: { adminRoleIds: "333333333333333333" }
     });
-    assert.equal(roleIds.status, 202);
+    assert.equal(roleIds.status, 200, "role-ids updates apply immediately -- no task to queue");
 
     const after = await (await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie })).json();
     assert.deepEqual(after.roleIds.player, ["111111111111111111"], "player role IDs must survive a request that never mentioned that field");
@@ -282,7 +282,7 @@ test("POST /enable and /role-ids degrade gracefully (no 500) when the request bo
         body: primitiveBody
       });
       assert.notEqual(res.status, 500, `body ${JSON.stringify(primitiveBody)} must not crash the route handler`);
-      assert.equal(res.status, 202, `body ${JSON.stringify(primitiveBody)} should be treated as no fields present, not an error`);
+      assert.equal(res.status, 200, `body ${JSON.stringify(primitiveBody)} should be treated as no fields present, not an error`);
     }
 
     const after = await (await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie })).json();
@@ -318,7 +318,7 @@ test("POST /role-ids does not re-validate a legacy, already-invalid .env role-ID
       csrf: session.csrf,
       body: { adminRoleIds: "222222222222222222" }
     });
-    assert.equal(res.status, 202, "an update that never touches the tier with the legacy invalid value must not 400");
+    assert.equal(res.status, 200, "an update that never touches the tier with the legacy invalid value must not 400");
 
     const after = await (await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie })).json();
     assert.deepEqual(after.roleIds.player, ["not-a-real-snowflake"], "the legacy invalid value must survive untouched");
@@ -374,13 +374,18 @@ test("POST /api/settings/discord-bot/disable fully resets an enabled adapter bac
   }
 });
 
-// Real UAT finding (2026-09-09): /enable and /role-ids no longer trigger the
-// restart themselves -- POST .../restart is the separate, explicit call the
-// console UI now makes once the operator has seen the token (for /enable)
-// or acknowledged the change (for /role-ids). This closes the same
-// real-HTTP-route gap for the new route that the tests above already close
-// for /enable, /role-ids, and /regenerate-token.
-test("POST /api/settings/discord-bot/restart queues the discordAdapterApply task and is recorded in the real audit log", async () => {
+// Maintainer review finding (upstream PR #215): this route used to queue a
+// discordAdapterApply task that recreated the console container -- removed
+// entirely, since /enable and /role-ids already mirror every setting they
+// touch straight into the running process (process.env/config), so the
+// change is already live by the time this route is even called. A real
+// Docker Compose reproduction showed the old recreate mechanism wasn't
+// atomic either (a failed recreate could leave the console down with
+// nothing to roll back to). This route is now a confirmation no-op: it
+// still gets called by the console UI as its explicit "apply" step and is
+// still audited, but there is nothing left to queue, poll, or verify a
+// container for.
+test("POST /api/settings/discord-bot/restart is a synchronous no-op that is still recorded in the real audit log", async () => {
   const port = await getFreePort();
   const tempDir = mkdtempSync(join(tmpdir(), "discordbot-routes-e2e-restart-"));
   const console = startConsole(port, tempDir);
@@ -395,42 +400,15 @@ test("POST /api/settings/discord-bot/restart queues the discordAdapterApply task
       csrf: session.csrf,
       body: {}
     });
-    assert.equal(restart.status, 202, "a successful restart trigger must return 202 (task queued)");
+    assert.equal(restart.status, 200, "restart is now an immediate confirmation, never a queued task");
     const restartBody = await restart.json();
-    assert.ok(restartBody.task, "the response must include the queued task");
-    assert.equal(restartBody.task.operation, "discordAdapterApply");
-
-    // Layer 3 audit finding (CRITICAL): this test used to stop at "the task
-    // was queued with the right operation name" -- it never checked the task
-    // actually ran successfully. runner.js's buildDuneArgs() had no case for
-    // "discordAdapterApply" at all, so the queued task ALWAYS failed with
-    // "Unsupported operation: discordAdapterApply" the moment it executed,
-    // silently, with this exact assertion set still green (the .env write
-    // and in-process mirror that make the settings page look correct happen
-    // synchronously, before this task is even queued -- see
-    // adapterSettings.js). This test's own sandbox has no real
-    // runtime/scripts/dune (DUNE_DOCKER_DIR points at a bare tempDir), so it
-    // cannot verify a real container recreate succeeds -- but it CAN verify
-    // the operation is actually recognized by polling to a terminal task
-    // state and asserting the failure, if any, is an infra-availability
-    // one ("Missing dune command"), never the code-level "Unsupported
-    // operation" this bug produced.
-    const deadline = Date.now() + 5000;
-    let finalTask = restartBody.task;
-    while (Date.now() < deadline && (finalTask.status === "queued" || finalTask.status === "running")) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      const poll = await api(port, `/api/setup/tasks/${finalTask.id}`, { method: "GET", cookie: session.cookie });
-      finalTask = (await poll.json()).task;
-    }
-    assert.notEqual(finalTask.status, "queued", "the task must have started running within the poll window");
-    assert.ok(
-      !finalTask.errorMessage || !/Unsupported operation/.test(finalTask.errorMessage),
-      `discordAdapterApply must be a recognized operation -- got: ${finalTask.errorMessage}`
-    );
+    assert.equal(restartBody.ok, true);
+    assert.equal(restartBody.applied, true);
+    assert.equal(restartBody.task, undefined, "no task is queued anymore -- nothing to poll");
 
     const rows = auditRows(tempDir).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
     const restartRow = rows.find((r) => r.action === "settings.discord-bot.restart");
-    assert.ok(restartRow, "a successful restart trigger must write a settings.discord-bot.restart audit row");
+    assert.ok(restartRow, "the no-op restart call must still write a settings.discord-bot.restart audit row");
     assert.equal(restartRow.path, "/api/settings/discord-bot/restart");
   } finally {
     await stopProcess(console.child);
@@ -581,7 +559,7 @@ test("POST /api/settings/discord-bot/role-ids persists a changed deploymentChoic
       csrf: session.csrf,
       body: { playerRoleIds: "111111111111111111", moderatorRoleIds: "", adminRoleIds: "", deploymentChoice: "hosted" }
     });
-    assert.equal(roleIds.status, 202);
+    assert.equal(roleIds.status, 200, "role-ids updates apply immediately -- no task to queue");
     assert.equal((await roleIds.json()).token, undefined, "role-ids updates must never carry a token field");
 
     const after = await api(port, "/api/settings/discord-bot", { method: "GET", cookie: session.cookie });
