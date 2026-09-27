@@ -35,7 +35,7 @@ type BasesPanelProps = {
 type SharedWithEntry = { name: string; rank: number; label: string };
 
 type GeneratorEntry = {
-  type: "fuel" | "spice" | "windTurbineOmni" | "windTurbineDirectional";
+  type: "fuel" | "spice" | "windTurbineOmni" | "windTurbineDirectional" | "windtrap" | "largeWindtrap";
   name: string;
   fuelName: string;
   fuelCells: number;
@@ -61,6 +61,9 @@ type BaseRow = Record<string, unknown> & {
   shared_with: SharedWithEntry[];
   generatorDataAvailable: boolean;
   generatorCount: number;
+  // Windtraps are refilled with generators but kept out of the generator
+  // totals above; this counts them for the refill button and confirm text.
+  windtrapCount?: number;
   fuelCells: number;
   generatorRuntimeSeconds: number;
   generatorUptimeMultiplier: number;
@@ -233,6 +236,17 @@ function queueRestartTarget(partitionMap: string, partitionId: number, dimension
   return { kind: "respawn", partitionId, label: `Restart ${partitionMap}` };
 }
 
+// Windtraps ride along with generator refill (their filters burn like fuel), but
+// their cards and copy talk about filters rather than generators and fuel.
+function isWindtrapType(type: string) {
+  return type === "windtrap" || type === "largeWindtrap";
+}
+
+// Every device a generator refill writes to: generators plus windtraps.
+function refillDeviceCount(base: BaseRow) {
+  return (Number(base.generatorCount) || 0) + (Number(base.windtrapCount) || 0);
+}
+
 // Report what actually changed per device rather than a generic "Action
 // completed." — "nothing was added" is a meaningful outcome here, not a failure.
 function summarizeRefill(response: {
@@ -249,7 +263,9 @@ function summarizeRefill(response: {
     .map((device) => `${device.label}: +${device.added} ${device.fuelName}${device.added === 1 ? "" : "s"}${device.capped ? " (capped by inventory space)" : ""}`)
     .join(" · ");
   const skipped = result.devices.filter((device) => device.skipped).length;
-  return `Added ${result.totalAdded} fuel unit${result.totalAdded === 1 ? "" : "s"} across ${changed.length} device${changed.length === 1 ? "" : "s"}. ${detail}${skipped ? ` · ${skipped} skipped (no inventory)` : ""}`;
+  const windtraps = changed.filter((device) => isWindtrapType(device.type)).length;
+  const unitName = windtraps === 0 ? "fuel unit" : windtraps === changed.length ? "filter unit" : "fuel and filter unit";
+  return `Added ${result.totalAdded} ${unitName}${result.totalAdded === 1 ? "" : "s"} across ${changed.length} device${changed.length === 1 ? "" : "s"}. ${detail}${skipped ? ` · ${skipped} skipped (no inventory)` : ""}`;
 }
 
 // Mirrors summarizeRefill. No fuelName/capped/skipped -- water refill is a
@@ -413,6 +429,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
   // once rather than polled: it only changes when this panel changes it.
   const [autoRefillBases, setAutoRefillBases] = useState<Map<string, AutoRefillBase>>(new Map());
   const [autoRefillThreshold, setAutoRefillThreshold] = useState(50);
+  const [autoRefillWindtrapThreshold, setAutoRefillWindtrapThreshold] = useState(40);
   const [autoRefillIntervalHours, setAutoRefillIntervalHours] = useState(24);
   const [savingAutoRefillId, setSavingAutoRefillId] = useState("");
   // Distinct from "no bases enrolled": the enrollment read itself failed, so
@@ -623,9 +640,10 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
 
   async function handleRefillGenerators(base: BaseRow) {
     const id = String(base.base_id);
-    const count = Number(base.generatorCount) || 0;
+    const count = refillDeviceCount(base);
+    const hasWindtraps = (Number(base.windtrapCount) || 0) > 0;
     const confirmed = await confirmAction(
-      `Refill ${count} power device${count === 1 ? "" : "s"} at "${base.name || `base ${id}`}" to full fuel?`,
+      `Refill ${count} power device${count === 1 ? "" : "s"} at "${base.name || `base ${id}`}" to full ${hasWindtraps ? "fuel and filters" : "fuel"}?`,
       {
         title: "Refill Generators",
         confirmLabel: "Refill",
@@ -842,6 +860,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
       const state = await basesApi.autoRefill();
       setAutoRefillBases(new Map(state.bases.map((entry) => [String(entry.baseId), entry])));
       setAutoRefillThreshold(state.thresholdPercent);
+      setAutoRefillWindtrapThreshold(state.windtrapThresholdPercent ?? 40);
       setAutoRefillIntervalHours(state.intervalHours);
       setAutoRefillUnavailable(false);
     } catch {
@@ -887,7 +906,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         {
           title: "Auto-Refill",
           confirmLabel: "Turn On",
-          warning: `Every ${autoRefillIntervalHours}h this base is checked, and a refill is queued if any generator holds less than ${autoRefillThreshold}% of its fuel cap. Queued refills are written the next time this base's map restarts or stops — auto-refill never restarts a map by itself.`
+          warning: `Every ${autoRefillIntervalHours}h this base is checked, and a refill is queued if any generator holds less than ${autoRefillThreshold}% of its fuel cap or any windtrap less than ${autoRefillWindtrapThreshold}% of its filters. Queued refills are written the next time this base's map restarts or stops — auto-refill never restarts a map by itself.`
         }
       );
       if (!confirmed) return;
@@ -1454,7 +1473,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
         action={(row) => {
           const base = row as BaseRow;
           const id = String(base.base_id);
-          const refillable = canRefill && base.generatorDataAvailable && (Number(base.generatorCount) || 0) > 0;
+          const refillable = canRefill && base.generatorDataAvailable && refillDeviceCount(base) > 0;
           // Auto-refill is shown by restyling this button rather than by adding a
           // control: the column is a fixed width and already holds one button per
           // refillable resource. The button stays clickable when enrolled, so
@@ -1464,9 +1483,12 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           const autoRefillStalled = Boolean(autoRefillEntryForRow?.stalledAt);
           const refillTitle = !canRefill ? "Refill is unsupported on this database"
             : !base.generatorDataAvailable ? "Generator data is unavailable for this base"
-            : !refillable ? "No generators at this base"
+            : !refillable ? "No generators or windtraps at this base"
             : autoRefillStalled ? `Auto-refill has stalled after ${autoRefillEntryForRow?.consecutiveQueues || 3} refills that did not raise the fuel. Click to refill now.`
             : autoRefillOn ? `Auto-refill is on — checked every ${autoRefillIntervalHours}h below ${autoRefillThreshold}%. Click to refill now.`
+            // The accessible name stays "Refill Generators" for every base; only
+            // this visible tooltip names what a windtrap-only base will get.
+            : (Number(base.generatorCount) || 0) === 0 ? "Refill Windtrap Filters"
             : "Refill Generators";
           // Water isn't bundled into this row's data (fetched on demand in the
           // Water tab instead), so there is no per-row "has water storage"
@@ -1675,7 +1697,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           const renderPower = () => {
           if (!base.generatorDataAvailable) return <p className="muted">Generator data is currently unavailable.</p>;
           const generators = base.generators ?? [];
-          if (!generators.length) return <p className="muted">No generators built at this base.</p>;
+          if (!generators.length) return <p className="muted">No generators or windtraps built at this base.</p>;
           const autoRefillEntry = autoRefillBases.get(id);
           const savingAutoRefill = savingAutoRefillId === id;
           const lastChecked = autoRefillEntry?.lastCheckedAt ? formatAgo(autoRefillEntry.lastCheckedAt) : "";
@@ -1687,7 +1709,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
           // InfoTooltip's popover is absolutely positioned with its own fixed
           // max-width, so it has no such constraint -- and it matches the
           // rest of the app rather than a bare native title attribute.
-          const autoRefillTooltip = `Checked every ${autoRefillIntervalHours}h. Queues a refill when any generator drops below ${autoRefillThreshold}%.`
+          const autoRefillTooltip = `Checked every ${autoRefillIntervalHours}h. Queues a refill when any generator drops below ${autoRefillThreshold}% or any windtrap below ${autoRefillWindtrapThreshold}%.`
             + (autoRefillEntry && lastChecked ? ` Last checked ${lastChecked}${autoRefillEntry.lastLowestPercent === null ? "" : ` — lowest ${autoRefillEntry.lastLowestPercent}%`}.` : "")
             + (autoRefillEntry && !lastChecked ? " Not checked yet." : "")
             + (autoRefillUnavailable ? " Last known state — the latest read failed." : "");
@@ -1724,7 +1746,7 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                   {/* Giving up has to be visible, or the operator believes fuel is
                       being handled while this base quietly stays empty. */}
                   {autoRefillEntry?.stalledAt && <p className="bases-auto-refill-stalled" role="alert">
-                    Paused after {autoRefillEntry.consecutiveQueues} refills that did not raise this base's fuel. Refill manually to check why, or turn auto-refill off and on to resume.
+                    Paused after {autoRefillEntry.consecutiveQueues} refills that did not raise this base's fuel or filters. Refill manually to check why, or turn auto-refill off and on to resume.
                   </p>}
                 </>}
               </div>}
@@ -1732,13 +1754,15 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                 {QUEUED_RESERVE_EXPLANATION}
               </p>
               <div className="bases-card-grid">
-              {generators.map((generator, index) => (
+              {generators.map((generator, index) => {
+                const windtrap = isWindtrapType(generator.type);
+                return (
                 <div className="bases-card" key={`${generator.type}-${index}`}>
                   <div className="bases-card-title">{generator.name}</div>
                   <dl className="bases-card-stats">
-                    <dt>Generators</dt>
+                    <dt>{windtrap ? "Windtraps" : "Generators"}</dt>
                     <dd>{generator.generatorCount.toLocaleString()}</dd>
-                    <dt>Fuel Queued</dt>
+                    <dt>{windtrap ? "Filters Queued" : "Fuel Queued"}</dt>
                     <dd>{generator.fuelCells.toLocaleString()} {generator.fuelName}{generator.fuelCells === 1 ? "" : "s"}</dd>
                     {!hasNoQueuedFuel(generator.unstockedCount, generator.generatorCount) ? (
                       <>
@@ -1748,13 +1772,14 @@ export function BasesPanel({ onError, confirmAction, restartGate, formatMutation
                     ) : null}
                     {generator.unstockedCount ? (
                       <>
-                        <dt>No Queued Fuel</dt>
+                        <dt>{windtrap ? "No Queued Filters" : "No Queued Fuel"}</dt>
                         <dd>{generator.unstockedCount.toLocaleString()} of {generator.generatorCount.toLocaleString()}</dd>
                       </>
                     ) : null}
                   </dl>
                 </div>
-              ))}
+                );
+              })}
               </div>
             </div>
           );
