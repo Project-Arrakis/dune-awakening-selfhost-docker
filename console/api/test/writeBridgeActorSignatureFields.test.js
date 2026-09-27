@@ -12,7 +12,7 @@ const SECRET = "test-actor-secret";
 const ACTOR = { userId: "111", username: "Alice", roleIds: ["mod"], guildId: "g1", channelId: "c1", interactionId: "i1", roleSnapshotAt: 1700000000 };
 
 test("WRITE_BRIDGE_SIGNED_ACTOR_FIELDS is its own independent set, not the shared array", () => {
-  assert.deepEqual(WRITE_BRIDGE_SIGNED_ACTOR_FIELDS, ["userId", "username", "roleIds", "guildId", "channelId", "roleSnapshotAt", "action"]);
+  assert.deepEqual(WRITE_BRIDGE_SIGNED_ACTOR_FIELDS, ["userId", "username", "roleIds", "guildId", "channelId", "roleSnapshotAt", "action", "params"]);
   assert.ok(!WRITE_BRIDGE_SIGNED_ACTOR_FIELDS.includes("interactionId"), "must not include interactionId -- nonce already binds the request");
 });
 
