@@ -8,7 +8,7 @@ import {
   discordAdapterEnabled, discordAdapterErrorResponse, discordAdapterHealth,
   discordAdapterPopulation, discordAdapterReadiness, discordAdapterServices,
   discordAdapterStatus, discordWritesEnabled, DISCORD_ADAPTER_ROUTES, DISCORD_PLANNED_ADAPTER_ROUTES,
-  DISCORD_CATALOG_PROTOCOL_VERSION, validateDiscordActor, discordRoleMappingFromEnv
+  DISCORD_CATALOG_PROTOCOL_VERSION, validateDiscordActor, discordRoleMappingFromEnv, csv
 } from "./adapter.js";
 import { buildCommandCatalog } from "./commandCatalog.js";
 import { discordActorTier, policyError, requireDiscordCapability, requireSelfScopedCapability, DISCORD_CAPABILITIES } from "./policy.js";
@@ -360,7 +360,21 @@ export async function handleDiscordAdapterRoute({
       const body = await readJsonWithActorSignature(req);
       const actor = validateDiscordActor(body.actor);
       requireDiscordCapability(actor, mapping, DISCORD_CAPABILITIES.ATLAS_READ);
-      return json(res, 200, await sietchAtlasProvider(config, db, { buildAtlas: sietchAtlasBuilder }));
+      // [Security fix, real finding from automated PR review, 2026-09-27]
+      // ATLAS_READ is intentionally public tier -- every OTHER field this
+      // route returns (combat state, storm status, modifiers) is meant to
+      // be visible to any Discord member. loginPassword is not: it must
+      // never ride along just because the route itself is public. A
+      // Discord channel's permission lock only controls who can see the
+      // message mentat later posts -- it has no bearing on who can call
+      // this route directly, so the real login password is only included
+      // when the CALLING ACTOR's own roles are independently checked here
+      // against an explicit allowlist, never inferred from channel setup.
+      const atlasPasswordRoleIds = csv(process.env.DUNE_ATLAS_PASSWORD_ROLE_IDS);
+      const includePasswords = atlasPasswordRoleIds.length > 0
+        && Array.isArray(actor.roleIds)
+        && actor.roleIds.some((roleId) => atlasPasswordRoleIds.includes(String(roleId)));
+      return json(res, 200, await sietchAtlasProvider(config, db, { buildAtlas: sietchAtlasBuilder, includePasswords }));
     }
 
     // Players link

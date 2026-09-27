@@ -181,7 +181,27 @@ function mktempRepoRoot() {
   return mkdtempSync(join(tmpdir(), "dune-sietch-atlas-"));
 }
 
-test("buildSietchAtlas includes the real sietch login password when one is configured", async () => {
+test("buildSietchAtlas includes the real sietch login password only when includePasswords is explicitly true", async () => {
+  const repoRoot = repoRootWithSietchPassword("1", "Shai-Hulud-42");
+  const result = await buildSietchAtlas({ repoRoot }, db, {
+    maps: [MAPS[0]],
+    mapCombatPartitionRows: async () => combatRowsFor(["1"]),
+    resolveCombatState: async (_config, map, rows) => ({
+      map, mapState: "PVE",
+      partitions: rows.map((row) => ({ map, partitionId: row.partitionId, serverDisplayName: "Sietch", runtimeStatus: "RUNNING", configuredState: "PVE" }))
+    }),
+    resolveCycle: async () => ({ seed: "cor-6", nextCycleAt: null }),
+    resolveStorm: async () => ({ active: false, lastStartAt: null }),
+    includePasswords: true
+  });
+  assert.equal(result.sietches.HaggaBasin[0].loginPassword, "Shai-Hulud-42");
+});
+
+// [Security regression test, real finding from automated PR review,
+// 2026-09-27] ATLAS_READ is public tier -- includePasswords must default
+// to false (never leak the real password to a caller the route handler
+// hasn't explicitly vetted) even when a real password IS configured.
+test("buildSietchAtlas omits the real password by default (includePasswords not passed) even when one is configured", async () => {
   const repoRoot = repoRootWithSietchPassword("1", "Shai-Hulud-42");
   const result = await buildSietchAtlas({ repoRoot }, db, {
     maps: [MAPS[0]],
@@ -193,7 +213,7 @@ test("buildSietchAtlas includes the real sietch login password when one is confi
     resolveCycle: async () => ({ seed: "cor-6", nextCycleAt: null }),
     resolveStorm: async () => ({ active: false, lastStartAt: null })
   });
-  assert.equal(result.sietches.HaggaBasin[0].loginPassword, "Shai-Hulud-42");
+  assert.equal(result.sietches.HaggaBasin[0].loginPassword, null);
 });
 
 test("buildSietchAtlas reports no password as null, not an empty string or missing field", async () => {

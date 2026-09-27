@@ -72,7 +72,7 @@ function partitionRowsFromCombatResult(result) {
   }));
 }
 
-async function sietchesForMap(config, displayMap, combatMap, db, mapCombatPartitionRows, resolveCombatState, resolveStorm, partitionModifiers) {
+async function sietchesForMap(config, displayMap, combatMap, db, mapCombatPartitionRows, resolveCombatState, resolveStorm, partitionModifiers, includePasswords) {
   const partitionResult = await mapCombatPartitionRows(db, combatMap).catch(() => ({ rows: [], capabilities: { combatState: false } }));
   const rows = partitionRowsFromCombatResult(partitionResult);
   if (rows.length === 0) return [];
@@ -85,7 +85,16 @@ async function sietchesForMap(config, displayMap, combatMap, db, mapCombatPartit
       serverDisplayName: partition.serverDisplayName,
       runtimeStatus: partition.runtimeStatus,
       combatState: partition.configuredState,
-      loginPassword: sietchLoginPassword(config, partition.partitionId),
+      // [Security fix, real finding from automated PR review, 2026-09-27]
+      // ATLAS_READ is public tier (policy.js CAPABILITY_BY_TIER) -- ANY
+      // Discord actor who can reach this route gets this payload,
+      // regardless of which channel mentat happens to post it into. A
+      // Discord channel permission lock only restricts who can SEE the
+      // message mentat posts; it does nothing to the underlying API this
+      // route serves. loginPassword must never be included unless the
+      // CALLING ACTOR's own roles are independently verified here, not
+      // merely assumed safe because of an unrelated channel lock.
+      loginPassword: includePasswords ? sietchLoginPassword(config, partition.partitionId) : null,
       sandstormActive: sandstorm.active,
       sandstormLastStartAt: sandstorm.lastStartAt,
       // Real operator request (2026-09-18): show what's configured
@@ -108,7 +117,8 @@ export async function buildSietchAtlas(config, db, {
   resolveCycle = resolveCoriolisCycle,
   resolveStorm = resolveSandstormStatus,
   readModifiers = defaultReadModifiers,
-  maps = ATLAS_MAPS
+  maps = ATLAS_MAPS,
+  includePasswords = false
 } = {}) {
   let modifiersByScope;
   try {
@@ -119,7 +129,7 @@ export async function buildSietchAtlas(config, db, {
 
   const [coriolis, ...sietchesByMap] = await Promise.all([
     resolveCycle({ map: "HaggaBasin" }).catch(() => ({ seed: null, nextCycleAt: null })),
-    ...maps.map(({ displayMap, combatMap }) => sietchesForMap(config, displayMap, combatMap, db, mapCombatPartitionRows, resolveCombatState, resolveStorm, modifiersByScope.partitions))
+    ...maps.map(({ displayMap, combatMap }) => sietchesForMap(config, displayMap, combatMap, db, mapCombatPartitionRows, resolveCombatState, resolveStorm, modifiersByScope.partitions, includePasswords))
   ]);
 
   const sietches = {};
