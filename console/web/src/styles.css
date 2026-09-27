@@ -1865,8 +1865,11 @@ body.debug .technical-details { display: block; }
 .base-backup-player-picker .bases-permissions-search-row > button { width: auto; min-height: 40px; }
 /* The shared blueprint file control is 40px; inputs and buttons here are 43px. */
 .base-backups-view .blueprint-file-control { min-height: 43px; }
-/* Edit owner/name panel, between the import controls and the table. */
-.base-backups-view > .base-backup-edit { display: grid; gap: 10px; margin: 0 0 12px; padding: 14px; border: 1px solid var(--border-strong); border-radius: 8px; }
+/* Edit owner/name/map panel, in an expanded row under the edited backup. */
+/* Undo the global td nowrap/ellipsis/360px cap inside the expanded row. */
+.base-backups-table td.expanded-row-cell { max-width: none; white-space: normal; overflow: visible; }
+.base-backup-edit { display: grid; gap: 10px; }
+.base-backup-edit .base-backup-edit-field { width: min(560px, 100%); }
 .base-backup-edit-field { display: grid; gap: 5px; color: var(--muted-warm); }
 .base-backup-edit-problem { margin: 0; color: var(--danger-text); }
 .base-backup-edit-map { display: grid; gap: 5px; justify-items: start; color: var(--muted-warm); }

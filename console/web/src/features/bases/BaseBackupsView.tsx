@@ -306,6 +306,14 @@ export function BaseBackupsView({ onError, confirmAction, playerId = "", playerN
     setEditMap(row.map);
   }
 
+  // The table scrolls inside its own capped box, so a panel opened under a
+  // lower row can start out of sight.
+  const editPanelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // The whole row, so the cell's padding is in view too.
+    if (editing) editPanelRef.current?.closest("tr")?.scrollIntoView?.({ block: "nearest" });
+  }, [editing?.id]);
+
   function cancelEdit() {
     setEditing(null);
     setEditOwner(null);
@@ -431,6 +439,34 @@ export function BaseBackupsView({ onError, confirmAction, playerId = "", playerN
     : ["ownerName", "name", "map", "pieces", "placeables", "items"];
   const Heading = embedded ? "h4" : "h2";
 
+  // Opens as an expanded row directly under the backup being edited.
+  const editPanel = editing && <div ref={editPanelRef} className="base-backup-edit" role="group" aria-label={`Edit ${editing.name}`}>
+    <strong>Edit {editing.name}</strong>
+    <label className="base-backup-edit-field">
+      <span>Backup name</span>
+      <input value={editName} maxLength={BACKUP_NAME_MAX} disabled={saving} aria-label="Backup name"
+        placeholder={unnamedBackup ? `Unnamed (${editing.name})` : ""}
+        onChange={(event) => setEditName(event.target.value)} />
+    </label>
+    {nameProblem && <p className="base-backup-edit-problem">{nameProblem}</p>}
+    <p className="base-backup-target-chosen">
+      <span>Owner: <strong>{editOwner ? editOwner.name : editing.ownerName || "Unknown"}</strong>{editOwner ? ` (was ${editing.ownerName || "unknown"})` : ""}</span>
+      {editOwner && <button type="button" disabled={saving} onClick={() => setEditOwner(null)}>Keep current owner</button>}
+    </p>
+    <PlayerPicker label="Search for the new owner" chooseLabel={(name) => `Make ${name} the owner`}
+      disabled={saving} onChoose={setEditOwner} onFailure={searchFailed} />
+    {mapOptions.length > 0 && <div className="base-backup-edit-map">
+      <span>Map</span>
+      <SegmentedControl name={`base-backup-map-${editing.id}`} ariaLabel="Map" value={editMap}
+        options={mapOptions.map((option) => ({ ...option, disabled: saving }))} onChange={setEditMap} />
+    </div>}
+    <p className="action-help-note">The current owner must be offline to change a backup. The game only lets a backup be redeployed on the map it was saved on, so moving it to another map changes where it can be placed.</p>
+    <div className="base-backup-edit-actions">
+      <button disabled={!canSave} onClick={() => void saveEdit()}>{saving ? "Saving..." : "Save"}</button>
+      <button type="button" disabled={saving} onClick={cancelEdit}>Cancel</button>
+    </div>
+  </div>;
+
   return <section className={embedded ? "playerAdmin_box base-backups-view" : "panel base-backups-view"}>
     <div className="panel-title">
       <div>
@@ -489,33 +525,6 @@ export function BaseBackupsView({ onError, confirmAction, playerId = "", playerN
           disabled={busy} onChoose={setTarget} onFailure={searchFailed} />}
       </div>}
 
-      {editing && <div className="base-backup-edit" role="group" aria-label={`Edit ${editing.name}`}>
-        <strong>Edit {editing.name}</strong>
-        <label className="base-backup-edit-field">
-          <span>Backup name</span>
-          <input value={editName} maxLength={BACKUP_NAME_MAX} disabled={saving} aria-label="Backup name"
-            placeholder={unnamedBackup ? `Unnamed (${editing.name})` : ""}
-            onChange={(event) => setEditName(event.target.value)} />
-        </label>
-        {nameProblem && <p className="base-backup-edit-problem">{nameProblem}</p>}
-        <p className="base-backup-target-chosen">
-          <span>Owner: <strong>{editOwner ? editOwner.name : editing.ownerName || "Unknown"}</strong>{editOwner ? ` (was ${editing.ownerName || "unknown"})` : ""}</span>
-          {editOwner && <button type="button" disabled={saving} onClick={() => setEditOwner(null)}>Keep current owner</button>}
-        </p>
-        <PlayerPicker label="Search for the new owner" chooseLabel={(name) => `Make ${name} the owner`}
-          disabled={saving} onChoose={setEditOwner} onFailure={searchFailed} />
-        {mapOptions.length > 0 && <div className="base-backup-edit-map">
-          <span>Map</span>
-          <SegmentedControl name={`base-backup-map-${editing.id}`} ariaLabel="Map" value={editMap}
-            options={mapOptions.map((option) => ({ ...option, disabled: saving }))} onChange={setEditMap} />
-        </div>}
-        <p className="action-help-note">The current owner must be offline to change a backup. The game only lets a backup be redeployed on the map it was saved on, so moving it to another map changes where it can be placed.</p>
-        <div className="base-backup-edit-actions">
-          <button disabled={!canSave} onClick={() => void saveEdit()}>{saving ? "Saving..." : "Save"}</button>
-          <button type="button" disabled={saving} onClick={cancelEdit}>Cancel</button>
-        </div>
-      </div>}
-
       <p className="action-help-note">
         An export includes the base's pieces, placeables, land claim and everything stored in it. Importing creates a new backup for the receiving player, who redeploys it with the in-game base backup tool. The original backup is not changed.
       </p>
@@ -547,6 +556,8 @@ export function BaseBackupsView({ onError, confirmAction, playerId = "", playerN
         sortDirection={sort.sortDirection}
         onSort={sort.onSort}
         rowKey={(row) => String(row.id)}
+        isRowExpanded={(row) => editing !== null && Number(row.id) === editing.id}
+        renderExpandedRow={() => editPanel}
       />
     </>}
   </section>;

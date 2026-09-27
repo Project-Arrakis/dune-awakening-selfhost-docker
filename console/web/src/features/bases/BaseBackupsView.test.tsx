@@ -223,6 +223,20 @@ describe("BaseBackupsView", () => {
       confirm = vi.fn().mockResolvedValue(true);
     });
 
+    it("opens in an expanded row directly under the backup being edited", async () => {
+      vi.mocked(baseBackupsApi.list).mockResolvedValue({
+        supported: true, maps: ["DeepDesert"],
+        rows: [backup, { ...backup, id: 4, name: "Second Base", rawName: "Second Base" }]
+      });
+      const panel = await openEditor();
+      const editedRow = screen.getByRole("button", { name: "Edit Test Base" }).closest("tr");
+      const panelRow = panel.closest("tr");
+      expect(panelRow).toHaveClass("expanded-row");
+      expect(editedRow?.nextElementSibling).toBe(panelRow);
+      fireEvent.click(within(panel).getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("group", { name: "Edit Test Base" })).not.toBeInTheDocument();
+    });
+
     it("renames a backup after confirmation, with Save gated on a real change", async () => {
       vi.mocked(baseBackupsApi.update).mockResolvedValue({ ok: true, backupId: 3, owner: null, name: { from: "Test Base", to: "North Wall" }, map: null, warnings: [] });
       const panel = await openEditor();
