@@ -60,7 +60,7 @@ Two independent writers share this database:
 | Writer | Connection | Owns |
 |---|---|---|
 | The dedicated server (closed source) | its own, not visible to us | virtually the entire schema |
-| This project (Console and runtime scripts) | the Console's `pg` pool or `psql` from runtime scripts | the project-owned objects in [§9](#9-project-authored-objects) |
+| This project (Console and runtime scripts) | the Console's `pg` pool, or `dune_psql` from runtime scripts ([§2.1](#21-how-runtime-scripts-connect)) | the project-owned objects in [§9](#9-project-authored-objects) |
 
 They are separate OS processes. The console's pool object is not shared with
 the game server in any way; the two simply agree on a database.
@@ -73,6 +73,51 @@ user and password. **Port is the exception** — it always delegates to
 port the console connects on can never disagree with the port
 status/preflight reports. The source comment explains the misconfiguration
 this prevents; don't reimplement the precedence chain anywhere else.
+
+### 2.1 How runtime scripts connect
+
+Shell scripts do not open a pool. They call `dune_psql` from
+[`runtime/scripts/lib/postgres.sh`](../../runtime/scripts/lib/postgres.sh),
+which connects as the `postgres` superuser and picks one of two transports:
+
+| Transport | Used when | How |
+|---|---|---|
+| `tcp` | a real `psql` client is on `PATH` | `psql -h 127.0.0.1 -p $POSTGRES_PORT` |
+| `exec` | it is not | `docker exec dune-postgres psql` |
+
+`auto` (the default) chooses between them per process; set
+`DUNE_PSQL_TRANSPORT` in `.env` to pin one. The detection is a `type -P`
+probe, deliberately not `command -v`, because `command -v` would also be
+satisfied by a *shell function* named `psql` — and this repository used to
+define one whose whole body was a container exec.
+
+Both legs reach the same database, so this is purely a question of cost. A
+container exec is not a connection: it forks a new process pair per
+statement, and the autoscaler issues them continuously, several per scan
+tick, for as long as the stack is up. On Podman each exec also rewrites the
+ExecIDs array in the container database, which turned a mostly idle server
+into a sustained tens-of-MB/s write load. The TCP leg reuses the published
+loopback port the stack already exposes and costs one short-lived
+connection instead.
+
+Two consequences worth knowing:
+
+- **The orchestrator image ships `postgresql-client`** so everything running
+  inside it — the autoscaler, the Coriolis coordinator — takes the TCP leg.
+  `dune doctor` reports it if a stale image does not, since the fallback is
+  silent and correct, just expensive.
+- **The exec leg is load-bearing, not vestigial.** The same scripts run
+  directly on the host, from the `dune` CLI and `start-all.sh`, where a
+  `psql` client usually is not installed.
+
+Because the containers never source `.env`, their launchers
+(`start-autoscaler.sh`, `start-coriolis-coordinator.sh`) forward
+`POSTGRES_PORT` explicitly; without it the in-container client would dial the
+default port on a stack configured for another one.
+
+`coriolis-data-cleanup.sh` stays on a direct `docker exec`: it pipes a
+heredoc on stdin and connects as the `dune` application role, neither of
+which `dune_psql` covers.
 
 ---
 

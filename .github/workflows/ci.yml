@@ -127,6 +127,8 @@ jobs:
         run: python3 runtime/scripts/test_spicefield_settings_schema.py
       - name: Test multi-server config helper
         run: python3 runtime/scripts/test_multi_server_config.py
+      - name: Test sietch catalog and resolver embedded Python
+        run: python3 runtime/scripts/test_sietches_embedded_python.py
       - name: Test combat-state publishers
         run: |
           runtime/tests/test-deepdesert-combat-state-publication.sh
@@ -162,6 +164,8 @@ jobs:
           tests/autoscaler-scan-gating-inventory-test.sh
           tests/autoscaler-story-return-test.sh
           tests/autoscaler-dedicated-occupancy-test.sh
+          tests/autoscaler-env-forwarding-test.sh
+          tests/psql-transport-test.sh
           tests/postgres-shutdown-test.sh
           tests/postgres-bootstrap-test.sh
           tests/coriolis-coordinator-test.sh
