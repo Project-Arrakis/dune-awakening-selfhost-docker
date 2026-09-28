@@ -9,6 +9,9 @@ cd "$(dirname "$0")/../.."
 source runtime/scripts/host-file-ownership.sh
 source runtime/scripts/farm-readiness.sh
 
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 PID_FILE="runtime/generated/sietch-overrides.pid"
 LOOP_TOKEN_FILE="runtime/generated/sietch-overrides.loop-token"
 LOG_FILE="runtime/generated/sietch-overrides.log"
@@ -363,7 +366,7 @@ PY
 )"
 
   [ -n "$sql" ] || return 0
-  docker exec dune-postgres psql -U postgres -d dune -qAt -c "$sql" >/dev/null 2>&1 || true
+  dune_psql -qAt -c "$sql" >/dev/null 2>&1 || true
 }
 
 publish_snapshot_once() {

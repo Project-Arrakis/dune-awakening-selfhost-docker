@@ -6,7 +6,14 @@ cd "$(dirname "$0")/../.."
 # shellcheck source=runtime/scripts/lib/igw-socket-health.sh
 source runtime/scripts/lib/igw-socket-health.sh
 
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 INTERVAL="${DUNE_AUTOSCALER_INTERVAL:-5}"
+if ! [[ "$INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid DUNE_AUTOSCALER_INTERVAL; using 5 seconds." >&2
+  INTERVAL=5
+fi
 DEMAND_INTERVAL="${DUNE_AUTOSCALER_DEMAND_INTERVAL:-2}"
 if ! [[ "$DEMAND_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
   echo "Invalid DUNE_AUTOSCALER_DEMAND_INTERVAL; using 2 seconds." >&2
@@ -167,10 +174,6 @@ if ! docker ps --format '{{.Names}}' | grep -qx dune-postgres; then
   echo "dune-postgres is not running."
   exit 1
 fi
-
-psql_value() {
-  docker exec dune-postgres psql -U postgres -d dune -Atc "$1"
-}
 
 hub_origin_id_for_map() {
   case "$1" in
@@ -867,20 +870,15 @@ forget_deepdesert_travel() {
 
 deepdesert_target_json() {
   local target_partition="${1:-}"
-  DUNE_DEEPDESERT_TARGET_PARTITION="$target_partition" python3 - <<'PY'
-import json
-import os
-import subprocess
+  local partition_clause=""
+  local row
 
-target_partition = os.environ.get("DUNE_DEEPDESERT_TARGET_PARTITION", "").strip()
-partition_clause = ""
-if target_partition:
-    try:
-        partition_clause = f"  and wp.partition_id = {int(target_partition)}\n"
-    except ValueError:
-        raise SystemExit(1)
+  if [ -n "$target_partition" ]; then
+    [[ "$target_partition" =~ ^[0-9]+$ ]] || return 1
+    partition_clause="  and wp.partition_id = $target_partition"
+  fi
 
-sql = f"""
+  row="$(dune_psql -AtF '|' -c "
 select
   wp.partition_id,
   coalesce(wp.dimension_index, 0),
@@ -892,20 +890,18 @@ select
 from dune.world_partition wp
 join dune.farm_state fs on fs.server_id = wp.server_id
 where wp.map = 'DeepDesert_1'
-{partition_clause}\
+$partition_clause
 order by wp.dimension_index, wp.partition_id
 limit 1;
-"""
-proc = subprocess.run(
-    ["docker", "exec", "dune-postgres", "psql", "-U", "postgres", "-d", "dune", "-AtF", "|", "-c", sql],
-    capture_output=True,
-    text=True,
-    check=False,
-)
-row = proc.stdout.strip()
-if not row:
-    raise SystemExit(1)
-partition_id, dimension, port, ip, ready, alive, server_id = row.split("|", 6)
+")" || return 1
+  [ -n "$row" ] || return 1
+
+  DUNE_DEEPDESERT_TARGET_ROW="$row" python3 - <<'PY'
+import json
+import os
+
+partition_id, dimension, port, ip, ready, alive, server_id = \
+    os.environ["DUNE_DEEPDESERT_TARGET_ROW"].strip().split("|", 6)
 print(json.dumps({
     "partition_id": int(partition_id),
     "dimension": int(dimension),
@@ -919,11 +915,9 @@ PY
 }
 
 survival_partition_target_json() {
-  python3 - <<'PY'
-import json
-import subprocess
+  local row
 
-sql = """
+  row="$(dune_psql -AtF '|' -c "
 select
   wp.partition_id,
   coalesce(wp.dimension_index, 0),
@@ -936,17 +930,15 @@ where wp.map = 'Survival_1'
   and fs.alive = true
 order by wp.partition_id
 limit 1;
-"""
-proc = subprocess.run(
-    ["docker", "exec", "dune-postgres", "psql", "-U", "postgres", "-d", "dune", "-AtF", "|", "-c", sql],
-    capture_output=True,
-    text=True,
-    check=False,
-)
-row = proc.stdout.strip()
-if not row:
-    raise SystemExit(1)
-partition_id, dimension, port, ip = row.split("|", 3)
+")" || return 1
+  [ -n "$row" ] || return 1
+
+  DUNE_SURVIVAL_TARGET_ROW="$row" python3 - <<'PY'
+import json
+import os
+
+partition_id, dimension, port, ip = \
+    os.environ["DUNE_SURVIVAL_TARGET_ROW"].strip().split("|", 3)
 print(json.dumps({
     "partition_id": int(partition_id),
     "dimension": int(dimension),
@@ -2561,7 +2553,7 @@ scan_idle_servers() {
     *) echo "WARN invalid idle scan scope: $scope" >&2; return 1 ;;
   esac
 
-  docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  dune_psql -At -F '|' -c "
     select
       fs.map,
       wp.partition_id,
@@ -2628,7 +2620,7 @@ follow_fresh_process_lifecycle() {
 }
 
 scan_reconnect_demand() {
-  docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  dune_psql -At -F '|' -c "
     select
       ps.account_id,
       coalesce(ps.server_id, ''),
@@ -2716,7 +2708,7 @@ scan_reconnect_demand() {
 }
 
 scan_live_player_partition_alignment() {
-  docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  dune_psql -At -F '|' -c "
     select
       ps.account_id,
       ps.server_id,
@@ -3047,7 +3039,7 @@ print(sum(1 for line in sys.stdin if stale_pattern.search(line)))
 }
 
 director_live_server_rows() {
-  docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  dune_psql -At -F '|' -c "
     select map, server_id
     from dune.farm_state
     where map in ('Survival_1', 'Overmap', 'DeepDesert_1')

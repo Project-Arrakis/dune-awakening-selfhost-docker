@@ -7,6 +7,9 @@ PORT_LOCK_FILE="runtime/generated/spawn-port-reservations.lock"
 # shellcheck source=runtime/scripts/landsraad-instance-cleanup.sh
 source runtime/scripts/landsraad-instance-cleanup.sh
 
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -50,10 +53,6 @@ case "${TARGET,,}" in
     ;;
 esac
 
-psql_value() {
-  docker exec dune-postgres psql -U postgres -d dune -Atc "$1"
-}
-
 container_name_for_map_partition() {
   local map="$1"
   local partition_id="$2"
@@ -68,7 +67,7 @@ rebuild_port_reservation_file() {
   local rows partition_id map game_port igw_port container_name
 
   : >"$output_path"
-  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F '|' -c "
+  rows="$(dune_psql -At -F '|' -c "
     select
       wp.partition_id,
       wp.map,
@@ -161,7 +160,7 @@ containers_from_map() {
   local map="$1"
   local rows partition safe_name container known_containers found=0
 
-  rows="$(docker exec dune-postgres psql -U postgres -d dune -Atc "
+  rows="$(dune_psql -Atc "
     select partition_id
     from dune.world_partition
     where lower(map) = lower('${map//\'/\'\'}')
@@ -243,7 +242,7 @@ despawn_container() {
   if [ -n "$server_id" ]; then
     echo
     echo "Cleaning DB assignment for server_id: $server_id"
-    docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+    dune_psql -v ON_ERROR_STOP=1 -c "
 begin;
 
 update dune.world_partition

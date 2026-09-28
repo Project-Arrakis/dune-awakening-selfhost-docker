@@ -3,6 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 PID_FILE="runtime/generated/network-server-state-overrides.pid"
 LOG_FILE="runtime/generated/network-server-state-overrides.log"
 LOG_POINTER_FILE="runtime/generated/network-server-state-overrides-current.log"
@@ -190,7 +193,7 @@ io:format(\"~p~n\", [rabbit_db_binding:delete(Binding, DeleteCallback)]).
 }
 
 server_state_maps() {
-  docker exec dune-postgres psql -U postgres -d dune -Atc "
+  dune_psql -Atc "
     select distinct map
     from (
       select map
@@ -329,7 +332,7 @@ snapshot_payloads_for_map() {
   local map_name="$1"
   local rows
 
-  rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
+  rows="$(dune_psql -At -F $'\t' -c "
     select wp.partition_id,
            fs.server_id,
            coalesce(host(fs.game_addr), ''),
@@ -425,7 +428,7 @@ forward_batch_for_map() {
   [[ "$messages" == \[* ]] || return 1
   [ "$messages" != "[]" ] || return 1
 
-  endpoint_rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
+  endpoint_rows="$(dune_psql -At -F $'\t' -c "
     select coalesce(wp.partition_id::text, ''),
            fs.server_id,
            coalesce(host(fs.game_addr), ''),

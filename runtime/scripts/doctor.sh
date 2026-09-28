@@ -478,6 +478,20 @@ else
   fail_msg "Cannot check database because dune-postgres is not running"
 fi
 
+# The autoscaler queries the database thousands of times an hour. It only takes
+# the cheap TCP path when the orchestrator image it runs from ships a psql
+# client; without one it falls back to a docker exec per statement, which is
+# what used to bury the container engine's own state database in writes.
+if is_running dune-autoscaler; then
+  if docker exec dune-autoscaler sh -c 'command -v psql' >/dev/null 2>&1; then
+    ok "Autoscaler reaches Postgres over TCP"
+  else
+    warn_msg "Autoscaler reaches Postgres through a container exec per query"
+    echo "     Rebuild the orchestrator image so it ships a psql client:"
+    echo "     docker compose build orchestrator && dune autoscaler restart"
+  fi
+fi
+
 echo
 echo "=== Sietch state ==="
 if is_running dune-postgres; then
