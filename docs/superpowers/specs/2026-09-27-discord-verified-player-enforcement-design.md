@@ -203,16 +203,30 @@ create table if not exists console.discord_enforcement_state (
 );
 ```
 
-`restore_max_item_count`/`restore_max_item_volume` are only ever populated
-the first time a character is constrained (captured atomically, see
-below) — they hold the character's real, perk-derived values, not a
-guessed default. This is the single, durable, backed-up (via Core's
-existing Postgres backup/restore-test cadence, Requirement 25 — unlike
-mentat's SQLite, which was the original design's actual point of failure)
-source of truth for "what to restore." mentat's own `enforcement_status`
-table (4.1) never needs to track these values at all — it only tracks
-*whether* mentat currently believes the character should be constrained,
-which is a much smaller, recoverable-by-re-check piece of state if lost.
+`restore_max_item_count`/`restore_max_item_volume` are re-captured every
+time a character transitions from *not constrained* into *constrained*
+(captured atomically, see below) — not just the very first time ever, a
+gap a reviewer correctly caught on an earlier draft of this section. A
+character can legitimately cycle: constrained → restored → (plays normally,
+maybe earns a real capacity increase from a perk) → constrained again on a
+later enforcement check. Capturing only on the row's first-ever creation
+would silently discard that legitimate gain forever, permanently reverting
+the character to whatever their capacity happened to be the very first time
+they were ever constrained. Re-capturing on every unconstrained→constrained
+transition instead means the stored restore value always reflects the
+character's most recent real capacity, not a stale historical one. This
+does *not* mean re-capturing on every call: a `constrained: true` call
+against a character that's *already* `constrained` must not re-read
+`dune.inventories`' current value (it holds the enforced minimum at that
+point, not a real one) — see step 3 below for the exact condition. They
+hold the character's real, perk-derived values, not a guessed default. This
+is the single, durable, backed-up (via Core's existing Postgres
+backup/restore-test cadence, Requirement 25 — unlike mentat's SQLite, which
+was the original design's actual point of failure) source of truth for
+"what to restore." mentat's own `enforcement_status` table (4.1) never
+needs to track these values at all — it only tracks *whether* mentat
+currently believes the character should be constrained, which is a much
+smaller, recoverable-by-re-check piece of state if lost.
 
 **Write action:** `player.set-backpack-cap`, params `{ playerControllerId,
 constrained: boolean }` — a boolean, not raw capacity numbers, closing
@@ -231,13 +245,19 @@ row — closing DBA audit finding F1):
    sessions; Core always resolves fresh at call time).
 2. Read-and-lock the current `dune.inventories` row and
    `console.discord_enforcement_state` row for this character.
-3. If `constrained: true` and no `discord_enforcement_state` row exists
-   yet, capture the *current* `max_item_count`/`max_item_volume` into
-   `restore_max_item_count`/`restore_max_item_volume` before overwriting —
-   this capture and the `dune.inventories` overwrite happen in the same
-   transaction, eliminating the crash-race the original design had (there
-   is no longer a separate "remember this somewhere else" step that could
-   be skipped by a crash).
+3. If `constrained: true` and the stored row either doesn't exist yet or
+   has `constrained = false` (i.e. this call is a transition *into*
+   constraint, not a repeat/idempotent call against an already-constrained
+   character), capture the *current* `max_item_count`/`max_item_volume`
+   into `restore_max_item_count`/`restore_max_item_volume` before
+   overwriting — this capture and the `dune.inventories` overwrite happen
+   in the same transaction, eliminating the crash-race the original design
+   had (there is no longer a separate "remember this somewhere else" step
+   that could be skipped by a crash). If the row already has
+   `constrained = true`, skip the capture entirely — `dune.inventories`
+   already holds the enforced minimum at this point, not a real value, and
+   overwriting the stored restore values with it would destroy the actual
+   snapshot.
 4. Apply the new capacity (the fixed enforced minimum, or the stored
    restore values, matching `constrained`).
 5. If no `dune.inventories` row exists yet for this character (a brand-new
