@@ -480,16 +480,36 @@ fi
 
 # The autoscaler queries the database thousands of times an hour. It only takes
 # the cheap TCP path when the orchestrator image it runs from ships a psql
-# client; without one it falls back to a docker exec per statement, which is
-# what used to bury the container engine's own state database in writes.
+# client and nothing has pinned the transport; otherwise it falls back to a
+# docker exec per statement, which is what used to bury the container engine's
+# own state database in writes.
+#
+# Ask the seam itself rather than inferring the answer from the client's
+# presence: DUNE_PSQL_TRANSPORT can pin the exec path on an image that has a
+# client, and a check that guessed would report the opposite of what runs.
 if is_running dune-autoscaler; then
-  if docker exec dune-autoscaler sh -c 'command -v psql' >/dev/null 2>&1; then
-    ok "Autoscaler reaches Postgres over TCP"
-  else
-    warn_msg "Autoscaler reaches Postgres through a container exec per query"
-    echo "     Rebuild the orchestrator image so it ships a psql client:"
-    echo "     docker compose build orchestrator && dune autoscaler restart"
-  fi
+  autoscaler_transport="$(docker exec dune-autoscaler bash -c \
+    'source runtime/scripts/lib/postgres.sh && dune_psql_init && printf "%s" "$DUNE_PSQL_TRANSPORT"' \
+    2>/dev/null || true)"
+  case "$autoscaler_transport" in
+    tcp)
+      ok "Autoscaler reaches Postgres over TCP"
+      ;;
+    exec)
+      warn_msg "Autoscaler reaches Postgres through a container exec per query"
+      if docker exec dune-autoscaler bash -c 'type -P psql' >/dev/null 2>&1; then
+        echo "     The image has a psql client, so DUNE_PSQL_TRANSPORT is pinning this."
+        echo "     Drop it from .env and restart:"
+        echo "     dune autoscaler restart"
+      else
+        echo "     Rebuild the orchestrator image so it ships a psql client:"
+        echo "     docker compose build orchestrator && dune autoscaler restart"
+      fi
+      ;;
+    *)
+      warn_msg "Could not determine how the autoscaler reaches Postgres"
+      ;;
+  esac
 fi
 
 echo

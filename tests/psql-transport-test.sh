@@ -63,7 +63,9 @@ fail() {
 
 # --- transport detection --------------------------------------------------
 
-snippet='printf "%s\n" "$DUNE_PSQL_TRANSPORT"'
+# The library resolves on the first query, not when it is sourced, so the
+# detection cases have to ask it to.
+snippet='dune_psql_init; printf "%s\n" "$DUNE_PSQL_TRANSPORT"'
 [ "$(seam with-psql)" = "tcp" ] || fail "a psql client on PATH must select TCP"
 [ "$(seam without-psql)" = "exec" ] || fail "no psql client must select the exec path"
 
@@ -151,6 +153,23 @@ seam with-psql POSTGRES_PORT=99999 2>"$test_root/err" \
   && fail "an out-of-range POSTGRES_PORT was accepted"
 grep -q 'Invalid POSTGRES_PORT=99999' "$test_root/err"
 
+# --- configuration read after the library is sourced ----------------------
+
+# spawn-server.sh sources this library in its prologue but reads .env thirty
+# lines later, and start-all.sh exports .env after its own sources. Settling the
+# port or the transport at source time would pin the defaults for both of them,
+# and no amount of configuration in .env would move them.
+printf 'POSTGRES_PORT=26432\n' > "$test_root/late-port.env"
+snippet='. '"$test_root"'/late-port.env; dune_psql -c "select 1;"'
+seam with-psql >/dev/null
+grep -qx '26432' "$log" || fail "a POSTGRES_PORT read after the source was ignored"
+
+printf 'DUNE_PSQL_TRANSPORT=exec\n' > "$test_root/late-transport.env"
+snippet='. '"$test_root"'/late-transport.env; dune_psql -c "select 1;"'
+seam with-psql >/dev/null
+grep -qx 'dune-postgres' "$log" \
+  || fail "a DUNE_PSQL_TRANSPORT read after the source was ignored"
+
 # --- the caller's stdin survives ------------------------------------------
 
 # Many callers query inside `while read` loops. A psql opened over TCP is a
@@ -174,6 +193,7 @@ converted=(
   runtime/scripts/autoscaler.sh
   runtime/scripts/deepdesert.sh
   runtime/scripts/despawn-server.sh
+  runtime/scripts/landsraad-instance-cleanup.sh
   runtime/scripts/map-modes.sh
   runtime/scripts/publish-network-server-state-overrides.sh
   runtime/scripts/publish-sietch-overrides.sh
@@ -189,6 +209,23 @@ for script in "${converted[@]}"; do
     || fail "$script queries Postgres through a container exec again"
   grep -qx 'source runtime/scripts/lib/postgres.sh' "$script" \
     || fail "$script does not source the Postgres library"
+done
+
+# Addressing the container by name meant the published port never mattered.
+# Over TCP it decides everything, and on the host nothing but .env supplies it,
+# so a script that queries without reading the file dials 15432 whatever the
+# operator configured. autoscaler.sh is the deliberate exception: it runs in a
+# container that never sees the file and start-autoscaler.sh hands it the
+# settings instead, which tests/autoscaler-env-forwarding-test.sh covers.
+# landsraad-instance-cleanup.sh is sourced by two of these, never run on its own.
+for script in "${converted[@]}"; do
+  case "$script" in
+    runtime/scripts/autoscaler.sh|runtime/scripts/landsraad-instance-cleanup.sh)
+      continue
+      ;;
+  esac
+  grep -q '^\[ -f \.env \] && \. \./\.env$' "$script" \
+    || fail "$script queries Postgres but never reads .env"
 done
 
 # The library exists to end eight identical copies of this helper. Anything

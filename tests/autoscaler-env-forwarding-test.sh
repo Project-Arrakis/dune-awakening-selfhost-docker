@@ -7,6 +7,9 @@ set -euo pipefail
 # which is why the scan-interval knobs were inert until they were forwarded, and
 # why the Postgres library inside those containers has to be told which
 # published port to dial before it can talk TCP instead of a container exec.
+#
+# `dune autoscaler` runs the same script in the foreground on the host, so the
+# `dune` CLI has to do the launcher's job there; that is covered below too.
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 test_root="$(mktemp -d)"
@@ -108,6 +111,38 @@ launch start-coriolis-coordinator.sh POSTGRES_PORT=25432 DUNE_PSQL_TRANSPORT=exe
   || fail "start-coriolis-coordinator.sh does not forward POSTGRES_PORT"
 [ "$(forwarded DUNE_PSQL_TRANSPORT)" = "exec" ] \
   || fail "start-coriolis-coordinator.sh does not forward DUNE_PSQL_TRANSPORT"
+
+# --- the same configuration reaches a foreground run ---------------------
+
+# `dune autoscaler` with no subcommand runs autoscaler.sh directly on the host,
+# where no launcher is involved and .env is the only place the settings can come
+# from. Drive the real CLI against a throwaway root whose autoscaler.sh reports
+# what it was given -- the real one never returns.
+fg_root="$test_root/foreground"
+mkdir -p "$fg_root/runtime/scripts"
+cp "$repo_root/runtime/scripts/dune" "$repo_root/runtime/scripts/compose-project.sh" \
+  "$fg_root/runtime/scripts/"
+cat > "$fg_root/runtime/scripts/autoscaler.sh" <<'STUB'
+#!/usr/bin/env bash
+for key in POSTGRES_PORT DUNE_PSQL_TRANSPORT DUNE_AUTOSCALER_INTERVAL; do
+  printf '%s=%s\n' "$key" "${!key-<unset>}"
+done
+STUB
+chmod +x "$fg_root/runtime/scripts/autoscaler.sh"
+printf 'POSTGRES_PORT=25432\nDUNE_PSQL_TRANSPORT=exec\nDUNE_AUTOSCALER_INTERVAL=9\n' > "$fg_root/.env"
+
+foreground="$(
+  env -u POSTGRES_PORT -u DUNE_PSQL_TRANSPORT -u DUNE_AUTOSCALER_INTERVAL \
+    DUNE_SKIP_STACK_GIT_REPAIR=1 \
+    "$fg_root/runtime/scripts/dune" autoscaler
+)" || fail "dune autoscaler exited non-zero"
+
+diff -u - <(printf '%s\n' "$foreground") <<'EXPECTED' \
+  || fail "dune autoscaler does not hand .env to a foreground autoscaler.sh"
+POSTGRES_PORT=25432
+DUNE_PSQL_TRANSPORT=exec
+DUNE_AUTOSCALER_INTERVAL=9
+EXPECTED
 
 # --- the intervals are validated where they are read ---------------------
 

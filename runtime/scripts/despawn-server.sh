@@ -2,6 +2,10 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+
+# POSTGRES_PORT and DUNE_PSQL_TRANSPORT from here configure the Postgres seam.
+[ -f .env ] && . ./.env
+
 PORT_RESERVATION_FILE="runtime/generated/spawn-port-reservations.tsv"
 PORT_LOCK_FILE="runtime/generated/spawn-port-reservations.lock"
 # shellcheck source=runtime/scripts/landsraad-instance-cleanup.sh

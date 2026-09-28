@@ -35,29 +35,41 @@ DUNE_PG_SUPERUSER_PASSWORD="postgres"
 DUNE_PG_DATABASE="dune"
 DUNE_PG_CONTAINER="dune-postgres"
 
-# `auto` (or unset) picks the transport from the environment. An explicit `tcp`
-# or `exec` pins it, which is how the tests exercise both paths.
-case "${DUNE_PSQL_TRANSPORT:-auto}" in
-  auto)
-    # type -P, not command -v: command -v would also match a shell function
-    # named psql, and this repo used to carry one (deepdesert.sh) whose whole
-    # body was a docker exec. Only a real client on PATH means TCP is possible.
-    if type -P psql >/dev/null 2>&1; then
-      DUNE_PSQL_TRANSPORT="tcp"
-    else
-      DUNE_PSQL_TRANSPORT="exec"
-    fi
-    ;;
-  tcp|exec) ;;
-  *)
-    printf '%s\n' "Invalid DUNE_PSQL_TRANSPORT=$DUNE_PSQL_TRANSPORT; expected auto, tcp or exec." >&2
-    return 1
-    ;;
-esac
+# `auto` (or unset) picks the transport by looking for a client; an explicit
+# `tcp` or `exec` pins it, which is how the tests exercise both paths.
+#
+# Both this and the port are settled on the first query rather than when this
+# file is sourced. Deferring is what makes the seam safe to source anywhere in a
+# caller's prologue: several callers read .env well after their `source` lines,
+# and resolving eagerly would pin the default port before the operator's value
+# was ever visible. Neither answer can change while a process runs, so the
+# result is cached in the shell that asked -- the autoscaler's scan loops settle
+# it once each, while a `$(dune_psql ...)` substitution re-derives it in its own
+# subshell, which is one grep against the cost of launching psql.
+dune_psql_init() {
+  [ -z "${DUNE_PSQL_INITIALIZED:-}" ] || return 0
 
-# Resolved once per process rather than per query: the autoscaler asks for it
-# thousands of times an hour and the answer cannot change while it runs.
-DUNE_PG_PORT="$(resolve_postgres_port)"
+  case "${DUNE_PSQL_TRANSPORT:-auto}" in
+    auto)
+      # type -P, not command -v: command -v would also match a shell function
+      # named psql, and this repo used to carry one (deepdesert.sh) whose whole
+      # body was a docker exec. Only a real client on PATH means TCP is possible.
+      if type -P psql >/dev/null 2>&1; then
+        DUNE_PSQL_TRANSPORT="tcp"
+      else
+        DUNE_PSQL_TRANSPORT="exec"
+      fi
+      ;;
+    tcp|exec) ;;
+    *)
+      printf '%s\n' "Invalid DUNE_PSQL_TRANSPORT=$DUNE_PSQL_TRANSPORT; expected auto, tcp or exec." >&2
+      return 1
+      ;;
+  esac
+
+  DUNE_PG_PORT="$(resolve_postgres_port)" || return 1
+  DUNE_PSQL_INITIALIZED=1
+}
 
 # Run psql against the stack's database as the superuser, passing through any
 # psql arguments. Callers supply their own -c/-At/-F flags exactly as they did
@@ -69,6 +81,8 @@ DUNE_PG_PORT="$(resolve_postgres_port)"
 # exec` without -i never attached stdin, so redirecting keeps the TCP path
 # behaving exactly like the exec path it replaces.
 dune_psql() {
+  dune_psql_init || return 1
+
   if [ "$DUNE_PSQL_TRANSPORT" = "tcp" ]; then
     PGPASSWORD="$DUNE_PG_SUPERUSER_PASSWORD" command psql \
       -h 127.0.0.1 \
