@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-RUNTIME_ENV = ROOT / "runtime" / "scripts" / "runtime-env.sh"
+PORTS_LIB = ROOT / "runtime" / "scripts" / "lib" / "ports.sh"
 USERSETTINGS = ROOT / "runtime" / "scripts" / "usersettings.py"
 SPAWN_SERVER = ROOT / "runtime" / "scripts" / "spawn-server.sh"
 RABBITMQ_START = ROOT / "runtime" / "scripts" / "start-rabbitmq.sh"
@@ -140,7 +140,7 @@ def read_text(path: Path) -> str:
 
 
 def parse_service_defaults() -> dict[str, int]:
-    text = read_text(RUNTIME_ENV)
+    text = read_text(PORTS_LIB)
     values: dict[str, int] = {}
     for field, (env_key, function_name) in SERVICE_DEFAULT_PATTERNS.items():
         pattern = (
@@ -150,7 +150,7 @@ def parse_service_defaults() -> dict[str, int]:
         match = re.search(pattern, text)
         if not match:
             raise ConfigError(
-                f"Could not derive {env_key} default from {RUNTIME_ENV}. "
+                f"Could not derive {env_key} default from {PORTS_LIB}. "
                 "The runtime source may have changed; update this helper before applying."
             )
         values[field] = int(match.group(1))
