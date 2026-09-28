@@ -22,10 +22,12 @@ function runFixture(row, args) {
   const generated = join(fixture, "runtime", "generated");
   const bin = join(fixture, "bin");
   const calls = join(generated, "calls.log");
-  mkdirSync(scripts, { recursive: true });
+  mkdirSync(join(scripts, "lib"), { recursive: true });
   mkdirSync(generated, { recursive: true });
   mkdirSync(bin, { recursive: true });
   copyFileSync(join(repoRoot, "runtime/scripts/sietches.sh"), join(scripts, "sietches.sh"));
+  copyFileSync(join(repoRoot, "runtime/scripts/lib/ports.sh"), join(scripts, "lib/ports.sh"));
+  copyFileSync(join(repoRoot, "runtime/scripts/lib/postgres.sh"), join(scripts, "lib/postgres.sh"));
   copyFileSync(join(repoRoot, "runtime/scripts/sietch-name.sh"), join(scripts, "sietch-name.sh"));
   copyFileSync(join(repoRoot, "runtime/scripts/host-file-ownership.sh"), join(scripts, "host-file-ownership.sh"));
   writeFileSync(join(generated, "sietch-config.json"), '{"maps":{"Survival_1":{"active_dimensions":2}},"partitions":{}}\n');
@@ -58,7 +60,16 @@ function runFixture(row, args) {
   const result = spawnSync("bash", ["runtime/scripts/sietches.sh", ...args], {
     cwd: fixture,
     encoding: "utf8",
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, MOCK_PARTITION_ROW: row }
+    // DUNE_PSQL_TRANSPORT: what the docker mock above stands in for is the
+    // Postgres container, so pin the exec leg. On "auto" the script would take
+    // the TCP leg wherever a psql client is installed -- as it is on a CI
+    // runner -- and dial a real port straight past the mock.
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      MOCK_PARTITION_ROW: row,
+      DUNE_PSQL_TRANSPORT: "exec"
+    }
   });
   const callLog = readFileSync(calls, "utf8");
   rmSync(fixture, { recursive: true, force: true });
@@ -174,9 +185,9 @@ test("Sietch config preflight rejects invalid state without replacing it with de
   const fixture = mkdtempSync(join(tmpdir(), "dune-sietch-preflight-"));
   const scripts = join(fixture, "runtime", "scripts");
   const generated = join(fixture, "runtime", "generated");
-  mkdirSync(scripts, { recursive: true });
+  mkdirSync(join(scripts, "lib"), { recursive: true });
   mkdirSync(generated, { recursive: true });
-  for (const name of ["sietches.sh", "sietch-name.sh", "host-file-ownership.sh"]) {
+  for (const name of ["sietches.sh", "sietch-name.sh", "host-file-ownership.sh", "lib/ports.sh", "lib/postgres.sh"]) {
     copyFileSync(join(repoRoot, "runtime/scripts", name), join(scripts, name));
   }
   const config = join(generated, "sietch-config.json");
