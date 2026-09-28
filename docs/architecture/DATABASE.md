@@ -112,8 +112,10 @@ Two consequences worth knowing:
 
 Because the containers never source `.env`, their launchers
 (`start-autoscaler.sh`, `start-coriolis-coordinator.sh`) forward
-`POSTGRES_PORT` explicitly; without it the in-container client would dial the
-default port on a stack configured for another one.
+`POSTGRES_PORT` and `DUNE_PSQL_TRANSPORT` explicitly. Without the first, an
+in-container client would dial the default port on a stack configured for
+another one; without the second, pinning the transport in `.env` would have no
+effect on the one process where it matters most.
 
 `coriolis-data-cleanup.sh` stays on a direct `docker exec`: it pipes a
 heredoc on stdin and connects as the `dune` application role, neither of

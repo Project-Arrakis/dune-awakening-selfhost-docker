@@ -62,9 +62,10 @@ fi
 
 # autoscaler.sh reads its configuration from the environment and never sources
 # .env itself, so anything an operator sets there has to be handed over here.
-# The scan intervals were silently inert before this; POSTGRES_PORT tells the
-# in-container psql client which published port to dial. An unset value is
-# passed through as empty, which every consumer treats as "use the default".
+# The scan intervals were silently inert before this; POSTGRES_PORT and
+# DUNE_PSQL_TRANSPORT decide which port the in-container psql client dials and
+# whether it dials one at all. An unset value is passed through as empty, which
+# every consumer treats as "use the default".
 echo "Starting autoscaler container..."
 group_args=()
 if [ -n "$DOCKER_SOCK_GID" ]; then
@@ -84,6 +85,7 @@ docker run -d \
   -e "DUNE_AUTOSCALER_INTERVAL=${DUNE_AUTOSCALER_INTERVAL:-}" \
   -e "DUNE_AUTOSCALER_DEMAND_INTERVAL=${DUNE_AUTOSCALER_DEMAND_INTERVAL:-}" \
   -e "POSTGRES_PORT=${POSTGRES_PORT:-}" \
+  -e "DUNE_PSQL_TRANSPORT=${DUNE_PSQL_TRANSPORT:-}" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$HOST_REPO_ROOT:$AUTOSCALER_CONTAINER_REPO_ROOT" \
   -w "$AUTOSCALER_CONTAINER_REPO_ROOT" \

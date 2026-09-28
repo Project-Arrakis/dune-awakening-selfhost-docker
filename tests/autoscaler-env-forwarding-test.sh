@@ -82,16 +82,18 @@ forwarded() {
 launch start-autoscaler.sh \
   DUNE_AUTOSCALER_INTERVAL=9 \
   DUNE_AUTOSCALER_DEMAND_INTERVAL=4 \
-  POSTGRES_PORT=25432
+  POSTGRES_PORT=25432 \
+  DUNE_PSQL_TRANSPORT=exec
 
 [ "$(forwarded DUNE_AUTOSCALER_INTERVAL)" = "9" ] || fail "the scan interval is not forwarded"
 [ "$(forwarded DUNE_AUTOSCALER_DEMAND_INTERVAL)" = "4" ] || fail "the demand interval is not forwarded"
 [ "$(forwarded POSTGRES_PORT)" = "25432" ] || fail "start-autoscaler.sh does not forward POSTGRES_PORT"
+[ "$(forwarded DUNE_PSQL_TRANSPORT)" = "exec" ] || fail "start-autoscaler.sh does not forward DUNE_PSQL_TRANSPORT"
 
 # Unset means unset: the key is still handed over, empty, so the script inside
 # the container applies its own default instead of inheriting a stale value.
 launch start-autoscaler.sh
-for key in DUNE_AUTOSCALER_INTERVAL DUNE_AUTOSCALER_DEMAND_INTERVAL POSTGRES_PORT; do
+for key in DUNE_AUTOSCALER_INTERVAL DUNE_AUTOSCALER_DEMAND_INTERVAL POSTGRES_PORT DUNE_PSQL_TRANSPORT; do
   [ "$(forwarded "$key" | wc -l)" = "1" ] || fail "start-autoscaler.sh drops $key when it is unset"
   [ -z "$(forwarded "$key")" ] || fail "start-autoscaler.sh invented a value for $key"
 done
@@ -101,9 +103,11 @@ done
 # coriolis-coordinator.sh issues no SQL itself, but restart-game-farm.sh hands
 # off to sietches.sh, recycle-world-game-servers.sh and the two override
 # publishers, all of which query through the Postgres library.
-launch start-coriolis-coordinator.sh POSTGRES_PORT=25432
+launch start-coriolis-coordinator.sh POSTGRES_PORT=25432 DUNE_PSQL_TRANSPORT=exec
 [ "$(forwarded POSTGRES_PORT)" = "25432" ] \
   || fail "start-coriolis-coordinator.sh does not forward POSTGRES_PORT"
+[ "$(forwarded DUNE_PSQL_TRANSPORT)" = "exec" ] \
+  || fail "start-coriolis-coordinator.sh does not forward DUNE_PSQL_TRANSPORT"
 
 # --- the intervals are validated where they are read ---------------------
 
