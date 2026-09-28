@@ -11,6 +11,11 @@ function evictOldestIfFull(map, maxEntries, protectedKey) {
   }
 }
 
+function trackedEntryLimit(value) {
+  const limit = Math.floor(Number(value));
+  return Number.isFinite(limit) && limit >= 2 ? limit : 5000;
+}
+
 export function createLoginRateLimiter(options = {}) {
   const {
     maxAttempts = 8,
@@ -22,6 +27,7 @@ export function createLoginRateLimiter(options = {}) {
   } = options;
   const attempts = new Map();
   const globalKey = "__global__";
+  const entryLimit = trackedEntryLimit(maxTrackedKeys);
 
   function check(key) {
     const timestamp = now();
@@ -60,7 +66,7 @@ export function createLoginRateLimiter(options = {}) {
       ? { count: 1, firstAttemptAt: timestamp, blockedUntil: 0 }
       : { ...current, count: current.count + 1 };
     if (next.count >= limit) next.blockedUntil = timestamp + blockMs;
-    if (!attempts.has(key)) evictOldestIfFull(attempts, maxTrackedKeys, globalKey);
+    if (!attempts.has(key)) evictOldestIfFull(attempts, entryLimit, globalKey);
     attempts.set(key, next);
   }
 
@@ -77,6 +83,7 @@ export function createMutationRateLimiter(options = {}) {
   } = options;
   const requests = new Map();
   const globalKey = "__global_mutations__";
+  const entryLimit = trackedEntryLimit(maxTrackedKeys);
 
   function check(key) {
     const timestamp = now();
@@ -114,7 +121,7 @@ export function createMutationRateLimiter(options = {}) {
     const next = current
       ? { ...current, count: current.count + 1 }
       : { count: 1, firstRequestAt: timestamp };
-    if (!current) evictOldestIfFull(requests, maxTrackedKeys, globalKey);
+    if (!current) evictOldestIfFull(requests, entryLimit, globalKey);
     requests.set(key, next);
   }
 
@@ -147,6 +154,7 @@ export function createApiKeyRateLimiter(options = {}) {
   } = options;
   const requests = new Map();
   const globalKey = "__global_api_keys__";
+  const entryLimit = trackedEntryLimit(maxTrackedKeys);
 
   function resolveLimit(maxRequests) {
     const limit = Math.floor(Number(maxRequests));
@@ -196,7 +204,7 @@ export function createApiKeyRateLimiter(options = {}) {
 
   function increment(key, timestamp) {
     const current = activeRequest(key, timestamp);
-    if (!current) evictOldestIfFull(requests, maxTrackedKeys, globalKey);
+    if (!current) evictOldestIfFull(requests, entryLimit, globalKey);
     requests.set(key, current ? { ...current, count: current.count + 1 } : { count: 1, firstRequestAt: timestamp });
   }
 
