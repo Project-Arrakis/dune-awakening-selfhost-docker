@@ -4,6 +4,7 @@ import { marketBotApi, type MarketBotStatus } from "../../api/marketBot";
 import { MarketBotOverlay } from "./MarketBotOverlay";
 
 vi.mock("../../api/marketBot", () => ({
+  MARKET_BOT_DISABLE_BACKUPS_PHRASE: "DISABLE MARKET BOT BACKUPS",
   marketBotApi: {
     status: vi.fn(),
     exchanges: vi.fn(),
@@ -16,6 +17,7 @@ vi.mock("../../api/marketBot", () => ({
     runBuyback: vi.fn(),
     runSeed: vi.fn(),
     unseed: vi.fn(),
+    saveSettings: vi.fn(),
     setActivePlan: vi.fn(),
     renamePlan: vi.fn(),
     downloadPlanCsv: vi.fn(),
@@ -187,6 +189,53 @@ describe("MarketBotOverlay", () => {
 
     await waitFor(() => expect(props.confirmAction).toHaveBeenCalled());
     expect(marketBotApi.runBuyback).not.toHaveBeenCalled();
+  });
+
+  it("shows safety backups on by default and disables them only after confirming, with the server phrase", async () => {
+    vi.mocked(marketBotApi.saveSettings).mockResolvedValue({ safetyBackups: false });
+    const props = renderOverlay();
+
+    const toggle = await screen.findByLabelText("Back Up the Database Before Every Write");
+    expect(toggle).toBeChecked();
+    expect(screen.queryByText(/without a restore point/)).not.toBeInTheDocument();
+
+    vi.mocked(marketBotApi.status).mockResolvedValue(statusFixture({ settings: { safetyBackups: false } }));
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      expect.stringMatching(/Turn off Market Bot safety backups\?/),
+      expect.objectContaining({ title: "Disable Safety Backups", danger: true })
+    ));
+    await waitFor(() => expect(marketBotApi.saveSettings).toHaveBeenCalledWith({ safetyBackups: false, confirmation: "DISABLE MARKET BOT BACKUPS" }));
+    expect(await screen.findByText(/without a restore point/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Back Up the Database Before Every Write")).not.toBeChecked();
+  });
+
+  it("keeps safety backups on when the disable confirmation is declined", async () => {
+    const props = renderOverlay();
+    props.confirmAction.mockResolvedValue(false);
+
+    fireEvent.click(await screen.findByLabelText("Back Up the Database Before Every Write"));
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalled());
+    expect(marketBotApi.saveSettings).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Back Up the Database Before Every Write")).toBeChecked();
+  });
+
+  it("re-enables safety backups without a confirmation and flags skipped backups in run results", async () => {
+    vi.mocked(marketBotApi.status).mockResolvedValue(statusFixture({ settings: { safetyBackups: false } }));
+    vi.mocked(marketBotApi.runBuyback).mockResolvedValue({ status: "swept", purchased: 1, totalUnits: "10", totalSolari: "500", backupSkipped: true });
+    vi.mocked(marketBotApi.saveSettings).mockResolvedValue({ safetyBackups: true });
+    const props = renderOverlay();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run Sweep Now" }));
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(expect.stringMatching(/Safety backups are off, so no backup is taken\./), expect.anything()));
+    expect(await screen.findByText(/bought 1 listing\(s\), 10 units for 500 Solari\. No safety backup was taken\./)).toBeInTheDocument();
+
+    props.confirmAction.mockClear();
+    fireEvent.click(screen.getByLabelText("Back Up the Database Before Every Write"));
+    await waitFor(() => expect(marketBotApi.saveSettings).toHaveBeenCalledWith({ safetyBackups: true }));
+    expect(props.confirmAction).not.toHaveBeenCalled();
   });
 
   it("saves the seed schedule with the chosen augment pricing", async () => {
