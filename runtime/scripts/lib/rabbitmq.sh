@@ -205,17 +205,41 @@ print(json.dumps({
 #
 # Unlike the admin verbs above, this one needs credentials -- rabbitmqctl
 # authenticates with the Erlang cookie, the HTTP API does not -- and finding
-# them must not itself cost an exec, or the trade is a wash. So the lookup is
-# read-only: it parses the director log the publishers already keep current
-# (publish-network-server-state-overrides.sh and publish-sietch-overrides.sh
-# both refresh it on their loops) and never runs ensure_text_router_log or
-# `docker logs` to produce one. Where that log is absent or stale this returns
-# RMQ_HTTP_UNSUPPORTED and the caller runs the exec it ran before, which is also
-# what happens if the port is unreachable or answers anything but 2xx.
+# them must not itself cost an exec, or the trade is a wash.
 #
-# The same two-line parse lives in four publishers as load_rmq_admin_creds.
-# Those copies refresh the log first and so cannot simply call this one; folding
-# them together is worth doing separately from the exec they are not on.
+# What has to be avoided is `docker exec`, which spawns a conmon pair. `docker
+# logs` is not that: it reads the engine's log for the container and starts no
+# process inside it. The rule here is no exec, not no engine call. An earlier
+# version of this function read only the file below on the theory that any
+# engine call was too expensive, and the result was a seam that declined every
+# time on a live host while the callers went on execing exactly as before.
+#
+# Two sources, in the order the publishers' load_rmq_admin_creds tries them:
+#
+#   1. runtime/text-router/director-current.log, if a publisher has left one.
+#      Free when it hits. It usually will not: that file is a `tail -n 4000` of
+#      a log inside dune-text-router, and the credentials are announced once at
+#      director startup, so they scroll out of the window almost immediately.
+#      Measured on a live host eight minutes after boot: zero matches.
+#   2. `docker logs dune-director`, read line by line and abandoned at the
+#      first match. The announcement is the nineteenth line the director
+#      writes, so this stops after roughly a kilobyte of a log that was 191 KB
+#      at the time -- 24 ms measured, and no exec.
+#
+# The publishers also try `docker logs dune-text-router` after the director.
+# That container logs the administrator's name a few hundred times and its
+# password never, so the fallback cannot match and is not reproduced here.
+#
+# Every miss returns RMQ_HTTP_UNSUPPORTED and the caller runs the exec it ran
+# before, which is also what happens if the port is unreachable or answers
+# anything but 2xx. Resolved once per process and cached: ready.sh is a fresh
+# process every thirty seconds and pays the 24 ms once, while the publisher
+# loops pay it once for their whole lifetime.
+#
+# The same parse lives in four publishers as load_rmq_admin_creds. Those copies
+# run ensure_text_router_log -- a real `docker exec` -- before reading, so they
+# cannot simply call this one; folding them together, and dropping that exec
+# from them, is worth doing separately.
 _dune_rmq_admin_user=""
 _dune_rmq_admin_password=""
 _dune_rmq_admin_creds_tried=""
@@ -231,21 +255,66 @@ _dune_rmq_admin_creds() {
   parsed="$(python3 - <<'PY' || true
 from pathlib import Path
 import re
+import subprocess
 
-log_path = Path("runtime/text-router/director-current.log")
-patterns = [
+PATTERNS = [
     re.compile(r'Generated new admin credentials:\s*(bgd\.[^/\s]+\.admin)\s*/\s*([A-Za-z0-9+/=]+)'),
     re.compile(r'(bgd\.[^/\s]+\.admin)/([A-Za-z0-9+/=]+) => allow administrator'),
 ]
-text = log_path.read_text(errors="ignore") if log_path.exists() else ""
-matches = []
-for pattern in patterns:
-    matches = pattern.findall(text)
-    if matches:
-        break
-if matches:
-    print(matches[-1][0])
-    print(matches[-1][1])
+
+
+def scan_all(lines):
+    # Last match wins, as in load_rmq_admin_creds: credentials can be
+    # regenerated and the newest announcement is the live one.
+    found = None
+    for line in lines:
+        for pattern in PATTERNS:
+            match = pattern.search(line)
+            if match:
+                found = match.groups()
+    return found
+
+
+log_path = Path("runtime/text-router/director-current.log")
+result = None
+if log_path.exists():
+    with log_path.open(errors="ignore") as handle:
+        result = scan_all(handle)
+
+if result is None:
+    # Streamed rather than captured, and abandoned at the first match. The
+    # announcement is near the top, so this reads a fraction of the log however
+    # large it has grown. There is only ever one announcement per director, so
+    # stopping at the first is stopping at the only one.
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            ["docker", "logs", "dune-director"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            errors="ignore",
+        )
+    except OSError:
+        proc = None
+    if proc is not None:
+        try:
+            for line in proc.stdout:
+                for pattern in PATTERNS:
+                    match = pattern.search(line)
+                    if match:
+                        result = match.groups()
+                        break
+                if result is not None:
+                    break
+        finally:
+            proc.stdout.close()
+            proc.kill()
+            proc.wait()
+
+if result:
+    print(result[0])
+    print(result[1])
 PY
 )"
 

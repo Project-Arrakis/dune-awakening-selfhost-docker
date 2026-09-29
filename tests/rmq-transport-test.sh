@@ -305,14 +305,28 @@ printf '%s' "${CONN_HTTP_CODE:-200}"
 STUB
 chmod +x "$work/bin/curl"
 
-# The fallback exec must not happen behind the seam's back, and neither must a
-# `docker logs` to find credentials: this docker records and fails.
+# Records every engine call so the assertions can tell the two kinds apart: a
+# `docker exec` spawns a conmon pair and is the thing being eliminated, while
+# `docker logs` starts no process in the container and is allowed. Serves the
+# director log when asked for it, and fails anything else.
 cat > "$work/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_CALLS"
+if [ "$1" = logs ] && [ "$2" = dune-director ]; then
+  cat "${DIRECTOR_LOG_FIXTURE:-/dev/null}" || exit 0
+  # Only reached if the reader consumed everything; a reader that stops at the
+  # match closes the pipe and kills this cat first.
+  printf 'drained-the-whole-log\n' >> "$DOCKER_CALLS"
+  exit 0
+fi
 exit 1
 STUB
 chmod +x "$work/bin/docker"
+
+# Asserts on the kind of engine call, not the count: `docker logs` is fine here.
+no_exec_happened() {
+  ! grep -Eq '(^| )exec( |$)' "$work/docker-calls"
+}
 
 # Run from a scratch tree, not the checkout: the credential lookup reads
 # runtime/text-router/director-current.log relative to the working directory,
@@ -367,17 +381,21 @@ grep -Fq "columns=user,state" "$work/conn-args" \
 grep -Fq 'user = "bgd.testgroup.admin:EXAMPLEONLYNOTASECRET"' "$work/conn-stdin" \
   || fail "connections did not read credentials from the director log, or passed them in argv"
 
-# The point of the exercise: no exec, of any kind, on the fast path. A
-# credential lookup that ran ensure_text_router_log or `docker logs` would trade
-# one exec for another and save nothing.
+# The point of the exercise: no exec on the fast path. A credential lookup that
+# ran ensure_text_router_log -- a `docker exec` -- would trade one exec for
+# another and save nothing. Here the maintained log hits, so nothing at all is
+# asked of the engine.
 [ ! -s "$work/docker-calls" ] \
-  || fail "the connections seam ran docker: $(cat "$work/docker-calls")"
+  || fail "the connections seam called docker although the log had credentials: $(cat "$work/docker-calls")"
 
 # An empty list is a successful answer -- no game server has connected yet --
 # not a reason to exec.
 conn_reset
+# Both halves are assignments, so this sets CONN_RESPONSE_BODY for good rather
+# than for one command; the cases below restore it deliberately.
 CONN_RESPONSE_BODY='[]' got="$(dune_rmq_game_connections)" || fail "an empty connection list was treated as a failure"
 [ -z "$got" ] || fail "an empty list rendered something: $(printf '%q' "$got")"
+CONN_RESPONSE_BODY='[{"user":"sg.world.7.overmap","state":"running"}]'
 
 # --- every way it declines ----------------------------------------------------
 expect_conn_unsupported() {
@@ -388,17 +406,80 @@ expect_conn_unsupported() {
     || fail "$label should have been unsupported (got $rc), so the caller cannot fall back"
 }
 
-# No credentials in the log: the lookup is read-only, so this is simply a miss.
+# --- the second credential source ---------------------------------------------
+# The maintained log is a `tail -n 4000` of a log inside dune-text-router and
+# the credentials are announced once at director startup, so on a live host it
+# almost never has them: measured zero matches eight minutes after boot. That
+# made the first version of this seam decline every single time while the
+# callers execed exactly as before, which is the failure these two cases exist
+# to catch. `docker logs` is the fallback because it starts no process in the
+# container -- it is not the `docker exec` the seam is here to remove.
+export DIRECTOR_LOG_FIXTURE="$work/director-container.log"
+cat > "$DIRECTOR_LOG_FIXTURE" <<'LOG'
+[info] Director starting up
+[info] Generated new admin credentials: bgd.fromlogs.admin / LOGSONLYNOTASECRET
+[info] steady state
+LOG
+
 conn_reset
 mv "$conn_log" "$conn_log.saved"
-expect_conn_unsupported 'a missing director log'
+got="$(dune_rmq_game_connections)" \
+  || fail "the seam declined although docker logs could supply credentials (rc=$?)"
+[ -n "$got" ] || fail "the docker logs path produced no connections"
+grep -Fq 'user = "bgd.fromlogs.admin:LOGSONLYNOTASECRET"' "$work/conn-stdin" \
+  || fail "credentials did not come from the director container log"
+grep -Fq 'logs dune-director' "$work/docker-calls" \
+  || fail "the seam did not fall through to docker logs"
+no_exec_happened \
+  || fail "the credential lookup used an exec: $(cat "$work/docker-calls")"
+
+# The read has to stop at the match rather than drain the log. On a live host
+# that log was 191 KB eight minutes in and grows all day, while the credentials
+# are on line nineteen -- the difference between a 24 ms read and an unbounded
+# one, on the branch whose whole subject is I/O. The fixture is big enough that
+# a reader which does not stop is obvious.
+conn_reset
+{
+  printf '[info] Director starting up\n'
+  printf '[info] Generated new admin credentials: bgd.early.admin / EARLYNOTASECRET\n'
+  # ~2 MB of what comes after, which must never be read.
+  for _ in $(seq 1 20000); do
+    printf '[info] steady state chatter that the reader must never reach %s\n' "$_"
+  done
+} > "$DIRECTOR_LOG_FIXTURE"
+
+dune_rmq_game_connections >/dev/null || fail "the early-exit case declined"
+grep -Fq 'user = "bgd.early.admin:EARLYNOTASECRET"' "$work/conn-stdin" \
+  || fail "the early-exit case did not read the credentials"
+! grep -Fq 'drained-the-whole-log' "$work/docker-calls" \
+  || fail "the credential lookup read the whole container log instead of stopping at the match"
+
+# Neither source has them: now it is a genuine miss and the caller execs.
+conn_reset
+: > "$DIRECTOR_LOG_FIXTURE"
+expect_conn_unsupported 'no credentials in either source'
+no_exec_happened \
+  || fail "a credential miss made the seam exec to go looking: $(cat "$work/docker-calls")"
+
+# The maintained log wins when it does have them, so the common case stays free.
+conn_reset
+mv "$conn_log.saved" "$conn_log"
+printf '[info] Generated new admin credentials: bgd.fromfile.admin / FILEONLYNOTASECRET\n' > "$conn_log"
+dune_rmq_game_connections >/dev/null || fail "the file source stopped working"
+grep -Fq 'user = "bgd.fromfile.admin:FILEONLYNOTASECRET"' "$work/conn-stdin" \
+  || fail "the director container log overrode the maintained file"
 [ ! -s "$work/docker-calls" ] \
-  || fail "a missing director log made the seam exec to go looking for one"
+  || fail "the seam called docker although the file had credentials"
 
 conn_reset
 printf '[info] nothing useful here\n' > "$conn_log"
+: > "$DIRECTOR_LOG_FIXTURE"
 expect_conn_unsupported 'a director log with no credentials'
-mv "$conn_log.saved" "$conn_log"
+cat > "$conn_log" <<'LOG'
+[info] Director starting up
+[info] Generated new admin credentials: bgd.testgroup.admin / EXAMPLEONLYNOTASECRET
+[info] bgd.testgroup.admin/EXAMPLEONLYNOTASECRET => allow administrator
+LOG
 
 # A 401 means the credentials in the log have been rotated out from under us.
 # Unlike dune_rmq_http_try, where the caller refreshes and retries, there is

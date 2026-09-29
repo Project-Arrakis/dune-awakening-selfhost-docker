@@ -136,14 +136,27 @@ source of container execs on an otherwise idle farm.
 
 Unlike the `rabbitmqadmin` verbs above, this one needs credentials — `rabbitmqctl`
 authenticates with the Erlang cookie, the HTTP API does not — and finding them
-must not itself cost an exec, or the trade is a wash. So the lookup is read-only:
-it parses the battlegroup administrator out of
-`runtime/text-router/director-current.log`, which the publisher loops already
-keep current, and never runs `ensure_text_router_log` or `docker logs` to
-produce one. Anything that goes wrong — no `curl`, no published port, no
-credentials in the log, a non-2xx answer — returns `RMQ_HTTP_UNSUPPORTED` and
-the caller runs the `rabbitmqctl` it always ran. A 401 is included in that,
-because credentials rotate and there is nothing fresher to re-read, while the
+must not itself cost an exec, or the trade is a wash.
+
+The distinction that matters is between `docker exec`, which spawns a conmon
+pair, and `docker logs`, which reads the engine's log and starts no process in
+the container. Only the first is what this seam exists to remove. The lookup
+tries `runtime/text-router/director-current.log` first, then falls through to
+`docker logs dune-director`, reading line by line and stopping at the first
+match — the announcement is the nineteenth line the director writes, so it
+stops after about a kilobyte. The result is cached per process.
+
+The file is tried first because it is free, but it usually misses: it is a
+`tail -n 4000` of a log inside `dune-text-router`, and the credentials are
+announced once at director startup, so they scroll out of the window within
+minutes. A first version of this seam read only that file, on the theory that
+any engine call was too expensive, and the result was a seam that declined
+every time on a live host while the callers went on execing exactly as before.
+
+Anything that goes wrong — no `curl`, no published port, no credentials in
+either source, a non-2xx answer — returns `RMQ_HTTP_UNSUPPORTED` and the caller
+runs the `rabbitmqctl` it always ran. A 401 is included in that, because
+credentials rotate and there is nothing fresher to re-read, while the
 cookie-authenticated exec still works.
 
 ---
