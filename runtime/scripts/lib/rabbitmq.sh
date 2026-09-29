@@ -192,3 +192,120 @@ print(json.dumps({
     "encoding": "auto",
 }), end="")'
 }
+
+# --- the game broker's connection list ------------------------------------
+
+# ready.sh and status.sh answer "is a game server connected and running?" with
+# `docker exec dune-rmq-game rabbitmqctl list_connections user state`. On a
+# quiet Battlegroup that is the largest standing source of container execs in
+# the stack: ready.sh runs it on the autoscaler's 30-second dynamic-ready heal
+# scan and retries it once, and every exec leaves a conmon pair resident for the
+# engine's exit delay. The management API answers the same question over the
+# loopback port start-rabbitmq.sh already publishes for it.
+#
+# Unlike the admin verbs above, this one needs credentials -- rabbitmqctl
+# authenticates with the Erlang cookie, the HTTP API does not -- and finding
+# them must not itself cost an exec, or the trade is a wash. So the lookup is
+# read-only: it parses the director log the publishers already keep current
+# (publish-network-server-state-overrides.sh and publish-sietch-overrides.sh
+# both refresh it on their loops) and never runs ensure_text_router_log or
+# `docker logs` to produce one. Where that log is absent or stale this returns
+# RMQ_HTTP_UNSUPPORTED and the caller runs the exec it ran before, which is also
+# what happens if the port is unreachable or answers anything but 2xx.
+#
+# The same two-line parse lives in four publishers as load_rmq_admin_creds.
+# Those copies refresh the log first and so cannot simply call this one; folding
+# them together is worth doing separately from the exec they are not on.
+_dune_rmq_admin_user=""
+_dune_rmq_admin_password=""
+_dune_rmq_admin_creds_tried=""
+
+_dune_rmq_admin_creds() {
+  [ -z "$_dune_rmq_admin_creds_tried" ] || {
+    [ -n "$_dune_rmq_admin_user" ] || return 1
+    return 0
+  }
+  _dune_rmq_admin_creds_tried=1
+
+  local parsed
+  parsed="$(python3 - <<'PY' || true
+from pathlib import Path
+import re
+
+log_path = Path("runtime/text-router/director-current.log")
+patterns = [
+    re.compile(r'Generated new admin credentials:\s*(bgd\.[^/\s]+\.admin)\s*/\s*([A-Za-z0-9+/=]+)'),
+    re.compile(r'(bgd\.[^/\s]+\.admin)/([A-Za-z0-9+/=]+) => allow administrator'),
+]
+text = log_path.read_text(errors="ignore") if log_path.exists() else ""
+matches = []
+for pattern in patterns:
+    matches = pattern.findall(text)
+    if matches:
+        break
+if matches:
+    print(matches[-1][0])
+    print(matches[-1][1])
+PY
+)"
+
+  _dune_rmq_admin_user="$(printf '%s' "$parsed" | sed -n 1p)"
+  _dune_rmq_admin_password="$(printf '%s' "$parsed" | sed -n 2p)"
+  [ -n "$_dune_rmq_admin_user" ] && [ -n "$_dune_rmq_admin_password" ]
+}
+
+# One connection per line, user and state separated by a tab -- the columns and
+# the order `rabbitmqctl list_connections user state` prints, minus its header,
+# which neither caller's awk wanted. Success prints the list, which may be
+# legitimately empty when no game server has connected yet.
+dune_rmq_game_connections() {
+  [ "$(dune_rmq_transport)" = http ] || return "$RMQ_HTTP_UNSUPPORTED"
+  _dune_rmq_admin_creds || return "$RMQ_HTTP_UNSUPPORTED"
+
+  local out_file code rc
+  out_file="$(mktemp)" || return "$RMQ_HTTP_UNSUPPORTED"
+
+  # Credentials go in on stdin rather than argv, where `ps` would show them.
+  code="$(printf 'user = "%s:%s"\n' "$_dune_rmq_admin_user" "$_dune_rmq_admin_password" | curl \
+    --silent --show-error --config - \
+    --max-time "${RMQ_HTTP_TIMEOUT_SECONDS:-${RMQ_TIMEOUT_SECONDS:-15}}" \
+    --get \
+    --data-urlencode 'columns=user,state' \
+    --output "$out_file" \
+    --write-out '%{http_code}' \
+    "http://127.0.0.1:$(resolve_rmq_game_local_http_port)/api/connections" 2>/dev/null)"
+  rc=$?
+
+  # Unlike _dune_rmq_http, a failure here does not demote the transport. The
+  # two legs answer on different ports, and this one is published only by a
+  # start-rabbitmq.sh new enough to have the loopback mapping -- so an
+  # unreachable game management port says nothing about the admin broker the
+  # publishers use, and must not switch them back to execing.
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$out_file"
+    return "$RMQ_HTTP_UNSUPPORTED"
+  fi
+
+  case "$code" in
+    2*) ;;
+    # Including 401: the credentials in the log have been rotated out from under
+    # us, and the caller's exec -- which authenticates with the Erlang cookie
+    # instead -- is the one that still works.
+    *)  rm -f "$out_file"; return "$RMQ_HTTP_UNSUPPORTED" ;;
+  esac
+
+  RMQ_CONN_FILE="$out_file" python3 -c '
+import json, os, sys
+path = os.environ["RMQ_CONN_FILE"]
+try:
+    with open(path) as handle:
+        rows = json.load(handle)
+except Exception:
+    sys.exit(1)
+for row in rows:
+    print("%s\t%s" % (row.get("user", ""), row.get("state", "")))
+'
+  rc=$?
+  rm -f "$out_file"
+  return "$rc"
+}

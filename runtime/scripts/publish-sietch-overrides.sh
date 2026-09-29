@@ -350,10 +350,20 @@ publish_payload() {
 }
 
 heal_survival_alive_state() {
-  local live_server_ids sql
+  local live_server_ids sql connections
+  # The third caller of `rabbitmqctl list_connections`, and on this loop the
+  # busiest: publish_snapshot_once runs every SNAPSHOT_REFRESH_SECONDS, ten by
+  # default. Same seam and same fallback as ready.sh -- see the note on
+  # dune_rmq_game_connections for why the credential lookup never refreshes the
+  # director log itself, which this script does keep current.
+  local RMQ_HTTP_TIMEOUT_SECONDS=8
+
+  connections="$(dune_rmq_game_connections 2>/dev/null)" \
+    || connections="$(timeout 8 docker exec dune-rmq-game rabbitmqctl list_connections user state 2>/dev/null)" \
+    || connections=""
 
   live_server_ids="$(
-    timeout 8 docker exec dune-rmq-game rabbitmqctl list_connections user state 2>/dev/null \
+    printf '%s\n' "$connections" \
       | awk '$1 ~ /^sg[.]/ && $2 == "running" { split($1, parts, "."); if (length(parts) >= 2) print parts[length(parts) - 1] }' \
       | sort -u
   )" || true

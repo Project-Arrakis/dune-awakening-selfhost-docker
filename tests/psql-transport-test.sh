@@ -293,6 +293,7 @@ shell_converted=(
   runtime/scripts/spicefield-overrides.sh
   runtime/scripts/start-server-overmap.sh
   runtime/scripts/start-server-survival-1.sh
+  runtime/scripts/status.sh
 )
 
 # Everything that reaches Postgres from an embedded `python3 - <<PY` block, via
@@ -356,6 +357,12 @@ done
 # does not accumulate conmon the way a polling loop does. If it ever moves onto
 # a timer, it belongs on the seam instead.
 #
+# ready.sh is a different case again: its queries are all on the seam, and the
+# only thing left matching is line 453, which echoes a `docker exec -i
+# dune-postgres psql` for an operator to paste. Narrowing the pattern to exclude
+# a printed instruction would weaken it against a real exec written the same
+# way, so the entry stays and this note says why it is there.
+#
 # The list is exhaustive on purpose -- a new script that opens its own exec
 # fails here until someone adds it deliberately, which is how an unattended
 # loop ends up on the seam instead of in this list by accident.
@@ -378,7 +385,6 @@ may_exec=(
   reconcile-world-partitions.sh
   servers.sh
   start-postgres.sh
-  status.sh
   stop-server-overmap.sh
   stop-server-survival-1.sh
   update-db.sh

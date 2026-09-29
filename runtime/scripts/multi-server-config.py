@@ -41,7 +41,6 @@ ROOT = Path(__file__).resolve().parents[2]
 PORTS_LIB = ROOT / "runtime" / "scripts" / "lib" / "ports.sh"
 USERSETTINGS = ROOT / "runtime" / "scripts" / "usersettings.py"
 SPAWN_SERVER = ROOT / "runtime" / "scripts" / "spawn-server.sh"
-RABBITMQ_START = ROOT / "runtime" / "scripts" / "start-rabbitmq.sh"
 ENV_EXAMPLE = ROOT / ".env.example"
 METRICS_COMPOSE = ROOT / "docker-compose.metrics.yml"
 ENV_PATH = ROOT / ".env"
@@ -76,6 +75,7 @@ SERVICE_DEFAULT_PATTERNS = {
     "rmq_admin_http": ("RMQ_ADMIN_HTTP_PORT", "resolve_rmq_admin_http_port"),
     "rmq_game": ("RMQ_GAME_PORT", "resolve_rmq_game_port"),
     "rmq_game_http": ("RMQ_GAME_HTTP_PORT", "resolve_rmq_game_http_port"),
+    "rmq_game_local_http": ("RMQ_GAME_LOCAL_HTTP_PORT", "resolve_rmq_game_local_http_port"),
     "text_router": ("TEXT_ROUTER_PORT", "resolve_text_router_port"),
     "director": ("DIRECTOR_PORT", "resolve_director_port"),
 }
@@ -201,18 +201,6 @@ def parse_prometheus_default() -> int:
     return int(match.group(1))
 
 
-def parse_rmq_game_local_http_default() -> int:
-    text = read_text(RABBITMQ_START)
-    match = re.search(
-        r"port_env_value\s+RMQ_GAME_LOCAL_HTTP_PORT\s+([0-9]+)", text
-    )
-    if not match:
-        raise ConfigError(
-            f"Could not derive RMQ_GAME_LOCAL_HTTP_PORT from {RABBITMQ_START}."
-        )
-    return int(match.group(1))
-
-
 def load_defaults() -> Defaults:
     service = parse_service_defaults()
     client, igw = parse_engine_defaults()
@@ -227,7 +215,7 @@ def load_defaults() -> Defaults:
         rmq_admin_http=service["rmq_admin_http"],
         rmq_game=service["rmq_game"],
         rmq_game_http=service["rmq_game_http"],
-        rmq_game_local_http=parse_rmq_game_local_http_default(),
+        rmq_game_local_http=service["rmq_game_local_http"],
         text_router=service["text_router"],
         director=service["director"],
         admin_web=parse_admin_default(),

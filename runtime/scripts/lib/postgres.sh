@@ -79,6 +79,14 @@ dune_psql_init() {
       ;;
   esac
 
+  # Resolved alongside the transport so _dune_psql_as can name the binary by
+  # path. Falling back to the bare word keeps the old failure -- "psql: command
+  # not found" -- for an operator who pinned DUNE_PSQL_TRANSPORT=tcp on an image
+  # that has no client, rather than turning it into an empty-argv puzzle.
+  if [ "$DUNE_PSQL_TRANSPORT" = "tcp" ]; then
+    DUNE_PSQL_CLIENT="$(type -P psql || printf '%s' psql)"
+  fi
+
   DUNE_PG_PORT="$(resolve_postgres_port)" || return 1
 
   # Resolved here rather than at the top of the file for the same reason as the
@@ -104,22 +112,41 @@ dune_psql_init() {
 # Only the TCP path sends a password. The exec path reaches the server over its
 # Unix socket, which the image trusts, and that is how every one of these
 # queries already authenticated before the seam existed.
+#
+# DUNE_PSQL_TIMEOUT_SECONDS, when set, bounds a single query on either leg. It
+# exists because the diagnostics -- ready.sh, status.sh -- wrapped every one of
+# their `docker exec`s in `timeout` and would otherwise lose that watchdog on
+# the way to the seam: `timeout` runs a program, and the seam is a shell
+# function. Unset means no watchdog, which is what the autoscaler's scan loops
+# have always run with, so nothing that does not opt in changes behaviour.
 _dune_psql_as() {
   local role="$1" password="$2"
   shift 2
 
+  local -a argv=()
+  if [ -n "${DUNE_PSQL_TIMEOUT_SECONDS:-}" ]; then
+    argv=(timeout --kill-after=2s "${DUNE_PSQL_TIMEOUT_SECONDS}s")
+  fi
+
   if [ "$DUNE_PSQL_TRANSPORT" = "tcp" ]; then
-    PGPASSWORD="$password" command psql \
-      -h 127.0.0.1 \
-      -p "$DUNE_PG_PORT" \
-      -U "$role" \
-      -d "$DUNE_PG_DATABASE" \
-      "$@" </dev/null
+    # The client is named by the absolute path dune_psql_init resolved, not by
+    # the word `psql`. That is what the `command` builtin used to be here for --
+    # to keep a shell function named psql from intercepting the call -- and a
+    # path does the same job while remaining something `timeout` can exec, which
+    # a builtin is not.
+    argv+=("$DUNE_PSQL_CLIENT"
+      -h 127.0.0.1
+      -p "$DUNE_PG_PORT"
+      -U "$role"
+      -d "$DUNE_PG_DATABASE"
+      "$@")
+    PGPASSWORD="$password" "${argv[@]}" </dev/null
   else
-    docker exec "$DUNE_PG_CONTAINER" psql \
-      -U "$role" \
-      -d "$DUNE_PG_DATABASE" \
-      "$@" </dev/null
+    argv+=(docker exec "$DUNE_PG_CONTAINER" psql
+      -U "$role"
+      -d "$DUNE_PG_DATABASE"
+      "$@")
+    "${argv[@]}" </dev/null
   fi
 }
 

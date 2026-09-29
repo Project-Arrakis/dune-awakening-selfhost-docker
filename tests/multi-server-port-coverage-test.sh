@@ -16,8 +16,10 @@ cd "$(dirname "$0")/.."
 # "should show" RMQ_ADMIN_HTTP_PORT=33574, a value no command could produce.
 #
 # The check is one-directional on purpose. Every resolver must be planned, but
-# not every planned port comes from a resolver: rmq_game_local_http, admin_web
-# and prometheus are parsed out of their own sources by dedicated helpers.
+# not every planned port comes from a resolver: admin_web and prometheus are
+# parsed out of their own sources by dedicated helpers. rmq_game_local_http used
+# to be a third such case and is not any more -- its default moved into
+# lib/ports.sh alongside its siblings, so it is discovered here like the rest.
 
 fail() {
   printf 'FAIL: %s\n' "$*" >&2

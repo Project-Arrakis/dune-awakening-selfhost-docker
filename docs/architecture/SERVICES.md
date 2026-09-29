@@ -120,6 +120,32 @@ costs nothing, and they stay on it.
 
 The listener is bound to 127.0.0.1, so the admin broker's exposure is unchanged.
 
+#### Why the game broker publishes one too
+
+`RMQ_GAME_LOCAL_HTTP_PORT` (default 15672) is the loopback mirror of the game
+broker's management endpoint, and predates this: it exists so host-side callers
+have an address that does not move when `RMQ_GAME_HTTP_PORT` is remapped.
+`lib/rabbitmq.sh` polls it for one question — which game servers are connected
+and running — through `dune_rmq_game_connections`.
+
+That question used to be `docker exec dune-rmq-game rabbitmqctl list_connections
+user state`, asked from three places: `ready.sh` on every 30-second ready sweep
+(retrying once), `status.sh` per run, and `publish-sietch-overrides.sh` every
+`SNAPSHOT_REFRESH_SECONDS` (default 10). Together they were the largest standing
+source of container execs on an otherwise idle farm.
+
+Unlike the `rabbitmqadmin` verbs above, this one needs credentials — `rabbitmqctl`
+authenticates with the Erlang cookie, the HTTP API does not — and finding them
+must not itself cost an exec, or the trade is a wash. So the lookup is read-only:
+it parses the battlegroup administrator out of
+`runtime/text-router/director-current.log`, which the publisher loops already
+keep current, and never runs `ensure_text_router_log` or `docker logs` to
+produce one. Anything that goes wrong — no `curl`, no published port, no
+credentials in the log, a non-2xx answer — returns `RMQ_HTTP_UNSUPPORTED` and
+the caller runs the `rabbitmqctl` it always ran. A 401 is included in that,
+because credentials rotate and there is nothing fresher to re-read, while the
+cookie-authenticated exec still works.
+
 ---
 
 ## 3. Messaging authorization topology

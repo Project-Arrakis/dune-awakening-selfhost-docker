@@ -261,4 +261,176 @@ DRIVER
     || fail "$publisher: rmq_admin reported success after two failed execs"
 done
 
+
+# --- the game broker's connection list ----------------------------------------
+# A separate leg with a separate contract: it needs credentials, it must find
+# them without an exec of its own, and every way it can fail has to end in
+# RMQ_HTTP_UNSUPPORTED so the caller runs the rabbitmqctl it ran before.
+
+# The loopback management port has to be published, as for the admin broker.
+grep -Fq -- '-p "127.0.0.1:${RMQ_GAME_LOCAL_HTTP_PORT}:15672/tcp"' runtime/scripts/start-rabbitmq.sh
+grep -Fq 'RMQ_GAME_LOCAL_HTTP_PORT="$(resolve_rmq_game_local_http_port)"' runtime/scripts/start-rabbitmq.sh
+grep -Fq 'resolve_rmq_game_local_http_port() { port_env_value RMQ_GAME_LOCAL_HTTP_PORT 15672; }' \
+  runtime/scripts/lib/ports.sh
+
+# All three callers must route through the seam and keep the exec behind it. A
+# caller that dropped its fallback would go blind wherever the seam declines.
+for caller in ready.sh status.sh publish-sietch-overrides.sh; do
+  grep -Fq 'source runtime/scripts/lib/rabbitmq.sh' "runtime/scripts/$caller" \
+    || fail "$caller does not source the rabbitmq library"
+  grep -Fq 'dune_rmq_game_connections' "runtime/scripts/$caller" \
+    || fail "$caller does not use the connections seam"
+  grep -Fq 'rabbitmqctl list_connections user state' "runtime/scripts/$caller" \
+    || fail "$caller dropped its rabbitmqctl fallback"
+done
+
+# A curl that answers with a canned connections list. Recorded separately from
+# the stub above so the publish assertions keep their own captures.
+cat > "$work/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""; url=""; args=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output) out="$2"; shift 2 ;;
+    --data-urlencode) args="$args $2"; shift 2 ;;
+    http://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+cat > "$CONN_STDIN_CAPTURE"
+printf '%s\n' "$url" > "$CONN_URL_CAPTURE"
+printf '%s\n' "$args" > "$CONN_ARGS_CAPTURE"
+[ -n "$out" ] && printf '%s' "${CONN_RESPONSE_BODY:-[]}" > "$out"
+printf '%s' "${CONN_HTTP_CODE:-200}"
+STUB
+chmod +x "$work/bin/curl"
+
+# The fallback exec must not happen behind the seam's back, and neither must a
+# `docker logs` to find credentials: this docker records and fails.
+cat > "$work/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$DOCKER_CALLS"
+exit 1
+STUB
+chmod +x "$work/bin/docker"
+
+# Run from a scratch tree, not the checkout: the credential lookup reads
+# runtime/text-router/director-current.log relative to the working directory,
+# and a developer's real log must not decide whether this passes.
+conn_reset() {
+  _dune_rmq_transport=""
+  _dune_rmq_admin_user=""
+  _dune_rmq_admin_password=""
+  _dune_rmq_admin_creds_tried=""
+  : > "$work/docker-calls"
+}
+
+mkdir -p "$work/tree/runtime/text-router"
+export CONN_STDIN_CAPTURE="$work/conn-stdin" CONN_URL_CAPTURE="$work/conn-url" \
+       CONN_ARGS_CAPTURE="$work/conn-args" DOCKER_CALLS="$work/docker-calls"
+conn_log="$work/tree/runtime/text-router/director-current.log"
+
+# Not a real credential: the shape the regex looks for, nothing more.
+cat > "$conn_log" <<'LOG'
+[info] Director starting up
+[info] Generated new admin credentials: bgd.testgroup.admin / EXAMPLEONLYNOTASECRET
+[info] bgd.testgroup.admin/EXAMPLEONLYNOTASECRET => allow administrator
+LOG
+
+cd "$work/tree"
+
+# --- the happy path -----------------------------------------------------------
+conn_reset
+export CONN_RESPONSE_BODY='[{"user":"sg.world.7.overmap","state":"running"},{"user":"admin","state":"blocked"}]'
+got="$(dune_rmq_game_connections)" || fail "connections returned $?"
+
+expected="$(printf 'sg.world.7.overmap\trunning\nadmin\tblocked')"
+[ "$got" = "$expected" ] \
+  || fail "connections did not render rabbitmqctl's two columns: $(printf '%q' "$got")"
+
+# No header row: rabbitmqctl prints one, and status.sh filters it, but ready.sh
+# would happily match a server named `user`. Emitting none is the safe shape.
+printf '%s\n' "$got" | grep -qv '^user[[:space:]]' || fail "connections emitted a header row"
+
+# The callers' awk has to work on this verbatim -- that is the whole contract.
+printf '%s\n' "$got" \
+  | awk '$1 ~ /^sg[.]/ && $2 == "running" { found=1 } END { exit(found ? 0 : 1) }' \
+  || fail "ready.sh's awk does not match the rendered output"
+
+grep -Fq "/api/connections" "$work/conn-url" || fail "connections URL wrong: $(cat "$work/conn-url")"
+grep -Fq "127.0.0.1:15672" "$work/conn-url" \
+  || fail "connections did not use the loopback management port: $(cat "$work/conn-url")"
+grep -Fq "columns=user,state" "$work/conn-args" \
+  || fail "connections did not narrow the response to the two columns it needs"
+
+# Credentials on stdin, as everywhere else in this seam.
+grep -Fq 'user = "bgd.testgroup.admin:EXAMPLEONLYNOTASECRET"' "$work/conn-stdin" \
+  || fail "connections did not read credentials from the director log, or passed them in argv"
+
+# The point of the exercise: no exec, of any kind, on the fast path. A
+# credential lookup that ran ensure_text_router_log or `docker logs` would trade
+# one exec for another and save nothing.
+[ ! -s "$work/docker-calls" ] \
+  || fail "the connections seam ran docker: $(cat "$work/docker-calls")"
+
+# An empty list is a successful answer -- no game server has connected yet --
+# not a reason to exec.
+conn_reset
+CONN_RESPONSE_BODY='[]' got="$(dune_rmq_game_connections)" || fail "an empty connection list was treated as a failure"
+[ -z "$got" ] || fail "an empty list rendered something: $(printf '%q' "$got")"
+
+# --- every way it declines ----------------------------------------------------
+expect_conn_unsupported() {
+  local label="$1"
+  local rc=0
+  dune_rmq_game_connections >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq "$RMQ_HTTP_UNSUPPORTED" ] \
+    || fail "$label should have been unsupported (got $rc), so the caller cannot fall back"
+}
+
+# No credentials in the log: the lookup is read-only, so this is simply a miss.
+conn_reset
+mv "$conn_log" "$conn_log.saved"
+expect_conn_unsupported 'a missing director log'
+[ ! -s "$work/docker-calls" ] \
+  || fail "a missing director log made the seam exec to go looking for one"
+
+conn_reset
+printf '[info] nothing useful here\n' > "$conn_log"
+expect_conn_unsupported 'a director log with no credentials'
+mv "$conn_log.saved" "$conn_log"
+
+# A 401 means the credentials in the log have been rotated out from under us.
+# Unlike dune_rmq_http_try, where the caller refreshes and retries, there is
+# nothing fresher to read here -- so this must fall back rather than fail, since
+# rabbitmqctl authenticates with the Erlang cookie and still works.
+conn_reset
+CONN_HTTP_CODE=401 expect_conn_unsupported 'a 401 from rotated credentials'
+
+conn_reset
+CONN_HTTP_CODE=500 expect_conn_unsupported 'a broken management plugin'
+
+# An unreachable port must fall back -- and must not demote the shared
+# transport, because the publishers reach a different broker on a different port
+# and would otherwise be pushed back onto the exec by this call.
+conn_reset
+cat > "$work/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+cat > /dev/null
+exit 7
+STUB
+chmod +x "$work/bin/curl"
+dune_rmq_transport >/dev/null
+expect_conn_unsupported 'an unreachable loopback management port'
+[ "$(dune_rmq_transport)" = http ] \
+  || fail "an unreachable game management port demoted the admin broker's transport too"
+
+# Pinning the exec leg has to turn this off as well.
+conn_reset
+rc=0
+DUNE_RMQ_TRANSPORT="exec" dune_rmq_game_connections >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq "$RMQ_HTTP_UNSUPPORTED" ] || fail "DUNE_RMQ_TRANSPORT=exec did not pin the exec leg for connections"
+
+cd "$repo_root"
+
 echo "rabbitmq seam translates publish and get to the management API and falls back for everything else"

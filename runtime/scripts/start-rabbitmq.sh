@@ -21,7 +21,7 @@ RMQ_GAME_HTTP_PORT="$(resolve_rmq_game_http_port)"
 # container-side management port remains 15672. Keeping the host port
 # configurable lets multi-VM deployments maintain a globally unique host-port
 # namespace while preserving the stock single-server default.
-RMQ_GAME_LOCAL_HTTP_PORT="$(port_env_value RMQ_GAME_LOCAL_HTTP_PORT 15672)"
+RMQ_GAME_LOCAL_HTTP_PORT="$(resolve_rmq_game_local_http_port)"
 
 mkdir -p runtime/rabbitmq-admin/config
 mkdir -p runtime/rabbitmq-game/config
