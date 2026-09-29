@@ -3,10 +3,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# POSTGRES_PORT and DUNE_PSQL_TRANSPORT from here configure the Postgres seam.
+[ -f .env ] && . ./.env
+
 # shellcheck source=runtime/scripts/sietch-name.sh
 source runtime/scripts/sietch-name.sh
 # shellcheck source=runtime/scripts/host-file-ownership.sh
 source runtime/scripts/host-file-ownership.sh
+
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
 
 PARTITION_CATALOG="runtime/generated/partition-catalog.json"
 SERVER_CATALOG="runtime/generated/server-catalog.json"
@@ -69,7 +75,7 @@ sync_sietch_config_from_db() {
   local db_json=""
 
   if docker_postgres_running; then
-    db_rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
+    db_rows="$(dune_psql -At -F $'\t' -c "
       select partition_id,
              map,
              dimension_index,
@@ -502,16 +508,12 @@ docker_postgres_running() {
   docker ps --format '{{.Names}}' 2>/dev/null | grep -x dune-postgres >/dev/null
 }
 
-psql_value() {
-  docker exec dune-postgres psql -U postgres -d dune -Atc "$1"
-}
-
 python_common() {
   local db_rows=""
   local db_json=""
 
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-postgres; then
-    db_rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
+    db_rows="$(dune_psql -At -F $'\t' -c "
       select partition_id, map, dimension_index, coalesce(label, ''), blocked, coalesce(server_id, '')
       from dune.world_partition
       order by partition_id;
@@ -965,23 +967,22 @@ sync_partition_catalog_from_db() {
     return 0
   fi
 
-  python3 - <<'PY'
+  local db_rows
+  db_rows="$(dune_psql -At -F $'\t' -c "
+select partition_id, map, dimension_index, blocked, partition_definition::text
+from dune.world_partition
+order by partition_id;
+")"
+
+  DUNE_PARTITION_CATALOG_ROWS="$db_rows" python3 - <<'PY'
 import json
-import subprocess
+import os
 from pathlib import Path
 
-out = subprocess.check_output([
-    "docker", "exec", "dune-postgres", "psql",
-    "-U", "postgres", "-d", "dune", "-At", "-F", "\t",
-    "-c",
-    "select partition_id, map, dimension_index, blocked, partition_definition::text "
-    "from dune.world_partition order by partition_id;"
-], text=True)
-
 rows = []
-for line in out.splitlines():
+for line in os.environ["DUNE_PARTITION_CATALOG_ROWS"].splitlines():
     if not line.strip():
-      continue
+        continue
     partition_id, map_name, dimension_index, blocked, definition = line.split("\t", 4)
     payload = json.loads(definition)
     box = payload.get("box", {})
@@ -1065,7 +1066,7 @@ for partition_id in expected:
 
   # Labels are globally unique. Move all managed rows through temporary
   # partition-specific labels and assign the resolved values in one transaction.
-  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+  dune_psql -v ON_ERROR_STOP=1 -c "
 begin;
 update dune.world_partition
 set label = 'DualDeepDesert_' || partition_id::text
@@ -1174,7 +1175,7 @@ relocate_survival_port_conflicts() {
   first_igw=$((igw_base + 2))
   last_igw=$((igw_base + target))
 
-  conflicts="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
+  conflicts="$(dune_psql -At -F $'\t' -c "
 select
   wp.partition_id,
   wp.map,
@@ -1316,7 +1317,7 @@ apply_survival_sietch_labels_from_config() {
   while IFS=$'\t' read -r partition_id display_name; do
     [ -n "${partition_id:-}" ] || continue
     [ -n "${display_name:-}" ] || continue
-    docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+    dune_psql -v ON_ERROR_STOP=1 -c "
 update dune.world_partition
 set label = '${display_name//\'/\'\'}'
 where partition_id = ${partition_id}
@@ -1547,7 +1548,7 @@ ensure_map_partitions() {
   [ -n "$next_dim" ] || next_dim=0
 
   while [ "$current" -lt "$wanted" ]; do
-    docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+    dune_psql -v ON_ERROR_STOP=1 -c "
 set search_path = dune, public;
 
 with template as (
@@ -1761,7 +1762,7 @@ PY
         limit 1;
       " | tr -d '[:space:]')"
       if [ -n "$base_server_id" ]; then
-        docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+        dune_psql -v ON_ERROR_STOP=1 -c "
 update dune.encrypted_player_state
 set
   server_id = '$base_server_id',
@@ -1777,7 +1778,7 @@ where previous_server_partition_id = $remove_partition
       topology_changed=1
     done
 
-    if [ "$target_explicit" = "1" ] && docker exec dune-postgres psql -U postgres -d dune -Atc "
+    if [ "$target_explicit" = "1" ] && dune_psql -Atc "
 with ranked as (
   select
     partition_id,
@@ -1795,7 +1796,7 @@ where ord > $target
     fi
 
     if [ "$target_explicit" = "1" ]; then
-      docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+      dune_psql -v ON_ERROR_STOP=1 -c "
 set search_path = dune, public;
 
 with ranked as (
@@ -1821,7 +1822,7 @@ select dune.update_partition_labels(true);
       echo "Preserving inactive $map partition rows because the active target was not explicitly saved."
     fi
   else
-    docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+    dune_psql -v ON_ERROR_STOP=1 -c "
 with ranked as (
   select
     partition_id,
@@ -1924,7 +1925,7 @@ set_partition_label_if_possible() {
   local label="$2"
 
   docker_postgres_running || return 0
-  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+  dune_psql -v ON_ERROR_STOP=1 -c "
 update dune.world_partition
 set label = '${label//\'/\'\'}'
 where partition_id = ${partition_id};
@@ -1960,7 +1961,7 @@ reset_partition_label_if_possible() {
   fi
 
   if [ -n "$default_label" ]; then
-    docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+    dune_psql -v ON_ERROR_STOP=1 -c "
 update dune.world_partition
 set label = '${default_label//\'/\'\'}'
 where partition_id = ${partition_id};
@@ -1968,7 +1969,7 @@ where partition_id = ${partition_id};
     return 0
   fi
 
-  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+  dune_psql -v ON_ERROR_STOP=1 -c "
 set search_path = dune, public;
 update dune.world_partition
 set label = null
