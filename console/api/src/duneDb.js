@@ -4483,8 +4483,11 @@ function friendlyChildAccessName(row) {
   return raw || "Base Object";
 }
 
+// Every relation the read and write paths name, including the ones only
+// basePermissionActor walks on save (actor_fgl_entities, actors, map_names) --
+// a missing one must read as unsupported, not surface as a raw SQL error.
 async function baseChildAccessSupported(db) {
-  for (const table of ["buildings", "building_instances", "placeables", "permission_actor"]) {
+  for (const table of ["buildings", "building_instances", "placeables", "permission_actor", "actor_fgl_entities", "actors", "map_names"]) {
     if (!(await tableExists(db, table))) return false;
   }
   return functionExists(db, "dune.permission_set_access_level(bigint,smallint)");
@@ -4537,9 +4540,12 @@ function childAccessGroupFor(buildingType, isChild) {
   // does not also pull in Windtrap_Placeable/LargeWindtrap_Placeable, which
   // are moisture collectors, not power generation.
   if (key.includes("generator") || key.includes("turbine")) return "generators";
+  // Door before water: the Watershippers cosmetic doors
+  // (MTX_Watershippers_Door_Placeable, ..._Garage_Door_Big_Placeable) contain
+  // "water" and would otherwise be filed as Water Storage.
+  if (key.includes("door")) return "door";
   if (key.includes("water")) return "water";
   if (key.includes("pentashield")) return "pentashield";
-  if (key.includes("door")) return "door";
   return "other";
 }
 

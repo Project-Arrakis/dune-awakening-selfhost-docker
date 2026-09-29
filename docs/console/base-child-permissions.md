@@ -164,7 +164,9 @@ Generators, Water Storage, Pentashield, and Door are simple case-insensitive
 substring rules ("generator"/"turbine", "water", "pentashield", "door"
 anywhere in the building type), so e.g. `BloodWaterExtractionAdvanced_Placeable`
 counts as Water Storage and `Choam_PentashieldSurfaceVertical_Placeable`
-counts as Pentashield. Sub-Fief is different: it's not a substring rule but
+counts as Pentashield. Door is checked before Water Storage, so the
+Watershippers cosmetic doors (`MTX_Watershippers_Door_Placeable`) count as
+Door despite "water" in their name. Sub-Fief is different: it's not a substring rule but
 the `is_child = false` row itself — the base's own totem, always exactly
 one, regardless of its building type. Only categories actually present on
 this base appear in the dropdown. **Select All** only checks the pieces the current filter is
@@ -181,7 +183,9 @@ Associate) or any other bulk change.
 The tab is hidden entirely unless `listBases` reports
 `capabilities.baseChildAccess`, probed once per list request the same way
 `basePermissions` is. That requires `dune.buildings`, `dune.building_instances`,
-`dune.placeables`, `dune.permission_actor`, and the
+`dune.placeables`, `dune.permission_actor`, `dune.actor_fgl_entities`,
+`dune.actors`, `dune.map_names` (the last three are walked on save to resolve
+the base's own actor), and the
 `dune.permission_set_access_level(bigint,smallint)` procedure.
 
 ## Related
