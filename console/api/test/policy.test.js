@@ -147,8 +147,10 @@ test("bases:write-config is not carried by a bases:mutate grant", () => {
   // A hand-authored policy that predates the settings surface must not gain it.
   assert.equal(evaluate({ tier: "moderator" }, "bases:mutate", policies), true);
   assert.equal(evaluate({ tier: "moderator" }, "bases:write-config", policies), false);
-  // The shipped tiers grant bases:*, so default access is unchanged.
-  assert.equal(evaluate({ tier: "admin" }, "bases:write-config"), true);
+  // Persistent global configuration stays owner-only under the shipped
+  // governance-vs-operation policy. Pass the default document explicitly so
+  // this assertion cannot inherit a policy installed by an earlier test.
+  assert.equal(evaluate({ tier: "admin" }, "bases:write-config", { admin: DEFAULT_POLICIES.admin }), false);
   assert.equal(evaluate({ tier: "owner" }, "bases:write-config"), true);
 });
 

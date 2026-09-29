@@ -188,10 +188,10 @@ test("players: no action is a string prefix of another", () => {
 // successors of players:mutate and the players:unclassified sentinel are
 // crown jewels denied to admin by design, not an oversight this test should
 // paper over.
-// Kept in sync by hand with policy.js's CROWN_JEWEL_DENY_ACTIONS (not
-// imported, since that constant isn't exported) -- if this list and that one
-// diverge, this test can pass while a real crown-jewel gap goes undetected.
+// Includes both policy.js's player-scoped crown jewels and persistent player
+// settings that the shipped admin policy intentionally leaves owner-only.
 const PLAYERS_ADMIN_DENIED = new Set([
+  "players:configure-list",
   "players:give-item", "players:grant", "players:reset",
   "players:delete-item", "players:edit-item", "players:repair", "players:recover",
   "players:unclassified",
