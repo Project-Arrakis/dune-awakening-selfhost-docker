@@ -29,6 +29,7 @@ port_env_value() {
 
 resolve_postgres_port() { port_env_value POSTGRES_PORT 15432; }
 resolve_rmq_admin_port() { port_env_value RMQ_ADMIN_PORT 32573; }
+resolve_rmq_admin_http_port() { port_env_value RMQ_ADMIN_HTTP_PORT 32574; }
 resolve_rmq_game_port() { port_env_value RMQ_GAME_PORT 31982; }
 resolve_rmq_game_http_port() { port_env_value RMQ_GAME_HTTP_PORT 31983; }
 resolve_text_router_port() { port_env_value TEXT_ROUTER_PORT 5059; }

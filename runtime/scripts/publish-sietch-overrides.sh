@@ -19,6 +19,8 @@ source runtime/scripts/farm-readiness.sh
 
 # shellcheck source=runtime/scripts/lib/postgres.sh
 source runtime/scripts/lib/postgres.sh
+# shellcheck source=runtime/scripts/lib/rabbitmq.sh
+source runtime/scripts/lib/rabbitmq.sh
 
 PID_FILE="runtime/generated/sietch-overrides.pid"
 LOOP_TOKEN_FILE="runtime/generated/sietch-overrides.loop-token"
@@ -265,10 +267,19 @@ rmq_admin() {
     [ "${#rmq_creds[@]}" -ge 2 ] || return 1
     rmq_user="${rmq_creds[0]}"
     rmq_password="${rmq_creds[1]}"
-    if timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"; then
-      return 0
-    fi
+    # The verbs on the hot paths go straight to the management API that
+    # rabbitmqadmin would have called anyway; lib/rabbitmq.sh returns
+    # RMQ_HTTP_UNSUPPORTED for the rest, which falls through to the exec below.
+    # Either way a real failure retries once with freshly read credentials.
+    dune_rmq_http_try "$rmq_user" "$rmq_password" "$@"
     rc=$?
+    if [ "$rc" -ne "$RMQ_HTTP_UNSUPPORTED" ]; then
+      [ "$rc" -eq 0 ] && return 0
+    elif timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"; then
+      return 0
+    else
+      rc=$?
+    fi
     rm -f "$RMQ_CREDS_FILE"
     allow_shared=false
   done

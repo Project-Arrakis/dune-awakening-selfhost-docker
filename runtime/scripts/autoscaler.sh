@@ -1426,8 +1426,7 @@ igw_socket_sample() {
     total_queue=$((total_queue + 16#$rx_hex))
     total_drops=$((total_drops + drop_count))
   done < <(
-    timeout --kill-after=1s 5s docker exec "$container" sh -c \
-      'cat /proc/net/udp /proc/net/udp6 2>/dev/null' 2>/dev/null \
+    igw_socket_table "$container" \
       | awk -v port="$port_hex" '
           $2 ~ (":" port "$") {
             split($5, queue, ":")
