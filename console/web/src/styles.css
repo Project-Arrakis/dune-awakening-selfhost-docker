@@ -2739,6 +2739,14 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .market-bot-toggle { min-height: 38px; display: flex !important; align-items: center; align-self: end; gap: 8px; padding: 0 11px; border: 1px solid #40382e; border-radius: 6px; background: #171a1f; color: #dfceb0 !important; font-size: 13px !important; cursor: pointer; }
 .market-bot-toggle input { width: auto; }
 .market-bot-backups-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+/* The title shrink-wraps beside the toggle here, so drop the section divider
+   (the block's own border frames it) and open the info box rightward from the
+   icon instead of leftward past the modal edge. Above 760px only: below it
+   the shared bottom-sheet rule positions every info box. */
+.market-bot-backups-row .market-bot-section-title { border-bottom: 0; padding-bottom: 0; }
+@media (min-width: 761px) {
+  .market-bot-backups-row .market-bot-section-title .memory-info-box { left: 0; right: auto; }
+}
 .market-bot-backups-off { border-color: rgba(214, 120, 70, .55); background: rgba(120, 52, 24, .22); }
 .market-bot-backups-warning { margin: 0; color: #f0b58c; font-size: 13px; }
 .market-bot-run-summary { margin: 0; padding: 0 2px; font-size: 12px; }
