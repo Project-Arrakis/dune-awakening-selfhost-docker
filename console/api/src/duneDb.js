@@ -4509,10 +4509,11 @@ const ACCESS_LEVEL_LABELS = { 1: "Owner", 2: "Co-Owner", 3: "Associate", 4: "Gui
 // inventory at all -- extending it would risk changing what the Inventory
 // tab actually shows for a reason unrelated to this feature. Storage/
 // Refining/Crafting still borrow that map's own curated building-type keys
-// for consistent naming where the two features genuinely overlap; Generators
-// and Water Storage are their own simple substring rules, matching the
-// same "anything with X in its name" logic for both. Order here is the
-// filter's display order.
+// for consistent naming where the two features genuinely overlap;
+// Generators, Water Storage, Pentashield, and Door are their own simple
+// "anything with X in its name" substring rules. Order here is the filter's
+// display order, not the matching order -- childAccessGroupFor checks Door
+// before Water Storage.
 const CHILD_ACCESS_GROUP_ORDER = ["subfief", "storage", "refining", "crafting", "generators", "water", "pentashield", "door", "other"];
 const CHILD_ACCESS_GROUP_LABELS = {
   subfief: "Sub-Fief",
