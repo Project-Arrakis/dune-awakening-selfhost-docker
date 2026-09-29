@@ -4483,8 +4483,11 @@ function friendlyChildAccessName(row) {
   return raw || "Base Object";
 }
 
+// Every relation the read and write paths name, including the ones only
+// basePermissionActor walks on save (actor_fgl_entities, actors, map_names) --
+// a missing one must read as unsupported, not surface as a raw SQL error.
 async function baseChildAccessSupported(db) {
-  for (const table of ["buildings", "building_instances", "placeables", "permission_actor"]) {
+  for (const table of ["buildings", "building_instances", "placeables", "permission_actor", "actor_fgl_entities", "actors", "map_names"]) {
     if (!(await tableExists(db, table))) return false;
   }
   return functionExists(db, "dune.permission_set_access_level(bigint,smallint)");
@@ -4506,10 +4509,11 @@ const ACCESS_LEVEL_LABELS = { 1: "Owner", 2: "Co-Owner", 3: "Associate", 4: "Gui
 // inventory at all -- extending it would risk changing what the Inventory
 // tab actually shows for a reason unrelated to this feature. Storage/
 // Refining/Crafting still borrow that map's own curated building-type keys
-// for consistent naming where the two features genuinely overlap; Generators
-// and Water Storage are their own simple substring rules, matching the
-// same "anything with X in its name" logic for both. Order here is the
-// filter's display order.
+// for consistent naming where the two features genuinely overlap;
+// Generators, Water Storage, Pentashield, and Door are their own simple
+// "anything with X in its name" substring rules. Order here is the filter's
+// display order, not the matching order -- childAccessGroupFor checks Door
+// before Water Storage.
 const CHILD_ACCESS_GROUP_ORDER = ["subfief", "storage", "refining", "crafting", "generators", "water", "pentashield", "door", "other"];
 const CHILD_ACCESS_GROUP_LABELS = {
   subfief: "Sub-Fief",
@@ -4537,9 +4541,12 @@ function childAccessGroupFor(buildingType, isChild) {
   // does not also pull in Windtrap_Placeable/LargeWindtrap_Placeable, which
   // are moisture collectors, not power generation.
   if (key.includes("generator") || key.includes("turbine")) return "generators";
+  // Door before water: the Watershippers cosmetic doors
+  // (MTX_Watershippers_Door_Placeable, ..._Garage_Door_Big_Placeable) contain
+  // "water" and would otherwise be filed as Water Storage.
+  if (key.includes("door")) return "door";
   if (key.includes("water")) return "water";
   if (key.includes("pentashield")) return "pentashield";
-  if (key.includes("door")) return "door";
   return "other";
 }
 
