@@ -253,7 +253,7 @@ export const ROUTE_ACTIONS = {
   // scoped to one base, whereas this retunes every enrolled base at once, so a
   // bases:mutate grant cannot be read as consent to it. Named for the
   // per-feature settings convention (exchange:write-config, maps:write-config);
-  // owner/admin grant bases:*, so default access is unchanged.
+  // The shipped owner policy reaches it; lower tiers require an explicit grant.
   //
   // This entry is also what keeps the route off the "POST /api/bases/" →
   // bases:mutate prefix rule, where it would resolve silently rather than
@@ -263,7 +263,7 @@ export const ROUTE_ACTIONS = {
   // reads, matching GET /api/bases/{id}/export. Import creates a whole base
   // (actors, pieces, storage items) for a player, so it is its own action:
   // no bases:read or bases:mutate grant should be read as consent to it.
-  // owner/admin grant bases:*, so they reach it; lower tiers do not.
+  // The shipped owner policy reaches it; lower tiers require an explicit grant.
   "GET /api/base-backups":                     "bases:read",
   "POST /api/base-backups/import":             "bases:import-backup",
 
@@ -578,8 +578,8 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // read-only, so an operator whose hand-authored policy grants bases:mutate
   // agreed to refills and permission edits and could not have agreed to item
   // destruction — folding this into that bucket would silently widen every
-  // existing narrow policy. The shipped owner/admin policies grant bases:*,
-  // so default access is unchanged.
+  // existing narrow policy. The shipped owner policy reaches it; lower tiers
+  // require an explicit grant.
   { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/, action: "bases:delete-item" },
   // POST /api/bases/{baseId}/containers/{placeableId}/items — creating one
   // stored item. Own action for the same consent reason as bases:delete-item
