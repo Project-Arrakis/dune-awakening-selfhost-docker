@@ -148,7 +148,7 @@ farm_partition_db_ready() {
   local state
 
   state="$(
-    psql_value "
+    psql_app_value "
       select concat(coalesce(fs.ready, false)::text, '|', coalesce(fs.alive, false)::text)
       from dune.world_partition wp
       left join dune.farm_state fs on fs.server_id = wp.server_id

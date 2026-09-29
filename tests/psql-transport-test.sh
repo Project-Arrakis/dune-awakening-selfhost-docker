@@ -142,6 +142,90 @@ select count(*) from dune.world_partition;
 PGPASSWORD=<unset>
 EXPECTED
 
+# --- the application role -------------------------------------------------
+
+# Nine queries across three scripts ran as `-U dune` before they moved onto the
+# seam. The seam must not widen what they may do, so it has a second entry point
+# that keeps them on the application role -- which owns the dune database but is
+# not a superuser. Only the TCP leg authenticates; the exec leg reaches the
+# server over its trusted Unix socket, exactly as the raw execs did.
+snippet='dune_psql_app -At -F "|" -c "select 1;"'
+
+seam without-psql >/dev/null
+diff -u - "$log" <<'EXPECTED'
+argc=12
+exec
+dune-postgres
+psql
+-U
+dune
+-d
+dune
+-At
+-F
+|
+-c
+select 1;
+PGPASSWORD=<unset>
+EXPECTED
+
+seam with-psql >/dev/null
+diff -u - "$log" <<'EXPECTED'
+argc=13
+-h
+127.0.0.1
+-p
+15432
+-U
+dune
+-d
+dune
+-At
+-F
+|
+-c
+select 1;
+PGPASSWORD=dune
+EXPECTED
+
+# The role's password comes from .env like everything else, and is resolved on
+# the first query rather than at source time -- callers read .env after their
+# `source` lines, and an eager default would pin `dune` whatever the operator set.
+printf 'DUNE_DB_PASSWORD=s3cret\n' > "$test_root/late-password.env"
+snippet='. '"$test_root"'/late-password.env; dune_psql_app -c "select 1;"'
+seam with-psql >/dev/null
+grep -qx 'PGPASSWORD=s3cret' "$log" \
+  || fail "a DUNE_DB_PASSWORD read after the source was ignored"
+
+# And it must not leak into the calling shell, as the superuser password does not.
+snippet='dune_psql_app -Atc "select 1;"; printf "PGPASSWORD=%s\n" "${PGPASSWORD-<unset>}"'
+[ "$(seam with-psql)" = "PGPASSWORD=<unset>" ] || fail "PGPASSWORD leaked into the calling shell"
+
+# The superuser leg is unaffected by the role's password.
+snippet='DUNE_DB_PASSWORD=s3cret dune_psql -Atc "select 1;"'
+seam with-psql >/dev/null
+grep -qx 'PGPASSWORD=postgres' "$log" \
+  || fail "the superuser leg picked up the application role's password"
+
+# --- no query was quietly promoted to superuser ---------------------------
+
+# The seam is the one place a role is chosen, so a script that used to say
+# `-U dune` and now says dune_psql/psql_value has silently gained superuser
+# rights. That is invisible in a diff that only shows the exec disappearing, so
+# the scripts whose queries ran as the application role are named here.
+app_role_scripts=(
+  runtime/scripts/deferred-reconcile.sh
+  runtime/scripts/farm-readiness.sh
+  runtime/scripts/repair-chat-exchanges.sh
+)
+
+for script in "${app_role_scripts[@]}"; do
+  ! grep -qE '(^|[^_[:alnum:]])(psql_value|dune_psql)[[:space:]]' "$script" \
+    || fail "$script queries as the superuser; it ran as the dune role before the seam"
+  grep -qE '(psql_app_value|dune_psql_app)[[:space:]]' "$script" \
+    || fail "$script no longer queries through the application-role entry point"
+done
+
 # --- the published port ---------------------------------------------------
 
 # A multi-server host reassigns POSTGRES_PORT, and the TCP path has to follow
@@ -369,8 +453,10 @@ PY
 
 # The library exists to end eight identical copies of this helper. Anything
 # that defines its own again has quietly reopened that duplication.
-definers="$(grep -rl '^psql_value() {' runtime/scripts/ || true)"
-[ "$definers" = "runtime/scripts/lib/postgres.sh" ] \
-  || fail "psql_value is defined outside the library: $definers"
+for helper in 'psql_value' 'psql_app_value'; do
+  definers="$(grep -rl "^${helper}() {" runtime/scripts/ || true)"
+  [ "$definers" = "runtime/scripts/lib/postgres.sh" ] \
+    || fail "$helper is defined outside the library: $definers"
+done
 
 echo "psql transport checks passed."

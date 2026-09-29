@@ -41,6 +41,12 @@ DUNE_PG_SUPERUSER_PASSWORD="postgres"
 DUNE_PG_DATABASE="dune"
 DUNE_PG_CONTAINER="dune-postgres"
 
+# The application role. postgres-bootstrap-sql.sh creates it with LOGIN and
+# makes it the owner of the dune database; it is not a superuser. Scripts that
+# only touch application tables connect as this role, which is what they did
+# when each spelled out its own `docker exec ... psql -U dune`.
+DUNE_PG_APP_ROLE="dune"
+
 # `auto` (or unset) picks the transport by looking for a client; an explicit
 # `tcp` or `exec` pins it, which is how the tests exercise both paths.
 #
@@ -74,10 +80,18 @@ dune_psql_init() {
   esac
 
   DUNE_PG_PORT="$(resolve_postgres_port)" || return 1
+
+  # Resolved here rather than at the top of the file for the same reason as the
+  # port: DUNE_DB_PASSWORD comes out of .env, which several callers read after
+  # their `source` lines, and an eager default would pin `dune` before the
+  # operator's value was ever visible. The default matches the one
+  # postgres-bootstrap-sql.sh sets the role's password to.
+  DUNE_PG_APP_PASSWORD="${DUNE_DB_PASSWORD:-dune}"
+
   DUNE_PSQL_INITIALIZED=1
 }
 
-# Run psql against the stack's database as the superuser, passing through any
+# Run psql against the stack's database as a given role, passing through any
 # psql arguments. Callers supply their own -c/-At/-F flags exactly as they did
 # when they spelled out the docker exec.
 #
@@ -86,25 +100,49 @@ dune_psql_init() {
 # inherit -- and, given a bare invocation, drain -- the loop's stdin. `docker
 # exec` without -i never attached stdin, so redirecting keeps the TCP path
 # behaving exactly like the exec path it replaces.
-dune_psql() {
-  dune_psql_init || return 1
+#
+# Only the TCP path sends a password. The exec path reaches the server over its
+# Unix socket, which the image trusts, and that is how every one of these
+# queries already authenticated before the seam existed.
+_dune_psql_as() {
+  local role="$1" password="$2"
+  shift 2
 
   if [ "$DUNE_PSQL_TRANSPORT" = "tcp" ]; then
-    PGPASSWORD="$DUNE_PG_SUPERUSER_PASSWORD" command psql \
+    PGPASSWORD="$password" command psql \
       -h 127.0.0.1 \
       -p "$DUNE_PG_PORT" \
-      -U "$DUNE_PG_SUPERUSER" \
+      -U "$role" \
       -d "$DUNE_PG_DATABASE" \
       "$@" </dev/null
   else
     docker exec "$DUNE_PG_CONTAINER" psql \
-      -U "$DUNE_PG_SUPERUSER" \
+      -U "$role" \
       -d "$DUNE_PG_DATABASE" \
       "$@" </dev/null
   fi
 }
 
+# As the superuser. For work that needs it: catalog and partition maintenance,
+# anything reaching outside the application's own tables.
+dune_psql() {
+  dune_psql_init || return 1
+  _dune_psql_as "$DUNE_PG_SUPERUSER" "$DUNE_PG_SUPERUSER_PASSWORD" "$@"
+}
+
+# As the `dune` application role. The seam must not quietly widen what a script
+# is allowed to do: a query that ran as `dune` before it moved onto the seam
+# still runs as `dune` after.
+dune_psql_app() {
+  dune_psql_init || return 1
+  _dune_psql_as "$DUNE_PG_APP_ROLE" "$DUNE_PG_APP_PASSWORD" "$@"
+}
+
 # The overwhelmingly common shape: one SQL statement, unaligned tuples only.
 psql_value() {
   dune_psql -Atc "$1"
+}
+
+psql_app_value() {
+  dune_psql_app -Atc "$1"
 }

@@ -22,7 +22,7 @@ db_bool_true() {
 
 partition_ready() {
   local partition_id="$1"
-  psql_value "
+  psql_app_value "
     select coalesce(fs.ready::text, 'f')
     from dune.world_partition wp
     left join dune.farm_state fs on fs.server_id = wp.server_id

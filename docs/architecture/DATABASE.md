@@ -81,16 +81,29 @@ two languages, because the publishers are written in two:
 
 | Caller | Entry point | File |
 |---|---|---|
-| shell | `dune_psql`, `psql_value` | [`runtime/scripts/lib/postgres.sh`](../../runtime/scripts/lib/postgres.sh) |
+| shell, as the superuser | `dune_psql`, `psql_value` | [`runtime/scripts/lib/postgres.sh`](../../runtime/scripts/lib/postgres.sh) |
+| shell, as the `dune` role | `dune_psql_app`, `psql_app_value` | [`runtime/scripts/lib/postgres.sh`](../../runtime/scripts/lib/postgres.sh) |
 | an embedded `python3 - <<PY` block | `dune_psql.query_tsv` | [`runtime/scripts/dune_psql.py`](../../runtime/scripts/dune_psql.py) |
 
-Both connect as the `postgres` superuser, read the same `DUNE_PSQL_TRANSPORT`
-and `POSTGRES_PORT`, and pick one of two transports:
+They read the same `DUNE_PSQL_TRANSPORT` and `POSTGRES_PORT`, and pick one of
+two transports:
 
 | Transport | Used when | How |
 |---|---|---|
 | `tcp` | a real `psql` client is on `PATH` | `psql -h 127.0.0.1 -p $POSTGRES_PORT` |
 | `exec` | it is not | `docker exec dune-postgres psql` |
+
+**The seam does not change which role a query runs as.** Most of these
+queries were already `-U postgres` before the conversion, and they use
+`dune_psql`. Nine across `deferred-reconcile.sh`, `farm-readiness.sh` and
+`repair-chat-exchanges.sh` were `-U dune`, and they use `dune_psql_app`, which
+connects as the application role: owner of the `dune` database, authenticated
+with `DUNE_DB_PASSWORD`, and not a superuser. Only the TCP leg sends a
+password at all — the exec leg reaches the server over its Unix socket, which
+the image trusts, which is how every one of these queries authenticated before
+the seam existed. `tests/psql-transport-test.sh` names those three scripts and
+fails if one of them reaches for a superuser entry point, because a promotion
+is invisible in a diff that only shows the exec disappearing.
 
 `auto` (the default) chooses between them on the first query of each process;
 set `DUNE_PSQL_TRANSPORT` in `.env` to pin one. Neither the transport nor the
@@ -140,9 +153,11 @@ the test until someone adds it on purpose. The same test rejects a
 is how four publishers evaded an earlier, grep-for-the-shell-string version of
 this guard and kept exec'ing at ~1.8 statements a second.
 
-`coriolis-data-cleanup.sh` stays on a direct `docker exec`: it pipes a
-heredoc on stdin and connects as the `dune` application role, neither of
-which the seam covers.
+`coriolis-data-cleanup.sh` stays on a direct `docker exec`: it pipes a heredoc
+on stdin, which the seam does not cover because both legs read from
+`/dev/null`. Its `dune` role is no longer a reason — `dune_psql_app` connects
+as that role — so if it ever stops needing stdin it can move onto the seam
+like the rest.
 
 #### Where the client lives, and how the configuration reaches it
 
