@@ -258,13 +258,23 @@ for script in "${python_converted[@]}"; do
     || fail "$script runs Python queries without exporting the seam's settings"
 done
 
-# Every remaining raw exec, named. These are operator-invoked one-shots,
-# bootstrap and patch scripts, probes and update flows: a single exec costs
-# nothing there, several of them pipe a .sql file in over stdin, and
-# start-postgres.sh has to work before any port is published to connect to. The
-# list is exhaustive on purpose -- a new script that opens its own exec fails
-# here until someone adds it deliberately, which is how an unattended loop
-# ends up on the seam instead of in this list by accident.
+# Every remaining raw exec, named. The criterion is how often a script runs, not
+# who starts it: these are operator-invoked one-shots, bootstrap and patch
+# scripts, probes and update flows, where a single exec costs nothing, several
+# of them pipe a .sql file in over stdin, and start-postgres.sh has to work
+# before there is a published port to connect to.
+#
+# network-addresses.sh is the one entry that is not operator-only --
+# autoscaler.sh reconciles through it in publish_state_for_map, and
+# spawn-server.sh, start-all.sh, start-server-*.sh and config.sh all call it
+# too. It stays on the list because every one of those sites is event-driven
+# (a demand event, a spawn, a heal past its grace period), not per-tick, so it
+# does not accumulate conmon the way a polling loop does. If it ever moves onto
+# a timer, it belongs on the seam instead.
+#
+# The list is exhaustive on purpose -- a new script that opens its own exec
+# fails here until someone adds it deliberately, which is how an unattended
+# loop ends up on the seam instead of in this list by accident.
 may_exec=(
   db-orphan-audit.sh
   db.sh

@@ -122,7 +122,7 @@ The dividing line is *how often a caller runs*, not what it queries:
 
 - **Unattended loops, timers and publishers go through the seam** — the
   autoscaler and its publishers, `publish-deepdesert-overrides.sh` (which
-  polls once a second and fans out over every partition),
+  re-queries every ten seconds and fans out over every partition),
   `publish-deepdesert-state.sh`, `publish-sietch-overrides.sh`,
   `validate-sietch-state.sh`, `farm-readiness.sh` (reached from both publisher
   hot paths), `restart-schedule.sh`, `deferred-reconcile.sh`,

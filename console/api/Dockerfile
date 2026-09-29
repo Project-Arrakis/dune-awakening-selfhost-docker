@@ -21,9 +21,9 @@ ENV NODE_ENV=production
 # prefer a TCP connection to the port start-postgres.sh publishes on loopback
 # and fall back to `docker exec dune-postgres psql` when no client is installed
 # -- and this image had none, so every query from here took the fallback.
-# publish-deepdesert-overrides.sh alone polls once a second and fans out over
-# every partition, and each exec spawns a conmon pair that lingers for the
-# engine's exit delay. The container runs with network_mode: host (see
+# publish-deepdesert-overrides.sh alone re-queries every ten seconds and fans
+# out over every partition, and each exec spawns a conmon pair that lingers for
+# the engine's exit delay. The container runs with network_mode: host (see
 # docker-compose.web.yml), so 127.0.0.1 here really is the host's loopback and
 # really does reach the published port.
 # gnupg (gpg) is required by `dune db backup-system`'s authenticated
