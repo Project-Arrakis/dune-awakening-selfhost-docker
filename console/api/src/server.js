@@ -75,6 +75,7 @@ import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals, set
 import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
 import { ensureExchangeHistory, listExchangeTransactions } from "./services/exchangeHistory.js";
 import { listMarketExchanges, marketBotStatus, saveMarketBuybackSchedule, saveMarketSeedSchedule, decodeSeedPlanCsvUpload, exportMarketSeedPlanCsv, importMarketSeedPlanFromCsv, renameMarketSeedPlan, setActiveMarketSeedPlan } from "./services/exchangeMarket.js";
+import { saveMarketBotSettings } from "./services/marketBotSettings.js";
 import { loadMarketSeedPlan } from "./addonSeedJob.js";
 import { readMarketItemOverrides, saveMarketItemOverrides, readUnsafeTemplateIds, listBotItemCatalogPickerItems, getOverrideRow } from "./services/marketItemOverrides.js";
 import { autoRefillPublicState, clampAutoRefillNextRun, createAutoRefillScheduler, setBaseAutoRefill } from "./services/autoRefill.js";
@@ -1339,6 +1340,7 @@ async function handleApi(req, res) {
   if (path === "/api/exchange/market/buyback/run" && req.method === "POST") return marketRunNowRoute(req, res, "buyback");
   if (path === "/api/exchange/market/seed/run" && req.method === "POST") return marketRunNowRoute(req, res, "seed");
   if (path === "/api/exchange/market/seed/clear" && req.method === "POST") return marketUnseedRoute(req, res);
+  if (path === "/api/exchange/market/settings" && req.method === "POST") return marketSettingsSaveRoute(req, res);
   if (path === "/api/exchange/market/plans/csv" && req.method === "GET") return marketSeedPlanCsvDownloadRoute(req, res, url);
   if (path === "/api/exchange/market/plans/csv" && req.method === "POST") return marketSeedPlanCsvUploadRoute(req, res);
   if (path === "/api/exchange/market/plans/active" && req.method === "POST") return marketSeedPlanActiveRoute(req, res);
@@ -2413,6 +2415,22 @@ async function marketUnseedRoute(req, res) {
     return json(res, 200, result);
   } catch (error) {
     audit(config, req, "exchange.market", { op: "seed-clear", ok: false, error: redact(error?.message || "Unexpected error.") });
+    const payload = apiErrorPayload(error, 400);
+    return json(res, payload.status, payload.body);
+  }
+}
+
+// Bot-wide settings (safety backups). Turning backups off requires the
+// confirmation phrase, checked server-side in saveMarketBotSettings.
+async function marketSettingsSaveRoute(req, res) {
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "exchange.market.settings")) return;
+  try {
+    const result = saveMarketBotSettings(config, body || {});
+    audit(config, req, "exchange.market", { op: "settings", safetyBackups: result.safetyBackups, ok: true });
+    return json(res, 200, result);
+  } catch (error) {
+    audit(config, req, "exchange.market", { op: "settings", ok: false, error: redact(error?.message || "Unexpected error.") });
     const payload = apiErrorPayload(error, 400);
     return json(res, payload.status, payload.body);
   }

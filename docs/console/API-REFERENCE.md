@@ -619,6 +619,7 @@ blacklist behaves.
 | POST | `/api/exchange/market/buyback/run` | Run a buyback sweep now with the saved schedule (probe → backup → sweep) | None |
 | POST | `/api/exchange/market/seed/run` | Run a market reseed now with the saved schedule (backup → clear bot listings → seed) | None |
 | POST | `/api/exchange/market/seed/clear` | Remove the bot's NPC listings from one exchange without reseeding (probe → backup → clear; no backup when the bot has none). Player listings and pending seller payments are never touched. Requires `exchange:market-write`. Rate-limited. | body: `exchangeId?` (defaults to the saved seed schedule's exchange) |
+| POST | `/api/exchange/market/settings` | Save bot-wide Market Bot settings. `safetyBackups: false` skips the pre-write backup for buyback, reseed, and clear runs (scheduled and manual) and requires `confirmation: "DISABLE MARKET BOT BACKUPS"`; re-enabling needs no phrase. Current settings are returned as `settings` by `GET /api/exchange/market`. Requires `exchange:market-write`. Audited, rate-limited. | body: `safetyBackups` (boolean), `confirmation?` |
 | GET | `/api/exchange/market/plans/csv` | Download the selected (or active) seed plan as CSV | query: `planId?` |
 | POST | `/api/exchange/market/plans/csv` | Upload a UTF-8 CSV as the current seeding list: creates or replaces a named custom plan and makes it active. Only the documented seed-plan columns (names and numbers) are accepted; extra columns, SQL/JSON/HTML, formulas, and non-numeric cells are rejected. The bundled plan is never overwritten. Requires `exchange:market-write`. Rate-limited. | multipart: `file` (`.csv`), `name?` (friendly name; required when creating a plan), `planId?` (existing custom plan to replace) |
 | POST | `/api/exchange/market/plans/active` | Set the active seed plan used by reseed and buyback | body: `planId` (`bundled` or a custom plan id) |
@@ -662,7 +663,7 @@ console API process, and do not require an addon; the seed plan is the **active*
 named plan (the bundled `runtime/data/market-seed-plan.json` until the operator
 imports a CSV-backed list and sets it active). `buybackPercent` is an integer
 from 1 to 500. Every write is preceded by a database
-backup, and buyback runs probe eligibility read-only first so idle intervals
+backup unless Safety Backups are turned off (`POST /api/exchange/market/settings`), and buyback runs probe eligibility read-only first so idle intervals
 never take a backup. See [exchange.md](exchange.md#market-bot) for behavior
 details.
 

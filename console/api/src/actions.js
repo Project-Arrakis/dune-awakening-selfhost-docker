@@ -208,6 +208,7 @@ export const ROUTE_ACTIONS = {
   "POST /api/exchange/market/buyback/run":     "exchange:market-write",
   "POST /api/exchange/market/seed/run":        "exchange:market-write",
   "POST /api/exchange/market/seed/clear":      "exchange:market-write",
+  "POST /api/exchange/market/settings":        "exchange:market-write",
   "GET /api/exchange/market/plans/csv":        "exchange:market",
   "POST /api/exchange/market/plans/csv":       "exchange:market-write",
   "POST /api/exchange/market/plans/active":    "exchange:market-write",
