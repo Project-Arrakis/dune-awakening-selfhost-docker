@@ -110,6 +110,7 @@ import { SETUP_CONFIG_KEYS, validHostDatacenterId } from "./services/setupConfig
 import { validateDiscordRoleIds, readDiscordBotSettingsState, applyDiscordBotEnableRequest, discordAdminRoleIdsChanged, updateDiscordBotRoleIds, regenerateDiscordBotToken, persistHostedBotConnectedGuild, disableDiscordBotAdapter, setDeploymentChoice } from "./integrations/discord/adapterSettings.js";
 import { readRestartHistory } from "./services/restartHistory.js";
 import { playerListSettingsView, resolvePlayerInactiveWeeks, savePlayerListSettings } from "./services/playerListSettings.js";
+import { resolveAutoStartBattlegroup, saveServerStartupSettings, serverStartupSettingsView } from "./services/serverStartupSettings.js";
 
 const config = loadConfig();
 const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
@@ -789,7 +790,7 @@ function runBackgroundTick(label, fn) {
 }
 
 function scheduleBootAutoStart() {
-  if (config.mockMode || process.env.ADMIN_AUTO_START_STACK_ON_BOOT === "0") return;
+  if (config.mockMode) return;
   setTimeout(() => {
     void maybeAutoStartStackOnBoot();
   }, 5000).unref?.();
@@ -804,6 +805,10 @@ function loadJourneyTagsData() {
 }
 
 async function maybeAutoStartStackOnBoot() {
+  if (!resolveAutoStartBattlegroup(config.repoRoot)) {
+    console.log("Boot auto-start skipped because automatic Battlegroup startup is disabled.");
+    return;
+  }
   if (!isSetupComplete()) {
     console.log("Boot auto-start skipped because first-time setup is not complete.");
     return;
@@ -2927,6 +2932,7 @@ async function handleApi(req, res) {
     return json(res, 200, { status, guildName: status === "confirmed" ? String(statusBody?.guildName || "") : undefined });
   }
 
+  if (path === "/api/settings/server-startup" && req.method === "POST") return serverStartupSettingsRoute(req, res);
   if (path === "/api/settings" && req.method === "POST") return writeConfig(req, res);
   if (path === "/api/settings") return json(res, 200, await setupState());
 
@@ -8430,6 +8436,7 @@ async function setupState() {
     config: publicConfig(config),
     serverConfig: readSetupConfigValues(),
     publicDirectory: publicDirectorySettings(),
+    serverStartup: serverStartupSettingsView(config.repoRoot),
     files: {
       env,
       token,
@@ -8960,6 +8967,12 @@ async function publicDirectorySettingsRoute(req, res) {
   });
   await publicDirectory.tick();
   return json(res, 200, { ok: true, publicDirectory: publicDirectorySettings() });
+}
+
+async function serverStartupSettingsRoute(req, res) {
+  const result = saveServerStartupSettings(config.repoRoot, await readJson(req));
+  audit(config, req, "settings.server-startup", result.settings);
+  return json(res, 200, { ok: true, ...result });
 }
 
 async function publicDirectoryClaimRoute(req, res) {

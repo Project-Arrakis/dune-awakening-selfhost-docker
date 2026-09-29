@@ -186,6 +186,8 @@ export const ROUTE_ACTIONS = {
   "POST /api/settings/api-keys":               "settings:write",
   "POST /api/settings/public-directory":       "settings:write",
   "POST /api/settings/public-directory/claim": "settings:write",
+  "POST /api/settings/server-startup":          "settings:write",
+
   // --- Discord Bot Adapter Settings ---
   // GET uses updates:read, not settings:read -- audit finding #6 (LOW):
   // admin is denied settings:* (see the Deny wildcard in policy.js) but IS
