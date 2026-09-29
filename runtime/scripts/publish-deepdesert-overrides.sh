@@ -214,10 +214,18 @@ rmq_admin() {
     # rabbitmqadmin would have called anyway; lib/rabbitmq.sh returns
     # RMQ_HTTP_UNSUPPORTED for the rest, which falls through to the exec below.
     # Either way a real failure retries once with freshly read credentials.
-    dune_rmq_http_try "$rmq_user" "$rmq_password" "$@"
-    rc=$?
+    # rc is captured rather than left to propagate: under `set -e` a plain
+    # failure here -- a 401 from stale credentials, which is routine, since
+    # these are scraped from rotating director logs -- would kill the caller
+    # before either the credential refresh below or the exec fallback could
+    # run. publish_payload calls this bare from a `while read` loop, so that
+    # abort took the whole publisher down.
+    rc=0
+    dune_rmq_http_try "$rmq_user" "$rmq_password" "$@" || rc=$?
     if [ "$rc" -ne "$RMQ_HTTP_UNSUPPORTED" ]; then
-      [ "$rc" -eq 0 ] && return 0
+      if [ "$rc" -eq 0 ]; then
+        return 0
+      fi
     elif timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"; then
       return 0
     else

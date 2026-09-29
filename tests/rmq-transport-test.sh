@@ -159,4 +159,106 @@ _dune_rmq_transport=""
 DUNE_RMQ_TRANSPORT="nonsense" dune_rmq_transport >/dev/null 2>&1 \
   && fail "an invalid DUNE_RMQ_TRANSPORT was accepted"
 
+# --- the caller can actually honour a failure ---------------------------------
+# Everything above tests the library. The contract that matters in production is
+# the publishers' rmq_admin wrapper: its comment promises that "a real failure
+# retries once with freshly read credentials", and a 401 from stale credentials
+# is routine because they are scraped from rotating director logs.
+#
+# That wrapper runs under `set -euo pipefail` and publish_payload calls it bare
+# from a `while read` loop, so any unprotected failing command inside it aborts
+# the whole publisher instead of retrying. Testing it through `|| rc=$?` would
+# prove nothing: that exemption propagates into the function and suppresses the
+# very errexit being tested. So the driver below calls it bare, exactly as
+# publish_payload does, and the assertion is on evidence the function left
+# behind rather than on the driver's own survival -- the driver is expected to
+# die on the final non-zero return, which is the caller's business.
+#
+# The function text is lifted out of the shipped scripts rather than copied
+# here, so this cannot pass against a stale duplicate.
+
+cat > "$work/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cat > /dev/null
+[ -n "$out" ] && printf '%s' '{"error":"not_authorised"}' > "$out"
+printf '%s' "${CURL_HTTP_CODE:-200}"
+STUB
+chmod +x "$work/bin/curl"
+
+# A docker that records the fallback exec instead of running one.
+cat > "$work/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$DOCKER_CALLS"
+exit 1
+STUB
+chmod +x "$work/bin/docker"
+
+repo_root="$PWD"
+
+for publisher in publish-sietch-overrides.sh publish-deepdesert-overrides.sh; do
+  awk '/^rmq_admin\(\) \{/,/^\}/' "runtime/scripts/$publisher" > "$work/rmq_admin.sh"
+  grep -Fq 'dune_rmq_http_try' "$work/rmq_admin.sh" \
+    || fail "could not lift rmq_admin out of $publisher"
+
+  cat > "$work/driver.sh" <<'DRIVER'
+set -euo pipefail
+cd "$REPO_ROOT"
+# shellcheck source=runtime/scripts/lib/rabbitmq.sh
+source runtime/scripts/lib/rabbitmq.sh
+RMQ_TIMEOUT_SECONDS=5
+RMQ_CREDS_FILE="$WORK/creds-file"
+: > "$RMQ_CREDS_FILE"
+# Each read is recorded, so the retry is observable from outside.
+load_rmq_admin_creds() { printf 'read\n' >> "$CREDS_READS"; printf '%s\n%s\n' user pass; }
+source "$WORK/rmq_admin.sh"
+# Bare, exactly as publish_payload calls it.
+rmq_admin publish exchange=dune.filter routing_key=k payload=p >/dev/null
+DRIVER
+
+  # A 401 on a verb the seam translates: two credential reads, and no exec,
+  # because an HTTP error is a real failure rather than an unsupported verb.
+  : > "$work/creds-reads"
+  : > "$work/docker-calls"
+  rc=0
+  env REPO_ROOT="$repo_root" WORK="$work" \
+      CREDS_READS="$work/creds-reads" DOCKER_CALLS="$work/docker-calls" \
+      CURL_HTTP_CODE=401 CURL_STDIN_CAPTURE=/dev/null \
+      CURL_URL_CAPTURE=/dev/null CURL_BODY_CAPTURE=/dev/null \
+      bash "$work/driver.sh" >/dev/null 2>&1 || rc=$?
+
+  reads="$(wc -l < "$work/creds-reads" | tr -d '[:space:]')"
+  [ "$reads" -eq 2 ] \
+    || fail "$publisher: a 401 must refresh credentials and retry once (credentials read $reads time(s), expected 2)"
+  [ ! -s "$work/docker-calls" ] \
+    || fail "$publisher: a 401 is a real failure, not an unsupported verb, so it must not exec rabbitmqadmin"
+  [ "$rc" -ne 0 ] \
+    || fail "$publisher: rmq_admin reported success after two 401s"
+
+  # A verb the seam does not translate must still reach the exec fallback, and
+  # that fallback's own failure must not skip the retry either.
+  : > "$work/creds-reads"
+  : > "$work/docker-calls"
+  sed -i 's/^rmq_admin publish .*/rmq_admin declare queue name=q durable=true >\/dev\/null/' "$work/driver.sh"
+  rc=0
+  env REPO_ROOT="$repo_root" WORK="$work" \
+      CREDS_READS="$work/creds-reads" DOCKER_CALLS="$work/docker-calls" \
+      CURL_STDIN_CAPTURE=/dev/null CURL_URL_CAPTURE=/dev/null CURL_BODY_CAPTURE=/dev/null \
+      bash "$work/driver.sh" >/dev/null 2>&1 || rc=$?
+
+  reads="$(wc -l < "$work/creds-reads" | tr -d '[:space:]')"
+  [ "$reads" -eq 2 ] \
+    || fail "$publisher: a failing exec fallback must also retry once (credentials read $reads time(s), expected 2)"
+  grep -Fq 'rabbitmqadmin' "$work/docker-calls" \
+    || fail "$publisher: an untranslated verb did not reach the rabbitmqadmin exec"
+  [ "$rc" -ne 0 ] \
+    || fail "$publisher: rmq_admin reported success after two failed execs"
+done
+
 echo "rabbitmq seam translates publish and get to the management API and falls back for everything else"
