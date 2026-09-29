@@ -8,7 +8,11 @@ export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 cd "$(dirname "$0")/../.."
 
 # POSTGRES_PORT and DUNE_PSQL_TRANSPORT from here configure the Postgres seam.
+# Exported because this script's snapshot queries run in embedded Python, which
+# reads them from its environment; a bare `. ./.env` would keep them invisible
+# to any child process.
 [ -f .env ] && . ./.env
+export POSTGRES_PORT DUNE_PSQL_TRANSPORT
 
 source runtime/scripts/host-file-ownership.sh
 source runtime/scripts/farm-readiness.sh
@@ -393,6 +397,7 @@ import time
 
 sys.path.insert(0, "runtime/scripts")
 import usersettings  # noqa: E402
+import dune_psql  # noqa: E402
 
 timestamp_lead = int(os.environ.get("TIMESTAMP_LEAD_SECONDS", "0"))
 survival_log_ready = os.environ.get("SURVIVAL_LOG_READY", "").lower() in ("1", "true", "t", "yes")
@@ -412,16 +417,7 @@ where coalesce(wp.server_id, '') <> ''
 order by wp.partition_id;
 """
 
-result = subprocess.run(
-    [
-        "docker", "exec", "dune-postgres",
-        "psql", "-U", "postgres", "-d", "dune",
-        "-At", "-F", "\t", "-c", query,
-    ],
-    check=True,
-    text=True,
-    capture_output=True,
-)
+rows_raw = dune_psql.query_tsv(query)
 
 usersettings_config = usersettings.load_config()
 
@@ -483,7 +479,7 @@ def gameplay_settings_for_partition(partition_id: str) -> dict:
     }
 
 
-for line in result.stdout.splitlines():
+for line in rows_raw.splitlines():
     if not line.strip():
         continue
     partition_id, map_name, server_id, ready, label, game_addr, game_port = line.split("\t")
@@ -547,26 +543,19 @@ import time
 
 sys.path.insert(0, "runtime/scripts")
 import usersettings  # noqa: E402
+import dune_psql  # noqa: E402
 
 messages = json.loads(os.environ["FILTER_MESSAGES"])
 survival_log_ready = os.environ.get("SURVIVAL_LOG_READY", "").lower() in ("1", "true", "t", "yes")
-label_rows_raw = subprocess.check_output([
-    "docker", "exec", "dune-postgres", "psql",
-    "-U", "postgres", "-d", "dune", "-At", "-F", "\t",
-    "-c", "select partition_id, coalesce(label, '') from dune.world_partition where lower(map)=lower('Survival_1');"
-], text=True)
-endpoint_rows_raw = subprocess.check_output([
-    "docker", "exec", "dune-postgres", "psql",
-    "-U", "postgres", "-d", "dune", "-At", "-F", "\t",
-    "-c", """
+label_rows_raw = dune_psql.query_tsv("select partition_id, coalesce(label, '') from dune.world_partition where lower(map)=lower('Survival_1');")
+endpoint_rows_raw = dune_psql.query_tsv("""
       select wp.partition_id,
              coalesce(host(fs.game_addr), ''),
              coalesce(fs.game_port, 0)
       from dune.world_partition wp
       left join dune.farm_state fs on fs.server_id = wp.server_id
       where lower(wp.map)=lower('Survival_1');
-    """
-], text=True)
+    """)
 label_by_partition = {}
 for line in label_rows_raw.splitlines():
     if not line.strip():

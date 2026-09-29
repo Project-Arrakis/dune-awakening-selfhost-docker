@@ -5,6 +5,13 @@ set -euo pipefail
 export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 
 cd "$(dirname "$0")/../.."
+
+# POSTGRES_PORT and DUNE_PSQL_TRANSPORT from here configure the Postgres seam.
+# Exported because this script's queries run in embedded Python, which reads
+# them from its environment; a bare `. ./.env` would keep them invisible to any
+# child process.
+[ -f .env ] && . ./.env
+export POSTGRES_PORT DUNE_PSQL_TRANSPORT
 source runtime/scripts/host-file-ownership.sh
 
 PID_FILE="runtime/generated/deepdesert-overrides.pid"
@@ -264,6 +271,7 @@ import time
 
 sys.path.insert(0, "runtime/scripts")
 import usersettings  # noqa: E402
+import dune_psql  # noqa: E402
 
 query = """
 select wp.partition_id,
@@ -280,16 +288,7 @@ where wp.map = 'DeepDesert_1'
 order by wp.dimension_index, wp.partition_id;
 """
 
-result = subprocess.run(
-    [
-        "docker", "exec", "dune-postgres",
-        "psql", "-U", "postgres", "-d", "dune",
-        "-At", "-F", "\t", "-c", query,
-    ],
-    check=True,
-    text=True,
-    capture_output=True,
-)
+rows_raw = dune_psql.query_tsv(query)
 
 usersettings_config = usersettings.load_config()
 
@@ -366,7 +365,7 @@ def gameplay_settings_for_partition(partition_id: str, display_name: str) -> dic
     }
 
 
-for line in result.stdout.splitlines():
+for line in rows_raw.splitlines():
     if not line.strip():
         continue
     partition_id, server_id, game_addr, game_port, ready, alive, label = line.split("\t")

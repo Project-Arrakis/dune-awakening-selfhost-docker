@@ -76,9 +76,16 @@ this prevents; don't reimplement the precedence chain anywhere else.
 
 ### 2.1 How runtime scripts connect
 
-Shell scripts do not open a pool. They call `dune_psql` from
-[`runtime/scripts/lib/postgres.sh`](../../runtime/scripts/lib/postgres.sh),
-which connects as the `postgres` superuser and picks one of two transports:
+Runtime scripts do not open a pool. They query through a seam that exists in
+two languages, because the publishers are written in two:
+
+| Caller | Entry point | File |
+|---|---|---|
+| shell | `dune_psql`, `psql_value` | [`runtime/scripts/lib/postgres.sh`](../../runtime/scripts/lib/postgres.sh) |
+| an embedded `python3 - <<PY` block | `dune_psql.query_tsv` | [`runtime/scripts/dune_psql.py`](../../runtime/scripts/dune_psql.py) |
+
+Both connect as the `postgres` superuser, read the same `DUNE_PSQL_TRANSPORT`
+and `POSTGRES_PORT`, and pick one of two transports:
 
 | Transport | Used when | How |
 |---|---|---|
@@ -87,13 +94,18 @@ which connects as the `postgres` superuser and picks one of two transports:
 
 `auto` (the default) chooses between them on the first query of each process;
 set `DUNE_PSQL_TRANSPORT` in `.env` to pin one. Neither the transport nor the
-port is settled when the library is *sourced*, deliberately: several callers
-(`spawn-server.sh`, `start-all.sh`) read `.env` well after their `source`
-lines, and resolving eagerly would pin the default port for them no matter
-what the operator configured. The detection is a `type -P` probe, deliberately
-not `command -v`, because `command -v` would also be satisfied by a *shell
-function* named `psql` — and this repository used to define one whose whole
-body was a container exec.
+port is settled when the library is *sourced* or *imported*, deliberately:
+several callers (`spawn-server.sh`, `start-all.sh`) read `.env` well after
+their `source` lines, and resolving eagerly would pin the default port for
+them no matter what the operator configured. The detection is a `type -P` /
+`shutil.which` probe, deliberately not `command -v`, because `command -v`
+would also be satisfied by a *shell function* named `psql` — and this
+repository used to define one whose whole body was a container exec.
+
+The duplication is the point and it is fenced: `tests/psql-transport-test.sh`
+diffs the Python constants against the shell ones, so a changed superuser,
+database, container name or default port fails there rather than in
+production.
 
 Both legs reach the same database, so this is purely a question of cost. A
 container exec is not a connection: it forks a new process pair per
@@ -104,14 +116,45 @@ into a sustained tens-of-MB/s write load. The TCP leg reuses the published
 loopback port the stack already exposes and costs one short-lived
 connection instead.
 
-Two consequences worth knowing:
+#### Which callers are on the seam
 
-- **The orchestrator image ships `postgresql-client`** so everything running
-  inside it — the autoscaler, the Coriolis coordinator — takes the TCP leg.
-  `dune doctor` asks the seam inside the running container which leg it took
-  and says which of the two reasons explains an answer of `exec` — a stale
-  image with no client, or a pinned `DUNE_PSQL_TRANSPORT`. The fallback is
-  silent and correct, just expensive, so nothing else would surface it.
+The dividing line is *how often a caller runs*, not what it queries:
+
+- **Unattended loops, timers and publishers go through the seam** — the
+  autoscaler and its publishers, `publish-deepdesert-overrides.sh` (which
+  polls once a second and fans out over every partition),
+  `publish-deepdesert-state.sh`, `publish-sietch-overrides.sh`,
+  `validate-sietch-state.sh`, `farm-readiness.sh` (reached from both publisher
+  hot paths), `restart-schedule.sh`, `deferred-reconcile.sh`,
+  `spicefield-overrides.sh` and `repair-chat-exchanges.sh`.
+- **Operator-invoked one-shots may keep a raw `docker exec`** — `db.sh`,
+  `doctor.sh`, `status.sh`, the `patch-*` and `probe-*` scripts,
+  `init-database.sh`, `update-db.sh`. One exec costs nothing when a human
+  typed the command, several pipe a `.sql` file in on stdin, and
+  `start-postgres.sh` has to work *before* any port is published.
+
+That boundary is an allowlist in `tests/psql-transport-test.sh`, diffed
+against what the tree actually contains, so a **new** raw-exec caller fails
+the test until someone adds it on purpose. The same test rejects a
+`["docker", "exec", ...]` argv list built anywhere but `dune_psql.py`, which
+is how four publishers evaded an earlier, grep-for-the-shell-string version of
+this guard and kept exec'ing at ~1.8 statements a second.
+
+`coriolis-data-cleanup.sh` stays on a direct `docker exec`: it pipes a
+heredoc on stdin and connects as the `dune` application role, neither of
+which the seam covers.
+
+#### Where the client lives, and how the configuration reaches it
+
+- **Both images that run publisher loops ship `postgresql-client`** — the
+  orchestrator image and the console image. The console's did not, so every
+  query from the web admin took the exec leg however correctly the script was
+  written; CI now runs `psql --version` against the built console image so a
+  dropped package fails the build rather than quietly doubling the exec rate.
+  `dune doctor` asks *both* seams inside *both* running containers which leg
+  they took, and names the two reasons an answer of `exec` has — a stale image
+  with no client, or a pinned `DUNE_PSQL_TRANSPORT`. The fallback is silent
+  and correct, just expensive, so nothing else would surface it.
 - **The exec leg is load-bearing, not vestigial.** The same scripts run
   directly on the host, from the `dune` CLI and `start-all.sh`, where a
   `psql` client usually is not installed.
@@ -121,16 +164,19 @@ Addressing the container by name meant the published port never mattered, so
 every host script that queries the database now reads `.env` itself — without
 that, a stack whose `POSTGRES_PORT` was remapped (see
 [`MULTI-SERVER-SINGLE-PUBLIC-IP.md`](../runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md))
-would dial the default port as soon as a `psql` client was installed. The
-containers never see the file, so their launchers (`start-autoscaler.sh`,
-`start-coriolis-coordinator.sh`) forward `POSTGRES_PORT` and
-`DUNE_PSQL_TRANSPORT` explicitly instead. `autoscaler.sh` is the one script
-written to be configured entirely by its environment, which is why `dune
-autoscaler` exports `.env` before running it in the foreground.
+would dial the default port as soon as a `psql` client was installed. Scripts
+whose queries run in embedded Python follow `. ./.env` with a targeted
+`export POSTGRES_PORT DUNE_PSQL_TRANSPORT`, because a child interpreter reads
+them from its environment — targeted rather than `set -a`, which would hand
+every other secret in `.env` to every child process as well.
 
-`coriolis-data-cleanup.sh` stays on a direct `docker exec`: it pipes a
-heredoc on stdin and connects as the `dune` application role, neither of
-which `dune_psql` covers.
+Inside a container the same route works: both the autoscaler and the console
+bind-mount the repo root, so a script that sources `.env` finds it. The
+exception is `autoscaler.sh`, which is written to be configured entirely by its
+environment and never reads the file — which is why `start-autoscaler.sh` and
+`start-coriolis-coordinator.sh` pass `POSTGRES_PORT` and `DUNE_PSQL_TRANSPORT`
+in with `-e`, and why `dune autoscaler` exports `.env` before running it in the
+foreground.
 
 ---
 

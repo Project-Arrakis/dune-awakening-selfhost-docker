@@ -13,12 +13,18 @@
 # So this seam prefers a plain TCP connection to the port `start-postgres.sh`
 # publishes on loopback, and falls back to `docker exec` where no `psql` client
 # exists. The split is not a heuristic dressed up as a policy: `psql` ships in
-# the orchestrator image and nowhere else, and every container built from that
-# image (dune-orchestrator, dune-autoscaler, dune-coriolis-coordinator) runs
-# with `--network host`, so whenever the client is present 127.0.0.1 really is
-# the host's loopback and really does reach the published port. On the host
-# itself -- the `dune` CLI, start-all.sh -- there is usually no client, and the
-# exec path is the same code that has always run there.
+# exactly the two images that run publisher loops -- the orchestrator image
+# (dune-orchestrator, dune-autoscaler, dune-coriolis-coordinator) and the
+# console image -- and every container from either runs with host networking,
+# so whenever the client is present 127.0.0.1 really is the host's loopback and
+# really does reach the published port. On the host itself -- the `dune` CLI,
+# start-all.sh -- there is usually no client, and the exec path is the same code
+# that has always run there.
+#
+# The same two transports, the same settings and the same defaults are
+# reimplemented once in runtime/scripts/dune_psql.py, for the publishers whose
+# queries run in an embedded `python3 - <<PY` block. tests/psql-transport-test.sh
+# diffs the two halves so they cannot drift apart.
 #
 # The engine is addressed as `docker` throughout, which on a Podman host is the
 # podman-docker shim; nothing here depends on Docker specifically.

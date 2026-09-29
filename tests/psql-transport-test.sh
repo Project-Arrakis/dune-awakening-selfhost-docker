@@ -189,44 +189,173 @@ snippet='dune_psql -Atc "select 1;"; printf "PGPASSWORD=%s\n" "${PGPASSWORD-<uns
 
 cd "$repo_root"
 
-converted=(
+# Everything that reaches Postgres from a shell statement. Each one sources the
+# library and must not spell out an exec of its own again.
+shell_converted=(
   runtime/scripts/autoscaler.sh
   runtime/scripts/deepdesert.sh
+  runtime/scripts/deferred-reconcile.sh
   runtime/scripts/despawn-server.sh
+  runtime/scripts/farm-readiness.sh
   runtime/scripts/landsraad-instance-cleanup.sh
   runtime/scripts/map-modes.sh
   runtime/scripts/publish-network-server-state-overrides.sh
   runtime/scripts/publish-sietch-overrides.sh
   runtime/scripts/recycle-world-game-servers.sh
+  runtime/scripts/repair-chat-exchanges.sh
+  runtime/scripts/restart-schedule.sh
   runtime/scripts/sietches.sh
   runtime/scripts/spawn-server.sh
+  runtime/scripts/spicefield-overrides.sh
   runtime/scripts/start-server-overmap.sh
   runtime/scripts/start-server-survival-1.sh
 )
 
-for script in "${converted[@]}"; do
-  ! grep -q 'docker exec dune-postgres psql' "$script" \
+# Everything that reaches Postgres from an embedded `python3 - <<PY` block, via
+# the module twin. publish-sietch-overrides.sh appears in both lists: its
+# readiness checks are shell and its snapshots are Python.
+python_converted=(
+  runtime/scripts/publish-deepdesert-overrides.sh
+  runtime/scripts/publish-deepdesert-state.sh
+  runtime/scripts/publish-sietch-overrides.sh
+  runtime/scripts/validate-sietch-state.sh
+)
+
+# -i included: a script that pipes SQL in over stdin is reopening the same exec.
+raw_exec_re='docker exec (-i )?dune-postgres psql'
+
+for script in "${shell_converted[@]}" "${python_converted[@]}"; do
+  ! grep -qE "$raw_exec_re" "$script" \
     || fail "$script queries Postgres through a container exec again"
+done
+
+for script in "${shell_converted[@]}"; do
   grep -qx 'source runtime/scripts/lib/postgres.sh' "$script" \
     || fail "$script does not source the Postgres library"
 done
 
-# Addressing the container by name meant the published port never mattered.
-# Over TCP it decides everything, and on the host nothing but .env supplies it,
-# so a script that queries without reading the file dials 15432 whatever the
-# operator configured. autoscaler.sh is the deliberate exception: it runs in a
-# container that never sees the file and start-autoscaler.sh hands it the
-# settings instead, which tests/autoscaler-env-forwarding-test.sh covers.
-# landsraad-instance-cleanup.sh is sourced by two of these, never run on its own.
-for script in "${converted[@]}"; do
-  case "$script" in
-    runtime/scripts/autoscaler.sh|runtime/scripts/landsraad-instance-cleanup.sh)
-      continue
-      ;;
-  esac
-  grep -q '^\[ -f \.env \] && \. \./\.env$' "$script" \
-    || fail "$script queries Postgres but never reads .env"
+for script in "${python_converted[@]}"; do
+  grep -q 'dune_psql\.query_tsv(' "$script" \
+    || fail "$script does not query through runtime/scripts/dune_psql.py"
 done
+
+# The library's own exec is the one the seam is allowed to build in shell, and
+# the module's is the only one allowed in Python. This is the check that was
+# missing: four publishers spelled the exec as a Python argv list -- ["docker",
+# "exec", "dune-postgres", "psql", ...] -- so no grep for the shell string could
+# ever see them, and they kept running roughly two execs a second in production
+# while this file reported success.
+argv_builders="$(grep -rlE '"docker",[[:space:]]*"exec"' runtime/scripts/ || true)"
+[ "$argv_builders" = "runtime/scripts/dune_psql.py" ] \
+  || fail "a docker exec argv list is built outside the Postgres seam: $argv_builders"
+
+# And the other half of that defect: the module reads its configuration from the
+# environment, so a script whose queries run in Python has to export the two
+# variables. Sourcing .env alone leaves them invisible to the python3 child, and
+# the queries would silently dial the default port whatever the operator set.
+for script in "${python_converted[@]}"; do
+  grep -qx 'export POSTGRES_PORT DUNE_PSQL_TRANSPORT' "$script" \
+    || fail "$script runs Python queries without exporting the seam's settings"
+done
+
+# Every remaining raw exec, named. These are operator-invoked one-shots,
+# bootstrap and patch scripts, probes and update flows: a single exec costs
+# nothing there, several of them pipe a .sql file in over stdin, and
+# start-postgres.sh has to work before any port is published to connect to. The
+# list is exhaustive on purpose -- a new script that opens its own exec fails
+# here until someone adds it deliberately, which is how an unattended loop
+# ends up on the seam instead of in this list by accident.
+may_exec=(
+  db-orphan-audit.sh
+  db.sh
+  doctor.sh
+  heal-core-ready.sh
+  init-database.sh
+  lib/postgres.sh
+  manager.sh
+  network-addresses.sh
+  patch-blueprint-array-bounds.sh
+  patch-coriolis-base-backups.sh
+  patch-vehicle-recovery-guard.sh
+  ping-diagnostics.sh
+  probe-autoscaler-signals.sh
+  probe-db-partitions.sh
+  ready.sh
+  reconcile-world-partitions.sh
+  servers.sh
+  start-postgres.sh
+  status.sh
+  stop-server-overmap.sh
+  stop-server-survival-1.sh
+  update-db.sh
+  update.sh
+)
+
+diff -u \
+  <(printf '%s\n' "${may_exec[@]}" | sort) \
+  <(grep -rlE "$raw_exec_re" runtime/scripts/ | sed 's|^runtime/scripts/||' | sort) \
+  || fail "the set of scripts holding a raw Postgres exec has changed"
+
+# --- the images that run the loops ship a client --------------------------
+
+# The seam takes the TCP path only where a psql client exists, and it does not
+# complain when there is none: on the host there is no client and the exec path
+# is the right answer. That silence is what let the console image run the
+# once-a-second DeepDesert publisher through a container exec per statement for
+# months while everything here reported success.
+# Matched against the install list rather than the whole file: both Dockerfiles
+# name the package in a comment explaining why it is there, and a guard that
+# accepted the comment would pass a file that had dropped the package itself.
+for dockerfile in orchestrator/Dockerfile console/api/Dockerfile; do
+  grep -vE '^[[:space:]]*#' "$dockerfile" | grep -qE '(^|[[:space:]])postgresql-client([[:space:]]|\\|$)' \
+    || fail "$dockerfile runs publisher loops but installs no psql client"
+done
+
+# --- the two seams state the same facts -----------------------------------
+
+# The shell library and the Python module each carry their own copy of how
+# start-postgres.sh provisions the server, because neither language can read the
+# other's. A silent disagreement would send one of them to the wrong database or
+# authenticate it with the wrong password, so they are compared here.
+python3 - <<'PY' || fail "the shell and Python seams disagree"
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "runtime/scripts")
+import dune_psql
+
+shell = Path("runtime/scripts/lib/postgres.sh").read_text()
+
+
+def shell_value(name):
+    match = re.search(rf'^{name}="([^"]*)"$', shell, re.MULTILINE)
+    assert match, f"{name} is no longer stated in lib/postgres.sh"
+    return match.group(1)
+
+
+def shell_default_port():
+    ports = Path("runtime/scripts/lib/ports.sh").read_text()
+    match = re.search(r'port_env_value POSTGRES_PORT (\d+)', ports)
+    assert match, "the default Postgres port is no longer stated in lib/ports.sh"
+    return int(match.group(1))
+
+
+pairs = [
+    ("DUNE_PG_SUPERUSER", shell_value("DUNE_PG_SUPERUSER"), dune_psql.SUPERUSER),
+    ("DUNE_PG_SUPERUSER_PASSWORD", shell_value("DUNE_PG_SUPERUSER_PASSWORD"), dune_psql.SUPERUSER_PASSWORD),
+    ("DUNE_PG_DATABASE", shell_value("DUNE_PG_DATABASE"), dune_psql.DATABASE),
+    ("DUNE_PG_CONTAINER", shell_value("DUNE_PG_CONTAINER"), dune_psql.CONTAINER),
+    ("default port", shell_default_port(), dune_psql.DEFAULT_PORT),
+]
+
+for name, in_shell, in_python in pairs:
+    if in_shell != in_python:
+        print(f"{name}: lib/postgres.sh says {in_shell!r}, dune_psql.py says {in_python!r}", file=sys.stderr)
+        raise SystemExit(1)
+PY
+
+# --- the library is still the only definition of the helper ---------------
 
 # The library exists to end eight identical copies of this helper. Anything
 # that defines its own again has quietly reopened that duplication.

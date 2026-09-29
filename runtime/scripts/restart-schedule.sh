@@ -8,6 +8,8 @@ HOST_ROOT_DIR="${DUNE_HOST_REPO_ROOT:-$ROOT_DIR}"
 [ -f .env ] && . ./.env
 [ -r runtime/generated/battlegroup.env ] && . runtime/generated/battlegroup.env
 source runtime/scripts/runtime-env.sh
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
 source runtime/scripts/host-file-ownership.sh
 
 IFS=: read -r HOST_SERVICE_UID HOST_SERVICE_GID <<< "$(dune_resolve_host_owner)"
@@ -631,7 +633,7 @@ scheduled_restart_public_ip_fallback() {
   [ "$mode" = "public" ] || return 0
 
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-postgres; then
-    ip="$(docker exec dune-postgres psql -U postgres -d dune -Atc "
+    ip="$(psql_value "
       select value
       from dune.network_address_config
       where key = 'game_addr_ip'

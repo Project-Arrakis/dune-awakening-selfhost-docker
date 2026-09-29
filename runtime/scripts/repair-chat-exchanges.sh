@@ -3,6 +3,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+[ -f .env ] && . ./.env
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 is_running() {
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$1"
 }
@@ -133,7 +137,7 @@ if ! load_rmq_metadata; then
 fi
 
 guild_ids="$(
-  docker exec dune-postgres psql -U dune -d dune -Atc "
+  psql_value "
     select guild_id
     from dune.guilds
     where guild_id is not null
@@ -155,7 +159,7 @@ while IFS= read -r guild_id; do
 done <<< "$guild_ids"
 
 faction_ids="$(
-  docker exec dune-postgres psql -U dune -d dune -Atc "
+  psql_value "
     select distinct id
     from dune.factions
     where id is not null
@@ -208,7 +212,7 @@ else
 fi
 
 guild_bindings="$(
-  docker exec dune-postgres psql -U dune -d dune -At -F $'\t' -c "
+  dune_psql -At -F $'\t' -c "
     select distinct gm.guild_id, concat(ac.\"user\", '_queue') as queue_name
     from dune.guild_members gm
     join dune.player_state ps on ps.player_controller_id = gm.player_id
@@ -236,7 +240,7 @@ while IFS=$'\t' read -r guild_id queue_name; do
 done <<< "$guild_bindings"
 
 faction_bindings="$(
-  docker exec dune-postgres psql -U dune -d dune -At -F $'\t' -c "
+  dune_psql -At -F $'\t' -c "
     select distinct pf.faction_id, concat(ac.\"user\", '_queue') as queue_name
     from dune.player_faction pf
     join dune.player_state ps on ps.player_controller_id = pf.actor_id
@@ -264,7 +268,7 @@ while IFS=$'\t' read -r faction_id queue_name; do
 done <<< "$faction_bindings"
 
 map_bindings="$(
-  docker exec dune-postgres psql -U dune -d dune -At -F $'\t' -c "
+  dune_psql -At -F $'\t' -c "
     select distinct concat(($map_chat_region_sql), '.', coalesce(wp.dimension_index, 0)) as routing_key,
            concat(ac.\"user\", '_queue') as queue_name
     from dune.player_state ps
@@ -292,7 +296,7 @@ while IFS=$'\t' read -r routing_key queue_name; do
 done <<< "$map_bindings"
 
 direct_bindings="$(
-  docker exec dune-postgres psql -U dune -d dune -At -F $'\t' -c "
+  dune_psql -At -F $'\t' -c "
     select distinct routing_key, queue_name
     from (
       select ac.\"user\" as routing_key,
@@ -331,7 +335,7 @@ while IFS=$'\t' read -r routing_key queue_name; do
 done <<< "$direct_bindings"
 
 notification_bindings="$(
-  docker exec dune-postgres psql -U dune -d dune -At -F $'\t' -c "
+  dune_psql -At -F $'\t' -c "
     select distinct concat('player.#.', ac.funcom_id) as routing_key,
            concat(ac.\"user\", '_queue') as queue_name
     from dune.player_state ps

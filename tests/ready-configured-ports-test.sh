@@ -16,6 +16,8 @@ cp "$repo_root/runtime/scripts/fls-signals.sh" "$test_root/project/runtime/scrip
 cp "$repo_root/runtime/scripts/farm-readiness.sh" "$test_root/project/runtime/scripts/farm-readiness.sh"
 # runtime-env.sh sources the port resolvers from their own library
 cp "$repo_root/runtime/scripts/lib/ports.sh" "$test_root/project/runtime/scripts/lib/ports.sh"
+# farm-readiness.sh queries the database through the shared Postgres seam
+cp "$repo_root/runtime/scripts/lib/postgres.sh" "$test_root/project/runtime/scripts/lib/postgres.sh"
 # runtime-env.sh sources this as of the age-based secrets library
 # Stage 2 rollout
 cp "$repo_root/runtime/scripts/lib/secrets.sh" "$test_root/project/runtime/scripts/lib/secrets.sh"

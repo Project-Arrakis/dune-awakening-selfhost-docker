@@ -478,38 +478,83 @@ else
   fail_msg "Cannot check database because dune-postgres is not running"
 fi
 
-# The autoscaler queries the database thousands of times an hour. It only takes
-# the cheap TCP path when the orchestrator image it runs from ships a psql
-# client and nothing has pinned the transport; otherwise it falls back to a
+# Two containers run the publisher loops that query the database thousands of
+# times an hour, and each only takes the cheap TCP path when its image ships a
+# psql client and nothing has pinned the transport. Otherwise it falls back to a
 # docker exec per statement, which is what used to bury the container engine's
-# own state database in writes.
+# own state database in writes. The console image shipped without a client for
+# months and nothing reported it, which is why this is checked per container and
+# per seam rather than once.
 #
-# Ask the seam itself rather than inferring the answer from the client's
+# Ask the seams themselves rather than inferring the answer from the client's
 # presence: DUNE_PSQL_TRANSPORT can pin the exec path on an image that has a
-# client, and a check that guessed would report the opposite of what runs.
+# client, and a check that guessed would report the opposite of what runs. Both
+# seams are asked because a container can resolve TCP in shell and exec in
+# Python -- the module reads its settings from the environment, so a publisher
+# that reads .env without exporting them leaves its python3 child blind.
+#
+# Each probe reproduces its publisher's prologue, .env and the export included,
+# because that is how the publishers are configured. docker-compose.web.yml
+# hands the console POSTGRES_PORT but not DUNE_PSQL_TRANSPORT, and the
+# orchestrator containers get both only because their launchers pass them with
+# -e; in every case the scripts themselves read the file. A probe that skipped
+# it would report the default while the loops ran on whatever was configured.
+report_seam_transport() {
+  local container="$1"
+  local label="$2"
+  local unpin_hint="$3"
+  local rebuild_hint="$4"
+  local seam transport
+
+  for seam in shell python; do
+    case "$seam" in
+      shell)
+        transport="$(docker exec "$container" bash -c \
+          '[ -f .env ] && . ./.env; source runtime/scripts/lib/postgres.sh && dune_psql_init && printf "%s" "$DUNE_PSQL_TRANSPORT"' \
+          2>/dev/null || true)"
+        ;;
+      python)
+        transport="$(docker exec "$container" bash -c \
+          '[ -f .env ] && . ./.env; export POSTGRES_PORT DUNE_PSQL_TRANSPORT PYTHONPATH=runtime/scripts; python3 -c "import sys, dune_psql; sys.stdout.write(dune_psql.resolved_transport())"' \
+          2>/dev/null || true)"
+        ;;
+    esac
+
+    case "$transport" in
+      tcp)
+        ok "$label reaches Postgres over TCP from $seam"
+        ;;
+      exec)
+        warn_msg "$label reaches Postgres through a container exec per query from $seam"
+        if docker exec "$container" bash -c 'type -P psql' >/dev/null 2>&1; then
+          echo "     The image has a psql client, so DUNE_PSQL_TRANSPORT is pinning this."
+          echo "     Drop it from .env and restart:"
+          echo "     $unpin_hint"
+        else
+          echo "     Rebuild the image so it ships a psql client:"
+          echo "     $rebuild_hint"
+        fi
+        ;;
+      *)
+        warn_msg "Could not determine how $label reaches Postgres from $seam"
+        ;;
+    esac
+  done
+}
+
 if is_running dune-autoscaler; then
-  autoscaler_transport="$(docker exec dune-autoscaler bash -c \
-    'source runtime/scripts/lib/postgres.sh && dune_psql_init && printf "%s" "$DUNE_PSQL_TRANSPORT"' \
-    2>/dev/null || true)"
-  case "$autoscaler_transport" in
-    tcp)
-      ok "Autoscaler reaches Postgres over TCP"
-      ;;
-    exec)
-      warn_msg "Autoscaler reaches Postgres through a container exec per query"
-      if docker exec dune-autoscaler bash -c 'type -P psql' >/dev/null 2>&1; then
-        echo "     The image has a psql client, so DUNE_PSQL_TRANSPORT is pinning this."
-        echo "     Drop it from .env and restart:"
-        echo "     dune autoscaler restart"
-      else
-        echo "     Rebuild the orchestrator image so it ships a psql client:"
-        echo "     docker compose build orchestrator && dune autoscaler restart"
-      fi
-      ;;
-    *)
-      warn_msg "Could not determine how the autoscaler reaches Postgres"
-      ;;
-  esac
+  report_seam_transport dune-autoscaler "Autoscaler" \
+    "dune autoscaler restart" \
+    "docker compose build orchestrator && dune autoscaler restart"
+fi
+
+# `dune console restart` rebuilds the image; `reload` only recreates the
+# container, which is all an .env change needs and takes seconds rather than
+# minutes.
+if is_running redblink-dune-docker-console; then
+  report_seam_transport redblink-dune-docker-console "Console" \
+    "dune console reload" \
+    "dune console restart"
 fi
 
 echo
