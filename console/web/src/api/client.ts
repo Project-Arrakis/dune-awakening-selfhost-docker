@@ -17,6 +17,20 @@ const INVALID_RESPONSE_MESSAGE = "The console received invalid data for this pag
 // invalid JSON is a different, console-side bug (a success response that
 // isn't JSON) and keeps the generic message -- there is no useful upstream
 // text to surface in that case.
+// A failed request. Still an Error with the same friendly message every caller
+// already shows; status and body are there for callers that need the server's
+// structured detail (a 409 offering an override, a 504 naming a step).
+export class ApiError extends Error {
+  status: number;
+  body: Record<string, unknown>;
+  constructor(message: string, status: number, body: Record<string, unknown> = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 function nonJsonResponseMessage(text: string, ok: boolean) {
   if (ok) return INVALID_RESPONSE_MESSAGE;
   const fallback = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240);
@@ -39,16 +53,18 @@ export async function apiDownload(path: string, options: RequestInit = {}, csrfR
   if (!response.ok) {
     const text = await response.text();
     let message = text || `Request failed: ${response.status}`;
+    let body: Record<string, unknown> = {};
     try {
-      const data = JSON.parse(text) as { error?: string };
-      message = data.error || message;
+      const data = JSON.parse(text) as Record<string, unknown>;
+      if (data && typeof data === "object") body = data;
+      message = typeof body.error === "string" && body.error ? body.error : message;
     } catch {}
     if (isSessionAuthFailure(response.status, message)) {
       if (response.status === 403 && !csrfRetried && await refreshCsrfToken()) return apiDownload(path, options, true);
       announceSessionExpired();
       throw new Error(AUTH_SESSION_EXPIRED_MESSAGE);
     }
-    throw new Error(friendlyApiError(message));
+    throw new ApiError(friendlyApiError(message), response.status, body);
   }
   return response;
 }
@@ -131,7 +147,7 @@ async function apiRequest<T>(path: string, options: RequestInit = {}, csrfRetrie
     throw new Error(AUTH_SESSION_EXPIRED_MESSAGE);
   }
   if (response.ok && invalidJsonResponse) throw new Error(INVALID_RESPONSE_MESSAGE);
-  if (!response.ok) throw new Error(friendlyApiError(String(record.error || `Request failed: ${response.status}`)));
+  if (!response.ok) throw new ApiError(friendlyApiError(String(record.error || `Request failed: ${response.status}`)), response.status, record);
   return data as T;
 }
 

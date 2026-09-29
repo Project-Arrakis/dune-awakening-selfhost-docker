@@ -505,6 +505,16 @@ test("a stored write level does not reach the whole-host backup actions", () => 
   }
 });
 
+test("a stored bases write level does not reach any base-backup transfer or delete action", () => {
+  for (const action of ["bases:import-backup", "bases:edit-backup", "bases:export-backup", "bases:delete-backup"]) {
+    assert.equal(scopeAllowsAction("bases", "write", action), false, `write must not cover ${action}`);
+    assert.equal(scopeAllowsAction("bases", "read", action), false, `read must not cover ${action}`);
+    assert.equal(scopeAllowsAction("bases", [action], action), true);
+  }
+  // Listing stays under bases:read.
+  assert.equal(scopeAllowsAction("bases", "read", "bases:read"), true);
+});
+
 // Tightened during the 2026-09-21 upstream rebase: these three were originally
 // LEVEL_EXCLUDED_ACTIONS-only (unreachable via a level, but grantable by naming
 // them explicitly). Reconciling this list with policy.js's CROWN_JEWEL_DENY_ACTIONS

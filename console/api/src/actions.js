@@ -80,6 +80,7 @@ export const ROUTE_ACTIONS = {
   // --- Server ---
   "GET /api/server/status":                    "server:read",
   "GET /api/server/performance":               "server:read",
+  "GET /api/server/restart-history":           "server:read",
   "GET /api/server/readiness":                 "server:read",
   "GET /api/server/ports":                     "server:read",
   "GET /api/server/services":                  "server:read",
@@ -303,9 +304,11 @@ export const ROUTE_ACTIONS = {
 
   // --- Players (read) ---
   "GET /api/players":                          "players:read",
+  "GET /api/players/list-settings":            "players:read",
   "GET /api/players/online":                   "players:read",
   "GET /api/players/search":                   "players:read",
   "GET /api/players/deleted-characters":       "players:read",
+  "POST /api/players/list-settings":           "players:configure-list",
 
   // --- Vehicles ---
   "GET /api/vehicles":                         "vehicles:read",
@@ -332,6 +335,7 @@ export const ROUTE_ACTIONS = {
   "POST /api/exchange/market/buyback/run":     "exchange:market-write",
   "POST /api/exchange/market/seed/run":        "exchange:market-write",
   "POST /api/exchange/market/seed/clear":      "exchange:market-write",
+  "POST /api/exchange/market/settings":        "exchange:market-write",
   "GET /api/exchange/market/plans/csv":        "exchange:market",
   "POST /api/exchange/market/plans/csv":       "exchange:market-write",
   "POST /api/exchange/market/plans/active":    "exchange:market-write",
@@ -364,12 +368,19 @@ export const ROUTE_ACTIONS = {
   // scoped to one base, whereas this retunes every enrolled base at once, so a
   // bases:mutate grant cannot be read as consent to it. Named for the
   // per-feature settings convention (exchange:write-config, maps:write-config);
-  // owner/admin grant bases:*, so default access is unchanged.
+  // The shipped owner policy reaches it; lower tiers require an explicit grant.
   //
   // This entry is also what keeps the route off the "POST /api/bases/" →
   // bases:mutate prefix rule, where it would resolve silently rather than
   // failing closed.
   "POST /api/bases/auto-refill/settings":      "bases:write-config",
+  // Base backups (the game's "pick up base" tool). Listing and exporting are
+  // reads, matching GET /api/bases/{id}/export. Import creates a whole base
+  // (actors, pieces, storage items) for a player, so it is its own action:
+  // no bases:read or bases:mutate grant should be read as consent to it.
+  // The shipped owner policy reaches it; lower tiers require an explicit grant.
+  "GET /api/base-backups":                     "bases:read",
+  "POST /api/base-backups/import":             "bases:import-backup",
 
   // --- Storage (read) ---
   "GET /api/storage":                          "storage:read",
@@ -628,6 +639,23 @@ export const REGEX_ACTIONS_BY_METHOD = {
 // the part that would distinguish them. Routes that need that distinction
 // go here instead, tested as a real regex before the prefix fallback.
 export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
+  // GET /api/base-backups/{id}/export -- the backup as a file (see
+  // bases:export-backup below). Anchored so nothing else under
+  // /api/base-backups/ resolves: that path has no prefix rule, so any other
+  // route there fails closed.
+  { method: "GET", pattern: /^\/api\/base-backups\/[^/]+\/export$/, action: "bases:export-backup" },
+  // GET /api/bases/{id}/export-backup -- a live base as a base backup file.
+  // Same action as the backup export above: either file carries every item
+  // stored in the base and imports as a whole base elsewhere, so neither is a
+  // plain bases:read. Anchored ahead of the "/api/bases/" read prefix.
+  { method: "GET", pattern: /^\/api\/bases\/[^/]+\/export-backup$/, action: "bases:export-backup" },
+  // PUT /api/base-backups/{id} -- reassign and/or rename a picked-up base.
+  // Handing a player a whole base (with its stored items) is the same consent
+  // case as import, so it is its own action rather than bases:mutate.
+  { method: "PUT", pattern: /^\/api\/base-backups\/\d+$/, action: "bases:edit-backup" },
+  // DELETE /api/base-backups/{id} -- permanently deletes a picked-up base and
+  // its stored items. Its own action, like bases:delete for a live base.
+  { method: "DELETE", pattern: /^\/api\/base-backups\/\d+$/, action: "bases:delete-backup" },
   // Installing a public community Blueprint writes a Solido item and its
   // Blueprint rows for the selected player. Keep it under the existing
   // blueprint import permission, never the read-only /api/blueprints prefix.
@@ -665,8 +693,8 @@ export const REGEX_ACTIONS_BY_METHOD_PATTERN = [
   // read-only, so an operator whose hand-authored policy grants bases:mutate
   // agreed to refills and permission edits and could not have agreed to item
   // destruction — folding this into that bucket would silently widen every
-  // existing narrow policy. The shipped owner/admin policies grant bases:*,
-  // so default access is unchanged.
+  // existing narrow policy. The shipped owner policy reaches it; lower tiers
+  // require an explicit grant.
   { method: "DELETE", pattern: /^\/api\/bases\/[^/]+\/containers\/[^/]+\/items\/[^/]+$/, action: "bases:delete-item" },
   // POST /api/bases/{baseId}/containers/{placeableId}/items — creating one
   // stored item. Own action for the same consent reason as bases:delete-item
