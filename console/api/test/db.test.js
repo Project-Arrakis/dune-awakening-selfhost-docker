@@ -136,6 +136,7 @@ import {
   playerItemAugmentState,
   playerJourney,
   playerOwnedStorageQuery,
+  playerPlaytimeSummary,
   playerPortalSnapshots,
   playerPosition,
   playerProfile,
@@ -4279,6 +4280,119 @@ test("playerItemAuditLog caps windowHours and limit, and returns real rows keyed
     stackSize: 3,
     positionIndex: 1
   }]);
+});
+
+// playerPlaytimeSummary (meta#64 "Chronicles of Kanly", mentat#364): powers
+// /profile's playtime + last-seen fields. Mirrors listPlayers()'s own
+// live-elapsed-time computation so the two never silently diverge.
+test("playerPlaytimeSummary reports unsupported when dune.player_state is missing", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        assert.deepEqual(values, ["dune.player_state"]);
+        return { rows: [{ exists: false }] };
+      }
+      return assert.fail(`unexpected query when player_state is missing: ${text}`);
+    }
+  };
+  const result = await playerPlaytimeSummary(db, "473");
+  assert.equal(result.capabilities.playtime, false);
+  assert.equal(result.totalPlaytimeSeconds, 0);
+  assert.equal(result.lastSeenAt, null);
+});
+
+test("playerPlaytimeSummary returns zeroed defaults when the controller id matches no player", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: name === "dune.player_state" }] };
+      }
+      if (text.includes("information_schema.columns")) {
+        return { rows: [{ column_name: "account_id" }, { column_name: "online_status" }, { column_name: "last_login_time" }] };
+      }
+      if (text.includes("from dune.player_state ps")) return { rows: [] };
+      return assert.fail(`unexpected query when controller id matches nothing: ${text}`);
+    }
+  };
+  const result = await playerPlaytimeSummary(db, "999999");
+  assert.equal(result.totalPlaytimeSeconds, 0);
+  assert.equal(result.lastSeenAt, null);
+});
+
+test("playerPlaytimeSummary adds live elapsed time to a currently-online player's completed total", async () => {
+  const sessionStartedAt = new Date(Date.now() - 90_000).toISOString();
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.player_state", "dune.console_player_playtime"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) {
+        return { rows: [{ column_name: "account_id" }, { column_name: "online_status" }, { column_name: "last_login_time" }] };
+      }
+      if (text.includes("from dune.player_state ps")) {
+        assert.deepEqual(values, ["473"]);
+        return { rows: [{ account_id: 201, online_status: "Online", last_seen_at: "2026-09-15T12:00:00.000Z" }] };
+      }
+      if (text.includes("from dune.console_player_playtime")) {
+        assert.deepEqual(values, [201]);
+        return { rows: [{ total_seconds: "1000", session_started_at: sessionStartedAt }] };
+      }
+      return assert.fail(`unexpected query in online happy path: ${text}`);
+    }
+  };
+  const result = await playerPlaytimeSummary(db, "473");
+  assert.equal(result.capabilities.playtime, true);
+  assert.ok(result.totalPlaytimeSeconds >= 1090 && result.totalPlaytimeSeconds <= 1095, `expected ~1090s, got ${result.totalPlaytimeSeconds}`);
+  assert.equal(result.lastSeenAt, "2026-09-15T12:00:00.000Z");
+});
+
+test("playerPlaytimeSummary does not add elapsed time for an offline player with no active session", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: ["dune.player_state", "dune.console_player_playtime"].includes(name) }] };
+      }
+      if (text.includes("information_schema.columns")) {
+        return { rows: [{ column_name: "account_id" }, { column_name: "online_status" }] };
+      }
+      if (text.includes("from dune.player_state ps")) {
+        return { rows: [{ account_id: 202, online_status: "Offline", last_seen_at: "" }] };
+      }
+      if (text.includes("from dune.console_player_playtime")) {
+        assert.deepEqual(values, [202]);
+        return { rows: [{ total_seconds: "4200", session_started_at: null }] };
+      }
+      return assert.fail(`unexpected query in offline happy path: ${text}`);
+    }
+  };
+  const result = await playerPlaytimeSummary(db, "999");
+  assert.equal(result.totalPlaytimeSeconds, 4200);
+  assert.equal(result.lastSeenAt, null);
+});
+
+test("playerPlaytimeSummary reports playtime unsupported (but still returns last-seen) when console_player_playtime doesn't exist", async () => {
+  const db = {
+    query: async (text, values = []) => {
+      if (text.includes("to_regclass")) {
+        const name = String(values[0] || "");
+        return { rows: [{ exists: name === "dune.player_state" }] };
+      }
+      if (text.includes("information_schema.columns")) {
+        return { rows: [{ column_name: "account_id" }, { column_name: "online_status" }, { column_name: "last_login_time" }] };
+      }
+      if (text.includes("from dune.player_state ps")) {
+        return { rows: [{ account_id: 203, online_status: "Offline", last_seen_at: "2026-09-14T00:00:00.000Z" }] };
+      }
+      return assert.fail(`unexpected query when console_player_playtime is missing: ${text}`);
+    }
+  };
+  const result = await playerPlaytimeSummary(db, "473");
+  assert.equal(result.capabilities.playtime, false);
+  assert.equal(result.totalPlaytimeSeconds, 0);
+  assert.equal(result.lastSeenAt, "2026-09-14T00:00:00.000Z");
 });
 
 test("addon leadership players derive character level from level component XP", async () => {
