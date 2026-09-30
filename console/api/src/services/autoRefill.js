@@ -289,6 +289,17 @@ export function createAutoRefillScheduler(options = {}) {
     const previous = enrollment[key] || {};
     const priorQueues = previous.consecutiveQueues || 0;
     try {
+      // A picked-up base must never be refilled. The enrollment route refuses
+      // one, but a base can be picked up after it was enrolled, and it then
+      // resolves to partition 0 -- which every queue treats as write-safe, so
+      // the flush would apply the refill at once. Enrollment and stall
+      // tracking are left untouched so a redeployed base picks up where it
+      // left off. A failed check falls to the catch below as a failure,
+      // never as "not backed up".
+      if (await duneDb.baseIsBackedUp(db, baseId)) {
+        counters.backedUp += 1;
+        return;
+      }
       const levels = await duneDb.baseGeneratorFuelLevels(db, config.repoRoot, baseId);
       counters.checked += 1;
       const lowest = levels.lowestPercent;
@@ -418,7 +429,7 @@ export function createAutoRefillScheduler(options = {}) {
       outcomes: new Map(),
       removed: [],
       failures: [],
-      counters: { checked: 0, queued: 0, dropped: 0, stalled: 0, alreadyQueued: 0 }
+      counters: { checked: 0, queued: 0, dropped: 0, stalled: 0, alreadyQueued: 0, backedUp: 0 }
     };
     const { outcomes, removed, failures, counters } = context;
 
