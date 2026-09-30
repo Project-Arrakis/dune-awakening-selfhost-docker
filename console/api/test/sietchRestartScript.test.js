@@ -130,18 +130,22 @@ test("start-partition on an unknown partition fails instead of guessing", () => 
   assert.match(result.stderr, /is not a Survival_1 Sietch/);
 });
 
-test("changing active Sietches does not restart Director or primary Survival", () => {
+test("Sietch reconciliation delegates publication to the contraction-aware lifecycle", () => {
   assert.doesNotMatch(reconcileSource, /refresh_survival_control_plane_state/);
   assert.doesNotMatch(reconcileSource, /refresh_survival_director_state/);
   assert.doesNotMatch(reconcileSource, /restart-director\.sh/);
   assert.doesNotMatch(reconcileSource, /start-server-survival-1\.sh/);
   assert.match(reconcileSource, /sync_survival_sietch_topology_state/);
-  assert.match(reconcileSource, /refresh_survival_browser_state/);
+  assert.match(reconcileSource, /refresh_survival_topology_publication "\$topology_removed"/);
+  const spawnLoop = reconcileSource.slice(reconcileSource.indexOf('for partition_row in'), reconcileSource.indexOf('# Only a target'));
+  assert.doesNotMatch(spawnLoop, /topology_removed=1/);
+  const removeLoop = reconcileSource.slice(reconcileSource.indexOf('while [ "$target_explicit"'), reconcileSource.indexOf('if [ "$target_explicit" = "1" ] && dune_psql'));
+  assert.match(removeLoop, /despawn-server\.sh[\s\S]*topology_removed=1/);
 });
 
 test("new Sietches settle before publishing the updated topology", () => {
   const settleAt = reconcileSource.indexOf('wait_for_survival_topology_settle "$target" 90');
-  const refreshAt = reconcileSource.indexOf("refresh_survival_browser_state");
+  const refreshAt = reconcileSource.indexOf("refresh_survival_topology_publication");
   assert.ok(settleAt >= 0, "missing Survival topology settle wait");
   assert.ok(refreshAt > settleAt, "topology publication must run after new Sietches settle");
 });
@@ -170,7 +174,7 @@ test("autoscaler browser healing ignores READY markers from previous core server
 
 test("scaling down removes inactive Sietch rows before publishing topology", () => {
   const deleteAt = reconcileSource.indexOf("delete from dune.world_partition");
-  const refreshAt = reconcileSource.indexOf("refresh_survival_browser_state");
+  const refreshAt = reconcileSource.indexOf("refresh_survival_topology_publication");
   assert.ok(deleteAt >= 0, "missing inactive partition deletion");
   assert.ok(refreshAt > deleteAt, "topology publication must run after inactive partitions are removed");
   assert.match(reconcileSource, /ranked\.ord > \$target\s+and ranked\.server_id = ''/);
@@ -215,4 +219,95 @@ test("Sietch publisher generations supersede loops across PID namespaces", () =>
   assert.match(publisherSource, /stop_loop_processes\(\)[\s\S]*?invalidate_loop_token/);
   assert.match(publisherSource, /start_loop\(\)[\s\S]*?write_loop_token "\$loop_token"/);
   assert.match(publisherSource, /while true; do\s+if ! loop_token_is_current "\$loop_token"/);
+});
+
+function runMetadataFixture(partitionId, running = true, removedPartitions = null) {
+  const fixture = mkdtempSync(join(tmpdir(), "dune-sietch-metadata-"));
+  const scripts = join(fixture, "runtime", "scripts");
+  const calls = join(fixture, "calls.log");
+  mkdirSync(scripts, { recursive: true });
+  writeFileSync(calls, "");
+  for (const [name, label] of [
+    ["start-server-survival-1.sh", "primary"],
+    ["despawn-server.sh", "despawn"],
+    ["spawn-server.sh", "spawn"],
+    ["publish-sietch-overrides.sh", "publish"],
+    ["restart-director.sh", "director"],
+    ["start-server-gateway.sh", "gateway"],
+  ]) {
+    executable(join(scripts, name), `printf "${label} %s\\n" "$*" >> "$MOCK_CALLS"`);
+  }
+  const names = [
+    "restart_survival_server_if_running",
+    "restart_sietch_partition_if_running",
+    "refresh_survival_browser_state",
+    "refresh_survival_director_state",
+    "refresh_survival_gateway_state",
+    "refresh_survival_sietch_metadata_state",
+    "refresh_survival_topology_publication",
+  ];
+  const functions = names.map((name) => {
+    const body = sietchesSource.match(new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}`, "m"))?.[0];
+    assert.ok(body, `missing ${name}`);
+    return body;
+  }).join("\n");
+  const script = [
+    "set -euo pipefail",
+    functions,
+    'docker() { if [ "$MOCK_RUNNING" = 1 ]; then printf "%s\\n" dune-server-survival-1 dune-server-survival-1-31 dune-director dune-server-gateway; fi; }',
+    'sync_survival_usersettings_state() { echo sync >> "$MOCK_CALLS"; }',
+    'apply_survival_sietch_labels_from_config() { echo labels >> "$MOCK_CALLS"; }',
+    'sync_survival_sietch_topology_state() { sync_survival_usersettings_state; apply_survival_sietch_labels_from_config; }',
+    ...(removedPartitions === null ? [
+      `restart_sietch_partition_if_running ${partitionId}`,
+      "refresh_survival_sietch_metadata_state",
+    ] : [`refresh_survival_topology_publication ${removedPartitions}`]),
+  ].join("\n");
+  try {
+    const result = spawnSync("bash", ["-c", script], {
+      cwd: fixture,
+      encoding: "utf8",
+      env: { ...process.env, MOCK_CALLS: calls, MOCK_RUNNING: running ? "1" : "0", DUNE_SKIP_SURVIVAL_DIRECTOR_REFRESH: "0" },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    return readFileSync(calls, "utf8");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+}
+
+test("secondary Sietch identity changes restart only the selected map and republish metadata", () => {
+  assert.equal(runMetadataFixture(31), "despawn 31\nspawn 31\nsync\nlabels\npublish restart\npublish once\n");
+});
+
+test("Sietch contraction resets Director publication once without replacing Gateway", () => {
+  assert.equal(runMetadataFixture(31, true, 1), "sync\nlabels\ndirector \npublish restart\npublish once\n");
+});
+
+test("Sietch additions publish without resetting Director or other maps", () => {
+  assert.equal(runMetadataFixture(31, true, 0), "sync\nlabels\npublish restart\npublish once\n");
+});
+
+test("Sietch contraction does not start a stopped Director", () => {
+  assert.equal(runMetadataFixture(31, false, 1), "sync\nlabels\npublish restart\npublish once\n");
+});
+
+test("primary Sietch identity changes restart the primary once without replacing Director or Gateway", () => {
+  assert.equal(runMetadataFixture(1), "primary \nsync\nlabels\npublish restart\npublish once\n");
+});
+
+test("identity changes preserve stopped Sietches while updating publication", () => {
+  assert.equal(runMetadataFixture(31, false), "sync\nlabels\npublish restart\npublish once\n");
+});
+
+test("password, display name and combined settings use the targeted identity refresh", () => {
+  for (const command of ["set-password", "set-display", "set-settings"]) {
+    const arm = sietchesSource.split(`  ${command})\n`)[1]?.split("    ;;", 1)[0];
+    assert.ok(arm, `missing ${command}`);
+    assert.match(arm, /partition-engine-set/);
+    assert.match(arm, /materialize-current/);
+    assert.match(arm, /restart_sietch_partition_if_running/);
+    assert.match(arm, /refresh_survival_sietch_metadata_state/);
+    assert.doesNotMatch(arm, /refresh_survival_control_plane_state|refresh_survival_director_state|refresh_survival_gateway_state/);
+  }
 });

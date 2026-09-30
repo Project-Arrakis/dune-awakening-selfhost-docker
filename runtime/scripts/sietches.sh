@@ -1370,14 +1370,34 @@ refresh_survival_control_plane_state() {
 refresh_survival_sietch_metadata_state() {
   sync_survival_usersettings_state
   apply_survival_sietch_labels_from_config
+  # The selected map has already been restarted with the canonical identity.
+  # Forward its new state through the existing publisher: the running Director
+  # consumes it and publishes FLS settings/heartbeats, while Gateway discovers
+  # server replacements through its live DB monitor. Replacing Director here
+  # unnecessarily replaces primary Survival_1 too and invalidates registrations.
+  # Keep coordinated Director recovery in restart-director.sh, not this path.
   refresh_survival_browser_state
-  refresh_survival_director_state
-  refresh_survival_gateway_state
 }
 
 sync_survival_sietch_topology_state() {
   sync_survival_usersettings_state
   apply_survival_sietch_labels_from_config
+}
+
+refresh_survival_topology_publication() {
+  local removed_partitions="${1:-0}"
+
+  sync_survival_sietch_topology_state
+  if [ "$removed_partitions" = "1" ]; then
+    # Director retains Server references in pending FLS declarations. Removing
+    # a partition clears their LastServerState but does not remove those pending
+    # references; subsequent heartbeat preparation fails indefinitely. Rebuild
+    # its registry after contraction using the existing coordinated lifecycle,
+    # which also re-registers primary Survival_1. Additions and identity updates
+    # do not need this topology reset. Gateway discovers removals from the DB.
+    refresh_survival_director_state
+  fi
+  refresh_survival_browser_state
 }
 
 restart_survival_server_if_running() {
@@ -1638,6 +1658,7 @@ reconcile_map_dimensions() {
   local map="$1"
   local safe_map target target_state target_explicit available base_partition assigned_count initial_assigned_count
   local topology_changed=0
+  local topology_removed=0
 
   ensure_config
 
@@ -1776,6 +1797,7 @@ where previous_server_partition_id = $remove_partition
       log_sietch_lifecycle "reconcile_despawn" "{\"map\":\"$map\",\"partition\":$remove_partition}"
       assigned_count=$((assigned_count - 1))
       topology_changed=1
+      topology_removed=1
     done
 
     if [ "$target_explicit" = "1" ] && dune_psql -Atc "
@@ -1793,6 +1815,7 @@ where ord > $target
   and server_id = '';
 " | grep -qv '^0$'; then
       topology_changed=1
+      topology_removed=1
     fi
 
     if [ "$target_explicit" = "1" ]; then
@@ -1847,10 +1870,8 @@ where wp.partition_id = ranked.partition_id;
     sync_survival_sietch_topology_state
   fi
   if [ "$map" = "Survival_1" ] && [ "$topology_changed" -eq 1 ]; then
-    # Running Director and primary Survival_1 receive server-state changes
-    # dynamically. A count change must not replace either one: additions can
-    # register directly, and removals are withdrawn by despawning/deleting the
-    # secondary before publishing the final topology.
+    # Additions register dynamically. Contraction must reset Director's pending
+    # FLS references after the removed partitions are gone from the database.
     (
       topology_maintenance_file="runtime/generated/sietch-topology-maintenance"
       mkdir -p "$(dirname "$topology_maintenance_file")"
@@ -1859,8 +1880,7 @@ where wp.partition_id = ranked.partition_id;
       # be mistaken for stale browser state immediately after reconciliation.
       trap 'touch "$topology_maintenance_file"' EXIT
 
-      sync_survival_sietch_topology_state
-      refresh_survival_browser_state
+      refresh_survival_topology_publication "$topology_removed"
       runtime/scripts/publish-sietch-overrides.sh once >/dev/null 2>&1 || true
     )
   fi
