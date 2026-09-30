@@ -110,6 +110,22 @@ longer claimed. It cannot be modified until the player redeploys it."` Reads
 rows are still real data, and there is no destructive or race-prone reason to
 hide it from a read the way there is for a write.
 
+Refills also reach the database without a request: from the pending-refill
+queues on a map restart, and from the daily auto-refill scans. A base can be
+picked up after its refill was queued or after it was enrolled, and a
+picked-up base has no partition, which the queues treat as safe to write at
+once. So the check is repeated on those paths too:
+
+- `refillBaseGenerators` / `refillBaseWater` re-check `baseIsBackedUp` inside
+  their write transaction and throw `"This base was picked up into a backup,
+  so the refill was not applied."`. The queue flushes treat that as *no longer
+  applicable* and drop the entry instead of retrying it.
+- The generator and water auto-refill scans skip a backed-up base before
+  reading its levels, counted as `backedUp` in the scan audit. Its enrollment
+  and stall tracking are left as they were, so a redeployed base picks up
+  where it left off. If the check itself fails, the base is recorded as a
+  scan failure and nothing is queued.
+
 ## Export and import
 
 The Bases page has a "Bases | Base Backups" toggle; the server-wide Base Backups

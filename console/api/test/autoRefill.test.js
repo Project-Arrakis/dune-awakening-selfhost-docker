@@ -59,6 +59,8 @@ const TEST_ENV = {};
 function fakeDuneDb({
   levels = {},
   missingBases = [],
+  // Bases picked up into a backup; an Error value makes the check itself fail.
+  backedUpBases = [],
   // Distinct from missingBases: the real baseMapLocation throws a different
   // message for a base whose owner-entity link is broken (still exists) vs
   // one that's genuinely gone. Only the latter should un-enroll -- collapsing
@@ -69,9 +71,16 @@ function fakeDuneDb({
   calls = []
 } = {}) {
   const missing = new Set(missingBases.map(Number));
+  const backedUp = new Set(backedUpBases.filter((entry) => !(entry instanceof Error)).map(Number));
+  const backupCheckError = backedUpBases.find((entry) => entry instanceof Error);
   const orphaned = new Set(orphanedBases.map(Number));
   return {
     calls,
+    baseIsBackedUp: async (_db, baseId) => {
+      calls.push({ fn: "baseIsBackedUp", baseId });
+      if (backupCheckError) throw backupCheckError;
+      return backedUp.has(Number(baseId));
+    },
     baseGeneratorFuelLevels: async (_db, _repoRoot, baseId) => {
       calls.push({ fn: "baseGeneratorFuelLevels", baseId });
       const entry = levels[baseId];
@@ -820,5 +829,47 @@ test("a threshold-only save never rewrites the enrollment file", async () => {
     saveAutoRefillSettings(repoRoot, { thresholdPercent: 40 });
     clampAutoRefillNextRun(repoRoot, { now: clock.now, env: TEST_ENV });
     assert.equal(readFileSync(statePath(repoRoot), "utf8"), before);
+  });
+});
+
+// A base picked up into a backup resolves to partition 0, which every queue
+// treats as write-safe, so a refill queued for it would be applied at once.
+test("a backed-up base is skipped: its fuel is never read, nothing is queued, and it stays enrolled", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const clock = makeClock();
+    for (const baseId of [482, 517]) setBaseAutoRefill(repoRoot, baseId, true, { now: clock.now, env: TEST_ENV });
+    const duneDb = fakeDuneDb({ levels: { 482: { lowestPercent: 5 }, 517: { lowestPercent: 5 } }, backedUpBases: [482] });
+    const { scheduler, audits } = makeScheduler(repoRoot, duneDb, clock);
+    await primeScheduler(scheduler, repoRoot, clock);
+
+    const result = await scheduler.tick();
+
+    assert.equal(result.backedUp, 1);
+    assert.equal(result.queued, 1);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot).map((entry) => entry.baseId), [517]);
+    assert.equal(duneDb.calls.some((call) => call.fn === "baseGeneratorFuelLevels" && call.baseId === 482), false);
+    assert.equal(audits.some((entry) => entry.action === "bases.auto-refill-queued" && entry.detail.baseId === 482), false);
+    // Kept, and untouched, so a redeployed base resumes where it left off.
+    const entry = readAutoRefillState(repoRoot).bases["482"];
+    assert.ok(entry);
+    assert.equal(entry.lastCheckedAt, "");
+    assert.equal(entry.consecutiveQueues, 0);
+  });
+});
+
+test("a backup check that fails is a scan failure, never a refill", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const clock = makeClock();
+    setBaseAutoRefill(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    const duneDb = fakeDuneDb({ levels: { 482: { lowestPercent: 5 } }, backedUpBases: [new Error("Connection terminated unexpectedly")] });
+    const { scheduler } = makeScheduler(repoRoot, duneDb, clock);
+    await primeScheduler(scheduler, repoRoot, clock);
+
+    const result = await scheduler.tick();
+
+    assert.equal(result.failures, 1);
+    assert.equal(result.queued, 0);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
+    assert.ok(readAutoRefillState(repoRoot).bases["482"]);
   });
 });
