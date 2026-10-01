@@ -45,9 +45,34 @@ export type DeepDesertRenderer = {
   setAssets(shared: SharedAssets, layout: LayoutAssets): void;
   resize(cssWidth: number, cssHeight: number, dpr: number): void;
   setView(view: TerrainView): void;
+  /** Faint elevation banding on rock and sand. Off by default. */
+  setElevationLines(on: boolean): void;
   draw(): void;
   dispose(): void;
 };
+
+/**
+ * Banding intervals in world uu for a given scale, as `[rock, sand]`.
+ *
+ * A contour's spacing is set by how fast Z changes, which has nothing to do with
+ * the map scale -- deriving this from horizontal scale alone put it at 5,000 uu
+ * at 199 uu/px, so a 6,000 uu formation got a single line. Hence a fixed base
+ * that keeps terraces readable when zoomed in, with `uuPerPixel` only as a floor
+ * that coarsens the interval as you zoom out, snapped to a 1-2-5 sequence the way
+ * a topographic map changes interval rather than letting lines converge.
+ *
+ * Sand is eight times coarser -- the interval that reads well on a mesa turns
+ * dunes into a hatch -- but capped, because the whole sand field spans only
+ * ~21,600 uu and letting it track rock all the way out put it at 40,000 uu at map
+ * zoom, wider than the entire relief, so the sand lines vanished.
+ */
+export function elevationIntervals(uuPerPixel: number): [number, number] {
+  const target = Math.max(250, uuPerPixel * 1.5);
+  const p = Math.pow(10, Math.floor(Math.log10(Math.max(target, 1e-6))));
+  const r = target / p;
+  const rock = p * (r < 1.5 ? 1 : r < 3.5 ? 2 : r < 7.5 ? 5 : 10);
+  return [rock, Math.min(rock * 8, 2500)];
+}
 
 export type RendererOptions = {
   /**
@@ -116,7 +141,8 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     brk: u(terrain, "uBrk"), brkTile: u(terrain, "uBrkTile"), brkAmp: u(terrain, "uBrkAmp"),
     clipRaise: u(terrain, "uClipRaise"), prepass: u(terrain, "uPrepass"), view: u(terrain, "uV"),
     d1: u(terrain, "uD1"), d2: u(terrain, "uD2"), tile: u(terrain, "uTile"),
-    detStr: u(terrain, "uDetStr"), detail: u(terrain, "uDetail")
+    detStr: u(terrain, "uDetStr"), detail: u(terrain, "uDetail"),
+    con: u(terrain, "uCon"), conStep: u(terrain, "uConStep"), conStepS: u(terrain, "uConStepS")
   };
   const r = { tex: u(resolve, "uT"), texel: u(resolve, "uTexel"), ss: u(resolve, "uSS") };
   const b = { vp: u(backdrop, "uVP"), c: u(backdrop, "uC"), half: u(backdrop, "uHalf"), z: u(backdrop, "uZ") };
@@ -184,6 +210,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   let view: TerrainView | null = null;
   let lost = false;
   let pixelRatio = 1;
+  let elevationLines = false;
 
   let bPos: WebGLBuffer | null = null;
   let bNrm: WebGLBuffer | null = null;
@@ -404,6 +431,12 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     // Straight down: the Live Map is not tiltable.
     gl.uniform3f(t.view, 0, 0, 1);
     gl.uniform1f(t.detail, det1 && det2 ? 1 : 0);
+    // Intervals track the scale currently in view, so the lines stay readable
+    // from a single formation out to the whole map.
+    const [rockStep, sandStep] = elevationIntervals((view.maxX - view.minX) / width);
+    gl.uniform1f(t.con, elevationLines ? 1 : 0);
+    gl.uniform1f(t.conStep, rockStep);
+    gl.uniform1f(t.conStepS, sandStep);
     gl.activeTexture(gl.TEXTURE6);
     gl.bindTexture(gl.TEXTURE_2D, texHf);
     gl.uniform1i(t.hf, 6);
@@ -492,6 +525,9 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     },
     setView(next: TerrainView) {
       view = next;
+    },
+    setElevationLines(on: boolean) {
+      elevationLines = on;
     },
     draw,
     dispose() {

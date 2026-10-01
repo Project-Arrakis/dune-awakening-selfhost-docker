@@ -235,6 +235,9 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   // over the grid burned into the picture, which is drawn at that image's own
   // mis-scaled extent -- the overlay is the one that agrees with the markers.
   const [showSectorGrid, setShowSectorGrid] = useState(true);
+  // Off by default: it is a reading aid for judging cliff height, not something
+  // every visit needs, and it darkens the terrain slightly wherever it draws.
+  const [showElevationLines, setShowElevationLines] = useState(false);
   // The canvas mounts empty and paints only once ~7 MB of assets are in, so the
   // flat image stays up until it reports itself ready. Dropping the image when
   // the lazy chunk resolved left a window showing neither.
@@ -1123,6 +1126,13 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
               <span className="live-map-sector-grid-swatch" aria-hidden="true" />
               <input type="checkbox" aria-label="Sector Grid" checked={showSectorGrid} onChange={() => setShowSectorGrid((on) => !on)} />
             </label>}
+            {/* Only offered when the 3D terrain is actually drawing -- it is a
+                shader effect, so on the flat fallback image it would do nothing. */}
+            {terrainEligible && <label className="checkbox-row live-map-layer">
+              <span className="live-map-layer-label">Elevation Lines</span>
+              <span className="muted">Terrain</span>
+              <input type="checkbox" aria-label="Elevation Lines" checked={showElevationLines} onChange={() => setShowElevationLines((on) => !on)} />
+            </label>}
             {LEGEND_LAYOUT.map((item, index) => {
             if ("header" in item) {
               const sectionName = item.header;
@@ -1306,7 +1316,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
               ? <>
                   {!terrainReady && activeMap.image && <img className="live-map-image" src={activeMap.image} alt={activeMap.label} draggable={false} />}
                   <Suspense fallback={null}>
-                    <DeepDesertTerrain config={activeMap} layout={coriolisLayout as number} zoom={zoom} frameRef={frameRef} onUnavailable={handleTerrainUnavailable} onReady={handleTerrainReady} />
+                    <DeepDesertTerrain config={activeMap} layout={coriolisLayout as number} zoom={zoom} frameRef={frameRef} onUnavailable={handleTerrainUnavailable} onReady={handleTerrainReady} elevationLines={showElevationLines} />
                   </Suspense>
                 </>
               : activeMap.image ? <img className="live-map-image" src={activeMap.image} alt={activeMap.label} draggable={false} /> : <div className="live-map-placeholder">{activeMap.label}</div>}

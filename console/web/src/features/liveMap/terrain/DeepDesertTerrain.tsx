@@ -26,6 +26,8 @@ export type DeepDesertTerrainProps = {
   frameRef: React.RefObject<HTMLDivElement | null>;
   /** Called when this cannot draw, so the panel can fall back to the image. */
   onUnavailable: (reason: string) => void;
+  /** Faint elevation banding on rock and sand, so height reads from overhead. */
+  elevationLines?: boolean;
   /** Test seams, mirroring how the API side injects its runners. */
   createRenderer?: typeof createDeepDesertRenderer;
   probeSupport?: typeof probeTerrainSupport;
@@ -39,6 +41,7 @@ export default function DeepDesertTerrain({
   zoom,
   frameRef,
   onUnavailable,
+  elevationLines = false,
   onReady,
   createRenderer = createDeepDesertRenderer,
   probeSupport = probeTerrainSupport
@@ -147,6 +150,7 @@ export default function DeepDesertTerrain({
       const rect = visibleWorldRect(config, zoom, left, top, width, height);
       if (!rect) return;
       renderer.setView(rect);
+      renderer.setElevationLines(elevationLines);
       renderer.draw();
     };
     const schedule = () => {
@@ -164,7 +168,7 @@ export default function DeepDesertTerrain({
       if (frameCallback.current) cancelAnimationFrame(frameCallback.current);
       frameCallback.current = 0;
     };
-  }, [config, zoom, ready, frameRef]);
+  }, [config, zoom, ready, frameRef, elevationLines]);
 
   return <canvas className="live-map-terrain" ref={canvasRef} aria-hidden="true" />;
 }

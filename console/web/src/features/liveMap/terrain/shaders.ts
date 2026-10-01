@@ -99,6 +99,10 @@ float hfTexel(ivec2 p){
 }
 uniform vec3 uL; uniform float uZlo, uZhi;
 uniform vec2 uC; uniform float uHalf;
+// Elevation lines. uCon is the on/off weight; uConStep and uConStepS are the
+// banding intervals in world uu for rock and for sand, picked per frame from the
+// current scale (see elevationIntervals in renderer.ts).
+uniform float uCon, uConStep, uConStepS;
 out vec4 o;
 void main(){
   // Hard-clip everything to the square so the mapped area has a crisp edge.
@@ -166,6 +170,39 @@ void main(){
   float sh = clamp(1.0+0.55*rel, 0.30, 1.75);
   vec3 lit = alb*sh;
   vec3 c = pow(clamp(lit,0.0,1.0), vec3(1.0/1.02));
+  // Straight down, shading alone cannot say how tall a formation is: two ledges
+  // at different heights light identically when their normals match. These lines
+  // restore that reading.
+  //
+  // NOT true isolines. The rock proxies are terraced -- broad flat treads,
+  // short risers -- and across a flat tread fwidth(Z) is zero, so a
+  // screen-space-width isoline goes infinitely thin and vanishes, while across a
+  // riser it is so steep it packs into moire. Squeezed from both ends it drew
+  // almost nothing. Banding the elevation and marking where the BAND INDEX
+  // changes between neighbouring pixels catches the tread boundaries instead,
+  // which is what reads as a step from overhead: fwidth of a floor() is zero
+  // within a band and >=1 across one, so it IS the edge test.
+  if(uCon > 0.0){
+    if(vMat < 0.5){
+      // Rock. Deliberately not density-faded: here the steepest edges are the
+      // cliff risers, and those are exactly the lines worth keeping.
+      float b    = floor(vZ / uConStep);
+      float edge = clamp(fwidth(b), 0.0, 1.0);
+      float tone = 1.0 - 0.045*mod(b, 2.0);
+      c *= tone * mix(1.0, 0.72, edge*uCon);
+    } else if(vMat < 1.5){
+      // Sand is a smooth height field, so the same edge test gives a clean
+      // isoline -- but a dune flank crosses many bands per pixel and would wash
+      // to grey, so it does need the fade rock does not. The window is wide on
+      // purpose: a tight one made the lines DASHED, because the dune gradient
+      // crosses the threshold back and forth along a single flank.
+      float bs   = floor(vZ / uConStepS);
+      float edge = clamp(fwidth(bs), 0.0, 1.0);
+      float dens = fwidth(vZ) / uConStepS;
+      float fade = 1.0 - smoothstep(0.75, 1.60, dens);
+      c *= mix(1.0, 0.82, edge*fade*uCon);
+    }
+  }
   float w = vWS;
   if(uFeather>0.0){
     float dx = min(vXY.x-vBox.x, vBox.z-vXY.x);

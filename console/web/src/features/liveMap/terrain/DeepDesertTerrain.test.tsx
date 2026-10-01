@@ -24,6 +24,7 @@ function fakeRenderer() {
     setAssets: vi.fn(),
     resize: vi.fn(),
     setView: vi.fn(),
+    setElevationLines: vi.fn(),
     draw: vi.fn(),
     dispose: vi.fn()
   };
@@ -73,6 +74,17 @@ describe("DeepDesertTerrain", () => {
     const { createRenderer, renderer } = mount();
     expect(createRenderer).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(renderer.setAssets).toHaveBeenCalledTimes(1));
+  });
+
+  it("passes the elevation-lines toggle through to the renderer", async () => {
+    const off = mount();
+    await waitFor(() => expect(off.renderer.setElevationLines).toHaveBeenCalled());
+    expect(off.renderer.setElevationLines.mock.calls.at(-1)![0]).toBe(false);
+    document.body.innerHTML = "";
+
+    const on = mount({ elevationLines: true });
+    await waitFor(() => expect(on.renderer.setElevationLines).toHaveBeenCalled());
+    expect(on.renderer.setElevationLines.mock.calls.at(-1)![0]).toBe(true);
   });
 
   it("draws the world rect the panel is showing, not the whole map", async () => {

@@ -661,6 +661,29 @@ it("still draws the grid over the flat image, now that the two agree", async () 
   expect(screen.getByRole("checkbox", { name: "Sector Grid" })).toBeInTheDocument();
 });
 
+// Elevation Lines is a shader effect on the terrain canvas, so on the flat
+// fallback image it would be a control that visibly does nothing. The Sector
+// Grid above is the opposite case -- it is drawn as SVG over either one -- so
+// the two must not be gated together.
+it("offers Elevation Lines only while the terrain canvas is the one drawing", async () => {
+  useDeepDesert({ coriolisLayout: 3 });
+  renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+  const toggle = screen.getByRole("checkbox", { name: "Elevation Lines" });
+  expect(toggle).toBeInTheDocument();
+  expect(toggle).not.toBeChecked();
+});
+
+it("hides Elevation Lines when the map has fallen back to the flat image", async () => {
+  useDeepDesert({ coriolisLayout: null });
+  renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+
+  expect(screen.queryByRole("checkbox", { name: "Elevation Lines" })).toBeNull();
+  // ...while the grid, which is drawn over either, stays available.
+  expect(screen.getByRole("checkbox", { name: "Sector Grid" })).toBeInTheDocument();
+});
+
 // Finding 5 of the branch review: the grid geometry was rebuilt on every render
 // and is a dependency of the label-placement effect, so the scroll listener and
 // the ResizeObserver were torn down and re-added on every marker hover and
