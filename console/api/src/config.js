@@ -9,7 +9,7 @@ export const APP_NAME = "Dune Docker Console";
 // Single source of truth for every host-facing port this console cares
 // about. Stock (Instance 1) values are the fallback defaults only --
 // multi-server / single-public-IP deployments override these via .env.
-// These values MUST stay in sync with runtime/scripts/runtime-env.sh's
+// These values MUST stay in sync with runtime/scripts/lib/ports.sh's
 // resolve_*_port() functions -- that file is the shell-side equivalent
 // used by non-Node scripts, and the two must never drift (found 6
 // places across the codebase that hardcoded these stock values directly

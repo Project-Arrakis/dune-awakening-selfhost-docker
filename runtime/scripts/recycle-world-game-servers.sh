@@ -11,13 +11,12 @@ source runtime/scripts/image-tags.sh
 # shellcheck source=runtime/scripts/landsraad-instance-cleanup.sh
 source runtime/scripts/landsraad-instance-cleanup.sh
 
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 ACTION="${1:-remove-stale}"
 TARGET_IMAGE="$(resolve_game_server_image)"
 SERVER_ID_MAP_FILE="runtime/generated/autoscaler-server-ids.tsv"
-
-psql_value() {
-  docker exec dune-postgres psql -U postgres -d dune -Atc "$1"
-}
 
 is_world_game_container() {
   local name="$1"
@@ -57,7 +56,7 @@ cleanup_partition_assignment() {
   server_id="$(psql_value "select coalesce(server_id, '') from dune.world_partition where partition_id = $partition_id limit 1;")"
   map_name="$(psql_value "select coalesce(map, '') from dune.world_partition where partition_id = $partition_id limit 1;")"
 
-  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+  dune_psql -v ON_ERROR_STOP=1 -c "
 begin;
 update dune.world_partition
 set server_id = null

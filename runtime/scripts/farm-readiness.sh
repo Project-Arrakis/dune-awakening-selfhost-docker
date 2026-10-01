@@ -11,6 +11,9 @@
 # Survival_1 also requires several consecutive director reports so an initial
 # or flapping ready=true value cannot briefly appear as Ready in the Console.
 
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+
 farm_ready_log_tail_lines="${DUNE_FARM_READY_LOG_TAIL_LINES:-6000}"
 farm_ready_director_tail_lines="${DUNE_FARM_READY_DIRECTOR_TAIL_LINES:-10000}"
 farm_ready_survival_reports="${DUNE_FARM_READY_SURVIVAL_REPORTS:-3}"
@@ -145,7 +148,7 @@ farm_partition_db_ready() {
   local state
 
   state="$(
-    docker exec dune-postgres psql -U dune -d dune -Atc "
+    psql_app_value "
       select concat(coalesce(fs.ready, false)::text, '|', coalesce(fs.alive, false)::text)
       from dune.world_partition wp
       left join dune.farm_state fs on fs.server_id = wp.server_id

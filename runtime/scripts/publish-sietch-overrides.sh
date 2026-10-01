@@ -6,8 +6,21 @@ set -euo pipefail
 export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 
 cd "$(dirname "$0")/../.."
+
+# POSTGRES_PORT and DUNE_PSQL_TRANSPORT from here configure the Postgres seam.
+# Exported because this script's snapshot queries run in embedded Python, which
+# reads them from its environment; a bare `. ./.env` would keep them invisible
+# to any child process.
+[ -f .env ] && . ./.env
+export POSTGRES_PORT DUNE_PSQL_TRANSPORT
+
 source runtime/scripts/host-file-ownership.sh
 source runtime/scripts/farm-readiness.sh
+
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+# shellcheck source=runtime/scripts/lib/rabbitmq.sh
+source runtime/scripts/lib/rabbitmq.sh
 
 PID_FILE="runtime/generated/sietch-overrides.pid"
 LOOP_TOKEN_FILE="runtime/generated/sietch-overrides.loop-token"
@@ -254,10 +267,27 @@ rmq_admin() {
     [ "${#rmq_creds[@]}" -ge 2 ] || return 1
     rmq_user="${rmq_creds[0]}"
     rmq_password="${rmq_creds[1]}"
-    if timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"; then
+    # The verbs on the hot paths go straight to the management API that
+    # rabbitmqadmin would have called anyway; lib/rabbitmq.sh returns
+    # RMQ_HTTP_UNSUPPORTED for the rest, which falls through to the exec below.
+    # Either way a real failure retries once with freshly read credentials.
+    # rc is captured rather than left to propagate: under `set -e` a plain
+    # failure here -- a 401 from stale credentials, which is routine, since
+    # these are scraped from rotating director logs -- would kill the caller
+    # before either the credential refresh below or the exec fallback could
+    # run. publish_payload calls this bare from a `while read` loop, so that
+    # abort took the whole publisher down.
+    rc=0
+    dune_rmq_http_try "$rmq_user" "$rmq_password" "$@" || rc=$?
+    if [ "$rc" -ne "$RMQ_HTTP_UNSUPPORTED" ]; then
+      if [ "$rc" -eq 0 ]; then
+        return 0
+      fi
+    elif timeout --kill-after=2s "${RMQ_TIMEOUT_SECONDS}s" docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"; then
       return 0
+    else
+      rc=$?
     fi
-    rc=$?
     rm -f "$RMQ_CREDS_FILE"
     allow_shared=false
   done
@@ -320,10 +350,20 @@ publish_payload() {
 }
 
 heal_survival_alive_state() {
-  local live_server_ids sql
+  local live_server_ids sql connections
+  # The third caller of `rabbitmqctl list_connections`, and on this loop the
+  # busiest: publish_snapshot_once runs every SNAPSHOT_REFRESH_SECONDS, ten by
+  # default. Same seam and same fallback as ready.sh -- see the note on
+  # dune_rmq_game_connections for why the credential lookup never refreshes the
+  # director log itself, which this script does keep current.
+  local RMQ_HTTP_TIMEOUT_SECONDS=8
+
+  connections="$(dune_rmq_game_connections 2>/dev/null)" \
+    || connections="$(timeout 8 docker exec dune-rmq-game rabbitmqctl list_connections user state 2>/dev/null)" \
+    || connections=""
 
   live_server_ids="$(
-    timeout 8 docker exec dune-rmq-game rabbitmqctl list_connections user state 2>/dev/null \
+    printf '%s\n' "$connections" \
       | awk '$1 ~ /^sg[.]/ && $2 == "running" { split($1, parts, "."); if (length(parts) >= 2) print parts[length(parts) - 1] }' \
       | sort -u
   )" || true
@@ -363,7 +403,7 @@ PY
 )"
 
   [ -n "$sql" ] || return 0
-  docker exec dune-postgres psql -U postgres -d dune -qAt -c "$sql" >/dev/null 2>&1 || true
+  dune_psql -qAt -c "$sql" >/dev/null 2>&1 || true
 }
 
 publish_snapshot_once() {
@@ -386,6 +426,7 @@ import time
 
 sys.path.insert(0, "runtime/scripts")
 import usersettings  # noqa: E402
+import dune_psql  # noqa: E402
 
 timestamp_lead = int(os.environ.get("TIMESTAMP_LEAD_SECONDS", "0"))
 survival_log_ready = os.environ.get("SURVIVAL_LOG_READY", "").lower() in ("1", "true", "t", "yes")
@@ -405,16 +446,7 @@ where coalesce(wp.server_id, '') <> ''
 order by wp.partition_id;
 """
 
-result = subprocess.run(
-    [
-        "docker", "exec", "dune-postgres",
-        "psql", "-U", "postgres", "-d", "dune",
-        "-At", "-F", "\t", "-c", query,
-    ],
-    check=True,
-    text=True,
-    capture_output=True,
-)
+rows_raw = dune_psql.query_tsv(query)
 
 usersettings_config = usersettings.load_config()
 
@@ -476,7 +508,7 @@ def gameplay_settings_for_partition(partition_id: str) -> dict:
     }
 
 
-for line in result.stdout.splitlines():
+for line in rows_raw.splitlines():
     if not line.strip():
         continue
     partition_id, map_name, server_id, ready, label, game_addr, game_port = line.split("\t")
@@ -540,26 +572,19 @@ import time
 
 sys.path.insert(0, "runtime/scripts")
 import usersettings  # noqa: E402
+import dune_psql  # noqa: E402
 
 messages = json.loads(os.environ["FILTER_MESSAGES"])
 survival_log_ready = os.environ.get("SURVIVAL_LOG_READY", "").lower() in ("1", "true", "t", "yes")
-label_rows_raw = subprocess.check_output([
-    "docker", "exec", "dune-postgres", "psql",
-    "-U", "postgres", "-d", "dune", "-At", "-F", "\t",
-    "-c", "select partition_id, coalesce(label, '') from dune.world_partition where lower(map)=lower('Survival_1');"
-], text=True)
-endpoint_rows_raw = subprocess.check_output([
-    "docker", "exec", "dune-postgres", "psql",
-    "-U", "postgres", "-d", "dune", "-At", "-F", "\t",
-    "-c", """
+label_rows_raw = dune_psql.query_tsv("select partition_id, coalesce(label, '') from dune.world_partition where lower(map)=lower('Survival_1');")
+endpoint_rows_raw = dune_psql.query_tsv("""
       select wp.partition_id,
              coalesce(host(fs.game_addr), ''),
              coalesce(fs.game_port, 0)
       from dune.world_partition wp
       left join dune.farm_state fs on fs.server_id = wp.server_id
       where lower(wp.map)=lower('Survival_1');
-    """
-], text=True)
+    """)
 label_by_partition = {}
 for line in label_rows_raw.splitlines():
     if not line.strip():

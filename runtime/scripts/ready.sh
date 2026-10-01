@@ -10,6 +10,10 @@ set +a
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/fls-signals.sh
 source runtime/scripts/farm-readiness.sh
+# shellcheck source=runtime/scripts/lib/postgres.sh
+source runtime/scripts/lib/postgres.sh
+# shellcheck source=runtime/scripts/lib/rabbitmq.sh
+source runtime/scripts/lib/rabbitmq.sh
 
 postgres_port="$(resolve_postgres_port)"
 rmq_admin_port="$(resolve_rmq_admin_port)"
@@ -26,6 +30,12 @@ log_tail_lines="${DUNE_READY_LOG_TAIL_LINES:-4000}"
 docker_timeout() {
   timeout --kill-after=2s "${docker_timeout_seconds}s" "$@"
 }
+
+# The database checks below run through lib/postgres.sh (sourced by
+# farm-readiness.sh) rather than a `docker exec` each. docker_timeout cannot
+# wrap them -- `timeout` runs a program and the seam is a shell function -- so
+# the seam is handed the same budget and applies it to whichever leg it picks.
+DUNE_PSQL_TIMEOUT_SECONDS="$docker_timeout_seconds"
 
 db_bool_true() {
   [[ "${1,,}" =~ ^(t|true|1|yes|y)$ ]]
@@ -133,7 +143,7 @@ partition_map_and_server() {
   local partition_id="$1"
 
   [ -n "$partition_id" ] || return 1
-  docker_timeout docker exec dune-postgres psql -U dune -d dune -Atc "
+  psql_app_value "
     select map || '|' || coalesce(server_id, '')
     from dune.world_partition
     where partition_id = $partition_id
@@ -149,7 +159,7 @@ server_effective_players() {
     return 0
   }
 
-  docker_timeout docker exec dune-postgres psql -U dune -d dune -Atc "
+  psql_app_value "
     select count(*)
     from dune.player_state
     where server_id = '${server_id//\'/\'\'}'
@@ -179,7 +189,7 @@ partition_effective_players() {
     return 0
   }
 
-  docker_timeout docker exec dune-postgres psql -U dune -d dune -Atc "
+  psql_app_value "
     select count(*)
     from dune.player_state ps
     left join dune.farm_state fs on fs.server_id = ps.server_id
@@ -323,11 +333,29 @@ check_game_server_ready() {
     "This is normal after init/start/restart; game maps can take several minutes to finish loading."
 }
 
+# `rabbitmqctl list_connections user state`, preferring the management API.
+#
+# This is the most frequently repeated exec in the stack: the autoscaler runs a
+# ready sweep every 30 seconds, this check retries once, and each attempt used
+# to be a container exec whose conmon pair stays resident for the engine's exit
+# delay. The HTTP leg answers the same question over the loopback management
+# port with no exec at all.
+#
+# The fallback is the exact call that ran here before, and it runs whenever the
+# seam declines -- no curl, no published loopback port, no credentials in the
+# director log, a non-2xx answer. `local` scopes the HTTP budget to this
+# function and whatever it calls, so the seam gets the same 7 seconds the
+# `timeout` gives the exec and nothing outside inherits it.
 game_server_rmq_connections_ready() {
-  local attempt
+  local attempt connections
+  local RMQ_HTTP_TIMEOUT_SECONDS=7
 
   for attempt in 1 2; do
-    if timeout 7 docker exec dune-rmq-game rabbitmqctl list_connections user state 2>/dev/null \
+    connections="$(dune_rmq_game_connections 2>/dev/null)" \
+      || connections="$(timeout 7 docker exec dune-rmq-game rabbitmqctl list_connections user state 2>/dev/null)" \
+      || connections=""
+
+    if printf '%s\n' "$connections" \
       | awk '$1 ~ /^sg[.]/ && $2 == "running" { found=1 } END { exit(found ? 0 : 1) }'; then
       return 0
     fi
@@ -408,7 +436,7 @@ check_udp "$((igw_port_base + 1))" "Overmap S2S" "dune-server-overmap"
 echo
 echo "=== Database world partition checks ==="
 if is_running dune-postgres; then
-  partition_count="$(docker_timeout docker exec dune-postgres psql -U dune -d dune -Atc "select count(*) from world_partition;" 2>/dev/null | tr -d '[:space:]' || true)"
+  partition_count="$(psql_app_value "select count(*) from world_partition;" 2>/dev/null | tr -d '[:space:]' || true)"
   partition_count="${partition_count:-0}"
 
   if [ "$partition_count" -gt 0 ]; then
@@ -482,7 +510,7 @@ while IFS= read -r c; do
 
   farm_ready="f"
   if [ -n "$server_id" ]; then
-    farm_ready="$(docker_timeout docker exec dune-postgres psql -U dune -d dune -Atc "
+    farm_ready="$(psql_app_value "
       select coalesce(ready::text, 'f')
       from dune.farm_state
       where server_id = '${server_id//\'/\'\'}'
@@ -498,7 +526,7 @@ while IFS= read -r c; do
 
   connected_players="0"
   if [ -n "$server_id" ]; then
-    connected_players="$(docker_timeout docker exec dune-postgres psql -U dune -d dune -Atc "
+    connected_players="$(psql_app_value "
       select coalesce(connected_players::text, '0')
       from dune.farm_state
       where server_id = '${server_id//\'/\'\'}'

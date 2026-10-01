@@ -177,6 +177,7 @@ export const ROUTE_ACTIONS = {
   "POST /api/settings/api-keys":               "settings:write",
   "POST /api/settings/public-directory":       "settings:write",
   "POST /api/settings/public-directory/claim": "settings:write",
+  "POST /api/settings/server-startup":          "settings:write",
 
   // --- Players (read) ---
   "GET /api/players":                          "players:read",

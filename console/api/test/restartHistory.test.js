@@ -12,6 +12,10 @@ test("restart history classifies battlegroup, map, and service restart tasks", (
   });
   assert.equal(restartDescriptor("restartService", { service: "director" }).scope, "service");
   assert.equal(restartDescriptor("updateCheck"), null);
+  // Actual game-update restarts are journaled by update.sh, including CLI
+  // updates. Recording the Console task too would duplicate them, and would
+  // incorrectly count no-update/stopped-Battlegroup runs as restarts.
+  assert.equal(restartDescriptor("updateApply"), null);
 });
 
 test("restart history returns newest rows and the latest successful battlegroup restart", () => {

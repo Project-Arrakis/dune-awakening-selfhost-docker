@@ -4360,6 +4360,15 @@ export function baseDeleteBlockedByBackup(message) {
   return String(message || "").includes(BASE_DELETE_BACKED_UP_MESSAGE);
 }
 
+// Thrown from inside the generator and water refill transactions. The routes
+// already refuse a backed-up base, but a queued refill and the auto-refill
+// scans reach the write later, after the base may have been picked up -- and a
+// picked-up base resolves to partition 0, so the flush would apply it at once.
+// Treated as "no longer applicable" by the flushes, so the entry is dropped
+// rather than retried: a refill for a base that is now a backup is stale.
+export const BASE_REFILL_BACKED_UP_MESSAGE =
+  "This base was picked up into a backup, so the refill was not applied.";
+
 export async function baseIsBackedUp(db, baseId) {
   const target = intParam(baseId, "base id", 1);
   if (!(await tableExists(db, "base_backup_linked_actors"))) return false;
@@ -11257,6 +11266,7 @@ export async function refillBaseGenerators(db, repoRoot, baseId) {
   const caps = refillCaps(repoRoot);
 
   return db.transaction(async (tx) => {
+    if (await baseIsBackedUp(tx, target)) throw new Error(BASE_REFILL_BACKED_UP_MESSAGE);
     const itemColumns = await columnsFor(tx, "items");
     const devices = await baseGenerators(tx, target);
     if (!devices.length) throw new Error(NO_POWER_DEVICES_MESSAGE);
@@ -11589,16 +11599,37 @@ export async function partitionRestartTargets(db) {
 // messages rather than collapse a broken link into "no longer exists".
 // order by prefers a resolved sibling piece the same way basePermissionActor
 // does, so a multi-piece base with one orphaned piece still resolves cleanly.
+//
+// A live totem can carry a NULL partition_id (the column is ON DELETE SET NULL
+// against world_partition, so it is lost if that row is ever recreated) while
+// the placeables built since carry the real one -- seen on 5 of 13 bases on a
+// live server. Partition 0 reads as "simulated by nothing" to partitionWriteSafe,
+// so without the fallback every queued write to such a base was applied
+// straight into the running map and overwritten by it. The claim's placeables
+// are resolved the same way baseGenerators resolves them. A base backup nulls
+// every piece's partition, so it still resolves to 0, which is correct for it.
 export async function baseMapLocation(db, baseId) {
   const target = intParam(baseId, "base id", 1);
   const result = await db.query(`
     select a.id::text as actor_id,
            coalesce(a.map, '') as map,
-           coalesce(a.partition_id, 0)::int as partition_id
+           coalesce(a.partition_id, piece.partition_id, 0)::int as partition_id
     from dune.buildings b
     left join dune.building_instances bi on bi.building_id = b.id
     left join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
     left join dune.actors a on a.id = afe.actor_id
+    left join lateral (
+      select pa.partition_id
+      from dune.actor_fgl_entities claim_afe
+      join dune.placeables p on p.owner_entity_id = claim_afe.entity_id
+      join dune.actors pa on pa.id = p.id
+      where a.partition_id is null
+        and claim_afe.actor_id = a.id
+        and pa.partition_id is not null
+      group by pa.partition_id
+      order by count(*) desc, pa.partition_id
+      limit 1
+    ) piece on true
     where b.id = $1
     order by (a.id is null) asc, bi.instance_id asc
     limit 1`, [target]);
@@ -11682,7 +11713,8 @@ function childAccessNoLongerApplicable(message) {
 
 function refillNoLongerApplicable(message) {
   return message === NO_POWER_DEVICES_MESSAGE
-    || message === "No water storage was found at this base";
+    || message === "No water storage was found at this base"
+    || message === BASE_REFILL_BACKED_UP_MESSAGE;
 }
 
 // Applies every queued refill whose map is currently down and leaves the rest
@@ -12422,6 +12454,7 @@ export async function refillBaseWater(db, baseId) {
   if (!devices.length) throw new Error("No water storage was found at this base");
 
   return db.transaction(async (tx) => {
+    if (await baseIsBackedUp(tx, target)) throw new Error(BASE_REFILL_BACKED_UP_MESSAGE);
     const refilled = [];
     for (const device of devices) {
       const spec = WATER_TYPES[device.water_type];
