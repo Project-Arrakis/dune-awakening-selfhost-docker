@@ -43,6 +43,18 @@ float hfAt(ivec2 p){
 }
 out vec3 vN; out float vZ; out float vMat; out vec2 vXY;
 flat out vec4 vBox; out float vWS; out float vEdge; flat out float vClip;
+flat out float vRand;
+// A per-instance random, hashed from the instance's own translation rather than
+// shipped as an attribute: same value every frame, deterministic, zero added
+// bytes. iT is in world uu and reaches ~1e6, so it is scaled down before fract()
+// to keep the hash meaningful in float32. Checked against layout 3's 13,562 real
+// translations: deciles within ~1300 of each other, std 0.2865 against 0.2887 for
+// a true uniform.
+float hash13(vec3 p){
+  vec3 q = fract(p * 0.0013);
+  q += dot(q, q.yzx + 33.33);
+  return fract((q.x + q.y) * q.z);
+}
 vec3 octDec(vec2 e){
   vec3 n=vec3(e.xy, 1.0-abs(e.x)-abs(e.y));
   if(n.z<0.0){ n.xy=(1.0-abs(n.yx))*vec2(n.x>=0.0?1.0:-1.0, n.y>=0.0?1.0:-1.0); }
@@ -57,6 +69,7 @@ void main(){
     float dx = hfAt(ivec2(ix+1,iy)) - hfAt(ivec2(ix-1,iy));
     float dy = hfAt(ivec2(ix,iy+1)) - hfAt(ivec2(ix,iy-1));
     vN = normalize(vec3(-dx, -dy, 2.0*uHStep));
+    vRand = 0.5;   // neutral: the height field has no instances
     vZ = wf.z; vMat = 1.0; vXY = wf.xy; vBox = vec4(0.0); vWS = 1.0; vEdge = 1e9; vClip = -1e9;
     gl_Position = uVP*vec4(wf,1.0);
     gl_Position.z += uBias;
@@ -68,6 +81,7 @@ void main(){
   w.z += ((iMat > 1.5 && iMat < 2.5) ? 0.0 : iLift*uLift);   // patches use iLift as a clip height
   vClip = iLift;
   vN = normalize(R*octDec(aNrm));
+  vRand = hash13(iT);
   vZ = w.z; vMat = iMat; vXY = w.xy;
   vec2 e0 = (R*vec3(uLo.xy,0.0)).xy + iT.xy;
   vec2 e1 = (R*vec3(uLo.xy+uExt.xy,0.0)).xy + iT.xy;
@@ -85,6 +99,10 @@ export const FS = `#version 300 es
 precision highp float;
 in vec3 vN; in float vZ; in float vMat; in vec2 vXY;
 flat in vec4 vBox; in float vWS; in float vEdge; flat in float vClip;
+flat in float vRand;
+// Per-instance rock tone spread, +/- this fraction. 0.10 was too faint to read
+// (a 99th-percentile delta of 11 levels); 0.25 reads without looking artificial.
+#define ROCKVAR 0.25
 uniform float uFeather;
 uniform sampler2D uD1, uD2, uBrk;
 uniform float uTile, uDetStr, uDetail;
@@ -157,7 +175,19 @@ void main(){
   }
   float t = clamp((vZ-uZlo)/max(uZhi-uZlo,1.0),0.0,1.0);
   vec3 sand = mix(vec3(0.804,0.631,0.443), vec3(0.980,0.914,0.769), t);
-  vec3 rock = vec3(0.588,0.416,0.173)*(0.88+0.45*t);
+  // Per-instance tone variation. The game's own rock material carries no textures
+  // at all and does exactly this -- it sets bHasPerInstanceRandom -- so breaking
+  // up the uniform tan this way follows the map rather than inventing past it.
+  // Brightness plus a slight warm/cool swing, because brightness alone reads as
+  // lighting rather than as different rock.
+  //
+  // This only tells apart rocks you can see side by side. A single formation is
+  // one or a few large instances, so zoomed into one it does almost nothing --
+  // breaking THAT up needs something spatially varying, i.e. a texture.
+  float rv = vRand - 0.5;
+  vec3 rock = vec3(0.588,0.416,0.173)*(0.88+0.45*t)
+            * (1.0 + rv*2.0*ROCKVAR)
+            * vec3(1.0 + rv*ROCKVAR*0.5, 1.0, 1.0 - rv*ROCKVAR*0.5);
   // 0 = rock, 1 = sand, 2 = terrain patch. The patch colour is the game's own
   // MI_UIMap_Terrain_3 tint (#CCAE7A) -- drawing these as rock made a large
   // ground patch read as a dark slab.
