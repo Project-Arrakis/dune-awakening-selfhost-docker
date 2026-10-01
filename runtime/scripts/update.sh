@@ -1372,6 +1372,7 @@ set -euo pipefail
 # real; the orchestrator never sets it.
 images_dir="${DUNE_ASSET_IMAGES_DIR:-/srv/dune/server/images}"
 mapfile -t tarballs < <(find "$images_dir" -type f \( -name "*.tar" -o -name "*.tar.gz" -o -name "*.tgz" \) | sort)
+[ "${#tarballs[@]}" -gt 0 ] || { echo "No downloaded game image archives found; update cannot continue." >&2; exit 1; }
 loaded=0
 for tar in "${tarballs[@]}"; do
   loaded=$((loaded + 1))
@@ -1392,7 +1393,7 @@ fi
 echo
 echo "DUNE_GAME_ASSETS_PHASE=Detecting image tags"
 echo "=== Detect loaded image tags ==="
-runtime/scripts/detect-image-tags.sh
+runtime/scripts/detect-image-tags.sh --from-bundle
 
 echo
 echo "=== Current tags ==="
@@ -1495,5 +1496,16 @@ else
   echo "Update finished."
   echo
   echo "Restarting Dune stack..."
-  runtime/scripts/start-all.sh
+  history_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  history_started_epoch="$(date +%s)"
+  restart_result=Succeeded
+  restart_rc=0
+  runtime/scripts/start-all.sh || { restart_rc=$?; restart_result=Failed; }
+  history_finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # Record the real lifecycle branch, not merely a successful download/task.
+  # This covers Console, CLI and automatic updates without duplicate entries.
+  runtime/scripts/restart-history.sh record battlegroup Battlegroup "Game Update" \
+    "Game update" "$restart_result" "$history_started" "$history_finished" \
+    "$(( $(date +%s) - history_started_epoch ))" || echo "WARN Game update restart history could not be recorded." >&2
+  [ "$restart_rc" -eq 0 ] || exit "$restart_rc"
 fi

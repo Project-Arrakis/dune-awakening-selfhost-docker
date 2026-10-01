@@ -14,13 +14,14 @@ source runtime/scripts/generated-file-paths.sh
 WORLD_IMAGE_TAG="$(resolve_world_image_tag)"
 IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server-rabbitmq:${WORLD_IMAGE_TAG}"
 RMQ_ADMIN_PORT="$(resolve_rmq_admin_port)"
+RMQ_ADMIN_HTTP_PORT="$(resolve_rmq_admin_http_port)"
 RMQ_GAME_PORT="$(resolve_rmq_game_port)"
 RMQ_GAME_HTTP_PORT="$(resolve_rmq_game_http_port)"
 # Host-side loopback mirror of the game RabbitMQ management endpoint. The
 # container-side management port remains 15672. Keeping the host port
 # configurable lets multi-VM deployments maintain a globally unique host-port
 # namespace while preserving the stock single-server default.
-RMQ_GAME_LOCAL_HTTP_PORT="$(port_env_value RMQ_GAME_LOCAL_HTTP_PORT 15672)"
+RMQ_GAME_LOCAL_HTTP_PORT="$(resolve_rmq_game_local_http_port)"
 
 mkdir -p runtime/rabbitmq-admin/config
 mkdir -p runtime/rabbitmq-game/config
@@ -106,12 +107,18 @@ chmod 644 runtime/rabbitmq-admin/config/enabled_plugins
 docker network create dune-net 2>/dev/null || true
 docker rm -f dune-rmq-admin dune-rmq-game 2>/dev/null || true
 
+# The management API is published on loopback, exactly as it already is for
+# dune-rmq-game below. lib/rabbitmq.sh publishes and polls the hot paths through
+# it, which is what keeps those calls from having to be a container exec each.
+# Until this container is recreated with the mapping the seam simply falls back,
+# so the change is safe to roll out before the next start-rabbitmq.sh run.
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-rmq-admin \
   --network dune-net \
   --restart unless-stopped \
   -p "127.0.0.1:${RMQ_ADMIN_PORT}:5672" \
+  -p "127.0.0.1:${RMQ_ADMIN_HTTP_PORT}:15672/tcp" \
   -v "$(host_path "$PWD/runtime/rabbitmq-admin/config/rabbitmq.conf"):/etc/rabbitmq/rabbitmq.conf:ro" \
   -v "$(host_path "$PWD/runtime/rabbitmq-admin/config/enabled_plugins"):/etc/rabbitmq/enabled_plugins:ro" \
   "$IMAGE"

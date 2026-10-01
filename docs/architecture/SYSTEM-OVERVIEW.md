@@ -108,7 +108,11 @@ TextRouter → BattlegroupDirector → the always-on world servers
 map partitions (via `dune spawn` / `dune despawn`). An Autoscaler process
 (`runtime/scripts/autoscaler.sh`) runs continuously to spawn/despawn
 dynamic maps based on demand signals it tracks under
-`runtime/generated/autoscaler-*`.
+`runtime/generated/autoscaler-*`. Its two loop intervals are tunable
+(`DUNE_AUTOSCALER_INTERVAL`, `DUNE_AUTOSCALER_DEMAND_INTERVAL`), and its
+database queries go through the transport seam described in
+[DATABASE.md §2.1](DATABASE.md#21-how-runtime-scripts-connect) — relevant
+because this is the one process that queries Postgres continuously.
 
 ---
 

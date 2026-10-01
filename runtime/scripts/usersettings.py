@@ -8,6 +8,7 @@ import re
 import sys
 import tempfile
 from base64 import b64decode
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 
@@ -551,6 +552,7 @@ CLIENT_FILE_REQUIRED = {
     # building values to match on every player's client.
     "max_landclaim_segments": "Game.ini",
     "building_restriction_limits_enabled": "Game.ini",
+    "base_backup_tool_time_restriction": "Game.ini",
     "hydration_enabled": "Game.ini",
     "water_consumption_rate": "Game.ini",
     "player_starting_water": "Game.ini",
@@ -2320,6 +2322,38 @@ def server_custom_profile_value(profile: dict, field_id: str, map_name: str, par
     return value, configured
 
 
+def configured_base_backup_cooldown_seconds(profile: dict, map_name: str = "", partition_id: str = "") -> int | None:
+    """Mirror an explicit native cooldown into the game's legacy seconds gate.
+
+    The native hours setting is still emitted to ServerCustomSettings.ini. The
+    older BuildingSettings property remains present in the shipped game and is
+    also used by clients for the Reconstruction Tool's repeat-pickup gate.
+    Omit both legacy overrides when the operator has not configured this field.
+    """
+    section, key, _default = SERVER_CUSTOM_FIELDS["base_backup_tool_time_restriction"]
+    value = profile_get_key(profile, "server_custom_global", section, key)
+    if map_name:
+        target_map = canonical_map(map_name)
+        map_value = profile_get_key(profile, "server_custom_map", section, key, target_map)
+        if map_value is not None:
+            value = map_value
+        if partition_id:
+            partition_value = profile_get_key(
+                profile, "server_custom_partition", section, key, target_map, str(partition_id)
+            )
+            if partition_value is not None:
+                value = partition_value
+    if value is None:
+        return None
+    try:
+        hours = Decimal(str(value).strip())
+    except InvalidOperation as error:
+        raise ValueError(f"Invalid base reconstruction cooldown: {value}") from error
+    if not hours.is_finite() or hours < Decimal("0.2"):
+        raise ValueError(f"Invalid base reconstruction cooldown: {value}")
+    return int((hours * 3600).to_integral_value(rounding=ROUND_HALF_UP))
+
+
 def legacy_building_restriction_value(profile: dict, map_name: str, partition_id: str = "") -> tuple[str | None, bool]:
     section, key, _default = RETIRED_USERGAME_FIELDS["building_restriction_limits_enabled"]
     value = None
@@ -2847,6 +2881,11 @@ def compiled_usergame_ini(profile: dict, map_name: str, partition_id: str | None
                 section_lines.setdefault(section, []).append(f"+m_PvpEnabledPartitions={target_partition}")
             if truthy(values.get("partition_pve_enabled", "False")):
                 section_lines.setdefault(section, []).append(f"+m_PveEnabledPartitions={target_partition}")
+    cooldown_seconds = configured_base_backup_cooldown_seconds(profile, target_map, target_partition)
+    if cooldown_seconds is not None:
+        section_lines.setdefault(BUILDING_SETTINGS_SECTION, []).append(
+            f"m_BaseBackupToolTimeRestrictionInSeconds={cooldown_seconds}"
+        )
     scopes = [("global", "", ""), ("map", target_map, "")]
     if target_partition:
         scopes.append(("partition", target_map, target_partition))
@@ -2904,8 +2943,14 @@ def client_game_ini(profile: dict, map_name: str, partition_id: str | None = Non
             continue
         section_lines.setdefault(section, []).append(f"{key}={value}")
 
-    # The server-side control moved to ServerCustomSettings.ini in Patch 1.5,
-    # while clients still consume the matching legacy Game.ini property.
+    # The native server control uses hours, but the Reconstruction Tool's
+    # repeat-pickup gate still needs the matching legacy seconds value on both
+    # the server and each client. Only export an explicit operator override.
+    cooldown_seconds = configured_base_backup_cooldown_seconds(profile, target_map, target_partition)
+    if cooldown_seconds is not None:
+        section_lines.setdefault(BUILDING_SETTINGS_SECTION, []).append(
+            f"m_BaseBackupToolTimeRestrictionInSeconds={cooldown_seconds}"
+        )
     custom_values = server_custom_values(profile, target_map or "Survival_1", target_partition, include_materialized=bool(target_map))
     restriction_value = custom_values["building_restriction_limits_enabled"]
     restriction_default = SERVER_CUSTOM_FIELDS["building_restriction_limits_enabled"][2]
@@ -3669,10 +3714,10 @@ Dune.GlobalVehicleMiningOutputMultiplier=10
     migrate_legacy_base_backup_cooldown(reparsed)
     if server_custom_values(reparsed, "Survival_1", include_materialized=False)["base_backup_tool_time_restriction"] != "2":
         raise SystemExit("Legacy base backup cooldown did not migrate from seconds to native hours.")
-    if "m_BaseBackupToolTimeRestrictionInSeconds" in compiled_usergame_ini(reparsed, "Survival_1", "3"):
-        raise SystemExit("Legacy base backup cooldown leaked into compiled UserGame.ini.")
-    if "m_BaseBackupToolTimeRestrictionInSeconds" in client_game_ini(reparsed, "Survival_1", "3"):
-        raise SystemExit("Legacy base backup cooldown leaked into the client Game.ini export.")
+    if "m_BaseBackupToolTimeRestrictionInSeconds=7200" not in compiled_usergame_ini(reparsed, "Survival_1", "3"):
+        raise SystemExit("Native base backup cooldown was not mirrored into compiled UserGame.ini.")
+    if "m_BaseBackupToolTimeRestrictionInSeconds=7200" not in client_game_ini(reparsed, "Survival_1", "3"):
+        raise SystemExit("Native base backup cooldown was not mirrored into the client Game.ini export.")
     if server_custom_values(reparsed, "Survival_1", include_materialized=False)["building_restriction_limits_enabled"] != "True":
         raise SystemExit("Building restriction limits did not default to enabled when unset.")
     profile_set_key(reparsed, "server_custom_global", SERVER_CUSTOM_SETTINGS_SECTION, "bIsBuildingRestrictionsEnabled", "False")

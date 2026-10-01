@@ -280,6 +280,11 @@ EOF
   autoscaler)
     shift || true
     if [ "$#" -eq 0 ]; then
+      # autoscaler.sh is configured entirely by its environment, because in
+      # normal operation it runs in a container that never sees .env and has the
+      # settings handed to it by start-autoscaler.sh. Running it in the
+      # foreground here has to do the same job.
+      set -a; [ -f .env ] && . ./.env; set +a
       runtime/scripts/autoscaler.sh
     else
       runtime/scripts/autoscaler-control.sh "$@"

@@ -24,6 +24,7 @@ for script in update.sh runtime-env.sh steamcmd-signals.sh fls-signals.sh \
   [ ! -f "$repo_root/runtime/scripts/$script" ] \
     || cp "$repo_root/runtime/scripts/$script" "$project/runtime/scripts/$script"
 done
+cp "$repo_root/runtime/scripts/lib/ports.sh" "$project/runtime/scripts/lib/ports.sh"
 cp "$repo_root/runtime/scripts/lib/secrets.sh" "$project/runtime/scripts/lib/secrets.sh"
 cp "$repo_root/runtime/scripts/lib/secrets_aead.py" "$project/runtime/scripts/lib/secrets_aead.py"
 
@@ -138,6 +139,9 @@ grep -q "compose exec" "$docker_log" \
 grep -q "No database work was performed" "$test_root/assets.log" \
   || fail "install-assets: did not report that the database was left alone" "$test_root/assets.log"
 echo "PASS install-assets-still-installs-assets"
+grep -q '^detect-image-tags.sh --from-bundle$' "$calls_log" \
+  || fail "install-assets did not verify tags from its downloaded bundle" "$calls_log"
+echo "PASS install-assets-verifies-the-downloaded-image-set"
 
 # --- Case 3: it refuses while a world server is running --------------------
 
@@ -260,17 +264,19 @@ for expected in "DUNE_GAME_ASSETS_LOAD=1/3 alpha.tar" "DUNE_GAME_ASSETS_LOAD=2/3
 done
 echo "PASS install-assets-counts-the-images-it-loads"
 
-# --- Case 11: an empty image directory loads nothing and still succeeds ----
-# `mapfile` on no matches leaves an empty array, and `for x in "${a[@]}"` under
-# `set -u` is the classic place that turns into an unbound-variable crash.
+# --- Case 11: an empty bundle cannot silently reuse old local images --------
 
 empty_out="$test_root/load-empty.out"
-DUNE_ASSET_IMAGES_DIR="$test_root/no-images" MOCK_DOCKER_LOG="$test_root/load-docker.log" PATH="$bin_dir:$PATH" bash "$load_script" > "$empty_out" 2>&1 \
-  || fail "the image-load loop failed on an empty directory" "$empty_out"
+mkdir -p "$test_root/no-images"
+if DUNE_ASSET_IMAGES_DIR="$test_root/no-images" MOCK_DOCKER_LOG="$test_root/load-docker.log" PATH="$bin_dir:$PATH" bash "$load_script" > "$empty_out" 2>&1; then
+  fail "the image-load loop accepted an empty downloaded bundle" "$empty_out"
+fi
+grep -q 'No downloaded game image archives found' "$empty_out" \
+  || fail "missing actionable empty-bundle error" "$empty_out"
 if grep -q "DUNE_GAME_ASSETS_LOAD" "$empty_out"; then
   fail "image-load loop reported loading an image when there were none" "$empty_out"
 fi
-echo "PASS install-assets-load-loop-handles-no-images"
+echo "PASS install-assets-load-loop-rejects-no-images"
 # --- Case 12: a CLI install-assets drops the console's cached update check --
 # The Web Console keeps its last Steam check in runtime/generated for 30
 # minutes, across restarts. install-assets can change the installed build and

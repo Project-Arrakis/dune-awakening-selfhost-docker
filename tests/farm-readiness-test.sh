@@ -3,6 +3,16 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 
+# farm-readiness.sh, like every script that sources a library here, resolves its
+# `source` lines against the repository root.
+cd "$repo_root"
+
+# The database query goes through runtime/scripts/lib/postgres.sh, which would
+# otherwise pick the TCP transport wherever a psql client is installed -- the
+# GitHub runner images ship one -- and dial a server that does not exist. Pinning
+# the exec transport keeps the query on the path the `docker` mock below covers.
+export DUNE_PSQL_TRANSPORT=exec
+
 source "$repo_root/runtime/scripts/farm-readiness.sh"
 
 mock_map_log=""

@@ -36,6 +36,10 @@ export function autoRefillThresholdPercent(env = process.env, repoRoot = "") {
   return resolveAutoRefillSetting("thresholdPercent", { env, repoRoot });
 }
 
+export function autoRefillWindtrapThresholdPercent(env = process.env, repoRoot = "") {
+  return resolveAutoRefillSetting("windtrapThresholdPercent", { env, repoRoot });
+}
+
 export function autoRefillIntervalHours(env = process.env, repoRoot = "") {
   return resolveAutoRefillSetting("intervalHours", { env, repoRoot });
 }
@@ -192,6 +196,7 @@ export function autoRefillPublicState(repoRoot, { env = process.env } = {}) {
   const state = readAutoRefillState(repoRoot);
   return {
     thresholdPercent: autoRefillThresholdPercent(env, repoRoot),
+    windtrapThresholdPercent: autoRefillWindtrapThresholdPercent(env, repoRoot),
     intervalHours: autoRefillIntervalHours(env, repoRoot),
     nextRunAt: state.nextRunAt,
     lastRunAt: state.lastRunAt,
@@ -264,6 +269,14 @@ export function createAutoRefillScheduler(options = {}) {
     });
   }
 
+  // Generators and windtraps are judged against their own thresholds; a kind
+  // the base does not have (null) never triggers.
+  function belowThreshold(levels, threshold, windtrapThreshold) {
+    const generator = levels.lowestGeneratorPercent;
+    const windtrap = levels.lowestWindtrapPercent;
+    return (generator != null && generator < threshold) || (windtrap != null && windtrap < windtrapThreshold);
+  }
+
   async function scanBase(baseId, threshold, context) {
     const { enrollment, pendingBaseIds, pendingDeleteBaseIds, outcomes, removed, failures, counters } = context;
     // A base marked for deletion is frozen from every other write (see
@@ -276,6 +289,17 @@ export function createAutoRefillScheduler(options = {}) {
     const previous = enrollment[key] || {};
     const priorQueues = previous.consecutiveQueues || 0;
     try {
+      // A picked-up base must never be refilled. The enrollment route refuses
+      // one, but a base can be picked up after it was enrolled, and it then
+      // resolves to partition 0 -- which every queue treats as write-safe, so
+      // the flush would apply the refill at once. Enrollment and stall
+      // tracking are left untouched so a redeployed base picks up where it
+      // left off. A failed check falls to the catch below as a failure,
+      // never as "not backed up".
+      if (await duneDb.baseIsBackedUp(db, baseId)) {
+        counters.backedUp += 1;
+        return;
+      }
       const levels = await duneDb.baseGeneratorFuelLevels(db, config.repoRoot, baseId);
       counters.checked += 1;
       const lowest = levels.lowestPercent;
@@ -300,7 +324,7 @@ export function createAutoRefillScheduler(options = {}) {
       }
 
       // Healthy again: whatever kept it low before has been resolved.
-      if (lowest >= threshold) {
+      if (!belowThreshold(levels, threshold, context.windtrapThreshold)) {
         outcome.consecutiveQueues = 0;
         outcome.stalledAt = "";
         outcomes.set(key, outcome);
@@ -334,6 +358,8 @@ export function createAutoRefillScheduler(options = {}) {
             baseId,
             lowestPercent: lowest,
             thresholdPercent: threshold,
+            lowestWindtrapPercent: levels.lowestWindtrapPercent,
+            windtrapThresholdPercent: context.windtrapThreshold,
             consecutiveQueues: priorQueues
           });
         }
@@ -362,6 +388,8 @@ export function createAutoRefillScheduler(options = {}) {
         baseId,
         lowestPercent: lowest,
         thresholdPercent: threshold,
+        lowestWindtrapPercent: levels.lowestWindtrapPercent,
+        windtrapThresholdPercent: context.windtrapThreshold,
         deviceCount: levels.deviceCount,
         attempt: outcome.consecutiveQueues,
         map: target.map,
@@ -387,8 +415,10 @@ export function createAutoRefillScheduler(options = {}) {
 
   async function run(baseIds, enrollment) {
     const threshold = autoRefillThresholdPercent(env, config.repoRoot);
+    const windtrapThreshold = autoRefillWindtrapThresholdPercent(env, config.repoRoot);
     const context = {
       enrollment,
+      windtrapThreshold,
       // Read once per scan: which bases already have an unflushed queue entry.
       pendingBaseIds: new Set(duneDb.listQueuedGeneratorRefills(config.repoRoot).map((entry) => entry.baseId)),
       // Read once per scan: which bases have a delete queued and are frozen.
@@ -399,7 +429,7 @@ export function createAutoRefillScheduler(options = {}) {
       outcomes: new Map(),
       removed: [],
       failures: [],
-      counters: { checked: 0, queued: 0, dropped: 0, stalled: 0, alreadyQueued: 0 }
+      counters: { checked: 0, queued: 0, dropped: 0, stalled: 0, alreadyQueued: 0, backedUp: 0 }
     };
     const { outcomes, removed, failures, counters } = context;
 
@@ -416,6 +446,7 @@ export function createAutoRefillScheduler(options = {}) {
     auditSafely("bases.auto-refill-scan", {
       enrolled: baseIds.length,
       thresholdPercent: threshold,
+      windtrapThresholdPercent: windtrapThreshold,
       ...counters,
       failures: failures.length,
       status
@@ -480,6 +511,7 @@ export function createAutoRefillScheduler(options = {}) {
     tick,
     publicState: () => autoRefillPublicState(config.repoRoot, { env }),
     thresholdPercent: () => autoRefillThresholdPercent(env, config.repoRoot),
+    windtrapThresholdPercent: () => autoRefillWindtrapThresholdPercent(env, config.repoRoot),
     intervalHours: () => autoRefillIntervalHours(env, config.repoRoot)
   };
 }
