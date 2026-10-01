@@ -1120,19 +1120,24 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
               return !filters[key];
             };
             return <>
-            {activeMap?.key === "DeepDesert" && <label className="checkbox-row live-map-layer live-map-sector-grid-layer">
-              <span className="live-map-layer-label">Sector Grid</span>
-              <span className="muted">Overlay</span>
-              <span className="live-map-sector-grid-swatch" aria-hidden="true" />
-              <input type="checkbox" aria-label="Sector Grid" checked={showSectorGrid} onChange={() => setShowSectorGrid((on) => !on)} />
-            </label>}
-            {/* Only offered when the 3D terrain is actually drawing -- it is a
-                shader effect, so on the flat fallback image it would do nothing. */}
-            {terrainEligible && <label className="checkbox-row live-map-layer">
-              <span className="live-map-layer-label">Elevation Lines</span>
-              <span className="muted">Terrain</span>
-              <input type="checkbox" aria-label="Elevation Lines" checked={showElevationLines} onChange={() => setShowElevationLines((on) => !on)} />
-            </label>}
+            {/* Terrain overlays, grouped above the marker legend. The divider is
+                on the group, not on a row, so both sit above it. */}
+            {(activeMap?.key === "DeepDesert" || terrainEligible) && <div className="live-map-overlay-group">
+              {activeMap?.key === "DeepDesert" && <label className="checkbox-row live-map-layer">
+                <span className="live-map-layer-label">Sector Grid</span>
+                <span className="muted">Overlay</span>
+                <span className="live-map-sector-grid-swatch" aria-hidden="true" />
+                <input type="checkbox" aria-label="Sector Grid" checked={showSectorGrid} onChange={() => setShowSectorGrid((on) => !on)} />
+              </label>}
+              {/* Only offered when the 3D terrain is actually drawing -- it is a
+                  shader effect, so on the flat fallback image it would do nothing. */}
+              {terrainEligible && <label className="checkbox-row live-map-layer">
+                <span className="live-map-layer-label">Elevation Lines</span>
+                <span className="muted">Terrain</span>
+                <span className="live-map-elevation-swatch" aria-hidden="true" />
+                <input type="checkbox" aria-label="Elevation Lines" checked={showElevationLines} onChange={() => setShowElevationLines((on) => !on)} />
+              </label>}
+            </div>}
             {LEGEND_LAYOUT.map((item, index) => {
             if ("header" in item) {
               const sectionName = item.header;

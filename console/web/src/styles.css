@@ -3089,7 +3089,30 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   flex: 0 0 24px;
 }
 .live-map-legend-dot-spacer { flex: 0 0 auto; width: 28px; height: 24px; }
-.live-map-sector-grid-layer { border-bottom: 1px solid rgba(198, 139, 74, .2); margin-bottom: 4px; padding-bottom: 8px; }
+/* The terrain overlays -- Sector Grid, Elevation Lines -- are their own group
+   above the marker legend. The divider belongs under the WHOLE group: it used to
+   sit on the Sector Grid row itself, so anything added after that row landed
+   below the divider and read as part of the marker list instead. */
+.live-map-overlay-group {
+  display: grid;
+  gap: 4px;
+  border-bottom: 1px solid rgba(198, 139, 74, .2);
+  margin-bottom: 4px;
+  padding-bottom: 8px;
+}
+.live-map-elevation-swatch {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  border: 1px solid rgba(198, 139, 74, .75);
+  border-radius: 4px;
+  /* stacked contours, to read as elevation rather than as a grid */
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0 4px,
+    rgba(198, 139, 74, .75) 4px 5px);
+  flex: 0 0 24px;
+}
 .live-map-sector-grid-swatch {
   width: 24px;
   min-width: 24px;

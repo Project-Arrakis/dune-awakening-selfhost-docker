@@ -665,6 +665,25 @@ it("still draws the grid over the flat image, now that the two agree", async () 
 // fallback image it would be a control that visibly does nothing. The Sector
 // Grid above is the opposite case -- it is drawn as SVG over either one -- so
 // the two must not be gated together.
+// The divider used to live on the Sector Grid row itself, so Elevation Lines
+// landed below it and read as part of the marker legend rather than as a terrain
+// overlay. Both now sit inside one group that carries the divider.
+it("groups Elevation Lines with Sector Grid, above the marker legend", async () => {
+  useDeepDesert({ coriolisLayout: 3 });
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+
+  const grid = screen.getByRole("checkbox", { name: "Sector Grid" }).closest(".live-map-overlay-group");
+  const elevation = screen.getByRole("checkbox", { name: "Elevation Lines" }).closest(".live-map-overlay-group");
+  expect(grid).not.toBeNull();
+  expect(elevation).toBe(grid);
+
+  // ...and a marker layer is outside that group, so the divider separates them.
+  const group = container.querySelector(".live-map-overlay-group");
+  const markerRows = [...container.querySelectorAll(".live-map-layer")].filter((row) => !group?.contains(row));
+  expect(markerRows.length).toBeGreaterThan(0);
+});
+
 it("offers Elevation Lines only while the terrain canvas is the one drawing", async () => {
   useDeepDesert({ coriolisLayout: 3 });
   renderPanel();
