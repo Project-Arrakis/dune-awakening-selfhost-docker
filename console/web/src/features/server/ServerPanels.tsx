@@ -1076,7 +1076,7 @@ export function ServerPanel(props: {
   );
 }
 
-function RestartHistoryPanel({ refreshKey }: { refreshKey: string }) {
+export function RestartHistoryPanel({ refreshKey }: { refreshKey: string }) {
   const [history, setHistory] = useState<RestartHistoryResponse | null>(null);
   const [filter, setFilter] = useState<"all" | RestartHistoryRow["scope"]>("all");
   const [loading, setLoading] = useState(false);
@@ -1095,28 +1095,31 @@ function RestartHistoryPanel({ refreshKey }: { refreshKey: string }) {
 
   return <details className="restart-history-panel">
     <summary><span><strong>Restart History</strong><small>{history?.lastBattlegroupRestart ? `Last Battlegroup restart ${formatRestartTime(history.lastBattlegroupRestart.finishedAt)}` : "Tracking begins after this update"}</small></span></summary>
-    <div className="restart-history-toolbar">
-      <label>Show<select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}>
-        <option value="all">All Restarts</option>
-        <option value="battlegroup">Battlegroup</option>
-        <option value="map">Maps</option>
-        <option value="service">Services</option>
-      </select></label>
-      <button className="secondary" disabled={loading} onClick={() => void load()}>{loading ? "Refreshing" : "Refresh"}</button>
+    <div className="restart-history-content">
+      <div className="restart-history-toolbar">
+        <label>Show<select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}>
+          <option value="all">All Restarts</option>
+          <option value="battlegroup">Battlegroup</option>
+          <option value="map">Maps</option>
+          <option value="service">Services</option>
+        </select></label>
+        <button className="secondary" disabled={loading} onClick={() => void load()}>{loading ? "Refreshing" : "Refresh"}</button>
+      </div>
+      {error && <p className="restart-history-message restart-history-error">{error}</p>}
+      {!error && !rows.length && <div className="restart-history-empty"><strong>No Matching Restarts</strong><span>No matching restarts have been recorded yet.</span></div>}
+      {rows.length > 0 && <div className="restart-history-table-wrap"><table className="restart-history-table">
+        <thead><tr><th>Completed</th><th>Type</th><th>Target</th><th>Source</th><th>Reason</th><th>Duration</th><th>Result</th></tr></thead>
+        <tbody>{rows.map((row) => <tr key={row.id}>
+          <td data-label="Completed" className="restart-history-completed">{formatRestartTime(row.finishedAt)}</td>
+          <td data-label="Type"><span className={`restart-history-scope scope-${row.scope}`}>{titleCase(row.scope)}</span></td>
+          <td data-label="Target" className="restart-history-target"><strong>{row.target}</strong>{row.partitionId && <small>Partition {row.partitionId}</small>}</td>
+          <td data-label="Source">{row.source}</td>
+          <td data-label="Reason" className="restart-history-reason">{row.reason}</td>
+          <td data-label="Duration">{formatRestartDuration(row.durationSeconds)}</td>
+          <td data-label="Result"><StatusPill value={row.result} /></td>
+        </tr>)}</tbody>
+      </table></div>}
     </div>
-    {error && <p className="error">{error}</p>}
-    {!error && !rows.length && <p className="muted">No matching restarts have been recorded yet.</p>}
-    {rows.length > 0 && <div className="restart-history-table-wrap"><table className="restart-history-table">
-      <thead><tr><th>Completed</th><th>Target</th><th>Source</th><th>Reason</th><th>Duration</th><th>Result</th></tr></thead>
-      <tbody>{rows.map((row) => <tr key={row.id}>
-        <td data-label="Completed">{formatRestartTime(row.finishedAt)}</td>
-        <td data-label="Target">{row.target}</td>
-        <td data-label="Source">{row.source}</td>
-        <td data-label="Reason">{row.reason}</td>
-        <td data-label="Duration">{formatRestartDuration(row.durationSeconds)}</td>
-        <td data-label="Result"><StatusPill value={row.result} /></td>
-      </tr>)}</tbody>
-    </table></div>}
   </details>;
 }
 

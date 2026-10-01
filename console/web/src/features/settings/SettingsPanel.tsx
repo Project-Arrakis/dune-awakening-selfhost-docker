@@ -29,6 +29,11 @@ type PublicDirectorySettings = {
   error?: string | null;
   probeError?: string | null;
 };
+type ServerStartupSettings = {
+  settings?: { autoStartBattlegroup?: boolean };
+  defaults?: { autoStartBattlegroup?: boolean };
+  source?: string;
+};
 
 type ConfirmAction = (
   message: string,
@@ -175,6 +180,9 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
     }
   }
   const [apiKeysOpen, setApiKeysOpen] = useState(false);
+  const [serverStartupOpen, setServerStartupOpen] = useState(false);
+  const [serverStartupSaving, setServerStartupSaving] = useState(false);
+  const [serverStartupResult, setServerStartupResult] = useState<SettingsTaskResult | null>(null);
   async function refresh() {
     await refreshCredentialState();
     const nextSettings = await api<Record<string, unknown>>("/api/settings");
@@ -201,6 +209,11 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
     const id = window.setTimeout(() => setPublicProfileResult(null), 7000);
     return () => window.clearTimeout(id);
   }, [publicProfileResult]);
+  useEffect(() => {
+    if (!serverStartupResult || serverStartupResult.status === "running") return;
+    const id = window.setTimeout(() => setServerStartupResult(null), 5400);
+    return () => window.clearTimeout(id);
+  }, [serverStartupResult]);
   useEffect(() => {
     if (!webPortRedirectUrl || webPortRedirectCountdown === null) return;
     if (webPortRedirectCountdown <= 0) {
@@ -493,6 +506,25 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
       setAnonymousCountSaving(false);
     }
   }
+  async function changeServerStartup(autoStartBattlegroup: boolean) {
+    setServerStartupSaving(true);
+    setServerStartupResult({ status: "running", title: "Saving Server Startup..." });
+    try {
+      const result = await post<{ ok: boolean } & ServerStartupSettings>("/api/settings/server-startup", { autoStartBattlegroup });
+      setSettings((current) => current ? { ...current, serverStartup: result } : current);
+      setServerStartupResult({
+        status: "succeeded",
+        title: "Server Startup Saved",
+        message: autoStartBattlegroup
+          ? "The Battlegroup will start automatically after the Linux host boots."
+          : "The Console will start after the Linux host boots, but the Battlegroup will remain stopped until you start it."
+      });
+    } catch (error) {
+      setServerStartupResult({ status: "failed", title: "Server Startup Save Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setServerStartupSaving(false);
+    }
+  }
   async function verifyListingClaim() {
     setPublicProfileSaving(true);
     setPublicProfileResult({ status: "running", title: "Verifying Listing Claim..." });
@@ -520,6 +552,8 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
   const serverListingVisible = settings !== null && publicDirectory.available === true;
   const serverListingEnabled = publicDirectory.enabled === true;
   const anonymousCountEnabled = publicDirectory.anonymousCountEnabled !== false;
+  const serverStartup = (settings?.serverStartup as ServerStartupSettings | undefined) || {};
+  const autoStartBattlegroup = serverStartup.settings?.autoStartBattlegroup !== false;
   const passwordEnvManaged = Boolean(config.adminPasswordEnvManaged);
   const consoleTotpAvailable = config.consoleTotpEnabled === true;
   // #676 §3/§6: the three Discord OAuth states this page's structure is
@@ -835,6 +869,32 @@ export function SettingsPanel({ onPasswordChanged, publicListingUrl, confirmActi
           </div>
         </div>}
       </div>}
+      <div className={`playerAdmin_toggle settings-server-startup-toggle ${serverStartupOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={serverStartupOpen ? "Collapse Server Startup" : "Expand Server Startup"} onClick={() => setServerStartupOpen(!serverStartupOpen)}>
+          {serverStartupOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+          <span>Server Startup</span>
+        </button>
+        {serverStartupOpen && <div className="playerAdmin_toggleBody settings-server-startup-body">
+          <div className="settings-server-startup-copy">
+            <strong>Start Battlegroup Automatically</strong>
+            <p className="muted">The Console always starts with Docker. When this is disabled, the Battlegroup remains stopped after the Linux host boots until you start it manually.</p>
+          </div>
+          <label className={`switch-checkbox settings-server-startup-control ${autoStartBattlegroup ? "enabled" : "disabled"}`}>
+            <input
+              type="checkbox"
+              disabled={serverStartupSaving || settings === null}
+              checked={autoStartBattlegroup}
+              onChange={(event) => { void changeServerStartup(event.target.checked); }}
+            />
+            <span className="switch-label">Automatic Startup:</span>
+            <strong className="switch-state">{serverStartupSaving ? "Saving" : autoStartBattlegroup ? "Enabled" : "Disabled"}</strong>
+          </label>
+          {serverStartupResult && <span className={`inline-task-result settings-server-startup-result result-${serverStartupResult.status === "succeeded" ? "ok" : serverStartupResult.status === "failed" ? "fail" : "running"}`}>
+            <strong className={serverStartupResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(serverStartupResult.title, serverStartupResult.status === "running")}</strong>
+            {serverStartupResult.message && <span className="inline-task-message">{formatResultMessage(serverStartupResult.message)}</span>}
+          </span>}
+        </div>}
+      </div>
       <RuntimeSettingsSummary settings={settings} />
       <div className={`playerAdmin_toggle settings-web-port-toggle ${webPortOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={webPortOpen ? "Collapse Web Console Port" : "Expand Web Console Port"} onClick={() => setWebPortOpen(!webPortOpen)}>{webPortOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Web Console Port</span></button>
