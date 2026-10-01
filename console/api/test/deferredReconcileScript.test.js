@@ -42,6 +42,11 @@ function createFixture(mapMode) {
   mkdirSync(scriptsDir, { recursive: true });
   mkdirSync(generatedDir, { recursive: true });
   mkdirSync(binDir, { recursive: true });
+  // The script queries through runtime/scripts/lib/postgres.sh, which sources
+  // lib/ports.sh; both have to exist in the fixture for the source to succeed.
+  mkdirSync(join(scriptsDir, "lib"), { recursive: true });
+  copyFileSync(join(repoRoot, "runtime/scripts/lib/ports.sh"), join(scriptsDir, "lib/ports.sh"));
+  copyFileSync(join(repoRoot, "runtime/scripts/lib/postgres.sh"), join(scriptsDir, "lib/postgres.sh"));
 
   copyFileSync(
     join(repoRoot, "runtime", "scripts", "deferred-reconcile.sh"),
@@ -77,7 +82,12 @@ function runDeferredReconcile(dir) {
       ...process.env,
       PATH: `${join(dir, "bin")}:${process.env.PATH}`,
       DUNE_DEFERRED_RECONCILE_TIMEOUT_SECONDS: "2",
-      DUNE_DEFERRED_RECONCILE_POLL_SECONDS: "0"
+      DUNE_DEFERRED_RECONCILE_POLL_SECONDS: "0",
+      // The `docker` stub above is the only database this fixture has, so pin
+      // the leg that goes through it. Left on `auto`, the seam would take its
+      // TCP leg wherever a psql client is installed -- GitHub's runner images
+      // ship one -- and dial a server that does not exist.
+      DUNE_PSQL_TRANSPORT: "exec"
     }
   });
 }

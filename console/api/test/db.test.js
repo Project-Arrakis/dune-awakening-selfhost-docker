@@ -20,7 +20,7 @@ import {
   queueWaterRefill,
   supportsGeneratorRefillQueue
 } from "../src/duneDb.js";
-import { deleteBaseCompletely } from "../src/duneDb.js";
+import { BASE_REFILL_BACKED_UP_MESSAGE, deleteBaseCompletely } from "../src/duneDb.js";
 import { addBaseContainerItem, addCurrency, addFactionReputation, addGuildMember, addIntel, addonLeadershipPlayers, addonOpsHealthFarms, addonOpsHealthPlayers, addonOpsHealthSummary, addonOpsHealthSummaryV2, addonPlayerIdentities, addSpecializationXp, applyLandsraadMilestonePreset, augmentInventoryItem, augmentNewestPlayerItem, baseContainerSlots, baseGeneratorFuelLevels, baseGenerators, baseIsBackedUp, changeDunePassword, completeJourneyNode, completeTutorial, dbStatus, deleteAllBaseContainerItems, deleteBaseContainerItem, deleteInventoryItem, deleteMultipleBaseContainerItems, demoteGuildMember, disbandGuild, exportBaseAsBlueprint, fillItemToBaseContainer, fillItemToStorage, generatorUptimePolicy, giveItemToBaseContainer, giveItemToPlayer, giveItemToStorage, giveMultipleItemsToBaseContainer, guildMembers, inspectDeletedCharacterRecovery, inspectLandsraadQuestRepairs, landsraadOverview, listBases, listGuilds, listPlayers, listRoutines, listSpicefieldTypes, listTables, liveMapPlayers, liveMapServices, playerBuildingUnlockState, playerCraftingRecipes, playerCurrency, playerCustomizationGrantState, playerFactions, playerIntel, playerInventory, playerInventoryAll, playerJourney, playerPortalSnapshots, playerPosition, playerProfile, playerProgression, playerResearchItems, playerServerMemberships, playerSolarisCoinTotal, playerTeleportDestinations, playerVitals, portalGeneratorFuel, portalVehicles, promoteGuildMember, recoverDeletedCharacter, refillBaseGenerators, removeGuildMember, repairFactionReputation, repairLandsraadQuests, repairVehicleDecay, resetJourneyNode, resetTutorial, resolvePlayerTarget, routineDefinition, runSql, setLandsraadPlayerContribution, setPlayerFaction, supportsGeneratorRefill, tablePreview, teleportOfflinePlayerToCoords, teleportPlayer, unlockCraftingRecipe, unlockResearchItem, updateInventoryItem, updateLandsraadRewardTier, updateLandsraadTaskGoal, updateLandsraadTermTaskGoals, updateSpicefieldType, updateTableRow, UnsupportedCapabilityError, _resetPlayerTargetCacheForTests } from "../src/duneDb.js";
 import { listStorage, liveMapBases, liveMapStorage, liveMapVehicles, portalStorage, trackPlayerPlaytime } from "../src/duneDb.js";
 
@@ -8785,7 +8785,7 @@ function fakeMutationDb(calls, fixtures = {}) {
 // microtask ordering, matching the idiom in addonItemGrants.test.js's
 // "serializes concurrent duplicate grants".
 function fakeRefillDb(calls, {
-  devices = [], items = {}, burning = {}, hasPlaceables = true, lockDelayMs = 0,
+  devices = [], items = {}, burning = {}, hasPlaceables = true, lockDelayMs = 0, backedUp = false,
   placeableColumns = ["id", "owner_entity_id", "building_type", "is_hologram"]
 } = {}) {
   const state = { items: JSON.parse(JSON.stringify(items)), inserts: [], nextId: 9000, locks: new Map() };
@@ -8803,6 +8803,7 @@ function fakeRefillDb(calls, {
       return { rows: columns.map((column_name) => ({ column_name })) };
     }
     if (text.includes("from base_entities be")) return { rows: devices };
+    if (text.includes("as backed_up")) return { rows: [{ backed_up: backedUp }] };
     // The inventory row itself always exists once inventory_id is set, so its
     // FOR UPDATE lock query always returns a row -- unlike the fuel-items
     // query below, which returns nothing for a device with no fuel yet.
@@ -9211,8 +9212,8 @@ async function withTempRepoRoot(fn) {
 // Extends fakeRefillDb with the partition observation the queue needs. Each
 // entry of `partitions` is { partitionId, connected, unassigned } -- "unassigned"
 // meaning world_partition.server_id was released, as despawn does.
-function fakeQueueDb(calls, { devices = [], items = {}, partitions = [], basePartition = null, hasWorldPartition = true } = {}) {
-  const { state, db } = fakeRefillDb(calls, { devices, items });
+function fakeQueueDb(calls, { devices = [], items = {}, partitions = [], basePartition = null, hasWorldPartition = true, backedUp = false } = {}) {
+  const { state, db } = fakeRefillDb(calls, { devices, items, backedUp });
   const inner = db.query;
   const query = async (text, values = []) => {
     // Record here too: the branches below return without reaching fakeRefillDb,
@@ -9229,7 +9230,7 @@ function fakeQueueDb(calls, { devices = [], items = {}, partitions = [], basePar
         connected: Boolean(partition.connected)
       })) };
     }
-    if (text.includes("coalesce(a.partition_id, 0)::int as partition_id")) {
+    if (text.includes("coalesce(a.partition_id, piece.partition_id, 0)::int as partition_id")) {
       // baseMapLocation now also selects actor_id to distinguish a genuinely
       // missing base from one with a broken owner-entity link; default it to
       // a resolved id here so existing callers testing write-safety don't
@@ -9604,6 +9605,33 @@ test("generator flush immediately clears a refill whose target no longer exists"
     assert.equal(result.flushed[0].ok, true);
     assert.equal(result.flushed[0].cleared, true);
     assert.equal(result.flushed[0].noLongerApplicable, true);
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
+  });
+});
+
+// A base picked up into a backup resolves to partition 0, so its queued refill
+// would otherwise be written the moment the flush saw it. The check runs
+// inside the write transaction, so it also covers a pickup that landed after
+// the refill was queued.
+test("refillBaseGenerators refuses a base that was picked up into a backup", async () => {
+  const { state, db } = fakeRefillDb([], { devices: [FUEL_DEVICE], backedUp: true });
+
+  await assert.rejects(() => refillBaseGenerators(db, "", 482), { message: BASE_REFILL_BACKED_UP_MESSAGE });
+  assert.deepEqual(state.inserts, []);
+});
+
+test("generator flush drops, rather than applies or retries, a refill for a backed-up base", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const { state, db } = fakeQueueDb([], { devices: [FUEL_DEVICE], partitions: LIVE_PARTITIONS, backedUp: true });
+    // Queued against a partition that is still live when the flush runs --
+    // the case where a picked-up base re-resolves to partition 0.
+    queueGeneratorRefill(repoRoot, { baseId: 482, map: "", partitionId: 0 });
+
+    const result = await flushGeneratorRefills(db, repoRoot, { now: () => 1_000_000 });
+
+    assert.equal(result.flushed[0].noLongerApplicable, true);
+    assert.equal(result.flushed[0].reason, BASE_REFILL_BACKED_UP_MESSAGE);
+    assert.deepEqual(state.inserts, []);
     assert.deepEqual(listQueuedGeneratorRefills(repoRoot), []);
   });
 });

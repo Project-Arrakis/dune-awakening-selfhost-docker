@@ -1786,13 +1786,15 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
     }
     if (activeChanged) actions.push(...survivalSietchActions({ includeActive: true, includePartitions: false }));
     if (rowName === "Survival_1" && primarySurvivalSietch) actions.push(...survivalSietchActions({ includeActive: false, includePartitions: true, partitionId: primarySurvivalSietch.partitionId }));
-    const confirmed = await confirmAction(`Save map settings for ${rowName}?`);
+    const confirmed = await confirmAction(activeSietchesDecreased
+      ? "Reduce the active Sietches? Extra Sietches will be stopped and removed. The Director and primary Sietch will restart to update the in-game server list, briefly disconnecting primary Sietch players."
+      : `Save map settings for ${rowName}?`);
     if (confirmed) {
       const successMessage = activeChanged
         ? activeSietchesDecreased
           ? primaryChanged
             ? "Sietch changes saved successfully. Extra sietches were despawned, and the main sietch settings were updated. Changes may take a short time to appear in-game."
-            : "Sietch changes saved successfully. Extra sietches were despawned and removed from the active list."
+            : "Sietch changes saved successfully. Extra Sietches were removed. The primary Sietch is restarting; the in-game list will update once it is Ready."
           : primaryChanged
             ? "Sietch changes saved successfully. The new sietch is starting, and the main sietch settings were updated. Changes may take a short time to appear in-game."
             : "Sietch changes saved successfully. The sietch is starting and may take a few minutes to appear in-game after it is running."

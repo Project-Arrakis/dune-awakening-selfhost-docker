@@ -354,7 +354,8 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         usersettings.migrate_legacy_base_backup_cooldown(profile)
         values = usersettings.server_custom_values(profile, MAP_NAME, include_materialized=False)
         self.assertEqual(values["base_backup_tool_time_restriction"], "2")
-        self.assertNotIn("m_BaseBackupToolTimeRestrictionInSeconds", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.client_game_ini(profile, MAP_NAME))
 
         usersettings.write_profile(profile)
         saved = usersettings.PROFILE_PATH.read_text(encoding="utf-8")
@@ -382,6 +383,28 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         usersettings.migrate_legacy_base_backup_cooldown(profile)
         values = usersettings.server_custom_values(profile, MAP_NAME, include_materialized=False)
         self.assertEqual(values["base_backup_tool_time_restriction"], "3")
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=10800", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+
+    def test_native_base_backup_cooldown_mirrors_only_explicit_scoped_values(self):
+        profile = usersettings.empty_profile()
+        self.assertNotIn("m_BaseBackupToolTimeRestrictionInSeconds", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertNotIn("m_BaseBackupToolTimeRestrictionInSeconds", usersettings.client_game_ini(profile, MAP_NAME))
+
+        section = usersettings.SERVER_CUSTOM_SETTINGS_SECTION
+        usersettings.profile_set_key(profile, "server_custom_global", section, "BaseBackupToolTimeRestriction", "0.2")
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.client_game_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.client_game_ini(profile, ""))
+
+        usersettings.profile_set_key(profile, "server_custom_map", section, "BaseBackupToolTimeRestriction", "2", MAP_NAME)
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.compiled_usergame_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.client_game_ini(profile, MAP_NAME))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=720", usersettings.client_game_ini(profile, ""))
+
+        usersettings.profile_set_key(profile, "server_custom_partition", section, "BaseBackupToolTimeRestriction", "0.5", MAP_NAME, "3")
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=1800", usersettings.compiled_usergame_ini(profile, MAP_NAME, "3"))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=1800", usersettings.client_game_ini(profile, MAP_NAME, "3"))
+        self.assertIn("m_BaseBackupToolTimeRestrictionInSeconds=7200", usersettings.client_game_ini(profile, MAP_NAME, "4"))
 
     def test_native_base_backup_cooldown_metadata_exposes_hours_and_minimum(self):
         output = io.StringIO()
@@ -394,6 +417,7 @@ class RetiredModifierAndCoriolisMetadataTests(ProfilePathTestCase):
         self.assertNotIn("base_backup_tool_time_restriction_seconds", game_ids)
         self.assertEqual(field["label"], "Base Reconstruction Cooldown (Hours)")
         self.assertEqual((field["minimum"], field["maximum"]), (0.2, None))
+        self.assertEqual(field["clientFile"], "Game.ini")
         self.assertIn("12 minutes", field["description"])
 
     def test_native_base_backup_cooldown_rejects_values_below_game_minimum(self):
@@ -753,6 +777,8 @@ class ClientGameIniAllowlistTests(ProfilePathTestCase):
                 continue
             if field_id == "building_restriction_limits_enabled":
                 key = "m_bBuildingRestrictionLimitsEnabled"
+            elif field_id == "base_backup_tool_time_restriction":
+                key = "m_BaseBackupToolTimeRestrictionInSeconds"
             else:
                 _section, key, _default = usersettings.MAP_FIELDS[field_id]
             self.assertNotIn(f"{key}=", rendered)
