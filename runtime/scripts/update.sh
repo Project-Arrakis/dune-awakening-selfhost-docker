@@ -1076,6 +1076,21 @@ if [ "$cmd" != "run" ] && [ "$cmd" != "apply" ] && [ "$cmd" != "install" ]; then
   exit 2
 fi
 
+# Own the same lifecycle lock as startup, shutdown and automatic recovery for
+# the entire update, including its final startup. Stopping the Autoscaler alone
+# does not stop recovery already running in the Coriolis Coordinator.
+if [ "${DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD:-0}" != "1" ]; then
+  lifecycle_lock="${DUNE_BATTLEGROUP_LIFECYCLE_LOCK_FILE:-runtime/generated/battlegroup-lifecycle.lock}"
+  mkdir -p "$(dirname "$lifecycle_lock")"
+  if flock -n -E 75 -o "$lifecycle_lock" env DUNE_BATTLEGROUP_LIFECYCLE_LOCK_HELD=1 "$0" "$@"; then
+    exit 0
+  else
+    rc=$?
+    [ "$rc" -ne 75 ] || echo "Another Battlegroup operation is running. Wait for it to finish, then retry the game update. No update files were changed." >&2
+    exit "$rc"
+  fi
+fi
+
 if [ "$skip_preflight" = "1" ]; then
   echo
   echo "=== Bootstrap/install mode ==="

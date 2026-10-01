@@ -28,6 +28,9 @@ export function conciseTaskError(task: Task) {
     if (/^Steam app id:/i.test(line)) return false;
     if (/^Running \w+$/i.test(line)) return false;
     if (/^Task started$/i.test(line)) return false;
+    // Command echoes aren't failures: SteamCMD's ShutdownOnFailedCommand
+    // option contains "failed" even when the download succeeds.
+    if (/^(?:\[dune\]\s*)?\$\s/.test(line)) return false;
     return true;
   });
   const seen = new Set<string>();

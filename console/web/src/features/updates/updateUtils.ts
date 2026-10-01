@@ -45,8 +45,11 @@ export function loadPersistedUpdateTask(key: string) {
 export function persistUpdateTask(key: string, task: Task | null) {
   if (typeof window === "undefined") return;
   try {
-    if (task && !isTerminalTaskStatus(task.status)) {
-      window.localStorage.setItem(key, JSON.stringify(task));
+    if (task && task.status !== "succeeded") {
+      // Preserve failed diagnostics across navigation/reloads, without keeping
+      // an unbounded Steam download log in browser storage.
+      const snapshot = { ...task, logLines: task.logLines.slice(-160).map((line) => ({ ...line, line: line.line.slice(-4096) })) };
+      window.localStorage.setItem(key, JSON.stringify(snapshot));
     } else {
       window.localStorage.removeItem(key);
     }
@@ -137,8 +140,4 @@ export function firstVersionMatch(text: string, patterns: RegExp[]) {
     }
   }
   return "";
-}
-
-function isTerminalTaskStatus(status: string) {
-  return ["succeeded", "failed", "cancelled"].includes(status);
 }
