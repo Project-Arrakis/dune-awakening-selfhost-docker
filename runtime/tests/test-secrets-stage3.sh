@@ -62,6 +62,7 @@ cp "$repo_root/runtime/scripts/host-file-ownership.sh" "$test_root/runtime/scrip
 cp "$repo_root/runtime/scripts/compose-project.sh" "$test_root/runtime/scripts/"
 cp "$repo_root/runtime/scripts/secrets-cli.sh" "$test_root/runtime/scripts/"
 cp "$repo_root/runtime/scripts/lib/secrets.sh" "$test_root/runtime/scripts/lib/"
+cp "$repo_root/runtime/scripts/lib/ports.sh" "$test_root/runtime/scripts/lib/"
 cp "$repo_root/runtime/scripts/lib/secrets_aead.py" "$test_root/runtime/scripts/lib/"
 cp "$repo_root/runtime/scripts/lib/console-secrets-env.sh" "$test_root/runtime/scripts/lib/"
 
