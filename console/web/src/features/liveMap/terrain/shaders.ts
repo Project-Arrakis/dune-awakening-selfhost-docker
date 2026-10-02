@@ -135,6 +135,9 @@ uniform vec3 uV, uPatchCol, uPoiCol;
 // the height field again, so a terrain patch can hide the skirt it buries
 uniform highp usampler2D uHF;
 uniform float uHN, uHStep, uHX0, uHY0, uHZlo, uHZhi, uPatchCut, uPatchFeather, uPrepass;
+// Pick pass: after every discard the visible surface would make, write the
+// fragment's world height instead of a colour (see renderer.pick).
+uniform float uPick;
 float hfTexel(ivec2 p){
   ivec2 q = clamp(p, ivec2(0), ivec2(int(uHN)-1));
   return uHZlo + float(texelFetch(uHF,q,0).r)/65535.0*(uHZhi-uHZlo);
@@ -185,6 +188,7 @@ void main(){
     // it is rejected and the fade reveals the backdrop instead of the ground.
     if(uPrepass > 0.5 && pfade < 0.999) discard;
   }
+  if(uPick > 0.5){ o = vec4(vZ, 1.0, 0.0, 1.0); return; }
   vec3 n = normalize(vN); if(n.z<0.0) n=-n;
   // Sand detail. The map's own material carries no mesh UVs, so it tiles these
   // dune normal maps in world space; we do the same, at the game's own period

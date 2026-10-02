@@ -203,9 +203,12 @@ export function cullInstances(
   instances: Float32Array,
   circles: Float32Array,
   view: TerrainView,
-  minRadius: number,
+  minRadius: number | ((x: number, y: number) => number),
   out: Float32Array
 ): { draws: CulledDraw[]; total: number } {
+  // A number is one threshold for the whole view (orthographic: every point has
+  // the same scale). A function gives it per instance, for a perspective view.
+  const threshold = typeof minRadius === "number" ? () => minRadius : minRadius;
   const draws: CulledDraw[] = [];
   let total = 0;
   for (const call of calls) {
@@ -222,7 +225,7 @@ export function cullInstances(
       let keep = call.land;
       if (!keep) {
         const x = circles[i * 3], y = circles[i * 3 + 1], r = circles[i * 3 + 2];
-        keep = r >= minRadius && x + r >= view.minX && x - r <= view.maxX && y + r >= view.minY && y - r <= view.maxY;
+        keep = x + r >= view.minX && x - r <= view.maxX && y + r >= view.minY && y - r <= view.maxY && r >= threshold(x, y);
       }
       if (keep) { if (runStart < 0) runStart = i; } else flush(i);
     }

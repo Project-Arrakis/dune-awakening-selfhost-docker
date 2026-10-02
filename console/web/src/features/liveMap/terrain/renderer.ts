@@ -1,6 +1,8 @@
 import { BFS, BVS, CFS, FS, RFS, RVS, VS } from "./shaders";
 import { buildDrawCalls, cullInstances, depthRange, instanceCircles, INSTANCE_FLOATS, orthoFromWorldRect, applyCanvasSize } from "./terrainGeometry";
 import type { CulledDraw } from "./terrainGeometry";
+import { cameraClipMatrix, cullRectForCamera, scaleAt, screenToWorldAtZ } from "./terrainCamera";
+import type { TerrainCamera } from "./terrainCamera";
 import type { LayoutAssets, SharedAssets } from "./terrainAssets";
 import type { TerrainDrawCall, TerrainView } from "./types";
 
@@ -56,6 +58,19 @@ export type DeepDesertRenderer = {
   setAssets(shared: SharedAssets, layout: LayoutAssets): void;
   resize(cssWidth: number, cssHeight: number, dpr: number): void;
   setView(view: TerrainView): void;
+  /**
+   * Draw through a 3D camera (tilt, rotation, perspective) instead of a world
+   * rect. `setView` returns to the flat rect view.
+   */
+  setCamera(camera: TerrainCamera): void;
+  /**
+   * The world point drawn at a viewport pixel (CSS pixels), read back from the
+   * GPU so it lands on whatever is actually visible there -- a rock top as much
+   * as the sand. Null where nothing is drawn, or where this GPU cannot render to
+   * a float target (`canPick`).
+   */
+  pick(sx: number, sy: number): { x: number; y: number; z: number } | null;
+  readonly canPick: boolean;
   /** Faint elevation banding on rock and sand. Off by default. */
   setElevationLines(on: boolean): void;
   draw(): void;
@@ -157,7 +172,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     d1: u(terrain, "uD1"), d2: u(terrain, "uD2"), tile: u(terrain, "uTile"),
     detStr: u(terrain, "uDetStr"), detail: u(terrain, "uDetail"),
     con: u(terrain, "uCon"), conStep: u(terrain, "uConStep"), conStepS: u(terrain, "uConStepS"),
-    rock: u(terrain, "uRock"), texOn: u(terrain, "uTexOn"), texLayer: u(terrain, "uTexLayer"),
+    rock: u(terrain, "uRock"), texOn: u(terrain, "uTexOn"), texLayer: u(terrain, "uTexLayer"), pick: u(terrain, "uPick"),
     texGain: u(terrain, "uTexGain")
   };
   const r = { tex: u(resolve, "uT"), texel: u(resolve, "uTexel"), ss: u(resolve, "uSS") };
@@ -271,6 +286,16 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   let bCull: WebGLBuffer | null = null;
   let zRange = 1;
   let view: TerrainView | null = null;
+  // Set by setCamera, cleared by setView. While null the renderer draws the rect
+  // exactly as it always has -- top-down never goes through the camera maths.
+  let camera: TerrainCamera | null = null;
+  let cssWidth = 0;
+  let cssHeight = 0;
+  // The last frame's matrix and culled draws, which the pick pass reuses.
+  let lastMatrix: Float32Array | null = null;
+  let pickFbo: WebGLFramebuffer | null = null;
+  let pickTex: WebGLTexture | null = null;
+  let pickDepth: WebGLRenderbuffer | null = null;
   let lost = false;
   let pixelRatio = 1;
   let elevationLines = false;
@@ -486,12 +511,97 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     }
   }
 
+  /**
+   * Render one pixel of the last frame's view into a 1x1 float target, writing
+   * world height instead of colour, and turn it back into a world point.
+   *
+   * The clip matrix is scaled about that pixel so it alone fills the target:
+   * x' = W*x - c*W*w keeps perspective intact. The same depth test and the same
+   * discards as the real frame decide what is visible, so the answer is whatever
+   * the user actually sees under the cursor -- rock top or sand.
+   */
+  function pickAt(sx: number, sy: number): { x: number; y: number; z: number } | null {
+    if (lost || !floatBuffer || !lastMatrix || !layoutRef || !cssWidth || !cssHeight) return null;
+    if (!pickFbo) {
+      pickFbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, pickFbo);
+      pickTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, pickTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, pickTex, 0);
+      pickDepth = gl.createRenderbuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, pickDepth);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, 1, 1);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, pickDepth);
+    }
+    const m = lastMatrix;
+    const ncx = (2 * sx) / cssWidth - 1;
+    const ncy = 1 - (2 * sy) / cssHeight;
+    const p = new Float32Array(16);
+    for (let col = 0; col < 4; col++) {
+      const x = m[col * 4], y = m[col * 4 + 1], z = m[col * 4 + 2], w = m[col * 4 + 3];
+      p[col * 4] = cssWidth * x - ncx * cssWidth * w;
+      p[col * 4 + 1] = cssHeight * y - ncy * cssHeight * w;
+      p[col * 4 + 2] = z;
+      p[col * 4 + 3] = w;
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, pickFbo);
+    gl.viewport(0, 0, 1, 1);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(terrain);
+    gl.uniformMatrix4fv(t.vp, false, p);
+    gl.uniform1f(t.prepass, 1);
+    gl.uniform1f(t.pick, 1);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthMask(true);
+    gl.depthFunc(gl.LESS);
+    gl.disable(gl.BLEND);
+    gl.colorMask(true, true, true, true);
+    drawGeometry();
+    const out = new Float32Array(4);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, out);
+    gl.uniform1f(t.pick, 0);
+    for (let k = 0; k < ATTRIBS; k++) {
+      gl.disableVertexAttribArray(k);
+      gl.vertexAttribDivisor(k, 0);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (out[1] < 0.5) return null;
+    const z = out[0];
+    if (camera) {
+      const w = screenToWorldAtZ(camera, sx, sy, z);
+      return { x: w.x, y: w.y, z };
+    }
+    // Flat: the rect spans the viewport exactly, axis by axis.
+    if (!view) return null;
+    return {
+      x: view.minX + (sx / cssWidth) * (view.maxX - view.minX),
+      y: view.minY + (sy / cssHeight) * (view.maxY - view.minY),
+      z
+    };
+  }
+
   function draw() {
-    if (lost || !view || !layoutRef || !sharedRef || !calls.length) return;
+    if (lost || !layoutRef || !sharedRef || !calls.length) return;
     const meta = layoutRef.meta;
     const width = canvas.width;
     const height = canvas.height;
     if (!width || !height) return;
+    if (camera) {
+      // What the camera can see, capped to the map square (plus the edge
+      // tolerance) so a steep view's far reach never drags in empty space.
+      const r = cullRectForCamera(camera, meta.zmin, meta.zmax);
+      const cap = meta.half * 1.05;
+      view = {
+        minX: Math.max(r.minX, meta.cx - cap), maxX: Math.min(r.maxX, meta.cx + cap),
+        minY: Math.max(r.minY, meta.cy - cap), maxY: Math.min(r.maxY, meta.cy + cap),
+        flipY: false
+      };
+    }
+    if (!view) return;
 
     const maxTexture = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
     // Supersample when the device pixel ratio is low, so effective sampling
@@ -508,14 +618,18 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     // orphans the previous frame's storage, which under ANGLE avoids a ~16 ms stall
     // waiting on the GPU to finish reading it.
     if (instFloats && circles && packed && bCull) {
-      const uuPerPixel = (view.maxX - view.minX) / fw;
-      const result = cullInstances(calls, instFloats, circles, view, CULL_MIN_RADIUS_PX * uuPerPixel, packed);
+      const cam = camera;
+      const threshold = cam
+        ? (x: number, y: number) => CULL_MIN_RADIUS_PX * scaleAt(cam, x, y, cam.cz) * (cssWidth / fw)
+        : CULL_MIN_RADIUS_PX * ((view.maxX - view.minX) / fw);
+      const result = cullInstances(calls, instFloats, circles, view, threshold, packed);
       culled = result.draws;
       gl.bindBuffer(gl.ARRAY_BUFFER, bCull);
       gl.bufferData(gl.ARRAY_BUFFER, packed.subarray(0, result.total * INSTANCE_FLOATS), gl.DYNAMIC_DRAW);
     }
 
-    const m = orthoFromWorldRect(view, zRange);
+    const m = camera ? cameraClipMatrix(camera, meta.zmin, meta.zmax, zRange) : orthoFromWorldRect(view, zRange);
+    lastMatrix = m;
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.viewport(0, 0, fw, fh);
@@ -523,7 +637,12 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.useProgram(terrain);
     gl.uniformMatrix4fv(t.vp, false, m);
-    gl.uniform3f(t.light, SUN[0], SUN[1], SUN[2]);
+    // The sun is fixed to the screen, not the world: rotating the map turns it
+    // too, so relief is always lit from the same side of the view.
+    const yaw = camera ? camera.yaw : 0;
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    gl.uniform3f(t.light, SUN[0] * cy - SUN[1] * sy, SUN[0] * sy + SUN[1] * cy, SUN[2]);
+    gl.uniform1f(t.pick, 0);
     gl.uniform1f(t.zlo, meta.zmin);
     gl.uniform1f(t.zhi, meta.zmin + (meta.zmax - meta.zmin) * 0.35);
     gl.uniform2f(t.c, meta.cx, meta.cy);
@@ -536,12 +655,17 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.uniform1i(t.d2, 2);
     gl.uniform1f(t.tile, TILE);
     gl.uniform1f(t.detStr, DETSTR);
-    // Straight down: the Live Map is not tiltable.
-    gl.uniform3f(t.view, 0, 0, 1);
+    // Toward the eye: straight up for the flat map, leaning with the tilt.
+    if (camera) {
+      const st = Math.sin(camera.tilt);
+      gl.uniform3f(t.view, -Math.sin(camera.yaw) * st, Math.cos(camera.yaw) * st, Math.cos(camera.tilt));
+    } else {
+      gl.uniform3f(t.view, 0, 0, 1);
+    }
     gl.uniform1f(t.detail, det1 && det2 ? 1 : 0);
     // Intervals track the scale currently in view, so the lines stay readable
     // from a single formation out to the whole map.
-    const [rockStep, sandStep] = elevationIntervals((view.maxX - view.minX) / width);
+    const [rockStep, sandStep] = elevationIntervals(camera ? camera.scale * (cssWidth / width) : (view.maxX - view.minX) / width);
     gl.uniform1f(t.con, elevationLines ? 1 : 0);
     gl.uniform1f(t.conStep, rockStep);
     gl.uniform1f(t.conStepS, sandStep);
@@ -630,12 +754,24 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       return !lost && calls.length > 0;
     },
     setAssets,
-    resize(cssWidth: number, cssHeight: number, dpr: number) {
+    resize(nextWidth: number, nextHeight: number, dpr: number) {
       pixelRatio = Math.min(dpr || 1, 2);
-      applyCanvasSize(canvas, cssWidth, cssHeight, dpr);
+      cssWidth = nextWidth;
+      cssHeight = nextHeight;
+      applyCanvasSize(canvas, nextWidth, nextHeight, dpr);
     },
     setView(next: TerrainView) {
       view = next;
+      camera = null;
+    },
+    setCamera(next: TerrainCamera) {
+      camera = next;
+    },
+    get canPick() {
+      return floatBuffer;
+    },
+    pick(sx: number, sy: number) {
+      return pickAt(sx, sy);
     },
     setElevationLines(on: boolean) {
       elevationLines = on;
@@ -644,7 +780,9 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     dispose() {
       canvas.removeEventListener("webglcontextlost", onLost as EventListener);
       for (const buffer of [bPos, bNrm, bIdx, bHfIdx, bUV, bCull, quad]) if (buffer) gl.deleteBuffer(buffer);
-      for (const texture of [texHf, det1, det2, texBrk, rockTex, accTex]) if (texture) gl.deleteTexture(texture);
+      for (const texture of [texHf, det1, det2, texBrk, rockTex, accTex, pickTex]) if (texture) gl.deleteTexture(texture);
+      if (pickDepth) gl.deleteRenderbuffer(pickDepth);
+      if (pickFbo) gl.deleteFramebuffer(pickFbo);
       if (accDepth) gl.deleteRenderbuffer(accDepth);
       if (fbo) gl.deleteFramebuffer(fbo);
       for (const program of [terrain, resolve, backdrop, decode]) gl.deleteProgram(program);

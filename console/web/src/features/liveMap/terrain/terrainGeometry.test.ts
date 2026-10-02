@@ -317,6 +317,15 @@ describe("instance culling", () => {
     expect(cullInstances(calls, instances, c, view, 0, out).draws[0].n).toBe(2);
   });
 
+  it("takes a per-instance size threshold, for a perspective view", () => {
+    const c = instanceCircles(calls, instances);
+    const out = new Float32Array(instances.length);
+    // a threshold that only the instance at the origin's side of x=200 can meet
+    const { draws } = cullInstances(calls, instances, c, view, (x) => (x < 200 ? 1 : 1e9), out);
+    expect(draws[0].n).toBe(0);
+    expect(cullInstances(calls, instances, c, view, (x) => (x > 200 ? 1 : 1e9), out).draws[0].n).toBe(1);
+  });
+
   it("keeps everything when the view covers it all and nothing is tiny", () => {
     const c = instanceCircles(calls, instances);
     const out = new Float32Array(instances.length);
