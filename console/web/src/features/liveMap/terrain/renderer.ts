@@ -67,6 +67,9 @@ const EDGE_APRON = 200000;
 // The depth copy markers are tested against is this many CSS pixels per texel.
 // A marker is about 18 px across and is tested over 3x3 texels, so 4 covers it.
 const OCCLUSION_DIV = 4;
+// The tilt, radians, by which rock has fully changed over from the top-down
+// lighting to the tilted one (25 degrees). Eased in so the change is not a step.
+const SIDE_LIT_TILT = (25 * Math.PI) / 180;
 /**
  * How far above a marker the terrain in front of it must stand before it hides
  * the marker, world uu (30 m). The map's meshes are coarse stand-ins, and a
@@ -213,7 +216,8 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     detStr: u(terrain, "uDetStr"), detail: u(terrain, "uDetail"),
     con: u(terrain, "uCon"), conStep: u(terrain, "uConStep"), conStepS: u(terrain, "uConStepS"),
     rock: u(terrain, "uRock"), texOn: u(terrain, "uTexOn"), texLayer: u(terrain, "uTexLayer"), pick: u(terrain, "uPick"),
-    texGain: u(terrain, "uTexGain"), apron: u(terrain, "uApron"), apronZ: u(terrain, "uApronZ")
+    texGain: u(terrain, "uTexGain"), apron: u(terrain, "uApron"), apronZ: u(terrain, "uApronZ"),
+    sideLit: u(terrain, "uSideLit")
   };
   const r = { tex: u(resolve, "uT"), texel: u(resolve, "uTexel"), ss: u(resolve, "uSS") };
   const b = { vp: u(backdrop, "uVP"), c: u(backdrop, "uC"), half: u(backdrop, "uHalf"), z: u(backdrop, "uZ") };
@@ -821,6 +825,10 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.uniform1i(t.d2, 2);
     gl.uniform1f(t.tile, TILE);
     gl.uniform1f(t.detStr, DETSTR);
+    {
+      const k = camera ? Math.min(1, Math.max(0, camera.tilt / SIDE_LIT_TILT)) : 0;
+      gl.uniform1f(t.sideLit, k * k * (3 - 2 * k));
+    }
     // Toward the eye: straight up for the flat map, leaning with the tilt.
     if (camera) {
       const st = Math.sin(camera.tilt);

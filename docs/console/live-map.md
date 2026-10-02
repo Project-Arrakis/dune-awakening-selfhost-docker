@@ -449,6 +449,17 @@ the same rule as top-down.
 perspective included: a pan carries the grabbed point with the cursor, and the
 wheel zooms about the point it is over.
 
+**Rock is lit differently once tilted.** The top-down shading exaggerates any
+lean away from flat so relief reads from overhead, and a face 60 degrees off the
+sun is already at its darkest. Overhead that costs nothing: a cliff's riser is
+edge-on. Tilted, the risers turn to face the camera and fill the view, all at
+that floor, and a wall of near-black wedges between lit ledges read as holes
+through the rock -- it looked see-through, though every face drawn was an
+outward one. So rock and POIs ease over, across the first 25 degrees of tilt, to
+an ordinary lit solid: some ambient, the sun without the exaggeration, and a
+fill from the camera, so that a face you can see always has light on it. Sand
+keeps the top-down curve, and top-down itself is untouched.
+
 **The view runs past the map's edge.** Top-down, everything is clipped to the
 mapped square, because the view ends there. Tilted, it does not, and what stands
 just outside is the shield wall -- which the square cuts through. The shipped

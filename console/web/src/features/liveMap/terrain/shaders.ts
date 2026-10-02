@@ -148,6 +148,9 @@ uniform sampler2D uD1, uD2, uBrk;
 uniform float uTile, uDetStr, uDetail;
 uniform float uBrkTile, uBrkAmp, uClipRaise;
 uniform vec3 uV, uPatchCol, uPoiCol;
+// How far the rock's lighting has moved from the top-down model to the tilted
+// one: 0 flat, 1 by SIDE_LIT_TILT. See the shading below.
+uniform float uSideLit;
 // the height field again, so a terrain patch can hide the skirt it buries
 uniform highp usampler2D uHF;
 uniform float uHN, uHStep, uHX0, uHY0, uHZlo, uHZhi, uPatchCut, uPatchFeather, uPrepass;
@@ -252,6 +255,23 @@ void main(){
   float flat_ = uL.z;
   float rel = (lam-flat_)/max(1.0-flat_,1e-3);
   float sh = clamp(1.0+0.55*rel, 0.30, 1.75);
+  // That curve is built for looking straight down: it exaggerates any lean away
+  // from flat so relief reads from overhead, and by 60 degrees off the sun a face
+  // is already at the 0.30 floor. Overhead that costs nothing -- a cliff's riser
+  // is edge-on and a few pixels wide. Tilted, the risers turn to face the camera
+  // and fill the view, all of them at the floor, and a wall of near-black wedges
+  // between lit treads reads as holes through the rock rather than as its sides.
+  //
+  // So rock and POIs ease over to an ordinary lit solid as the view tilts: some
+  // ambient, the sun without the exaggeration, and a fill from the camera, which
+  // is what guarantees that a face you can see is a face with light on it. Flat
+  // ground comes out near 1.0 either way, so nothing shifts as the tilt begins.
+  // Sand keeps the top-down curve: its slopes are gentle, and it needs the help.
+  if(uSideLit > 0.0 && (vMat < 0.5 || vMat > 2.5)){
+    float sun  = lam / max(flat_, 1e-3);
+    float fill = clamp(dot(n, uV), 0.0, 1.0);
+    sh = mix(sh, 0.35 + 0.45*sun + 0.35*fill, uSideLit);
+  }
   vec3 lit = alb*sh;
   if(textured){
     vec3 over = max(lit - TEXKNEE, 0.0);
