@@ -13,6 +13,7 @@ import {
   projectWorldPoint,
   interpolateHeightField,
   sandRingCount,
+  withCommonRock,
   withOutside,
   withSandRing,
   sampleHeightField, applyCanvasSize } from "./terrainGeometry";
@@ -268,6 +269,46 @@ describe("withOutside", () => {
 
   it("refuses an outside draw whose mesh the library does not have", () => {
     expect(() => withOutside([], own, library, { nInst: 1, zmax: 0, draws: [{ m: 9, off: 0, n: 1 }] }, extra)).toThrow(/mesh 9/);
+  });
+});
+
+describe("withCommonRock", () => {
+  // Two draws of the layout's own: mesh 4 with placements A and B, mesh 7 with C.
+  // The shared file holds X for mesh 7 and Y, Z for mesh 4.
+  const place = (tag: number) => new Float32Array(INSTANCE_FLOATS).fill(tag);
+  const bytes = (...tags: number[]) => {
+    const out = new Float32Array(tags.length * INSTANCE_FLOATS);
+    tags.forEach((tag, i) => out.set(place(tag), i * INSTANCE_FLOATS));
+    return new Uint8Array(out.buffer);
+  };
+  const tagsOf = (b: Uint8Array) => {
+    const f = new Float32Array(b.slice().buffer);
+    return Array.from({ length: f.length / INSTANCE_FLOATS }, (_, i) => f[i * INSTANCE_FLOATS]);
+  };
+  const meta = { layout: 3, common: 3, draws: [{ m: 4, off: 0, n: 2, overlay: 0 }, { m: 7, off: 2, n: 1, overlay: 1 }] } as unknown as TerrainLayoutMeta;
+  const common = { nInst: 3, draws: [{ m: 7, overlay: 1, off: 0, n: 1 }, { m: 4, overlay: 0, off: 1, n: 2 }] };
+
+  it("gives each draw the shared placements of its mesh first, then its own", () => {
+    const out = withCommonRock(meta, bytes(1, 2, 3), common, bytes(24, 25, 26));
+    expect(tagsOf(out.instances)).toEqual([25, 26, 1, 2, 24, 3]);
+    expect(out.meta.draws).toEqual([{ m: 4, off: 0, n: 4, overlay: 0 }, { m: 7, off: 4, n: 2, overlay: 1 }]);
+  });
+
+  it("passes an unsplit layout through untouched", () => {
+    const plain = { ...meta, common: undefined } as TerrainLayoutMeta;
+    const instances = bytes(1, 2, 3);
+    const out = withCommonRock(plain, instances, common, bytes(24, 25, 26));
+    expect(out.meta).toBe(plain);
+    expect(out.instances).toBe(instances);
+  });
+
+  it("refuses a shared file other than the one the layout was split against", () => {
+    expect(() => withCommonRock({ ...meta, common: 4 }, bytes(1, 2, 3), common, bytes(24, 25, 26))).toThrow(/expects 4 shared placements, the shared file has 3/);
+  });
+
+  it("refuses shared placements for a mesh the layout does not draw", () => {
+    const extra = { nInst: 4, draws: [...common.draws, { m: 9, overlay: 0, off: 3, n: 1 }] };
+    expect(() => withCommonRock({ ...meta, common: 4 }, bytes(1, 2, 3), extra, bytes(24, 25, 26, 27))).toThrow(/no draw for 1 of the shared placement groups/);
   });
 });
 

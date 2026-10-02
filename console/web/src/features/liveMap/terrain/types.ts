@@ -52,6 +52,15 @@ export type TerrainOutside = {
 };
 
 /**
+ * The rock and POI placements every layout has, shipped once. Draws are keyed
+ * by mesh and overlay flag, and index the shared instance block.
+ */
+export type TerrainCommonRock = {
+  nInst: number;
+  draws: { m: number; overlay: number; off: number; n: number }[];
+};
+
+/**
  * The game's sand past a layout's height field, also shared. A frame of heights
  * on the layout's grid extended `pad` texels each way: everything outside the
  * layout's field, plus that field's own outermost ring.
@@ -84,6 +93,12 @@ export type TerrainDraw = {
 export type TerrainLayoutMeta = {
   layout: number;
   nInst: number;
+  /**
+   * Set once a layout's placements have been split from those every layout
+   * shares: how many shared ones it expects. Its own `draws` then cover only
+   * its own placements. See `withCommonRock`.
+   */
+  common?: number;
   tris: number;
   /** Vertical range of everything in this layout, for the depth mapping. */
   zmin: number;

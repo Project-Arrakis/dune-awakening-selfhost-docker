@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { LiveMapConfig } from "../../../api/liveMap";
 import { liveMapCamera, terrainViewport, visibleWorldRect } from "../liveMapGeometry";
 import { createDeepDesertRenderer, type DeepDesertRenderer } from "./renderer";
-import { loadLayoutAssets, loadSharedAssets, withOutsideSand } from "./terrainAssets";
+import { joinShared, loadLayoutAssets, loadSharedAssets } from "./terrainAssets";
 import { interpolateHeightField } from "./terrainGeometry";
 import { probeTerrainSupport } from "./terrainSupport";
 
@@ -133,14 +133,14 @@ export default function DeepDesertTerrain({
         if (controller.signal.aborted) return;
         const renderer = rendererRef.current;
         if (!renderer) return;
-        const sand = withOutsideSand(shared, assets);
-        renderer.setAssets(shared, sand);
+        const full = joinShared(shared, assets);
+        renderer.setAssets(shared, full);
         // The pivot stays the mean of the map's own sand, not of the ring round it.
         const inside = new Uint16Array(assets.heightField.buffer, assets.heightField.byteOffset, assets.heightField.byteLength / 2);
         let sum = 0;
         for (let i = 0; i < inside.length; i++) sum += inside[i];
-        const meta = sand.meta;
-        const field = new Uint16Array(sand.heightField.buffer);
+        const meta = full.meta;
+        const field = new Uint16Array(full.heightField.buffer);
         pivotRef.current = meta.hfZlo + (sum / Math.max(inside.length, 1) / 65535) * (meta.hfZhi - meta.hfZlo);
         topRef.current = meta.zmax;
         callbacks.current.onTerrainApi?.({

@@ -480,20 +480,32 @@ when the terrain at its spot is both nearer the eye and more than 30 m above it
 
 ### Assets
 
-`terrain/assets/` is 47 gzipped files totalling 17.9 MB, inflated in the browser:
+`terrain/assets/` is 49 gzipped files totalling 16.0 MB, inflated in the browser:
 
 | part | size |
 |---|---|
-| shared: mesh library | 4.4 MB |
+| shared: mesh library | 4.0 MB |
 | shared: rock UVs | 0.8 MB |
 | shared: rock textures | 1.4 MB |
 | shared: sand detail textures | 1.8 MB |
 | shared: rock outside the map (221 pieces) | 5 KB |
 | shared: sand outside the map | 50 KB |
-| each of 12 layouts | about 0.78 MB |
+| shared: placements every layout has (6,394) | 0.13 MB |
+| each of 12 layouts | about 0.65 MB |
 
-A Coriolis reset changes only the layout, so the browser re-fetches under a
-megabyte and the 8.5 MB shared half stays cached.
+A Coriolis reset changes only the layout, so the browser re-fetches about
+0.65 MB and the 8.2 MB shared half stays cached.
+
+Two encodings shrink the files, and the loader undoes both:
+
+- **Mesh indices** are stored as the step from the index before, zigzagged so
+  small steps either way stay small (`idxCoding` in `meshes.json.gz`). The
+  library gzips 10% smaller. `decodeIndices` restores them exactly.
+- **Placements every layout shares**, 45% of an average layout's, ship once in
+  `rock-common.*`. A split layout's table carries `common`, and `joinShared`
+  gives each of its draws the shared placements of that mesh first, then its
+  own. The placements are exactly the original ones; only their order within a
+  draw changes, which the order-independent blending does not see.
 
 Vite fingerprints them into `dist/assets/`, which earns the immutable
 cache-control rule in `staticFiles.js`. Two build settings must stay:
@@ -575,7 +587,7 @@ Feature-level changes to the Live Map, newest first.
 | Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag. Markers and the sector grid are projected through the camera, and markers and grid lines are hidden where rock covers them. |
 | Unreleased | 2026-10 | The tilted view draws past the map's edge, out to 375,000 uu: the shield walls outside the square, hand-placed pieces included, with the wall's floating upper tiers closed down to the ground, on the game's own sand for the first 90,000 uu and a level plain beyond. |
 | Unreleased | 2026-10 | Rock meshes are sealed at load, rock is lit as a solid and its cliffs textured from the side when tilted, and the camera's eye stays above the rock at high zoom. |
-| Unreleased | 2026-10 | Rock is painted with the game's own textures, with the game's normal map baked into the two big wall shapes. Terrain instances are culled per frame. |
+| Unreleased | 2026-10 | Rock is painted with the game's own textures, with the game's normal map baked into the two big wall shapes. Terrain instances are culled per frame, and the depth pass stops before shading. Assets are 1.9 MB smaller: delta-coded mesh indices, and placements every layout shares shipped once. |
 | Unreleased | 2026-09 | **Elevation Lines** layer. Rock is lit with its authored normals and given a per-instance tone. |
 | v1.4.35 | 2026-09-20 | The Coriolis block is read from the game log by pattern instead of from a tail, so the layout no longer goes missing on long-running servers. |
 | v1.4.23 | 2026-09-17 | Spice and Flour Sand layers fixed after the game changed `resourcefield_state`. |

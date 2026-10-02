@@ -14,7 +14,7 @@ vi.mock("./terrainAssets", () => ({
     heightField: new Uint8Array(new Uint16Array([0, 1000, 2000, 3000]).buffer)
   })),
   // The same field with a ring of 500 uu sand one texel deep round it.
-  withOutsideSand: vi.fn((_shared: unknown, layout: { meta: object }) => ({
+  joinShared: vi.fn((_shared: unknown, layout: { meta: object }) => ({
     ...layout,
     meta: { ...layout.meta, hfN: 4, hfX0: -1000, hfY0: -1000 },
     heightField: new Uint8Array(new Uint16Array([500, 500, 500, 500, 500, 0, 1000, 500, 500, 2000, 3000, 500, 500, 500, 500, 500]).buffer)

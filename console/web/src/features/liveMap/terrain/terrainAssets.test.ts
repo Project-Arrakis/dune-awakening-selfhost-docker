@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearTerrainAssetCache, decodeIndices, loadLayoutAssets, loadSharedAssets, withOutsideSand } from "./terrainAssets";
+import { clearTerrainAssetCache, decodeIndices, joinShared, loadLayoutAssets, loadSharedAssets } from "./terrainAssets";
 import type { TerrainLibrary } from "./types";
 
 // Production resolves hashed URLs out of the Vite bundle; tests inject a plain
@@ -70,6 +70,9 @@ function installFetch(overrides: Record<string, () => Promise<Response>> = {}) {
     // A ring one texel deep round the 2x2 layout field: all 16 texels of the 4x4, 2 bytes each.
     if (url.endsWith("sand-ring.json.gz")) return deliver(await gzipJson({ pad: 1, n: 2, zlo: 0, zstep: 1 }), signal);
     if (url.endsWith("sand-ring.bin.gz")) return deliver(await gzip(new Uint8Array(32)), signal);
+    // One placement every layout shares, all 2s, for mesh 0.
+    if (url.endsWith("rock-common.json.gz")) return deliver(await gzipJson({ nInst: 1, draws: [{ m: 0, overlay: 0, off: 0, n: 1 }] }), signal);
+    if (url.endsWith("rock-common.bin.gz")) return deliver(await gzip(new Uint8Array(new Float32Array(14).fill(2).buffer)), signal);
     if (url.includes("/tex/")) return deliver(await gzip(new Uint8Array(4)), signal);
     const match = url.match(/layout-(\d+)\.(json|bin|hf)\.gz$/);
     if (match) {
@@ -145,12 +148,41 @@ describe("loadSharedAssets", () => {
     clearTerrainAssetCache();
     installFetch();
     const [shared, layout] = await Promise.all([loadSharedAssets(at), loadLayoutAssets(3, at)]);
-    const joined = withOutsideSand(shared, layout);
+    const joined = joinShared(shared, layout);
     expect(joined.meta.hfN).toBe(4);
     expect(joined.heightField.byteLength).toBe(4 * 4 * 2);
     expect(joined.instances).toBe(layout.instances);
     expect(layout.meta.hfN).toBe(2);
-    expect(withOutsideSand(shared, layout)).toBe(joined);
+    expect(joinShared(shared, layout)).toBe(joined);
+    // An unsplit layout keeps its placements as they are.
+    expect(joined.meta.draws).toEqual(layout.meta.draws);
+  });
+
+  it("puts the shared placements back into a split layout, ahead of its own", async () => {
+    clearTerrainAssetCache();
+    const own = new Float32Array(14).fill(1);
+    installFetch({
+      "/base/layout-5.json.gz": async () => bytesResponse(await gzipJson({ ...layoutMeta(5), common: 1 })),
+      "/base/layout-5.bin.gz": async () => bytesResponse(await gzip(new Uint8Array(own.buffer)))
+    });
+    const [shared, layout] = await Promise.all([loadSharedAssets(at), loadLayoutAssets(5, at)]);
+    const joined = joinShared(shared, layout);
+    expect(joined.meta.draws).toEqual([{ m: 0, off: 0, n: 2, overlay: 0 }]);
+    const floats = new Float32Array(joined.instances.slice().buffer);
+    expect(floats[0]).toBe(2);
+    expect(floats[14]).toBe(1);
+  });
+
+  it("rejects shared placements that do not match their table", async () => {
+    clearTerrainAssetCache();
+    installFetch({ "/base/rock-common.bin.gz": async () => bytesResponse(await gzip(new Uint8Array(28))) });
+    await expect(loadSharedAssets(at)).rejects.toThrow(/shared placements are 28 bytes, their table describes 1/);
+  });
+
+  it("refuses mesh indices stored in a way it cannot read", async () => {
+    clearTerrainAssetCache();
+    installFetch({ "/base/meshes.json.gz": async () => bytesResponse(await gzipJson({ ...library, idxCoding: "something-new" })) });
+    await expect(loadSharedAssets(at)).rejects.toThrow(/stored as something-new/);
   });
 
   it("rejects a rock texture that is not whole BC1 layers", async () => {

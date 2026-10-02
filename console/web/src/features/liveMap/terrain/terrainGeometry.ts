@@ -1,4 +1,4 @@
-import type { TerrainDrawCall, TerrainLayoutMeta, TerrainLibrary, TerrainOutside, TerrainSandRing, TerrainView } from "./types";
+import type { TerrainCommonRock, TerrainDrawCall, TerrainLayoutMeta, TerrainLibrary, TerrainOutside, TerrainSandRing, TerrainView } from "./types";
 
 /**
  * A mesh over 50k uu on both horizontal axes is a landscape tile; everything
@@ -206,6 +206,44 @@ export function interpolateHeightField(field: Uint16Array, layout: TerrainLayout
   const at = (ix: number, iy: number) => field[iy * n + ix];
   const raw = (at(x0, y0) * (1 - tx) + at(x0 + 1, y0) * tx) * (1 - ty) + (at(x0, y0 + 1) * (1 - tx) + at(x0 + 1, y0 + 1) * tx) * ty;
   return layout.hfZlo + (raw / 65535) * (layout.hfZhi - layout.hfZlo);
+}
+
+/** Bytes per instance: `INSTANCE_FLOATS` float32. */
+const INSTANCE_BYTES = 56;
+
+/**
+ * A split layout's placements with the shared ones put back: each draw gets
+ * the shared placements of its mesh first, then the layout's own. The order
+ * within a draw differs from the unsplit file, which the order-independent
+ * blending does not see.
+ */
+export function withCommonRock(
+  meta: TerrainLayoutMeta,
+  instances: Uint8Array,
+  common: TerrainCommonRock,
+  commonInstances: Uint8Array
+): { meta: TerrainLayoutMeta; instances: Uint8Array } {
+  if (meta.common === undefined) return { meta, instances };
+  if (meta.common !== common.nInst || commonInstances.byteLength !== common.nInst * INSTANCE_BYTES) {
+    throw new Error(`layout ${meta.layout} expects ${meta.common} shared placements, the shared file has ${common.nInst}`);
+  }
+  const shared = new Map(common.draws.map((d) => [`${d.m}/${d.overlay}`, d]));
+  const out = new Uint8Array(instances.byteLength + commonInstances.byteLength);
+  let at = 0;
+  const draws = meta.draws.map((draw) => {
+    const mine = shared.get(`${draw.m}/${draw.overlay ?? 0}`);
+    shared.delete(`${draw.m}/${draw.overlay ?? 0}`);
+    const off = at / INSTANCE_BYTES;
+    if (mine) {
+      out.set(commonInstances.subarray(mine.off * INSTANCE_BYTES, (mine.off + mine.n) * INSTANCE_BYTES), at);
+      at += mine.n * INSTANCE_BYTES;
+    }
+    out.set(instances.subarray(draw.off * INSTANCE_BYTES, (draw.off + draw.n) * INSTANCE_BYTES), at);
+    at += draw.n * INSTANCE_BYTES;
+    return { ...draw, off, n: at / INSTANCE_BYTES - off };
+  });
+  if (shared.size) throw new Error(`layout ${meta.layout} has no draw for ${shared.size} of the shared placement groups`);
+  return { meta: { ...meta, draws }, instances: out.subarray(0, at) };
 }
 
 /** Texels over which a step between a layout's rim and the ring is faded out. */
