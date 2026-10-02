@@ -32,6 +32,8 @@ const terrain = vi.hoisted(() => ({
   picked: null as { x: number; y: number; z: number } | null,
   pickCalls: [] as number[][],
   sandHeight: 1000,
+  // Height above which the fake terrain "hides" a point: nothing, unless a test sets it.
+  hidesBelow: -Infinity,
   props: [] as { tilt?: number; yaw?: number }[]
 }));
 vi.mock("./terrain/DeepDesertTerrain", () => ({
@@ -42,7 +44,8 @@ vi.mock("./terrain/DeepDesertTerrain", () => ({
       onTerrainApi?.({
         pick: (sx: number, sy: number) => { terrain.pickCalls.push([sx, sy]); return terrain.picked; },
         heightAt: () => terrain.sandHeight,
-        pivotZ: terrain.sandHeight
+        pivotZ: terrain.sandHeight,
+        occluded: (_x: number, _y: number, z: number) => z < terrain.hidesBelow
       });
       onReady?.();
       return () => onTerrainApi?.(null);
@@ -77,6 +80,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   terrain.signalsReady = true;
   terrain.picked = null;
+  terrain.hidesBelow = -Infinity;
   terrain.pickCalls.length = 0;
   terrain.props.length = 0;
   vi.mocked(liveMapApi.markers).mockResolvedValue({
@@ -955,4 +959,49 @@ it("keeps the sector grid while tilted, projected, and puts the flat one back af
   expect(container.querySelector("svg.live-map-sector-grid.is-3d")).toBeNull();
   expect(container.querySelectorAll("svg.live-map-sector-grid line")).toHaveLength(20);
   expect(container.querySelectorAll("svg.live-map-sector-grid text")).toHaveLength(81);
+});
+
+it("hides a marker the tilted terrain stands in front of, but never top-down or while selected", async () => {
+  useTwoHeights();
+  // The fake terrain hides anything below 5,000: "Low" (z 200), not "High" (z 20,000).
+  terrain.hidesBelow = 5000;
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  sizeFrame(container);
+
+  // Top-down nothing is behind anything.
+  expect(screen.getByRole("button", { name: "Base: Low" })).toBeInTheDocument();
+
+  fireEvent.change(slider, { target: { value: "45" } });
+  expect(screen.queryByRole("button", { name: "Base: Low" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Base: High" })).toBeInTheDocument();
+
+  // Back to top-down: it is back.
+  fireEvent.click(screen.getByRole("button", { name: "Top-Down" }));
+  const low = screen.getByRole("button", { name: "Base: Low" });
+
+  // Selected, it stays through the tilt: its overlay is open on it.
+  fireEvent.click(low);
+  fireEvent.change(slider, { target: { value: "45" } });
+  expect(screen.getByRole("button", { name: "Base: Low" })).toBeInTheDocument();
+});
+
+it("shows a marker the terrain is covering once it is searched for", async () => {
+  useTwoHeights();
+  terrain.hidesBelow = 5000;
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  sizeFrame(container);
+  fireEvent.change(slider, { target: { value: "45" } });
+  expect(screen.queryByRole("button", { name: "Base: Low" })).toBeNull();
+
+  // A search asks where it is: behind the rock is an answer.
+  const search = screen.getByPlaceholderText(/player, owner, base/i);
+  fireEvent.change(search, { target: { value: "Low" } });
+  expect(screen.getByRole("button", { name: "Base: Low" })).toBeInTheDocument();
+
+  fireEvent.change(search, { target: { value: "" } });
+  expect(screen.queryByRole("button", { name: "Base: Low" })).toBeNull();
 });

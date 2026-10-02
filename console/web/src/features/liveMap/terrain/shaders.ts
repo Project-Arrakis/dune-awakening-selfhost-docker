@@ -338,6 +338,13 @@ void main(){
   o = vec4(a.rgb/a.a, 1.0);
 }`;
 
+// Copies the frame's depth buffer, point-sampled, into a small float target that
+// can be read back: see terrainOcclusion.ts.
+export const DFS = `#version 300 es
+precision highp float;
+uniform highp sampler2D uD; in vec2 vUV; out vec4 o;
+void main(){ o = vec4(texture(uD,vUV).r, 0.0, 0.0, 1.0); }`;
+
 // Blit used to decode a compressed texture (BC7 detail, BC1 rock) into an RGBA8
 // copy that can carry mips.
 export const CFS = `#version 300 es

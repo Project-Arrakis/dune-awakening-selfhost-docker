@@ -516,6 +516,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   });
   const layerVisible = topLevelVisible.filter((marker) => !marker.subtype || subtypeFilters[String(marker.type)]?.[marker.subtype] !== false);
   const visible = layerVisible.filter((marker) => liveMapMarkerMatchesSearch(marker, markerSearch));
+  const searching = markerSearch.trim() !== "";
   const plotted = visible.filter((marker) => Number.isFinite(Number(marker.x)) && Number.isFinite(Number(marker.y)));
   const displayRows = visible.filter((marker) => TABLE_MARKER_TYPES.has(String(marker.type))).map((marker) => ({ ...marker, display_name: friendlyMarkerName(marker), raw_name: marker.name || marker.id }));
   const markerCounts = countMarkers(visible);
@@ -619,13 +620,16 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
     if (!terrainEligible) { setTilt(0); setYaw(0); }
   }, [terrainEligible]);
   const handleTerrainApi = useCallback((api: TerrainApi | null) => setTerrainApi(api), []);
+  // What the terrain hides has been measured again: place the markers again.
+  const handleTerrainOcclusion = useCallback(() => setViewTick((n) => n + 1), []);
   /**
    * Where a map point is drawn: `left`/`top` inside the scrolled map, and the
    * same point relative to the viewport. Flat, that is the map pixel times zoom.
    * In 3D it is the projection of the world point at its height -- the marker's
    * own `z` when it has one, the sand height otherwise -- and `visible` is false
    * for anything outside the view, which must not be drawn: a marker placed past
-   * the map's edge would stretch the scroll area.
+   * the map's edge would stretch the scroll area. `occluded` is set, tilted, for
+   * a point the terrain stands in front of.
    */
   function placePoint(point: LiveMapPoint, z?: number) {
     const frame = frameRef.current;
@@ -635,7 +639,8 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
         top: point.py * zoom,
         viewportX: point.px * zoom - (frame?.scrollLeft || 0),
         viewportY: point.py * zoom - (frame?.scrollTop || 0),
-        visible: true
+        visible: true,
+        occluded: false
       };
     }
     const world = liveMapPixelsToWorld(point.px, point.py, activeMap);
@@ -648,7 +653,8 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
       top: viewport.top + s.sy,
       viewportX: s.sx + viewport.left - (frame?.scrollLeft || 0),
       viewportY: s.sy + viewport.top - (frame?.scrollTop || 0),
-      visible: !s.behind && s.sx >= 0 && s.sx <= viewport.width && s.sy >= 0 && s.sy <= viewport.height
+      visible: !s.behind && s.sx >= 0 && s.sx <= viewport.width && s.sy >= 0 && s.sy <= viewport.height,
+      occluded: tilt > 0 && terrainApi.occluded(world.x, world.y, height)
     };
   }
   const targetPlaced = targetPoint ? placePoint(targetPoint, targetHeight) : null;
@@ -1510,7 +1516,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
               ? <>
                   {!terrainReady && activeMap.image && <img className="live-map-image" src={activeMap.image} alt={activeMap.label} draggable={false} />}
                   <Suspense fallback={null}>
-                    <DeepDesertTerrain config={activeMap} layout={coriolisLayout as number} zoom={zoom} frameRef={frameRef} onUnavailable={handleTerrainUnavailable} onReady={handleTerrainReady} elevationLines={showElevationLines} tilt={tilt} yaw={yaw} onTerrainApi={handleTerrainApi} />
+                    <DeepDesertTerrain config={activeMap} layout={coriolisLayout as number} zoom={zoom} frameRef={frameRef} onUnavailable={handleTerrainUnavailable} onReady={handleTerrainReady} elevationLines={showElevationLines} tilt={tilt} yaw={yaw} onTerrainApi={handleTerrainApi} onOcclusion={handleTerrainOcclusion} />
                   </Suspense>
                 </>
               : activeMap.image ? <img className="live-map-image" src={activeMap.image} alt={activeMap.label} draggable={false} /> : <div className="live-map-placeholder">{activeMap.label}</div>}
@@ -1576,6 +1582,13 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                 // dragged or previewed elsewhere takes the ground's.
                 const placed = placePoint(renderPoint, renderPoint === point ? Number(marker.z) : undefined);
                 if (!placed || !placed.visible) return null;
+                // Behind the terrain, tilted: hidden, as it would be in the world.
+                // Never the one being worked with -- its overlay is open, or it is
+                // under the pointer mid-drag -- which would vanish from under the admin.
+                // And never while a search is narrowing the map: a search asks where
+                // something is, and "behind that rock" is an answer, not a reason to
+                // withhold it.
+                if (placed.occluded && !searching && !isPinned && !isDraggingThisPlayer && !isPreviewingThisPlayer) return null;
                 const spiceSizeClass = SPICE_TIER_TYPES.has(String(marker.type)) && typeof marker.subtype === "string" ? `spice-size-${marker.subtype.toLowerCase()}` : "";
                 const subtypeClass = typeof marker.subtype === "string" ? `subtype-${marker.subtype.toLowerCase()}` : "";
                 // A plain div, not a button: the overlay below nests real

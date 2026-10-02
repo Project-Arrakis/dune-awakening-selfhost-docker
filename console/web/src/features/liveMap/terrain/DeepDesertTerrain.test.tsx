@@ -30,6 +30,7 @@ function fakeRenderer() {
     setView: vi.fn(),
     setCamera: vi.fn(),
     pick: vi.fn(() => ({ x: 1, y: 2, z: 3 })),
+    occluded: vi.fn((_x: number, _y: number, z: number) => z < 100),
     setElevationLines: vi.fn(),
     draw: vi.fn(),
     dispose: vi.fn()
@@ -40,8 +41,10 @@ function mount(overrides: Record<string, unknown> = {}) {
   const renderer = fakeRenderer();
   const onUnavailable = vi.fn();
   const lost: Array<() => void> = [];
+  const occlusion: Array<() => void> = [];
   const createRenderer = vi.fn((_canvas, options) => {
     if (options?.onContextLost) lost.push(options.onContextLost);
+    if (options?.onOcclusion) occlusion.push(options.onOcclusion);
     return renderer as never;
   });
   const frame = document.createElement("div");
@@ -62,7 +65,7 @@ function mount(overrides: Record<string, unknown> = {}) {
       {...overrides}
     />
   );
-  return { renderer, onUnavailable, createRenderer, frame, frameRef, view, lost };
+  return { renderer, onUnavailable, createRenderer, frame, frameRef, view, lost, occlusion };
 }
 
 beforeEach(() => {
@@ -262,7 +265,22 @@ describe("3D", () => {
     expect(api.heightAt(1000, 1000)).toBe(3000);
     expect(api.heightAt(0, 0)).toBe(0);
     expect(api.pick(10, 20)).toEqual({ x: 1, y: 2, z: 3 });
+    // what the last frame hides is the renderer's answer, passed straight through
+    expect(api.occluded(5, 6, 50)).toBe(true);
+    expect(api.occluded(5, 6, 500)).toBe(false);
     view.unmount();
     expect(onTerrainApi).toHaveBeenLastCalledWith(null);
   });
+
+  it("tells the panel when the renderer has measured afresh what the terrain hides", async () => {
+    const onOcclusion = vi.fn();
+    const { renderer, occlusion } = mount({ tilt: 0.5, onOcclusion });
+    await waitFor(() => expect(renderer.draw).toHaveBeenCalled());
+    // Drawing a frame is not it: the measurement lands later, from the renderer.
+    expect(onOcclusion).not.toHaveBeenCalled();
+    expect(occlusion).toHaveLength(1);
+    occlusion[0]();
+    expect(onOcclusion).toHaveBeenCalledTimes(1);
+  });
+
 });

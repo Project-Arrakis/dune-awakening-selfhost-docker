@@ -38,6 +38,11 @@ export type DeepDesertTerrainProps = {
    * and null again when it is not: see `TerrainApi`.
    */
   onTerrainApi?: (api: TerrainApi | null) => void;
+  /**
+   * Called when what the terrain hides has been measured afresh -- shortly after
+   * a tilted frame is drawn -- so the panel can place its markers again.
+   */
+  onOcclusion?: () => void;
   /** Test seams, mirroring how the API side injects its runners. */
   createRenderer?: typeof createDeepDesertRenderer;
   probeSupport?: typeof probeTerrainSupport;
@@ -57,6 +62,8 @@ export type TerrainApi = {
   heightAt: (x: number, y: number) => number;
   /** The height the 3D camera pivots about: the layout's mean sand height. */
   pivotZ: number;
+  /** Whether the terrain hides a world point, as of a frame just drawn. Only ever true while tilted. */
+  occluded: (x: number, y: number, z: number) => boolean;
 };
 
 export default function DeepDesertTerrain({
@@ -69,6 +76,7 @@ export default function DeepDesertTerrain({
   tilt = 0,
   yaw = 0,
   onTerrainApi,
+  onOcclusion,
   onReady,
   createRenderer = createDeepDesertRenderer,
   probeSupport = probeTerrainSupport
@@ -81,8 +89,8 @@ export default function DeepDesertTerrain({
   // Held in refs so creating the context depends on nothing: it must happen once
   // per mount, and a caller passing an inline callback must not be able to tear
   // down and rebuild a WebGL context on every render.
-  const callbacks = useRef({ onUnavailable, onReady, createRenderer, probeSupport, onTerrainApi });
-  callbacks.current = { onUnavailable, onReady, createRenderer, probeSupport, onTerrainApi };
+  const callbacks = useRef({ onUnavailable, onReady, createRenderer, probeSupport, onTerrainApi, onOcclusion });
+  callbacks.current = { onUnavailable, onReady, createRenderer, probeSupport, onTerrainApi, onOcclusion };
   // The layout's pivot height, kept for the paint loop.
   const pivotRef = useRef(0);
 
@@ -103,7 +111,8 @@ export default function DeepDesertTerrain({
         // The context can be taken away after a successful start -- a GPU reset,
         // a driver update, the browser reclaiming it. Falling back beats leaving
         // a blank canvas on a machine that was working a minute ago.
-        onContextLost: () => callbacks.current.onUnavailable("graphics context lost")
+        onContextLost: () => callbacks.current.onUnavailable("graphics context lost"),
+        onOcclusion: () => callbacks.current.onOcclusion?.()
       });
     } catch (error) {
       report(error instanceof Error ? error.message : String(error));
@@ -139,7 +148,8 @@ export default function DeepDesertTerrain({
         callbacks.current.onTerrainApi?.({
           pick: (sx, sy) => rendererRef.current?.pick(sx, sy) ?? null,
           heightAt: (x, y) => interpolateHeightField(field, meta, x, y),
-          pivotZ: pivotRef.current
+          pivotZ: pivotRef.current,
+          occluded: (x, y, z) => rendererRef.current?.occluded(x, y, z) ?? false
         });
         setReady(true);
         // The panel holds the flat image up until this point: the canvas is

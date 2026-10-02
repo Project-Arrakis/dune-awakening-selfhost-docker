@@ -1,4 +1,6 @@
-import { BFS, BVS, CFS, FS, RFS, RVS, VS } from "./shaders";
+import { BFS, BVS, CFS, DFS, FS, RFS, RVS, VS } from "./shaders";
+import { invert4, isOccluded } from "./terrainOcclusion";
+import type { DepthGrid } from "./terrainOcclusion";
 import { borderHeight, buildDrawCalls, cullInstances, depthRange, instanceCircles, INSTANCE_FLOATS, orthoFromWorldRect, applyCanvasSize } from "./terrainGeometry";
 import type { CulledDraw } from "./terrainGeometry";
 import { cameraClipMatrix, cullRectForCamera, scaleAt, screenToWorldAtZ } from "./terrainCamera";
@@ -62,6 +64,17 @@ const CULL_MIN_RADIUS_PX = 0.5;
  * far enough to take all of it, and the sand is carried out underneath.
  */
 const EDGE_APRON = 200000;
+// The depth copy markers are tested against is this many CSS pixels per texel.
+// A marker is about 18 px across and is tested over 3x3 texels, so 4 covers it.
+const OCCLUSION_DIV = 4;
+/**
+ * How far above a marker the terrain in front of it must stand before it hides
+ * the marker, world uu (30 m). The map's meshes are coarse stand-ins, and a
+ * marker belongs to things -- a base on a ledge, a player inside a wreck -- that
+ * it rarely sits exactly on top of; without this slack those would vanish into
+ * the very thing they are part of.
+ */
+const OCCLUSION_TOLERANCE = 3000;
 const ATTRIBS = 9; // locations 0..8, cleared around every pass
 
 export type DeepDesertRenderer = {
@@ -81,6 +94,14 @@ export type DeepDesertRenderer = {
    * a float target (`canPick`).
    */
   pick(sx: number, sy: number): { x: number; y: number; z: number } | null;
+  /**
+   * Whether the terrain hides a world point: something tall stands between it
+   * and the eye. Answered from the depth of a recent frame -- read back
+   * asynchronously, so up to a frame or two old; `onOcclusion` fires when it is
+   * renewed. Only ever true in a tilted view, and never where this GPU cannot
+   * render to float (see `canPick`).
+   */
+  occluded(x: number, y: number, z: number): boolean;
   readonly canPick: boolean;
   /** Faint elevation banding on rock and sand. Off by default. */
   setElevationLines(on: boolean): void;
@@ -118,6 +139,11 @@ export type RendererOptions = {
    * image rather than leave a blank canvas.
    */
   onContextLost?: () => void;
+  /**
+   * Fired when what the terrain hides has been measured afresh, a frame or two
+   * after a tilted frame is drawn: `occluded` may now answer differently.
+   */
+  onOcclusion?: () => void;
 };
 
 function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
@@ -168,6 +194,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   const resolve = link(gl, RVS, RFS);
   const backdrop = link(gl, BVS, BFS);
   const decode = link(gl, RVS, CFS);
+  const depthCopy = link(gl, RVS, DFS);
 
   const u = (program: WebGLProgram, name: string) => gl.getUniformLocation(program, name);
   const t = {
@@ -189,6 +216,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   const r = { tex: u(resolve, "uT"), texel: u(resolve, "uTexel"), ss: u(resolve, "uSS") };
   const b = { vp: u(backdrop, "uVP"), c: u(backdrop, "uC"), half: u(backdrop, "uHalf"), z: u(backdrop, "uZ") };
   const decodeTex = u(decode, "uT");
+  const depthCopyTex = u(depthCopy, "uD");
 
   const quad = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, quad);
@@ -328,7 +356,20 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
 
   let fbo: WebGLFramebuffer | null = null;
   let accTex: WebGLTexture | null = null;
-  let accDepth: WebGLRenderbuffer | null = null;
+  // A texture, not a renderbuffer, so the tilted view can read it back.
+  let accDepth: WebGLTexture | null = null;
+  let occFbo: WebGLFramebuffer | null = null;
+  let occTex: WebGLTexture | null = null;
+  let occW = 0;
+  let occH = 0;
+  let occPbo: WebGLBuffer | null = null;
+  let occSync: WebGLSync | null = null;
+  let occPending: { matrix: Float32Array; inverse: Float64Array } | null = null;
+  // A frame was drawn while a read was still in flight, so that read is already old.
+  let occStale = false;
+  let occPoll = 0;
+  // The depth of the last tilted frame, for testing markers against; null otherwise.
+  let occlusion: DepthGrid | null = null;
   let fbW = 0;
   let fbH = 0;
 
@@ -353,7 +394,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     if (fbo) {
       gl.deleteFramebuffer(fbo);
       gl.deleteTexture(accTex);
-      gl.deleteRenderbuffer(accDepth);
+      gl.deleteTexture(accDepth);
     }
     fbo = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
@@ -366,10 +407,14 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, accTex, 0);
-    accDepth = gl.createRenderbuffer();
-    gl.bindRenderbuffer(gl.RENDERBUFFER, accDepth);
-    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, width, height);
-    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, accDepth);
+    accDepth = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, accDepth);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, width, height, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, accDepth, 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     fbW = width;
     fbH = height;
@@ -598,6 +643,107 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     };
   }
 
+  /** Drop a depth read that is still in flight, and anything waiting on it. */
+  function cancelDepthRead() {
+    if (occSync) gl.deleteSync(occSync);
+    occSync = null;
+    if (occPoll) cancelAnimationFrame(occPoll);
+    occPoll = 0;
+    occStale = false;
+  }
+
+  /**
+   * Copy the frame's depth, point-sampled at one texel per OCCLUSION_DIV CSS
+   * pixels, into a float target, and start reading it back.
+   *
+   * The read is asynchronous: into a pixel buffer, behind a fence, collected a
+   * frame or two later by `collectDepth`. Reading it straight back would make
+   * every tilted frame wait for the GPU to finish it -- measured at 9-18 ms of
+   * blocked page per frame while panning -- to save a delay nobody can see: a
+   * marker passing behind a rock is hidden a frame late.
+   */
+  function startDepthRead(matrix: Float32Array) {
+    const inverse = invert4(matrix);
+    const w = Math.max(1, Math.ceil(cssWidth / OCCLUSION_DIV));
+    const h = Math.max(1, Math.ceil(cssHeight / OCCLUSION_DIV));
+    if (!inverse || !accDepth) {
+      occlusion = null;
+      return;
+    }
+    if (!occFbo || occW !== w || occH !== h) {
+      if (occFbo) gl.deleteFramebuffer(occFbo);
+      if (occTex) gl.deleteTexture(occTex);
+      if (occPbo) gl.deleteBuffer(occPbo);
+      occFbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, occFbo);
+      occTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, occTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, occTex, 0);
+      occPbo = gl.createBuffer();
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, occPbo);
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, w * h * 16, gl.STREAM_READ);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      occW = w;
+      occH = h;
+      // The grid in use was read at the old size; it is no longer this one's.
+      occlusion = null;
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, occFbo);
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.DEPTH_TEST);
+    gl.useProgram(depthCopy);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, accDepth);
+    gl.uniform1i(depthCopyTex, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribDivisor(0, 0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, occPbo);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, 0);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    occSync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    gl.flush();
+    gl.disableVertexAttribArray(0);
+    gl.enable(gl.DEPTH_TEST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    occPending = { matrix, inverse };
+    if (!occPoll) occPoll = requestAnimationFrame(collectDepth);
+  }
+
+  /** Collect a depth read once the GPU has got to it, and say so. */
+  function collectDepth() {
+    occPoll = 0;
+    if (lost || !occSync || !occPending) return;
+    const status = gl.clientWaitSync(occSync, 0, 0);
+    if (status === gl.TIMEOUT_EXPIRED) {
+      occPoll = requestAnimationFrame(collectDepth);
+      return;
+    }
+    gl.deleteSync(occSync);
+    occSync = null;
+    if (status !== gl.WAIT_FAILED) {
+      const pixels = new Float32Array(occW * occH * 4);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, occPbo);
+      gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, pixels);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      // Depth and the matrix it was drawn with change hands together, so a test
+      // against it is always self-consistent even when it is a frame old.
+      occlusion = { depth: pixels, stride: 4, width: occW, height: occH, matrix: occPending.matrix, inverse: occPending.inverse };
+      options.onOcclusion?.();
+    }
+    // Frames drawn while that read was in flight were skipped; the depth buffer
+    // still holds the last of them, so read that one now.
+    if (occStale) {
+      occStale = false;
+      if (camera && camera.tilt > 0 && lastMatrix) startDepthRead(lastMatrix);
+    }
+  }
+
   function draw() {
     if (lost || !layoutRef || !sharedRef || !calls.length) return;
     const meta = layoutRef.meta;
@@ -738,6 +884,18 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       gl.vertexAttribDivisor(k, 0);
     }
 
+    // Tilted, things stand in front of other things: keep the frame's depth so
+    // markers behind the terrain can be told from markers in front of it.
+    if (camera && camera.tilt > 0 && floatBuffer) {
+      // One read at a time: a frame drawn while one is in flight is picked up
+      // when it lands.
+      if (occSync) occStale = true;
+      else startDepthRead(m);
+    } else {
+      cancelDepthRead();
+      occlusion = null;
+    }
+
     // Backdrop to the screen, then the resolved terrain composited over it.
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, width, height);
@@ -791,6 +949,9 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     pick(sx: number, sy: number) {
       return pickAt(sx, sy);
     },
+    occluded(x: number, y: number, z: number) {
+      return !lost && occlusion ? isOccluded(occlusion, x, y, z, OCCLUSION_TOLERANCE) : false;
+    },
     setElevationLines(on: boolean) {
       elevationLines = on;
     },
@@ -798,12 +959,15 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     dispose() {
       canvas.removeEventListener("webglcontextlost", onLost as EventListener);
       for (const buffer of [bPos, bNrm, bIdx, bHfIdx, bUV, bCull, quad]) if (buffer) gl.deleteBuffer(buffer);
-      for (const texture of [texHf, det1, det2, texBrk, rockTex, accTex, pickTex]) if (texture) gl.deleteTexture(texture);
+      for (const texture of [texHf, det1, det2, texBrk, rockTex, accTex, accDepth, occTex, pickTex]) if (texture) gl.deleteTexture(texture);
       if (pickDepth) gl.deleteRenderbuffer(pickDepth);
       if (pickFbo) gl.deleteFramebuffer(pickFbo);
-      if (accDepth) gl.deleteRenderbuffer(accDepth);
+      cancelDepthRead();
+      if (occPbo) gl.deleteBuffer(occPbo);
+      if (occFbo) gl.deleteFramebuffer(occFbo);
       if (fbo) gl.deleteFramebuffer(fbo);
-      for (const program of [terrain, resolve, backdrop, decode]) gl.deleteProgram(program);
+      for (const program of [terrain, resolve, backdrop, decode, depthCopy]) gl.deleteProgram(program);
+      occlusion = null;
       calls = [];
       sharedRef = null;
       layoutRef = null;

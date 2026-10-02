@@ -458,6 +458,31 @@ moves the clip out 200,000 uu to take in all of it and carries the sand on
 underneath as a level plain. The height field has no data out there; the plain
 sits at the mean height of its rim. Nothing out there can be picked.
 
+**Markers behind the terrain are hidden.** Markers are DOM elements over the
+canvas, so nothing occludes them by itself: a player behind a mesa would show
+through it. After each tilted frame the renderer copies that frame's depth buffer
+into a small float target (one texel per 4 px) and reads it back, and a marker is
+dropped when the terrain at its spot is both nearer the eye than the marker and
+standing more than 3,000 uu (30 m) above it (`terrain/terrainOcclusion.ts`).
+
+- *Both* conditions, because either alone is wrong: the open ground in front of
+  a marker is nearer the eye too, and a cliff behind it is higher.
+- The 30 m of slack is what keeps a marker visible on, in or under the thing it
+  belongs to. The map's meshes are coarse stand-ins, and a base on a ledge or a
+  player inside a wreck rarely sits exactly on them.
+- The whole 3x3 texels around the marker must be covered, so it goes when it is
+  well behind something, not while an edge merely clips it.
+- **The selected marker, and a player being dragged, are never hidden** -- the
+  thing being worked with should not vanish from under the admin.
+- **Nothing is hidden while the search box has text in it.** A search asks where
+  something is, and "behind that rock" is an answer, not a reason to withhold
+  it. This is the way to find a marker the terrain is covering.
+- The read-back is asynchronous (a pixel buffer behind a fence), so a marker is
+  hidden a frame or two after it passes behind something. Read synchronously it
+  blocked the page 9-18 ms on every tilted frame.
+- Top-down nothing is hidden, and nothing is where the GPU cannot render to
+  float. The sector grid is not occluded; its lines still draw over rock.
+
 **The sector grid** is projected through the same camera. Its lines are laid on
 the sand rather than on a flat plane -- a line at the map's average height would
 slide past a marker standing on a dune as the view tilts -- and each label sits
