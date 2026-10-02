@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LiveMapConfig } from "../../api/liveMap";
 import { clampLiveMapZoom, liveMapCamera, liveMapMinimumZoom, liveMapPixelsToWorld, MAX_LIVE_MAP_ZOOM, panScrollDelta, terrainViewport, visibleWorldRect, worldToLiveMapPoint, zoomCentreFor } from "./liveMapGeometry";
-import { projectToScreen, screenToWorldAtZ } from "./terrain/terrainCamera";
+import { eyeDistance, projectToScreen, screenToWorldAtZ } from "./terrain/terrainCamera";
 
 // LIVE_MAP_CONFIGS.DeepDesert, verbatim from console/api/src/duneDb.js.
 const DEEP_DESERT: LiveMapConfig = {
@@ -178,6 +178,31 @@ describe("3D view helpers", () => {
     const d = panScrollDelta(camera, { sx: 200, sy: 300 }, { sx: 237, sy: 279 }, 8000);
     expect(d.left).toBeCloseTo(-37, 9);
     expect(d.top).toBeCloseTo(21, 9);
+  });
+
+  it("keeps the eye above the tallest rock at any zoom, without moving what is in the middle of the view", () => {
+    const pivot = 5000;
+    const top = 137000;
+    for (const z of [0.22, 1, 3, 5, 8]) {
+      const v = terrainViewport(DEEP_DESERT, z, 1500 * z, 1400 * z, 1100, 700);
+      const camera = liveMapCamera(DEEP_DESERT, z, v, deg(60), deg(20), pivot, top)!;
+      const free = liveMapCamera(DEEP_DESERT, z, v, deg(60), deg(20), pivot)!;
+      const eyeHeight = pivot + eyeDistance(camera) * Math.cos(camera.tilt);
+      expect(eyeHeight).toBeGreaterThan(top);
+      // Same target and same scale: only the amount of perspective differs, and never upward.
+      expect([camera.cx, camera.cy, camera.cz, camera.scale]).toEqual([free.cx, free.cy, free.cz, free.scale]);
+      expect(camera.fov).toBeLessThanOrEqual(free.fov);
+      const centre = projectToScreen(camera, camera.cx, camera.cy, camera.cz);
+      expect(centre.sx).toBeCloseTo(v.width / 2, 9);
+      expect(centre.sy).toBeCloseTo(v.height / 2, 9);
+    }
+    // At the fit the eye is far overhead already: untouched.
+    const v = terrainViewport(DEEP_DESERT, 0.22, 0, 0, 1100, 700);
+    expect(liveMapCamera(DEEP_DESERT, 0.22, v, deg(60), 0, pivot, top)!.fov).toBe(liveMapCamera(DEEP_DESERT, 0.22, v, deg(60), 0, pivot)!.fov);
+    // Without the guard, full zoom puts the eye below the rock tops.
+    const v8 = terrainViewport(DEEP_DESERT, 8, 12000, 11200, 1100, 700);
+    const unguarded = liveMapCamera(DEEP_DESERT, 8, v8, deg(60), 0, pivot)!;
+    expect(pivot + eyeDistance(unguarded) * Math.cos(unguarded.tilt)).toBeLessThan(top);
   });
 
   it("zooms about the point under the cursor, perspective included", () => {

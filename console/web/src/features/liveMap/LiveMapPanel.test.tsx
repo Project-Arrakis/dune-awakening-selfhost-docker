@@ -45,6 +45,7 @@ vi.mock("./terrain/DeepDesertTerrain", () => ({
         pick: (sx: number, sy: number) => { terrain.pickCalls.push([sx, sy]); return terrain.picked; },
         heightAt: () => terrain.sandHeight,
         pivotZ: terrain.sandHeight,
+        topZ: 140000,
         occluded: (_x: number, _y: number, z: number) => z < terrain.hidesBelow
       });
       onReady?.();

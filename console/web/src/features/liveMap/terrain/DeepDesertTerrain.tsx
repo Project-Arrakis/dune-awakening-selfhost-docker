@@ -62,6 +62,8 @@ export type TerrainApi = {
   heightAt: (x: number, y: number) => number;
   /** The height the 3D camera pivots about: the layout's mean sand height. */
   pivotZ: number;
+  /** The top of the tallest thing in the layout, which the 3D camera's eye stays above. */
+  topZ: number;
   /** Whether the terrain hides a world point, as of a frame just drawn. Only ever true while tilted. `reach`: see the renderer. */
   occluded: (x: number, y: number, z: number, reach?: number) => boolean;
 };
@@ -93,6 +95,8 @@ export default function DeepDesertTerrain({
   callbacks.current = { onUnavailable, onReady, createRenderer, probeSupport, onTerrainApi, onOcclusion };
   // The layout's pivot height, kept for the paint loop.
   const pivotRef = useRef(0);
+  // ...and the height of its tallest rock, which the camera's eye is kept above.
+  const topRef = useRef(0);
 
   // Create the context once per mount. The panel unmounts this entirely when the
   // map changes, so teardown is automatic.
@@ -145,10 +149,12 @@ export default function DeepDesertTerrain({
         for (let i = 0; i < field.length; i++) sum += field[i];
         const meta = assets.meta;
         pivotRef.current = meta.hfZlo + (sum / Math.max(field.length, 1) / 65535) * (meta.hfZhi - meta.hfZlo);
+        topRef.current = meta.zmax;
         callbacks.current.onTerrainApi?.({
           pick: (sx, sy) => rendererRef.current?.pick(sx, sy) ?? null,
           heightAt: (x, y) => interpolateHeightField(field, meta, x, y),
           pivotZ: pivotRef.current,
+          topZ: topRef.current,
           occluded: (x, y, z, reach) => rendererRef.current?.occluded(x, y, z, reach) ?? false
         });
         setReady(true);
@@ -197,7 +203,7 @@ export default function DeepDesertTerrain({
       if (tilt !== 0 || yaw !== 0) {
         // 3D: the same scroll and zoom, seen through the tilted camera. The panel
         // builds its camera from the same helper, so markers land on this render.
-        const camera = liveMapCamera(config, zoom, { left, top, width, height }, tilt, yaw, pivotRef.current);
+        const camera = liveMapCamera(config, zoom, { left, top, width, height }, tilt, yaw, pivotRef.current, topRef.current);
         if (!camera) return;
         renderer.setCamera(camera);
       } else {

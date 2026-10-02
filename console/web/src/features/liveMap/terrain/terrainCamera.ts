@@ -46,6 +46,25 @@ export function fovForTilt(tilt: number): number {
   return MAX_FOV * Math.max(0, Math.min(1, tilt / MAX_TILT));
 }
 
+/**
+ * The field of view for a tilt, held back as far as it takes to keep the eye at
+ * least `rise` above the pivot.
+ *
+ * The eye stands off from its target by a distance that goes with the scale:
+ * zoom in and it comes closer, and lower. Fully tilted at high zoom that put it
+ * below the tops of the tall rock, and then inside the rock, looking at the
+ * inside of a cliff. A narrower field of view stands the eye further back for
+ * the same framing -- the scale at the target does not change -- so the field is
+ * narrowed just enough to lift the eye clear. The cost is a little less
+ * perspective when zoomed right in, which is where there is least of it to lose.
+ */
+export function fovClearing(tilt: number, scale: number, height: number, rise: number): number {
+  const base = fovForTilt(tilt);
+  if (base <= 0 || !(rise > 0)) return base;
+  // Eye height over the pivot is D * cos(tilt), with D = scale * height / (2 tan(fov / 2)).
+  return Math.min(base, 2 * Math.atan((scale * height * Math.cos(tilt)) / (2 * rise)));
+}
+
 /** The flat, top-down camera for a world rect drawn into a viewport -- today's view. */
 export function cameraFromRect(view: TerrainView, width: number, height: number): TerrainCamera {
   return {

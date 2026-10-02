@@ -10,7 +10,7 @@ vi.mock("./terrainAssets", () => ({
   loadSharedAssets: vi.fn(async () => ({ library: { meshes: [] } })),
   // A 2x2 height field: 0, 1000, 2000 and 3000 uu -- enough for the pivot and the sampler.
   loadLayoutAssets: vi.fn(async (layout: number) => ({
-    meta: { layout, hfN: 2, hfZlo: 0, hfZhi: 65535, hfStep: 1000, hfX0: 0, hfY0: 0 },
+    meta: { layout, zmax: 90000, hfN: 2, hfZlo: 0, hfZhi: 65535, hfStep: 1000, hfX0: 0, hfY0: 0 },
     heightField: new Uint8Array(new Uint16Array([0, 1000, 2000, 3000]).buffer)
   }))
 }));
@@ -257,11 +257,22 @@ describe("3D", () => {
     expect(camera.cz).toBeCloseTo(1500, 6);
   });
 
+  it("keeps the camera's eye above the layout's tallest point when zoomed right in", async () => {
+    // Steep and at full zoom: left alone, the eye would sit below 90,000.
+    const { renderer } = mount({ tilt: Math.PI / 3, zoom: 8 });
+    await waitFor(() => expect(renderer.setCamera).toHaveBeenCalled());
+    const camera = renderer.setCamera.mock.calls.at(-1)![0];
+    const eyeHeight = camera.cz + (camera.scale * camera.height) / (2 * Math.tan(camera.fov / 2)) * Math.cos(camera.tilt);
+    expect(eyeHeight).toBeGreaterThan(90000);
+    expect(camera.fov).toBeGreaterThan(0);
+  });
+
   it("hands the panel a terrain API for the layout, and withdraws it on unmount", async () => {
     const onTerrainApi = vi.fn();
     const { view } = mount({ onTerrainApi });
     await waitFor(() => expect(onTerrainApi).toHaveBeenCalledWith(expect.objectContaining({ pivotZ: 1500 })));
     const api = onTerrainApi.mock.calls.at(-1)![0];
+    expect(api.topZ).toBe(90000);
     expect(api.heightAt(1000, 1000)).toBe(3000);
     expect(api.heightAt(0, 0)).toBe(0);
     expect(api.pick(10, 20)).toEqual({ x: 1, y: 2, z: 3 });

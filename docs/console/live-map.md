@@ -432,6 +432,15 @@ grows with tilt, from none at top-down to a 35 degree field of view at 60, and
 the scale at the view centre is held fixed, so leaning the map back never makes
 the thing being looked at jump or change size. The sun turns with the view.
 
+**The eye stays above the rock.** The eye stands off from the point it looks at
+by a distance that goes with the scale, so zooming in brings it closer and
+lower. Fully tilted, past about 350% zoom, that put it below the tops of the
+tall rock and then inside it, looking at the inside of a cliff. The field of
+view is narrowed just enough to keep the eye 10% above the layout's tallest
+point (`fovClearing`). A narrower field stands the eye further back for the same
+framing, so nothing in the view moves or changes size; there is only a little
+less perspective when zoomed right in.
+
 **Markers stand at their height.** Under tilt a point shifts on screen with its
 height, so a marker drawn at height zero would sit at the base of the mesa it is
 on. Each marker is projected at its own `z`, or the sand height under it where it

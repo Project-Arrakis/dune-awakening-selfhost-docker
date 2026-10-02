@@ -1,5 +1,5 @@
 import type { LiveMapConfig, LiveMapMarker } from "../../api/liveMap";
-import { fovForTilt, screenToWorldAtZ } from "./terrain/terrainCamera";
+import { fovClearing, fovForTilt, screenToWorldAtZ } from "./terrain/terrainCamera";
 import type { TerrainCamera } from "./terrain/terrainCamera";
 
 // The Live Map's coordinate maths, extracted from LiveMapPanel so it can be
@@ -115,10 +115,18 @@ export function terrainViewport(config: LiveMapConfig, zoom: number, scrollLeft:
   return { left, top, width, height };
 }
 
+// How far above the tallest terrain the eye is kept, as a multiple of that
+// terrain's height over the pivot.
+const EYE_CLEARANCE = 1.1;
+
 /**
  * The 3D camera for the panel's current scroll and zoom: the viewport's centre
  * is the camera's target, at height `cz`, and the scale there is the flat map's
  * scale. Tilt and yaw are radians; perspective follows tilt.
+ *
+ * `topZ`, when given, is the height of the tallest thing on the map. The eye is
+ * kept above it, with a margin, by easing off the perspective at high zoom --
+ * see `fovClearing`.
  */
 export function liveMapCamera(
   config: LiveMapConfig,
@@ -126,20 +134,22 @@ export function liveMapCamera(
   viewport: { left: number; top: number; width: number; height: number },
   tilt: number,
   yaw: number,
-  cz: number
+  cz: number,
+  topZ?: number
 ): TerrainCamera | null {
   const centre = liveMapPixelsToWorld((viewport.left + viewport.width / 2) / zoom, (viewport.top + viewport.height / 2) / zoom, config);
   if (!centre || viewport.width <= 0 || viewport.height <= 0) return null;
+  const scale = (config.maxX - config.minX) / config.width / zoom;
   return {
     cx: centre.x,
     cy: centre.y,
     cz,
-    scale: (config.maxX - config.minX) / config.width / zoom,
+    scale,
     width: viewport.width,
     height: viewport.height,
     tilt,
     yaw,
-    fov: fovForTilt(tilt)
+    fov: topZ === undefined ? fovForTilt(tilt) : fovClearing(tilt, scale, viewport.height, (topZ - cz) * EYE_CLEARANCE)
   };
 }
 

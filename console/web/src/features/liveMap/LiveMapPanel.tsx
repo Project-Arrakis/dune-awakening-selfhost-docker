@@ -593,7 +593,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
     const frame = frameRef.current;
     if (!is3D || !activeMap || !frame || !terrainApi) return null;
     const viewport = terrainViewport(activeMap, zoom, frame.scrollLeft, frame.scrollTop, frame.clientWidth, frame.clientHeight);
-    const camera = liveMapCamera(activeMap, zoom, viewport, tilt, yaw, terrainApi.pivotZ);
+    const camera = liveMapCamera(activeMap, zoom, viewport, tilt, yaw, terrainApi.pivotZ, terrainApi.topZ);
     return camera ? { viewport, camera } : null;
   }
   const view3d = currentView3d();

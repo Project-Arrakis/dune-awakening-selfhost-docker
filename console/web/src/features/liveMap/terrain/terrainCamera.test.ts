@@ -6,6 +6,7 @@ import {
   cameraFromRect,
   cullRectForCamera,
   eyeDistance,
+  fovClearing,
   fovForTilt,
   isFlatCamera,
   projectToScreen,
@@ -116,6 +117,29 @@ describe("terrain camera", () => {
     const steep = tilted(60, 0);
     const top = screenToWorldAtZ(steep, W / 2, 0, steep.cz);
     expect(Number.isFinite(top.x) && Number.isFinite(top.y)).toBe(true);
+  });
+
+  it("narrows the field of view only as far as it takes to keep the eye above the rock", () => {
+    const tilt = MAX_TILT;
+    /** Eye height over the pivot for a field of view, at this scale and viewport. */
+    const eyeRise = (fov: number, scale: number) => eyeDistance({ ...tilted(60, 0), scale, fov }) * Math.cos(tilt);
+    const rise = 140000;
+    // Zoomed right in: the tilt's own field of view would put the eye among the rock...
+    const close = 69;
+    expect(eyeRise(fovForTilt(tilt), close)).toBeLessThan(rise);
+    // ...so it is narrowed, to exactly the clearance asked for.
+    const narrowed = fovClearing(tilt, close, H, rise);
+    expect(narrowed).toBeLessThan(fovForTilt(tilt));
+    expect(narrowed).toBeGreaterThan(0);
+    expect(eyeRise(narrowed, close)).toBeCloseTo(rise, 3);
+    // Zoomed out the eye is already far above everything, and nothing changes.
+    const far = 2500;
+    expect(eyeRise(fovForTilt(tilt), far)).toBeGreaterThan(rise);
+    expect(fovClearing(tilt, far, H, rise)).toBe(fovForTilt(tilt));
+    // Top-down has no eye to lift, and no rise means nothing to clear.
+    expect(fovClearing(0, close, H, rise)).toBe(0);
+    expect(fovClearing(tilt, close, H, 0)).toBe(fovForTilt(tilt));
+    expect(fovClearing(tilt, close, H, -5)).toBe(fovForTilt(tilt));
   });
 
   it("culls to a rect that holds every visible corner", () => {
