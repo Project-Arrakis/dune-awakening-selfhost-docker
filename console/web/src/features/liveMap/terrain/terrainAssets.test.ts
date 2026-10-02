@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearTerrainAssetCache, loadLayoutAssets, loadSharedAssets } from "./terrainAssets";
+import { clearTerrainAssetCache, decodeIndices, loadLayoutAssets, loadSharedAssets } from "./terrainAssets";
+import type { TerrainLibrary } from "./types";
 
 // Production resolves hashed URLs out of the Vite bundle; tests inject a plain
 // one so the fetch mock can key on readable paths.
@@ -210,5 +211,39 @@ describe("a server that already inflated the body", () => {
     const shared = await loadSharedAssets(at);
     expect(shared.library.meshes).toHaveLength(1);
     expect(shared.geometry.byteLength).toBe(10);
+  });
+});
+
+describe("decodeIndices", () => {
+  /** The pipeline's encoding: the step from the previous index, wrapped to 16 bits and zigzagged. */
+  function encode(indices: number[]): number[] {
+    let prev = 0;
+    return indices.map((v) => {
+      const s = ((v - prev + 32768 + 65536) % 65536) - 32768;
+      prev = v;
+      return ((s << 1) ^ (s >> 15)) & 0xffff;
+    });
+  }
+
+  it("restores each mesh's indices, steps back and forth and across the 16-bit wrap included", () => {
+    const meshes = [[0, 1, 2, 2, 1, 3], [65535, 0, 7, 40000, 3, 65535]];
+    const coded = meshes.flatMap(encode);
+    // 4 bytes of positions and normals ahead of the indices
+    const geometry = new Uint8Array(4 + coded.length * 2);
+    new Uint16Array(geometry.buffer, 4).set(coded);
+    const lib = {
+      posBytes: 2, nrmBytes: 2, idxBytes: coded.length * 2, idxCoding: "zigzag-delta",
+      meshes: [{ io: 0, ic: 6 }, { io: 6, ic: 6 }]
+    } as unknown as TerrainLibrary;
+    const plain = decodeIndices(lib, geometry);
+    expect(Array.from(new Uint16Array(geometry.buffer, 4))).toEqual(meshes.flat());
+    expect(plain.idxCoding).toBeUndefined();
+  });
+
+  it("leaves a plain library alone", () => {
+    const lib = { posBytes: 0, nrmBytes: 0, idxBytes: 2, meshes: [{ io: 0, ic: 1 }] } as unknown as TerrainLibrary;
+    const geometry = new Uint8Array(new Uint16Array([9]).buffer);
+    expect(decodeIndices(lib, geometry)).toBe(lib);
+    expect(new Uint16Array(geometry.buffer)[0]).toBe(9);
   });
 });

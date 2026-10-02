@@ -22,6 +22,8 @@ export type TerrainLibrary = {
   posBytes: number;
   nrmBytes: number;
   idxBytes: number;
+  /** How the index section is stored; absent means plain u16. See `decodeIndices`. */
+  idxCoding?: string;
   meshes: TerrainMesh[];
 };
 

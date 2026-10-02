@@ -132,7 +132,7 @@ export async function loadSharedAssets(resolve: AssetResolver = bundledAsset, si
       if (geometry.byteLength !== expected) {
         throw new Error(`mesh library is ${geometry.byteLength} bytes, its table describes ${expected}`);
       }
-      return { library, geometry, detail1, detail2, breakup };
+      return { library: decodeIndices(library, geometry), geometry, detail1, detail2, breakup };
     })();
     // A failed load must not poison the page: drop the rejected promise so a
     // later attempt (a retry, or simply switching back to the map) can try again.
@@ -141,6 +141,28 @@ export async function loadSharedAssets(resolve: AssetResolver = bundledAsset, si
     });
   }
   return forCaller(sharedPromise, signal);
+}
+
+/**
+ * Undo the library's index coding, in place. With `idxCoding` "zigzag-delta"
+ * each mesh's indices are stored as the step from the one before (from 0),
+ * wrapped to 16 bits and zigzagged so small steps either way stay small: the
+ * library gzips 10% smaller. Returns the library without the coding mark.
+ */
+export function decodeIndices(library: TerrainLibrary, geometry: Uint8Array): TerrainLibrary {
+  if (!library.idxCoding) return library;
+  if (library.idxCoding !== "zigzag-delta") throw new Error(`mesh indices are stored as ${library.idxCoding}, which this console cannot read`);
+  const idx = new Uint16Array(geometry.buffer, geometry.byteOffset + library.posBytes + library.nrmBytes, library.idxBytes / 2);
+  for (const mesh of library.meshes) {
+    let v = 0;
+    for (let i = mesh.io; i < mesh.io + mesh.ic; i++) {
+      const z = idx[i];
+      v = (v + ((z >>> 1) ^ -(z & 1))) & 0xffff;
+      idx[i] = v;
+    }
+  }
+  const { idxCoding: _coding, ...plain } = library;
+  return plain;
 }
 
 export async function loadLayoutAssets(layout: number, resolve: AssetResolver = bundledAsset, signal?: AbortSignal): Promise<LayoutAssets> {
