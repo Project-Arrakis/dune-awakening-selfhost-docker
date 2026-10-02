@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  INSTANCE_FLOATS,
   buildDrawCalls,
+  cullInstances,
+  instanceCircles,
   depthRange,
   dequantizePosition,
   octDecode,
@@ -266,5 +269,60 @@ describe("applyCanvasSize", () => {
     const c = canvas();
     applyCanvasSize(c, 800, 600, 3);
     expect(c.width).toBe(1600);
+  });
+});
+
+describe("instance culling", () => {
+  // One rock mesh, a 100 x 100 x 40 box from the origin, and one landscape tile.
+  const rock = { lo: [0, 0, 0] as [number, number, number], ext: [100, 100, 40] as [number, number, number], vo: 0, vn: 3, io: 0, ic: 3 };
+  const land = { lo: [0, 0, 0] as [number, number, number], ext: [60000, 60000, 900] as [number, number, number], vo: 3, vn: 3, io: 3, ic: 3 };
+  function instance(scale: number, x: number, y: number): number[] {
+    return [scale, 0, 0, 0, scale, 0, 0, 0, scale, x, y, 0, 0, 0];
+  }
+  // rock instances: in view, far outside it, in view but tiny; then one land tile far away
+  const instances = new Float32Array([
+    ...instance(10, 0, 0),
+    ...instance(10, 900000, 900000),
+    ...instance(0.01, 10, 10),
+    ...instance(1, 5000000, 5000000)
+  ]);
+  const calls = [
+    { ...rock, instOff: 0, instN: 3, overlay: 0, land: false },
+    { ...land, instOff: 3, instN: 1, overlay: 0, land: true }
+  ];
+  const view: TerrainView = { minX: -1000, maxX: 1000, minY: -1000, maxY: 1000, flipY: false };
+
+  it("bounds each instance by a circle around its transformed box", () => {
+    const c = instanceCircles(calls, instances);
+    // centre of the 100x100x40 box is (50, 50, 20); scale 10 puts it at (500, 500)
+    expect(c[0]).toBeCloseTo(500);
+    expect(c[1]).toBeCloseTo(500);
+    expect(c[2]).toBeCloseTo(0.5 * Math.hypot(100, 100, 40) * 10);
+  });
+
+  it("keeps what is in view and large enough, drops the rest, always keeps land", () => {
+    const c = instanceCircles(calls, instances);
+    const out = new Float32Array(instances.length);
+    const { draws, total } = cullInstances(calls, instances, c, view, 1, out);
+    expect(draws).toEqual([{ off: 0, n: 1 }, { off: 1, n: 1 }]);
+    expect(total).toBe(2);
+    // packed contiguously: the kept rock instance, then the land tile
+    expect(Array.from(out.subarray(0, INSTANCE_FLOATS))).toEqual(Array.from(instances.subarray(0, INSTANCE_FLOATS)));
+    expect(out[INSTANCE_FLOATS + 9]).toBe(5000000);
+  });
+
+  it("keeps a sub-pixel instance once the pixel threshold allows it", () => {
+    const c = instanceCircles(calls, instances);
+    const out = new Float32Array(instances.length);
+    expect(cullInstances(calls, instances, c, view, 0, out).draws[0].n).toBe(2);
+  });
+
+  it("keeps everything when the view covers it all and nothing is tiny", () => {
+    const c = instanceCircles(calls, instances);
+    const out = new Float32Array(instances.length);
+    const all: TerrainView = { minX: -1e7, maxX: 1e7, minY: -1e7, maxY: 1e7, flipY: false };
+    const { total } = cullInstances(calls, instances, c, all, 0, out);
+    expect(total).toBe(4);
+    expect(Array.from(out)).toEqual(Array.from(instances));
   });
 });

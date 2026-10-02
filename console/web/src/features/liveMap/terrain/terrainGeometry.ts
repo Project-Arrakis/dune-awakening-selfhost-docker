@@ -151,3 +151,83 @@ export function applyCanvasSize(canvas: SizableCanvas, cssWidth: number, cssHeig
   if (canvas.height !== h) { canvas.height = h; reset = true; }
   return reset;
 }
+
+/** Floats per instance in a layout's instance buffer: mat3 by columns, translation, iMat, lift. */
+export const INSTANCE_FLOATS = 14;
+
+/**
+ * A bounding circle in world XY for every instance, as `[x, y, r]` triples in the
+ * instance buffer's own order. The circle bounds the mesh's quantisation box under
+ * the instance's transform; `r` takes the longest matrix column, so it stays a
+ * bound under non-uniform scale. Computed once per layout -- instances never move.
+ */
+export function instanceCircles(calls: TerrainDrawCall[], instances: Float32Array): Float32Array {
+  const out = new Float32Array((instances.length / INSTANCE_FLOATS) * 3);
+  for (const call of calls) {
+    const lx = call.lo[0] + call.ext[0] / 2;
+    const ly = call.lo[1] + call.ext[1] / 2;
+    const lz = call.lo[2] + call.ext[2] / 2;
+    const half = 0.5 * Math.hypot(call.ext[0], call.ext[1], call.ext[2]);
+    for (let i = call.instOff; i < call.instOff + call.instN; i++) {
+      const f = i * INSTANCE_FLOATS;
+      const s = Math.max(
+        Math.hypot(instances[f], instances[f + 1], instances[f + 2]),
+        Math.hypot(instances[f + 3], instances[f + 4], instances[f + 5]),
+        Math.hypot(instances[f + 6], instances[f + 7], instances[f + 8])
+      );
+      out[i * 3] = instances[f] * lx + instances[f + 3] * ly + instances[f + 6] * lz + instances[f + 9];
+      out[i * 3 + 1] = instances[f + 1] * lx + instances[f + 4] * ly + instances[f + 7] * lz + instances[f + 10];
+      out[i * 3 + 2] = half * s;
+    }
+  }
+  return out;
+}
+
+export type CulledDraw = { off: number; n: number };
+
+/**
+ * Choose which instances to draw this frame, and pack them contiguously into `out`.
+ *
+ * The terrain is geometry-bound: a layout is 18-26M triangles per pass, ~80% of
+ * them POI ship-kit pieces, and every frame used to draw all of them whatever the
+ * view. An instance is dropped when its bounding circle misses the view, or when
+ * it is under `minRadius` -- smaller than a pixel, so it can change at most a
+ * fraction of one. Landscape tiles are always kept: there are few of them, and
+ * they are the ground everything else is drawn against.
+ *
+ * Culling per instance, not per call, is the point: each call's instances are
+ * scattered across the whole map, so whole-call culling keeps 87-100% of them.
+ */
+export function cullInstances(
+  calls: TerrainDrawCall[],
+  instances: Float32Array,
+  circles: Float32Array,
+  view: TerrainView,
+  minRadius: number,
+  out: Float32Array
+): { draws: CulledDraw[]; total: number } {
+  const draws: CulledDraw[] = [];
+  let total = 0;
+  for (const call of calls) {
+    const off = total;
+    let runStart = -1;
+    const flush = (end: number) => {
+      if (runStart < 0) return;
+      out.set(instances.subarray(runStart * INSTANCE_FLOATS, end * INSTANCE_FLOATS), total * INSTANCE_FLOATS);
+      total += end - runStart;
+      runStart = -1;
+    };
+    const last = call.instOff + call.instN;
+    for (let i = call.instOff; i < last; i++) {
+      let keep = call.land;
+      if (!keep) {
+        const x = circles[i * 3], y = circles[i * 3 + 1], r = circles[i * 3 + 2];
+        keep = r >= minRadius && x + r >= view.minX && x - r <= view.maxX && y + r >= view.minY && y - r <= view.maxY;
+      }
+      if (keep) { if (runStart < 0) runStart = i; } else flush(i);
+    }
+    flush(last);
+    draws.push({ off, n: total - off });
+  }
+  return { draws, total };
+}

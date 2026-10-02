@@ -1,5 +1,6 @@
 import { BFS, BVS, CFS, FS, RFS, RVS, VS } from "./shaders";
-import { buildDrawCalls, depthRange, orthoFromWorldRect, applyCanvasSize } from "./terrainGeometry";
+import { buildDrawCalls, cullInstances, depthRange, instanceCircles, INSTANCE_FLOATS, orthoFromWorldRect, applyCanvasSize } from "./terrainGeometry";
+import type { CulledDraw } from "./terrainGeometry";
 import type { LayoutAssets, SharedAssets } from "./terrainAssets";
 import type { TerrainDrawCall, TerrainView } from "./types";
 
@@ -40,6 +41,14 @@ const VOID_COLOUR: [number, number, number] = [0.3, 0.26, 0.22];
 const INSTANCE_STRIDE = 56; // 14 float32: mat3, translation, iMat, lift
 const INSTANCE_OFFSETS = [0, 12, 24, 36, 48, 52];
 const UV_LOCATION = 8;
+/**
+ * Instances with a bounding radius under this many framebuffer pixels are not
+ * drawn. At 0.5 (one pixel across) the whole-map view drops 57% of its triangles
+ * and changes 0.01% of pixels. 1.0 would drop 81%, but POI structures are built
+ * from many sub-pixel ship pieces that only read together, and at 1.0 their blue
+ * hulls vanish from the overview.
+ */
+const CULL_MIN_RADIUS_PX = 0.5;
 const ATTRIBS = 9; // locations 0..8, cleared around every pass
 
 export type DeepDesertRenderer = {
@@ -253,6 +262,13 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   let sharedRef: SharedAssets | null = null;
   let layoutRef: LayoutAssets | null = null;
   let calls: TerrainDrawCall[] = [];
+  // Per-instance culling: bounding circles per layout, and this frame's survivors
+  // packed into bCull. See cullInstances.
+  let instFloats: Float32Array | null = null;
+  let circles: Float32Array | null = null;
+  let packed: Float32Array | null = null;
+  let culled: CulledDraw[] = [];
+  let bCull: WebGLBuffer | null = null;
   let zRange = 1;
   let view: TerrainView | null = null;
   let lost = false;
@@ -262,7 +278,6 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   let bPos: WebGLBuffer | null = null;
   let bNrm: WebGLBuffer | null = null;
   let bIdx: WebGLBuffer | null = null;
-  let bIns: WebGLBuffer | null = null;
   let bHfIdx: WebGLBuffer | null = null;
   let hfIndexCount = 0;
   let texHf: WebGLTexture | null = null;
@@ -325,8 +340,8 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   function setAssets(shared: SharedAssets, layout: LayoutAssets) {
     if (lost) return;
     // Geometry and the sand textures are shared by all 12 layouts: only re-upload
-    // them when the shared set itself changes, so a Coriolis reset costs one
-    // instance buffer and one height field rather than 8.5 MB of re-upload.
+    // them when the shared set itself changes, so a Coriolis reset costs new
+    // instance bounds and one height field rather than 8.5 MB of re-upload.
     if (sharedRef !== shared) {
       const { library, geometry } = shared;
       const nrmAt = library.posBytes;
@@ -353,9 +368,6 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     }
 
     if (layoutRef !== layout) {
-      if (bIns) gl.deleteBuffer(bIns);
-      bIns = upload(gl.ARRAY_BUFFER, layout.instances);
-
       const meta = layout.meta;
       if (texHf) gl.deleteTexture(texHf);
       texHf = gl.createTexture();
@@ -389,6 +401,13 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     }
 
     calls = buildDrawCalls(shared.library, layout.meta);
+    const ins = layout.instances;
+    instFloats = ins.byteOffset % 4 === 0
+      ? new Float32Array(ins.buffer, ins.byteOffset, ins.byteLength / 4)
+      : new Float32Array(ins.slice().buffer);
+    circles = instanceCircles(calls, instFloats);
+    packed = new Float32Array(instFloats.length);
+    if (!bCull) bCull = gl.createBuffer();
     zRange = depthRange(layout.meta);
   }
 
@@ -416,7 +435,10 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
 
   function drawGeometry() {
     drawHeightField();
-    for (const call of calls) {
+    for (let c = 0; c < calls.length; c++) {
+      const call = calls[c];
+      const kept = culled[c];
+      if (!kept || kept.n === 0) continue;
       gl.uniform3f(t.lo, call.lo[0], call.lo[1], call.lo[2]);
       gl.uniform3f(t.ext, call.ext[0], call.ext[1], call.ext[2]);
       gl.uniform1f(t.feather, call.land ? FEATHER : 0);
@@ -433,8 +455,8 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       gl.vertexAttribDivisor(1, 0);
       gl.vertexAttribPointer(1, 2, gl.BYTE, true, 2, call.vo * 2);
 
-      gl.bindBuffer(gl.ARRAY_BUFFER, bIns);
-      const base = call.instOff * INSTANCE_STRIDE;
+      gl.bindBuffer(gl.ARRAY_BUFFER, bCull);
+      const base = kept.off * INSTANCE_STRIDE;
       for (let k = 0; k < 6; k++) {
         const location = k < 5 ? 2 + k : 7;
         const size = k >= 4 ? 1 : 3;
@@ -460,7 +482,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       }
 
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bIdx);
-      gl.drawElementsInstanced(gl.TRIANGLES, call.ic, gl.UNSIGNED_SHORT, call.io * 2, call.instN);
+      gl.drawElementsInstanced(gl.TRIANGLES, call.ic, gl.UNSIGNED_SHORT, call.io * 2, kept.n);
     }
   }
 
@@ -480,6 +502,18 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     const fw = width * ss;
     const fh = height * ss;
     ensureFramebuffer(fw, fh);
+
+    // Cull once per frame; both passes draw the same survivors (see
+    // CULL_MIN_RADIUS_PX for the size cut). bufferData (not bufferSubData)
+    // orphans the previous frame's storage, which under ANGLE avoids a ~16 ms stall
+    // waiting on the GPU to finish reading it.
+    if (instFloats && circles && packed && bCull) {
+      const uuPerPixel = (view.maxX - view.minX) / fw;
+      const result = cullInstances(calls, instFloats, circles, view, CULL_MIN_RADIUS_PX * uuPerPixel, packed);
+      culled = result.draws;
+      gl.bindBuffer(gl.ARRAY_BUFFER, bCull);
+      gl.bufferData(gl.ARRAY_BUFFER, packed.subarray(0, result.total * INSTANCE_FLOATS), gl.DYNAMIC_DRAW);
+    }
 
     const m = orthoFromWorldRect(view, zRange);
 
@@ -609,7 +643,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     draw,
     dispose() {
       canvas.removeEventListener("webglcontextlost", onLost as EventListener);
-      for (const buffer of [bPos, bNrm, bIdx, bIns, bHfIdx, bUV, quad]) if (buffer) gl.deleteBuffer(buffer);
+      for (const buffer of [bPos, bNrm, bIdx, bHfIdx, bUV, bCull, quad]) if (buffer) gl.deleteBuffer(buffer);
       for (const texture of [texHf, det1, det2, texBrk, rockTex, accTex]) if (texture) gl.deleteTexture(texture);
       if (accDepth) gl.deleteRenderbuffer(accDepth);
       if (fbo) gl.deleteFramebuffer(fbo);
