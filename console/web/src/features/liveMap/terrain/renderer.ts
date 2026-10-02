@@ -1,5 +1,5 @@
 import { BFS, BVS, CFS, FS, RFS, RVS, VS } from "./shaders";
-import { buildDrawCalls, cullInstances, depthRange, instanceCircles, INSTANCE_FLOATS, orthoFromWorldRect, applyCanvasSize } from "./terrainGeometry";
+import { borderHeight, buildDrawCalls, cullInstances, depthRange, instanceCircles, INSTANCE_FLOATS, orthoFromWorldRect, applyCanvasSize } from "./terrainGeometry";
 import type { CulledDraw } from "./terrainGeometry";
 import { cameraClipMatrix, cullRectForCamera, scaleAt, screenToWorldAtZ } from "./terrainCamera";
 import type { TerrainCamera } from "./terrainCamera";
@@ -51,6 +51,17 @@ const UV_LOCATION = 8;
  * hulls vanish from the overview.
  */
 const CULL_MIN_RADIUS_PX = 0.5;
+/**
+ * How far past the mapped square the tilted view draws, world uu.
+ *
+ * The flat map's view ends at the square, so everything is clipped to it. A
+ * tilted view sees over the edge, and what is there is the shield wall, sliced
+ * through where the square ends. The shipped instances already reach past it --
+ * measured across all twelve layouts, identically: 185,078 uu to the south,
+ * 144,085 west, 89,559 east, nothing north -- so the clip is simply moved out
+ * far enough to take all of it, and the sand is carried out underneath.
+ */
+const EDGE_APRON = 200000;
 const ATTRIBS = 9; // locations 0..8, cleared around every pass
 
 export type DeepDesertRenderer = {
@@ -173,7 +184,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     detStr: u(terrain, "uDetStr"), detail: u(terrain, "uDetail"),
     con: u(terrain, "uCon"), conStep: u(terrain, "uConStep"), conStepS: u(terrain, "uConStepS"),
     rock: u(terrain, "uRock"), texOn: u(terrain, "uTexOn"), texLayer: u(terrain, "uTexLayer"), pick: u(terrain, "uPick"),
-    texGain: u(terrain, "uTexGain")
+    texGain: u(terrain, "uTexGain"), apron: u(terrain, "uApron"), apronZ: u(terrain, "uApronZ")
   };
   const r = { tex: u(resolve, "uT"), texel: u(resolve, "uTexel"), ss: u(resolve, "uSS") };
   const b = { vp: u(backdrop, "uVP"), c: u(backdrop, "uC"), half: u(backdrop, "uHalf"), z: u(backdrop, "uZ") };
@@ -293,6 +304,8 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   let cssHeight = 0;
   // The last frame's matrix and culled draws, which the pick pass reuses.
   let lastMatrix: Float32Array | null = null;
+  // The level the sand settles to past the map's edge, in 3D: see EDGE_APRON.
+  let apronZ = 0;
   let pickFbo: WebGLFramebuffer | null = null;
   let pickTex: WebGLTexture | null = null;
   let pickDepth: WebGLRenderbuffer | null = null;
@@ -403,6 +416,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      apronZ = borderHeight(new Uint16Array(layout.heightField.buffer, layout.heightField.byteOffset, layout.heightField.byteLength / 2), meta);
 
       // The grid's indices are generated rather than shipped: 6 MB of payload
       // for something a loop reproduces exactly.
@@ -591,10 +605,10 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     const height = canvas.height;
     if (!width || !height) return;
     if (camera) {
-      // What the camera can see, capped to the map square (plus the edge
-      // tolerance) so a steep view's far reach never drags in empty space.
+      // What the camera can see, capped to the map square and its apron so a
+      // steep view's far reach never drags in empty space.
       const r = cullRectForCamera(camera, meta.zmin, meta.zmax);
-      const cap = meta.half * 1.05;
+      const cap = meta.half + EDGE_APRON;
       view = {
         minX: Math.max(r.minX, meta.cx - cap), maxX: Math.min(r.maxX, meta.cx + cap),
         minY: Math.max(r.minY, meta.cy - cap), maxY: Math.min(r.maxY, meta.cy + cap),
@@ -646,7 +660,11 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.uniform1f(t.zlo, meta.zmin);
     gl.uniform1f(t.zhi, meta.zmin + (meta.zmax - meta.zmin) * 0.35);
     gl.uniform2f(t.c, meta.cx, meta.cy);
-    gl.uniform1f(t.half, meta.half);
+    // Tilted, the clip moves out to take in the rock that stands past the edge.
+    const apron = camera ? EDGE_APRON : 0;
+    gl.uniform1f(t.half, meta.half + apron);
+    gl.uniform1f(t.apron, apron);
+    gl.uniform1f(t.apronZ, apronZ);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, det1);
     gl.uniform1i(t.d1, 1);
@@ -734,7 +752,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.useProgram(backdrop);
     gl.uniformMatrix4fv(b.vp, false, m);
     gl.uniform2f(b.c, meta.cx, meta.cy);
-    gl.uniform1f(b.half, meta.half);
+    gl.uniform1f(b.half, meta.half + apron);
     gl.uniform1f(b.z, meta.floorZ);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 

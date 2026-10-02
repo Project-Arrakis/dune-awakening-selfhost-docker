@@ -9,6 +9,7 @@ import {
   octDecode,
   orthoFromWorldRect,
   projectWorldPoint,
+  borderHeight,
   interpolateHeightField,
   sampleHeightField, applyCanvasSize } from "./terrainGeometry";
 import type { TerrainLayoutMeta, TerrainLibrary, TerrainView } from "./types";
@@ -229,6 +230,24 @@ describe("sampleHeightField", () => {
   it("clamps outside the field instead of wrapping or reading out of bounds", () => {
     expect(sampleHeightField(field, meta, -1e6, -1e6)).toBeCloseTo(0, 6);
     expect(Number.isFinite(sampleHeightField(field, meta, 1e6, 1e6))).toBe(true);
+  });
+});
+
+describe("borderHeight", () => {
+  const meta = { hfN: 4, hfZlo: 1000, hfZhi: 1000 + 6553.5, hfStep: 100, hfX0: 0, hfY0: 0 } as unknown as TerrainLayoutMeta;
+
+  it("averages the rim and ignores the interior", () => {
+    // Rim at 10000 raw (1000 uu above the floor), interior far higher.
+    const field = new Uint16Array(16).fill(10000);
+    for (const i of [5, 6, 9, 10]) field[i] = 65535;
+    expect(borderHeight(field, meta)).toBeCloseTo(2000, 6);
+  });
+
+  it("counts each rim texel once, corners included", () => {
+    // One corner raised: 1 of the 12 rim texels of a 4x4.
+    const field = new Uint16Array(16);
+    field[0] = 12000;
+    expect(borderHeight(field, meta)).toBeCloseTo(1000 + 1200 / 12, 6);
   });
 });
 

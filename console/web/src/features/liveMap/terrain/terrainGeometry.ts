@@ -150,6 +150,27 @@ export function interpolateHeightField(field: Uint16Array, layout: TerrainLayout
   return layout.hfZlo + (raw / 65535) * (layout.hfZhi - layout.hfZlo);
 }
 
+/**
+ * The mean sand height around the height field's rim: the level the ground is
+ * carried on at past the map's edge, where there is no height data. The rim
+ * rather than the whole field, so the plain meets the edge near its own height
+ * instead of stepping up or down to the map's average.
+ */
+export function borderHeight(field: Uint16Array, layout: TerrainLayoutMeta): number {
+  const n = layout.hfN;
+  let sum = 0;
+  let count = 0;
+  for (let i = 0; i < n; i++) {
+    sum += field[i] + field[(n - 1) * n + i];
+    count += 2;
+    if (i > 0 && i < n - 1) {
+      sum += field[i * n] + field[i * n + n - 1];
+      count += 2;
+    }
+  }
+  return layout.hfZlo + (sum / Math.max(count, 1) / 65535) * (layout.hfZhi - layout.hfZlo);
+}
+
 /** The parts of a canvas the size guard touches, so it can be tested without one. */
 export type SizableCanvas = { width: number; height: number; style: { width: string; height: string } };
 

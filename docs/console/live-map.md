@@ -449,6 +449,15 @@ the same rule as top-down.
 perspective included: a pan carries the grabbed point with the cursor, and the
 wheel zooms about the point it is over.
 
+**The view runs past the map's edge.** Top-down, everything is clipped to the
+mapped square, because the view ends there. Tilted, it does not, and what stands
+just outside is the shield wall -- which the square cuts through. The shipped
+instances already reach past the edge (185,078 uu to the south, 144,085 west,
+89,559 east, nothing north, the same in all twelve layouts), so the tilted view
+moves the clip out 200,000 uu to take in all of it and carries the sand on
+underneath as a level plain. The height field has no data out there; the plain
+sits at the mean height of its rim. Nothing out there can be picked.
+
 **The sector grid** is projected through the same camera. Its lines are laid on
 the sand rather than on a flat plane -- a line at the map's average height would
 slide past a marker standing on a dune as the view tilts -- and each label sits

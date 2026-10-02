@@ -38,6 +38,9 @@ uniform float uFeather, uWScale, uBias, uLift;
 // differences on the grid, which is continuous by construction.
 uniform highp usampler2D uHF;   // integer samplers have no default precision
 uniform float uHFMode, uHN, uHStep, uHX0, uHY0, uHZlo, uHZhi;
+// 3D only: how far the sand runs on past the height field, and the height it
+// settles to out there. Zero for the flat map, which never sees past its edge.
+uniform float uApron, uApronZ;
 float hfAt(ivec2 p){
   ivec2 q = clamp(p, ivec2(0), ivec2(int(uHN)-1));
   return uHZlo + float(texelFetch(uHF,q,0).r)/65535.0*(uHZhi-uHZlo);
@@ -71,6 +74,19 @@ void main(){
     float dx = hfAt(ivec2(ix+1,iy)) - hfAt(ivec2(ix-1,iy));
     float dy = hfAt(ivec2(ix,iy+1)) - hfAt(ivec2(ix,iy-1));
     vN = normalize(vec3(-dx, -dy, 2.0*uHStep));
+    // The height field stops at the map's edge, but the rock does not: the
+    // shield wall stands well outside it. Rather than leave that rock over a
+    // void, the sand is carried on under it as a level plain. The grid's two
+    // outermost rings -- both already past the mapped square -- are levelled,
+    // and the outer one is moved out to the apron's far edge. Levelling both is
+    // what keeps the plain plain: stretch a single ring and the edge's own dunes
+    // are smeared across the whole apron as streaks.
+    if(uApron > 0.0 && (ix<=1 || iy<=1 || ix>=n-2 || iy>=n-2)){
+      wf.x += ix==0 ? -uApron : (ix==n-1 ? uApron : 0.0);
+      wf.y += iy==0 ? -uApron : (iy==n-1 ? uApron : 0.0);
+      wf.z = uApronZ;
+      vN = vec3(0.0, 0.0, 1.0);
+    }
     vRand = 0.5;   // neutral: the height field has no instances
     vUV = vec2(0.0);
     vZ = wf.z; vMat = 1.0; vXY = wf.xy; vBox = vec4(0.0); vWS = 1.0; vEdge = 1e9; vClip = -1e9;
@@ -158,6 +174,9 @@ void main(){
   // cut but the backdrop, and the exemption instead let the southern shield wall
   // spill unbounded past the map edge. Checked at 234 uu/px: the cut face is
   // clean, no interior is exposed.
+  //
+  // That is the flat map, whose view ends at the square. Tilted, the view runs
+  // on past it, and there uHalf is widened to take in the whole wall.
   if(abs(vXY.x-uC.x)>uHalf || abs(vXY.y-uC.y)>uHalf) discard;
   // A terrain patch is composited over the landscape, which exposes the deep
   // flat skirt it is meant to bury -- 74% of this mesh sits over 1000 uu under
