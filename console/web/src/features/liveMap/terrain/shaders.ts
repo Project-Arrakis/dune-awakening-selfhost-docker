@@ -52,6 +52,9 @@ out vec3 vN; out float vZ; out float vMat; out vec2 vXY;
 flat out vec4 vBox; out float vWS; out float vEdge; flat out float vClip;
 flat out float vRand;
 out vec2 vUV;
+// For texturing a cliff from the side: how much the face looks along the mesh's
+// x and y, and its height as a texture coordinate at the density u and v have.
+out vec2 vSideW; out vec2 vSideUV;
 // A per-instance random hashed from the instance's translation: no attribute, no
 // bytes. iT reaches ~1e6 uu, so it is scaled down to keep the hash meaningful.
 float hash13(vec3 p){
@@ -81,7 +84,7 @@ void main(){
       wf.y += iy==0 ? -uApron : (iy==n-1 ? uApron : 0.0);
     }
     vRand = 0.5;   // neutral: the height field has no instances
-    vUV = vec2(0.0);
+    vUV = vec2(0.0); vSideW = vec2(0.0); vSideUV = vec2(0.5);
     vZ = wf.z; vMat = 1.0; vXY = wf.xy; vBox = vec4(0.0); vWS = 1.0; vEdge = 1e9; vClip = -1e9;
     gl_Position = uVP*vec4(wf,1.0);
     gl_Position.z += uBias;
@@ -98,6 +101,10 @@ void main(){
   vN = normalize(R*octDec(aNrm));
   vRand = hash13(iT);
   vUV = aUV;
+  vec3 nl = octDec(aNrm);
+  vSideW = abs(nl.xy);
+  // Height from the finished vertex, so a skirt carried to the ground keeps the texture's scale.
+  vSideUV = 0.5 + ((w.z - iT.z)/length(iC2) - (uLo.z + 0.5*uExt.z)) / uExt.xy;
   vZ = w.z; vMat = iMat; vXY = w.xy;
   vec2 e0 = (R*vec3(uLo.xy,0.0)).xy + iT.xy;
   vec2 e1 = (R*vec3(uLo.xy+uExt.xy,0.0)).xy + iT.xy;
@@ -117,6 +124,7 @@ in vec3 vN; in float vZ; in float vMat; in vec2 vXY;
 flat in vec4 vBox; in float vWS; in float vEdge; flat in float vClip;
 flat in float vRand;
 in vec2 vUV;
+in vec2 vSideW; in vec2 vSideUV;
 // The baked diffuse of each rock family's in-world counterpart, one layer each.
 uniform mediump sampler2DArray uRock;
 uniform float uTexOn, uTexLayer, uTexGain;
@@ -218,7 +226,20 @@ void main(){
   vec3 alb  = mix(rock, sand, step(0.5, vMat));
   bool textured = uTexOn > 0.5 && vMat < 0.5;
   if(textured){
-    vec3 tx = texture(uRock, vec3(vUV, uTexLayer)).rgb * uTexGain;
+    vec3 tx = texture(uRock, vec3(vUV, uTexLayer)).rgb;
+    // The texture is laid on from overhead, so down a cliff it smears into
+    // vertical stripes. Tilted, a steep face takes it from the side instead:
+    // across the face one way, up the face the other.
+    if(uSideLit > 0.0){
+      vec2 s = vSideW*vSideW; s *= s;
+      float up = max(1.0 - dot(vSideW, vSideW), 0.0); up *= up;
+      if(s.x + s.y > 0.02*up){
+        vec3 sx = texture(uRock, vec3(vSideUV.y, vUV.y, uTexLayer)).rgb;
+        vec3 sy = texture(uRock, vec3(vUV.x, vSideUV.x, uTexLayer)).rgb;
+        tx = mix(tx, (tx*up + sx*s.x + sy*s.y) / (up + s.x + s.y), uSideLit);
+      }
+    }
+    tx *= uTexGain;
     // the texture's light and dark, over its family's normalised mean luminance (0.414)
     float tl = dot(tx, vec3(0.2126, 0.7152, 0.0722)) / 0.414;
     alb = mix(tx * TEXTINT, rock * tl, TEXHUE);

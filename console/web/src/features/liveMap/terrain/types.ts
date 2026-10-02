@@ -22,7 +22,7 @@ export type TerrainMesh = {
   texGain?: number;
   /** First vertex of this mesh's UVs in the rock UV buffer, in vertices. */
   uvo?: number;
-  /** Index of the first skirt vertex the seal appended; absent on an unsealed mesh. */
+  /** Index of the first lowered skirt vertex the seal appended; absent on an unsealed mesh. */
   skirt?: number;
 };
 

@@ -348,16 +348,22 @@ flat tone with a per-instance random. Here it gets:
 - **Sealing.** The rock meshes are stacks of open plates, and the bottom of one
   cliff face hangs a few metres above the ledge below, leaving a slit. When the
   library loads, `terrainSeal.ts` hangs a 60 m skirt from every open edge of
-  every rock mesh, which closes them. From overhead a skirt has no area, so the
-  top-down view is unaffected. POIs and ground patches are left alone.
+  every rock mesh, which closes them. A skirt has its own vertices, with a level
+  normal, so it lights and textures as cliff rather than as a ramp down from
+  the ledge. From overhead a skirt has no area, so the top-down view is
+  unaffected. POIs and ground patches are left alone.
 
 The diffuse ships as BC1 (60 layers of 256 x 256) and is decoded once on the GPU
 into a mipmapped array.
 
-Limits of the overhead projection: where the in-world rock and the map's proxy
-differ in shape (an arch, say) the paint does not line up, and a vertical face
-gets one column of texels stretched down it, so cliffs look streaked when tilted
-and zoomed right in.
+Laid on from overhead, a texture gives a vertical face one column of texels
+stretched down it, which shows as stripes. So when the view is tilted, a steep
+face takes the same texture from the side instead: across the face one way and
+up it the other, at the density the overhead mapping has, blended in by how far
+the face leans. Top-down is unchanged.
+
+Limit of the overhead projection: where the in-world rock and the map's proxy
+differ in shape (an arch, say) the paint does not line up.
 
 ### Elevation lines
 
@@ -568,7 +574,7 @@ Feature-level changes to the Live Map, newest first.
 |---|---|---|
 | Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag. Markers and the sector grid are projected through the camera, and markers and grid lines are hidden where rock covers them. |
 | Unreleased | 2026-10 | The tilted view draws past the map's edge, out to 375,000 uu: the shield walls outside the square, hand-placed pieces included, with the wall's floating upper tiers closed down to the ground, on the game's own sand for the first 90,000 uu and a level plain beyond. |
-| Unreleased | 2026-10 | Rock meshes are sealed at load, rock is lit as a solid when tilted, and the camera's eye stays above the rock at high zoom. |
+| Unreleased | 2026-10 | Rock meshes are sealed at load, rock is lit as a solid and its cliffs textured from the side when tilted, and the camera's eye stays above the rock at high zoom. |
 | Unreleased | 2026-10 | Rock is painted with the game's own textures, with the game's normal map baked into the two big wall shapes. Terrain instances are culled per frame. |
 | Unreleased | 2026-09 | **Elevation Lines** layer. Rock is lit with its authored normals and given a per-instance tone. |
 | v1.4.35 | 2026-09-20 | The Coriolis block is read from the game log by pattern instead of from a tail, so the layout no longer goes missing on long-running servers. |

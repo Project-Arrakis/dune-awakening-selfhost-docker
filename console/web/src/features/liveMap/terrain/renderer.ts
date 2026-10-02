@@ -222,8 +222,10 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   function decodeRockArray(raw: Uint8Array, size: number, layers: number): { texture: WebGLTexture; real: boolean } {
     const texture = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    // Mirrored, not clamped: a cliff textured from the side runs its height past
+    // the texture's edge. Inside 0..1 the two sample alike.
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     if (!s3tc || !layers || !size) {
       gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8, 1, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));

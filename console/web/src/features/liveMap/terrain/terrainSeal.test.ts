@@ -71,10 +71,18 @@ describe("sealMesh", () => {
     // The originals are untouched, in place.
     expect(Array.from(sealed.pos.subarray(0, stacked.pos.length))).toEqual(Array.from(stacked.pos));
     expect(Array.from(sealed.idx.subarray(0, stacked.idx.length))).toEqual(Array.from(stacked.idx));
-    // Every new vertex is straight below an open-edge vertex, by the drop.
-    const rimZ = new Set<number>();
-    for (let v = stacked.pos.length / 3; v < sealed.pos.length / 3; v++) rimZ.add(sealed.pos[v * 3 + 2]);
-    expect([...rimZ].sort((a, b) => a - b)).toEqual([200, 700]);
+    // The skirt's own top vertices sit on the open edges; the lowered ones, from
+    // `skirt` on, are straight below them by the drop.
+    const heights = (from: number, to: number) => {
+      const z = new Set<number>();
+      for (let v = from; v < to; v++) z.add(sealed.pos[v * 3 + 2]);
+      return [...z].sort((a, b) => a - b);
+    };
+    expect(sealed.skirt).toBe(stacked.pos.length / 3 + added / 2);
+    expect(heights(stacked.pos.length / 3, sealed.skirt!)).toEqual([500, 1000]);
+    expect(heights(sealed.skirt!, sealed.pos.length / 3)).toEqual([200, 700]);
+    // A skirt uses none of the mesh's own vertices, so the ledge's normal does not bleed into it.
+    for (let t = stacked.idx.length; t < sealed.idx.length; t++) expect(sealed.idx[t]).toBeGreaterThanOrEqual(stacked.pos.length / 3);
     // The upper plate's skirt (z 700..1000) spans the slit (z 900..1000).
     const skirtTops = new Set<number>();
     for (let t = stacked.idx.length; t < sealed.idx.length; t++) skirtTops.add(sealed.pos[sealed.idx[t] * 3 + 2]);
@@ -111,7 +119,7 @@ describe("sealMesh", () => {
     // One just above the floor is clamped to it rather than wrapping below zero.
     const low = soup(box(100, 200, 100, 200, 50, 500, false));
     const sealed = sealMesh(low, 300);
-    for (let v = low.pos.length / 3; v < sealed.pos.length / 3; v++) expect(sealed.pos[v * 3 + 2]).toBe(0);
+    for (let v = sealed.skirt!; v < sealed.pos.length / 3; v++) expect(sealed.pos[v * 3 + 2]).toBe(0);
   });
 
   it("returns a closed mesh as it is", () => {
@@ -178,8 +186,8 @@ describe("sealRockLibrary", () => {
     expect(p1.vn).toBe(p0.vn);
     expect(p1.ic).toBe(p0.ic);
     expect(p1.uvo).toBeUndefined();
-    // A sealed mesh records where its skirt starts: its own vertices come first.
-    expect(r1.skirt).toBe(r0.vn);
+    // A sealed mesh records where its lowered skirt vertices start: its own come first, then the skirt's tops.
+    expect(r1.skirt).toBe(r0.vn + (r1.vn - r0.vn) / 2);
     expect(p1.skirt).toBeUndefined();
     expect(Array.from(after.pos.subarray(p1.vo * 3, (p1.vo + p1.vn) * 3))).toEqual(Array.from(before.pos.subarray(p0.vo * 3, (p0.vo + p0.vn) * 3)));
     expect(Array.from(after.idx.subarray(p1.io, p1.io + p1.ic))).toEqual(Array.from(before.idx.subarray(p0.io, p0.io + p0.ic)));
@@ -212,7 +220,7 @@ describe("sealRockLibrary", () => {
   it("drops by the mesh's own height scale", () => {
     const r1 = out.library.meshes[0];
     const zs = new Set<number>();
-    for (let v = r1.vo + packed.library.meshes[0].vn; v < r1.vo + r1.vn; v++) zs.add(after.pos[v * 3 + 2]);
+    for (let v = r1.vo + r1.skirt!; v < r1.vo + r1.vn; v++) zs.add(after.pos[v * 3 + 2]);
     // rims at 1000 and 500, dropped 300 counts
     expect([...zs].sort((a, b) => a - b)).toEqual([200, 700]);
   });

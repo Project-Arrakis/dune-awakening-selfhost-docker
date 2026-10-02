@@ -34,6 +34,8 @@ export type MeshBuffers = {
   uv: Uint16Array | null;
   /** Triangle list, indices local to this mesh. */
   idx: Uint16Array;
+  /** Index of the first lowered skirt vertex, on a mesh that was given a skirt. */
+  skirt?: number;
 };
 
 /**
@@ -82,23 +84,21 @@ export function openEdges(pos: Uint16Array, idx: Uint16Array): Uint32Array {
 
 /**
  * Hang a skirt `drop` (quantised z) below every open edge not already on the
- * mesh's floor. Skirt normals are laid flat so they light as cliff, not ledge.
+ * mesh's floor. A skirt has its own vertices top and bottom, with the normal
+ * laid flat: sharing the ledge's vertices would shade it as a ramp from ledge
+ * to cliff. The lowered ones come last, from `skirt` on.
  * Returns the mesh unchanged if there is nothing to close or no index room.
  */
 export function sealMesh(mesh: MeshBuffers, drop: number): MeshBuffers {
   const edges = openEdges(mesh.pos, mesh.idx);
   const count = mesh.pos.length / 3;
-  const lowered = new Map<number, number>();
-  const pos: number[] = [];
-  const nrm: number[] = [];
-  const uv: number[] = [];
-  const idx: number[] = [];
-  const lower = (v: number, ex: number, ey: number): number => {
-    const known = lowered.get(v);
-    if (known !== undefined) return known;
-    const id = count + lowered.size;
-    lowered.set(v, id);
-    pos.push(mesh.pos[v * 3], mesh.pos[v * 3 + 1], Math.max(0, mesh.pos[v * 3 + 2] - drop));
+  // Per skirted vertex, in first-seen order: its slot and its flat normal.
+  const slot = new Map<number, number>();
+  const flat: number[] = [];
+  const quads: number[] = [];
+  const claim = (v: number, ex: number, ey: number): void => {
+    if (slot.has(v)) return;
+    slot.set(v, slot.size);
     const n = octDecode(mesh.nrm[v * 2] / 127, mesh.nrm[v * 2 + 1] / 127);
     let nx = n[0];
     let ny = n[1];
@@ -108,26 +108,46 @@ export function sealMesh(mesh: MeshBuffers, drop: number): MeshBuffers {
       nx = -ey * side;
       ny = ex * side;
     }
-    const flat = octEncode(nx, ny, 0);
-    nrm.push(flat[0], flat[1]);
-    if (mesh.uv) uv.push(mesh.uv[v * 2], mesh.uv[v * 2 + 1]);
-    return id;
+    flat.push(...octEncode(nx, ny, 0));
   };
   for (let e = 0; e < edges.length; e += 2) {
     const a = edges[e];
     const b = edges[e + 1];
     if (mesh.pos[a * 3 + 2] === 0 && mesh.pos[b * 3 + 2] === 0) continue;
-    if (count + lowered.size + 2 > 65536) break;
+    if (count + (slot.size + 2) * 2 > 65536) break;
     const ex = mesh.pos[b * 3] - mesh.pos[a * 3];
     const ey = mesh.pos[b * 3 + 1] - mesh.pos[a * 3 + 1];
     const len = Math.hypot(ex, ey) || 1;
-    const la = lower(a, ex / len, ey / len);
-    const lb = lower(b, ex / len, ey / len);
-    idx.push(a, b, lb, a, lb, la);
+    claim(a, ex / len, ey / len);
+    claim(b, ex / len, ey / len);
+    quads.push(a, b);
   }
-  if (!idx.length) return mesh;
-  const join = <T extends Uint16Array | Int8Array>(base: T, extra: number[]): T => {
-    const out = new (base.constructor as new (n: number) => T)(base.length + extra.length);
+  if (!quads.length) return mesh;
+  const added = slot.size;
+  const pos = new Uint16Array(added * 6);
+  const nrm = new Int8Array(added * 4);
+  const uv = mesh.uv ? new Uint16Array(added * 4) : null;
+  for (const [v, k] of slot) {
+    for (const [at, z] of [[k, mesh.pos[v * 3 + 2]], [added + k, Math.max(0, mesh.pos[v * 3 + 2] - drop)]]) {
+      pos[at * 3] = mesh.pos[v * 3];
+      pos[at * 3 + 1] = mesh.pos[v * 3 + 1];
+      pos[at * 3 + 2] = z;
+      nrm[at * 2] = flat[k * 2];
+      nrm[at * 2 + 1] = flat[k * 2 + 1];
+      if (uv && mesh.uv) {
+        uv[at * 2] = mesh.uv[v * 2];
+        uv[at * 2 + 1] = mesh.uv[v * 2 + 1];
+      }
+    }
+  }
+  const idx = new Uint16Array(quads.length * 3);
+  for (let q = 0; q < quads.length; q += 2) {
+    const ta = count + slot.get(quads[q])!;
+    const tb = count + slot.get(quads[q + 1])!;
+    idx.set([ta, tb, tb + added, ta, tb + added, ta + added], q * 3);
+  }
+  const join = <A extends Uint16Array | Int8Array>(base: A, extra: A): A => {
+    const out = new (base.constructor as new (n: number) => A)(base.length + extra.length);
     out.set(base);
     out.set(extra, base.length);
     return out;
@@ -135,8 +155,9 @@ export function sealMesh(mesh: MeshBuffers, drop: number): MeshBuffers {
   return {
     pos: join(mesh.pos, pos),
     nrm: join(mesh.nrm, nrm),
-    uv: mesh.uv ? join(mesh.uv, uv) : null,
-    idx: join(mesh.idx, idx)
+    uv: mesh.uv && uv ? join(mesh.uv, uv) : null,
+    idx: join(mesh.idx, idx),
+    skirt: count + added
   };
 }
 
@@ -203,7 +224,7 @@ export function sealRockLibrary(
     nrm.set(m.nrm, vo * 2);
     idx.set(m.idx, io);
     const next: TerrainMesh = { ...mesh, vo, vn: count, io, ic: m.idx.length };
-    if (count > mesh.vn) next.skirt = mesh.vn;
+    if (m.skirt !== undefined) next.skirt = m.skirt;
     if (m.uv) {
       uv.set(m.uv, uo * 2);
       next.uvo = uo;
