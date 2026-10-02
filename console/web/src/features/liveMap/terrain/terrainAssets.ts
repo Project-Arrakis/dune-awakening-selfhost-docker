@@ -6,10 +6,8 @@ import type { TerrainLayoutMeta, TerrainLibrary } from "./types";
  * Fetching and inflating the terrain assets.
  *
  * Everything ships gzipped, including the JSON sidecars, so it all flows through
- * one path. The shared half is 8.5 MB -- the mesh library, the detail textures
- * and the rock diffuse -- and identical for every layout; a layout adds about
- * 0.78 MB. That split is the whole point: a Coriolis reset changes the layout,
- * and the browser re-fetches under a megabyte.
+ * one path. The shared half is 8.5 MB and identical for every layout; a layout
+ * adds about 0.78 MB, so a Coriolis reset re-fetches under a megabyte.
  */
 
 export type SharedAssets = {
@@ -147,9 +145,8 @@ export async function loadSharedAssets(resolve: AssetResolver = bundledAsset, si
       if (rockTex.byteLength !== (library.texLayers ?? 0) * layerBytes) {
         throw new Error(`rock texture is ${rockTex.byteLength} bytes, expected ${library.texLayers ?? 0} BC1 layers of ${size}^2`);
       }
-      // The rock meshes ship as stacks of open plates with slits between them;
-      // close those once, here, off the frame path. See terrainSeal.ts.
       const plain = decodeIndices(library, geometry);
+      // Close the slits in the rock meshes once, off the frame path: see terrainSeal.ts.
       const sealed = sealRockLibrary(plain, geometry, rockUV);
       return { library: sealed.library, geometry: sealed.geometry, detail1, detail2, breakup, rockUV: sealed.rockUV, rockTex };
     })();

@@ -130,12 +130,8 @@ export function sampleHeightField(field: Uint16Array, layout: TerrainLayoutMeta,
 }
 
 /**
- * Height of the drawn sand surface at a world point. The sand is a mesh with a
- * vertex at every texel, so between texels the surface is the interpolation of
- * its four corners -- which is what something standing on it has to match. The
- * nearest texel is right at the vertices and up to half a cell's slope off
- * between them: hundreds of units, a visible float once the map is tilted and
- * zoomed in.
+ * Height of the drawn sand surface at a world point: the sand mesh has a vertex
+ * per texel, so between texels it is the interpolation of the four corners.
  */
 export function interpolateHeightField(field: Uint16Array, layout: TerrainLayoutMeta, x: number, y: number): number {
   const n = layout.hfN;
@@ -151,10 +147,8 @@ export function interpolateHeightField(field: Uint16Array, layout: TerrainLayout
 }
 
 /**
- * The mean sand height around the height field's rim: the level the ground is
- * carried on at past the map's edge, where there is no height data. The rim
- * rather than the whole field, so the plain meets the edge near its own height
- * instead of stepping up or down to the map's average.
+ * Mean sand height around the height field's rim: the level the ground is
+ * carried on at past the map's edge, where there is no height data.
  */
 export function borderHeight(field: Uint16Array, layout: TerrainLayoutMeta): number {
   const n = layout.hfN;
@@ -198,10 +192,8 @@ export function applyCanvasSize(canvas: SizableCanvas, cssWidth: number, cssHeig
 export const INSTANCE_FLOATS = 14;
 
 /**
- * A bounding circle in world XY for every instance, as `[x, y, r]` triples in the
- * instance buffer's own order. The circle bounds the mesh's quantisation box under
- * the instance's transform; `r` takes the longest matrix column, so it stays a
- * bound under non-uniform scale. Computed once per layout -- instances never move.
+ * A bounding circle in world XY per instance, as `[x, y, r]` triples in instance
+ * order. `r` takes the longest matrix column, so it holds under non-uniform scale.
  */
 export function instanceCircles(calls: TerrainDrawCall[], instances: Float32Array): Float32Array {
   const out = new Float32Array((instances.length / INSTANCE_FLOATS) * 3);
@@ -228,17 +220,10 @@ export function instanceCircles(calls: TerrainDrawCall[], instances: Float32Arra
 export type CulledDraw = { off: number; n: number };
 
 /**
- * Choose which instances to draw this frame, and pack them contiguously into `out`.
- *
- * The terrain is geometry-bound: a layout is 18-26M triangles per pass, ~80% of
- * them POI ship-kit pieces, and every frame used to draw all of them whatever the
- * view. An instance is dropped when its bounding circle misses the view, or when
- * it is under `minRadius` -- smaller than a pixel, so it can change at most a
- * fraction of one. Landscape tiles are always kept: there are few of them, and
- * they are the ground everything else is drawn against.
- *
- * Culling per instance, not per call, is the point: each call's instances are
- * scattered across the whole map, so whole-call culling keeps 87-100% of them.
+ * Choose which instances to draw this frame and pack them into `out`: those
+ * whose bounding circle touches the view and is at least `minRadius`. Per
+ * instance, not per call -- a call's instances are scattered across the map.
+ * Landscape tiles are always kept.
  */
 export function cullInstances(
   calls: TerrainDrawCall[],
@@ -248,8 +233,7 @@ export function cullInstances(
   minRadius: number | ((x: number, y: number) => number),
   out: Float32Array
 ): { draws: CulledDraw[]; total: number } {
-  // A number is one threshold for the whole view (orthographic: every point has
-  // the same scale). A function gives it per instance, for a perspective view.
+  // A number is one threshold for the whole view; a function gives it per instance.
   const threshold = typeof minRadius === "number" ? () => minRadius : minRadius;
   const draws: CulledDraw[] = [];
   let total = 0;

@@ -129,14 +129,10 @@ export type SectorGrid3D = {
   labels: { text: string; sx: number; sy: number }[];
 };
 
-// Perspective depth below which a point is treated as behind the view. Anything
-// on screen is far above this -- the bottom edge of the steepest view sits near
-// 0.6 -- so it only ever cuts geometry that is off-screen toward the eye, where
-// the projection runs away to infinity.
+// Perspective depth below which a point counts as behind the view. Anything on
+// screen is far above it, so this only cuts geometry off-screen toward the eye.
 const NEAR_DEPTH = 0.1;
-// A line is sampled about this often on screen, so it follows the dunes it lies on.
-// Twice as often when it is also being cut where the terrain covers it: a line
-// can only end at a sample, and 12 px of overshoot into a rock shows.
+// Lines are sampled this often on screen, and twice as often when being cut.
 const SAMPLE_PX = 12;
 const MAX_SAMPLES = 256;
 
@@ -159,24 +155,10 @@ function clipPolygon<T extends Vec>(points: T[], inside: (p: T) => number, mix: 
 const mixVec = (a: Vec, b: Vec, t: number): Vec => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 
 /**
- * The sector grid seen through the 3D camera.
- *
- * Lines are laid on the sand rather than on a flat plane: a marker stands at its
- * own height, so a line floating at the map's average height would slide past it
- * as the view tilts and put a base near a boundary on the wrong side of it.
- * `heightAt` is the sand height, and each line is sampled finely enough to
- * follow it.
- *
- * Each label sits at the centre of the part of its cell that is in view, which
- * is what the flat grid does too: zoomed in, a cell is larger than the viewport
- * and its true centre is off-screen. `padding` keeps a label clear of the
- * viewport's edge and `minArea` (square pixels) drops one whose visible part is
- * a sliver.
- *
- * `hidden`, when given, says whether the terrain stands in front of a point, and
- * a line is not drawn through such points: it runs along the ground, so a rock
- * on it covers it. Labels are left alone -- one names its whole sector, and
- * where it sits within it is arbitrary.
+ * The sector grid seen through the 3D camera, in viewport CSS pixels. Lines are
+ * laid on the sand (`heightAt`) so they stay on the right side of markers, and
+ * each label sits at the centre of the visible part of its cell. `hidden`, when
+ * given, cuts lines where terrain covers them; labels are never hidden.
  */
 export function projectSectorGrid(
   camera: TerrainCamera,

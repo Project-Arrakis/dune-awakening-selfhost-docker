@@ -74,8 +74,9 @@ export function clampLiveMapZoom(value: number, minimum = 0.16) {
 /**
  * The world rectangle currently scrolled into view, for the terrain renderer.
  *
- * The panel scrolls a div and scales a canvas element by `zoom`; the renderer
- * has no camera of its own and draws exactly the rect it is given. Deriving that
+ * The panel scrolls a div and scales a canvas element by `zoom`; top-down, the
+ * renderer has no camera and draws exactly the rect it is given (tilted, it is
+ * given `liveMapCamera`'s camera instead, from the same scroll). Deriving that
  * rect through `liveMapPixelsToWorld` -- the same inverse the double-click
  * teleport uses -- is what keeps terrain and markers on the same pixel.
  */
@@ -100,10 +101,8 @@ export function visibleWorldRect(
 }
 
 /**
- * Where the terrain canvas sits inside the scrolled map, CSS pixels: it covers
- * the viewport (or the whole map, when that is smaller), clamped to the map's
- * extent -- see DeepDesertTerrain for why the clamp is load-bearing. Shared so
- * the 3D markers are placed against exactly the canvas the terrain draws into.
+ * Where the terrain canvas sits inside the scrolled map, CSS pixels, clamped to
+ * the map's extent (see DeepDesertTerrain for why the clamp matters).
  */
 export function terrainViewport(config: LiveMapConfig, zoom: number, scrollLeft: number, scrollTop: number, frameWidth: number, frameHeight: number) {
   const mapWidth = Math.floor(config.width * zoom);
@@ -115,18 +114,12 @@ export function terrainViewport(config: LiveMapConfig, zoom: number, scrollLeft:
   return { left, top, width, height };
 }
 
-// How far above the tallest terrain the eye is kept, as a multiple of that
-// terrain's height over the pivot.
+// The eye is kept this multiple of the tallest terrain's height above the pivot.
 const EYE_CLEARANCE = 1.1;
 
 /**
- * The 3D camera for the panel's current scroll and zoom: the viewport's centre
- * is the camera's target, at height `cz`, and the scale there is the flat map's
- * scale. Tilt and yaw are radians; perspective follows tilt.
- *
- * `topZ`, when given, is the height of the tallest thing on the map. The eye is
- * kept above it, with a margin, by easing off the perspective at high zoom --
- * see `fovClearing`.
+ * The 3D camera for the panel's scroll and zoom: the viewport's centre is the
+ * target, at height `cz`. Given `topZ`, the eye is kept above it (`fovClearing`).
  */
 export function liveMapCamera(
   config: LiveMapConfig,
@@ -154,14 +147,9 @@ export function liveMapCamera(
 }
 
 /**
- * How far to scroll, CSS pixels, so that a drag from one viewport pixel to
- * another carries the ground with it: the point grabbed, at height `z`, ends up
- * under the pointer. Flat, that is just the drag reversed. Tilted and rotated it
- * is the difference between the two pixels' ground points -- exact anywhere in
- * the view, perspective included, because moving the camera's centre moves every
- * projected point rigidly. `camera` is the one in force when the drag began.
- *
- * Unflipped maps only, like the camera itself: world axes and scroll axes agree.
+ * How far to scroll, CSS pixels, so a drag between two viewport pixels carries
+ * the grabbed ground point (at height `z`) with the pointer. Exact under
+ * perspective. `camera` is the one in force when the drag began.
  */
 export function panScrollDelta(camera: TerrainCamera, from: { sx: number; sy: number }, to: { sx: number; sy: number }, z: number) {
   const grabbed = screenToWorldAtZ(camera, from.sx, from.sy, z);
@@ -170,10 +158,8 @@ export function panScrollDelta(camera: TerrainCamera, from: { sx: number; sy: nu
 }
 
 /**
- * Where the camera centre must move, in world units, so that zooming from
- * `oldZoom` to `newZoom` keeps `anchor` (a world point) under the same pixel.
- * Exact even with perspective: the eye distance scales with the scale, so the
- * whole projection scales uniformly about the target.
+ * Where the camera centre must move, world units, so zooming from `oldZoom` to
+ * `newZoom` keeps `anchor` under the same pixel.
  */
 export function zoomCentreFor(camera: TerrainCamera, anchor: { x: number; y: number }, oldZoom: number, newZoom: number) {
   const f = oldZoom / newZoom;

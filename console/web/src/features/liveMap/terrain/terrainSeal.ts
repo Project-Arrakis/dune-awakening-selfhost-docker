@@ -2,21 +2,9 @@ import { octDecode } from "./terrainGeometry";
 import type { TerrainLibrary, TerrainMesh } from "./types";
 
 /**
- * Closing the slits in the rock.
- *
- * The map's rock meshes are not closed surfaces. Each is a stack of open plates
- * -- a ledge and the cliff face under it -- and the bottom of one cliff face is
- * simply left hanging a few metres above the ledge below rather than joined to
- * it. Measured across the library: no rock mesh is watertight, 5% of all edges
- * are open, over 90% of those run level, and the gap to the next plate is
- * typically 5-25 m. From overhead, which is all the game's own map table ever
- * shows, none of it can be seen. Tilted, every one is a slit through the rock
- * with the sand beneath showing in it.
- *
- * The plates cannot be re-meshed here, but they do not need to be: a slit is
- * closed by hanging a skirt from the open edge, straight down, far enough to
- * pass behind the plate below. That is what this does, to every open edge of
- * every rock mesh, once, when the library loads.
+ * The map's rock meshes are stacks of open plates: the bottom of one cliff face
+ * hangs a few metres above the ledge below, leaving a slit that shows sand once
+ * the view is tilted. A skirt hung from every open edge closes them.
  */
 
 /** How far a skirt hangs, in the mesh's own units (x100 for world uu: 60 m). */
@@ -49,10 +37,9 @@ export type MeshBuffers = {
 };
 
 /**
- * The open edges of a mesh: those used by exactly one triangle once vertices at
- * the same position are treated as one. (The meshes split vertices wherever a
- * normal or a UV changes, so by index alone nearly every edge looks open.)
- * Returned as vertex-index pairs, flat.
+ * Edges used by exactly one triangle, with vertices at the same position
+ * treated as one (the meshes split vertices wherever a normal or UV changes).
+ * Returned as flat vertex-index pairs.
  */
 export function openEdges(pos: Uint16Array, idx: Uint16Array): Uint32Array {
   const count = pos.length / 3;
@@ -94,18 +81,9 @@ export function openEdges(pos: Uint16Array, idx: Uint16Array): Uint32Array {
 }
 
 /**
- * Hang a skirt from every open edge of a mesh: two new vertices `drop` below the
- * edge's own (in quantised z), and a quad between. Edges already at the mesh's
- * floor are left -- there is nothing below them to close against.
- *
- * A skirt's normal is the edge vertex's own, laid flat. On a cliff face that is
- * the face's own direction, so the skirt lights as more of the same cliff; on a
- * ledge, whose normal points up, there is no flat part to keep, and the skirt
- * takes the edge's perpendicular instead. Either way it is a vertical surface
- * lit as one, and never the bright sliver a copied ledge normal would make it.
- *
- * Returns the mesh unchanged if it has nothing to close, or no room for more
- * vertices under the 16-bit index limit.
+ * Hang a skirt `drop` (quantised z) below every open edge not already on the
+ * mesh's floor. Skirt normals are laid flat so they light as cliff, not ledge.
+ * Returns the mesh unchanged if there is nothing to close or no index room.
  */
 export function sealMesh(mesh: MeshBuffers, drop: number): MeshBuffers {
   const edges = openEdges(mesh.pos, mesh.idx);
@@ -125,8 +103,7 @@ export function sealMesh(mesh: MeshBuffers, drop: number): MeshBuffers {
     let nx = n[0];
     let ny = n[1];
     if (Math.hypot(nx, ny) < 0.35) {
-      // A ledge: nothing flat in its normal. Perpendicular to the edge, on the
-      // side the normal leans toward if it leans at all.
+      // A ledge's normal has no flat part: use the edge's perpendicular.
       const side = nx * -ey + ny * ex >= 0 ? 1 : -1;
       nx = -ey * side;
       ny = ex * side;
@@ -169,11 +146,9 @@ function isRock(mesh: TerrainMesh): boolean {
 }
 
 /**
- * The shared library with every rock mesh sealed. Geometry is `positions |
- * normals | indices` as the pipeline emits it, and comes back in the same
- * layout with the table's offsets moved to match. Other meshes -- POIs, ground
- * patches -- are copied through untouched: they are thin structures, not
- * solids, and a skirt on them would be a curtain.
+ * The shared library (`positions | normals | indices`) with every rock mesh
+ * sealed and the table's offsets moved to match. POIs and ground patches are
+ * thin structures, not solids, and are copied through untouched.
  */
 export function sealRockLibrary(
   library: TerrainLibrary,

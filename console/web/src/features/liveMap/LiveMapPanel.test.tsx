@@ -25,8 +25,7 @@ function fakeTask(status: Task["status"]): Task {
 // fall back. `ready` is controllable because the panel now keeps the flat image
 // up until the canvas reports it has something to paint.
 //
-// It also hands the panel the 3D API the real one does: a pick that answers with
-// whatever the test set, and flat sand at `sandHeight`.
+// It also hands the panel a fake 3D API: a settable pick and flat sand.
 const terrain = vi.hoisted(() => ({
   signalsReady: true,
   picked: null as { x: number; y: number; z: number } | null,
@@ -686,13 +685,8 @@ it("still draws the grid over the flat image, now that the two agree", async () 
   expect(screen.getByRole("checkbox", { name: "Sector Grid" })).toBeInTheDocument();
 });
 
-// Elevation Lines is a shader effect on the terrain canvas, so on the flat
-// fallback image it would be a control that visibly does nothing. The Sector
-// Grid above is the opposite case -- it is drawn as SVG over either one -- so
-// the two must not be gated together.
-// The divider used to live on the Sector Grid row itself, so Elevation Lines
-// landed below it and read as part of the marker legend rather than as a terrain
-// overlay. Both now sit inside one group that carries the divider.
+// Elevation Lines is a shader effect, so it is offered only with the rendered
+// terrain; Sector Grid draws over either. Both sit in one group above the legend.
 it("groups Elevation Lines with Sector Grid, above the marker legend", async () => {
   useDeepDesert({ coriolisLayout: 3 });
   const { container } = renderPanel();

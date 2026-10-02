@@ -3089,10 +3089,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   flex: 0 0 24px;
 }
 .live-map-legend-dot-spacer { flex: 0 0 auto; width: 28px; height: 24px; }
-/* The terrain overlays -- Sector Grid, Elevation Lines -- are their own group
-   above the marker legend. The divider belongs under the WHOLE group: it used to
-   sit on the Sector Grid row itself, so anything added after that row landed
-   below the divider and read as part of the marker list instead. */
+/* The terrain overlays are their own group above the marker legend; the divider
+   sits under the whole group. */
 .live-map-overlay-group {
   display: grid;
   gap: 4px;
@@ -3150,9 +3148,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-frame.dragging { cursor: grabbing; user-select: none; }
 .live-map-frame.dragging-player { cursor: grabbing; user-select: none; }
 .live-map-canvas { position: relative; background: #101316; }
-/* In 3D a marker can stand right at the viewport's edge, which is not the map's
-   edge: left to overflow, its own half-width would stretch the frame's scroll
-   area past the map. `clip`, not `hidden`, so this never becomes a scroller. */
+/* A marker at the viewport's edge must not stretch the scroll area. `clip`, so
+   this never becomes a scroller. */
 .live-map-canvas.is-3d { overflow: clip; }
 .live-map-toolbar input[type="range"].live-map-tilt-range { width: 110px; }
 .live-map-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; user-select: none; pointer-events: none; z-index: 0; }
@@ -3181,8 +3178,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-sector-grid .lines path { stroke: rgba(16, 11, 4, .8); stroke-width: 1; vector-effect: non-scaling-stroke; fill: none; }
 .live-map-sector-grid .lines line.edge,
 .live-map-sector-grid .lines path.edge { stroke: rgba(16, 11, 4, .95); stroke-width: 2; }
-/* Tilted, the grid is drawn in viewport pixels over the terrain canvas, and a
-   line that runs off the view is cut there rather than left to overflow. */
+/* Tilted, the grid is drawn in viewport pixels and cut at the view's edge. */
 .live-map-sector-grid.is-3d { overflow: hidden; }
 /* font-size is set inline as viewBox units divided by zoom, so the label stays
    a constant size on screen. Sizing it in viewBox units alone would scale it

@@ -1,19 +1,12 @@
 import type { TerrainView } from "./types";
 
 /**
- * The Live Map's 3D camera: the map seen from overhead, optionally tilted back,
- * rotated, and -- as it tilts -- given perspective.
+ * The Live Map's 3D camera: top-down, optionally tilted, rotated, and given
+ * perspective as it tilts. With no tilt, rotation or field of view it is the
+ * same orthographic mapping as `orthoFromWorldRect`.
  *
- * Top-down is the flat map everyone already reads, and it must stay exactly that:
- * with no tilt, no rotation and no field of view this is the same orthographic
- * mapping `orthoFromWorldRect` builds, which is what the markers and the teleport
- * have always relied on. Tilt adds perspective gradually (see `fovForTilt`), and
- * the scale at the view centre is held fixed while it does, so leaning the map
- * back never makes the point you are looking at jump or change size.
- *
- * Conventions match the panel: world +X draws right, world +Y draws down (the
- * Deep Desert is not flipped), screen coordinates are CSS pixels from the
- * viewport's top-left.
+ * World +X draws right and +Y draws down; screen coordinates are CSS pixels
+ * from the viewport's top-left.
  */
 export type TerrainCamera = {
   /** The world point at the centre of the viewport. `cz` is the height tilting pivots about. */
@@ -37,26 +30,17 @@ export const MAX_TILT = (60 * Math.PI) / 180;
 export const MAX_FOV = (35 * Math.PI) / 180;
 
 /**
- * Perspective grows with tilt: none at top-down, `MAX_FOV` at `MAX_TILT`. Tilting
- * past 60 with 35 of field puts the top edge's ray 77.5 degrees from vertical, so
- * it still meets the ground -- the view never reaches the horizon, which keeps
- * both the culling rect and the far depth finite.
+ * Perspective grows with tilt: none top-down, `MAX_FOV` at `MAX_TILT`. At those
+ * limits the top edge's ray still meets the ground, so the view stays finite.
  */
 export function fovForTilt(tilt: number): number {
   return MAX_FOV * Math.max(0, Math.min(1, tilt / MAX_TILT));
 }
 
 /**
- * The field of view for a tilt, held back as far as it takes to keep the eye at
- * least `rise` above the pivot.
- *
- * The eye stands off from its target by a distance that goes with the scale:
- * zoom in and it comes closer, and lower. Fully tilted at high zoom that put it
- * below the tops of the tall rock, and then inside the rock, looking at the
- * inside of a cliff. A narrower field of view stands the eye further back for
- * the same framing -- the scale at the target does not change -- so the field is
- * narrowed just enough to lift the eye clear. The cost is a little less
- * perspective when zoomed right in, which is where there is least of it to lose.
+ * The field of view for a tilt, narrowed as far as it takes to keep the eye at
+ * least `rise` above the pivot. A narrower field stands the eye further back
+ * for the same framing, so zooming in cannot put the eye inside tall rock.
  */
 export function fovClearing(tilt: number, scale: number, height: number, rise: number): number {
   const base = fovForTilt(tilt);
@@ -65,7 +49,7 @@ export function fovClearing(tilt: number, scale: number, height: number, rise: n
   return Math.min(base, 2 * Math.atan((scale * height * Math.cos(tilt)) / (2 * rise)));
 }
 
-/** The flat, top-down camera for a world rect drawn into a viewport -- today's view. */
+/** The flat, top-down camera for a world rect drawn into a viewport. */
 export function cameraFromRect(view: TerrainView, width: number, height: number): TerrainCamera {
   return {
     cx: (view.minX + view.maxX) / 2,
@@ -84,11 +68,7 @@ export function isFlatCamera(camera: TerrainCamera): boolean {
   return camera.tilt === 0 && camera.yaw === 0 && camera.fov === 0;
 }
 
-/**
- * Eye distance from the target, world units, for a perspective camera: the
- * distance at which the vertical field of view spans exactly `height` pixels at
- * `scale`. Infinite for an orthographic camera.
- */
+/** Eye distance from the target, world units. Infinite when orthographic. */
 export function eyeDistance(camera: TerrainCamera): number {
   if (camera.fov <= 1e-6) return Infinity;
   return (camera.scale * camera.height) / (2 * Math.tan(camera.fov / 2));
@@ -101,11 +81,7 @@ function basis(camera: TerrainCamera) {
   return { rx: c, ry: s, dx: -s, dy: c };
 }
 
-/**
- * Camera-relative coordinates of a world point: `a` across the screen, `syw`
- * down the screen, and `q` toward the eye -- all world units, before
- * perspective.
- */
+/** A world point in camera space: `a` across, `syw` down, `q` toward the eye. World units. */
 function cameraSpace(camera: TerrainCamera, x: number, y: number, z: number) {
   const { rx, ry, dx, dy } = basis(camera);
   const px = x - camera.cx;
@@ -118,10 +94,7 @@ function cameraSpace(camera: TerrainCamera, x: number, y: number, z: number) {
   return { a, syw: b * ct - h * st, q: b * st + h * ct };
 }
 
-/**
- * Where a world point lands in the viewport, CSS pixels from its top-left.
- * `behind` is set for a point at or behind the eye, which has no position.
- */
+/** Where a world point lands in the viewport, CSS pixels. `behind`: at or behind the eye. */
 export function projectToScreen(camera: TerrainCamera, x: number, y: number, z: number): { sx: number; sy: number; behind: boolean } {
   const { a, syw, q } = cameraSpace(camera, x, y, z);
   const D = eyeDistance(camera);
@@ -133,12 +106,7 @@ export function projectToScreen(camera: TerrainCamera, x: number, y: number, z: 
   };
 }
 
-/**
- * The world point under a screen pixel, at a given world height. Exact: the ray
- * through the pixel meets the horizontal plane `z` there. Used directly for a
- * plane (the sector grid's ground), and iterated against the height field where
- * the true surface is wanted and no GPU pick is available.
- */
+/** The world point under a screen pixel at world height `z`. Exact. */
 export function screenToWorldAtZ(camera: TerrainCamera, sx: number, sy: number, z: number): { x: number; y: number } {
   const ux = sx - camera.width / 2;
   const uy = sy - camera.height / 2;
@@ -164,9 +132,8 @@ export function scaleAt(camera: TerrainCamera, x: number, y: number, z: number):
 }
 
 /**
- * The world rect that holds everything the camera can see between heights
- * `zmin` and `zmax`: the bounding box of the four screen corners inverse-projected
- * onto both planes. Exact for a flat camera, conservative otherwise.
+ * The world rect holding everything the camera can see between `zmin` and
+ * `zmax`. Exact for a flat camera, conservative otherwise.
  */
 export function cullRectForCamera(camera: TerrainCamera, zmin: number, zmax: number): TerrainView {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -181,15 +148,8 @@ export function cullRectForCamera(camera: TerrainCamera, zmin: number, zmax: num
 }
 
 /**
- * The camera as a WebGL clip-space matrix (column-major), for scene heights
- * between `zmin` and `zmax`.
- *
- * Flat, it is `orthoFromWorldRect`'s matrix term for term, depth included: depth
- * there is `-z / zRange + 0.5`, which the pick and the weighted blend were both
- * built against. Tilted and orthographic, depth follows `q` -- distance toward
- * the eye -- over a range widened to span the tilted volume. With perspective,
- * clip w is `1 - q/D` and depth is the usual hyperbolic mapping of the scene's
- * near and far planes, so it interpolates correctly across large triangles.
+ * The camera as a column-major clip matrix for scene heights `zmin`..`zmax`.
+ * Flat, it is `orthoFromWorldRect`'s matrix term for term, depth included.
  */
 export function cameraClipMatrix(camera: TerrainCamera, zmin: number, zmax: number, zRange: number): Float32Array {
   const { rx, ry, dx, dy } = basis(camera);
@@ -212,8 +172,7 @@ export function cameraClipMatrix(camera: TerrainCamera, zmin: number, zmax: numb
       // Flat: exactly orthoFromWorldRect's depth, on absolute z.
       row(2, [0, 0, -1 / zRange, 0.5]);
     } else {
-      // Tilted orthographic: depth by distance toward the eye, over the span the
-      // view's corners and heights can reach.
+      // Tilted orthographic: depth by distance toward the eye.
       const reach = Math.max(Math.abs(zmin - camera.cz), Math.abs(zmax - camera.cz)) * ct
         + 0.5 * Math.hypot(camera.width, camera.height) * s * st;
       const r = 2.2 * Math.max(reach, 1);
@@ -222,8 +181,7 @@ export function cameraClipMatrix(camera: TerrainCamera, zmin: number, zmax: numb
     row(3, [0, 0, 0, 1]);
     return m;
   }
-  // Perspective: w = 1 - q/D. Depth maps the nearest and farthest q the view can
-  // hold to -1..1 hyperbolically: ndc_z = alpha + beta / w.
+  // Perspective: w = 1 - q/D, depth hyperbolic between the nearest and farthest q.
   const W = Q.map((v, i) => (-v / D) + (i === 3 ? 1 : 0));
   let qmin = Infinity, qmax = -Infinity;
   const rect = cullRectForCamera(camera, zmin, zmax);

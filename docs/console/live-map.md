@@ -1,6 +1,6 @@
 # Live Map
 
-**Status:** Current | **Last Updated:** August 2026
+**Status:** Current | **Last Updated:** October 2026
 
 The Live Map panel renders Hagga Basin and The Deep Desert as pannable,
 zoomable square maps with real-time markers read directly from Postgres --
@@ -10,6 +10,10 @@ Nothing on this page polls the game server itself except the Coriolis seed
 else is a straight database read. Live actors and active fields refresh every
 5 seconds; the much larger static POI/resource atlas refreshes once per minute
 and is retained between live polls.
+
+The Deep Desert is not drawn from a picture: it is rendered from the game's own
+map meshes for the layout the current cycle selected, and can be tilted and
+turned. See [Rendered terrain](#rendered-terrain-deep-desert).
 
 See [API-REFERENCE.md](API-REFERENCE.md#live-map) for the endpoint contract.
 
@@ -119,12 +123,17 @@ orchestration code. Pattern order matters where categories could overlap:
 substring, because a substring match on `%ore%` false-positived on
 `HarkoRecustomization` (contains "ore" mid-word) in production data.
 
-Fortress/House Representative/Trainer were originally sub-grouped inside
-`poi` and were promoted to their own top-level categories so each gets its
-own legend row instead of only being reachable by expanding POI's first.
+Fortress, House Representative and Trainer are top-level categories rather
+than sub-groups of `poi`, so each has its own legend row.
 
 ## The Layers legend
 
+- **Terrain overlays sit above the marker legend**, in a group of their own:
+  **Sector Grid** (the Deep Desert, on the rendered terrain and the flat image
+  alike) and **Elevation Lines** (only while the rendered terrain is drawing --
+  it is a shader effect, and on the flat image would do nothing). They are not
+  marker categories and are not part of Default Layer Settings: Sector Grid
+  starts on and Elevation Lines off, each time the panel opens.
 - **Expandable categories** (`EXPANDABLE_KEYS` in `LiveMapPanel.tsx`) show
   the real sub-types actually present in the loaded data -- never a
   curated list -- so a new game-added resource or marker type appears with
@@ -160,14 +169,11 @@ even though the current game process has written a fresh seed to `Saved/Logs`.
 `docker logs` remains a compatibility fallback when the active file cannot be
 read.
 
-It selects the `LogCoriolis`/`LogWorldLayout` lines out of that file rather than
-tailing it. The block is written once during startup, so it sits near the top and
-leaves any tail window within hours — on a live farm the log reached 24,539 lines
-with the block at 383-576, so a 10,000-line tail began at 14,438 and returned
-none of it. Since an active log that opens is authoritative, that silently cost
-the Deep Desert layout, and with it the rendered terrain, on any server up more
-than a few hours. Output is still bounded, and a log that opens but holds no
-block is treated as authoritative-empty, exactly as before. Results use a short server-side cache,
+It selects the `LogCoriolis`/`LogWorldLayout` lines out of that file by pattern
+rather than tailing it: the block is written once during startup, so on a server
+that has been up for hours it sits far above any tail window. Output is still
+bounded, and a log that opens but holds no block is treated as
+authoritative-empty. Results use a short server-side cache,
 since every server container prints the identical farm-wide seed and cycle
 boundary once at startup. Candidate container names are built from the
 map/partition (`dune-server-survival-1[-<id>]` for Hagga Basin,
@@ -180,11 +186,9 @@ allowlist regex used by the rest of the Console's Docker access.
 The seed line is only printed **at container startup**, but the Deep Desert
 world re-rolls at every weekly Coriolis boundary whether or not anything
 restarts. Between a boundary and the next restart the logs therefore still
-advertise the *previous* cycle's seed, and taking that at face value put the
-previous cycle's spice pool on the map -- observed on a live server, where
-fields first seen the day after a boundary were filed under the old seed and
-39% of them later reappeared under the new one (against a 2% baseline overlap
-between genuinely different seeds).
+advertise the *previous* cycle's seed, and taking that at face value would put
+the previous cycle's spice pool on the map and file newly seen fields under the
+wrong seed.
 
 The same log block also prints when the cycle ends, so a boundary that is
 already in the past is proof the logged seed is stale. `resolveCoriolisCycle()`
@@ -205,11 +209,9 @@ the seed is unknown.
 
 This includes Hagga Basin, whose resources also move at a Coriolis -- so its
 learned entries are keyed by the Deep Desert seed and relearned each cycle by
-design. Measured across one boundary on a live server, Deep Desert re-rolled
-95% of its positions while Hagga Basin's mostly recurred (only 8% new), which
-makes the relearn look redundant for Hagga Basin -- it is not. Some Hagga Basin
-positions genuinely are new each cycle, and there is no way to tell a recurring
-one from a moved one after the fact, so the keying stays conservative.
+design. Most Hagga Basin positions recur from cycle to cycle, but some are new,
+and there is no way to tell a recurring one from a moved one after the fact, so
+the keying stays conservative.
 
 ### Cleanup when the database wipe is disabled
 
@@ -219,8 +221,8 @@ retain Deep Desert structures also disable this housekeeping, so renewable
 resource markers from old cycles otherwise accumulate in `dune.markers` and
 continue to appear on the Live Map.
 
-Immediately before its coordinated farm restart, the Coriolis Coordinator now
-runs `runtime/scripts/coriolis-data-cleanup.sh`. It checks the effective setting
+Immediately before its coordinated farm restart, the Coriolis Coordinator runs
+`runtime/scripts/coriolis-data-cleanup.sh`. It checks the effective setting
 for Hagga Basin and Deep Desert independently and acts only where **Coriolis
 Database Wipe** is disabled. The cleanup:
 
@@ -271,8 +273,8 @@ Two details worth knowing when reading `coriolisSeed.js`:
   no "All Partitions" entry -- but other API callers need not supply one.
 
 `coriolisLayout` is `null` whenever the layout cannot be determined -- the
-container is down, the line has aged out of the tail, or the game reports a
-layout this console has no terrain for. Consumers must treat `null` as
+container is down, the line is not in the log, or the game reports a layout
+this console has no terrain for. Consumers must treat `null` as
 "fall back", never as an error.
 
 **It is also null once the cycle boundary has passed**, for exactly the reason
@@ -285,78 +287,194 @@ falls back to the flat image until the map server restarts.
 
 ## Rendered terrain (Deep Desert)
 
-The Deep Desert map is not a picture. Instead of the flat
-`images/maps/deep-desert.png`, the console draws the game's own cartography
-meshes for whichever layout the current cycle selected -- the same proxy geometry
-the in-game map table renders, extracted from the game's `.pak` files offline.
-
-The Deep Desert ships **no terrain texture at all**; its in-game map is a mesh
-diorama, which is why upscaling an image was never an option.
+The Deep Desert is drawn from the game's own map meshes for whichever layout the
+current cycle selected, not from a picture. The game ships no terrain texture for
+it: its in-game map is a mesh diorama. The sand is a height field built from the
+map's landscape tiles, and the rock is the map's own meshes. The view is top-down
+by default and can be [tilted and turned](#tilt-and-rotation). The flat
+`images/maps/deep-desert.png` stays as the [fallback](#when-it-falls-back).
 
 ### How it fits together
 
 `console/web/src/features/liveMap/terrain/` holds a framework-free WebGL2
-renderer (`renderer.ts`) behind a thin React wrapper
-(`DeepDesertTerrain.tsx`), lazy-loaded so a Hagga Basin user never downloads it.
+renderer (`renderer.ts`) behind a thin React wrapper (`DeepDesertTerrain.tsx`),
+lazy-loaded so a Hagga Basin user never downloads it.
 
-**The panel keeps ownership of everything interactive.** Pan, zoom, markers and
-teleport are all DOM and unchanged; the renderer replaces only the `<img>`. It
-has no camera of its own -- it is handed the world rect currently scrolled into
-view (`visibleWorldRect` in `liveMapGeometry.ts`) and draws exactly that. Terrain
-and markers therefore land on the same pixel by construction, using one shared
-mapping rather than two that must be kept in step.
+- **The panel owns the view.** Pan, zoom, markers and teleport are DOM; the
+  renderer replaces only the `<img>` and decides nothing about what is shown.
+  Top-down it is handed the world rect scrolled into view (`visibleWorldRect`)
+  and draws exactly that. Tilted, the panel and the renderer each build the same
+  camera from one helper (`liveMapCamera`) and the same scroll and zoom. Either
+  way terrain and markers share one mapping, and the scroll position is the
+  single source of truth for where the view is.
+- **No render loop.** It draws only when something changed; the console sits open
+  for hours and must not pin a GPU.
+- **The map rect is the sector square.** Image, terrain, markers and grid share
+  that one frame of reference. Players do stray past the edge, so
+  `worldToLiveMapPoint` allows 16 px of tolerance, and such markers are drawn at
+  their true position, never clamped.
+- **The canvas covers the viewport, not the scaled map**, and is translated to
+  follow the scroll. At maximum zoom the map is 16,384 px across, beyond
+  `MAX_TEXTURE_SIZE` on many GPUs.
+- **That translation is clamped to the map's extent, and the clamp must stay.** A
+  transform counts toward the frame's scrollable width, so an unclamped one
+  inflates the scroll area and leaves the map stuck off-centre after zooming out.
+- **Only what is in view is drawn.** A layout is 18-26 million triangles per pass.
+  Each frame draws the instances whose bounding circle touches the view and is at
+  least half a pixel in radius. Not one pixel: POI hulls are assembled from
+  sub-pixel pieces and would vanish from the overview.
 
-Rendering the terrain is what exposed a long-standing inaccuracy in
-`LIVE_MAP_CONFIGS`. Its Deep Desert rect was ~8% wider than the square the PNG
-covers, so the picture was stretched across a rect it does not fill and every
-marker was drawn short of where the image put it -- exact at the centre, 84,163
-uu adrift at the edges, a third of a sector cell. Terrain sidestepped it by
-placing geometry at true world positions, which made the two visibly disagree.
-The rect is now the sector square itself, so image, terrain, markers and grid
-share one frame of reference.
+### Rock
 
-The world does not stop at that edge, though, so `worldToLiveMapPoint` allows a
-16 px tolerance before calling a marker out of bounds. Measured on a live farm, a
-player and the ornithopter they were flying sat 4,216 uu past the north edge; a
-hard cut would drop exactly the marker an admin is most likely to be hunting for.
-Such markers are drawn at their true position, never clamped.
+In the game the map's rock has no textures and no normal maps; its material is a
+flat tone with a per-instance random. Here it gets:
 
-The canvas covers the frame's **viewport**, not the scaled map, and is translated
-to follow the scrollport on each scroll. At maximum zoom the map is 16384 px
-across -- beyond `MAX_TEXTURE_SIZE` on many GPUs, and roughly a gigabyte of
-backing store.
+- **Authored normals**, read from the meshes' own tangent buffers. Shading is the
+  whole visual read of a cliff, so these are not resynthesised.
+- **Per-instance tone.** A value hashed from each instance's translation varies
+  brightness with a slight warm/cool swing, so a field of rocks does not read as
+  one asset stamped repeatedly.
+- **The game's own diffuse.** Each of the 64 rock families is painted with the
+  baked diffuse of its in-world counterpart. The map's geometry is kept, so
+  outlines match the map; only the paint is borrowed. UVs are an overhead
+  projection, which is how the in-world cliff blocks bake theirs; the shield
+  walls' atlases are re-baked overhead to match. Colour is pulled halfway toward
+  the map's ochre so that shape mismatches blend in.
+- **Sealing.** The rock meshes are stacks of open plates, and the bottom of one
+  cliff face hangs a few metres above the ledge below, leaving a slit. When the
+  library loads, `terrainSeal.ts` hangs a 60 m skirt from every open edge of
+  every rock mesh, which closes them. From overhead a skirt has no area, so the
+  top-down view is unaffected. POIs and ground patches are left alone.
 
-That translation is clamped to the map's own extent, and the clamp is
-load-bearing rather than defensive: a transform on the canvas counts toward the
-frame's scrollable width, so translating by an out-of-range `scrollLeft` pushes
-the canvas past the map's edge, inflates the scroll area, and thereby makes that
-out-of-range offset legal. The result was a self-sustaining state in which
-zooming back out left the map stuck off-centre instead of returning to the fit.
+The diffuse ships as BC1 (60 layers of 256 x 256) and is decoded once on the GPU
+into a mipmapped array.
+
+Limits of the overhead projection: where the in-world rock and the map's proxy
+differ in shape (an arch, say) the paint does not line up, and a vertical face
+gets one column of texels stretched down it, so cliffs look streaked when tilted
+and zoomed right in.
+
+### Elevation lines
+
+An optional layer, off by default, in the Layers panel while the terrain is
+drawing. It marks changes in height, which shading alone cannot show from
+straight overhead.
+
+The lines are bands, not true isolines: the rock is terraced, and an isoline
+vanishes across a flat tread. The elevation is banded and a line drawn where the
+band index changes between neighbouring pixels. The interval is 200 uu zoomed in
+and coarsens with zoom-out in a 1-2-5 sequence (1,000 uu at 100%, 5,000 at the
+whole map). Sand uses an interval eight times coarser, capped at 2,500 uu, and
+fades its lines on steep dune flanks.
+
+### Sector grid
+
+**Sector Grid**, in the Layers panel and on by default, overlays the Deep
+Desert's 9x9 lettered grid: 250,000 uu cells spanning +/-1,125,000 uu about the
+map centre. It draws over the rendered terrain and the flat image alike. Hagga
+Basin has no lettered sectors.
+
+- **I is at the top and A at the bottom.** World +Y draws downward, so the letter
+  runs opposite to screen-down. This matches the game's own map art and is pinned
+  by tests.
+- **Lines and labels are a constant size on screen** at every zoom.
+- **Labels follow the viewport.** Above about 2x zoom a cell is wider than the
+  frame, so each label sits at the centre of the *visible part* of its cell and is
+  hidden when too little of the cell is on screen.
+- **Tilted**, the grid is projected through the camera: lines are laid on the
+  sand, so a marker near a boundary stays on the right side of it, and are cut
+  where rock covers them.
+
+### Tilt and rotation
+
+While the terrain is drawing, the map can be leaned back up to 60 degrees and
+turned. A **Tilt** slider and a **Top-Down** reset sit in the toolbar, and
+**right-dragging** the map does both: across rotates, up leans it back. The
+controls are absent on Hagga Basin and on the flat fallback image.
+
+Top-down is not a special case of the tilted view. With no tilt and no rotation
+the original code path runs, and everything below is inactive.
+
+- **Camera** (`terrainCamera.ts`). It looks at the middle of the viewport, which
+  scrolling still sets, so pan and zoom mean the same in both modes. Perspective
+  grows with tilt, from none to a 35 degree field of view at 60, with the scale
+  at the view centre held fixed. The sun turns with the view.
+- **Eye clearance.** Zooming in brings the eye closer and lower. At high zoom the
+  field of view is narrowed just enough to keep the eye 10% above the layout's
+  tallest point, so it never ends up inside rock. Framing is unchanged; there is
+  only less perspective.
+- **Markers** are projected at their own `z`, or at the sand height under them
+  where they have none. Markers outside the view are not drawn.
+- **Picking.** Double-click and player-drag read the point from the terrain under
+  the cursor, by rendering that one pixel's world height. Nothing past the map's
+  edge can be picked. What is sent to the server is unchanged.
+- **Pan and zoom** keep the ground under the pointer fixed, perspective included.
+- **Lighting.** Over the first 25 degrees of tilt, rock and POIs change from the
+  top-down shading to ambient plus sun plus a fill from the camera. The top-down
+  curve leaves steep faces near-black, which reads as holes once cliffs face the
+  camera. Sand keeps the top-down curve.
+- **Past the map's edge.** The clip moves out 200,000 uu, which takes in the whole
+  shield wall (the shipped layouts reach 185,078 uu past the south edge), and the
+  sand continues under it as a level plain.
+
+**Hiding what the terrain covers.** Markers are DOM elements over the canvas, so
+nothing occludes them by itself. After each tilted frame the renderer reads back
+a small copy of that frame's depth (one texel per 4 px), and a marker is hidden
+when the terrain at its spot is both nearer the eye and more than 30 m above it
+(`terrainOcclusion.ts`).
+
+- Both conditions are needed: open ground in front of a marker is nearer the eye
+  too, and a cliff behind it is higher.
+- The 30 m keeps a marker visible on or in the coarse mesh it belongs to, such as
+  a base on a ledge.
+- All 3x3 texels round a marker must be covered, so an edge clipping it does not
+  hide it.
+- **Never hidden:** the selected marker, a player being dragged, and everything
+  while the search box has text in it. Searching is how to find a covered marker.
+- Sector grid lines are cut the same way, tested at a single texel. Sector labels
+  are not hidden.
+- The read-back is asynchronous, so a marker is hidden a frame or two after it
+  passes behind something.
+
+**Known limits.**
+
+- A marker with no height of its own stands on the *sand*. On a rock top it is
+  drawn at the rock's foot and, being under the rock, is hidden.
+- The view centre cannot be panned past the map square. The ground beyond the
+  edge is seen by tilting or turning toward it.
+- Past the edge only what the shipped layouts contain is drawn. They hold nothing
+  that lies wholly outside the square.
 
 ### Assets
 
-`terrain/assets/` is 41 gzipped files totalling 15.7 MB, inflated in the browser:
-a 6.4 MB shared half -- the 4.6 MB mesh library plus 1.8 MB of detail textures --
-and twelve per-layout sets of about 0.78 MB each. The split is the point: a
-Coriolis reset changes only the layout, so the browser re-fetches under a
-megabyte and the shared half stays cached.
+`terrain/assets/` is 43 gzipped files totalling 17.9 MB, inflated in the browser:
+
+| part | size |
+|---|---|
+| shared: mesh library | 4.4 MB |
+| shared: rock UVs | 0.8 MB |
+| shared: rock textures | 1.4 MB |
+| shared: sand detail textures | 1.8 MB |
+| each of 12 layouts | about 0.78 MB |
+
+A Coriolis reset changes only the layout, so the browser re-fetches under a
+megabyte and the 8.5 MB shared half stays cached.
 
 Vite fingerprints them into `dist/assets/`, which earns the immutable
-cache-control rule in `staticFiles.js` and, being content-addressed, cannot go
-stale. Two build settings are load-bearing and easy to lose: `assetsInclude`
-keeps `.gz` opaque so it is hashed and copied rather than parsed, and
-`build.assetsInlineLimit` stops the ~1.6 KB layout sidecars being inlined as
-base64 into the main bundle by the 4 KB default.
+cache-control rule in `staticFiles.js`. Two build settings must stay:
+`assetsInclude` keeps `.gz` opaque so it is hashed and copied rather than parsed,
+and `build.assetsInlineLimit` stops the ~1.6 KB layout sidecars being inlined
+into the main bundle.
 
-The offline pipeline that produced these is developer-only and not in the repo --
-it needs the game's paks and a local Oodle DLL, so it can never run in CI.
+The pipeline that produced these is developer-only and not in the repo. It needs
+the game's paks and a local Oodle DLL, so it cannot run in CI.
 
 ### When it falls back
 
-The rendered terrain is an upgrade over the flat image, never a replacement for
-it. `deep-desert.png` stays committed and stays in `LIVE_MAP_CONFIGS.image`, and
-every case below simply shows it, with no error state and no loss of function --
-markers, teleport, pan and zoom are unaffected either way.
+The rendered terrain is an upgrade over the flat image, never a replacement.
+Every case below shows `deep-desert.png` instead, with no error state and no loss
+of markers, teleport, pan or zoom. Which case applied is shown as **Terrain**
+beside the Coriolis readout.
 
 | condition | |
 |---|---|
@@ -367,166 +485,15 @@ markers, teleport, pan and zoom are unaffected either way.
 | no `EXT_texture_compression_bptc` | the sand normals are BC7; common on desktop, absent on many mobile GPUs |
 | no `DecompressionStream` | Safari before 16.4 |
 | an asset fails to load | fetch or inflate error |
-| the context is lost | GPU reset, driver update, or the browser reclaiming it after a successful start |
+| the context is lost | GPU reset, driver update, or the browser reclaiming it |
 
-Which one applied is shown as **Terrain** beside the Coriolis readout, so a flat
-map is always explainable rather than mysterious. Silent degradation is what made
-the stale-layout problem invisible in the first place.
+If the browser's GPU lacks either of these two capabilities, the terrain still
+draws but loses something. Both are standard on desktop GPUs.
 
-`EXT_color_buffer_float` is **not** in that list: without it the renderer keeps
-drawing with a slightly flatter blend rather than refusing.
-
-### Sector grid
-
-A **Sector Grid** toolbar button overlays the Deep Desert's 9x9 lettered grid --
-250,000 uu cells spanning +/-1,125,000 uu about the map centre. Deep Desert only,
-and only while the terrain is being rendered; Hagga Basin has no lettered sector
-system, and the flat image supplies its own grid.
-
-Orientation is the easy thing to get wrong, so it is pinned by tests: **I is at
-the top and A at the bottom**, confirmed against the game's own map art, which
-carries the labels burned in. World +Y draws downward in the panel, so the letter
-runs *opposite* to screen-down and the obvious guess is upside down.
-
-The overlay is drawn in map-pixel space from the same `worldToLiveMapPoint` the
-markers use, so a marker at a cell's centre lands on that cell's label (measured:
-within 0.5 px).
-
-Lines and labels are both a constant size on screen: the strokes use
-`vector-effect: non-scaling-stroke`, and the label font size is divided back out
-by zoom (sized in viewBox units alone, a label would render ~368 px tall at
-maximum zoom).
-
-**Labels follow the viewport.** A 250,000 uu cell is wider than the frame above
-roughly 2x zoom, so a label pinned to the cell's true centre scrolls out of view
-and the grid stops answering the one question it exists for. Each label is
-instead placed at the centre of the *visible part* of its own cell, and hidden
-when too little of the cell is on screen to label. Measured across a pan at high
-zoom: a label is visible at every position, where fixed centres left 6 of 8
-positions unlabelled.
-
-**It is on by default.** The rendered terrain has no grid of its own and
-relating a marker to a sector is the common case. It is drawn over the flat image
-too: that picture carries its own grid, but the two now describe the same world
-square and coincide, and the overlay's labels stay crisp and constant-sized at
-any zoom where the burned-in ones do not. Before the bounds were corrected the
-two sat about a third of a cell apart, which read as a rendering fault.
-
-### Tilt and rotation
-
-While the terrain is being rendered, the map can be leaned back and turned so the
-relief reads as relief. A **Tilt** slider (0-60 degrees) and a **Top-Down** reset
-sit in the toolbar, and **right-dragging** the map does both at once: across
-rotates, up leans it back. The controls are absent on Hagga Basin and whenever the
-Deep Desert has fallen back to the flat image -- a picture cannot tilt.
-
-Top-down is not a special case of the 3D view; it is the old code path, untouched.
-With no tilt and no rotation the terrain draws through the same orthographic rect
-as before and markers are placed at `pixel * zoom`. Everything below applies only
-once the view is tilted or turned.
-
-**The camera** (`terrain/terrainCamera.ts`) looks at the point in the middle of
-the viewport, which is still set by scrolling, so panning and zooming mean the
-same thing in both modes and leaving 3D returns to the same place. Perspective
-grows with tilt, from none at top-down to a 35 degree field of view at 60, and
-the scale at the view centre is held fixed, so leaning the map back never makes
-the thing being looked at jump or change size. The sun turns with the view.
-
-**The eye stays above the rock.** The eye stands off from the point it looks at
-by a distance that goes with the scale, so zooming in brings it closer and
-lower. Fully tilted, past about 350% zoom, that put it below the tops of the
-tall rock and then inside it, looking at the inside of a cliff. The field of
-view is narrowed just enough to keep the eye 10% above the layout's tallest
-point (`fovClearing`). A narrower field stands the eye further back for the same
-framing, so nothing in the view moves or changes size; there is only a little
-less perspective when zoomed right in.
-
-**Markers stand at their height.** Under tilt a point shifts on screen with its
-height, so a marker drawn at height zero would sit at the base of the mesa it is
-on. Each marker is projected at its own `z`, or the sand height under it where it
-has none. Markers outside the view are not drawn.
-
-**Picking reads the terrain.** Double-click and player-drag ask the renderer what
-is drawn under the cursor -- one pixel of world height, rendered on demand -- so
-the point lands on whatever is visible there, rock top or sand. Where that cannot
-be read (no float render target), the cursor's ray is walked onto the sand
-instead. Nothing past the map's edge can be picked, though a tilted view shows
-beyond it. The teleport request itself is unchanged: X and Y from the pick, Z by
-the same rule as top-down.
-
-**Panning and zooming** keep the ground under the pointer fixed, exactly, with
-perspective included: a pan carries the grabbed point with the cursor, and the
-wheel zooms about the point it is over.
-
-**Rock is lit differently once tilted.** The top-down shading exaggerates any
-lean away from flat so relief reads from overhead, and a face 60 degrees off the
-sun is already at its darkest. Overhead that costs nothing: a cliff's riser is
-edge-on. Tilted, the risers turn to face the camera and fill the view, all at
-that floor, and a wall of near-black wedges between lit ledges read as holes
-through the rock -- it looked see-through, though every face drawn was an
-outward one. So rock and POIs ease over, across the first 25 degrees of tilt, to
-an ordinary lit solid: some ambient, the sun without the exaggeration, and a
-fill from the camera, so that a face you can see always has light on it. Sand
-keeps the top-down curve, and top-down itself is untouched.
-
-**The rock is sealed at load.** The map's rock meshes are not closed surfaces.
-Each is a stack of open plates -- a ledge and the cliff face under it -- and the
-bottom of one cliff face is left hanging a few metres above the ledge below
-rather than joined to it. Measured across the library: no rock mesh is
-watertight, 5% of all edges are open, over 90% of those run level, and the gap
-to the next plate is typically 5-25 m. From overhead none of it shows. Tilted,
-each was a slit through the rock with bright sand visible in it. So when the
-mesh library loads, `terrain/terrainSeal.ts` finds every open edge of every rock
-mesh and hangs a skirt from it, 60 m straight down, which passes behind the
-plate below and closes the slit. It costs about 56 ms once and 8% more
-triangles in the library; POIs and ground patches are left alone, being thin
-structures on which a skirt would be a curtain. Seen from straight above a skirt
-has no area, so the top-down render is unchanged, pixel for pixel.
-
-**The view runs past the map's edge.** Top-down, everything is clipped to the
-mapped square, because the view ends there. Tilted, it does not, and what stands
-just outside is the shield wall -- which the square cuts through. The shipped
-instances already reach past the edge (185,078 uu to the south, 144,085 west,
-89,559 east, nothing north, the same in all twelve layouts), so the tilted view
-moves the clip out 200,000 uu to take in all of it and carries the sand on
-underneath as a level plain. The height field has no data out there; the plain
-sits at the mean height of its rim. Nothing out there can be picked.
-
-**Markers behind the terrain are hidden.** Markers are DOM elements over the
-canvas, so nothing occludes them by itself: a player behind a mesa would show
-through it. After each tilted frame the renderer copies that frame's depth buffer
-into a small float target (one texel per 4 px) and reads it back, and a marker is
-dropped when the terrain at its spot is both nearer the eye than the marker and
-standing more than 3,000 uu (30 m) above it (`terrain/terrainOcclusion.ts`).
-
-- *Both* conditions, because either alone is wrong: the open ground in front of
-  a marker is nearer the eye too, and a cliff behind it is higher.
-- The 30 m of slack is what keeps a marker visible on, in or under the thing it
-  belongs to. The map's meshes are coarse stand-ins, and a base on a ledge or a
-  player inside a wreck rarely sits exactly on them.
-- The whole 3x3 texels around the marker must be covered, so it goes when it is
-  well behind something, not while an edge merely clips it.
-- **The selected marker, and a player being dragged, are never hidden** -- the
-  thing being worked with should not vanish from under the admin.
-- **Nothing is hidden while the search box has text in it.** A search asks where
-  something is, and "behind that rock" is an answer, not a reason to withhold
-  it. This is the way to find a marker the terrain is covering.
-- The read-back is asynchronous (a pixel buffer behind a fence), so a marker is
-  hidden a frame or two after it passes behind something. Read synchronously it
-  blocked the page 9-18 ms on every tilted frame.
-- **The sector grid's lines are cut the same way.** They run along the ground,
-  so a rock standing on one covers it. A line has no size, so it is tested at
-  the single texel it falls in rather than a 3x3 -- it stops where the rock
-  starts -- and it is sampled twice as finely (every 6 px) so it does not
-  overshoot into the rock. Sector labels are not hidden: one names its whole
-  sector, and where it sits within it is arbitrary.
-- Top-down nothing is hidden, and nothing is where the GPU cannot render to
-  float.
-
-**The sector grid** is projected through the same camera. Its lines are laid on
-the sand rather than on a flat plane -- a line at the map's average height would
-slide past a marker standing on a dune as the view tilts -- and each label sits
-at the centre of the visible part of its sector, as in the flat grid.
+| GPU capability | what is lost without it |
+|---|---|
+| `EXT_color_buffer_float` | a slightly flatter blend; and, tilted, picking from the terrain (the pick falls back to the sand) and hiding markers and grid lines behind rock |
+| `WEBGL_compressed_texture_s3tc` | the rock textures; rock draws in its flat per-instance tone |
 
 ## Player teleport
 
@@ -553,8 +520,31 @@ code as a marker (`type: "picked_location"`, the one marker type the API never
 sends) so that path is shared rather than duplicated. Closing the overlay, or
 pressing Escape, clears the pick.
 
+With the Deep Desert tilted, both gestures take their point from the terrain
+under the cursor rather than from the flat map, and nothing past the map's edge
+can be picked. What is sent is unchanged. See
+[Tilt and rotation](#tilt-and-rotation).
+
 ## Related
 
 - [API-REFERENCE.md](API-REFERENCE.md#live-map) -- full HTTP API reference.
 - [base-permissions.md](base-permissions.md) -- the Bases panel this page's
   base markers link into.
+
+## Change log
+
+Feature-level changes to the Live Map, newest first.
+
+| Release | Date | Change |
+|---|---|---|
+| Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag. Markers and the sector grid are projected through the camera, and markers and grid lines are hidden where rock covers them. |
+| Unreleased | 2026-10 | The tilted view draws 200,000 uu past the map's edge, so the shield wall is whole. |
+| Unreleased | 2026-10 | Rock meshes are sealed at load, rock is lit as a solid when tilted, and the camera's eye stays above the rock at high zoom. |
+| Unreleased | 2026-10 | Rock is painted with the game's own textures. Terrain instances are culled per frame. |
+| Unreleased | 2026-09 | **Elevation Lines** layer. Rock is lit with its authored normals and given a per-instance tone. |
+| v1.4.35 | 2026-09-20 | The Coriolis block is read from the game log by pattern instead of from a tail, so the layout no longer goes missing on long-running servers. |
+| v1.4.23 | 2026-09-17 | Spice and Flour Sand layers fixed after the game changed `resourcefield_state`. |
+| v1.4.7 | 2026-09-02 | **Rendered Deep Desert terrain** for the live Coriolis layout, with the flat image as fallback. **Sector Grid** overlay. Map rect corrected to the sector square. A double-clicked location opens as an overlay. |
+| v1.4.7 | 2026-09-02 | Partition runtime state (Ready / Starting / Offline). Stale Coriolis map data cleaned before the farm restart. Sector Grid toggle moved into the Layers panel. Sub-types come from a backend registry. |
+| v1.4.6 | 2026-08-31 | A Coriolis seed whose cycle has ended is no longer served; the static spice pool waits for the restart. |
+| v1.4.0 | 2026-08-25 | Large Spice locations and the redesigned marker overlay. |

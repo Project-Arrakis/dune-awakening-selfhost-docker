@@ -21,10 +21,8 @@ function camera(tiltDeg: number, yawDeg = 0): TerrainCamera {
 type Block = { x0: number; x1: number; y0: number; y1: number; top: number };
 
 /**
- * The depth grid a scene would leave: flat ground at z = 0, plus axis-aligned
- * blocks standing on it. Each texel takes the nearest surface along its ray, as
- * a depth buffer does -- found by marching the ray down from the top of the
- * tallest block.
+ * The depth grid a scene would leave: flat ground at z = 0 plus axis-aligned
+ * blocks, each texel taking the nearest surface along its ray.
  */
 function scene(cam: TerrainCamera, blocks: Block[]): DepthGrid {
   const matrix = cameraClipMatrix(cam, -1000, 60000, 300000);
@@ -109,9 +107,7 @@ describe("isOccluded", () => {
   });
 
   it("cuts a point with no size right at the edge, where a marker would still show", () => {
-    // Walk in from past the end of the wall, a pixel at a time, to the first
-    // spot the single texel calls covered. A marker there still shows: its 3x3
-    // sees round the end.
+    // Walk in from past the wall's end to the first spot the single texel calls covered.
     let x = wall.x1 + cam.scale * 16;
     let steps = 0;
     while (!isOccluded(grid, x, -25000, 0, TOL, 0) && steps++ < 64) x -= cam.scale;
@@ -130,10 +126,8 @@ describe("isOccluded", () => {
   });
 
   it("keeps a marker whose top shows a cliff behind it, however much is in front", () => {
-    // Zoomed well out, where a few pixels up the screen is thousands of units up
-    // in the world: the texels above a marker can show ground that is higher
-    // than the marker and yet behind it. Height alone would count those as
-    // cover; it takes the depth to see they are not.
+    // Zoomed out, the texels above a marker can show ground that is higher than
+    // it and yet behind it. Only the depth tells those apart from cover.
     const wide: TerrainCamera = { ...camera(50), scale: 2500 };
     const matrix = cameraClipMatrix(wide, -1000, 60000, 300000);
     const depthOf = (x: number, y: number, z: number) => {
@@ -158,8 +152,7 @@ describe("isOccluded", () => {
     };
     const markerDepth = depthOf(marker.x, marker.y, marker.z);
 
-    // Tall rock in front across the lower two rows; the row above sees past it
-    // to ground 3,500 up -- above the tolerance, but farther than the marker.
+    // Tall rock in front on the lower two rows; the row above sees past it to higher ground behind.
     const cliffBehind = build({ below: 10000, level: 10000, above: 3500 });
     expect(cliffBehind.depth[((ty + 1) * GW + tx) * 4]).toBeGreaterThan(markerDepth);
     expect(cliffBehind.depth[(ty * GW + tx) * 4]).toBeLessThan(markerDepth);

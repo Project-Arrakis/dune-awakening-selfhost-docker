@@ -16,16 +16,9 @@ export type TerrainMesh = {
   io: number;
   /** Index count. */
   ic: number;
-  /**
-   * Present only on rock the game ships an in-world counterpart for: which layer of
-   * the rock texture array carries that counterpart's baked diffuse. The map's own
-   * mesh is kept and painted with it -- see `uvo`.
-   */
+  /** Rock only: the layer of the rock texture array holding this family's diffuse. */
   texLayer?: number;
-  /**
-   * Brings that diffuse to one shared mean brightness, capped so a dark or
-   * saturated texture is not pushed past the reference family's highlights.
-   */
+  /** Brings that diffuse to the shared mean brightness. */
   texGain?: number;
   /** First vertex of this mesh's UVs in the rock UV buffer, in vertices. */
   uvo?: number;

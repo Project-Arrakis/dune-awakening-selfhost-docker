@@ -38,8 +38,7 @@ uniform float uFeather, uWScale, uBias, uLift;
 // differences on the grid, which is continuous by construction.
 uniform highp usampler2D uHF;   // integer samplers have no default precision
 uniform float uHFMode, uHN, uHStep, uHX0, uHY0, uHZlo, uHZhi;
-// 3D only: how far the sand runs on past the height field, and the height it
-// settles to out there. Zero for the flat map, which never sees past its edge.
+// Tilted only: how far the sand runs past the height field, and its height there.
 uniform float uApron, uApronZ;
 float hfAt(ivec2 p){
   ivec2 q = clamp(p, ivec2(0), ivec2(int(uHN)-1));
@@ -49,12 +48,8 @@ out vec3 vN; out float vZ; out float vMat; out vec2 vXY;
 flat out vec4 vBox; out float vWS; out float vEdge; flat out float vClip;
 flat out float vRand;
 out vec2 vUV;
-// A per-instance random, hashed from the instance's own translation rather than
-// shipped as an attribute: same value every frame, deterministic, zero added
-// bytes. iT is in world uu and reaches ~1e6, so it is scaled down before fract()
-// to keep the hash meaningful in float32. Checked against layout 3's 13,562 real
-// translations: deciles within ~1300 of each other, std 0.2865 against 0.2887 for
-// a true uniform.
+// A per-instance random hashed from the instance's translation: no attribute, no
+// bytes. iT reaches ~1e6 uu, so it is scaled down to keep the hash meaningful.
 float hash13(vec3 p){
   vec3 q = fract(p * 0.0013);
   q += dot(q, q.yzx + 33.33);
@@ -74,13 +69,9 @@ void main(){
     float dx = hfAt(ivec2(ix+1,iy)) - hfAt(ivec2(ix-1,iy));
     float dy = hfAt(ivec2(ix,iy+1)) - hfAt(ivec2(ix,iy-1));
     vN = normalize(vec3(-dx, -dy, 2.0*uHStep));
-    // The height field stops at the map's edge, but the rock does not: the
-    // shield wall stands well outside it. Rather than leave that rock over a
-    // void, the sand is carried on under it as a level plain. The grid's two
-    // outermost rings -- both already past the mapped square -- are levelled,
-    // and the outer one is moved out to the apron's far edge. Levelling both is
-    // what keeps the plain plain: stretch a single ring and the edge's own dunes
-    // are smeared across the whole apron as streaks.
+    // Carry the sand on past the map's edge as a level plain, under the rock
+    // that stands out there. Both outer rings are levelled: stretching only one
+    // smears the edge's dunes across the apron as streaks.
     if(uApron > 0.0 && (ix<=1 || iy<=1 || ix>=n-2 || iy>=n-2)){
       wf.x += ix==0 ? -uApron : (ix==n-1 ? uApron : 0.0);
       wf.y += iy==0 ? -uApron : (iy==n-1 ? uApron : 0.0);
@@ -121,41 +112,29 @@ in vec3 vN; in float vZ; in float vMat; in vec2 vXY;
 flat in vec4 vBox; in float vWS; in float vEdge; flat in float vClip;
 flat in float vRand;
 in vec2 vUV;
-// Textured rock: the map's own rock mesh, painted with the baked diffuse of the
-// game's in-world counterpart, one array layer per family. uTexOn is per draw call.
+// The baked diffuse of each rock family's in-world counterpart, one layer each.
 uniform mediump sampler2DArray uRock;
 uniform float uTexOn, uTexLayer, uTexGain;
-// Tuned against the untextured look by rock-only pixel statistics (see the plan):
-// TEXTINT brings the families, already normalised to one mean brightness by
-// uTexGain, up to the brightness the map's rock has today. Textured rock keeps
-// the full directional shading: the map's terraced shapes are what give it relief,
-// and several of the game's diffuses (the shield-wall HLODs) are near-uniform
-// brown that only reads as rock once lit. TEXKNEE starts a highlight shoulder, so
-// lit tops roll off instead of clipping to one flat saturated tone.
+// TEXTINT brings textured rock up to the untextured rock's brightness; TEXKNEE
+// starts a highlight shoulder so lit tops roll off instead of clipping.
 #define TEXTINT 1.37
 #define TEXKNEE 0.7
-// TEXHUE pulls textured rock's colour toward the map's own ochre rock tone, keeping
-// the texture's light and dark. The game's diffuses run pink-salmon against the
-// map's ochre, and where a family's game shape differs from the map's, its texture
-// lands out of place; halfway keeps a hint of the game's red while those rocks blend
-// in instead of standing out. 0 is the game's colour, 1 is the map's tone.
+// TEXHUE pulls textured rock toward the map's ochre (0 = the game's colour,
+// 1 = the map's), so families whose shape differs from the map's blend in.
 #define TEXHUE 0.5
-// Per-instance rock tone spread, +/- this fraction. 0.10 was too faint to read
-// (a 99th-percentile delta of 11 levels); 0.25 reads without looking artificial.
+// Per-instance rock tone spread, +/- this fraction.
 #define ROCKVAR 0.25
 uniform float uFeather;
 uniform sampler2D uD1, uD2, uBrk;
 uniform float uTile, uDetStr, uDetail;
 uniform float uBrkTile, uBrkAmp, uClipRaise;
 uniform vec3 uV, uPatchCol, uPoiCol;
-// How far the rock's lighting has moved from the top-down model to the tilted
-// one: 0 flat, 1 by SIDE_LIT_TILT. See the shading below.
+// 0 top-down, 1 once tilted: how far rock has eased to the tilted lighting.
 uniform float uSideLit;
 // the height field again, so a terrain patch can hide the skirt it buries
 uniform highp usampler2D uHF;
 uniform float uHN, uHStep, uHX0, uHY0, uHZlo, uHZhi, uPatchCut, uPatchFeather, uPrepass;
-// Pick pass: after every discard the visible surface would make, write the
-// fragment's world height instead of a colour (see renderer.pick).
+// Pick pass: write the fragment's world height instead of a colour.
 uniform float uPick;
 float hfTexel(ivec2 p){
   ivec2 q = clamp(p, ivec2(0), ivec2(int(uHN)-1));
@@ -163,9 +142,7 @@ float hfTexel(ivec2 p){
 }
 uniform vec3 uL; uniform float uZlo, uZhi;
 uniform vec2 uC; uniform float uHalf;
-// Elevation lines. uCon is the on/off weight; uConStep and uConStepS are the
-// banding intervals in world uu for rock and for sand, picked per frame from the
-// current scale (see elevationIntervals in renderer.ts).
+// Elevation lines: on/off weight, and the banding intervals for rock and sand.
 uniform float uCon, uConStep, uConStepS;
 out vec4 o;
 void main(){
@@ -178,8 +155,7 @@ void main(){
   // spill unbounded past the map edge. Checked at 234 uu/px: the cut face is
   // clean, no interior is exposed.
   //
-  // That is the flat map, whose view ends at the square. Tilted, the view runs
-  // on past it, and there uHalf is widened to take in the whole wall.
+  // Tilted, uHalf is widened to take in the wall past the edge.
   if(abs(vXY.x-uC.x)>uHalf || abs(vXY.y-uC.y)>uHalf) discard;
   // A terrain patch is composited over the landscape, which exposes the deep
   // flat skirt it is meant to bury -- 74% of this mesh sits over 1000 uu under
@@ -225,15 +201,8 @@ void main(){
   }
   float t = clamp((vZ-uZlo)/max(uZhi-uZlo,1.0),0.0,1.0);
   vec3 sand = mix(vec3(0.804,0.631,0.443), vec3(0.980,0.914,0.769), t);
-  // Per-instance tone variation. The game's own rock material carries no textures
-  // at all and does exactly this -- it sets bHasPerInstanceRandom -- so breaking
-  // up the uniform tan this way follows the map rather than inventing past it.
-  // Brightness plus a slight warm/cool swing, because brightness alone reads as
-  // lighting rather than as different rock.
-  //
-  // This only tells apart rocks you can see side by side. A single formation is
-  // one or a few large instances, so zoomed into one it does almost nothing --
-  // breaking THAT up needs something spatially varying, i.e. a texture.
+  // Per-instance tone: brightness plus a slight warm/cool swing, since brightness
+  // alone reads as lighting. The game's own material does the same.
   float rv = vRand - 0.5;
   vec3 rock = vec3(0.588,0.416,0.173)*(0.88+0.45*t)
             * (1.0 + rv*2.0*ROCKVAR)
@@ -255,18 +224,10 @@ void main(){
   float flat_ = uL.z;
   float rel = (lam-flat_)/max(1.0-flat_,1e-3);
   float sh = clamp(1.0+0.55*rel, 0.30, 1.75);
-  // That curve is built for looking straight down: it exaggerates any lean away
-  // from flat so relief reads from overhead, and by 60 degrees off the sun a face
-  // is already at the 0.30 floor. Overhead that costs nothing -- a cliff's riser
-  // is edge-on and a few pixels wide. Tilted, the risers turn to face the camera
-  // and fill the view, all of them at the floor, and a wall of near-black wedges
-  // between lit treads reads as holes through the rock rather than as its sides.
-  //
-  // So rock and POIs ease over to an ordinary lit solid as the view tilts: some
-  // ambient, the sun without the exaggeration, and a fill from the camera, which
-  // is what guarantees that a face you can see is a face with light on it. Flat
-  // ground comes out near 1.0 either way, so nothing shifts as the tilt begins.
-  // Sand keeps the top-down curve: its slopes are gentle, and it needs the help.
+  // That curve is built for looking straight down and bottoms out 60 degrees off
+  // the sun. Tilted, cliff faces turn toward the camera, all at that floor, and
+  // read as holes. So rock and POIs ease to ambient + plain sun + a fill from the
+  // camera; flat ground stays near 1.0 either way.
   if(uSideLit > 0.0 && (vMat < 0.5 || vMat > 2.5)){
     float sun  = lam / max(flat_, 1e-3);
     float fill = clamp(dot(n, uV), 0.0, 1.0);
@@ -278,32 +239,19 @@ void main(){
     lit = min(lit, vec3(TEXKNEE)) + (1.0 - TEXKNEE) * (1.0 - exp(-over / (1.0 - TEXKNEE)));
   }
   vec3 c = pow(clamp(lit,0.0,1.0), vec3(1.0/1.02));
-  // Straight down, shading alone cannot say how tall a formation is: two ledges
-  // at different heights light identically when their normals match. These lines
-  // restore that reading.
-  //
-  // NOT true isolines. The rock proxies are terraced -- broad flat treads,
-  // short risers -- and across a flat tread fwidth(Z) is zero, so a
-  // screen-space-width isoline goes infinitely thin and vanishes, while across a
-  // riser it is so steep it packs into moire. Squeezed from both ends it drew
-  // almost nothing. Banding the elevation and marking where the BAND INDEX
-  // changes between neighbouring pixels catches the tread boundaries instead,
-  // which is what reads as a step from overhead: fwidth of a floor() is zero
-  // within a band and >=1 across one, so it IS the edge test.
+  // Elevation lines. Not true isolines: the rock is terraced, and across a flat
+  // tread an isoline vanishes. Banding the height and marking where the band
+  // index changes catches the tread boundaries instead.
   if(uCon > 0.0){
     if(vMat < 0.5){
-      // Rock. Deliberately not density-faded: here the steepest edges are the
-      // cliff risers, and those are exactly the lines worth keeping.
+      // Rock: not density-faded, since the steepest edges are the ones to keep.
       float b    = floor(vZ / uConStep);
       float edge = clamp(fwidth(b), 0.0, 1.0);
       float tone = 1.0 - 0.045*mod(b, 2.0);
       c *= tone * mix(1.0, 0.72, edge*uCon);
     } else if(vMat < 1.5){
-      // Sand is a smooth height field, so the same edge test gives a clean
-      // isoline -- but a dune flank crosses many bands per pixel and would wash
-      // to grey, so it does need the fade rock does not. The window is wide on
-      // purpose: a tight one made the lines DASHED, because the dune gradient
-      // crosses the threshold back and forth along a single flank.
+      // Sand: faded where a dune flank crosses many bands per pixel. The window
+      // is wide on purpose; a tight one made the lines dashed.
       float bs   = floor(vZ / uConStepS);
       float edge = clamp(fwidth(bs), 0.0, 1.0);
       float dens = fwidth(vZ) / uConStepS;
@@ -358,8 +306,7 @@ void main(){
   o = vec4(a.rgb/a.a, 1.0);
 }`;
 
-// Copies the frame's depth buffer, point-sampled, into a small float target that
-// can be read back: see terrainOcclusion.ts.
+// Copies the frame's depth into a float target that can be read back.
 export const DFS = `#version 300 es
 precision highp float;
 uniform highp sampler2D uD; in vec2 vUV; out vec4 o;

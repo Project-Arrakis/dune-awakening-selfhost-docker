@@ -1,19 +1,15 @@
 import { describe, it, expect } from "vitest";
 import { elevationIntervals } from "./renderer";
 
-// The interval is what makes the elevation lines readable or useless, and both
-// failure modes were hit while building this: derived from horizontal scale
-// alone it landed on 5,000 uu at 199 uu/px, so a 6,000 uu formation got a single
-// line; and letting sand track rock all the way out put sand at 40,000 uu, wider
-// than the whole ~21,600 uu sand field, so those lines vanished entirely.
+// Both ways the interval can go wrong were hit: too coarse for a formation, and
+// wider than the whole sand field.
 describe("elevationIntervals", () => {
   it("never goes finer than the base, however far you zoom in", () => {
     for (const uuPerPixel of [0.5, 10, 100, 166]) {
       const [rock] = elevationIntervals(uuPerPixel);
       expect(rock).toBeGreaterThanOrEqual(200);
     }
-    // At a scale where 1.5x uuPerPixel is under the 250 floor, every zoom level
-    // shares one interval, so lines do not crawl as you zoom.
+    // Under the floor every zoom level shares one interval, so lines do not crawl.
     expect(elevationIntervals(10)[0]).toBe(elevationIntervals(100)[0]);
   });
 
@@ -35,8 +31,7 @@ describe("elevationIntervals", () => {
     const [rockClose, sandClose] = elevationIntervals(229);
     expect(sandClose).toBe(rockClose * 8);
 
-    // Zoomed out, the uncapped value would be 40,000 -- past the ~21,600 uu the
-    // sand field spans, which erased the sand lines completely.
+    // Uncapped this would exceed the sand field's whole relief.
     const [rockFar, sandFar] = elevationIntervals(3373);
     expect(rockFar * 8).toBeGreaterThan(2500);
     expect(sandFar).toBe(2500);

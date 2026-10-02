@@ -275,8 +275,7 @@ describe("projectSectorGrid", () => {
 
   describe("where the terrain covers it", () => {
     const camera = cameraAt(0.6, 2048, 2048, 50, 0);
-    // The grid line nearest the viewer of the two that cross the view's middle:
-    // horizontal on screen at yaw 0, so it can be picked out by its row.
+    // The grid line just nearer the viewer than the view's middle; horizontal on screen at yaw 0.
     const lineY = CENTRE_Y + CELL / 2;
     const rowSy = projectToScreen(camera, camera.cx, lineY, PIVOT).sy;
     const onRow = (paths: { d: string }[]) => paths.flatMap((path) => vertices(path.d)).filter(([, y]) => Math.abs(y - rowSy) < 1);

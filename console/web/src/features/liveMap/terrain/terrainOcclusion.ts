@@ -1,10 +1,7 @@
 /**
- * Which markers the tilted terrain hides.
- *
- * Markers are DOM elements drawn over the canvas, so nothing occludes them: a
- * player behind a mesa shows through it. To fix that the renderer hands back a
- * small copy of the depth buffer it has just drawn, and a marker is tested
- * against it here.
+ * Which markers the tilted terrain hides. Markers are DOM elements over the
+ * canvas, so nothing occludes them; they are tested against a copy of the
+ * frame's depth buffer instead.
  */
 export type DepthGrid = {
   /** Window-space depth, 0 (near) to 1 (far, or nothing drawn), `stride` floats per texel, rows bottom-up as readPixels returns them. */
@@ -45,23 +42,10 @@ export function invert4(m: ArrayLike<number>): Float64Array | null {
 }
 
 /**
- * Whether the terrain drawn in `grid` hides a world point.
- *
- * A texel hides the point when what it shows is both nearer the eye than the
- * point and standing more than `tolerance` above it. Depth alone is not enough:
- * in a tilted view the open ground in front of a marker is nearer the eye too,
- * and would hide everything. Height alone is not enough either: a cliff behind a
- * marker is higher, and hides nothing. Together they mean "something tall, in
- * front".
- *
- * The tolerance is what keeps a marker visible on, in or under the thing it
- * belongs to -- a base on a ledge, a player inside a wreck -- since the map's
- * meshes are coarse stand-ins and a marker rarely sits exactly on them.
- *
- * `reach` is how far round the point has to be covered, in texels. A marker has
- * a size, so it uses 1 -- the whole 3x3 -- and goes when it is well behind
- * something, not while an edge merely clips it. A grid line has none, and uses
- * 0: just the texel it falls in, so the line stops where the rock starts.
+ * Whether the terrain drawn in `grid` hides a world point: every texel within
+ * `reach` shows something both nearer the eye and more than `tolerance` above
+ * it. Depth alone would hide everything behind open ground; height alone would
+ * hide a marker in front of a cliff.
  */
 export function isOccluded(grid: DepthGrid, x: number, y: number, z: number, tolerance: number, reach = 1): boolean {
   const m = grid.matrix;

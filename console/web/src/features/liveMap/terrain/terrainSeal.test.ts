@@ -57,9 +57,7 @@ describe("openEdges", () => {
 });
 
 describe("sealMesh", () => {
-  // One plate standing over another, as the rock is built: the upper plate's
-  // walls stop at z = 1000, the lower plate's top is at z = 900, and the 100
-  // between them is the slit.
+  // One plate over another: the upper's walls stop at z = 1000, the lower's top is at 900.
   const upper = box(400, 600, 400, 600, 1000, 1500, false);
   const lower = box(200, 800, 200, 800, 500, 900, false);
   const stacked = soup([...upper, ...lower]);

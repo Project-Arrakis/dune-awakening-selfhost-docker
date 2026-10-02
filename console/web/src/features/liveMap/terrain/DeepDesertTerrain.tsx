@@ -33,15 +33,9 @@ export type DeepDesertTerrainProps = {
   tilt?: number;
   /** Rotation about the vertical, radians. */
   yaw?: number;
-  /**
-   * Handed what the panel needs to place things in 3D once a layout is drawing,
-   * and null again when it is not: see `TerrainApi`.
-   */
+  /** Handed the `TerrainApi` once a layout is drawing, and null when it is not. */
   onTerrainApi?: (api: TerrainApi | null) => void;
-  /**
-   * Called when what the terrain hides has been measured afresh -- shortly after
-   * a tilted frame is drawn -- so the panel can place its markers again.
-   */
+  /** Called when what the terrain hides has been re-measured. */
   onOcclusion?: () => void;
   /** Test seams, mirroring how the API side injects its runners. */
   createRenderer?: typeof createDeepDesertRenderer;
@@ -50,11 +44,7 @@ export type DeepDesertTerrainProps = {
   onReady?: () => void;
 };
 
-/**
- * What the panel needs from the terrain to work in 3D. The panel never sees the
- * renderer or the height field directly; it gets these, bound to the layout that
- * is currently drawing.
- */
+/** What the panel needs from the terrain to work in 3D, bound to the layout that is drawing. */
 export type TerrainApi = {
   /** The world point drawn at a canvas pixel (CSS px), from the GPU; null where nothing is drawn or picking is unsupported. */
   pick: (sx: number, sy: number) => { x: number; y: number; z: number } | null;
@@ -201,8 +191,7 @@ export default function DeepDesertTerrain({
       canvas.style.transform = `translate(${left}px, ${top}px)`;
       renderer.resize(width, height, window.devicePixelRatio || 1);
       if (tilt !== 0 || yaw !== 0) {
-        // 3D: the same scroll and zoom, seen through the tilted camera. The panel
-        // builds its camera from the same helper, so markers land on this render.
+        // 3D: the panel builds its camera from the same helper, so markers land on this render.
         const camera = liveMapCamera(config, zoom, { left, top, width, height }, tilt, yaw, pivotRef.current, topRef.current);
         if (!camera) return;
         renderer.setCamera(camera);

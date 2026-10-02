@@ -241,18 +241,13 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   // over the grid burned into the picture, which is drawn at that image's own
   // mis-scaled extent -- the overlay is the one that agrees with the markers.
   const [showSectorGrid, setShowSectorGrid] = useState(true);
-  // Off by default: it is a reading aid for judging cliff height, not something
-  // every visit needs, and it darkens the terrain slightly wherever it draws.
+  // Off by default: a reading aid that darkens the terrain slightly.
   const [showElevationLines, setShowElevationLines] = useState(false);
-  // The 3D view, radians. Both zero is the flat, top-down map, and leaves every
-  // existing code path alone; anything else draws the terrain through a tilted
-  // camera and places markers by projection. Only offered while the rendered
-  // terrain is the thing drawing -- a flat image cannot tilt.
+  // The 3D view, radians. Both zero is the flat, top-down map.
   const [tilt, setTilt] = useState(0);
   const [yaw, setYaw] = useState(0);
   const [terrainApi, setTerrainApi] = useState<TerrainApi | null>(null);
-  // Bumped on scroll while in 3D: there, markers do not ride the scroll -- panning
-  // moves the camera, and each marker's position has to be projected again.
+  // Bumped on scroll while in 3D, where each marker has to be projected again.
   const [, setViewTick] = useState(0);
   const [rotateDrag, setRotateDrag] = useState<{ x: number; y: number; tilt: number; yaw: number } | null>(null);
   // The canvas mounts empty and paints only once ~7 MB of assets are in, so the
@@ -275,8 +270,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [zoom, setZoom] = useState(0.16);
   const [target, setTarget] = useState<{ x: number; y: number } | null>(null);
-  // The height a location was picked at in 3D, for drawing its pin on the rock it
-  // was picked on. Display only: the teleport payload never reads it.
+  // The height a location was picked at in 3D. Display only, never sent.
   const [targetHeight, setTargetHeight] = useState<number | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   // Distinct from `loading` -- that flips on every 5s auto-refresh poll too,
@@ -284,8 +278,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   // triggered by switching map/partition, so the overlay appears just for
   // the switch itself.
   const [switching, setSwitching] = useState(false);
-  // `grab` is set for a pan that began in 3D: the camera then, and the viewport
-  // pixel and ground height that were grabbed.
+  // `grab`: for a pan begun in 3D, the camera then and what was grabbed.
   const [drag, setDrag] = useState<{ x: number; y: number; left: number; top: number; grab?: { camera: TerrainCamera; sx: number; sy: number; z: number } } | null>(null);
   const [playerDrag, setPlayerDrag] = useState<{ marker: LiveMapMarker; point: LiveMapPoint; startX: number; startY: number } | null>(null);
   const [playerTeleportPreview, setPlayerTeleportPreview] = useState<{ marker: LiveMapMarker; point: LiveMapPoint } | null>(null);
@@ -583,12 +576,8 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   const terrainReady = readyTerrainKey === terrainKey;
   const can3D = terrainEligible && terrainReady && terrainApi !== null;
   const is3D = can3D && (tilt !== 0 || yaw !== 0);
-  // This render's camera: the same helper the terrain canvas builds its own from,
-  // fed the same scroll and zoom, so markers land on the render.
-  //
-  // A function, because event handlers call it again rather than trusting the
-  // render's copy: the scroll position moves between renders, and a camera built
-  // from last frame's scroll puts the cursor over the wrong ground.
+  // The same helper the terrain canvas builds its camera from. A function,
+  // because handlers call it again: the scroll moves between renders.
   function currentView3d() {
     const frame = frameRef.current;
     if (!is3D || !activeMap || !frame || !terrainApi) return null;
@@ -614,8 +603,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
       if (queued) cancelAnimationFrame(queued);
     };
   }, [is3D]);
-  // Leaving the rendered terrain (another map, a fallback to the flat image)
-  // leaves 3D with it.
+  // Leaving the rendered terrain leaves 3D with it.
   useEffect(() => {
     if (!terrainEligible) { setTilt(0); setYaw(0); }
   }, [terrainEligible]);
@@ -623,13 +611,9 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   // What the terrain hides has been measured again: place the markers again.
   const handleTerrainOcclusion = useCallback(() => setViewTick((n) => n + 1), []);
   /**
-   * Where a map point is drawn: `left`/`top` inside the scrolled map, and the
-   * same point relative to the viewport. Flat, that is the map pixel times zoom.
-   * In 3D it is the projection of the world point at its height -- the marker's
-   * own `z` when it has one, the sand height otherwise -- and `visible` is false
-   * for anything outside the view, which must not be drawn: a marker placed past
-   * the map's edge would stretch the scroll area. `occluded` is set, tilted, for
-   * a point the terrain stands in front of.
+   * Where a map point is drawn, inside the scrolled map and relative to the
+   * viewport. In 3D it is projected at height `z`, or the sand's. `visible` is
+   * false outside the view, where drawing it would stretch the scroll area.
    */
   function placePoint(point: LiveMapPoint, z?: number) {
     const frame = frameRef.current;
@@ -659,13 +643,8 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   }
   const targetPlaced = targetPoint ? placePoint(targetPoint, targetHeight) : null;
   /**
-   * The world point under a mouse event, in 3D: read back from the terrain where
-   * the GPU can, so it lands on whatever is drawn there. Otherwise the ray is
-   * walked onto the sand -- four rounds settle it to well under a pixel.
-   *
-   * Null outside the map. Flat, the map is the only thing there is to click on;
-   * tilted, the view runs on past its far edge, and a point out there is not a
-   * place anything can be sent.
+   * The world point under a mouse event in 3D: read back from the terrain, or
+   * failing that the ray walked onto the sand. Null outside the map.
    */
   function worldUnderPointer(event: { clientX: number; clientY: number }) {
     const view3d = currentView3d();
@@ -735,13 +714,9 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
       observer.disconnect();
       if (queued) cancelAnimationFrame(queued);
     };
-    // is3D: the flat grid is unmounted while tilted, so its labels have to be
-    // found and placed again on the way back.
+    // is3D: the flat grid is unmounted while tilted and re-placed on the way back.
   }, [showSectorGrid, sectorGrid, zoom, is3D]);
-  // Tilted, the grid is projected through the camera each render instead: lines
-  // laid on the sand, labels at the centre of what is visible of each sector, and
-  // the lines cut where the terrain stands in front of them. A line has no
-  // width to speak of, so it is tested at a single point (reach 0), unlike a marker.
+  // Tilted, the grid is projected each render instead, and cut where terrain covers it.
   const sectorGrid3d = view3d && terrainApi && showSectorGrid && sectorGrid
     ? projectSectorGrid(
       view3d.camera,
@@ -870,8 +845,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
     }
     const view3d = currentView3d();
     if (view3d && anchor && activeMap && terrainApi && canvas) {
-      // 3D: keep the ground under the cursor fixed. The camera centre is the
-      // scroll centre, so the anchor is the centre the zoom must move to.
+      // 3D: keep the ground under the cursor fixed; the scroll centre is the camera centre.
       const rect = canvas.getBoundingClientRect();
       const ground = screenToWorldAtZ(view3d.camera, anchor.clientX - rect.left - view3d.viewport.left, anchor.clientY - rect.top - view3d.viewport.top, terrainApi.pivotZ);
       const centre = zoomCentreFor(view3d.camera, ground, oldZoom, next);
@@ -1509,7 +1483,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
             if (!drag || !frameRef.current) return;
             const dx = event.clientX - drag.x;
             const dy = event.clientY - drag.y;
-            // 3D: a screen drag is a camera move, through the rotation, the tilt and the perspective.
+            // 3D: a screen drag is a camera move.
             const delta = drag.grab
               ? panScrollDelta(drag.grab.camera, drag.grab, { sx: drag.grab.sx + dx, sy: drag.grab.sy + dy }, drag.grab.z)
               : { left: -dx, top: -dy };
@@ -1586,16 +1560,11 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                 const isDraggingThisPlayer = Boolean(playerDrag && String(playerDrag.marker.id) === String(marker.id) && String(playerDrag.marker.type) === String(marker.type));
                 const isPreviewingThisPlayer = Boolean(playerTeleportPreview && String(playerTeleportPreview.marker.id) === String(marker.id) && String(playerTeleportPreview.marker.type) === String(marker.type));
                 const renderPoint = isDraggingThisPlayer ? playerDrag!.point : isPreviewingThisPlayer ? playerTeleportPreview!.point : point;
-                // A marker at its own position stands at its own height; one being
-                // dragged or previewed elsewhere takes the ground's.
+                // A marker being dragged or previewed takes the ground's height, not its own.
                 const placed = placePoint(renderPoint, renderPoint === point ? Number(marker.z) : undefined);
                 if (!placed || !placed.visible) return null;
-                // Behind the terrain, tilted: hidden, as it would be in the world.
-                // Never the one being worked with -- its overlay is open, or it is
-                // under the pointer mid-drag -- which would vanish from under the admin.
-                // And never while a search is narrowing the map: a search asks where
-                // something is, and "behind that rock" is an answer, not a reason to
-                // withhold it.
+                // Hidden behind the tilted terrain -- but never the marker being
+                // worked with, and never while a search is narrowing the map.
                 if (placed.occluded && !searching && !isPinned && !isDraggingThisPlayer && !isPreviewingThisPlayer) return null;
                 const spiceSizeClass = SPICE_TIER_TYPES.has(String(marker.type)) && typeof marker.subtype === "string" ? `spice-size-${marker.subtype.toLowerCase()}` : "";
                 const subtypeClass = typeof marker.subtype === "string" ? `subtype-${marker.subtype.toLowerCase()}` : "";
@@ -1683,8 +1652,7 @@ export function mergeLiveMapRows(previous: LiveMapMarker[], incoming: LiveMapMar
 // scrolled viewport, not just its raw canvas position) while the shift
 // itself is still applied via CSS classes, not inline math, so it stays
 // themeable.
-// Right-drag sensitivity: a 600 px drag across turns the map 180 degrees, a
-// 200 px drag up takes it from top-down to fully tilted.
+// Right-drag sensitivity.
 const ROTATE_DEG_PER_PX = 0.3;
 const TILT_DEG_PER_PX = 0.3;
 const OVERLAY_WIDTH = 230;

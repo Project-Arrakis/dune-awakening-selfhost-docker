@@ -14,8 +14,8 @@ import type { TerrainDrawCall, TerrainView } from "./types";
  *
  * Two rules it is built on, because the Live Map panel owns pan and zoom:
  *
- * - **No camera.** It is handed the world rect currently in view and projects
- *   onto exactly that, so terrain and markers share one mapping.
+ * - **No camera of its own.** Top-down it is handed the world rect in view;
+ *   tilted, a camera the panel built from the same scroll and zoom.
  * - **No render loop.** `draw()` is synchronous and runs only when something
  *   changed; this console sits open for hours and must not pin a GPU.
  */
@@ -45,38 +45,18 @@ const VOID_COLOUR: [number, number, number] = [0.3, 0.26, 0.22];
 const INSTANCE_STRIDE = 56; // 14 float32: mat3, translation, iMat, lift
 const INSTANCE_OFFSETS = [0, 12, 24, 36, 48, 52];
 const UV_LOCATION = 8;
-/**
- * Instances with a bounding radius under this many framebuffer pixels are not
- * drawn. At 0.5 (one pixel across) the whole-map view drops 57% of its triangles
- * and changes 0.01% of pixels. 1.0 would drop 81%, but POI structures are built
- * from many sub-pixel ship pieces that only read together, and at 1.0 their blue
- * hulls vanish from the overview.
- */
+// Instances under this radius, in framebuffer pixels, are skipped. Not 1.0:
+// POI hulls are built from sub-pixel pieces and would vanish from the overview.
 const CULL_MIN_RADIUS_PX = 0.5;
-/**
- * How far past the mapped square the tilted view draws, world uu.
- *
- * The flat map's view ends at the square, so everything is clipped to it. A
- * tilted view sees over the edge, and what is there is the shield wall, sliced
- * through where the square ends. The shipped instances already reach past it --
- * measured across all twelve layouts, identically: 185,078 uu to the south,
- * 144,085 west, 89,559 east, nothing north -- so the clip is simply moved out
- * far enough to take all of it, and the sand is carried out underneath.
- */
+// How far past the mapped square the tilted view draws, world uu. The shipped
+// instances reach at most 185,078 uu past it (the southern shield wall).
 const EDGE_APRON = 200000;
-// The depth copy markers are tested against is this many CSS pixels per texel.
-// A marker is about 18 px across and is tested over 3x3 texels, so 4 covers it.
+// CSS pixels per texel of the depth copy markers are tested against.
 const OCCLUSION_DIV = 4;
-// The tilt, radians, by which rock has fully changed over from the top-down
-// lighting to the tilted one (25 degrees). Eased in so the change is not a step.
+// Tilt by which rock has fully eased over to the tilted lighting.
 const SIDE_LIT_TILT = (25 * Math.PI) / 180;
-/**
- * How far above a marker the terrain in front of it must stand before it hides
- * the marker, world uu (30 m). The map's meshes are coarse stand-ins, and a
- * marker belongs to things -- a base on a ledge, a player inside a wreck -- that
- * it rarely sits exactly on top of; without this slack those would vanish into
- * the very thing they are part of.
- */
+// How far above a marker (world uu) the terrain in front must stand to hide it.
+// The slack keeps a marker visible on or in the coarse mesh it belongs to.
 const OCCLUSION_TOLERANCE = 3000;
 const ATTRIBS = 9; // locations 0..8, cleared around every pass
 
@@ -85,26 +65,17 @@ export type DeepDesertRenderer = {
   setAssets(shared: SharedAssets, layout: LayoutAssets): void;
   resize(cssWidth: number, cssHeight: number, dpr: number): void;
   setView(view: TerrainView): void;
-  /**
-   * Draw through a 3D camera (tilt, rotation, perspective) instead of a world
-   * rect. `setView` returns to the flat rect view.
-   */
+  /** Draw through a 3D camera instead of a world rect; `setView` returns to the rect. */
   setCamera(camera: TerrainCamera): void;
   /**
-   * The world point drawn at a viewport pixel (CSS pixels), read back from the
-   * GPU so it lands on whatever is actually visible there -- a rock top as much
-   * as the sand. Null where nothing is drawn, or where this GPU cannot render to
-   * a float target (`canPick`).
+   * The world point drawn at a viewport pixel (CSS px), read back from the GPU.
+   * Null where nothing is drawn or the GPU cannot render to float (`canPick`).
    */
   pick(sx: number, sy: number): { x: number; y: number; z: number } | null;
   /**
-   * Whether the terrain hides a world point: something tall stands between it
-   * and the eye. Answered from the depth of a recent frame -- read back
-   * asynchronously, so up to a frame or two old; `onOcclusion` fires when it is
-   * renewed. Only ever true in a tilted view, and never where this GPU cannot
-   * render to float (see `canPick`). `reach` is how far round the point must be
-   * covered, in depth texels: 1 (the default) for something with a size, 0 for a
-   * bare point.
+   * Whether terrain stands between a world point and the eye, from a recent
+   * frame's depth (`onOcclusion` fires when it is renewed). Tilted views only.
+   * `reach`: depth texels round the point that must be covered (default 1).
    */
   occluded(x: number, y: number, z: number, reach?: number): boolean;
   readonly canPick: boolean;
@@ -115,19 +86,9 @@ export type DeepDesertRenderer = {
 };
 
 /**
- * Banding intervals in world uu for a given scale, as `[rock, sand]`.
- *
- * A contour's spacing is set by how fast Z changes, which has nothing to do with
- * the map scale -- deriving this from horizontal scale alone put it at 5,000 uu
- * at 199 uu/px, so a 6,000 uu formation got a single line. Hence a fixed base
- * that keeps terraces readable when zoomed in, with `uuPerPixel` only as a floor
- * that coarsens the interval as you zoom out, snapped to a 1-2-5 sequence the way
- * a topographic map changes interval rather than letting lines converge.
- *
- * Sand is eight times coarser -- the interval that reads well on a mesa turns
- * dunes into a hatch -- but capped, because the whole sand field spans only
- * ~21,600 uu and letting it track rock all the way out put it at 40,000 uu at map
- * zoom, wider than the entire relief, so the sand lines vanished.
+ * Banding intervals in world uu for a given scale, as `[rock, sand]`: a fixed
+ * base that coarsens as you zoom out, snapped to a 1-2-5 sequence. Sand is
+ * eight times coarser, capped so it never exceeds the dune relief.
  */
 export function elevationIntervals(uuPerPixel: number): [number, number] {
   const target = Math.max(250, uuPerPixel * 1.5);
@@ -144,10 +105,7 @@ export type RendererOptions = {
    * image rather than leave a blank canvas.
    */
   onContextLost?: () => void;
-  /**
-   * Fired when what the terrain hides has been measured afresh, a frame or two
-   * after a tilted frame is drawn: `occluded` may now answer differently.
-   */
+  /** Fired when what the terrain hides has been re-measured. */
   onOcclusion?: () => void;
 };
 
@@ -187,8 +145,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   const compressedFormats = gl.getExtension("EXT_texture_compression_bptc");
   if (!compressedFormats) throw new Error("EXT_texture_compression_bptc is not available");
   const bptc: EXT_texture_compression_bptc = compressedFormats;
-  // The rock diffuse ships as the game's own BC1 blocks. Unlike BPTC this is not
-  // worth refusing over: without it the rock simply draws in its untextured tone.
+  // Optional: without it the rock draws untextured.
   const s3tc = gl.getExtension("WEBGL_compressed_texture_s3tc");
   // Order-independent weighted blending wants a float accumulator. Without it
   // the blend still works, just flatter -- not a reason to refuse to draw.
@@ -259,13 +216,8 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   }
 
   /**
-   * The rock diffuse, decoded the same way into an RGBA8 texture array -- one
-   * layer per family, so a single sampler serves every textured draw. Clamped,
-   * not repeated: these are baked atlases whose UVs run to the very edge.
-   *
-   * Without S3TC, or with no textured meshes, this is a 1x1 placeholder: the
-   * sampler is live in the program whether a draw reads it or not, so it must
-   * always have something real bound.
+   * The rock diffuse as an RGBA8 texture array, one layer per family. A 1x1
+   * placeholder without S3TC: the sampler must always have something bound.
    */
   function decodeRockArray(raw: Uint8Array, size: number, layers: number): { texture: WebGLTexture; real: boolean } {
     const texture = gl.createTexture()!;
@@ -322,8 +274,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   let sharedRef: SharedAssets | null = null;
   let layoutRef: LayoutAssets | null = null;
   let calls: TerrainDrawCall[] = [];
-  // Per-instance culling: bounding circles per layout, and this frame's survivors
-  // packed into bCull. See cullInstances.
+  // Per-instance culling: see cullInstances.
   let instFloats: Float32Array | null = null;
   let circles: Float32Array | null = null;
   let packed: Float32Array | null = null;
@@ -331,8 +282,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   let bCull: WebGLBuffer | null = null;
   let zRange = 1;
   let view: TerrainView | null = null;
-  // Set by setCamera, cleared by setView. While null the renderer draws the rect
-  // exactly as it always has -- top-down never goes through the camera maths.
+  // Set by setCamera, cleared by setView. Null means the flat rect path.
   let camera: TerrainCamera | null = null;
   let cssWidth = 0;
   let cssHeight = 0;
@@ -429,8 +379,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   function setAssets(shared: SharedAssets, layout: LayoutAssets) {
     if (lost) return;
     // Geometry and the sand textures are shared by all 12 layouts: only re-upload
-    // them when the shared set itself changes, so a Coriolis reset costs new
-    // instance bounds and one height field rather than 8.5 MB of re-upload.
+    // them when the shared set itself changes.
     if (sharedRef !== shared) {
       const { library, geometry } = shared;
       const nrmAt = library.posBytes;
@@ -555,8 +504,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
         gl.vertexAttribDivisor(location, 1);
       }
 
-      // The game's own diffuse for the meshes that carry one; every other draw
-      // reads a constant zero UV and ignores the sampler.
+      // The game's diffuse, for the meshes that carry one.
       if (rockTextured && call.texLayer !== undefined && call.uvo !== undefined) {
         gl.bindBuffer(gl.ARRAY_BUFFER, bUV);
         gl.enableVertexAttribArray(UV_LOCATION);
@@ -577,13 +525,9 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   }
 
   /**
-   * Render one pixel of the last frame's view into a 1x1 float target, writing
-   * world height instead of colour, and turn it back into a world point.
-   *
-   * The clip matrix is scaled about that pixel so it alone fills the target:
-   * x' = W*x - c*W*w keeps perspective intact. The same depth test and the same
-   * discards as the real frame decide what is visible, so the answer is whatever
-   * the user actually sees under the cursor -- rock top or sand.
+   * Render the pixel under (sx, sy) into a 1x1 float target, writing world
+   * height, and turn it back into a world point. The clip matrix is scaled
+   * about that pixel (x' = W*x - c*W*w), which keeps perspective intact.
    */
   function pickAt(sx: number, sy: number): { x: number; y: number; z: number } | null {
     if (lost || !floatBuffer || !lastMatrix || !layoutRef || !cssWidth || !cssHeight) return null;
@@ -659,14 +603,9 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   }
 
   /**
-   * Copy the frame's depth, point-sampled at one texel per OCCLUSION_DIV CSS
-   * pixels, into a float target, and start reading it back.
-   *
-   * The read is asynchronous: into a pixel buffer, behind a fence, collected a
-   * frame or two later by `collectDepth`. Reading it straight back would make
-   * every tilted frame wait for the GPU to finish it -- measured at 9-18 ms of
-   * blocked page per frame while panning -- to save a delay nobody can see: a
-   * marker passing behind a rock is hidden a frame late.
+   * Copy the frame's depth into a small float target and start reading it back.
+   * Asynchronous (pixel buffer + fence): a synchronous read blocks the page
+   * until the GPU finishes the frame.
    */
   function startDepthRead(matrix: Float32Array) {
     const inverse = invert4(matrix);
@@ -737,13 +676,11 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       gl.bindBuffer(gl.PIXEL_PACK_BUFFER, occPbo);
       gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, pixels);
       gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-      // Depth and the matrix it was drawn with change hands together, so a test
-      // against it is always self-consistent even when it is a frame old.
+      // Depth and its matrix are swapped together, so a test is self-consistent.
       occlusion = { depth: pixels, stride: 4, width: occW, height: occH, matrix: occPending.matrix, inverse: occPending.inverse };
       options.onOcclusion?.();
     }
-    // Frames drawn while that read was in flight were skipped; the depth buffer
-    // still holds the last of them, so read that one now.
+    // A frame was drawn meanwhile; the depth buffer still holds it.
     if (occStale) {
       occStale = false;
       if (camera && camera.tilt > 0 && lastMatrix) startDepthRead(lastMatrix);
@@ -757,8 +694,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     const height = canvas.height;
     if (!width || !height) return;
     if (camera) {
-      // What the camera can see, capped to the map square and its apron so a
-      // steep view's far reach never drags in empty space.
+      // What the camera can see, capped to the map square and its apron.
       const r = cullRectForCamera(camera, meta.zmin, meta.zmax);
       const cap = meta.half + EDGE_APRON;
       view = {
@@ -779,10 +715,8 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     const fh = height * ss;
     ensureFramebuffer(fw, fh);
 
-    // Cull once per frame; both passes draw the same survivors (see
-    // CULL_MIN_RADIUS_PX for the size cut). bufferData (not bufferSubData)
-    // orphans the previous frame's storage, which under ANGLE avoids a ~16 ms stall
-    // waiting on the GPU to finish reading it.
+    // Cull once per frame; both passes draw the same survivors. bufferData (not
+    // bufferSubData) orphans the old storage, avoiding a stall under ANGLE.
     if (instFloats && circles && packed && bCull) {
       const cam = camera;
       const threshold = cam
@@ -803,8 +737,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.useProgram(terrain);
     gl.uniformMatrix4fv(t.vp, false, m);
-    // The sun is fixed to the screen, not the world: rotating the map turns it
-    // too, so relief is always lit from the same side of the view.
+    // The sun is fixed to the screen, so it turns with the view.
     const yaw = camera ? camera.yaw : 0;
     const cy = Math.cos(yaw), sy = Math.sin(yaw);
     gl.uniform3f(t.light, SUN[0] * cy - SUN[1] * sy, SUN[0] * sy + SUN[1] * cy, SUN[2]);
@@ -837,8 +770,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       gl.uniform3f(t.view, 0, 0, 1);
     }
     gl.uniform1f(t.detail, det1 && det2 ? 1 : 0);
-    // Intervals track the scale currently in view, so the lines stay readable
-    // from a single formation out to the whole map.
+    // Intervals track the scale in view.
     const [rockStep, sandStep] = elevationIntervals(camera ? camera.scale * (cssWidth / width) : (view.maxX - view.minX) / width);
     gl.uniform1f(t.con, elevationLines ? 1 : 0);
     gl.uniform1f(t.conStep, rockStep);
@@ -894,11 +826,9 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       gl.vertexAttribDivisor(k, 0);
     }
 
-    // Tilted, things stand in front of other things: keep the frame's depth so
-    // markers behind the terrain can be told from markers in front of it.
+    // Tilted: keep the frame's depth so markers behind terrain can be hidden.
     if (camera && camera.tilt > 0 && floatBuffer) {
-      // One read at a time: a frame drawn while one is in flight is picked up
-      // when it lands.
+      // One read at a time.
       if (occSync) occStale = true;
       else startDepthRead(m);
     } else {
