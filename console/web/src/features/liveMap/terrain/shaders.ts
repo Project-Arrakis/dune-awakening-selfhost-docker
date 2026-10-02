@@ -199,6 +199,8 @@ void main(){
     // it is rejected and the fade reveals the backdrop instead of the ground.
     if(uPrepass > 0.5 && pfade < 0.999) discard;
   }
+  // The depth pass writes no colour: everything that can discard has run, so stop here.
+  if(uPrepass > 0.5){ o = vec4(0.0); return; }
   if(uPick > 0.5){ o = vec4(vZ, 1.0, 0.0, 1.0); return; }
   vec3 n = normalize(vN); if(n.z<0.0) n=-n;
   // Sand detail. The map's own material carries no mesh UVs, so it tiles these
