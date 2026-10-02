@@ -9,6 +9,7 @@ import {
   octDecode,
   orthoFromWorldRect,
   projectWorldPoint,
+  interpolateHeightField,
   sampleHeightField, applyCanvasSize } from "./terrainGeometry";
 import type { TerrainLayoutMeta, TerrainLibrary, TerrainView } from "./types";
 
@@ -228,6 +229,32 @@ describe("sampleHeightField", () => {
   it("clamps outside the field instead of wrapping or reading out of bounds", () => {
     expect(sampleHeightField(field, meta, -1e6, -1e6)).toBeCloseTo(0, 6);
     expect(Number.isFinite(sampleHeightField(field, meta, 1e6, 1e6))).toBe(true);
+  });
+});
+
+describe("interpolateHeightField", () => {
+  const meta = { hfN: 4, hfZlo: 0, hfZhi: 6553.5, hfStep: 100, hfX0: 0, hfY0: 0 } as unknown as TerrainLayoutMeta;
+  const field = new Uint16Array([0, 10000, 20000, 30000, 40000, 50000, 60000, 65535, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+  it("agrees with the mesh at its vertices", () => {
+    for (const [x, y] of [[0, 0], [100, 0], [0, 100], [300, 100], [300, 300]]) {
+      expect(interpolateHeightField(field, meta, x, y)).toBeCloseTo(sampleHeightField(field, meta, x, y), 6);
+    }
+  });
+
+  it("follows the surface between vertices, where the nearest texel steps", () => {
+    // Halfway along an edge, and in the middle of a cell.
+    expect(interpolateHeightField(field, meta, 50, 0)).toBeCloseTo(500, 6);
+    expect(interpolateHeightField(field, meta, 0, 50)).toBeCloseTo(2000, 6);
+    expect(interpolateHeightField(field, meta, 50, 50)).toBeCloseTo((0 + 1000 + 4000 + 5000) / 4, 6);
+    // The nearest texel is off by a visible amount at the same point.
+    expect(Math.abs(sampleHeightField(field, meta, 40, 0) - interpolateHeightField(field, meta, 40, 0))).toBeGreaterThan(300);
+  });
+
+  it("clamps outside the field instead of extrapolating", () => {
+    expect(interpolateHeightField(field, meta, -1e6, -1e6)).toBeCloseTo(0, 6);
+    expect(interpolateHeightField(field, meta, 1e6, 0)).toBeCloseTo(3000, 6);
+    expect(interpolateHeightField(field, meta, 1e6, 1e6)).toBeCloseTo(0, 6);
   });
 });
 

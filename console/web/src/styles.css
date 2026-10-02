@@ -3150,6 +3150,11 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-frame.dragging { cursor: grabbing; user-select: none; }
 .live-map-frame.dragging-player { cursor: grabbing; user-select: none; }
 .live-map-canvas { position: relative; background: #101316; }
+/* In 3D a marker can stand right at the viewport's edge, which is not the map's
+   edge: left to overflow, its own half-width would stretch the frame's scroll
+   area past the map. `clip`, not `hidden`, so this never becomes a scroller. */
+.live-map-canvas.is-3d { overflow: clip; }
+.live-map-toolbar input[type="range"].live-map-tilt-range { width: 110px; }
 .live-map-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; user-select: none; pointer-events: none; z-index: 0; }
 /* The terrain canvas covers the frame's viewport, not the scaled map: at
    maximum zoom the map is 16384px, beyond MAX_TEXTURE_SIZE on many GPUs. It is

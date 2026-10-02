@@ -1,4 +1,6 @@
 import type { LiveMapConfig, LiveMapMarker } from "../../api/liveMap";
+import { fovForTilt, screenToWorldAtZ } from "./terrain/terrainCamera";
+import type { TerrainCamera } from "./terrain/terrainCamera";
 
 // The Live Map's coordinate maths, extracted from LiveMapPanel so it can be
 // tested without rendering a 1300-line component. Behaviour is unchanged; the
@@ -95,4 +97,75 @@ export function visibleWorldRect(
     maxY: Math.max(a.y, b.y),
     flipY: config.flipY
   };
+}
+
+/**
+ * Where the terrain canvas sits inside the scrolled map, CSS pixels: it covers
+ * the viewport (or the whole map, when that is smaller), clamped to the map's
+ * extent -- see DeepDesertTerrain for why the clamp is load-bearing. Shared so
+ * the 3D markers are placed against exactly the canvas the terrain draws into.
+ */
+export function terrainViewport(config: LiveMapConfig, zoom: number, scrollLeft: number, scrollTop: number, frameWidth: number, frameHeight: number) {
+  const mapWidth = Math.floor(config.width * zoom);
+  const mapHeight = Math.floor(config.height * zoom);
+  const width = Math.min(frameWidth, mapWidth);
+  const height = Math.min(frameHeight, mapHeight);
+  const left = Math.min(Math.max(scrollLeft, 0), Math.max(0, mapWidth - width));
+  const top = Math.min(Math.max(scrollTop, 0), Math.max(0, mapHeight - height));
+  return { left, top, width, height };
+}
+
+/**
+ * The 3D camera for the panel's current scroll and zoom: the viewport's centre
+ * is the camera's target, at height `cz`, and the scale there is the flat map's
+ * scale. Tilt and yaw are radians; perspective follows tilt.
+ */
+export function liveMapCamera(
+  config: LiveMapConfig,
+  zoom: number,
+  viewport: { left: number; top: number; width: number; height: number },
+  tilt: number,
+  yaw: number,
+  cz: number
+): TerrainCamera | null {
+  const centre = liveMapPixelsToWorld((viewport.left + viewport.width / 2) / zoom, (viewport.top + viewport.height / 2) / zoom, config);
+  if (!centre || viewport.width <= 0 || viewport.height <= 0) return null;
+  return {
+    cx: centre.x,
+    cy: centre.y,
+    cz,
+    scale: (config.maxX - config.minX) / config.width / zoom,
+    width: viewport.width,
+    height: viewport.height,
+    tilt,
+    yaw,
+    fov: fovForTilt(tilt)
+  };
+}
+
+/**
+ * How far to scroll, CSS pixels, so that a drag from one viewport pixel to
+ * another carries the ground with it: the point grabbed, at height `z`, ends up
+ * under the pointer. Flat, that is just the drag reversed. Tilted and rotated it
+ * is the difference between the two pixels' ground points -- exact anywhere in
+ * the view, perspective included, because moving the camera's centre moves every
+ * projected point rigidly. `camera` is the one in force when the drag began.
+ *
+ * Unflipped maps only, like the camera itself: world axes and scroll axes agree.
+ */
+export function panScrollDelta(camera: TerrainCamera, from: { sx: number; sy: number }, to: { sx: number; sy: number }, z: number) {
+  const grabbed = screenToWorldAtZ(camera, from.sx, from.sy, z);
+  const under = screenToWorldAtZ(camera, to.sx, to.sy, z);
+  return { left: (grabbed.x - under.x) / camera.scale, top: (grabbed.y - under.y) / camera.scale };
+}
+
+/**
+ * Where the camera centre must move, in world units, so that zooming from
+ * `oldZoom` to `newZoom` keeps `anchor` (a world point) under the same pixel.
+ * Exact even with perspective: the eye distance scales with the scale, so the
+ * whole projection scales uniformly about the target.
+ */
+export function zoomCentreFor(camera: TerrainCamera, anchor: { x: number; y: number }, oldZoom: number, newZoom: number) {
+  const f = oldZoom / newZoom;
+  return { x: anchor.x - (anchor.x - camera.cx) * f, y: anchor.y - (anchor.y - camera.cy) * f };
 }

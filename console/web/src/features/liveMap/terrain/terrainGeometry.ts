@@ -129,6 +129,27 @@ export function sampleHeightField(field: Uint16Array, layout: TerrainLayoutMeta,
   return layout.hfZlo + (raw / 65535) * (layout.hfZhi - layout.hfZlo);
 }
 
+/**
+ * Height of the drawn sand surface at a world point. The sand is a mesh with a
+ * vertex at every texel, so between texels the surface is the interpolation of
+ * its four corners -- which is what something standing on it has to match. The
+ * nearest texel is right at the vertices and up to half a cell's slope off
+ * between them: hundreds of units, a visible float once the map is tilted and
+ * zoomed in.
+ */
+export function interpolateHeightField(field: Uint16Array, layout: TerrainLayoutMeta, x: number, y: number): number {
+  const n = layout.hfN;
+  const fx = Math.min(n - 1, Math.max(0, (x - layout.hfX0) / layout.hfStep));
+  const fy = Math.min(n - 1, Math.max(0, (y - layout.hfY0) / layout.hfStep));
+  const x0 = Math.min(n - 2, Math.floor(fx));
+  const y0 = Math.min(n - 2, Math.floor(fy));
+  const tx = fx - x0;
+  const ty = fy - y0;
+  const at = (ix: number, iy: number) => field[iy * n + ix];
+  const raw = (at(x0, y0) * (1 - tx) + at(x0 + 1, y0) * tx) * (1 - ty) + (at(x0, y0 + 1) * (1 - tx) + at(x0 + 1, y0 + 1) * tx) * ty;
+  return layout.hfZlo + (raw / 65535) * (layout.hfZhi - layout.hfZlo);
+}
+
 /** The parts of a canvas the size guard touches, so it can be tested without one. */
 export type SizableCanvas = { width: number; height: number; style: { width: string; height: string } };
 

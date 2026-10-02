@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LiveMapConfig } from "../../api/liveMap";
-import { clampLiveMapZoom, liveMapMinimumZoom, liveMapPixelsToWorld, MAX_LIVE_MAP_ZOOM, visibleWorldRect, worldToLiveMapPoint } from "./liveMapGeometry";
+import { clampLiveMapZoom, liveMapCamera, liveMapMinimumZoom, liveMapPixelsToWorld, MAX_LIVE_MAP_ZOOM, panScrollDelta, terrainViewport, visibleWorldRect, worldToLiveMapPoint, zoomCentreFor } from "./liveMapGeometry";
+import { projectToScreen, screenToWorldAtZ } from "./terrain/terrainCamera";
 
 // LIVE_MAP_CONFIGS.DeepDesert, verbatim from console/api/src/duneDb.js.
 const DEEP_DESERT: LiveMapConfig = {
@@ -131,5 +132,62 @@ describe("markers just outside the map square", () => {
                           [DEEP_DESERT.minX, DEEP_DESERT.maxY], [DEEP_DESERT.maxX, DEEP_DESERT.minY]]) {
       expect(worldToLiveMapPoint({ x, y }, DEEP_DESERT)!.inBounds).toBe(true);
     }
+  });
+});
+
+describe("3D view helpers", () => {
+  const zoom = 2;
+  const viewport = terrainViewport(DEEP_DESERT, zoom, 3000, 2500, 1100, 700);
+  const deg = (d: number) => (d * Math.PI) / 180;
+
+  it("places the canvas over the viewport, clamped to the map", () => {
+    expect(viewport).toEqual({ left: 3000, top: 2500, width: 1100, height: 700 });
+    const past = terrainViewport(DEEP_DESERT, zoom, 1e9, -50, 1100, 700);
+    expect(past.left).toBe(Math.floor(DEEP_DESERT.width * zoom) - 1100);
+    expect(past.top).toBe(0);
+  });
+
+  it("flat, projects every point exactly where the flat map draws it", () => {
+    const camera = liveMapCamera(DEEP_DESERT, zoom, viewport, 0, 0, 0)!;
+    for (const [px, py] of [[1600, 1300], [2100, 1500], [1500.5, 1250.25]]) {
+      const world = liveMapPixelsToWorld(px, py, DEEP_DESERT)!;
+      const s = projectToScreen(camera, world.x, world.y, 12345);
+      expect(s.sx).toBeCloseTo(px * zoom - viewport.left, 6);
+      expect(s.sy).toBeCloseTo(py * zoom - viewport.top, 6);
+    }
+  });
+
+  it("pans so the ground under the pointer follows it, rotated and tilted", () => {
+    for (const [t, y] of [[0, 0], [0, 90], [40, 25], [60, -130]]) {
+      const before = liveMapCamera(DEEP_DESERT, zoom, viewport, deg(t), deg(y), 8000)!;
+      // Far from the centre and off the pivot height, where perspective bites hardest.
+      for (const [sx, sy, z] of [[700, 300, 8000], [40, 660, 8000], [1050, 30, 21000]]) {
+        const grabbed = screenToWorldAtZ(before, sx, sy, z);
+        const d = panScrollDelta(before, { sx, sy }, { sx: sx + 137, sy: sy - 91 }, z);
+        const moved = { ...viewport, left: viewport.left + d.left, top: viewport.top + d.top };
+        const after = liveMapCamera(DEEP_DESERT, zoom, moved, deg(t), deg(y), 8000)!;
+        const s = projectToScreen(after, grabbed.x, grabbed.y, z);
+        expect(s.sx).toBeCloseTo(sx + 137, 6);
+        expect(s.sy).toBeCloseTo(sy - 91, 6);
+      }
+    }
+  });
+
+  it("flat, pans by exactly the drag reversed", () => {
+    const camera = liveMapCamera(DEEP_DESERT, zoom, viewport, 0, 0, 8000)!;
+    const d = panScrollDelta(camera, { sx: 200, sy: 300 }, { sx: 237, sy: 279 }, 8000);
+    expect(d.left).toBeCloseTo(-37, 9);
+    expect(d.top).toBeCloseTo(21, 9);
+  });
+
+  it("zooms about the point under the cursor, perspective included", () => {
+    const camera = liveMapCamera(DEEP_DESERT, zoom, viewport, deg(45), deg(30), 8000)!;
+    const anchor = screenToWorldAtZ(camera, 900, 200, 8000);
+    const next = 3.1;
+    const centre = zoomCentreFor(camera, anchor, zoom, next);
+    const scaled = { ...camera, cx: centre.x, cy: centre.y, scale: camera.scale * zoom / next };
+    const s = projectToScreen(scaled, anchor.x, anchor.y, 8000);
+    expect(s.sx).toBeCloseTo(900, 6);
+    expect(s.sy).toBeCloseTo(200, 6);
   });
 });

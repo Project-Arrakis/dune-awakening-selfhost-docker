@@ -24,12 +24,29 @@ function fakeTask(status: Task["status"]): Task {
 // The real component needs WebGL2, which jsdom has not got, so it would always
 // fall back. `ready` is controllable because the panel now keeps the flat image
 // up until the canvas reports it has something to paint.
-const terrain = vi.hoisted(() => ({ signalsReady: true }));
+//
+// It also hands the panel the 3D API the real one does: a pick that answers with
+// whatever the test set, and flat sand at `sandHeight`.
+const terrain = vi.hoisted(() => ({
+  signalsReady: true,
+  picked: null as { x: number; y: number; z: number } | null,
+  pickCalls: [] as number[][],
+  sandHeight: 1000,
+  props: [] as { tilt?: number; yaw?: number }[]
+}));
 vi.mock("./terrain/DeepDesertTerrain", () => ({
-  default: ({ onReady }: { onReady?: () => void }) => {
+  default: ({ onReady, onTerrainApi, tilt, yaw }: { onReady?: () => void; onTerrainApi?: (api: unknown) => void; tilt?: number; yaw?: number }) => {
+    terrain.props.push({ tilt, yaw });
     useEffect(() => {
-      if (terrain.signalsReady) onReady?.();
-    }, [onReady]);
+      if (!terrain.signalsReady) return undefined;
+      onTerrainApi?.({
+        pick: (sx: number, sy: number) => { terrain.pickCalls.push([sx, sy]); return terrain.picked; },
+        heightAt: () => terrain.sandHeight,
+        pivotZ: terrain.sandHeight
+      });
+      onReady?.();
+      return () => onTerrainApi?.(null);
+    }, [onReady, onTerrainApi]);
     return <canvas className="live-map-terrain" />;
   }
 }));
@@ -59,6 +76,9 @@ const map = {
 beforeEach(() => {
   vi.clearAllMocks();
   terrain.signalsReady = true;
+  terrain.picked = null;
+  terrain.pickCalls.length = 0;
+  terrain.props.length = 0;
   vi.mocked(liveMapApi.markers).mockResolvedValue({
     rows: [
       { id: 31573, type: "base", name: "Desert Home", base_type: "Sub-Fief", owner_name: "Chani", map: "HaggaBasin", partition_id: 1, x: 500, y: 500, z: 20 },
@@ -763,4 +783,145 @@ it("drops the flat image once the terrain has painted", async () => {
 
   await waitFor(() => expect(container.querySelector("img.live-map-image")).toBeNull());
   expect(container.querySelector("canvas.live-map-terrain")).not.toBeNull();
+});
+
+// ---- 3D: tilt, rotation, and markers placed by projection --------------------
+
+/** jsdom lays nothing out, so the frame has no size until it is given one. */
+function sizeFrame(container: HTMLElement, width = 800, height = 600) {
+  const frame = container.querySelector(".live-map-frame") as HTMLDivElement;
+  Object.defineProperty(frame, "clientWidth", { configurable: true, value: width });
+  Object.defineProperty(frame, "clientHeight", { configurable: true, value: height });
+  return frame;
+}
+
+function useTwoHeights() {
+  useDeepDesert({
+    coriolisLayout: 3,
+    rows: [
+      { id: 1, type: "base", name: "Low", base_type: "Sub-Fief", owner_name: "A", map: "DeepDesert", partition_id: 8, x: -52656, y: -52066, z: 200 },
+      { id: 2, type: "base", name: "High", base_type: "Sub-Fief", owner_name: "B", map: "DeepDesert", partition_id: 8, x: -52656, y: -52066, z: 20000 }
+    ]
+  });
+}
+
+it("offers tilt only while the rendered terrain is drawing", async () => {
+  // Hagga Basin: a flat image, which cannot tilt.
+  const hagga = renderPanel();
+  await screen.findByRole("button", { name: "Base: Desert Home" });
+  expect(screen.queryByRole("slider", { name: "Tilt" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Top-Down" })).toBeNull();
+  hagga.unmount();
+
+  // Deep Desert, terrain mounted but not painting yet.
+  terrain.signalsReady = false;
+  useDeepDesert({ coriolisLayout: 3 });
+  const waiting = renderPanel();
+  await screen.findByRole("button", { name: "Base: Sietch Tabr" });
+  expect(screen.queryByRole("slider", { name: "Tilt" })).toBeNull();
+  waiting.unmount();
+
+  terrain.signalsReady = true;
+  renderPanel();
+  expect(await screen.findByRole("slider", { name: "Tilt" })).toHaveValue("0");
+  // Nothing to reset while the view is already top-down.
+  expect(screen.getByRole("button", { name: "Top-Down" })).toBeDisabled();
+});
+
+it("places markers by height once tilted, and exactly as before while top-down", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  const low = await screen.findByRole("button", { name: "Base: Low" });
+  const high = screen.getByRole("button", { name: "Base: High" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  sizeFrame(container);
+
+  // Top-down: two markers over the same ground sit on the same pixel, whatever their height.
+  expect(low.style.top).toBe(high.style.top);
+  expect(low.style.left).toBe(high.style.left);
+  const flatTop = parseFloat(low.style.top);
+
+  fireEvent.change(slider, { target: { value: "45" } });
+  // Tilted: the higher one is drawn further up the screen, by its height.
+  expect(parseFloat(high.style.top)).toBeLessThan(parseFloat(low.style.top) - 1);
+  expect(terrain.props.at(-1)!.tilt).toBeCloseTo(Math.PI / 4, 9);
+
+  // Back to top-down: back to the very same position.
+  fireEvent.click(screen.getByRole("button", { name: "Top-Down" }));
+  expect(parseFloat(low.style.top)).toBe(flatTop);
+  expect(high.style.top).toBe(low.style.top);
+  expect(terrain.props.at(-1)).toEqual({ tilt: 0, yaw: 0 });
+});
+
+it("picks a location from the terrain under the cursor when tilted", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  const frame = sizeFrame(container);
+  fireEvent.change(slider, { target: { value: "50" } });
+
+  terrain.picked = { x: -60000, y: -40000, z: 15000 };
+  terrain.pickCalls.length = 0;
+  fireEvent.doubleClick(frame, { clientX: 120, clientY: 90 });
+  expect(terrain.pickCalls).toEqual([[120, 90]]);
+  const overlay = screen.getByRole("dialog", { name: "Picked location" });
+  expect(overlay).toHaveTextContent("-60000");
+  expect(overlay).toHaveTextContent("-40000");
+});
+
+it("picks nothing past the edge of the map, which a tilted view runs beyond", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  const frame = sizeFrame(container);
+  fireEvent.change(slider, { target: { value: "50" } });
+
+  terrain.picked = { x: deepDesert.maxX + 5000, y: -40000, z: 3000 };
+  fireEvent.doubleClick(frame, { clientX: 120, clientY: 90 });
+  expect(screen.queryByRole("dialog", { name: "Picked location" })).toBeNull();
+});
+
+it("falls back to the sand under the cursor where the terrain cannot be read", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  const frame = sizeFrame(container);
+  fireEvent.change(slider, { target: { value: "50" } });
+
+  terrain.picked = null;
+  // The centre of the view is the camera's centre, at the pivot height the sand sits at.
+  fireEvent.doubleClick(frame, { clientX: 400, clientY: 300 });
+  const overlay = screen.getByRole("dialog", { name: "Picked location" });
+  const numbers = [...overlay.querySelectorAll("strong")].map((node) => Number(node.textContent));
+  expect(numbers.filter(Number.isFinite).length).toBeGreaterThanOrEqual(2);
+});
+
+it("tilts and rotates on a right-drag, and leaves a left-drag panning", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  const frame = sizeFrame(container);
+
+  // Left-drag: no tilt.
+  fireEvent.mouseDown(frame, { button: 0, clientX: 300, clientY: 300 });
+  fireEvent.mouseMove(frame, { clientX: 340, clientY: 200 });
+  fireEvent.mouseUp(frame);
+  expect(slider).toHaveValue("0");
+
+  // Right-drag up 100 px leans the map back 30 degrees; across 50 px turns it 15.
+  fireEvent.mouseDown(frame, { button: 2, clientX: 300, clientY: 300 });
+  fireEvent.mouseMove(frame, { clientX: 350, clientY: 200 });
+  fireEvent.mouseUp(frame);
+  expect(slider).toHaveValue("30");
+  expect(terrain.props.at(-1)!.yaw).toBeCloseTo((15 * Math.PI) / 180, 9);
+
+  // It stops at the limit rather than going past it.
+  fireEvent.mouseDown(frame, { button: 2, clientX: 300, clientY: 300 });
+  fireEvent.mouseMove(frame, { clientX: 300, clientY: -900 });
+  fireEvent.mouseUp(frame);
+  expect(slider).toHaveValue("60");
 });

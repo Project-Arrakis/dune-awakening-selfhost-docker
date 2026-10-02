@@ -8,7 +8,11 @@ import DeepDesertTerrain from "./DeepDesertTerrain";
 // not loading, so the loader is stubbed out.
 vi.mock("./terrainAssets", () => ({
   loadSharedAssets: vi.fn(async () => ({ library: { meshes: [] } })),
-  loadLayoutAssets: vi.fn(async (layout: number) => ({ meta: { layout } }))
+  // A 2x2 height field: 0, 1000, 2000 and 3000 uu -- enough for the pivot and the sampler.
+  loadLayoutAssets: vi.fn(async (layout: number) => ({
+    meta: { layout, hfN: 2, hfZlo: 0, hfZhi: 65535, hfStep: 1000, hfX0: 0, hfY0: 0 },
+    heightField: new Uint8Array(new Uint16Array([0, 1000, 2000, 3000]).buffer)
+  }))
 }));
 
 const CONFIG: LiveMapConfig = {
@@ -24,6 +28,8 @@ function fakeRenderer() {
     setAssets: vi.fn(),
     resize: vi.fn(),
     setView: vi.fn(),
+    setCamera: vi.fn(),
+    pick: vi.fn(() => ({ x: 1, y: 2, z: 3 })),
     setElevationLines: vi.fn(),
     draw: vi.fn(),
     dispose: vi.fn()
@@ -229,5 +235,34 @@ describe("scroll-area integrity", () => {
       const canvas = document.querySelector("canvas.live-map-terrain") as HTMLCanvasElement;
       expect(canvas.style.transform).toBe("translate(0px, 0px)");
     });
+  });
+});
+
+describe("3D", () => {
+  it("draws through the camera when tilted, and the flat rect otherwise", async () => {
+    const flat = mount();
+    await waitFor(() => expect(flat.renderer.setView).toHaveBeenCalled());
+    expect(flat.renderer.setCamera).not.toHaveBeenCalled();
+    document.body.innerHTML = "";
+    const tilted = mount({ tilt: 0.5, yaw: 0.25 });
+    await waitFor(() => expect(tilted.renderer.setCamera).toHaveBeenCalled());
+    const camera = tilted.renderer.setCamera.mock.calls.at(-1)![0];
+    expect(camera.tilt).toBe(0.5);
+    expect(camera.yaw).toBe(0.25);
+    expect(camera.fov).toBeGreaterThan(0);
+    // pivots about the layout's mean sand height
+    expect(camera.cz).toBeCloseTo(1500, 6);
+  });
+
+  it("hands the panel a terrain API for the layout, and withdraws it on unmount", async () => {
+    const onTerrainApi = vi.fn();
+    const { view } = mount({ onTerrainApi });
+    await waitFor(() => expect(onTerrainApi).toHaveBeenCalledWith(expect.objectContaining({ pivotZ: 1500 })));
+    const api = onTerrainApi.mock.calls.at(-1)![0];
+    expect(api.heightAt(1000, 1000)).toBe(3000);
+    expect(api.heightAt(0, 0)).toBe(0);
+    expect(api.pick(10, 20)).toEqual({ x: 1, y: 2, z: 3 });
+    view.unmount();
+    expect(onTerrainApi).toHaveBeenLastCalledWith(null);
   });
 });
