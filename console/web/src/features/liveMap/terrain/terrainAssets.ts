@@ -5,10 +5,10 @@ import type { TerrainLayoutMeta, TerrainLibrary } from "./types";
  * Fetching and inflating the terrain assets.
  *
  * Everything ships gzipped, including the JSON sidecars, so it all flows through
- * one path. The shared half is 6.4 MB -- the mesh library plus the detail
- * textures -- and identical for every layout; a layout adds about 0.78 MB. That
- * split is the whole point: a Coriolis reset changes the layout, and the browser
- * re-fetches under a megabyte.
+ * one path. The shared half is 8.5 MB -- the mesh library, the detail textures
+ * and the rock diffuse -- and identical for every layout; a layout adds about
+ * 0.78 MB. That split is the whole point: a Coriolis reset changes the layout,
+ * and the browser re-fetches under a megabyte.
  */
 
 export type SharedAssets = {
@@ -18,6 +18,10 @@ export type SharedAssets = {
   detail1: Uint8Array;
   detail2: Uint8Array;
   breakup: Uint8Array;
+  /** Normalized u16 UVs for the textured rock meshes (see `TerrainMesh.uvo`). */
+  rockUV: Uint8Array;
+  /** The game's baked rock diffuse: `texLayers` BC1 layers, back to back. */
+  rockTex: Uint8Array;
 };
 
 export type LayoutAssets = {
@@ -36,7 +40,7 @@ export type LayoutAssets = {
  * built from a base path.
  *
  * A layout-only rebuild leaves `meshes.bin-<hash>.gz` at the same URL, so a
- * Coriolis reset re-downloads under a megabyte rather than the whole 6 MB.
+ * Coriolis reset re-downloads under a megabyte rather than the whole 8.5 MB.
  */
 const assetUrls = import.meta.glob("./assets/**/*.gz", {
   query: "?url",
@@ -72,7 +76,7 @@ const layoutCache = new Map<string, Promise<LayoutAssets>>();
  * aborted promise and report the terrain unavailable.
  *
  * Abandoning a load is also no reason to throw the bytes away -- whoever comes
- * next wants the same 6 MB -- so the fetch is left to finish and fill the cache.
+ * next wants the same 8.5 MB -- so the fetch is left to finish and fill the cache.
  */
 function forCaller<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return work;
@@ -121,18 +125,28 @@ async function gunzipJson<T>(url: string): Promise<T> {
 export async function loadSharedAssets(resolve: AssetResolver = bundledAsset, signal?: AbortSignal): Promise<SharedAssets> {
   if (!sharedPromise) {
     sharedPromise = (async () => {
-      const [library, geometry, detail1, detail2, breakup] = await Promise.all([
+      const [library, geometry, detail1, detail2, breakup, rockUV, rockTex] = await Promise.all([
         gunzipJson<TerrainLibrary>(resolve("meshes.json.gz")),
         gunzip(resolve("meshes.bin.gz")),
         gunzip(resolve("tex/det1.bin.gz")),
         gunzip(resolve("tex/det2.bin.gz")),
-        gunzip(resolve("tex/brk.bin.gz"))
+        gunzip(resolve("tex/brk.bin.gz")),
+        gunzip(resolve("rock-uv.bin.gz")),
+        gunzip(resolve("tex/rock.bin.gz"))
       ]);
       const expected = library.posBytes + library.nrmBytes + library.idxBytes;
       if (geometry.byteLength !== expected) {
         throw new Error(`mesh library is ${geometry.byteLength} bytes, its table describes ${expected}`);
       }
-      return { library: decodeIndices(library, geometry), geometry, detail1, detail2, breakup };
+      if (rockUV.byteLength !== (library.uvBytes ?? 0)) {
+        throw new Error(`rock UVs are ${rockUV.byteLength} bytes, the library describes ${library.uvBytes ?? 0}`);
+      }
+      const size = library.texSize ?? 0;
+      const layerBytes = (size / 4) * (size / 4) * 8;
+      if (rockTex.byteLength !== (library.texLayers ?? 0) * layerBytes) {
+        throw new Error(`rock texture is ${rockTex.byteLength} bytes, expected ${library.texLayers ?? 0} BC1 layers of ${size}^2`);
+      }
+      return { library: decodeIndices(library, geometry), geometry, detail1, detail2, breakup, rockUV, rockTex };
     })();
     // A failed load must not poison the page: drop the rejected promise so a
     // later attempt (a retry, or simply switching back to the map) can try again.

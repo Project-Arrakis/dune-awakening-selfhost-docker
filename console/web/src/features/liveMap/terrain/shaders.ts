@@ -21,6 +21,7 @@ layout(location=4) in vec3 iC2;
 layout(location=5) in vec3 iT;
 layout(location=6) in float iMat;
 layout(location=7) in float iLift;   // world uu this instance rises by, if buried
+layout(location=8) in vec2 aUV;      // textured rock only; a constant zero elsewhere
 uniform vec3 uLo, uExt;
 uniform mat4 uVP;
 // uFeather: width (world uu) of the band at a tile's rim over which its
@@ -44,6 +45,7 @@ float hfAt(ivec2 p){
 out vec3 vN; out float vZ; out float vMat; out vec2 vXY;
 flat out vec4 vBox; out float vWS; out float vEdge; flat out float vClip;
 flat out float vRand;
+out vec2 vUV;
 // A per-instance random, hashed from the instance's own translation rather than
 // shipped as an attribute: same value every frame, deterministic, zero added
 // bytes. iT is in world uu and reaches ~1e6, so it is scaled down before fract()
@@ -70,6 +72,7 @@ void main(){
     float dy = hfAt(ivec2(ix,iy+1)) - hfAt(ivec2(ix,iy-1));
     vN = normalize(vec3(-dx, -dy, 2.0*uHStep));
     vRand = 0.5;   // neutral: the height field has no instances
+    vUV = vec2(0.0);
     vZ = wf.z; vMat = 1.0; vXY = wf.xy; vBox = vec4(0.0); vWS = 1.0; vEdge = 1e9; vClip = -1e9;
     gl_Position = uVP*vec4(wf,1.0);
     gl_Position.z += uBias;
@@ -82,6 +85,7 @@ void main(){
   vClip = iLift;
   vN = normalize(R*octDec(aNrm));
   vRand = hash13(iT);
+  vUV = aUV;
   vZ = w.z; vMat = iMat; vXY = w.xy;
   vec2 e0 = (R*vec3(uLo.xy,0.0)).xy + iT.xy;
   vec2 e1 = (R*vec3(uLo.xy+uExt.xy,0.0)).xy + iT.xy;
@@ -100,6 +104,26 @@ precision highp float;
 in vec3 vN; in float vZ; in float vMat; in vec2 vXY;
 flat in vec4 vBox; in float vWS; in float vEdge; flat in float vClip;
 flat in float vRand;
+in vec2 vUV;
+// Textured rock: the map's own rock mesh, painted with the baked diffuse of the
+// game's in-world counterpart, one array layer per family. uTexOn is per draw call.
+uniform mediump sampler2DArray uRock;
+uniform float uTexOn, uTexLayer, uTexGain;
+// Tuned against the untextured look by rock-only pixel statistics (see the plan):
+// TEXTINT brings the families, already normalised to one mean brightness by
+// uTexGain, up to the brightness the map's rock has today. Textured rock keeps
+// the full directional shading: the map's terraced shapes are what give it relief,
+// and several of the game's diffuses (the shield-wall HLODs) are near-uniform
+// brown that only reads as rock once lit. TEXKNEE starts a highlight shoulder, so
+// lit tops roll off instead of clipping to one flat saturated tone.
+#define TEXTINT 1.37
+#define TEXKNEE 0.7
+// TEXHUE pulls textured rock's colour toward the map's own ochre rock tone, keeping
+// the texture's light and dark. The game's diffuses run pink-salmon against the
+// map's ochre, and where a family's game shape differs from the map's, its texture
+// lands out of place; halfway keeps a hint of the game's red while those rocks blend
+// in instead of standing out. 0 is the game's colour, 1 is the map's tone.
+#define TEXHUE 0.5
 // Per-instance rock tone spread, +/- this fraction. 0.10 was too faint to read
 // (a 99th-percentile delta of 11 levels); 0.25 reads without looking artificial.
 #define ROCKVAR 0.25
@@ -192,6 +216,13 @@ void main(){
   // MI_UIMap_Terrain_3 tint (#CCAE7A) -- drawing these as rock made a large
   // ground patch read as a dark slab.
   vec3 alb  = mix(rock, sand, step(0.5, vMat));
+  bool textured = uTexOn > 0.5 && vMat < 0.5;
+  if(textured){
+    vec3 tx = texture(uRock, vec3(vUV, uTexLayer)).rgb * uTexGain;
+    // the texture's light and dark, over its family's normalised mean luminance (0.414)
+    float tl = dot(tx, vec3(0.2126, 0.7152, 0.0722)) / 0.414;
+    alb = mix(tx * TEXTINT, rock * tl, TEXHUE);
+  }
   alb = mix(alb, uPatchCol, step(1.5, vMat));
   alb = mix(alb, uPoiCol,   step(2.5, vMat));   // POIs: the map's own #89A897
   float lam = clamp(dot(n,uL),0.0,1.0);
@@ -199,6 +230,10 @@ void main(){
   float rel = (lam-flat_)/max(1.0-flat_,1e-3);
   float sh = clamp(1.0+0.55*rel, 0.30, 1.75);
   vec3 lit = alb*sh;
+  if(textured){
+    vec3 over = max(lit - TEXKNEE, 0.0);
+    lit = min(lit, vec3(TEXKNEE)) + (1.0 - TEXKNEE) * (1.0 - exp(-over / (1.0 - TEXKNEE)));
+  }
   vec3 c = pow(clamp(lit,0.0,1.0), vec3(1.0/1.02));
   // Straight down, shading alone cannot say how tall a formation is: two ledges
   // at different heights light identically when their normals match. These lines
@@ -280,7 +315,8 @@ void main(){
   o = vec4(a.rgb/a.a, 1.0);
 }`;
 
-// Blit used to decode a BC7 texture into an RGBA8 copy that can carry mips.
+// Blit used to decode a compressed texture (BC7 detail, BC1 rock) into an RGBA8
+// copy that can carry mips.
 export const CFS = `#version 300 es
 precision highp float;
 uniform sampler2D uT; in vec2 vUV; out vec4 o;

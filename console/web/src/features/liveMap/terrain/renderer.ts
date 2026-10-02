@@ -39,6 +39,8 @@ const SUN: [number, number, number] = [-0.4, -0.5, 0.77];
 const VOID_COLOUR: [number, number, number] = [0.3, 0.26, 0.22];
 const INSTANCE_STRIDE = 56; // 14 float32: mat3, translation, iMat, lift
 const INSTANCE_OFFSETS = [0, 12, 24, 36, 48, 52];
+const UV_LOCATION = 8;
+const ATTRIBS = 9; // locations 0..8, cleared around every pass
 
 export type DeepDesertRenderer = {
   readonly ready: boolean;
@@ -119,6 +121,9 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   const compressedFormats = gl.getExtension("EXT_texture_compression_bptc");
   if (!compressedFormats) throw new Error("EXT_texture_compression_bptc is not available");
   const bptc: EXT_texture_compression_bptc = compressedFormats;
+  // The rock diffuse ships as the game's own BC1 blocks. Unlike BPTC this is not
+  // worth refusing over: without it the rock simply draws in its untextured tone.
+  const s3tc = gl.getExtension("WEBGL_compressed_texture_s3tc");
   // Order-independent weighted blending wants a float accumulator. Without it
   // the blend still works, just flatter -- not a reason to refuse to draw.
   const floatBuffer = !!gl.getExtension("EXT_color_buffer_float");
@@ -142,7 +147,9 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     clipRaise: u(terrain, "uClipRaise"), prepass: u(terrain, "uPrepass"), view: u(terrain, "uV"),
     d1: u(terrain, "uD1"), d2: u(terrain, "uD2"), tile: u(terrain, "uTile"),
     detStr: u(terrain, "uDetStr"), detail: u(terrain, "uDetail"),
-    con: u(terrain, "uCon"), conStep: u(terrain, "uConStep"), conStepS: u(terrain, "uConStepS")
+    con: u(terrain, "uCon"), conStep: u(terrain, "uConStep"), conStepS: u(terrain, "uConStepS"),
+    rock: u(terrain, "uRock"), texOn: u(terrain, "uTexOn"), texLayer: u(terrain, "uTexLayer"),
+    texGain: u(terrain, "uTexGain")
   };
   const r = { tex: u(resolve, "uT"), texel: u(resolve, "uTexel"), ss: u(resolve, "uSS") };
   const b = { vp: u(backdrop, "uVP"), c: u(backdrop, "uC"), half: u(backdrop, "uHalf"), z: u(backdrop, "uZ") };
@@ -161,12 +168,6 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
    * once on the GPU into an RGBA8 copy that can carry a real mip chain.
    */
   function decodeToMipped(raw: Uint8Array, size: number): WebGLTexture {
-    const compressed = gl.createTexture()!;
-    gl.bindTexture(gl.TEXTURE_2D, compressed);
-    gl.compressedTexImage2D(gl.TEXTURE_2D, 0, bptc.COMPRESSED_RGBA_BPTC_UNORM_EXT, size, size, 0, raw);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-
     const decoded = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, decoded);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
@@ -176,6 +177,61 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     const fb = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, decoded, 0);
+    blitCompressed(raw, size, bptc.COMPRESSED_RGBA_BPTC_UNORM_EXT);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fb);
+
+    gl.bindTexture(gl.TEXTURE_2D, decoded);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    return decoded;
+  }
+
+  /**
+   * The rock diffuse, decoded the same way into an RGBA8 texture array -- one
+   * layer per family, so a single sampler serves every textured draw. Clamped,
+   * not repeated: these are baked atlases whose UVs run to the very edge.
+   *
+   * Without S3TC, or with no textured meshes, this is a 1x1 placeholder: the
+   * sampler is live in the program whether a draw reads it or not, so it must
+   * always have something real bound.
+   */
+  function decodeRockArray(raw: Uint8Array, size: number, layers: number): { texture: WebGLTexture; real: boolean } {
+    const texture = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    if (!s3tc || !layers || !size) {
+      gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8, 1, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      return { texture, real: false };
+    }
+    gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8, size, size, layers, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    const layerBytes = (size / 4) * (size / 4) * 8;
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    for (let layer = 0; layer < layers; layer++) {
+      gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, texture, 0, layer);
+      blitCompressed(raw.subarray(layer * layerBytes, (layer + 1) * layerBytes), size, s3tc.COMPRESSED_RGB_S3TC_DXT1_EXT);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fb);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+    gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    return { texture, real: true };
+  }
+
+  /** Draw one compressed image into whatever colour target is bound. */
+  function blitCompressed(raw: Uint8Array, size: number, format: number) {
+    const compressed = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, compressed);
+    gl.compressedTexImage2D(gl.TEXTURE_2D, 0, format, size, size, 0, raw);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.viewport(0, 0, size, size);
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.BLEND);
@@ -189,17 +245,8 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     gl.disableVertexAttribArray(0);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.deleteFramebuffer(fb);
     gl.deleteTexture(compressed);
-
-    gl.bindTexture(gl.TEXTURE_2D, decoded);
-    gl.generateMipmap(gl.TEXTURE_2D);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
     gl.enable(gl.DEPTH_TEST);
-    return decoded;
   }
 
   // ---- mutable state --------------------------------------------------------
@@ -222,6 +269,9 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   let det1: WebGLTexture | null = null;
   let det2: WebGLTexture | null = null;
   let texBrk: WebGLTexture | null = null;
+  let bUV: WebGLBuffer | null = null;
+  let rockTex: WebGLTexture | null = null;
+  let rockTextured = false;
 
   let fbo: WebGLFramebuffer | null = null;
   let accTex: WebGLTexture | null = null;
@@ -276,7 +326,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     if (lost) return;
     // Geometry and the sand textures are shared by all 12 layouts: only re-upload
     // them when the shared set itself changes, so a Coriolis reset costs one
-    // instance buffer and one height field rather than 6 MB of re-upload.
+    // instance buffer and one height field rather than 8.5 MB of re-upload.
     if (sharedRef !== shared) {
       const { library, geometry } = shared;
       const nrmAt = library.posBytes;
@@ -293,6 +343,12 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       det1 = decodeToMipped(shared.detail1, 1024);
       det2 = decodeToMipped(shared.detail2, 1024);
       texBrk = decodeToMipped(shared.breakup, 128);
+      if (bUV) gl.deleteBuffer(bUV);
+      bUV = shared.rockUV.byteLength ? upload(gl.ARRAY_BUFFER, shared.rockUV) : null;
+      if (rockTex) gl.deleteTexture(rockTex);
+      const rock = decodeRockArray(shared.rockTex, library.texSize ?? 0, library.texLayers ?? 0);
+      rockTex = rock.texture;
+      rockTextured = rock.real && !!bUV;
       sharedRef = shared;
     }
 
@@ -341,11 +397,13 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     // enough: location 0 is an integer attribute, and a disabled integer
     // attribute whose generic value was never set with vertexAttribI4ui makes
     // the whole draw INVALID_OPERATION under ANGLE.
-    for (let k = 0; k < 8; k++) {
+    for (let k = 0; k < ATTRIBS; k++) {
       gl.disableVertexAttribArray(k);
       gl.vertexAttribDivisor(k, 0);
     }
     gl.vertexAttribI4ui(0, 0, 0, 0, 0);
+    gl.vertexAttrib2f(UV_LOCATION, 0, 0);
+    gl.uniform1f(t.texOn, 0);
     gl.uniform1f(t.hfMode, 1);
     gl.uniform1f(t.feather, 0);
     gl.uniform1f(t.wScale, 1);
@@ -383,6 +441,22 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
         gl.enableVertexAttribArray(location);
         gl.vertexAttribPointer(location, size, gl.FLOAT, false, INSTANCE_STRIDE, base + INSTANCE_OFFSETS[k]);
         gl.vertexAttribDivisor(location, 1);
+      }
+
+      // The game's own diffuse for the meshes that carry one; every other draw
+      // reads a constant zero UV and ignores the sampler.
+      if (rockTextured && call.texLayer !== undefined && call.uvo !== undefined) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, bUV);
+        gl.enableVertexAttribArray(UV_LOCATION);
+        gl.vertexAttribDivisor(UV_LOCATION, 0);
+        gl.vertexAttribPointer(UV_LOCATION, 2, gl.UNSIGNED_SHORT, true, 4, call.uvo * 4);
+        gl.uniform1f(t.texOn, 1);
+        gl.uniform1f(t.texLayer, call.texLayer);
+        gl.uniform1f(t.texGain, call.texGain ?? 1);
+      } else {
+        gl.disableVertexAttribArray(UV_LOCATION);
+        gl.vertexAttrib2f(UV_LOCATION, 0, 0);
+        gl.uniform1f(t.texOn, 0);
       }
 
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bIdx);
@@ -451,6 +525,9 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.activeTexture(gl.TEXTURE7);
     gl.bindTexture(gl.TEXTURE_2D, texBrk);
     gl.uniform1i(t.brk, 7);
+    gl.activeTexture(gl.TEXTURE8);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, rockTex);
+    gl.uniform1i(t.rock, 8);
     gl.uniform1f(t.brkTile, BRKTILE);
     gl.uniform1f(t.brkAmp, texBrk ? BRKAMP : 0);
     gl.uniform1f(t.clipRaise, CLIPRAISE);
@@ -480,7 +557,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.disable(gl.BLEND);
     gl.depthMask(true);
     gl.depthFunc(gl.LESS);
-    for (let k = 0; k < 8; k++) {
+    for (let k = 0; k < ATTRIBS; k++) {
       gl.disableVertexAttribArray(k);
       gl.vertexAttribDivisor(k, 0);
     }
@@ -532,8 +609,8 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     draw,
     dispose() {
       canvas.removeEventListener("webglcontextlost", onLost as EventListener);
-      for (const buffer of [bPos, bNrm, bIdx, bIns, bHfIdx, quad]) if (buffer) gl.deleteBuffer(buffer);
-      for (const texture of [texHf, det1, det2, texBrk, accTex]) if (texture) gl.deleteTexture(texture);
+      for (const buffer of [bPos, bNrm, bIdx, bIns, bHfIdx, bUV, quad]) if (buffer) gl.deleteBuffer(buffer);
+      for (const texture of [texHf, det1, det2, texBrk, rockTex, accTex]) if (texture) gl.deleteTexture(texture);
       if (accDepth) gl.deleteRenderbuffer(accDepth);
       if (fbo) gl.deleteFramebuffer(fbo);
       for (const program of [terrain, resolve, backdrop, decode]) gl.deleteProgram(program);

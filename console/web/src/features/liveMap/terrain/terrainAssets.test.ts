@@ -25,11 +25,15 @@ function bytesResponse(body: Uint8Array, status = 200): Response {
 
 const gzipJson = (value: unknown) => gzip(new TextEncoder().encode(JSON.stringify(value)));
 
+// One textured mesh: a single UV pair, and one 4x4 BC1 layer (a single 8-byte block).
 const library = {
   posBytes: 6,
   nrmBytes: 2,
   idxBytes: 2,
-  meshes: [{ lo: [0, 0, 0], ext: [1, 1, 1], vo: 0, vn: 1, io: 0, ic: 1 }]
+  uvBytes: 8,
+  texLayers: 1,
+  texSize: 4,
+  meshes: [{ lo: [0, 0, 0], ext: [1, 1, 1], vo: 0, vn: 1, io: 0, ic: 1, texLayer: 0, texGain: 1, uvo: 0 }]
 };
 
 function layoutMeta(layout: number) {
@@ -59,6 +63,8 @@ function installFetch(overrides: Record<string, () => Promise<Response>> = {}) {
     const signal = init?.signal;
     if (url.endsWith("meshes.json.gz")) return deliver(await gzipJson(library), signal);
     if (url.endsWith("meshes.bin.gz")) return deliver(await gzip(new Uint8Array(10)), signal);
+    if (url.endsWith("rock-uv.bin.gz")) return deliver(await gzip(new Uint8Array(8)), signal);
+    if (url.endsWith("tex/rock.bin.gz")) return deliver(await gzip(new Uint8Array(8)), signal);
     if (url.includes("/tex/")) return deliver(await gzip(new Uint8Array(4)), signal);
     const match = url.match(/layout-(\d+)\.(json|bin|hf)\.gz$/);
     if (match) {
@@ -84,6 +90,8 @@ describe("loadSharedAssets", () => {
     expect(shared.library.meshes).toHaveLength(1);
     expect(shared.geometry.byteLength).toBe(10);
     expect(shared.detail1.byteLength).toBe(4);
+    expect(shared.rockUV.byteLength).toBe(8);
+    expect(shared.rockTex.byteLength).toBe(8);
   });
 
   it("is fetched once and then reused, so a layout switch costs nothing", async () => {
@@ -96,6 +104,18 @@ describe("loadSharedAssets", () => {
     clearTerrainAssetCache();
     installFetch({ "/base/meshes.bin.gz": async () => bytesResponse(await gzip(new Uint8Array(3))) });
     await expect(loadSharedAssets(at)).rejects.toThrow(/table describes/);
+  });
+
+  it("rejects rock UVs that do not match the library", async () => {
+    clearTerrainAssetCache();
+    installFetch({ "/base/rock-uv.bin.gz": async () => bytesResponse(await gzip(new Uint8Array(16))) });
+    await expect(loadSharedAssets(at)).rejects.toThrow(/rock UVs are 16 bytes, the library describes 8/);
+  });
+
+  it("rejects a rock texture that is not whole BC1 layers", async () => {
+    clearTerrainAssetCache();
+    installFetch({ "/base/tex/rock.bin.gz": async () => bytesResponse(await gzip(new Uint8Array(12))) });
+    await expect(loadSharedAssets(at)).rejects.toThrow(/expected 1 BC1 layers of 4\^2/);
   });
 
   it("does not cache a failure, so a retry can still succeed", async () => {

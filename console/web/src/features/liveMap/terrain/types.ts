@@ -16,12 +16,30 @@ export type TerrainMesh = {
   io: number;
   /** Index count. */
   ic: number;
+  /**
+   * Present only on rock the game ships an in-world counterpart for: which layer of
+   * the rock texture array carries that counterpart's baked diffuse. The map's own
+   * mesh is kept and painted with it -- see `uvo`.
+   */
+  texLayer?: number;
+  /**
+   * Brings that diffuse to one shared mean brightness, capped so a dark or
+   * saturated texture is not pushed past the reference family's highlights.
+   */
+  texGain?: number;
+  /** First vertex of this mesh's UVs in the rock UV buffer, in vertices. */
+  uvo?: number;
 };
 
 export type TerrainLibrary = {
   posBytes: number;
   nrmBytes: number;
   idxBytes: number;
+  /** Normalized u16 UV pairs for the textured meshes only, indexed by `uvo`. */
+  uvBytes?: number;
+  /** Layers in the rock texture array, each `texSize` square, BC1. */
+  texLayers?: number;
+  texSize?: number;
   /** How the index section is stored; absent means plain u16. See `decodeIndices`. */
   idxCoding?: string;
   meshes: TerrainMesh[];
