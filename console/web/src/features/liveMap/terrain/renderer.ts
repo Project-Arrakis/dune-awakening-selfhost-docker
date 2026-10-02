@@ -1,7 +1,7 @@
 import { BFS, BVS, CFS, DFS, FS, RFS, RVS, VS } from "./shaders";
 import { invert4, isOccluded } from "./terrainOcclusion";
 import type { DepthGrid } from "./terrainOcclusion";
-import { borderHeight, buildDrawCalls, cullInstances, depthRange, instanceCircles, INSTANCE_FLOATS, orthoFromWorldRect, applyCanvasSize, withOutside } from "./terrainGeometry";
+import { buildDrawCalls, cullInstances, depthRange, instanceCircles, INSTANCE_FLOATS, orthoFromWorldRect, applyCanvasSize, withOutside } from "./terrainGeometry";
 import type { CulledDraw } from "./terrainGeometry";
 import { cameraClipMatrix, cullRectForCamera, scaleAt, screenToWorldAtZ } from "./terrainCamera";
 import type { TerrainCamera } from "./terrainCamera";
@@ -173,7 +173,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     detStr: u(terrain, "uDetStr"), detail: u(terrain, "uDetail"),
     con: u(terrain, "uCon"), conStep: u(terrain, "uConStep"), conStepS: u(terrain, "uConStepS"),
     rock: u(terrain, "uRock"), texOn: u(terrain, "uTexOn"), texLayer: u(terrain, "uTexLayer"), pick: u(terrain, "uPick"),
-    texGain: u(terrain, "uTexGain"), apron: u(terrain, "uApron"), apronZ: u(terrain, "uApronZ"),
+    texGain: u(terrain, "uTexGain"), apron: u(terrain, "uApron"),
     sideLit: u(terrain, "uSideLit")
   };
   const r = { tex: u(resolve, "uT"), texel: u(resolve, "uTexel"), ss: u(resolve, "uSS") };
@@ -291,8 +291,6 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   let cssHeight = 0;
   // The last frame's matrix and culled draws, which the pick pass reuses.
   let lastMatrix: Float32Array | null = null;
-  // The level the sand settles to past the map's edge, in 3D: see EDGE_APRON.
-  let apronZ = 0;
   let pickFbo: WebGLFramebuffer | null = null;
   let pickTex: WebGLTexture | null = null;
   let pickDepth: WebGLRenderbuffer | null = null;
@@ -419,7 +417,6 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      apronZ = borderHeight(new Uint16Array(layout.heightField.buffer, layout.heightField.byteOffset, layout.heightField.byteLength / 2), meta);
 
       // The grid's indices are generated rather than shipped: 6 MB of payload
       // for something a loop reproduces exactly.
@@ -757,7 +754,6 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     const apron = camera ? EDGE_APRON : 0;
     gl.uniform1f(t.half, meta.half + apron);
     gl.uniform1f(t.apron, apron);
-    gl.uniform1f(t.apronZ, apronZ);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, det1);
     gl.uniform1i(t.d1, 1);

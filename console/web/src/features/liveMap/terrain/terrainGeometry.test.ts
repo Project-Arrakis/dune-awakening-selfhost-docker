@@ -9,9 +9,10 @@ import {
   octDecode,
   orthoFromWorldRect,
   projectWorldPoint,
-  borderHeight,
   interpolateHeightField,
+  sandRingCount,
   withOutside,
+  withSandRing,
   sampleHeightField, applyCanvasSize } from "./terrainGeometry";
 import type { TerrainLayoutMeta, TerrainLibrary, TerrainView } from "./types";
 
@@ -268,21 +269,71 @@ describe("withOutside", () => {
   });
 });
 
-describe("borderHeight", () => {
+describe("withSandRing", () => {
+  // A 4x4 field, 0.1 uu per raw step, and a ring 8 texels deep round it.
   const meta = { hfN: 4, hfZlo: 1000, hfZhi: 1000 + 6553.5, hfStep: 100, hfX0: 0, hfY0: 0 } as unknown as TerrainLayoutMeta;
+  const ring = { pad: 8, n: 4, zlo: 0, zstep: 8 };
+  const m = 4 + 2 * ring.pad;
+  const count = sandRingCount(ring);
+  const inside = (i: number, j: number) => i > ring.pad && i < ring.pad + 3 && j > ring.pad && j < ring.pad + 3;
 
-  it("averages the rim and ignores the interior", () => {
-    // Rim at 10000 raw (1000 uu above the floor), interior far higher.
-    const field = new Uint16Array(16).fill(10000);
-    for (const i of [5, 6, 9, 10]) field[i] = 65535;
-    expect(borderHeight(field, meta)).toBeCloseTo(2000, 6);
+  /** Ring planes holding `value(i, j)` at every texel the ring covers. */
+  function planes(value: (i: number, j: number) => number): Uint8Array {
+    const out = new Uint8Array(count * 2);
+    let k = 0;
+    for (let j = 0; j < m; j++) {
+      for (let i = 0; i < m; i++) {
+        if (inside(i, j)) continue;
+        const v = value(i, j);
+        out[k] = v >> 8;
+        out[count + k] = v & 255;
+        k++;
+      }
+    }
+    return out;
+  }
+
+  it("holds every texel outside the layout's field less its rim", () => {
+    expect(count).toBe(m * m - 2 * 2);
   });
 
-  it("counts each rim texel once, corners included", () => {
-    // One corner raised: 1 of the 12 rim texels of a 4x4.
+  it("keeps the layout's own texels and moves the grid's origin out by the padding", () => {
+    const field = Uint16Array.from({ length: 16 }, (_, i) => 1000 + i);
+    const joined = withSandRing(field, meta, ring, planes(() => 300));
+    expect(joined.meta.hfN).toBe(m);
+    expect(joined.meta.hfX0).toBe(-800);
+    expect(joined.meta.hfY0).toBe(-800);
+    for (let j = 0; j < 4; j++) {
+      for (let i = 0; i < 4; i++) expect(joined.field[(j + ring.pad) * m + i + ring.pad]).toBe(field[j * 4 + i]);
+    }
+    // The same world point reads the same height through either grid.
+    expect(interpolateHeightField(joined.field, joined.meta, 150, 250)).toBeCloseTo(interpolateHeightField(field, meta, 150, 250), 6);
+  });
+
+  it("converts ring heights into the layout's own scale", () => {
+    // The layout's rim agrees with the ring (300 * 8 = 2400 uu = raw 14000), so nothing is faded.
+    const field = new Uint16Array(16).fill(14000);
+    const joined = withSandRing(field, meta, ring, planes((i) => (i === 0 ? 500 : 300)));
+    expect(joined.field[5 * m + 3]).toBe(14000);
+    // 500 * 8 = 4000 uu, which is 3000 above the layout's floor: raw 30000.
+    expect(joined.field[5 * m + 0]).toBe(30000);
+  });
+
+  it("fades a step at the seam out over six texels, and no further", () => {
+    // The layout's rim sits 1000 raw above the ring's copy of it.
+    const field = new Uint16Array(16).fill(15000);
+    const joined = withSandRing(field, meta, ring, planes(() => 300));
+    const row = (ring.pad + 1) * m;
+    const west = Array.from({ length: ring.pad }, (_, k) => joined.field[row + ring.pad - 1 - k]);
+    expect(west).toEqual([14833, 14667, 14500, 14333, 14167, 14000, 14000, 14000]);
+    // A corner texel is measured from the rim's corner, not from one side.
+    expect(joined.field[(ring.pad - 3) * m + ring.pad - 3]).toBe(14500);
+  });
+
+  it("refuses a ring made for another field size or cut short", () => {
     const field = new Uint16Array(16);
-    field[0] = 12000;
-    expect(borderHeight(field, meta)).toBeCloseTo(1000 + 1200 / 12, 6);
+    expect(() => withSandRing(field, meta, { ...ring, n: 6 }, planes(() => 0))).toThrow(/sand ring is for a 6 field/);
+    expect(() => withSandRing(field, meta, ring, new Uint8Array(count * 2 - 2))).toThrow(/sand ring/);
   });
 });
 

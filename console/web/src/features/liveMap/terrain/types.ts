@@ -38,7 +38,6 @@ export type TerrainLibrary = {
   meshes: TerrainMesh[];
 };
 
-/** One mesh placed by one layout. */
 /**
  * Rock standing wholly outside the mapped square: the same in every layout, so
  * it ships once. Draws index the shared instance block, not a layout's.
@@ -50,6 +49,21 @@ export type TerrainOutside = {
   draws: { m: number; off: number; n: number }[];
 };
 
+/**
+ * The game's sand past a layout's height field, also shared. A frame of heights
+ * on the layout's grid extended `pad` texels each way: everything outside the
+ * layout's field, plus that field's own outermost ring.
+ */
+export type TerrainSandRing = {
+  pad: number;
+  /** The `hfN` this frame fits round. */
+  n: number;
+  /** Height is `zlo + value * zstep`, world uu. */
+  zlo: number;
+  zstep: number;
+};
+
+/** One mesh placed by one layout. */
 export type TerrainDraw = {
   /** Index into `TerrainLibrary.meshes`. */
   m: number;

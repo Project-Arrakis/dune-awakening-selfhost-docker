@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearTerrainAssetCache, decodeIndices, loadLayoutAssets, loadSharedAssets } from "./terrainAssets";
+import { clearTerrainAssetCache, decodeIndices, loadLayoutAssets, loadSharedAssets, withOutsideSand } from "./terrainAssets";
 import type { TerrainLibrary } from "./types";
 
 // Production resolves hashed URLs out of the Vite bundle; tests inject a plain
@@ -67,6 +67,9 @@ function installFetch(overrides: Record<string, () => Promise<Response>> = {}) {
     if (url.endsWith("tex/rock.bin.gz")) return deliver(await gzip(new Uint8Array(8)), signal);
     if (url.endsWith("outside.json.gz")) return deliver(await gzipJson({ nInst: 2, zmax: 9000, draws: [{ m: 0, off: 0, n: 2 }] }), signal);
     if (url.endsWith("outside.bin.gz")) return deliver(await gzip(new Uint8Array(112)), signal);
+    // A ring one texel deep round the 2x2 layout field: all 16 texels of the 4x4, 2 bytes each.
+    if (url.endsWith("sand-ring.json.gz")) return deliver(await gzipJson({ pad: 1, n: 2, zlo: 0, zstep: 1 }), signal);
+    if (url.endsWith("sand-ring.bin.gz")) return deliver(await gzip(new Uint8Array(32)), signal);
     if (url.includes("/tex/")) return deliver(await gzip(new Uint8Array(4)), signal);
     const match = url.match(/layout-(\d+)\.(json|bin|hf)\.gz$/);
     if (match) {
@@ -124,6 +127,30 @@ describe("loadSharedAssets", () => {
     clearTerrainAssetCache();
     installFetch({ "/base/outside.bin.gz": async () => bytesResponse(await gzip(new Uint8Array(56))) });
     await expect(loadSharedAssets(at)).rejects.toThrow(/outside rock is 56 bytes, its table describes 2 instances/);
+  });
+
+  it("loads the sand ring with the shared half, and rejects a short one", async () => {
+    clearTerrainAssetCache();
+    installFetch();
+    const shared = await loadSharedAssets(at);
+    expect(shared.sandRing.pad).toBe(1);
+    expect(shared.sandRingField.byteLength).toBe(32);
+
+    clearTerrainAssetCache();
+    installFetch({ "/base/sand-ring.bin.gz": async () => bytesResponse(await gzip(new Uint8Array(30))) });
+    await expect(loadSharedAssets(at)).rejects.toThrow(/sand ring is 30 bytes, its table describes 16 heights/);
+  });
+
+  it("joins the ring to a layout once, so the renderer sees one object per layout", async () => {
+    clearTerrainAssetCache();
+    installFetch();
+    const [shared, layout] = await Promise.all([loadSharedAssets(at), loadLayoutAssets(3, at)]);
+    const joined = withOutsideSand(shared, layout);
+    expect(joined.meta.hfN).toBe(4);
+    expect(joined.heightField.byteLength).toBe(4 * 4 * 2);
+    expect(joined.instances).toBe(layout.instances);
+    expect(layout.meta.hfN).toBe(2);
+    expect(withOutsideSand(shared, layout)).toBe(joined);
   });
 
   it("rejects a rock texture that is not whole BC1 layers", async () => {

@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import { sealRockLibrary } from "./terrainSeal";
-import type { TerrainLayoutMeta, TerrainLibrary, TerrainOutside } from "./types";
+import { sandRingCount, withSandRing } from "./terrainGeometry";
+import type { TerrainLayoutMeta, TerrainLibrary, TerrainOutside, TerrainSandRing } from "./types";
 
 /**
  * Fetching and inflating the terrain assets.
@@ -24,6 +25,9 @@ export type SharedAssets = {
   /** Rock outside the mapped square, and its instances (14 float32 each). */
   outside: TerrainOutside;
   outsideInstances: Uint8Array;
+  /** Sand past a layout's height field: u16 heights, high bytes then low bytes. */
+  sandRing: TerrainSandRing;
+  sandRingField: Uint8Array;
 };
 
 export type LayoutAssets = {
@@ -127,7 +131,7 @@ async function gunzipJson<T>(url: string): Promise<T> {
 export async function loadSharedAssets(resolve: AssetResolver = bundledAsset, signal?: AbortSignal): Promise<SharedAssets> {
   if (!sharedPromise) {
     sharedPromise = (async () => {
-      const [library, geometry, detail1, detail2, breakup, rockUV, rockTex, outside, outsideInstances] = await Promise.all([
+      const [library, geometry, detail1, detail2, breakup, rockUV, rockTex, outside, outsideInstances, sandRing, sandRingField] = await Promise.all([
         gunzipJson<TerrainLibrary>(resolve("meshes.json.gz")),
         gunzip(resolve("meshes.bin.gz")),
         gunzip(resolve("tex/det1.bin.gz")),
@@ -136,7 +140,9 @@ export async function loadSharedAssets(resolve: AssetResolver = bundledAsset, si
         gunzip(resolve("rock-uv.bin.gz")),
         gunzip(resolve("tex/rock.bin.gz")),
         gunzipJson<TerrainOutside>(resolve("outside.json.gz")),
-        gunzip(resolve("outside.bin.gz"))
+        gunzip(resolve("outside.bin.gz")),
+        gunzipJson<TerrainSandRing>(resolve("sand-ring.json.gz")),
+        gunzip(resolve("sand-ring.bin.gz"))
       ]);
       const expected = library.posBytes + library.nrmBytes + library.idxBytes;
       if (geometry.byteLength !== expected) {
@@ -153,10 +159,13 @@ export async function loadSharedAssets(resolve: AssetResolver = bundledAsset, si
       if (outsideInstances.byteLength !== outside.nInst * 56) {
         throw new Error(`outside rock is ${outsideInstances.byteLength} bytes, its table describes ${outside.nInst} instances`);
       }
+      if (sandRingField.byteLength !== sandRingCount(sandRing) * 2) {
+        throw new Error(`sand ring is ${sandRingField.byteLength} bytes, its table describes ${sandRingCount(sandRing)} heights`);
+      }
       const plain = decodeIndices(library, geometry);
       // Close the slits in the rock meshes once, off the frame path: see terrainSeal.ts.
       const sealed = sealRockLibrary(plain, geometry, rockUV);
-      return { library: sealed.library, geometry: sealed.geometry, detail1, detail2, breakup, rockUV: sealed.rockUV, rockTex, outside, outsideInstances };
+      return { library: sealed.library, geometry: sealed.geometry, detail1, detail2, breakup, rockUV: sealed.rockUV, rockTex, outside, outsideInstances, sandRing, sandRingField };
     })();
     // A failed load must not poison the page: drop the rejected promise so a
     // later attempt (a retry, or simply switching back to the map) can try again.
@@ -187,6 +196,23 @@ export function decodeIndices(library: TerrainLibrary, geometry: Uint8Array): Te
   }
   const { idxCoding: _coding, ...plain } = library;
   return plain;
+}
+
+const ringed = new WeakMap<LayoutAssets, LayoutAssets>();
+
+/**
+ * A layout with the shared ring of outside sand joined to its height field.
+ * Built once per layout: the renderer tells layouts apart by identity.
+ */
+export function withOutsideSand(shared: SharedAssets, layout: LayoutAssets): LayoutAssets {
+  let joined = ringed.get(layout);
+  if (!joined) {
+    const hf = layout.heightField;
+    const { field, meta } = withSandRing(new Uint16Array(hf.buffer, hf.byteOffset, hf.byteLength / 2), layout.meta, shared.sandRing, shared.sandRingField);
+    joined = { meta, instances: layout.instances, heightField: new Uint8Array(field.buffer) };
+    ringed.set(layout, joined);
+  }
+  return joined;
 }
 
 export async function loadLayoutAssets(layout: number, resolve: AssetResolver = bundledAsset, signal?: AbortSignal): Promise<LayoutAssets> {

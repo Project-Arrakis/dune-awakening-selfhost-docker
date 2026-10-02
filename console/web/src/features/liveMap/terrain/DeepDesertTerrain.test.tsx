@@ -12,6 +12,12 @@ vi.mock("./terrainAssets", () => ({
   loadLayoutAssets: vi.fn(async (layout: number) => ({
     meta: { layout, zmax: 90000, hfN: 2, hfZlo: 0, hfZhi: 65535, hfStep: 1000, hfX0: 0, hfY0: 0 },
     heightField: new Uint8Array(new Uint16Array([0, 1000, 2000, 3000]).buffer)
+  })),
+  // The same field with a ring of 500 uu sand one texel deep round it.
+  withOutsideSand: vi.fn((_shared: unknown, layout: { meta: object }) => ({
+    ...layout,
+    meta: { ...layout.meta, hfN: 4, hfX0: -1000, hfY0: -1000 },
+    heightField: new Uint8Array(new Uint16Array([500, 500, 500, 500, 500, 0, 1000, 500, 500, 2000, 3000, 500, 500, 500, 500, 500]).buffer)
   }))
 }));
 
@@ -83,6 +89,8 @@ describe("DeepDesertTerrain", () => {
     const { createRenderer, renderer } = mount();
     expect(createRenderer).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(renderer.setAssets).toHaveBeenCalledTimes(1));
+    // The renderer is given the layout with the outside sand joined on, not the bare one.
+    expect(renderer.setAssets.mock.calls[0][1].meta.hfN).toBe(4);
   });
 
   it("passes the elevation-lines toggle through to the renderer", async () => {
@@ -275,6 +283,8 @@ describe("3D", () => {
     expect(api.topZ).toBe(90000);
     expect(api.heightAt(1000, 1000)).toBe(3000);
     expect(api.heightAt(0, 0)).toBe(0);
+    // Past the layout's own field the height is the ring's, and the pivot above ignored it.
+    expect(api.heightAt(-1000, -1000)).toBe(500);
     expect(api.pick(10, 20)).toEqual({ x: 1, y: 2, z: 3 });
     // what the last frame hides is the renderer's answer, passed straight through
     expect(api.occluded(5, 6, 50)).toBe(true);

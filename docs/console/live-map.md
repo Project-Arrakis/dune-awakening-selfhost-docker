@@ -414,12 +414,18 @@ the original code path runs, and everything below is inactive.
   curve leaves steep faces near-black, which reads as holes once cliffs face the
   camera. Sand keeps the top-down curve.
 - **Past the map's edge.** The clip moves out 375,000 uu, which takes in the
-  shield walls nearest the map, and the sand continues under them as a level
-  plain. That rock lies wholly outside the mapped square and is the same in
-  every layout, so it ships once, as a shared file, and is added to whichever
-  layout is drawn. It includes the wall pieces the game places by hand rather
-  than as instances, which the layout build does not read. Only pieces lying
-  wholly within the 375,000 uu are shipped, so none is sliced by the clip.
+  shield walls nearest the map. That rock lies wholly outside the mapped square
+  and is the same in every layout, so it ships once, as a shared file, and is
+  added to whichever layout is drawn. It includes the wall pieces the game
+  places by hand rather than as instances, which the layout build does not
+  read. Only pieces lying wholly within the 375,000 uu are shipped, so none is
+  sliced by the clip.
+- **The sand out there.** The game's sand tiles reach about 90,000 uu past the
+  square, and that ring is shared too: it is joined to the layout's height field
+  on the same grid when the layout loads. The dunes run on for about 65,000 uu,
+  settle over the next 25,000 into a level plain at the edge's own height, and
+  the plain carries on to the clip. A layout's own texels are never changed, so
+  the top-down picture is the same with or without the ring.
 
 **Hiding what the terrain covers.** Markers are DOM elements over the canvas, so
 nothing occludes them by itself. After each tilted frame the renderer reads back
@@ -446,14 +452,15 @@ when the terrain at its spot is both nearer the eye and more than 30 m above it
   drawn at the rock's foot and, being under the rock, is hidden.
 - The view centre cannot be panned past the map square. The ground beyond the
   edge is seen by tilting or turning toward it.
-- Past the edge the rock is real but the sand is not: the height field stops at
-  the map's edge, so the ground out there is a flat plain. Rock that reaches
-  beyond 375,000 uu is not drawn (32 pieces), and one nearer piece is missing
-  because its shape is not in the mesh library.
+- The game has sand for only about 90,000 uu past the edge. Beyond that the
+  ground is a level plain, which the game does not have. One outer sand tile
+  differs in layout 9, by up to 515 uu, and is drawn as in the other eleven.
+- Rock that reaches beyond 375,000 uu is not drawn (32 pieces), and one nearer
+  piece is missing because its shape is not in the mesh library.
 
 ### Assets
 
-`terrain/assets/` is 45 gzipped files totalling 17.9 MB, inflated in the browser:
+`terrain/assets/` is 47 gzipped files totalling 17.9 MB, inflated in the browser:
 
 | part | size |
 |---|---|
@@ -462,6 +469,7 @@ when the terrain at its spot is both nearer the eye and more than 30 m above it
 | shared: rock textures | 1.4 MB |
 | shared: sand detail textures | 1.8 MB |
 | shared: rock outside the map (221 pieces) | 5 KB |
+| shared: sand outside the map | 50 KB |
 | each of 12 layouts | about 0.78 MB |
 
 A Coriolis reset changes only the layout, so the browser re-fetches under a
@@ -545,7 +553,7 @@ Feature-level changes to the Live Map, newest first.
 | Release | Date | Change |
 |---|---|---|
 | Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag. Markers and the sector grid are projected through the camera, and markers and grid lines are hidden where rock covers them. |
-| Unreleased | 2026-10 | The tilted view draws past the map's edge: the shield walls outside the square, on a level plain out to 375,000 uu. |
+| Unreleased | 2026-10 | The tilted view draws past the map's edge, out to 375,000 uu: the shield walls outside the square, on the game's own sand for the first 90,000 uu and a level plain beyond. |
 | Unreleased | 2026-10 | Rock meshes are sealed at load, rock is lit as a solid when tilted, and the camera's eye stays above the rock at high zoom. |
 | Unreleased | 2026-10 | Rock is painted with the game's own textures. Terrain instances are culled per frame. |
 | Unreleased | 2026-09 | **Elevation Lines** layer. Rock is lit with its authored normals and given a per-instance tone. |

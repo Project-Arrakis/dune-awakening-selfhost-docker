@@ -38,8 +38,8 @@ uniform float uFeather, uWScale, uBias, uLift;
 // differences on the grid, which is continuous by construction.
 uniform highp usampler2D uHF;   // integer samplers have no default precision
 uniform float uHFMode, uHN, uHStep, uHX0, uHY0, uHZlo, uHZhi;
-// Tilted only: how far the sand runs past the height field, and its height there.
-uniform float uApron, uApronZ;
+// Tilted only: how far the height field's outermost ring is pushed out.
+uniform float uApron;
 float hfAt(ivec2 p){
   ivec2 q = clamp(p, ivec2(0), ivec2(int(uHN)-1));
   return uHZlo + float(texelFetch(uHF,q,0).r)/65535.0*(uHZhi-uHZlo);
@@ -69,14 +69,12 @@ void main(){
     float dx = hfAt(ivec2(ix+1,iy)) - hfAt(ivec2(ix-1,iy));
     float dy = hfAt(ivec2(ix,iy+1)) - hfAt(ivec2(ix,iy-1));
     vN = normalize(vec3(-dx, -dy, 2.0*uHStep));
-    // Carry the sand on past the map's edge as a level plain, under the rock
-    // that stands out there. Both outer rings are levelled: stretching only one
-    // smears the edge's dunes across the apron as streaks.
-    if(uApron > 0.0 && (ix<=1 || iy<=1 || ix>=n-2 || iy>=n-2)){
+    // Carry the sand on as a plain under the rock that stands past it. The
+    // field's two outer rings ship level with each other, so stretching the
+    // last one smears no dunes across the plain.
+    if(uApron > 0.0){
       wf.x += ix==0 ? -uApron : (ix==n-1 ? uApron : 0.0);
       wf.y += iy==0 ? -uApron : (iy==n-1 ? uApron : 0.0);
-      wf.z = uApronZ;
-      vN = vec3(0.0, 0.0, 1.0);
     }
     vRand = 0.5;   // neutral: the height field has no instances
     vUV = vec2(0.0);

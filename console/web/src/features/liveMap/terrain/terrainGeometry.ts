@@ -1,4 +1,4 @@
-import type { TerrainDrawCall, TerrainLayoutMeta, TerrainLibrary, TerrainOutside, TerrainView } from "./types";
+import type { TerrainDrawCall, TerrainLayoutMeta, TerrainLibrary, TerrainOutside, TerrainSandRing, TerrainView } from "./types";
 
 /**
  * A mesh over 50k uu on both horizontal axes is a landscape tile; everything
@@ -169,23 +169,70 @@ export function interpolateHeightField(field: Uint16Array, layout: TerrainLayout
   return layout.hfZlo + (raw / 65535) * (layout.hfZhi - layout.hfZlo);
 }
 
+/** Texels over which a step between a layout's rim and the ring is faded out. */
+const SEAM_TEXELS = 6;
+
+/** How many heights a sand ring holds: the padded grid less the layout's field inside its rim. */
+export function sandRingCount(ring: TerrainSandRing): number {
+  const m = ring.n + 2 * ring.pad;
+  return m * m - (ring.n - 2) * (ring.n - 2);
+}
+
 /**
- * Mean sand height around the height field's rim: the level the ground is
- * carried on at past the map's edge, where there is no height data.
+ * A layout's height field with the shared ring of outside sand joined on, on
+ * the same grid. The layout's own texels are untouched. The ring was built from
+ * the game's current tiles and a layout's rim may not match it, so any step
+ * there is faded out over the ring's first few texels.
+ *
+ * `planes` is the ring's u16 heights, all high bytes then all low bytes.
  */
-export function borderHeight(field: Uint16Array, layout: TerrainLayoutMeta): number {
+export function withSandRing(
+  field: Uint16Array,
+  layout: TerrainLayoutMeta,
+  ring: TerrainSandRing,
+  planes: Uint8Array
+): { field: Uint16Array; meta: TerrainLayoutMeta } {
   const n = layout.hfN;
-  let sum = 0;
-  let count = 0;
-  for (let i = 0; i < n; i++) {
-    sum += field[i] + field[(n - 1) * n + i];
-    count += 2;
-    if (i > 0 && i < n - 1) {
-      sum += field[i * n] + field[i * n + n - 1];
-      count += 2;
+  const pad = ring.pad;
+  const count = sandRingCount(ring);
+  if (ring.n !== n || planes.length !== count * 2) {
+    throw new Error(`sand ring is for a ${ring.n} field and ${planes.length} bytes, the layout's is ${n}`);
+  }
+  const m = n + 2 * pad;
+  const lo = pad;
+  const hi = pad + n - 1;
+  const toRaw = 65535 / (layout.hfZhi - layout.hfZlo);
+  const out = new Uint16Array(m * m);
+  // The ring's heights in the layout's own u16 scale, rim copy included.
+  const ringRaw = new Float32Array(m * m);
+  let k = 0;
+  for (let j = 0; j < m; j++) {
+    for (let i = 0; i < m; i++) {
+      if (i > lo && i < hi && j > lo && j < hi) {
+        out[j * m + i] = field[(j - pad) * n + (i - pad)];
+        continue;
+      }
+      const value = (planes[k] << 8) | planes[count + k];
+      k++;
+      ringRaw[j * m + i] = (ring.zlo + value * ring.zstep - layout.hfZlo) * toRaw;
     }
   }
-  return layout.hfZlo + (sum / Math.max(count, 1) / 65535) * (layout.hfZhi - layout.hfZlo);
+  for (let j = 0; j < m; j++) {
+    for (let i = 0; i < m; i++) {
+      if (i > lo && i < hi && j > lo && j < hi) continue;
+      // The nearest texel of the layout's rim, and how far out this one is from it.
+      const ci = Math.min(hi, Math.max(lo, i));
+      const cj = Math.min(hi, Math.max(lo, j));
+      const own = field[(cj - pad) * n + (ci - pad)];
+      const reach = Math.max(Math.abs(i - ci), Math.abs(j - cj));
+      const step = (own - ringRaw[cj * m + ci]) * Math.max(0, 1 - reach / SEAM_TEXELS);
+      out[j * m + i] = reach === 0 ? own : Math.min(65535, Math.max(0, Math.round(ringRaw[j * m + i] + step)));
+    }
+  }
+  return {
+    field: out,
+    meta: { ...layout, hfN: m, hfX0: layout.hfX0 - pad * layout.hfStep, hfY0: layout.hfY0 - pad * layout.hfStep }
+  };
 }
 
 /** The parts of a canvas the size guard touches, so it can be tested without one. */
