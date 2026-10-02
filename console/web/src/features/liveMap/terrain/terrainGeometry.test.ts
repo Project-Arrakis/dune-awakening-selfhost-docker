@@ -11,6 +11,7 @@ import {
   projectWorldPoint,
   borderHeight,
   interpolateHeightField,
+  withOutside,
   sampleHeightField, applyCanvasSize } from "./terrainGeometry";
 import type { TerrainLayoutMeta, TerrainLibrary, TerrainView } from "./types";
 
@@ -230,6 +231,40 @@ describe("sampleHeightField", () => {
   it("clamps outside the field instead of wrapping or reading out of bounds", () => {
     expect(sampleHeightField(field, meta, -1e6, -1e6)).toBeCloseTo(0, 6);
     expect(Number.isFinite(sampleHeightField(field, meta, 1e6, 1e6))).toBe(true);
+  });
+});
+
+describe("withOutside", () => {
+  const mesh = (n: number) => ({ lo: [0, 0, 0], ext: [n, n, n], vo: 0, vn: 3, io: 0, ic: 3 });
+  const library = { posBytes: 0, nrmBytes: 0, idxBytes: 0, meshes: [mesh(10), mesh(20), mesh(30)] } as unknown as TerrainLibrary;
+  const layout = { layout: 1, draws: [{ m: 0, off: 0, n: 2, overlay: 0 }, { m: 1, off: 2, n: 1, overlay: 1 }] } as unknown as TerrainLayoutMeta;
+  const own = new Float32Array(3 * INSTANCE_FLOATS).fill(1);
+  const extra = new Float32Array(4 * INSTANCE_FLOATS).fill(2);
+  const outside = { nInst: 4, zmax: 100, draws: [{ m: 2, off: 0, n: 3 }, { m: 0, off: 3, n: 1 }] };
+
+  it("appends the outside rock after the layout's own instances", () => {
+    const calls = buildDrawCalls(library, layout);
+    const merged = withOutside(calls, own, library, outside, extra);
+    expect(merged.instances.length).toBe(7 * INSTANCE_FLOATS);
+    // The layout's own come first, untouched; the outside block follows.
+    expect(Array.from(merged.instances.subarray(0, own.length))).toEqual(Array.from(own));
+    expect(Array.from(merged.instances.subarray(own.length))).toEqual(Array.from(extra));
+    // The layout's draws are unchanged, and the outside draws point past them.
+    expect(merged.calls.slice(0, 2)).toEqual(calls);
+    expect(merged.calls.slice(2).map((c) => [c.instOff, c.instN, c.ext[0], c.overlay])).toEqual([[3, 3, 30, 0], [6, 1, 10, 0]]);
+    // Every draw stays inside the merged buffer.
+    for (const call of merged.calls) expect(call.instOff + call.instN).toBeLessThanOrEqual(7);
+  });
+
+  it("is the layout alone when there is no outside rock", () => {
+    const calls = buildDrawCalls(library, layout);
+    const merged = withOutside(calls, own, library, { nInst: 0, zmax: 0, draws: [] }, new Float32Array(0));
+    expect(merged.calls).toEqual(calls);
+    expect(Array.from(merged.instances)).toEqual(Array.from(own));
+  });
+
+  it("refuses an outside draw whose mesh the library does not have", () => {
+    expect(() => withOutside([], own, library, { nInst: 1, zmax: 0, draws: [{ m: 9, off: 0, n: 1 }] }, extra)).toThrow(/mesh 9/);
   });
 });
 

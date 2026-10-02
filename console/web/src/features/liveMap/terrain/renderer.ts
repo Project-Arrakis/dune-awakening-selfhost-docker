@@ -1,7 +1,7 @@
 import { BFS, BVS, CFS, DFS, FS, RFS, RVS, VS } from "./shaders";
 import { invert4, isOccluded } from "./terrainOcclusion";
 import type { DepthGrid } from "./terrainOcclusion";
-import { borderHeight, buildDrawCalls, cullInstances, depthRange, instanceCircles, INSTANCE_FLOATS, orthoFromWorldRect, applyCanvasSize } from "./terrainGeometry";
+import { borderHeight, buildDrawCalls, cullInstances, depthRange, instanceCircles, INSTANCE_FLOATS, orthoFromWorldRect, applyCanvasSize, withOutside } from "./terrainGeometry";
 import type { CulledDraw } from "./terrainGeometry";
 import { cameraClipMatrix, cullRectForCamera, scaleAt, screenToWorldAtZ } from "./terrainCamera";
 import type { TerrainCamera } from "./terrainCamera";
@@ -48,9 +48,9 @@ const UV_LOCATION = 8;
 // Instances under this radius, in framebuffer pixels, are skipped. Not 1.0:
 // POI hulls are built from sub-pixel pieces and would vanish from the overview.
 const CULL_MIN_RADIUS_PX = 0.5;
-// How far past the mapped square the tilted view draws, world uu. The shipped
-// instances reach at most 185,078 uu past it (the southern shield wall).
-const EDGE_APRON = 200000;
+// How far past the mapped square the tilted view draws, world uu. The outside
+// rock that ships is limited to the same distance, so none is sliced by the clip.
+const EDGE_APRON = 375000;
 // CSS pixels per texel of the depth copy markers are tested against.
 const OCCLUSION_DIV = 4;
 // Tilt by which rock has fully eased over to the tilted lighting.
@@ -281,6 +281,9 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
   let culled: CulledDraw[] = [];
   let bCull: WebGLBuffer | null = null;
   let zRange = 1;
+  // Top of everything drawn, outside rock included: the tilted camera's depth
+  // has to span it. `meta.zmax` stays the top of what is inside the square.
+  let zTop = 0;
   let view: TerrainView | null = null;
   // Set by setCamera, cleared by setView. Null means the flat rect path.
   let camera: TerrainCamera | null = null;
@@ -439,11 +442,16 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       layoutRef = layout;
     }
 
-    calls = buildDrawCalls(shared.library, layout.meta);
-    const ins = layout.instances;
-    instFloats = ins.byteOffset % 4 === 0
-      ? new Float32Array(ins.buffer, ins.byteOffset, ins.byteLength / 4)
-      : new Float32Array(ins.slice().buffer);
+    const floats = (bytes: Uint8Array) => bytes.byteOffset % 4 === 0
+      ? new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4)
+      : new Float32Array(bytes.slice().buffer);
+    // The layout's own instances, then the rock outside the square, which is the
+    // same for every layout. Top-down it is culled or clipped away.
+    const merged = withOutside(buildDrawCalls(shared.library, layout.meta), floats(layout.instances),
+      shared.library, shared.outside, floats(shared.outsideInstances));
+    calls = merged.calls;
+    instFloats = merged.instances;
+    zTop = Math.max(layout.meta.zmax, shared.outside.zmax);
     circles = instanceCircles(calls, instFloats);
     packed = new Float32Array(instFloats.length);
     if (!bCull) bCull = gl.createBuffer();
@@ -695,7 +703,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     if (!width || !height) return;
     if (camera) {
       // What the camera can see, capped to the map square and its apron.
-      const r = cullRectForCamera(camera, meta.zmin, meta.zmax);
+      const r = cullRectForCamera(camera, meta.zmin, zTop);
       const cap = meta.half + EDGE_APRON;
       view = {
         minX: Math.max(r.minX, meta.cx - cap), maxX: Math.min(r.maxX, meta.cx + cap),
@@ -728,7 +736,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       gl.bufferData(gl.ARRAY_BUFFER, packed.subarray(0, result.total * INSTANCE_FLOATS), gl.DYNAMIC_DRAW);
     }
 
-    const m = camera ? cameraClipMatrix(camera, meta.zmin, meta.zmax, zRange) : orthoFromWorldRect(view, zRange);
+    const m = camera ? cameraClipMatrix(camera, meta.zmin, zTop, zRange) : orthoFromWorldRect(view, zRange);
     lastMatrix = m;
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);

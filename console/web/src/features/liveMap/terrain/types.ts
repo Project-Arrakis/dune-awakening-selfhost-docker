@@ -39,6 +39,17 @@ export type TerrainLibrary = {
 };
 
 /** One mesh placed by one layout. */
+/**
+ * Rock standing wholly outside the mapped square: the same in every layout, so
+ * it ships once. Draws index the shared instance block, not a layout's.
+ */
+export type TerrainOutside = {
+  nInst: number;
+  /** Top of the tallest piece, world uu. */
+  zmax: number;
+  draws: { m: number; off: number; n: number }[];
+};
+
 export type TerrainDraw = {
   /** Index into `TerrainLibrary.meshes`. */
   m: number;

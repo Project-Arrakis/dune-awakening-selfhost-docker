@@ -65,6 +65,8 @@ function installFetch(overrides: Record<string, () => Promise<Response>> = {}) {
     if (url.endsWith("meshes.bin.gz")) return deliver(await gzip(new Uint8Array(10)), signal);
     if (url.endsWith("rock-uv.bin.gz")) return deliver(await gzip(new Uint8Array(8)), signal);
     if (url.endsWith("tex/rock.bin.gz")) return deliver(await gzip(new Uint8Array(8)), signal);
+    if (url.endsWith("outside.json.gz")) return deliver(await gzipJson({ nInst: 2, zmax: 9000, draws: [{ m: 0, off: 0, n: 2 }] }), signal);
+    if (url.endsWith("outside.bin.gz")) return deliver(await gzip(new Uint8Array(112)), signal);
     if (url.includes("/tex/")) return deliver(await gzip(new Uint8Array(4)), signal);
     const match = url.match(/layout-(\d+)\.(json|bin|hf)\.gz$/);
     if (match) {
@@ -110,6 +112,18 @@ describe("loadSharedAssets", () => {
     clearTerrainAssetCache();
     installFetch({ "/base/rock-uv.bin.gz": async () => bytesResponse(await gzip(new Uint8Array(16))) });
     await expect(loadSharedAssets(at)).rejects.toThrow(/rock UVs are 16 bytes, the library describes 8/);
+  });
+
+  it("loads the rock outside the map with the shared half, and rejects a short block", async () => {
+    clearTerrainAssetCache();
+    installFetch();
+    const shared = await loadSharedAssets(at);
+    expect(shared.outside.nInst).toBe(2);
+    expect(shared.outsideInstances.byteLength).toBe(112);
+
+    clearTerrainAssetCache();
+    installFetch({ "/base/outside.bin.gz": async () => bytesResponse(await gzip(new Uint8Array(56))) });
+    await expect(loadSharedAssets(at)).rejects.toThrow(/outside rock is 56 bytes, its table describes 2 instances/);
   });
 
   it("rejects a rock texture that is not whole BC1 layers", async () => {

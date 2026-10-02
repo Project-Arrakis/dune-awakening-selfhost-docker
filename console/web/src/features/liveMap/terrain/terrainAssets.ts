@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { sealRockLibrary } from "./terrainSeal";
-import type { TerrainLayoutMeta, TerrainLibrary } from "./types";
+import type { TerrainLayoutMeta, TerrainLibrary, TerrainOutside } from "./types";
 
 /**
  * Fetching and inflating the terrain assets.
@@ -21,6 +21,9 @@ export type SharedAssets = {
   rockUV: Uint8Array;
   /** The game's baked rock diffuse: `texLayers` BC1 layers, back to back. */
   rockTex: Uint8Array;
+  /** Rock outside the mapped square, and its instances (14 float32 each). */
+  outside: TerrainOutside;
+  outsideInstances: Uint8Array;
 };
 
 export type LayoutAssets = {
@@ -124,14 +127,16 @@ async function gunzipJson<T>(url: string): Promise<T> {
 export async function loadSharedAssets(resolve: AssetResolver = bundledAsset, signal?: AbortSignal): Promise<SharedAssets> {
   if (!sharedPromise) {
     sharedPromise = (async () => {
-      const [library, geometry, detail1, detail2, breakup, rockUV, rockTex] = await Promise.all([
+      const [library, geometry, detail1, detail2, breakup, rockUV, rockTex, outside, outsideInstances] = await Promise.all([
         gunzipJson<TerrainLibrary>(resolve("meshes.json.gz")),
         gunzip(resolve("meshes.bin.gz")),
         gunzip(resolve("tex/det1.bin.gz")),
         gunzip(resolve("tex/det2.bin.gz")),
         gunzip(resolve("tex/brk.bin.gz")),
         gunzip(resolve("rock-uv.bin.gz")),
-        gunzip(resolve("tex/rock.bin.gz"))
+        gunzip(resolve("tex/rock.bin.gz")),
+        gunzipJson<TerrainOutside>(resolve("outside.json.gz")),
+        gunzip(resolve("outside.bin.gz"))
       ]);
       const expected = library.posBytes + library.nrmBytes + library.idxBytes;
       if (geometry.byteLength !== expected) {
@@ -145,10 +150,13 @@ export async function loadSharedAssets(resolve: AssetResolver = bundledAsset, si
       if (rockTex.byteLength !== (library.texLayers ?? 0) * layerBytes) {
         throw new Error(`rock texture is ${rockTex.byteLength} bytes, expected ${library.texLayers ?? 0} BC1 layers of ${size}^2`);
       }
+      if (outsideInstances.byteLength !== outside.nInst * 56) {
+        throw new Error(`outside rock is ${outsideInstances.byteLength} bytes, its table describes ${outside.nInst} instances`);
+      }
       const plain = decodeIndices(library, geometry);
       // Close the slits in the rock meshes once, off the frame path: see terrainSeal.ts.
       const sealed = sealRockLibrary(plain, geometry, rockUV);
-      return { library: sealed.library, geometry: sealed.geometry, detail1, detail2, breakup, rockUV: sealed.rockUV, rockTex };
+      return { library: sealed.library, geometry: sealed.geometry, detail1, detail2, breakup, rockUV: sealed.rockUV, rockTex, outside, outsideInstances };
     })();
     // A failed load must not poison the page: drop the rejected promise so a
     // later attempt (a retry, or simply switching back to the map) can try again.

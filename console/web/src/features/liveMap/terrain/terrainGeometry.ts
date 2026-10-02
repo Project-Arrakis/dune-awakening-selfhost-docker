@@ -1,4 +1,4 @@
-import type { TerrainDrawCall, TerrainLayoutMeta, TerrainLibrary, TerrainView } from "./types";
+import type { TerrainDrawCall, TerrainLayoutMeta, TerrainLibrary, TerrainOutside, TerrainView } from "./types";
 
 /**
  * A mesh over 50k uu on both horizontal axes is a landscape tile; everything
@@ -27,6 +27,29 @@ export function buildDrawCalls(library: TerrainLibrary, layout: TerrainLayoutMet
       land: mesh.ext[0] > LAND_EXTENT && mesh.ext[1] > LAND_EXTENT
     };
   });
+}
+
+/**
+ * A layout's draw calls and instances with the shared outside rock appended,
+ * its draws offset past the layout's own instances.
+ */
+export function withOutside(
+  calls: TerrainDrawCall[],
+  instances: Float32Array,
+  library: TerrainLibrary,
+  outside: TerrainOutside,
+  outsideInstances: Float32Array
+): { calls: TerrainDrawCall[]; instances: Float32Array } {
+  const base = instances.length / INSTANCE_FLOATS;
+  const merged = new Float32Array(instances.length + outsideInstances.length);
+  merged.set(instances);
+  merged.set(outsideInstances, instances.length);
+  const extra = outside.draws.map((draw) => {
+    const mesh = library.meshes[draw.m];
+    if (!mesh) throw new Error(`outside rock references mesh ${draw.m}, which the library does not have`);
+    return { ...mesh, instOff: base + draw.off, instN: draw.n, overlay: 0, land: false };
+  });
+  return { calls: [...calls, ...extra], instances: merged };
 }
 
 /**
