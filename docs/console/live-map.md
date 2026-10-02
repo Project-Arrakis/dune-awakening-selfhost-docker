@@ -412,6 +412,48 @@ square and coincide, and the overlay's labels stay crisp and constant-sized at
 any zoom where the burned-in ones do not. Before the bounds were corrected the
 two sat about a third of a cell apart, which read as a rendering fault.
 
+### Tilt and rotation
+
+While the terrain is being rendered, the map can be leaned back and turned so the
+relief reads as relief. A **Tilt** slider (0-60 degrees) and a **Top-Down** reset
+sit in the toolbar, and **right-dragging** the map does both at once: across
+rotates, up leans it back. The controls are absent on Hagga Basin and whenever the
+Deep Desert has fallen back to the flat image -- a picture cannot tilt.
+
+Top-down is not a special case of the 3D view; it is the old code path, untouched.
+With no tilt and no rotation the terrain draws through the same orthographic rect
+as before and markers are placed at `pixel * zoom`. Everything below applies only
+once the view is tilted or turned.
+
+**The camera** (`terrain/terrainCamera.ts`) looks at the point in the middle of
+the viewport, which is still set by scrolling, so panning and zooming mean the
+same thing in both modes and leaving 3D returns to the same place. Perspective
+grows with tilt, from none at top-down to a 35 degree field of view at 60, and
+the scale at the view centre is held fixed, so leaning the map back never makes
+the thing being looked at jump or change size. The sun turns with the view.
+
+**Markers stand at their height.** Under tilt a point shifts on screen with its
+height, so a marker drawn at height zero would sit at the base of the mesa it is
+on. Each marker is projected at its own `z`, or the sand height under it where it
+has none. Markers outside the view are not drawn.
+
+**Picking reads the terrain.** Double-click and player-drag ask the renderer what
+is drawn under the cursor -- one pixel of world height, rendered on demand -- so
+the point lands on whatever is visible there, rock top or sand. Where that cannot
+be read (no float render target), the cursor's ray is walked onto the sand
+instead. Nothing past the map's edge can be picked, though a tilted view shows
+beyond it. The teleport request itself is unchanged: X and Y from the pick, Z by
+the same rule as top-down.
+
+**Panning and zooming** keep the ground under the pointer fixed, exactly, with
+perspective included: a pan carries the grabbed point with the cursor, and the
+wheel zooms about the point it is over.
+
+**The sector grid** is projected through the same camera. Its lines are laid on
+the sand rather than on a flat plane -- a line at the map's average height would
+slide past a marker standing on a dune as the view tilts -- and each label sits
+at the centre of the visible part of its sector, as in the flat grid.
+
 ## Player teleport
 
 Dragging an **online** player marker previews a new position; releasing
