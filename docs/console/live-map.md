@@ -340,6 +340,11 @@ flat tone with a per-instance random. Here it gets:
   projection, which is how the in-world cliff blocks bake theirs; the shield
   walls' atlases are re-baked overhead to match. Colour is pulled halfway toward
   the map's ochre so that shape mismatches blend in.
+- **Relief on the two big wall shapes.** The outer shield wall and the shield
+  wall vista ship a diffuse that is close to one flat brown; in the game their
+  detail comes from a normal map. That normal map is lit from a fixed direction
+  and the shading multiplied into their two texture layers, so they read as
+  rock. The light is baked in and does not turn with the view.
 - **Sealing.** The rock meshes are stacks of open plates, and the bottom of one
   cliff face hangs a few metres above the ledge below, leaving a slit. When the
   library loads, `terrainSeal.ts` hangs a 60 m skirt from every open edge of
@@ -464,6 +469,8 @@ when the terrain at its spot is both nearer the eye and more than 30 m above it
   differs in layout 9, by up to 515 uu, and is drawn as in the other eleven.
 - Rock that reaches beyond 375,000 uu is not drawn (32 pieces), and one nearer
   piece is missing because its shape is not in the mesh library.
+- The two big wall shapes are still coarse up close: one texel of theirs covers
+  about 256 x 712 uu, against 129 uu for a typical rock.
 
 ### Assets
 
@@ -562,7 +569,7 @@ Feature-level changes to the Live Map, newest first.
 | Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag. Markers and the sector grid are projected through the camera, and markers and grid lines are hidden where rock covers them. |
 | Unreleased | 2026-10 | The tilted view draws past the map's edge, out to 375,000 uu: the shield walls outside the square, hand-placed pieces included, with the wall's floating upper tiers closed down to the ground, on the game's own sand for the first 90,000 uu and a level plain beyond. |
 | Unreleased | 2026-10 | Rock meshes are sealed at load, rock is lit as a solid when tilted, and the camera's eye stays above the rock at high zoom. |
-| Unreleased | 2026-10 | Rock is painted with the game's own textures. Terrain instances are culled per frame. |
+| Unreleased | 2026-10 | Rock is painted with the game's own textures, with the game's normal map baked into the two big wall shapes. Terrain instances are culled per frame. |
 | Unreleased | 2026-09 | **Elevation Lines** layer. Rock is lit with its authored normals and given a per-instance tone. |
 | v1.4.35 | 2026-09-20 | The Coriolis block is read from the game log by pattern instead of from a tail, so the layout no longer goes missing on long-running servers. |
 | v1.4.23 | 2026-09-17 | Spice and Flour Sand layers fixed after the game changed `resourcefield_state`. |
