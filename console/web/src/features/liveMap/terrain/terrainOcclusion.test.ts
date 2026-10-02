@@ -108,6 +108,21 @@ describe("isOccluded", () => {
     expect(isOccluded(grid, edgeX, -25000, 0, TOL)).toBe(false);
   });
 
+  it("cuts a point with no size right at the edge, where a marker would still show", () => {
+    // Walk in from past the end of the wall, a pixel at a time, to the first
+    // spot the single texel calls covered. A marker there still shows: its 3x3
+    // sees round the end.
+    let x = wall.x1 + cam.scale * 16;
+    let steps = 0;
+    while (!isOccluded(grid, x, -25000, 0, TOL, 0) && steps++ < 64) x -= cam.scale;
+    expect(steps).toBeLessThan(64);
+    expect(isOccluded(grid, x, -25000, 0, TOL, 0)).toBe(true);
+    expect(isOccluded(grid, x, -25000, 0, TOL)).toBe(false);
+    // Well inside, both agree; on open ground, both agree the other way.
+    expect(isOccluded(grid, 0, -25000, 0, TOL, 0)).toBe(true);
+    expect(isOccluded(grid, -120000, 60000, 0, TOL, 0)).toBe(false);
+  });
+
   it("follows the view round: what hides a marker from one side does not from the other", () => {
     const behind = scene(camera(50, 180), [wall]);
     expect(isOccluded(behind, 0, -25000, 0, TOL)).toBe(false);

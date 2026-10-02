@@ -135,6 +135,8 @@ export type SectorGrid3D = {
 // the projection runs away to infinity.
 const NEAR_DEPTH = 0.1;
 // A line is sampled about this often on screen, so it follows the dunes it lies on.
+// Twice as often when it is also being cut where the terrain covers it: a line
+// can only end at a sample, and 12 px of overshoot into a rock shows.
 const SAMPLE_PX = 12;
 const MAX_SAMPLES = 256;
 
@@ -170,17 +172,24 @@ const mixVec = (a: Vec, b: Vec, t: number): Vec => ({ x: a.x + (b.x - a.x) * t, 
  * and its true centre is off-screen. `padding` keeps a label clear of the
  * viewport's edge and `minArea` (square pixels) drops one whose visible part is
  * a sliver.
+ *
+ * `hidden`, when given, says whether the terrain stands in front of a point, and
+ * a line is not drawn through such points: it runs along the ground, so a rock
+ * on it covers it. Labels are left alone -- one names its whole sector, and
+ * where it sits within it is arbitrary.
  */
 export function projectSectorGrid(
   camera: TerrainCamera,
   heightAt: (x: number, y: number) => number,
   padding: number,
-  minArea: number
+  minArea: number,
+  hidden?: (x: number, y: number, z: number) => boolean
 ): SectorGrid3D {
   const depth = (x: number, y: number, z: number) => scaleAt(camera, x, y, z) / camera.scale;
   // What the camera can see of the ground, generously: dunes stay well inside this band.
   const seen = cullRectForCamera(camera, camera.cz - 40000, camera.cz + 40000);
-  const step = Math.max(SAMPLE_PX * camera.scale, 1);
+  const step = Math.max((hidden ? SAMPLE_PX / 2 : SAMPLE_PX) * camera.scale, 1);
+  const maxSamples = hidden ? MAX_SAMPLES * 2 : MAX_SAMPLES;
   const margin = 64;
   const onScreen = (ax: number, ay: number, bx: number, by: number) => (
     Math.max(ax, bx) >= -margin && Math.min(ax, bx) <= camera.width + margin
@@ -195,23 +204,24 @@ export function projectSectorGrid(
     const to = Math.min(hi, alongX ? seen.maxX : seen.maxY);
     const across = alongX ? [seen.minY, seen.maxY] : [seen.minX, seen.maxX];
     if (to <= from || fixed < across[0] || fixed > across[1]) return;
-    const count = Math.min(MAX_SAMPLES, Math.max(1, Math.ceil((to - from) / step)));
+    const count = Math.min(maxSamples, Math.max(1, Math.ceil((to - from) / step)));
     let d = "";
     let pen = false;
-    let prev: { x: number; y: number; z: number; w: number } | null = null;
+    let prev: { x: number; y: number; z: number; w: number; covered: boolean } | null = null;
     for (let i = 0; i <= count; i++) {
       const v = from + ((to - from) * i) / count;
       const x = alongX ? v : fixed;
       const y = alongX ? fixed : v;
       const z = heightAt(x, y);
-      const cur = { x, y, z, w: depth(x, y, z) };
-      if (prev && (prev.w >= NEAR_DEPTH || cur.w >= NEAR_DEPTH)) {
+      const w = depth(x, y, z);
+      const cur = { x, y, z, w, covered: !!hidden && w >= NEAR_DEPTH && hidden(x, y, z) };
+      if (prev && !prev.covered && !cur.covered && (prev.w >= NEAR_DEPTH || cur.w >= NEAR_DEPTH)) {
         // Cut the segment where it passes behind the view, rather than dropping it whole.
         let a = prev;
         let b = cur;
         if (a.w < NEAR_DEPTH || b.w < NEAR_DEPTH) {
           const t = (NEAR_DEPTH - a.w) / (b.w - a.w);
-          const cut = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t, w: NEAR_DEPTH };
+          const cut = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t, w: NEAR_DEPTH, covered: false };
           if (a.w < NEAR_DEPTH) a = cut; else b = cut;
         }
         const sa = projectToScreen(camera, a.x, a.y, a.z);

@@ -1005,3 +1005,23 @@ it("shows a marker the terrain is covering once it is searched for", async () =>
   fireEvent.change(search, { target: { value: "" } });
   expect(screen.queryByRole("button", { name: "Base: Low" })).toBeNull();
 });
+
+it("cuts the sector grid's lines where the tilted terrain covers them, and keeps its labels", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  sizeFrame(container);
+  fireEvent.change(slider, { target: { value: "45" } });
+  const drawn = () => container.querySelectorAll("svg.live-map-sector-grid.is-3d path").length;
+  const labels = () => container.querySelectorAll("svg.live-map-sector-grid.is-3d text").length;
+  const open = drawn();
+  const named = labels();
+  expect(open).toBeGreaterThan(0);
+
+  // The fake terrain now covers everything at sand height, which is where the lines lie.
+  terrain.hidesBelow = 5000;
+  fireEvent.change(slider, { target: { value: "46" } });
+  expect(drawn()).toBe(0);
+  expect(labels()).toBe(named);
+});

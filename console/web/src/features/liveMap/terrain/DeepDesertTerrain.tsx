@@ -62,8 +62,8 @@ export type TerrainApi = {
   heightAt: (x: number, y: number) => number;
   /** The height the 3D camera pivots about: the layout's mean sand height. */
   pivotZ: number;
-  /** Whether the terrain hides a world point, as of a frame just drawn. Only ever true while tilted. */
-  occluded: (x: number, y: number, z: number) => boolean;
+  /** Whether the terrain hides a world point, as of a frame just drawn. Only ever true while tilted. `reach`: see the renderer. */
+  occluded: (x: number, y: number, z: number, reach?: number) => boolean;
 };
 
 export default function DeepDesertTerrain({
@@ -149,7 +149,7 @@ export default function DeepDesertTerrain({
           pick: (sx, sy) => rendererRef.current?.pick(sx, sy) ?? null,
           heightAt: (x, y) => interpolateHeightField(field, meta, x, y),
           pivotZ: pivotRef.current,
-          occluded: (x, y, z) => rendererRef.current?.occluded(x, y, z) ?? false
+          occluded: (x, y, z, reach) => rendererRef.current?.occluded(x, y, z, reach) ?? false
         });
         setReady(true);
         // The panel holds the flat image up until this point: the canvas is

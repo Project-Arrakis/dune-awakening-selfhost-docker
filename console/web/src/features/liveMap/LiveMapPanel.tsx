@@ -739,9 +739,17 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
     // found and placed again on the way back.
   }, [showSectorGrid, sectorGrid, zoom, is3D]);
   // Tilted, the grid is projected through the camera each render instead: lines
-  // laid on the sand, labels at the centre of what is visible of each sector.
+  // laid on the sand, labels at the centre of what is visible of each sector, and
+  // the lines cut where the terrain stands in front of them. A line has no
+  // width to speak of, so it is tested at a single point (reach 0), unlike a marker.
   const sectorGrid3d = view3d && terrainApi && showSectorGrid && sectorGrid
-    ? projectSectorGrid(view3d.camera, terrainApi.heightAt, SECTOR_LABEL_PX * 1.6, SECTOR_LABEL_PX * SECTOR_LABEL_PX * 4)
+    ? projectSectorGrid(
+      view3d.camera,
+      terrainApi.heightAt,
+      SECTOR_LABEL_PX * 1.6,
+      SECTOR_LABEL_PX * SECTOR_LABEL_PX * 4,
+      tilt > 0 ? (x, y, z) => terrainApi.occluded(x, y, z, 0) : undefined
+    )
     : null;
 
   const zoomMaxPercent = Math.round(MAX_LIVE_MAP_ZOOM * 100);

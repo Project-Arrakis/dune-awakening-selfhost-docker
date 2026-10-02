@@ -99,9 +99,11 @@ export type DeepDesertRenderer = {
    * and the eye. Answered from the depth of a recent frame -- read back
    * asynchronously, so up to a frame or two old; `onOcclusion` fires when it is
    * renewed. Only ever true in a tilted view, and never where this GPU cannot
-   * render to float (see `canPick`).
+   * render to float (see `canPick`). `reach` is how far round the point must be
+   * covered, in depth texels: 1 (the default) for something with a size, 0 for a
+   * bare point.
    */
-  occluded(x: number, y: number, z: number): boolean;
+  occluded(x: number, y: number, z: number, reach?: number): boolean;
   readonly canPick: boolean;
   /** Faint elevation banding on rock and sand. Off by default. */
   setElevationLines(on: boolean): void;
@@ -949,8 +951,8 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     pick(sx: number, sy: number) {
       return pickAt(sx, sy);
     },
-    occluded(x: number, y: number, z: number) {
-      return !lost && occlusion ? isOccluded(occlusion, x, y, z, OCCLUSION_TOLERANCE) : false;
+    occluded(x: number, y: number, z: number, reach?: number) {
+      return !lost && occlusion ? isOccluded(occlusion, x, y, z, OCCLUSION_TOLERANCE, reach) : false;
     },
     setElevationLines(on: boolean) {
       elevationLines = on;

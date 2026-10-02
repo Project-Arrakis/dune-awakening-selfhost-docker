@@ -480,8 +480,14 @@ standing more than 3,000 uu (30 m) above it (`terrain/terrainOcclusion.ts`).
 - The read-back is asynchronous (a pixel buffer behind a fence), so a marker is
   hidden a frame or two after it passes behind something. Read synchronously it
   blocked the page 9-18 ms on every tilted frame.
+- **The sector grid's lines are cut the same way.** They run along the ground,
+  so a rock standing on one covers it. A line has no size, so it is tested at
+  the single texel it falls in rather than a 3x3 -- it stops where the rock
+  starts -- and it is sampled twice as finely (every 6 px) so it does not
+  overshoot into the rock. Sector labels are not hidden: one names its whole
+  sector, and where it sits within it is arbitrary.
 - Top-down nothing is hidden, and nothing is where the GPU cannot render to
-  float. The sector grid is not occluded; its lines still draw over rock.
+  float.
 
 **The sector grid** is projected through the same camera. Its lines are laid on
 the sand rather than on a flat plane -- a line at the map's average height would

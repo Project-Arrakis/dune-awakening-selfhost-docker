@@ -58,10 +58,12 @@ export function invert4(m: ArrayLike<number>): Float64Array | null {
  * belongs to -- a base on a ledge, a player inside a wreck -- since the map's
  * meshes are coarse stand-ins and a marker rarely sits exactly on them.
  *
- * The point has to be covered across its whole 3x3 neighbourhood, so a marker
- * goes when it is well behind something and not while an edge merely clips it.
+ * `reach` is how far round the point has to be covered, in texels. A marker has
+ * a size, so it uses 1 -- the whole 3x3 -- and goes when it is well behind
+ * something, not while an edge merely clips it. A grid line has none, and uses
+ * 0: just the texel it falls in, so the line stops where the rock starts.
  */
-export function isOccluded(grid: DepthGrid, x: number, y: number, z: number, tolerance: number): boolean {
+export function isOccluded(grid: DepthGrid, x: number, y: number, z: number, tolerance: number, reach = 1): boolean {
   const m = grid.matrix;
   const w = m[3] * x + m[7] * y + m[11] * z + m[15];
   if (!(w > 0)) return false;
@@ -72,8 +74,8 @@ export function isOccluded(grid: DepthGrid, x: number, y: number, z: number, tol
   const ty = Math.floor((ny * 0.5 + 0.5) * grid.height);
   if (tx < 0 || ty < 0 || tx >= grid.width || ty >= grid.height) return false;
   const inv = grid.inverse;
-  for (let dy = -1; dy <= 1; dy++) {
-    for (let dx = -1; dx <= 1; dx++) {
+  for (let dy = -reach; dy <= reach; dy++) {
+    for (let dx = -reach; dx <= reach; dx++) {
       const cx = Math.min(grid.width - 1, Math.max(0, tx + dx));
       const cy = Math.min(grid.height - 1, Math.max(0, ty + dy));
       const d = grid.depth[(cy * grid.width + cx) * grid.stride];

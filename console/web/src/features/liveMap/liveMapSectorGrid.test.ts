@@ -273,6 +273,55 @@ describe("projectSectorGrid", () => {
     }
   });
 
+  describe("where the terrain covers it", () => {
+    const camera = cameraAt(0.6, 2048, 2048, 50, 0);
+    // The grid line nearest the viewer of the two that cross the view's middle:
+    // horizontal on screen at yaw 0, so it can be picked out by its row.
+    const lineY = CENTRE_Y + CELL / 2;
+    const rowSy = projectToScreen(camera, camera.cx, lineY, PIVOT).sy;
+    const onRow = (paths: { d: string }[]) => paths.flatMap((path) => vertices(path.d)).filter(([, y]) => Math.abs(y - rowSy) < 1);
+    const sxOf = (x: number) => projectToScreen(camera, x, lineY, PIVOT).sx;
+
+    it("breaks a line there, and nowhere else", () => {
+      const open = projectSectorGrid(camera, flatSand, 20, 900);
+      // A rock across the middle of the view: everything within 60,000 uu of the centre line.
+      const cut = projectSectorGrid(camera, flatSand, 20, 900, (x) => Math.abs(x - camera.cx) < 60000);
+      const left = sxOf(camera.cx - 60000);
+      const right = sxOf(camera.cx + 60000);
+      const inBand = (paths: { d: string }[]) => onRow(paths).filter(([x]) => x > left + 1 && x < right - 1);
+      // Uncovered, the line runs through the band; covered, nothing of it is drawn there...
+      expect(inBand(open.paths).length).toBeGreaterThan(5);
+      expect(inBand(cut.paths)).toHaveLength(0);
+      // ...it is broken, not dropped...
+      const moves = (paths: { d: string }[]) => paths.reduce((n, path) => n + (path.d.match(/M/g) || []).length, 0);
+      expect(moves(cut.paths)).toBeGreaterThan(moves(open.paths));
+      // ...and it still runs on both sides.
+      const xs = onRow(cut.paths).map(([x]) => x);
+      expect(Math.min(...xs)).toBeLessThan(left - 20);
+      expect(Math.max(...xs)).toBeGreaterThan(right + 20);
+      // Labels are not hidden by it.
+      expect(cut.labels).toEqual(open.labels);
+    });
+
+    it("stops within half the usual sampling distance of the rock", () => {
+      const edge = camera.cx - 60000;
+      const cut = projectSectorGrid(camera, flatSand, 20, 900, (x) => x > edge);
+      const edgeSx = sxOf(edge);
+      const last = Math.max(...onRow(cut.paths).map(([x]) => x));
+      // Never into the rock, and no more than a 6 px sample short of it.
+      expect(last).toBeLessThanOrEqual(edgeSx + 0.1);
+      expect(edgeSx - last).toBeLessThanOrEqual(7);
+    });
+
+    it("is not sampled, or cut, when nothing says what is covered", () => {
+      const open = projectSectorGrid(camera, flatSand, 20, 900);
+      const never = projectSectorGrid(camera, flatSand, 20, 900, () => false);
+      // The same lines either way; only finer when being tested.
+      expect(never.paths).toHaveLength(open.paths.length);
+      expect(onRow(never.paths).length).toBeGreaterThan(onRow(open.paths).length);
+    });
+  });
+
   it("marks the four outer lines as the edge", () => {
     const grid = projectSectorGrid(cameraAt(0.2, 2048, 2048, 30, 10), flatSand, 20, 900);
     expect(grid.paths.filter((path) => path.edge)).toHaveLength(4);
