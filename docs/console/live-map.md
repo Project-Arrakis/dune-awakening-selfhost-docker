@@ -420,6 +420,13 @@ the original code path runs, and everything below is inactive.
   places by hand rather than as instances, which the layout build does not
   read. Only pieces lying wholly within the 375,000 uu are shipped, so none is
   sliced by the clip.
+- **Rock that hangs in the air.** The shield wall is built in tiers, and the
+  upper ones have nothing under them: the game only shows its map from above,
+  where that cannot be seen. When a layout loads, every rock piece whose own
+  floor clears the sand beneath it by more than 1,500 uu is marked (about 50 of
+  a layout's own along the south, and most of the outside rock), and the vertex
+  shader carries a marked piece's skirts straight down to the ground. It stands
+  as a cliff instead of floating, and from above nothing changes.
 - **The sand out there.** The game's sand tiles reach about 90,000 uu past the
   square, and that ring is shared too: it is joined to the layout's height field
   on the same grid when the layout loads. The dunes run on for about 65,000 uu,
@@ -553,7 +560,7 @@ Feature-level changes to the Live Map, newest first.
 | Release | Date | Change |
 |---|---|---|
 | Unreleased | 2026-10 | **Tilt and rotation** of the Deep Desert terrain, with perspective: Tilt slider, Top-Down reset, right-drag. Markers and the sector grid are projected through the camera, and markers and grid lines are hidden where rock covers them. |
-| Unreleased | 2026-10 | The tilted view draws past the map's edge, out to 375,000 uu: the shield walls outside the square, on the game's own sand for the first 90,000 uu and a level plain beyond. |
+| Unreleased | 2026-10 | The tilted view draws past the map's edge, out to 375,000 uu: the shield walls outside the square, hand-placed pieces included, with the wall's floating upper tiers closed down to the ground, on the game's own sand for the first 90,000 uu and a level plain beyond. |
 | Unreleased | 2026-10 | Rock meshes are sealed at load, rock is lit as a solid when tilted, and the camera's eye stays above the rock at high zoom. |
 | Unreleased | 2026-10 | Rock is painted with the game's own textures. Terrain instances are culled per frame. |
 | Unreleased | 2026-09 | **Elevation Lines** layer. Rock is lit with its authored normals and given a per-instance tone. |

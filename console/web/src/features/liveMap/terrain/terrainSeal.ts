@@ -203,6 +203,7 @@ export function sealRockLibrary(
     nrm.set(m.nrm, vo * 2);
     idx.set(m.idx, io);
     const next: TerrainMesh = { ...mesh, vo, vn: count, io, ic: m.idx.length };
+    if (count > mesh.vn) next.skirt = mesh.vn;
     if (m.uv) {
       uv.set(m.uv, uo * 2);
       next.uvo = uo;

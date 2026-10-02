@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  FOOTED_ROCK,
   INSTANCE_FLOATS,
   buildDrawCalls,
+  markHoveringRock,
   cullInstances,
   instanceCircles,
   depthRange,
@@ -266,6 +268,42 @@ describe("withOutside", () => {
 
   it("refuses an outside draw whose mesh the library does not have", () => {
     expect(() => withOutside([], own, library, { nInst: 1, zmax: 0, draws: [{ m: 9, off: 0, n: 1 }] }, extra)).toThrow(/mesh 9/);
+  });
+});
+
+describe("markHoveringRock", () => {
+  // A sealed rock mesh 10 units tall whose floor is 2 below its origin, and an unsealed one.
+  const rock = { lo: [-5, -5, -2], ext: [10, 10, 10], vo: 0, vn: 8, io: 0, ic: 6, skirt: 6 };
+  const plain = { lo: [-5, -5, -2], ext: [10, 10, 10], vo: 8, vn: 4, io: 6, ic: 6 };
+  const call = (mesh: object, instOff: number, instN: number) => ({ ...mesh, instOff, instN, overlay: 0, land: false }) as unknown as Parameters<typeof markHoveringRock>[0][number];
+
+  /** One instance: uniform scale 100, at (x, y, z), with a material and a lift. */
+  function instance(x: number, y: number, z: number, mat = 0, lift = 0): number[] {
+    return [100, 0, 0, 0, 100, 0, 0, 0, 100, x, y, z, mat, lift];
+  }
+  const sandAt = (x: number) => (x < 0 ? 1000 : 5000);
+
+  it("marks rock whose floor clears the sand, and leaves grounded rock alone", () => {
+    // Floors: 3000 - 200 = 2800 over sand at 1000 (hovering), and 1200 - 200 = 1000 (standing on it).
+    const instances = Float32Array.from([...instance(-50, 0, 3000), ...instance(-50, 0, 1200)]);
+    expect(markHoveringRock([call(rock, 0, 2)], instances, sandAt)).toBe(1);
+    expect(instances[12]).toBeCloseTo(FOOTED_ROCK, 6);
+    expect(instances[INSTANCE_FLOATS + 12]).toBe(0);
+  });
+
+  it("measures against the sand under the piece, and counts its lift", () => {
+    // The same floor of 5800 clears the low sand but not the high sand...
+    const instances = Float32Array.from([...instance(-50, 0, 6000), ...instance(50, 0, 6000), ...instance(50, 0, 6000, 0, 1000)]);
+    expect(markHoveringRock([call(rock, 0, 3)], instances, sandAt)).toBe(2);
+    // ...until a lift of 1000 raises it to 6800, 1800 clear.
+    expect([instances[12], instances[INSTANCE_FLOATS + 12], instances[2 * INSTANCE_FLOATS + 12]].map((v) => v > 0)).toEqual([true, false, true]);
+  });
+
+  it("skips meshes with no skirt to carry down, and instances that are not rock", () => {
+    const instances = Float32Array.from([...instance(-50, 0, 9000), ...instance(-50, 0, 9000, 3)]);
+    expect(markHoveringRock([call(plain, 0, 1), call(rock, 1, 1)], instances, sandAt)).toBe(0);
+    expect(instances[12]).toBe(0);
+    expect(instances[INSTANCE_FLOATS + 12]).toBe(3);
   });
 });
 

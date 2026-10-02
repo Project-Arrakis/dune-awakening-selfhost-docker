@@ -1,7 +1,7 @@
 import { BFS, BVS, CFS, DFS, FS, RFS, RVS, VS } from "./shaders";
 import { invert4, isOccluded } from "./terrainOcclusion";
 import type { DepthGrid } from "./terrainOcclusion";
-import { buildDrawCalls, cullInstances, depthRange, instanceCircles, INSTANCE_FLOATS, orthoFromWorldRect, applyCanvasSize, withOutside } from "./terrainGeometry";
+import { buildDrawCalls, interpolateHeightField, markHoveringRock, cullInstances, depthRange, instanceCircles, INSTANCE_FLOATS, orthoFromWorldRect, applyCanvasSize, withOutside } from "./terrainGeometry";
 import type { CulledDraw } from "./terrainGeometry";
 import { cameraClipMatrix, cullRectForCamera, scaleAt, screenToWorldAtZ } from "./terrainCamera";
 import type { TerrainCamera } from "./terrainCamera";
@@ -165,7 +165,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     feather: u(terrain, "uFeather"), hf: u(terrain, "uHF"), hfMode: u(terrain, "uHFMode"),
     hn: u(terrain, "uHN"), hStep: u(terrain, "uHStep"), hx0: u(terrain, "uHX0"), hy0: u(terrain, "uHY0"),
     hzlo: u(terrain, "uHZlo"), hzhi: u(terrain, "uHZhi"), wScale: u(terrain, "uWScale"),
-    bias: u(terrain, "uBias"), lift: u(terrain, "uLift"), patchCut: u(terrain, "uPatchCut"),
+    bias: u(terrain, "uBias"), lift: u(terrain, "uLift"), skirtFrom: u(terrain, "uSkirtFrom"), footZ: u(terrain, "uFootZ"), patchCut: u(terrain, "uPatchCut"),
     patchFeather: u(terrain, "uPatchFeather"), patchCol: u(terrain, "uPatchCol"), poiCol: u(terrain, "uPoiCol"),
     brk: u(terrain, "uBrk"), brkTile: u(terrain, "uBrkTile"), brkAmp: u(terrain, "uBrkAmp"),
     clipRaise: u(terrain, "uClipRaise"), prepass: u(terrain, "uPrepass"), view: u(terrain, "uV"),
@@ -448,6 +448,8 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       shared.library, shared.outside, floats(shared.outsideInstances));
     calls = merged.calls;
     instFloats = merged.instances;
+    const sand = new Uint16Array(layout.heightField.buffer, layout.heightField.byteOffset, layout.heightField.byteLength / 2);
+    markHoveringRock(calls, instFloats, (x, y) => interpolateHeightField(sand, layout.meta, x, y));
     zTop = Math.max(layout.meta.zmax, shared.outside.zmax);
     circles = instanceCircles(calls, instFloats);
     packed = new Float32Array(instFloats.length);
@@ -489,6 +491,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
       gl.uniform1f(t.wScale, call.land ? 1 : call.overlay ? 64 : rockWeight);
       gl.uniform1f(t.lift, LIFTON);
       gl.uniform1f(t.bias, call.overlay ? -OVERLAY / zRange : 0);
+      gl.uniform1i(t.skirtFrom, call.skirt ?? 0x7fffffff);
 
       gl.bindBuffer(gl.ARRAY_BUFFER, bPos);
       gl.enableVertexAttribArray(0);
@@ -748,6 +751,7 @@ export function createDeepDesertRenderer(canvas: HTMLCanvasElement, options: Ren
     gl.uniform3f(t.light, SUN[0] * cy - SUN[1] * sy, SUN[0] * sy + SUN[1] * cy, SUN[2]);
     gl.uniform1f(t.pick, 0);
     gl.uniform1f(t.zlo, meta.zmin);
+    gl.uniform1f(t.footZ, meta.zmin);
     gl.uniform1f(t.zhi, meta.zmin + (meta.zmax - meta.zmin) * 0.35);
     gl.uniform2f(t.c, meta.cx, meta.cy);
     // Tilted, the clip moves out to take in the rock that stands past the edge.

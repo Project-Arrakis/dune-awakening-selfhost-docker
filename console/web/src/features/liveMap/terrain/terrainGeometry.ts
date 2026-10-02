@@ -52,6 +52,45 @@ export function withOutside(
   return { calls: [...calls, ...extra], instances: merged };
 }
 
+/** `iMat` of rock whose skirts run down to the ground. Anything under 0.5 shades as rock. */
+export const FOOTED_ROCK = 0.25;
+
+/** How far a rock's own floor must clear the sand to count as hanging in the air, world uu. */
+const HOVER = 1500;
+
+/**
+ * Mark the rock that hangs in the air, by writing `FOOTED_ROCK` into its
+ * instance's `iMat`. The game builds the shield wall in tiers and leaves the
+ * upper ones with nothing under them, because its own map is only seen from
+ * above; tilted, they float. The vertex shader carries a marked instance's
+ * skirts down to the ground. Returns how many it marked.
+ */
+export function markHoveringRock(calls: TerrainDrawCall[], instances: Float32Array, sandAt: (x: number, y: number) => number): number {
+  let marked = 0;
+  for (const call of calls) {
+    if (call.skirt === undefined) continue;
+    const { lo, ext } = call;
+    const mid = [lo[0] + ext[0] / 2, lo[1] + ext[1] / 2, lo[2] + ext[2] / 2];
+    for (let k = call.instOff; k < call.instOff + call.instN; k++) {
+      const o = k * INSTANCE_FLOATS;
+      if (instances[o + 12] !== 0) continue;
+      // Lowest point of the mesh's box under this instance's transform, lift included.
+      let floor = instances[o + 11] + instances[o + 13];
+      for (let axis = 0; axis < 3; axis++) {
+        const z = instances[o + axis * 3 + 2];
+        floor += Math.min(z * lo[axis], z * (lo[axis] + ext[axis]));
+      }
+      const x = instances[o + 9] + instances[o] * mid[0] + instances[o + 3] * mid[1] + instances[o + 6] * mid[2];
+      const y = instances[o + 10] + instances[o + 1] * mid[0] + instances[o + 4] * mid[1] + instances[o + 7] * mid[2];
+      if (floor - sandAt(x, y) > HOVER) {
+        instances[o + 12] = FOOTED_ROCK;
+        marked++;
+      }
+    }
+  }
+  return marked;
+}
+
 /**
  * How far world Z is spread across clip depth. Exposed because the overlay
  * layer's depth bias is expressed in world units and has to be divided through

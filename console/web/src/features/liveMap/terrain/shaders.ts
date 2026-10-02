@@ -32,6 +32,10 @@ uniform mat4 uVP;
 // ~500 vertices each, so a per-vertex weight would be interpolated across
 // 10,000 uu triangles and smear the band ten times wider than the overlap.
 uniform float uFeather, uWScale, uBias, uLift;
+// Rock marked as hanging in the air (iMat 0.25) has its skirts, the vertices
+// from uSkirtFrom on, carried down to uFootZ.
+uniform int uSkirtFrom;
+uniform float uFootZ;
 // The landscape can be drawn either as the game's overlapping tiles or as one
 // continuous height field resampled from them. The field has no tile borders,
 // so it has neither seams nor tears, and its normal comes from central
@@ -87,6 +91,9 @@ void main(){
   mat3 R = mat3(iC0,iC1,iC2);
   vec3 w = R*p + iT;
   w.z += ((iMat > 1.5 && iMat < 2.5) ? 0.0 : iLift*uLift);   // patches use iLift as a clip height
+  // Only skirt bottoms move, straight down: every open edge gets a wall to the
+  // ground, and seen from above nothing changes.
+  if(iMat > 0.2 && iMat < 0.3 && gl_VertexID >= uSkirtFrom) w.z = min(w.z, uFootZ);
   vClip = iLift;
   vN = normalize(R*octDec(aNrm));
   vRand = hash13(iT);

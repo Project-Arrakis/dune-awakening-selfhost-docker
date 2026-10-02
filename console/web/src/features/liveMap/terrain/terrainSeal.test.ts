@@ -178,6 +178,9 @@ describe("sealRockLibrary", () => {
     expect(p1.vn).toBe(p0.vn);
     expect(p1.ic).toBe(p0.ic);
     expect(p1.uvo).toBeUndefined();
+    // A sealed mesh records where its skirt starts: its own vertices come first.
+    expect(r1.skirt).toBe(r0.vn);
+    expect(p1.skirt).toBeUndefined();
     expect(Array.from(after.pos.subarray(p1.vo * 3, (p1.vo + p1.vn) * 3))).toEqual(Array.from(before.pos.subarray(p0.vo * 3, (p0.vo + p0.vn) * 3)));
     expect(Array.from(after.idx.subarray(p1.io, p1.io + p1.ic))).toEqual(Array.from(before.idx.subarray(p0.io, p0.io + p0.ic)));
   });
