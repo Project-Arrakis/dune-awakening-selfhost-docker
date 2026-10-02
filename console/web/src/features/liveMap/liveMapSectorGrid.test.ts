@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { LiveMapConfig } from "../../api/liveMap";
-import { labelAnchorInView, sectorForWorldPoint, sectorGridFor } from "./liveMapSectorGrid";
+import { labelAnchorInView, projectSectorGrid, sectorForWorldPoint, sectorGridFor } from "./liveMapSectorGrid";
+import { liveMapCamera, terrainViewport } from "./liveMapGeometry";
+import { projectToScreen, screenToWorldAtZ } from "./terrain/terrainCamera";
 
 const DEEP_DESERT: LiveMapConfig = {
   key: "DeepDesert", label: "The Deep Desert", actorMap: "DeepDesert",
@@ -168,5 +170,112 @@ describe("labels survive being zoomed out", () => {
     const cell = grid.labels.find((l) => l.text === "E5")!;
     const view = { left: cell.x1 - 4, top: cell.y0, right: cell.x1 + 500, bottom: cell.y1 };
     expect(labelAnchorInView(cell, view, 20)).toBeNull();
+  });
+});
+
+describe("projectSectorGrid", () => {
+  const deg = (d: number) => (d * Math.PI) / 180;
+  const W = 900;
+  const H = 700;
+  const PIVOT = 5000;
+  /** The panel's camera for a zoom, centred on a map pixel. */
+  function cameraAt(zoom: number, px: number, py: number, tiltDeg: number, yawDeg: number) {
+    const viewport = terrainViewport(DEEP_DESERT, zoom, px * zoom - W / 2, py * zoom - H / 2, W, H);
+    return liveMapCamera(DEEP_DESERT, zoom, viewport, deg(tiltDeg), deg(yawDeg), PIVOT)!;
+  }
+  const flatSand = () => PIVOT;
+  /** Every vertex of every path, as numbers. */
+  const vertices = (d: string) => [...d.matchAll(/[ML](-?[\d.]+) (-?[\d.]+)/g)].map((m) => [Number(m[1]), Number(m[2])]);
+  /** Distance from a point to the nearest segment of a path. */
+  function distanceToPath(d: string, x: number, y: number) {
+    let best = Infinity;
+    let prev: number[] | null = null;
+    for (const m of d.matchAll(/([ML])(-?[\d.]+) (-?[\d.]+)/g)) {
+      const cur = [Number(m[2]), Number(m[3])];
+      if (m[1] === "L" && prev) {
+        const vx = cur[0] - prev[0];
+        const vy = cur[1] - prev[1];
+        const t = Math.max(0, Math.min(1, ((x - prev[0]) * vx + (y - prev[1]) * vy) / Math.max(vx * vx + vy * vy, 1e-9)));
+        best = Math.min(best, Math.hypot(x - prev[0] - vx * t, y - prev[1] - vy * t));
+      }
+      prev = cur;
+    }
+    return best;
+  }
+
+  it("labels each sector with the sector that is actually under the label", () => {
+    for (const [zoom, tilt, yaw] of [[0.2, 0, 35], [0.2, 45, 0], [0.5, 60, 130], [2, 55, -70], [8, 60, 20]]) {
+      const camera = cameraAt(zoom, 2048, 2048, tilt, yaw);
+      const grid = projectSectorGrid(camera, flatSand, 20, 900);
+      expect(grid.labels.length).toBeGreaterThan(0);
+      for (const label of grid.labels) {
+        const ground = screenToWorldAtZ(camera, label.sx, label.sy, PIVOT);
+        expect(sectorForWorldPoint(ground.x, ground.y)).toBe(label.text);
+        // ...and it is inside the viewport, clear of its edge.
+        expect(label.sx).toBeGreaterThanOrEqual(20);
+        expect(label.sx).toBeLessThanOrEqual(W - 20);
+        expect(label.sy).toBeGreaterThanOrEqual(20);
+        expect(label.sy).toBeLessThanOrEqual(H - 20);
+      }
+    }
+  });
+
+  it("still labels the sector in view when one cell is larger than the viewport", () => {
+    // Zoom 8, centred in E5's middle: the cell's edges are all off-screen.
+    const grid = projectSectorGrid(cameraAt(8, 2048, 2048, 50, 25), flatSand, 20, 900);
+    expect(grid.labels.map((label) => label.text)).toEqual(["E5"]);
+  });
+
+  it("draws the lines through the grid's own intersections", () => {
+    const camera = cameraAt(0.6, 1900, 2100, 50, 40);
+    const grid = projectSectorGrid(camera, flatSand, 20, 900);
+    let checked = 0;
+    for (let i = 0; i <= 9; i++) for (let j = 0; j <= 9; j++) {
+      const s = projectToScreen(camera, CENTRE_X - HALF + i * CELL, CENTRE_Y - HALF + j * CELL, PIVOT);
+      if (s.sx < 0 || s.sx > W || s.sy < 0 || s.sy > H) continue;
+      checked++;
+      // Two lines cross at every intersection: one path of each direction passes within rounding.
+      const near = grid.paths.filter((path) => distanceToPath(path.d, s.sx, s.sy) < 0.2);
+      expect(near.length).toBeGreaterThanOrEqual(2);
+    }
+    expect(checked).toBeGreaterThan(3);
+  });
+
+  it("lays the lines on the sand, not on a flat plane", () => {
+    const camera = cameraAt(1, 2048, 2048, 55, 0);
+    const flat = projectSectorGrid(camera, flatSand, 20, 900);
+    const raised = projectSectorGrid(camera, () => PIVOT + 12000, 20, 900);
+    // Higher ground draws further up the screen once tilted.
+    const top = (paths: { d: string }[]) => Math.min(...paths.flatMap((path) => vertices(path.d).map((v) => v[1])));
+    expect(top(raised.paths)).toBeLessThan(top(flat.paths) - 5);
+    // A point on a dune sits on the line drawn over that dune.
+    const x = CENTRE_X - HALF + 4 * CELL;
+    const dune = (px: number, py: number) => PIVOT + 6000 * Math.sin(py / 30000) + 0 * px;
+    const draped = projectSectorGrid(camera, dune, 20, 900);
+    const y = camera.cy + 20000;
+    const s = projectToScreen(camera, x, y, dune(x, y));
+    expect(Math.min(...draped.paths.map((path) => distanceToPath(path.d, s.sx, s.sy)))).toBeLessThan(1.5);
+    // The flat-plane line misses it by a visible amount.
+    expect(Math.min(...flat.paths.map((path) => distanceToPath(path.d, s.sx, s.sy)))).toBeGreaterThan(3);
+  });
+
+  it("stays finite where lines run behind the view", () => {
+    // Steep and zoomed in: most of every line is off-screen, some of it behind the eye.
+    for (const yaw of [0, 90, 180, 270, 33]) {
+      const grid = projectSectorGrid(cameraAt(8, 1500, 1700, 60, yaw), flatSand, 20, 900);
+      for (const path of grid.paths) {
+        for (const [x, y] of vertices(path.d)) {
+          expect(Number.isFinite(x) && Number.isFinite(y)).toBe(true);
+          expect(Math.abs(x)).toBeLessThan(20000);
+          expect(Math.abs(y)).toBeLessThan(20000);
+        }
+      }
+    }
+  });
+
+  it("marks the four outer lines as the edge", () => {
+    const grid = projectSectorGrid(cameraAt(0.2, 2048, 2048, 30, 10), flatSand, 20, 900);
+    expect(grid.paths.filter((path) => path.edge)).toHaveLength(4);
+    expect(grid.paths).toHaveLength(20);
   });
 });

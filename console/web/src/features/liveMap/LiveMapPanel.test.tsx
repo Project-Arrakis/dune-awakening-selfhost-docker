@@ -925,3 +925,34 @@ it("tilts and rotates on a right-drag, and leaves a left-drag panning", async ()
   fireEvent.mouseUp(frame);
   expect(slider).toHaveValue("60");
 });
+
+it("keeps the sector grid while tilted, projected, and puts the flat one back after", async () => {
+  useTwoHeights();
+  const { container } = renderPanel();
+  await screen.findByRole("button", { name: "Base: Low" });
+  const slider = await screen.findByRole("slider", { name: "Tilt" });
+  sizeFrame(container);
+  expect(container.querySelectorAll("svg.live-map-sector-grid line")).toHaveLength(20);
+
+  fireEvent.change(slider, { target: { value: "45" } });
+  const tilted = container.querySelector("svg.live-map-sector-grid.is-3d");
+  expect(tilted).not.toBeNull();
+  // Drawn as paths in the viewport, not as the flat grid's straight lines.
+  expect(container.querySelectorAll("svg.live-map-sector-grid line")).toHaveLength(0);
+  expect(tilted!.querySelectorAll("path").length).toBeGreaterThan(0);
+  expect(tilted!.querySelectorAll("text").length).toBeGreaterThan(0);
+  // Sized to the viewport, not to the scaled map.
+  expect(Number(tilted!.getAttribute("width"))).toBeGreaterThan(0);
+  expect(Number(tilted!.getAttribute("width"))).toBeLessThanOrEqual(800);
+  expect(tilted!.getAttribute("viewBox")).toBeNull();
+
+  // The toggle still governs it.
+  fireEvent.click(screen.getByRole("checkbox", { name: "Sector Grid" }));
+  expect(container.querySelector("svg.live-map-sector-grid")).toBeNull();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Sector Grid" }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Top-Down" }));
+  expect(container.querySelector("svg.live-map-sector-grid.is-3d")).toBeNull();
+  expect(container.querySelectorAll("svg.live-map-sector-grid line")).toHaveLength(20);
+  expect(container.querySelectorAll("svg.live-map-sector-grid text")).toHaveLength(81);
+});

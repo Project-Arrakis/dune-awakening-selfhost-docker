@@ -22,7 +22,7 @@ import {
 } from "./liveMapGeometry";
 import { MAX_TILT, projectToScreen, screenToWorldAtZ, type TerrainCamera } from "./terrain/terrainCamera";
 import type { TerrainApi } from "./terrain/DeepDesertTerrain";
-import { labelAnchorInView, sectorForWorldPoint, sectorGridFor } from "./liveMapSectorGrid";
+import { labelAnchorInView, projectSectorGrid, sectorForWorldPoint, sectorGridFor } from "./liveMapSectorGrid";
 
 // On-screen size of a sector label, in CSS pixels. The SVG is drawn in map-pixel
 // space and scaled by zoom, so the font size is divided back out to keep it
@@ -729,7 +729,14 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
       observer.disconnect();
       if (queued) cancelAnimationFrame(queued);
     };
-  }, [showSectorGrid, sectorGrid, zoom]);
+    // is3D: the flat grid is unmounted while tilted, so its labels have to be
+    // found and placed again on the way back.
+  }, [showSectorGrid, sectorGrid, zoom, is3D]);
+  // Tilted, the grid is projected through the camera each render instead: lines
+  // laid on the sand, labels at the centre of what is visible of each sector.
+  const sectorGrid3d = view3d && terrainApi && showSectorGrid && sectorGrid
+    ? projectSectorGrid(view3d.camera, terrainApi.heightAt, SECTOR_LABEL_PX * 1.6, SECTOR_LABEL_PX * SECTOR_LABEL_PX * 4)
+    : null;
 
   const zoomMaxPercent = Math.round(MAX_LIVE_MAP_ZOOM * 100);
   const zoomValuePercent = Math.round(zoom * 100);
@@ -1513,6 +1520,14 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
               </g>
               <g className="labels" ref={sectorLabelsRef}>
                 {sectorGrid.labels.map((label) => <text key={label.text} x={label.px} y={label.py} fontSize={SECTOR_LABEL_PX / Math.max(zoom, 0.01)}>{label.text}</text>)}
+              </g>
+            </svg>}
+            {sectorGrid3d && view3d && <svg className="live-map-sector-grid is-3d" style={{ left: view3d.viewport.left, top: view3d.viewport.top }} width={view3d.viewport.width} height={view3d.viewport.height} aria-hidden="true">
+              <g className="lines">
+                {sectorGrid3d.paths.map((path, index) => <path key={index} d={path.d} className={path.edge ? "edge" : ""} />)}
+              </g>
+              <g className="labels">
+                {sectorGrid3d.labels.map((label) => <text key={label.text} x={label.sx} y={label.sy} fontSize={SECTOR_LABEL_PX}>{label.text}</text>)}
               </g>
             </svg>}
             <div className="live-map-marker-layer">

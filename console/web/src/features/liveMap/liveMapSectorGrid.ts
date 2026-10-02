@@ -1,5 +1,6 @@
 import type { LiveMapConfig } from "../../api/liveMap";
 import { worldToLiveMapPoint } from "./liveMapGeometry";
+import { cullRectForCamera, projectToScreen, scaleAt, type TerrainCamera } from "./terrain/terrainCamera";
 
 /**
  * The Deep Desert's 9x9 lettered sector grid.
@@ -120,4 +121,160 @@ export function sectorGridFor(config: LiveMapConfig): { lines: SectorGridLine[];
     }
   }
   return { lines, labels };
+}
+
+/** The grid as the tilted view draws it: paths and labels in viewport CSS pixels. */
+export type SectorGrid3D = {
+  paths: { d: string; edge: boolean }[];
+  labels: { text: string; sx: number; sy: number }[];
+};
+
+// Perspective depth below which a point is treated as behind the view. Anything
+// on screen is far above this -- the bottom edge of the steepest view sits near
+// 0.6 -- so it only ever cuts geometry that is off-screen toward the eye, where
+// the projection runs away to infinity.
+const NEAR_DEPTH = 0.1;
+// A line is sampled about this often on screen, so it follows the dunes it lies on.
+const SAMPLE_PX = 12;
+const MAX_SAMPLES = 256;
+
+type Vec = { x: number; y: number };
+
+/** Sutherland-Hodgman: the part of a convex polygon where `inside` is non-negative. */
+function clipPolygon<T extends Vec>(points: T[], inside: (p: T) => number, mix: (a: T, b: T, t: number) => T): T[] {
+  const out: T[] = [];
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    const da = inside(a);
+    const db = inside(b);
+    if (da >= 0) out.push(a);
+    if ((da >= 0) !== (db >= 0)) out.push(mix(a, b, da / (da - db)));
+  }
+  return out;
+}
+
+const mixVec = (a: Vec, b: Vec, t: number): Vec => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+
+/**
+ * The sector grid seen through the 3D camera.
+ *
+ * Lines are laid on the sand rather than on a flat plane: a marker stands at its
+ * own height, so a line floating at the map's average height would slide past it
+ * as the view tilts and put a base near a boundary on the wrong side of it.
+ * `heightAt` is the sand height, and each line is sampled finely enough to
+ * follow it.
+ *
+ * Each label sits at the centre of the part of its cell that is in view, which
+ * is what the flat grid does too: zoomed in, a cell is larger than the viewport
+ * and its true centre is off-screen. `padding` keeps a label clear of the
+ * viewport's edge and `minArea` (square pixels) drops one whose visible part is
+ * a sliver.
+ */
+export function projectSectorGrid(
+  camera: TerrainCamera,
+  heightAt: (x: number, y: number) => number,
+  padding: number,
+  minArea: number
+): SectorGrid3D {
+  const depth = (x: number, y: number, z: number) => scaleAt(camera, x, y, z) / camera.scale;
+  // What the camera can see of the ground, generously: dunes stay well inside this band.
+  const seen = cullRectForCamera(camera, camera.cz - 40000, camera.cz + 40000);
+  const step = Math.max(SAMPLE_PX * camera.scale, 1);
+  const margin = 64;
+  const onScreen = (ax: number, ay: number, bx: number, by: number) => (
+    Math.max(ax, bx) >= -margin && Math.min(ax, bx) <= camera.width + margin
+    && Math.max(ay, by) >= -margin && Math.min(ay, by) <= camera.height + margin
+  );
+  const fmt = (v: number) => (Math.round(v * 10) / 10).toString();
+
+  const paths: SectorGrid3D["paths"] = [];
+  const trace = (fixed: number, lo: number, hi: number, alongX: boolean, edge: boolean) => {
+    // Only the stretch the camera can see is sampled.
+    const from = Math.max(lo, alongX ? seen.minX : seen.minY);
+    const to = Math.min(hi, alongX ? seen.maxX : seen.maxY);
+    const across = alongX ? [seen.minY, seen.maxY] : [seen.minX, seen.maxX];
+    if (to <= from || fixed < across[0] || fixed > across[1]) return;
+    const count = Math.min(MAX_SAMPLES, Math.max(1, Math.ceil((to - from) / step)));
+    let d = "";
+    let pen = false;
+    let prev: { x: number; y: number; z: number; w: number } | null = null;
+    for (let i = 0; i <= count; i++) {
+      const v = from + ((to - from) * i) / count;
+      const x = alongX ? v : fixed;
+      const y = alongX ? fixed : v;
+      const z = heightAt(x, y);
+      const cur = { x, y, z, w: depth(x, y, z) };
+      if (prev && (prev.w >= NEAR_DEPTH || cur.w >= NEAR_DEPTH)) {
+        // Cut the segment where it passes behind the view, rather than dropping it whole.
+        let a = prev;
+        let b = cur;
+        if (a.w < NEAR_DEPTH || b.w < NEAR_DEPTH) {
+          const t = (NEAR_DEPTH - a.w) / (b.w - a.w);
+          const cut = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t, w: NEAR_DEPTH };
+          if (a.w < NEAR_DEPTH) a = cut; else b = cut;
+        }
+        const sa = projectToScreen(camera, a.x, a.y, a.z);
+        const sb = projectToScreen(camera, b.x, b.y, b.z);
+        if (onScreen(sa.sx, sa.sy, sb.sx, sb.sy)) {
+          if (!pen || a !== prev) d += `M${fmt(sa.sx)} ${fmt(sa.sy)}`;
+          d += `L${fmt(sb.sx)} ${fmt(sb.sy)}`;
+          pen = b === cur;
+        } else {
+          pen = false;
+        }
+      } else {
+        pen = false;
+      }
+      prev = cur;
+    }
+    if (d) paths.push({ d, edge });
+  };
+  for (let i = 0; i <= DIVISIONS; i++) {
+    const edge = i === 0 || i === DIVISIONS;
+    const offset = -HALF + i * CELL;
+    trace(CENTRE_X + offset, CENTRE_Y - HALF, CENTRE_Y + HALF, false, edge);
+    trace(CENTRE_Y + offset, CENTRE_X - HALF, CENTRE_X + HALF, true, edge);
+  }
+
+  const labels: SectorGrid3D["labels"] = [];
+  const z = camera.cz;
+  for (let row = 0; row < DIVISIONS; row++) {
+    for (let column = 0; column < DIVISIONS; column++) {
+      const x0 = CENTRE_X - HALF + column * CELL;
+      const y1 = CENTRE_Y + HALF - row * CELL;
+      if (x0 > seen.maxX || x0 + CELL < seen.minX || y1 < seen.minY || y1 - CELL > seen.maxY) continue;
+      // The cell on the ground, cut to what is in front of the view...
+      const ground = clipPolygon<Vec>(
+        [{ x: x0, y: y1 - CELL }, { x: x0 + CELL, y: y1 - CELL }, { x: x0 + CELL, y: y1 }, { x: x0, y: y1 }],
+        (p) => depth(p.x, p.y, z) - NEAR_DEPTH,
+        mixVec
+      );
+      if (ground.length < 3) continue;
+      // ...then on screen, cut to the viewport.
+      let shape: Vec[] = ground.map((p) => {
+        const s = projectToScreen(camera, p.x, p.y, z);
+        return { x: s.sx, y: s.sy };
+      });
+      shape = clipPolygon(shape, (p) => p.x - padding, mixVec);
+      shape = clipPolygon(shape, (p) => camera.width - padding - p.x, mixVec);
+      shape = clipPolygon(shape, (p) => p.y - padding, mixVec);
+      shape = clipPolygon(shape, (p) => camera.height - padding - p.y, mixVec);
+      if (shape.length < 3) continue;
+      let area = 0;
+      let cx = 0;
+      let cy = 0;
+      for (let i = 0; i < shape.length; i++) {
+        const a = shape[i];
+        const b = shape[(i + 1) % shape.length];
+        const cross = a.x * b.y - b.x * a.y;
+        area += cross;
+        cx += (a.x + b.x) * cross;
+        cy += (a.y + b.y) * cross;
+      }
+      if (Math.abs(area) / 2 < minArea) continue;
+      labels.push({ text: `${String.fromCharCode(65 + row)}${column + 1}`, sx: cx / (3 * area), sy: cy / (3 * area) });
+    }
+  }
+  return { paths, labels };
 }
