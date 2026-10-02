@@ -460,6 +460,20 @@ an ordinary lit solid: some ambient, the sun without the exaggeration, and a
 fill from the camera, so that a face you can see always has light on it. Sand
 keeps the top-down curve, and top-down itself is untouched.
 
+**The rock is sealed at load.** The map's rock meshes are not closed surfaces.
+Each is a stack of open plates -- a ledge and the cliff face under it -- and the
+bottom of one cliff face is left hanging a few metres above the ledge below
+rather than joined to it. Measured across the library: no rock mesh is
+watertight, 5% of all edges are open, over 90% of those run level, and the gap
+to the next plate is typically 5-25 m. From overhead none of it shows. Tilted,
+each was a slit through the rock with bright sand visible in it. So when the
+mesh library loads, `terrain/terrainSeal.ts` finds every open edge of every rock
+mesh and hangs a skirt from it, 60 m straight down, which passes behind the
+plate below and closes the slit. It costs about 56 ms once and 8% more
+triangles in the library; POIs and ground patches are left alone, being thin
+structures on which a skirt would be a curtain. Seen from straight above a skirt
+has no area, so the top-down render is unchanged, pixel for pixel.
+
 **The view runs past the map's edge.** Top-down, everything is clipped to the
 mapped square, because the view ends there. Tilted, it does not, and what stands
 just outside is the shield wall -- which the square cuts through. The shipped

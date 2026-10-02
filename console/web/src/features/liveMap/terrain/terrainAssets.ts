@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { sealRockLibrary } from "./terrainSeal";
 import type { TerrainLayoutMeta, TerrainLibrary } from "./types";
 
 /**
@@ -146,7 +147,11 @@ export async function loadSharedAssets(resolve: AssetResolver = bundledAsset, si
       if (rockTex.byteLength !== (library.texLayers ?? 0) * layerBytes) {
         throw new Error(`rock texture is ${rockTex.byteLength} bytes, expected ${library.texLayers ?? 0} BC1 layers of ${size}^2`);
       }
-      return { library: decodeIndices(library, geometry), geometry, detail1, detail2, breakup, rockUV, rockTex };
+      // The rock meshes ship as stacks of open plates with slits between them;
+      // close those once, here, off the frame path. See terrainSeal.ts.
+      const plain = decodeIndices(library, geometry);
+      const sealed = sealRockLibrary(plain, geometry, rockUV);
+      return { library: sealed.library, geometry: sealed.geometry, detail1, detail2, breakup, rockUV: sealed.rockUV, rockTex };
     })();
     // A failed load must not poison the page: drop the rejected promise so a
     // later attempt (a retry, or simply switching back to the map) can try again.
