@@ -582,7 +582,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   function currentView3d() {
     const frame = frameRef.current;
     if (!is3D || !activeMap || !frame || !terrainApi) return null;
-    const viewport = terrainViewport(activeMap, zoom, frame.scrollLeft, frame.scrollTop, frame.clientWidth, frame.clientHeight);
+    const viewport = terrainViewport(activeMap, zoom, frame.scrollLeft, frame.scrollTop, frame.clientWidth, frame.clientHeight, true);
     const camera = liveMapCamera(activeMap, zoom, viewport, tilt, yaw, terrainApi.pivotZ, terrainApi.topZ);
     return camera ? { viewport, camera } : null;
   }
@@ -612,8 +612,8 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   // What the terrain hides has been measured again: place the markers again.
   const handleTerrainOcclusion = useCallback(() => setViewTick((n) => n + 1), []);
   /**
-   * Where a map point is drawn, inside the scrolled map and relative to the
-   * viewport. In 3D it is projected at height `z`, or the sand's. `visible` is
+   * Where a map point is drawn, inside the marker layer and relative to the
+   * viewport. In 3D the marker layer covers the viewport, not the map. In 3D it is projected at height `z`, or the sand's. `visible` is
    * false outside the view, where drawing it would stretch the scroll area.
    */
   function placePoint(point: LiveMapPoint, z?: number) {
@@ -634,8 +634,8 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
     const { viewport, camera } = view3d;
     const s = projectToScreen(camera, world.x, world.y, height);
     return {
-      left: viewport.left + s.sx,
-      top: viewport.top + s.sy,
+      left: s.sx,
+      top: s.sy,
       viewportX: s.sx + viewport.left - (frame?.scrollLeft || 0),
       viewportY: s.sy + viewport.top - (frame?.scrollTop || 0),
       visible: !s.behind && s.sx >= 0 && s.sx <= viewport.width && s.sy >= 0 && s.sy <= viewport.height,
@@ -1520,7 +1520,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                 {sectorGrid3d.labels.map((label) => <text key={label.text} x={label.sx} y={label.sy} fontSize={SECTOR_LABEL_PX}>{label.text}</text>)}
               </g>
             </svg>}
-            <div className="live-map-marker-layer">
+            <div className="live-map-marker-layer" style={view3d ? { inset: "auto", left: view3d.viewport.left, top: view3d.viewport.top, width: view3d.viewport.width, height: view3d.viewport.height } : undefined}>
               {targetPoint && pickedMarker && targetPlaced?.visible && <div className="live-map-target" style={{ left: `${targetPlaced.left}px`, top: `${targetPlaced.top}px` }}>
                 <div className={`live-map-marker-overlay ${overlayAnchorClasses(targetPlaced.viewportX, targetPlaced.viewportY, frameRef.current)}`} role="dialog" aria-label="Picked location"
                   onMouseDown={(event) => event.stopPropagation()}

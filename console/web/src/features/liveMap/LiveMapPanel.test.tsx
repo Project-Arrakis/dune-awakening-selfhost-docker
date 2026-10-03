@@ -859,6 +859,11 @@ it("picks a location from the terrain under the cursor when tilted", async () =>
   const slider = await screen.findByRole("slider", { name: "Tilt" });
   const frame = sizeFrame(container);
   fireEvent.change(slider, { target: { value: "50" } });
+  // The map is narrower than the frame, so the CSS centres it; tilted, the terrain still spans the frame.
+  const canvas = container.querySelector(".live-map-canvas") as HTMLDivElement;
+  const margin = (800 - parseFloat(canvas.style.width)) / 2;
+  expect(margin).toBeGreaterThan(0);
+  vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue(new DOMRect(margin, 0, 800 - 2 * margin, 600));
 
   terrain.picked = { x: -60000, y: -40000, z: 15000 };
   terrain.pickCalls.length = 0;

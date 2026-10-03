@@ -102,15 +102,18 @@ export function visibleWorldRect(
 
 /**
  * Where the terrain canvas sits inside the scrolled map, CSS pixels, clamped to
- * the map's extent (see DeepDesertTerrain for why the clamp matters).
+ * the map's extent (see DeepDesertTerrain for why the clamp matters). With
+ * `fill` (3D), a map narrower than the frame, which the CSS centres, is widened
+ * to the frame's full width: past the map's edge there is still terrain to draw.
  */
-export function terrainViewport(config: LiveMapConfig, zoom: number, scrollLeft: number, scrollTop: number, frameWidth: number, frameHeight: number) {
+export function terrainViewport(config: LiveMapConfig, zoom: number, scrollLeft: number, scrollTop: number, frameWidth: number, frameHeight: number, fill = false) {
   const mapWidth = Math.floor(config.width * zoom);
   const mapHeight = Math.floor(config.height * zoom);
-  const width = Math.min(frameWidth, mapWidth);
   const height = Math.min(frameHeight, mapHeight);
-  const left = Math.min(Math.max(scrollLeft, 0), Math.max(0, mapWidth - width));
   const top = Math.min(Math.max(scrollTop, 0), Math.max(0, mapHeight - height));
+  if (fill && frameWidth > mapWidth) return { left: -(frameWidth - mapWidth) / 2, top, width: frameWidth, height };
+  const width = Math.min(frameWidth, mapWidth);
+  const left = Math.min(Math.max(scrollLeft, 0), Math.max(0, mapWidth - width));
   return { left, top, width, height };
 }
 

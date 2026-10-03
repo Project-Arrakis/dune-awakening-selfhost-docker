@@ -189,7 +189,7 @@ export default function DeepDesertTerrain({
       // a self-sustaining state where zooming back out leaves the map stuck
       // off-centre instead of returning to the fit. Clamping here keeps the
       // scroll area honest, so the browser corrects the scroll offset itself.
-      const { left, top, width, height } = terrainViewport(config, zoom, frame.scrollLeft, frame.scrollTop, frame.clientWidth, frame.clientHeight);
+      const { left, top, width, height } = terrainViewport(config, zoom, frame.scrollLeft, frame.scrollTop, frame.clientWidth, frame.clientHeight, tilt !== 0 || yaw !== 0);
       if (width <= 0 || height <= 0) return;
       canvas.style.transform = `translate(${left}px, ${top}px)`;
       renderer.resize(width, height, window.devicePixelRatio || 1);

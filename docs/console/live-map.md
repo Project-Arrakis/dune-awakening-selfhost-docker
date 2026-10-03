@@ -408,6 +408,10 @@ turned. Its needle points at north (the map's top edge, sector row I), and its
 label names the way the view faces. It turns with the view but stays round
 while tilted. Clicking it turns the view back to face north and keeps the tilt.
 
+The map frame spans the panel's width but is never taller than the window less
+the toolbar, so the whole map fits without scrolling the page. In a wide window
+the flat map is centred at fit zoom; tilted, the view fills the frame's width.
+
 Top-down is not a special case of the tilted view. With no tilt and no rotation
 the original code path runs, and everything below is inactive.
 

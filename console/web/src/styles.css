@@ -3165,6 +3165,11 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   aspect-ratio: 1 / 1;
   min-width: 560px;
   min-height: 560px;
+  /* Full width, but never taller than the window less the toolbar above it,
+     so the whole map fits without scrolling the page. A wide window then
+     letterboxes the flat map at fit; tilted, the extra width shows past the edge. */
+  max-height: calc(100vh - 110px);
+  max-height: calc(100dvh - 110px);
   overflow: hidden;
   overscroll-behavior: contain;
   touch-action: none;
@@ -3175,10 +3180,12 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 }
 .live-map-frame.dragging { cursor: grabbing; user-select: none; }
 .live-map-frame.dragging-player { cursor: grabbing; user-select: none; }
-.live-map-canvas { position: relative; background: #101316; }
+/* Centred when narrower than the frame (fit zoom in a wide window); no effect once wider. */
+.live-map-canvas { position: relative; margin-inline: auto; background: #101316; }
 /* A marker at the viewport's edge must not stretch the scroll area. `clip`, so
-   this never becomes a scroller. */
-.live-map-canvas.is-3d { overflow: clip; }
+   this never becomes a scroller. The layer, not the map, so markers still show
+   where the tilted view runs past a map narrower than the frame. */
+.live-map-canvas.is-3d .live-map-marker-layer { overflow: clip; }
 .live-map-toolbar input[type="range"].live-map-tilt-range { width: 110px; }
 .live-map-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; user-select: none; pointer-events: none; z-index: 0; }
 /* The terrain canvas covers the frame's viewport, not the scaled map: at
@@ -3193,6 +3200,8 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   display: block;
   pointer-events: none;
   will-change: transform;
+  /* Tilted, it can be wider than the map (see terrainViewport's fill). */
+  max-width: none;
 }
 .live-map-placeholder { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(circle at center, #251d14, #07090b 72%); color: #ffd08a; border: 1px dashed #514232; }
 /* Sits between the map and the markers. Drawn in map-pixel space via viewBox,
@@ -3207,7 +3216,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-sector-grid .lines line.edge,
 .live-map-sector-grid .lines path.edge { stroke: rgba(16, 11, 4, .95); stroke-width: 2; }
 /* Tilted, the grid is drawn in viewport pixels and cut at the view's edge. */
-.live-map-sector-grid.is-3d { overflow: hidden; }
+.live-map-sector-grid.is-3d { overflow: hidden; max-width: none; }
 /* font-size is set inline as viewBox units divided by zoom, so the label stays
    a constant size on screen. Sizing it in viewBox units alone would scale it
    with the map -- at maximum zoom a cell label would render ~368px tall. */

@@ -147,6 +147,20 @@ describe("3D view helpers", () => {
     expect(past.top).toBe(0);
   });
 
+  it("with fill, widens a map narrower than the frame to the frame, about the map's centre", () => {
+    const z = 0.2;
+    const mapWidth = Math.floor(DEEP_DESERT.width * z);
+    const v = terrainViewport(DEEP_DESERT, z, 0, 0, 1300, 700, true);
+    expect(v).toEqual({ left: -(1300 - mapWidth) / 2, top: 0, width: 1300, height: Math.min(700, Math.floor(DEEP_DESERT.height * z)) });
+    const camera = liveMapCamera(DEEP_DESERT, z, v, deg(45), 0, 0)!;
+    // The centre of the canvas the CSS centres, which is floor(map width) wide.
+    const centre = liveMapPixelsToWorld(mapWidth / 2 / z, (v.top + v.height / 2) / z, DEEP_DESERT)!;
+    expect(camera.cx).toBeCloseTo(centre.x, 6);
+    // Without fill, or once the map is wider than the frame, it is the clamped viewport.
+    expect(terrainViewport(DEEP_DESERT, z, 0, 0, 1300, 700).width).toBe(mapWidth);
+    expect(terrainViewport(DEEP_DESERT, zoom, 3000, 2500, 1100, 700, true)).toEqual(viewport);
+  });
+
   it("flat, projects every point exactly where the flat map draws it", () => {
     const camera = liveMapCamera(DEEP_DESERT, zoom, viewport, 0, 0, 0)!;
     for (const [px, py] of [[1600, 1300], [2100, 1500], [1500.5, 1250.25]]) {
