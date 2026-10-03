@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../../api/setup";
 import { gameUpdateTerminalStatus, isDetachedStackUpdateTask, isUpdatedConsoleReady, summarizeStackUpdateProgress } from "./UpdatesPanel";
-import { gameAssetsMissing, gameAssetsMissingInText, parseUpdateTask } from "./updateUtils";
+import { gameAssetsMissing, gameAssetsMissingInText, parseUpdateTask, stackVersionButtonLabel } from "./updateUtils";
 
 function detachedTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -138,5 +138,14 @@ describe("missing game files", () => {
     expect(gameAssetsMissingInText("Restoring database...\nDUNE_GAME_ASSETS_MISSING\n")).toBe(true);
     expect(gameAssetsMissingInText("Database restore failed (exit 1).")).toBe(false);
     expect(gameAssetsMissingInText(undefined)).toBe(false);
+  });
+});
+
+describe("a check that outlives the poll window", () => {
+  it("is reported as an outcome, so the sidebar badge cannot stay on Checking", () => {
+    const status = parseUpdateTask(detachedTask({ operation: "selfUpdateCheck", status: "running", logLines: [] }));
+    expect(status.status).toBe("Check Failed");
+    expect(status.reason).toMatch(/did not finish in time/);
+    expect(stackVersionButtonLabel(status)).toBe("Version");
   });
 });

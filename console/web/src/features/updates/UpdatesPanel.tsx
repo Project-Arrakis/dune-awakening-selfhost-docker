@@ -31,6 +31,8 @@ type UpdatesPanelProps = {
   // 0 means nothing has asked, so a fresh mount never auto-starts a download.
   installGameFilesRequest?: number;
   onInstallGameFilesHandled?: () => void;
+  // Keeps the sidebar version badge in step with checks made here.
+  onStackStatus?: (status: Record<string, string>) => void;
   confirmAction: (message: string) => Promise<boolean>;
   waitForTask: (task: Task) => Promise<Task>;
   parseKeyValueText: (text: string) => Record<string, string>;
@@ -44,6 +46,7 @@ type UpdatesPanelProps = {
 export function UpdatesPanel({
   installGameFilesRequest = 0,
   onInstallGameFilesHandled,
+  onStackStatus,
   confirmAction,
   waitForTask,
   parseKeyValueText,
@@ -104,7 +107,9 @@ export function UpdatesPanel({
   async function checkStack() {
     setStackStatus({ status: "Checking...", current: "", latest: "", reason: "" });
     const final = await waitForTask((await updatesApi.checkStack()).task);
-    setStackStatus(parseUpdateTask(final));
+    const parsed = parseUpdateTask(final);
+    setStackStatus(parsed);
+    if (parsed.current || parsed.latest) onStackStatus?.(parsed);
   }
 
   async function refreshStackStatus() {

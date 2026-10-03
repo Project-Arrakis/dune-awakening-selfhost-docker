@@ -12,7 +12,8 @@ export function parseUpdateTask(task: Task) {
   const repository = firstVersionMatch(text, [/github repo\s*[:=]\s*([^\n]+)/i]);
   const versions = { current, latest, repository };
   if (task.status === "failed") return { status: "Check Failed", ...versions, reason: updateCheckFailureReason(task.errorMessage || "", text) };
-  if (task.status !== "succeeded") return { status: "Checking...", ...versions, reason: task.progressMessage || "" };
+  // Still running here means the caller's polling gave up; nothing re-checks.
+  if (task.status !== "succeeded") return { status: "Check Failed", ...versions, reason: "The check did not finish in time. Try again in a few minutes." };
   const updateAvailable = /update available|newer|can update|available update/i.test(text);
   const latestStatus = /up to date|already latest|no update|latest/i.test(text) && !updateAvailable;
   if (sameUpdateVersion(current, latest)) return { status: "Latest", ...versions, reason: summarizeCommandText(text) };
