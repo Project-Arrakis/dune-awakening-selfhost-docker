@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { getAdminPort, getServerPorts, resetServerPortsForTests, setAdminPort } from "./api/serverPorts";
@@ -85,4 +85,34 @@ describe("sidebar version badge", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Open Updates" }).textContent).toBe("v1.4.44"));
   });
+
+  it("keeps the Updates page result when the sidebar's own check fails afterwards", async () => {
+    const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
+    const task = (id: string, status: string, lines: string[] = []) => ({ task: { id, type: "updates", operation: "selfUpdateCheck", status, currentStep: "", progressMessage: "", warnings: [], startedAt: "", finishedAt: null, errorMessage: null, logLines: lines.map((line) => ({ timestamp: "", stream: "stdout", line })) } });
+    let stackChecks = 0;
+    let failSidebarPoll = false;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((path: string) => {
+      const url = String(path);
+      if (url.includes("/api/auth/state")) return json({ authenticated: true, csrfToken: "t", config: { version: "1.4.43" } });
+      if (url.includes("/api/setup/state")) return json({ files: { complete: true }, config: {} });
+      if (url.includes("/api/updates/check-stack")) {
+        stackChecks += 1;
+        return stackChecks === 1 ? json(task("slow", "running")) : json(task("done", "succeeded", ["Current stack version: v1.4.43", "Latest release:        v1.4.44", "A newer stack version is available."]));
+      }
+      if (url.includes("/api/setup/tasks/slow")) return failSidebarPoll ? json({ error: "unavailable" }, 500) : json(task("slow", "running"));
+      return json({ error: "unavailable" }, 500);
+    }));
+
+    render(<App />);
+    const badge = await screen.findByRole("button", { name: "Open Updates" });
+    await waitFor(() => expect(stackChecks).toBe(1));
+    fireEvent.click(badge);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Update Available" }).textContent).toBe("v1.4.43 > v1.4.44"), { timeout: 5000 });
+
+    const pollsBefore = vi.mocked(fetch).mock.calls.filter(([path]) => String(path).includes("/tasks/slow")).length;
+    failSidebarPoll = true;
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([path]) => String(path).includes("/tasks/slow")).length).toBeGreaterThan(pollsBefore), { timeout: 5000 });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByRole("button", { name: "Update Available" }).textContent).toBe("v1.4.43 > v1.4.44");
+  }, 15000);
 });

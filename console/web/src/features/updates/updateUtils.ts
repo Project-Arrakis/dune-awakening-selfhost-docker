@@ -76,7 +76,14 @@ export function stackVersionButtonLabel(status: Record<string, string>) {
 
 // A check that learned nothing still leaves the installed version known.
 export function withInstalledVersion(status: Record<string, string>, installed: string) {
-  return status.current || !installed ? status : { ...status, current: installed };
+  if (status.current || !installed || /updating/i.test(status.status)) return status;
+  return { ...status, current: installed };
+}
+
+// The sidebar and the Updates page check independently and can finish in either order.
+export function preferKnownVersions(previous: Record<string, string>, next: Record<string, string>) {
+  const known = (status: Record<string, string>) => Boolean(status.current || status.latest);
+  return known(previous) && !known(next) ? previous : next;
 }
 
 export function stackVersionButtonTitle(status: Record<string, string>) {

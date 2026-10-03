@@ -32,7 +32,7 @@ import {
   type HomeTaskResult,
   type RestartLifecycleState
 } from "./features/server/ServerPanels";
-import { parseUpdateTask, stackVersionButtonLabel, stackVersionButtonTitle, withInstalledVersion } from "./features/updates/updateUtils";
+import { parseUpdateTask, stackVersionButtonLabel, preferKnownVersions, stackVersionButtonTitle, withInstalledVersion } from "./features/updates/updateUtils";
 import { formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "./lib/display";
 import { useStaleBuildWatcher } from "./lib/staleBuildWatcher";
 
@@ -722,9 +722,9 @@ export function App() {
     void (async () => {
       try {
         const final = await waitForTaskSilently((await updatesApi.checkStack()).task);
-        if (!cancelled) setStackVersionStatus(parseUpdateTask(final));
+        if (!cancelled) setStackVersionStatus((previous) => preferKnownVersions(previous, parseUpdateTask(final)));
       } catch {
-        if (!cancelled) setStackVersionStatus({ status: "Unavailable", current: "", latest: "" });
+        if (!cancelled) setStackVersionStatus((previous) => preferKnownVersions(previous, { status: "Unavailable", current: "", latest: "" }));
       }
     })();
     return () => { cancelled = true; };
